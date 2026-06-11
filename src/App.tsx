@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import CrucibleMark from './CrucibleMark'
 import { MODEL_REGISTRY } from './modelData'
+import LeftDock from './LeftDock'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
@@ -1217,6 +1218,7 @@ export default function App() {
       `}</style>
 
       <ShimmerBg thinking={thinking} />
+      <LeftDock />
 
       {/* ── Top bar ── */}
       <div style={{
@@ -1663,7 +1665,7 @@ export default function App() {
       })()}
 
      {/* ── Model status bar ── */}
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 20px 0', zIndex: 10, position: 'relative' }}>
+      <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 20px 12px', zIndex: 21, position: 'relative' }}>
         <div style={{
           position: 'relative', display: 'inline-flex', gap: 4, flexWrap: 'wrap' as const,
           padding: '8px 10px', borderRadius: 14,

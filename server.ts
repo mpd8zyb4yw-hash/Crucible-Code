@@ -47,7 +47,7 @@ export function saveCircuitState() {
 }
 
 loadCircuitState()
-import { exec } from 'child_process'
+import { exec, execFile } from 'child_process'
 import { prewarmPython } from './src/CrucibleEngine/sandbox'
 
 // ── Exact response cache ──────────────────────────────────────────────────────
@@ -1052,6 +1052,89 @@ app.post('/api/file/list', (req, res) => {
   } catch (e: any) {
     res.status(500).json({ error: e.message })
   }
+})
+
+// ── Sandbox API (Code tab) ────────────────────────────────────────────────────
+// A dedicated scratch dir under .crucible/sandbox/ where the Code-tab editor and the
+// agent operate with no risk to the user's real tree. All paths are gated to this root;
+// `run` is executed under macOS sandbox-exec with network DENIED (lightweight isolation,
+// no containers — matches the project's no-heavy-framework invariant).
+const SANDBOX_ROOT = path.join(process.cwd(), '.crucible', 'sandbox')
+const SANDBOX_SKIP = new Set(['node_modules', '.git', '.DS_Store', 'dist', '.crucible'])
+
+function ensureSandbox() {
+  if (!fs.existsSync(SANDBOX_ROOT)) fs.mkdirSync(SANDBOX_ROOT, { recursive: true })
+}
+// Resolve a relative path against the sandbox root, refusing any escape (../, abs paths).
+function sandboxResolve(relPath: string): string | null {
+  const clean = (relPath || '').replace(/^\/+/, '')
+  const abs = path.resolve(SANDBOX_ROOT, clean)
+  if (abs !== SANDBOX_ROOT && !abs.startsWith(SANDBOX_ROOT + path.sep)) return null
+  return abs
+}
+function sandboxTree(dir: string, rel = ''): any[] {
+  const out: any[] = []
+  let entries: fs.Dirent[] = []
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return out }
+  for (const e of entries.sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))) {
+    if (SANDBOX_SKIP.has(e.name)) continue
+    const childRel = rel ? `${rel}/${e.name}` : e.name
+    if (e.isDirectory()) out.push({ name: e.name, path: childRel, isDir: true, children: sandboxTree(path.join(dir, e.name), childRel) })
+    else out.push({ name: e.name, path: childRel, isDir: false })
+  }
+  return out
+}
+
+app.get('/api/sandbox/tree', (_req, res) => {
+  ensureSandbox()
+  res.json({ success: true, root: SANDBOX_ROOT, tree: sandboxTree(SANDBOX_ROOT) })
+})
+
+app.post('/api/sandbox/read', (req, res) => {
+  const abs = sandboxResolve(req.body?.path)
+  if (!abs) return res.status(400).json({ error: 'path outside sandbox' })
+  if (!fs.existsSync(abs) || fs.statSync(abs).isDirectory()) return res.status(404).json({ error: 'not a file' })
+  try { res.json({ success: true, content: fs.readFileSync(abs, 'utf-8') }) }
+  catch (e: any) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/sandbox/write', (req, res) => {
+  const abs = sandboxResolve(req.body?.path)
+  if (!abs) return res.status(400).json({ error: 'path outside sandbox' })
+  try {
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    fs.writeFileSync(abs, req.body?.content ?? '', 'utf-8')
+    res.json({ success: true })
+  } catch (e: any) { res.status(500).json({ error: e.message }) }
+})
+
+app.post('/api/sandbox/delete', (req, res) => {
+  const abs = sandboxResolve(req.body?.path)
+  if (!abs || abs === SANDBOX_ROOT) return res.status(400).json({ error: 'path outside sandbox' })
+  try { fs.rmSync(abs, { recursive: true, force: true }); res.json({ success: true }) }
+  catch (e: any) { res.status(500).json({ error: e.message }) }
+})
+
+// Run a command in the sandbox with network denied. Streams nothing yet — returns on exit.
+app.post('/api/sandbox/run', (req, res) => {
+  ensureSandbox()
+  const command = String(req.body?.command || '')
+  if (!command.trim()) return res.status(400).json({ error: 'command required' })
+  // macOS sandbox-exec profile: allow everything except outbound/inbound network.
+  const profile = '(version 1)(allow default)(deny network*)'
+  const started = Date.now()
+  execFile('sandbox-exec', ['-p', profile, '/bin/sh', '-c', command], {
+    cwd: SANDBOX_ROOT, timeout: 20000, maxBuffer: 4 * 1024 * 1024,
+    env: { ...process.env, PATH: process.env.PATH || '' },
+  }, (error, stdout, stderr) => {
+    res.json({
+      success: !error,
+      output: (stdout || '') + (stderr ? `\n${stderr}` : ''),
+      code: (error as any)?.code ?? 0,
+      timedOut: (error as any)?.killed ?? false,
+      ms: Date.now() - started,
+    })
+  })
 })
 
 // ── Checkpoint API ────────────────────────────────────────────────────────────
