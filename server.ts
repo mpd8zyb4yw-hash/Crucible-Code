@@ -19,6 +19,7 @@ import { fenceProtocolPrompt, parseFenceToolCall, toOpenAITools, fromOpenAIToolC
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
 import { runAgentLoop } from './src/CrucibleEngine/agent/loop'
 import type { DriveTurn } from './src/CrucibleEngine/agent/loop'
+import { makeVerifier } from './src/CrucibleEngine/agent/verify'
 
 const CIRCUIT_STATE_FILE = path.join(process.cwd(), '.circuit-state.json')
 
@@ -406,12 +407,14 @@ app.post('/api/chat', async (req, res) => {
 
     send({ type: 'agent_start', driver: DRIVER_MODEL, projectPath })
     console.log(`[Agent] Starting loop — driver: ${DRIVER_MODEL}, project: ${projectPath}`)
+    const verifier = makeVerifier({ command: req.body.verifyCommand })
     const result = await runAgentLoop({
       goal: message,
       projectPath,
       driveTurn: nativeDriveTurn,
       emit: send,
       signal: ac.signal,
+      verify: verifier.verify,
     })
     if (result.finalText) send({ type: 'final', text: result.finalText })
     res.write('data: [DONE]\n\n')

@@ -21,6 +21,8 @@ export interface VerifyResult {
   signal: 'compile' | 'test' | 'runtime' | 'lint' | 'none'
   report: string
   hints?: string[]
+  /** Set by the verifier when healing should stop (heal cap hit or repeated failure fingerprint). */
+  escalate?: boolean
 }
 
 export interface AgentLoopOpts {
@@ -42,7 +44,7 @@ export interface AgentLoopResult {
   finalText: string
   iters: number
   toolCallCount: number
-  stopped: 'final' | 'max_iters' | 'budget' | 'cancelled' | 'error'
+  stopped: 'final' | 'max_iters' | 'budget' | 'cancelled' | 'error' | 'verify_failed'
 }
 
 const APPROX_CHARS_PER_TOKEN = 4
@@ -126,7 +128,12 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     // No tool calls — model thinks it's done. Verify before accepting.
     if (verify) {
       const v = await verify(turn.text, ctx)
-      emit({ type: 'verify', passed: v.passed, signal: v.signal, report: v.report.slice(0, 1500) })
+      emit({ type: 'verify', passed: v.passed, signal: v.signal, report: v.report.slice(0, 1500), escalate: v.escalate ?? false })
+      if (!v.passed && v.escalate) {
+        // Heal cap hit or same failure repeating — stop honestly instead of thrashing.
+        const honest = `Verification is still failing after repeated fix attempts (${v.signal}).\n\nLast report:\n${v.report.slice(0, 2000)}\n\nModel's last summary:\n${turn.text}`
+        return { ...done('verify_failed', honest, iter), finalText: honest }
+      }
       if (!v.passed) {
         messages.push({ role: 'assistant', content: turn.text })
         messages.push({
