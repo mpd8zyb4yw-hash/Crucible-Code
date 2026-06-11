@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "crucible-vite",
+      "runtimeExecutable": "/Users/justin/crucible-local/node_modules/.bin/vite",
+      "runtimeArgs": ["--port", "5173", "--config", "/Users/justin/crucible-local/vite.config.ts"],
+      "cwd": "/Users/justin/crucible-local",
+      "port": 5173
+    }
+  ]
+}

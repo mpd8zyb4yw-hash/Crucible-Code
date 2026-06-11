@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+release/
+server-dist/
+app/
+.env.local
+.env*.local
+.circuit-state.json
+.DS_Store
+*.log
+.vite/

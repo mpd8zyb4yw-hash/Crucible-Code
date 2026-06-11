@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "es2022",
+    "outDir": "server-dist",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "ignoreDeprecations": "6.0"
+  },
+  "include": [
+    "server.ts",
+    "src/CrucibleEngine/**/*.ts"
+  ],
+  "exclude": [
+    "src/CrucibleEngine/test.ts"
+  ]
+}

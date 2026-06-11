@@ -1,0 +1,5 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { overflow: hidden; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 4px; }
