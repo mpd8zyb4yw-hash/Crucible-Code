@@ -411,10 +411,23 @@ registry.register({
   },
 })
 
-/** Imperative coding request that wants actions, not just an answer. */
+/** Imperative coding request that wants ACTIONS (write files, run them), not just code to read.
+ *  "show me code / a snippet / an example" is a DISPLAY request → belongs in the ensemble
+ *  pipeline (renders code in chat), NOT the file-writing agent loop. */
 function detectAgentTask(message: string): boolean {
-  return /\b(create|write|build|make|add|implement|fix|refactor|update|generate|run|execute|test)\b/i.test(message) &&
-    /\b(file|script|code|function|test|program|app|project|directory|folder)\b/i.test(message)
+  const m = message.toLowerCase()
+  // Display-only intent — user wants to SEE code, not have files written/run.
+  const wantsDisplay = /\b(show|display|paste|print|give)\b[\s\S]{0,30}\bcode\b/.test(m)
+    || /\bjust (the )?code\b/.test(m) || /\b(snippet|example)\b/.test(m)
+    || /\bhow (do|to|can|would)\b/.test(m) || /\bwhat('?s| is| does)\b/.test(m)
+  // Strong build/execute signals — an actual artifact or run is requested.
+  const wantsBuild =
+    /\b(create|write|build|make|add|implement|generate|scaffold)\b[\s\S]{0,40}\b(file|script|app|application|website|page|module|package|component|server|api|directory|folder|repo|project)\b/.test(m)
+    || /\b(run|execute|compile|install|deploy|and run|then run|make it work|get it working|build it)\b/.test(m)
+    || /\.(py|js|ts|tsx|jsx|html|css|json|sh|go|rs|java|cpp|c|rb|php)\b/.test(m)
+    || /\b(save|write|put)\b[\s\S]{0,20}\b(to|into|as|in)\b[\s\S]{0,20}\.[a-z]/.test(m)
+  if (wantsDisplay && !wantsBuild) return false
+  return wantsBuild
 }
 
 app.post('/api/chat', async (req, res) => {
