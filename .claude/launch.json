@@ -3,10 +3,10 @@
   "configurations": [
     {
       "name": "crucible-vite",
-      "runtimeExecutable": "/Users/justin/crucible-local/node_modules/.bin/vite",
-      "runtimeArgs": ["--port", "5173", "--config", "/Users/justin/crucible-local/vite.config.ts"],
-      "cwd": "/Users/justin/crucible-local",
-      "port": 5173
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "runtimeArgs": ["/Users/justin/Desktop/crucible-local/node_modules/vite/bin/vite.js", "--port", "5180", "--strictPort"],
+      "cwd": "/Users/justin/Desktop/crucible-local",
+      "port": 5180
     }
   ]
 }

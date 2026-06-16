@@ -67,6 +67,8 @@ export interface ScoringInput {
     forbiddenAntipatterns: string[];
     qualityGates: string[];
     promptType: string;
+    promptRequirements?: string[];
+    evaluationCriteria?: Array<{ concept: string; keywords: string[]; required: boolean }>;
   };
 }
 

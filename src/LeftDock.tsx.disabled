@@ -1,0 +1,647 @@
+// Code Studio — inline side panel (no longer full-screen overlay).
+// Opens as a resizable left panel that pushes the chat column right.
+// Agent-powered mode: build prompt goes through the agent loop for
+// live tool/diff/verify feedback inside the studio.
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { API_BASE } from './api'
+
+const API = API_BASE
+
+function useProximityOpacity(ref: React.RefObject<HTMLElement | null>, opts?: { near?: number; far?: number }) {
+ const near = opts?.near ?? 40
+ const far = opts?.far ?? 340
+ const [opacity, setOpacity] = useState(0)
+ useEffect(() => {
+   const onMove = (e: MouseEvent) => {
+     const el = ref.current
+     if (!el) return
+     const r = el.getBoundingClientRect()
+     const cx = Math.max(r.left, Math.min(e.clientX, r.right))
+     const cy = Math.max(r.top, Math.min(e.clientY, r.bottom))
+     const d = Math.hypot(e.clientX - cx, e.clientY - cy)
+     const t = 1 - Math.min(1, Math.max(0, (d - near) / (far - near)))
+     setOpacity(t * t)
+   }
+   window.addEventListener('mousemove', onMove)
+   return () => window.removeEventListener('mousemove', onMove)
+ }, [ref, near, far])
+ return opacity
+}
+
+function extractHtml(text: string): string {
+ const fenced = text.match(/```(?:html)?\s*\n([\s\S]*?)```/i)
+ const body = fenced ? fenced[1] : text
+ const doc = body.match(/<!DOCTYPE[\s\S]*<\/html>/i) || body.match(/<html[\s\S]*<\/html>/i)
+ if (doc) return doc[0]
+ if (/<\/\w+>/.test(body)) return `<!DOCTYPE html><html><body style="margin:0">${body}</body></html>`
+ return body.trim()
+}
+
+function injectErrorReporter(doc: string): string {
+ const reporter = `<script>
+window.onerror = function(msg, src, line, col, err) {
+ window.parent.postMessage({ type: 'crucible_iframe_error', message: String(msg), line: line, col: col }, '*');
+ return false;
+};
+window.addEventListener('unhandledrejection', function(e) {
+ window.parent.postMessage({ type: 'crucible_iframe_error', message: String(e.reason) }, '*');
+});
+<\/script>`
+ if (/<head>/i.test(doc)) return doc.replace(/<head>/i, '<head>' + reporter)
+ if (/<html[^>]*>/i.test(doc)) return doc.replace(/<html[^>]*>/i, m => m + reporter)
+ return reporter + doc
+}
+
+async function runEnsemble(message: string, onStage: () => void, signal: AbortSignal): Promise<string> {
+ const res = await fetch(`${API}/api/chat`, {
+   method: 'POST', headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({ message, agentMode: false }), signal,
+ })
+ const reader = res.body!.getReader()
+ const dec = new TextDecoder()
+ let buf = '', synthesis = ''
+ for (;;) {
+   const { done, value } = await reader.read()
+   if (done) break
+   buf += dec.decode(value, { stream: true })
+   const chunks = buf.split('\n\n'); buf = chunks.pop() ?? ''
+   for (const c of chunks) {
+     const line = c.split('\n').find(l => l.startsWith('data: '))
+     if (!line) continue
+     try {
+       const ev = JSON.parse(line.slice(6))
+       if (ev.type === 'stage') onStage()
+       if (ev.type === 'synthesis' || ev.type === 'synthesis_token') {
+         synthesis = ev.replace ? (ev.text || synthesis) : synthesis + (ev.text || '')
+       }
+     } catch { /* partial */ }
+   }
+ }
+ return synthesis
+}
+
+const AGENT_EVENT_TYPES = new Set([
+ 'agent_start','plan','step_status','tool_call','tool_result','tool_created',
+ 'diff','verify','thought','agent_done','plan_done','agent_error','final',
+])
+
+interface AgentStep { id: number; intent: string; status: string }
+interface AgentTool { id: string; tool: string; args?: any; ok?: boolean; output?: string; truncated?: boolean; done: boolean }
+interface AgentDiff { ts: number; path: string; old?: string; new?: string; patch?: string }
+interface AgentVerify { ts: number; passed: boolean; signal: string; report: string }
+interface AgentState {
+ active: boolean
+ steps: AgentStep[]
+ tools: AgentTool[]
+ diffs: AgentDiff[]
+ verifies: AgentVerify[]
+ thoughts: string[]
+ final?: string
+ done?: { ok: boolean; stopped: string }
+ error?: string
+}
+
+function emptyAgent(): AgentState {
+ return { active: true, steps: [], tools: [], diffs: [], verifies: [], thoughts: [] }
+}
+
+function agentReducer(s: AgentState, ev: any): AgentState {
+ switch (ev.type) {
+   case 'agent_start': return { ...s, active: true }
+   case 'plan': return { ...s, steps: ev.steps ?? s.steps }
+   case 'step_status': {
+     const steps = s.steps.map(st => st.id === ev.id ? { ...st, status: ev.status } : st)
+     if (!steps.some(st => st.id === ev.id) && ev.intent) steps.push({ id: ev.id, intent: ev.intent, status: ev.status })
+     return { ...s, steps }
+   }
+   case 'tool_call': return { ...s, tools: [...s.tools, { id: ev.id, tool: ev.tool, args: ev.args, done: false }] }
+   case 'tool_result': {
+     const tools = s.tools.map(t => t.id === ev.id && !t.done ? { ...t, ok: ev.ok, output: ev.output, truncated: ev.truncated, done: true } : t)
+     return { ...s, tools }
+   }
+   case 'diff': return { ...s, diffs: [...s.diffs, { ts: Date.now(), path: ev.path, old: ev.old, new: ev.new, patch: ev.patch }] }
+   case 'verify': return { ...s, verifies: [...s.verifies, { ts: Date.now(), passed: ev.passed, signal: ev.signal, report: ev.report }] }
+   case 'thought': return ev.text?.trim() ? { ...s, thoughts: [...s.thoughts, ev.text] } : s
+   case 'agent_error': return { ...s, error: ev.error, active: false }
+   case 'agent_done': return { ...s, done: { ok: ev.ok, stopped: ev.stopped }, active: false }
+   case 'final': return { ...s, final: ev.text, active: false }
+   default: return s
+ }
+}
+
+function StudioAgentPanel({ agent }: { agent: AgentState }) {
+ const STEP_COLOR: Record<string, string> = { pending: '#555', active: '#7c7cf8', done: '#4ade80', failed: '#f87171' }
+ const STEP_GLYPH: Record<string, string> = { pending: '○', active: '◐', done: '●', failed: '✕' }
+ return (
+   <div style={{
+     margin: '8px 0', padding: '10px 12px', borderRadius: 10,
+     background: 'rgba(124,124,248,0.04)', border: '1px solid rgba(124,124,248,0.15)',
+     fontSize: 11, display: 'flex', flexDirection: 'column', gap: 8,
+   }}>
+     <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', color: '#7c7cf8', textTransform: 'uppercase' as const }}>
+       {agent.active ? 'agent building…' : agent.done?.ok ? 'agent done' : agent.error ? 'agent error' : 'agent finished'}
+     </div>
+     {agent.steps.length > 0 && (
+       <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+         {agent.steps.map(st => (
+           <div key={st.id} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', color: st.status === 'done' ? '#555' : '#ccc' }}>
+             <span style={{ color: STEP_COLOR[st.status] ?? '#555', flexShrink: 0 }}>{STEP_GLYPH[st.status] ?? '○'}</span>
+             <span style={{ textDecoration: st.status === 'done' ? 'line-through' : 'none' }}>{st.intent}</span>
+           </div>
+         ))}
+       </div>
+     )}
+     {agent.tools.length > 0 && (
+       <div style={{ fontSize: 10, color: '#555' }}>
+         {agent.tools.filter(t => t.done).length}/{agent.tools.length} tools complete
+         {agent.diffs.length > 0 && ` · ${agent.diffs.length} file${agent.diffs.length > 1 ? 's' : ''} changed`}
+       </div>
+     )}
+     {agent.error && <div style={{ color: '#fca5a5', fontSize: 10 }}>{agent.error}</div>}
+   </div>
+ )
+}
+
+function CodeStudio({ onClose }: { onClose: () => void }) {
+ const [prompt, setPrompt] = useState('')
+ const [building, setBuilding] = useState(false)
+ const [progress, setProgress] = useState(0)
+ const [html, setHtml] = useState<string>('')
+ const [showCode, setShowCode] = useState(false)
+ const [error, setError] = useState<string | null>(null)
+ const [steps, setSteps] = useState<string[]>([])
+ const [copied, setCopied] = useState(false)
+ const [fixAttempt, setFixAttempt] = useState(0)
+ const [fixStatus, setFixStatus] = useState<string>('')
+ const [agentMode, setAgentMode] = useState(false)
+ const [agent, setAgent] = useState<AgentState | null>(null)
+ const ac = useRef<AbortController | null>(null)
+
+ const statusText = fixAttempt > 0
+   ? fixStatus || `fixing error (attempt ${fixAttempt}/3)…`
+   : (steps.length
+     ? steps[Math.min(steps.length - 1, Math.floor(progress * steps.length))]
+     : 'building…')
+
+ const POWER = `Make it genuinely impressive and detailed — NEVER a placeholder, blank frame, ` +
+   `empty box, or "todo" stub. ` +
+   `Author ALL visuals yourself in code — do NOT load external or stock images. ` +
+   `No <img> tags pointing at remote URLs. ` +
+   `Build everything from primitives: inline SVG, <canvas>, WebGL, CSS gradients/filters/shapes, ` +
+   `and requestAnimationFrame. Generate icons, illustrations, textures, and scenes procedurally. ` +
+   `For "animated" requests add real, continuous motion. Fill the viewport and make it look professional.`
+
+ const attemptFix = useCallback(async (brokenHtml: string, errorMsg: string, attempt: number, signal: AbortSignal) => {
+   if (attempt > 3) return
+   setFixAttempt(attempt)
+   setFixStatus(`detected error — asking models to fix it…`)
+   try {
+     const out = await runEnsemble(
+       `This standalone HTML document throws a JavaScript error:\n\nError: ${errorMsg}\n\n` +
+       `Here is the full document:\n\`\`\`html\n${brokenHtml}\n\`\`\`\n\n` +
+       `Fix the JavaScript error. Return ONLY the complete corrected standalone HTML document.`,
+       () => {},
+       signal,
+     )
+     const fixed = extractHtml(out)
+     if (fixed && fixed.length > 200) {
+       setHtml(fixed); persist(fixed)
+       setFixAttempt(0); setFixStatus('')
+     }
+   } catch (e: any) {
+     if (e.name !== 'AbortError') { setFixAttempt(0); setFixStatus('') }
+   }
+ }, [])
+
+ useEffect(() => {
+   let fixCount = 0
+   const handler = (e: MessageEvent) => {
+     if (e.data?.type !== 'crucible_iframe_error') return
+     if (fixCount >= 3 || building) return
+     fixCount++
+     const msg = e.data.message || 'unknown error'
+     const newAc = new AbortController()
+     ac.current = newAc
+     attemptFix(html, msg, fixCount, newAc.signal)
+   }
+   window.addEventListener('message', handler)
+   return () => window.removeEventListener('message', handler)
+ }, [html, building, attemptFix])
+
+ const buildAgent = async (desc: string) => {
+   setBuilding(true); setProgress(0.04); setError(null)
+   setAgent(emptyAgent())
+   ac.current = new AbortController()
+   const signal = ac.current.signal
+   const genMsg = html
+     ? `Here is the current web app:\n\`\`\`html\n${html}\n\`\`\`\nModify it to: ${desc}\n${POWER}\nReturn the complete updated standalone HTML document.`
+     : `Create a complete standalone HTML document (inline CSS/JS) for: ${desc}\n${POWER}\nReturn only the HTML.`
+   try {
+     const res = await fetch(`${API}/api/chat`, {
+       method: 'POST', headers: { 'Content-Type': 'application/json' },
+       body: JSON.stringify({ message: genMsg, mode: 'agent' }), signal,
+     })
+     const reader = res.body!.getReader()
+     const dec = new TextDecoder()
+     let buf = ''
+     for (;;) {
+       const { done, value } = await reader.read()
+       if (done) break
+       buf += dec.decode(value, { stream: true })
+       const lines = buf.split('\n'); buf = lines.pop() ?? ''
+       for (const line of lines) {
+         if (!line.startsWith('data: ')) continue
+         const raw = line.slice(6).trim()
+         if (raw === '[DONE]') break
+         try {
+           const ev = JSON.parse(raw)
+           if (AGENT_EVENT_TYPES.has(ev.type)) {
+             setAgent(s => agentReducer(s ?? emptyAgent(), ev))
+             setProgress(p => Math.min(0.95, p + 0.02))
+           }
+           if (ev.type === 'final' && ev.text) {
+             const doc = extractHtml(ev.text)
+             if (doc && doc.length > 200) { setHtml(doc); persist(doc) }
+           }
+           if (ev.type === 'diff' && ev.path?.endsWith('.html') && ev.new) {
+             const doc = extractHtml(ev.new)
+             if (doc && doc.length > 200) { setHtml(doc); persist(doc) }
+           }
+         } catch {}
+       }
+     }
+     setProgress(1)
+   } catch (e: any) {
+     if (e.name !== 'AbortError') setError(e.message || 'build failed')
+   }
+   setBuilding(false)
+ }
+
+ const buildEnsemble = async (desc: string) => {
+   setBuilding(true); setProgress(0.04); setError(null); setSteps([])
+   setFixAttempt(0); setFixStatus('')
+   ac.current = new AbortController()
+   const signal = ac.current.signal
+
+   fetch(`${API}/api/studio/plan`, {
+     method: 'POST', headers: { 'Content-Type': 'application/json' },
+     body: JSON.stringify({ desc }), signal,
+   }).then(r => r.json()).then(d => setSteps(d.steps ?? [])).catch(() => {})
+
+   const genMsg = html
+     ? `Here is the current web app:\n\`\`\`html\n${html}\n\`\`\`\nModify it to: ${desc}\n${POWER}\nReturn ONLY the complete updated standalone HTML document.`
+     : `Create a complete, standalone HTML document (inline <style> and <script>) for: ${desc}\n${POWER}\nReturn ONLY the HTML document.`
+   try {
+     const out = await runEnsemble(genMsg, () => setProgress(p => Math.min(0.7, p + 0.1)), signal)
+     let doc = extractHtml(out)
+     if (!doc) throw new Error('no renderable output')
+     setHtml(doc); setProgress(0.75); persist(doc)
+
+     setProgress(0.8)
+     try {
+       const refined = await runEnsemble(
+         `Here is a web app:\n\`\`\`html\n${doc}\n\`\`\`\nMake it dramatically more detailed and alive. Remove any placeholder. ${POWER}\nReturn ONLY the improved HTML.`,
+         () => setProgress(p => Math.min(0.97, p + 0.06)), signal,
+       )
+       const better = extractHtml(refined)
+       if (better && better.length > doc.length * 0.5) { doc = better; setHtml(doc); persist(doc) }
+     } catch (e: any) { if (e.name === 'AbortError') throw e }
+
+     setProgress(1)
+   } catch (e: any) {
+     if (e.name !== 'AbortError') setError(e.message || 'build failed')
+   }
+   setBuilding(false)
+ }
+
+ const build = async () => {
+   const desc = prompt.trim()
+   if (!desc || building) return
+   setPrompt('')
+   if (agentMode) await buildAgent(desc)
+   else await buildEnsemble(desc)
+ }
+
+ const persist = (doc: string) => fetch(`${API}/api/sandbox/write`, {
+   method: 'POST', headers: { 'Content-Type': 'application/json' },
+   body: JSON.stringify({ path: 'studio/index.html', content: doc }),
+ }).catch(() => {})
+
+ const copyCode = () => {
+   const fb = () => { const ta = document.createElement('textarea'); ta.value = html; ta.style.userSelect = 'text'; (ta.style as any).webkitUserSelect = 'text'; document.body.appendChild(ta); ta.focus(); ta.select(); ta.setSelectionRange(0, ta.value.length); try { document.execCommand('copy') } catch {} document.body.removeChild(ta) }
+   try { navigator.clipboard?.writeText ? navigator.clipboard.writeText(html).catch(fb) : fb() } catch { fb() }
+   setCopied(true); setTimeout(() => setCopied(false), 1500)
+ }
+
+ const downloadHtml = () => {
+   const blob = new Blob([html], { type: 'text/html' })
+   const url = URL.createObjectURL(blob)
+   const a = document.createElement('a'); a.href = url; a.download = 'crucible-studio.html'; a.click()
+   URL.revokeObjectURL(url)
+ }
+
+ const iframeDoc = html ? injectErrorReporter(html) : ''
+
+ return (
+   <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+     <style>{`
+       @keyframes studioBreathe { 0%,100% { opacity:0.18; transform:scale(0.98); } 50% { opacity:0.42; transform:scale(1.03); } }
+       @keyframes studioDrift { 0% { background-position:0% 50%; } 100% { background-position:300% 50%; } }
+        @media (max-width: 640px) { .crucible-studio-inputbar { display: none; } }
+        @media (max-width: 640px) { .crucible-studio-collab-btn { display: none !important; } }
+     `}</style>
+
+     <div style={{ height: 22, flexShrink: 0 }} />
+
+     <div style={{ flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 16px' }}>
+       <div style={{ position: 'relative', width: '100%', height: '100%', maxHeight: 560 }}>
+         <div style={{
+           position: 'absolute', inset: -14, borderRadius: 30, pointerEvents: 'none', zIndex: 0,
+           background: 'linear-gradient(90deg, #7c7cf8, #4db89e, #c084fc, #f59e0b, #7c7cf8)',
+           backgroundSize: '300% 100%',
+           filter: `blur(${(building || fixAttempt > 0) ? 48 : 32}px) saturate(${(building || fixAttempt > 0) ? 1.1 : 1.3})`,
+           opacity: (building || fixAttempt > 0) ? undefined : (html ? 0.4 : 0.28),
+           animation: (building || fixAttempt > 0)
+             ? 'studioDrift 6s linear infinite, studioBreathe 3.2s ease-in-out infinite'
+             : 'studioDrift 26s linear infinite',
+           transition: 'filter 1.4s ease, opacity 1.4s ease',
+         }} />
+         <div style={{
+           position: 'relative', zIndex: 1, width: '100%', height: '100%',
+           borderRadius: 20, overflow: 'hidden',
+           background: html ? '#fff' : 'rgba(16,16,26,0.32)',
+           backdropFilter: html ? 'none' : 'blur(26px) saturate(1.3)', WebkitBackdropFilter: html ? 'none' : 'blur(26px) saturate(1.3)',
+           border: '1px solid rgba(255,255,255,0.12)',
+           boxShadow: '0 24px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.08)',
+         }}>
+           {html ? (
+             <iframe
+               key={iframeDoc.slice(0, 120)}
+               title="preview"
+               sandbox="allow-scripts"
+               srcDoc={iframeDoc}
+               style={{ width: '100%', height: '100%', border: 'none' }}
+             />
+           ) : (
+             <div style={{
+               position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+               alignItems: 'center', justifyContent: 'center', gap: 12,
+               color: '#55556a', textAlign: 'center', padding: 24,
+             }}>
+               <div style={{ fontSize: 38, opacity: 0.6, background: 'linear-gradient(135deg,#7c7cf8,#4db89e,#c084fc)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>✦</div>
+               <div style={{ fontSize: 15, color: '#c7c7d8', fontWeight: 500 }}>Describe anything and watch it come to life.</div>
+               <div style={{ fontSize: 12.5, color: '#7a7a90', maxWidth: 320, lineHeight: 1.6 }}>Try "a red bouncing ball", "a calculator", or "a starry night sky".</div>
+             </div>
+           )}
+           {showCode && html && (
+             <>
+               <pre style={{
+                 position: 'absolute', inset: 0, margin: 0, padding: 16, overflow: 'auto',
+                 background: 'rgba(8,8,14,0.97)', color: '#cdd0e0', fontFamily: 'ui-monospace, monospace',
+                 fontSize: 11.5, lineHeight: 1.55, whiteSpace: 'pre-wrap', userSelect: 'text',
+               }}>{html}</pre>
+               <div style={{ position: 'absolute', top: 12, right: 12, display: 'flex', gap: 6 }}>
+                 <button onClick={downloadHtml} style={{
+                   background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.14)',
+                   borderRadius: 7, padding: '5px 11px', cursor: 'pointer',
+                   fontSize: 10.5, fontWeight: 600, letterSpacing: '0.06em', color: '#aaa',
+                 }}>download</button>
+                 <button onClick={copyCode} style={{
+                   background: copied ? 'rgba(77,184,158,0.2)' : 'rgba(255,255,255,0.08)',
+                   border: `1px solid ${copied ? 'rgba(77,184,158,0.4)' : 'rgba(255,255,255,0.14)'}`,
+                   borderRadius: 7, padding: '5px 11px', cursor: 'pointer',
+                   fontSize: 10.5, fontWeight: 600, letterSpacing: '0.06em',
+                   color: copied ? '#4db89e' : '#aaa', transition: 'all 0.2s',
+                 }}>{copied ? 'copied' : 'copy'}</button>
+               </div>
+             </>
+           )}
+         </div>
+       </div>
+     </div>
+
+     {agentMode && agent && <div style={{ padding: '0 16px', flexShrink: 0 }}><StudioAgentPanel agent={agent} /></div>}
+
+     <div style={{ height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 16px', flexShrink: 0 }}>
+       {(building || fixAttempt > 0) ? (
+         <div style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%' }}>
+           <span key={statusText} style={{ fontSize: 11, color: '#b6b6d0', whiteSpace: 'nowrap', minWidth: 100, animation: 'fadeIn 0.4s ease' }}>
+             {statusText}
+           </span>
+           <div style={{ flex: 1, height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+             <div style={{
+               height: '100%',
+               width: fixAttempt > 0 ? '100%' : `${progress * 100}%`,
+               borderRadius: 2,
+               background: fixAttempt > 0
+                 ? 'linear-gradient(90deg, #f59e0b, #f87171)'
+                 : 'linear-gradient(90deg, #7c7cf8, #4db89e, #c084fc)',
+               transition: fixAttempt > 0 ? 'none' : 'width 0.5s ease',
+               animation: fixAttempt > 0 ? 'studioDrift 2s linear infinite' : 'none',
+               backgroundSize: '200% 100%',
+             }} />
+           </div>
+           <button onClick={() => ac.current?.abort()} style={{ background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: 11 }}>stop</button>
+         </div>
+       ) : error ? (
+         <span style={{ fontSize: 12, color: '#fca5a5' }}>{error}</span>
+       ) : html ? (
+         <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
+           <button onClick={() => setShowCode(s => !s)} style={{
+             background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, letterSpacing: '0.04em',
+             color: showCode ? '#7c7cf8' : '#666',
+           }}>〔 {showCode ? 'hide code' : 'peek at code'} 〕</button>
+           {!showCode && (
+             <button onClick={downloadHtml} style={{
+               background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, letterSpacing: '0.04em', color: '#555',
+             }}>↓ export</button>
+           )}
+         </div>
+       ) : null}
+     </div>
+
+     <div className="crucible-studio-inputbar" style={{ padding: '8px 16px 24px', flexShrink: 0 }}>
+       <div style={{
+         display: 'flex', alignItems: 'center', gap: 8,
+         background: 'rgba(18,18,28,0.55)', border: '1px solid rgba(255,255,255,0.12)',
+         borderRadius: 14, padding: '8px 10px',
+         backdropFilter: 'blur(28px) saturate(1.2)', WebkitBackdropFilter: 'blur(28px) saturate(1.2)',
+         boxShadow: '0 8px 30px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)',
+       }}>
+         <button onClick={onClose} title="Back to chat" className="crucible-studio-collab-btn" style={{
+           display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+           background: 'transparent', border: '1px solid rgba(77,184,158,0.28)', color: '#9fdcc8',
+           borderRadius: 9, padding: '5px 10px', cursor: 'pointer', fontSize: 10.5, fontWeight: 600,
+           transition: 'background 0.2s',
+         }}>
+           <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+             <path d="M7.5 2.5L4 6l3.5 3.5" stroke="#4db89e" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+           </svg>
+           collab
+         </button>
+
+         <button
+           onClick={() => setAgentMode(m => !m)}
+           title={agentMode ? 'Switch to ensemble mode' : 'Switch to agent mode'}
+           style={{
+             flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4,
+             background: agentMode ? 'rgba(124,124,248,0.15)' : 'transparent',
+             border: `1px solid ${agentMode ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.1)'}`,
+             borderRadius: 8, padding: '4px 9px', cursor: 'pointer',
+             fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+             color: agentMode ? '#9090f8' : '#555',
+             transition: 'all 0.2s',
+           }}
+         >
+           
+           agent
+         </button>
+
+         <textarea
+           value={prompt}
+           onChange={e => setPrompt(e.target.value)}
+           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); build() } }}
+           placeholder={html ? 'Describe a change…' : 'Describe to build…'}
+           rows={1}
+           style={{
+             flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent',
+             color: '#e8e8f0', fontSize: 13, lineHeight: 1.5, fontFamily: 'inherit',
+             height: 22, overflow: 'hidden', userSelect: 'text',
+           }}
+         />
+
+         {(() => {
+           const ready = !!prompt.trim() && !building && fixAttempt === 0
+           return (
+             <button onClick={build} disabled={!ready} style={{
+               width: 28, height: 28, borderRadius: '50%', border: 'none', flexShrink: 0,
+               background: ready ? 'rgba(77,184,158,0.14)' : 'transparent',
+               cursor: ready ? 'pointer' : 'default',
+               display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+               opacity: ready ? 1 : 0.3, transition: 'opacity 0.3s, background 0.3s',
+               outline: `1px solid ${ready ? 'rgba(77,184,158,0.4)' : 'rgba(255,255,255,0.07)'}`,
+             }}>
+               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                 <path d="M7 11V3M3.5 6.5L7 3L10.5 6.5" stroke={ready ? '#4db89e' : '#444'} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+               </svg>
+             </button>
+           )
+         })()}
+       </div>
+     </div>
+   </div>
+ )
+}
+
+interface LeftDockProps {
+ externalOpen?: boolean
+ onExternalClose?: () => void
+ inputBarHeight?: number
+}
+
+export default function LeftDock({ externalOpen, onExternalClose, inputBarHeight = 88 }: LeftDockProps) {
+ const [internalOpen, setInternalOpen] = useState(false)
+ const [mounted, setMounted] = useState(false)
+ const pillRef = useRef<HTMLDivElement | null>(null)
+ const opacity = useProximityOpacity(pillRef)
+
+ const isOpen = externalOpen !== undefined ? externalOpen : internalOpen
+
+ useEffect(() => {
+   if (isOpen) setTimeout(() => setMounted(true), 10)
+   else setMounted(false)
+ }, [isOpen])
+
+ const openStudio = () => setInternalOpen(true)
+ const close = () => {
+   setMounted(false)
+   setTimeout(() => {
+     setInternalOpen(false)
+     onExternalClose?.()
+   }, 380)
+ }
+
+ const PANEL_WIDTH = 'min(52vw, 680px)'
+
+ return (
+   <>
+     {!isOpen && (
+       <div
+         ref={pillRef}
+         onClick={openStudio}
+         className="crucible-dock-pill"
+         style={{
+           position: 'fixed', left: 16, bottom: 22, zIndex: 40, cursor: 'pointer',
+           padding: '9px 16px 9px 11px', borderRadius: 14,
+           background: `rgba(16,16,26,${0.3 + opacity * 0.45})`,
+           backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+           border: `1px solid rgba(140,140,248,${0.06 + opacity * 0.4})`,
+           boxShadow: `0 6px 26px rgba(0,0,0,0.35), 0 0 ${opacity * 28}px rgba(124,124,248,${opacity * 0.55})`,
+           opacity: 0.4 + opacity * 0.6,
+           transition: 'opacity 0.3s, background 0.3s, border 0.3s, box-shadow 0.3s',
+           display: 'flex', alignItems: 'center', gap: 9,
+         }}
+       >
+         <span style={{
+           width: 16, height: 16, borderRadius: 5, flexShrink: 0,
+           background: 'linear-gradient(135deg, #7c7cf8, #4db89e, #c084fc, #f59e0b)',
+           backgroundSize: '200% 200%',
+           filter: `saturate(${0.4 + opacity * 1.1}) brightness(${0.7 + opacity * 0.6})`,
+           boxShadow: `0 0 ${opacity * 14}px rgba(124,124,248,${opacity * 0.8})`,
+           animation: opacity > 0.5 ? 'prism 2.4s linear infinite' : 'none',
+           transition: 'filter 0.3s, box-shadow 0.3s',
+         }} />
+         <span style={{
+           fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' as const,
+           color: `rgba(225,225,245,${0.5 + opacity * 0.5})`, transition: 'color 0.3s',
+         }}>Code</span>
+       </div>
+     )}
+
+     {isOpen && (
+       <>
+         <div
+           className="crucible-studio-panel"
+           style={window.innerWidth <= 640 ? {
+             position: 'fixed', left: 0, top: 0, bottom: inputBarHeight,
+             width: '95vw',
+             zIndex: 30,
+             background: 'rgba(13,13,22,0.78)',
+             backdropFilter: 'blur(48px) saturate(1.8)', WebkitBackdropFilter: 'blur(48px) saturate(1.8)',
+             borderRight: '1px solid rgba(255,255,255,0.10)',
+             boxShadow: '8px 0 24px rgba(0,0,0,0.4), inset -1px 0 0 rgba(255,255,255,0.06)',
+             transform: mounted ? 'translateX(0)' : 'translateX(-100%)',
+             transition: 'transform 0.42s cubic-bezier(0.16,1,0.3,1)',
+             display: 'flex', flexDirection: 'column',
+           } : {
+             position: 'fixed', left: 0, top: 0, bottom: 0,
+             width: PANEL_WIDTH,
+             zIndex: 30,
+             background: 'rgba(13,13,20,0.97)',
+             backdropFilter: 'blur(30px)', WebkitBackdropFilter: 'blur(30px)',
+             borderRight: '1px solid rgba(255,255,255,0.07)',
+             boxShadow: '4px 0 40px rgba(0,0,0,0.5)',
+             transform: mounted ? 'translateX(0)' : 'translateX(-100%)',
+             transition: 'transform 0.38s cubic-bezier(0.16,1,0.3,1)',
+             display: 'flex', flexDirection: 'column',
+           }}
+         >
+           <CodeStudio onClose={close} />
+         </div>
+
+         <div
+           className="crucible-studio-scrim"
+           onClick={close}
+           style={{
+             position: 'fixed', top: 0, left: 0, right: 0, bottom: inputBarHeight, zIndex: 29,
+             background: window.innerWidth <= 640 ? 'rgba(0,0,0,0.55)' : 'rgba(0,0,0,0.25)',
+             opacity: mounted ? 1 : 0,
+             transition: 'opacity 0.38s',
+             pointerEvents: mounted ? 'auto' : 'none',
+           }}
+         />
+       </>
+     )}
+   </>
+ )
+}

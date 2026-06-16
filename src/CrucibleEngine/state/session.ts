@@ -101,6 +101,41 @@ export function readMemoryDigest(projectPath: string, maxChars = 1200): string {
   return `Known facts about this project:\n${digest}`
 }
 
+// ── Global memory (~/.crucible/world.md) ─────────────────────────────────────
+// Cross-project facts: user preferences, recurring patterns, tool choices.
+// Compressed (max 1500 chars) and injected into every agent system preamble.
+export function globalMemoryFile(): string {
+  return path.join(process.env.HOME ?? '~', '.crucible', 'world.md')
+}
+
+export function appendGlobalMemory(fact: string, when: number): void {
+  const f = fact.trim()
+  if (!f) return
+  const file = globalMemoryFile()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const existing = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : '# Global memory\n\n'
+  if (existing.includes(`- ${f}`)) return
+  fs.appendFileSync(file, `- ${f}  <!-- ${new Date(when).toISOString()} -->\n`, 'utf-8')
+}
+
+export function readGlobalMemoryDigest(maxChars = 1500): string {
+  const file = globalMemoryFile()
+  if (!fs.existsSync(file)) return ''
+  const bullets = fs.readFileSync(file, 'utf-8')
+    .split('\n')
+    .filter(l => l.trim().startsWith('- '))
+    .map(l => l.replace(/\s*<!--.*?-->\s*$/, '').trim())
+  if (!bullets.length) return ''
+  let digest = bullets.join('\n')
+  if (digest.length > maxChars) {
+    // Keep most recent bullets (they're appended chronologically)
+    const lines = digest.split('\n')
+    digest = lines.slice(-50).join('\n')
+    if (digest.length > maxChars) digest = digest.slice(digest.length - maxChars)
+  }
+  return `Global memory (cross-project):\n${digest}`
+}
+
 // ── Permissions / safety ──────────────────────────────────────────────────────
 export interface Permissions {
   /** Absolute paths outside projectPath that mutation is explicitly allowed to touch. */

@@ -3,3 +3,8 @@ body { overflow: hidden; }
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 4px; }
+
+@keyframes amberBreath {
+  0%, 100% { box-shadow: 0 0 0px rgba(255,180,80,0); }
+  50%       { box-shadow: 0 0 7px rgba(255,180,80,0.65); }
+}

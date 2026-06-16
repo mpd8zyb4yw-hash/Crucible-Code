@@ -92,6 +92,12 @@ export interface PlannedTaskOpts {
   onPersist?: (steps: Step[], completedSummaries: string[], status: 'running' | 'done' | 'failed') => void
   /** Compressed project-memory digest injected into each step's driver preamble. */
   memoryDigest?: string
+  /** Called after every loop iteration — forwarded to runAgentLoop for checkpoint writes. */
+  onCheckpoint?: (messages: Array<Record<string, unknown>>, iter: number) => void
+  /** Resume mid-step from a saved iteration checkpoint. */
+  resumeCheckpoint?: { stepIndex: number; messages: Array<Record<string, unknown>> }
+  /** Called when a file-mutating tool writes; forwarded to runAgentLoop. */
+  onFileMutated?: (absPaths: string[]) => void
 }
 
 export interface PlannedTaskResult {
@@ -136,7 +142,15 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
       emit,
       signal,
       verify: opts.makeVerify?.(),
-      maxIters: 10,
+      maxIters: 20,
+      stepIndex: i,
+      stepTotal: steps.length,
+      stepIntent: step.intent,
+      onCheckpoint: opts.onCheckpoint,
+      onFileMutated: opts.onFileMutated,
+      initialMessages: opts.resumeCheckpoint?.stepIndex === i
+        ? opts.resumeCheckpoint.messages
+        : undefined,
       systemPreamble: opts.memoryDigest
         ? `${defaultSystemPreamble(projectPath)}\n\n${opts.memoryDigest}`
         : undefined,

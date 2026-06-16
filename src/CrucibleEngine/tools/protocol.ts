@@ -8,6 +8,8 @@
 
 export interface ToolCtx {
   projectPath: string
+  /** Authenticated user ID — used by Google API tools to load per-user tokens. */
+  userId?: string
   /** Remaining token budget for the enclosing loop; tools may consult it to cap output. */
   budget?: { remainingTokens: number }
   /** Stream an event to the client (SSE). */
@@ -15,6 +17,13 @@ export interface ToolCtx {
   signal?: AbortSignal
   /** When false, mutating tools (write/edit/run) must refuse. */
   allowMutation?: boolean
+  /** When true, the `run` tool permits commands flagged as destructive (rm -rf, force-push,
+   *  outside-root deletes, etc.). Defaults to false — destructive ops are blocked and the agent
+   *  is told to surface them to the user (Section 8 — destructive op confirmation). */
+  allowDestructive?: boolean
+  /** Called after a successful mutating tool call with the abs paths that were written.
+   *  Used by the codebase indexer to stay fresh without coupling registry to codebaseIndex. */
+  onFileMutated?: (absPaths: string[]) => void
 }
 
 export interface ToolResult {

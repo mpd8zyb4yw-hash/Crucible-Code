@@ -64,7 +64,17 @@ export function detectCheck(projectPath: string): { command: string; signal: Ver
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'))
       const test = pkg.scripts?.test
       if (test && !/no test specified/i.test(test)) return { command: 'npm test --silent', signal: 'test' }
-      if (fs.existsSync(path.join(projectPath, 'tsconfig.json'))) return { command: 'npx tsc --noEmit', signal: 'compile' }
+      if (fs.existsSync(path.join(projectPath, 'tsconfig.json'))) {
+        // Find entry point — prefer src/index.ts, src/main.ts, or any single ts file in src/
+        const srcDir = path.join(projectPath, 'src')
+        let entry: string | null = null
+        for (const candidate of ['index.ts', 'main.ts', 'testHarness.ts', 'app.ts']) {
+          if (fs.existsSync(path.join(srcDir, candidate))) { entry = `src/${candidate}`; break }
+          if (fs.existsSync(path.join(projectPath, candidate))) { entry = candidate; break }
+        }
+        if (entry) return { command: `npx tsx ${entry}`, signal: 'runtime' }
+        return { command: 'npx tsc --noEmit', signal: 'compile' }
+      }
     } catch { /* fall through */ }
   }
   let entries: string[] = []

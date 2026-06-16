@@ -103,6 +103,15 @@ code {
   background: var(--code-bg);
 }
 
+/* Prevent iOS auto-zoom on input focus (triggered when font-size < 16px) */
+@media (max-width: 639px) {
+  .crucible-textarea,
+  input[type="text"],
+  input:not([type]) {
+    font-size: 16px !important;
+  }
+}
+
 @keyframes fanIn {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }

@@ -1,0 +1,26 @@
+#!/bin/bash
+cd /Users/justin/crucible-local
+
+BACKEND_RUNNING=$(lsof -ti tcp:3001 2>/dev/null)
+FRONTEND_RUNNING=$(lsof -ti tcp:5173 2>/dev/null)
+
+if [ -n "$BACKEND_RUNNING" ] && [ -n "$FRONTEND_RUNNING" ]; then
+  open http://172.20.10.4:5173
+  exit 0
+fi
+
+[ -n "$BACKEND_RUNNING" ] && kill $BACKEND_RUNNING 2>/dev/null
+[ -n "$FRONTEND_RUNNING" ] && kill $FRONTEND_RUNNING 2>/dev/null
+sleep 1
+
+osascript -e 'tell application "Terminal" to do script "cd /Users/justin/crucible-local && bash launch-mobile.sh"'
+
+for i in {1..15}; do
+  sleep 1
+  if curl -s http://localhost:3001 > /dev/null 2>&1; then
+    open http://172.20.10.4:5173
+    exit 0
+  fi
+done
+
+open http://172.20.10.4:5173
