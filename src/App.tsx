@@ -1529,8 +1529,9 @@ export default function App() {
     }
   }, [remoteBrain])
 
-  // SSE screen stream — uses createImageBitmap (async GPU decode, no main-thread block)
-  // + requestAnimationFrame so frames paint without janking the UI.
+  // WebSocket screen stream — binary JPEG frames, no base64 overhead.
+  // binaryType='blob' lets createImageBitmap consume e.data directly (GPU decode).
+  // WebSocket bypasses the SSE buffering that caused ~30s lag through ngrok/tunnels.
   useEffect(() => {
     if (!remoteBrain) {
       streamEsRef.current?.close()
@@ -1541,15 +1542,23 @@ export default function App() {
     setStreamFps(0)
     fpsCounterRef.current = { count: 0, last: performance.now() }
 
-    const es = new EventSource(`${API_BASE}/api/screen-stream?t=${Date.now()}`)
-    streamEsRef.current = es
-    apiFetch(`${API_BASE}/api/remote-brain/status`).then(r => r.json()).then((s) => {
+    // Build WebSocket URL from API_BASE (http→ws, https→wss).
+    const wsBase = API_BASE.replace(/^http/, 'ws')
+    let ws = new WebSocket(`${wsBase}/api/screen-stream-ws?t=${Date.now()}`)
+    ws.binaryType = 'blob'
+    streamEsRef.current = ws as unknown as EventSource
+
+    // If the status endpoint returns a LAN ws:// URL different from the current
+    // host, switch to it immediately — avoids the tunnel entirely on local WiFi.
+    apiFetch(`${API_BASE}/api/remote-brain/status`).then(r => r.json()).then((s: { screenStream?: string }) => {
       if (!streamEsRef.current) return
       const lanUrl = s.screenStream
       if (lanUrl && !lanUrl.includes(window.location.hostname)) {
-        streamEsRef.current.close()
-        const es2 = new EventSource(`${lanUrl}?t=${Date.now()}`)
-        streamEsRef.current = es2
+        ws.close()
+        ws = new WebSocket(`${lanUrl}?t=${Date.now()}`)
+        ws.binaryType = 'blob'
+        streamEsRef.current = ws as unknown as EventSource
+        attachHandlers(ws)
       }
     }).catch(() => {})
 
@@ -1565,7 +1574,6 @@ export default function App() {
           canvas.getContext('2d')?.drawImage(pendingBitmap, 0, 0)
           pendingBitmap.close()
           pendingBitmap = null
-          // fps counter
           const fr = fpsCounterRef.current
           fr.count++
           const now = performance.now()
@@ -1581,25 +1589,24 @@ export default function App() {
     rafId = requestAnimationFrame(paintLoop)
 
     let frameSeq = 0
-    es.onopen = () => setStreamStatus('live')
-    es.onerror = () => setStreamStatus('error')
-    es.onmessage = (e) => {
-      setStreamStatus('live')
-      const seq = ++frameSeq
-      // Decode asynchronously off the rAF path — createImageBitmap does GPU decode.
-      const bin = atob(e.data)
-      const buf = new Uint8Array(bin.length)
-      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i)
-      const blob = new Blob([buf], { type: 'image/jpeg' })
-      createImageBitmap(blob).then(bmp => {
-        if (seq < frameSeq) { bmp.close(); return } // drop stale frame
-        pendingBitmap?.close()
-        pendingBitmap = bmp
-      }).catch(() => {})
+    function attachHandlers(sock: WebSocket) {
+      sock.onopen  = () => setStreamStatus('live')
+      sock.onclose = () => { if (streamEsRef.current === (sock as unknown as EventSource)) setStreamStatus('error') }
+      sock.onmessage = (e) => {
+        setStreamStatus('live')
+        const seq = ++frameSeq
+        // e.data is already a Blob (binaryType='blob') — pass directly to GPU decoder.
+        createImageBitmap(e.data as Blob).then(bmp => {
+          if (seq < frameSeq) { bmp.close(); return } // drop stale frame
+          pendingBitmap?.close()
+          pendingBitmap = bmp
+        }).catch(() => {})
+      }
     }
+    attachHandlers(ws)
 
     return () => {
-      es.close()
+      ws.close()
       streamEsRef.current = null
       cancelAnimationFrame(rafId)
       pendingBitmap?.close()

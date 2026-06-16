@@ -4163,80 +4163,59 @@ app.post('/api/corpus/ingest-document', async (req, res) => {
 
 // ── Step 9: Remote Brain ──────────────────────────────────────────────────────
 
-// GET /api/screen-stream — SSE-based screen capture for Remote Brain mode.
+// WebSocket /api/screen-stream-ws — binary JPEG frames for Remote Brain mode.
 //
-// Why SSE instead of MJPEG multipart:
-//   iOS Safari has never supported multipart/x-mixed-replace in <img> tags, so
-//   MJPEG was silently broken on every iPhone/iPad. SSE (text/event-stream) works
-//   on every browser. Each event carries a base64-encoded JPEG frame; the client
-//   draws it to a <canvas> element.
+// Replaced SSE (text/event-stream + base64) with WebSocket binary frames to
+// eliminate the 30-second lag caused by ngrok free-tier SSE buffering. ngrok
+// and Cloudflare Tunnel both forward WebSocket frames without the HTTP chunked-
+// transfer buffering that stalls SSE. Binary (ws.binaryType='blob') also skips
+// the base64 encode/decode round-trip, halving per-frame bytes on the wire.
 //
-// Why the old screencapture command was broken:
-//   `-q 25` is not a valid screencapture flag on macOS. The flag was silently
-//   treated as an output filename, so the real tmpFile was never written and every
-//   frame triggered the readErr branch → infinite retry with no output.
+// iOS Safari fully supports binary WebSocket — no MJPEG or MediaSource needed.
+// No auth: endpoint is LAN-scoped by the router ACL (same as the old SSE endpoint).
 //
-// No auth required — endpoint is LAN-scoped by the router ACL.
-app.get('/api/screen-stream', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  // Flush headers + an immediate comment so EventSource fires `onopen` right away
-  // (the client flips to "connecting → live" without waiting for the first capture).
-  res.flushHeaders()
-  res.write(': connected\n\n')
-  ;(res as any).flush?.()
+// Wired up to httpServer after it is created (see bottom of file).
+function attachScreenStreamWs(httpSrv: import('http').Server) {
+  const { WebSocketServer } = require('ws') as typeof import('ws')
+  const wss = new WebSocketServer({ server: httpSrv, path: '/api/screen-stream-ws' })
 
-  // Target ~5fps. screencapture ≈ 250ms + sips ≈ 150ms → real cadence is ~400ms/frame
-  // regardless of this interval, but keeping it tight means we start the next capture
-  // immediately after the write rather than waiting an extra gap.
   const FRAME_INTERVAL_MS = 80
-  const rawFile  = '/tmp/crucible_screen_raw.jpg'
-  const outFile  = '/tmp/crucible_screen_frame.jpg'
+  const rawFile   = '/tmp/crucible_screen_raw.jpg'
+  const outFile   = '/tmp/crucible_screen_frame.jpg'
   const captureCmd = `screencapture -x -t jpg ${rawFile} && sips -Z 1100 ${rawFile} --out ${outFile} -s format jpeg -s formatOptions 45 >/dev/null 2>&1 || cp ${rawFile} ${outFile}`
-  debugBus.emit('model', 'screen_stream_start', {}, { severity: 'info' })
 
-  let alive = true
-  let framesSent = 0
-  // SSE keep-alive ping every 20s — prevents iOS Safari from closing an idle connection
-  // while the user is typing and no frames are in-flight.
-  const keepalive = setInterval(() => {
-    if (!alive || res.writableEnded) { clearInterval(keepalive); return }
-    try { res.write(': ping\n\n'); (res as any).flush?.() } catch { alive = false }
-  }, 20000)
+  wss.on('connection', (ws: import('ws').WebSocket) => {
+    debugBus.emit('model', 'screen_stream_start', {}, { severity: 'info' })
+    let alive = true
+    let framesSent = 0
 
-  req.on('close', () => {
-    alive = false
-    clearInterval(keepalive)
-    debugBus.emit('model', 'screen_stream_stop', { framesSent }, { severity: 'info' })
-  })
-
-  function captureFrame() {
-    if (!alive || res.writableEnded) return
-    exec(captureCmd, { timeout: 5000 }, (err) => {
-      if (!alive || res.writableEnded) return
-      if (err) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
-      fs.readFile(outFile, (readErr, frame) => {
-        if (!alive || res.writableEnded) return
-        if (readErr || !frame?.length) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
-        // If the socket buffer is backed up, drop this frame and try again next tick.
-        // This prevents a growing queue of stale frames causing multi-second delay.
-        if ((res as any).writableNeedDrain || (res.socket && !res.socket.writable)) {
-          setTimeout(captureFrame, FRAME_INTERVAL_MS)
-          return
-        }
-        try {
-          res.write(`data: ${frame.toString('base64')}\n\n`)
-          ;(res as any).flush?.()
-          framesSent++
-        } catch { alive = false; return }
-        setTimeout(captureFrame, FRAME_INTERVAL_MS)
-      })
+    ws.on('close', () => {
+      alive = false
+      debugBus.emit('model', 'screen_stream_stop', { framesSent }, { severity: 'info' })
     })
-  }
-  captureFrame()
-})
+    ws.on('error', () => { alive = false })
+
+    function captureFrame() {
+      if (!alive || ws.readyState !== 1 /* OPEN */) return
+      exec(captureCmd, { timeout: 5000 }, (err) => {
+        if (!alive || ws.readyState !== 1) return
+        if (err) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
+        fs.readFile(outFile, (readErr, frame) => {
+          if (!alive || ws.readyState !== 1) return
+          if (readErr || !frame?.length) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
+          // Drop frame if send buffer is backing up to prevent stale-frame pile-up.
+          if (ws.bufferedAmount > 0) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
+          try {
+            ws.send(frame)
+            framesSent++
+          } catch { alive = false; return }
+          setTimeout(captureFrame, FRAME_INTERVAL_MS)
+        })
+      })
+    }
+    captureFrame()
+  })
+}
 
 // GET /api/remote-brain/status — check if Remote Brain tools are available
 app.get('/api/remote-brain/status', requireAuth, (req, res) => {
@@ -4250,7 +4229,7 @@ app.get('/api/remote-brain/status', requireAuth, (req, res) => {
       // now builds this URL itself from API_BASE; this stays correct for other callers.
       const fwdHost = (req.headers['x-forwarded-host'] as string | undefined)?.split(':')[0]
       const host = fwdHost || req.hostname  // e.g. 192.168.x.x (the Mac's LAN IP)
-      const streamUrl = `http://${host}:3001/api/screen-stream`
+      const streamUrl = `ws://${host}:3001/api/screen-stream-ws`
       res.json({
         available: !err,
         frontApp,
@@ -5003,6 +4982,7 @@ app.post('/api/governance', (req, res) => {
 const httpServer = createServer(app)
 httpServer.keepAliveTimeout = 620000
 httpServer.headersTimeout   = 630000
+attachScreenStreamWs(httpServer)
 
 // ── Self-healing port binding ─────────────────────────────────────────────────
 // If port 3001 is occupied by a stale Crucible/tsx process, kill it and retry.
