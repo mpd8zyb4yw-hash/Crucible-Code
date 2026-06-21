@@ -38,6 +38,7 @@ const MODE_META: Record<string, { label: string; hint: string; color: string }> 
   quorum: { label: 'Ensemble', hint: 'Multi-model pipeline', color: '#7c7cf8' },
   code:   { label: 'Code',     hint: 'Dev-optimised',       color: '#4db89e' },
   seeker: { label: 'Search',   hint: 'Web-augmented',       color: '#f59e0b' },
+  research: { label: 'Research', hint: 'Autonomous, cited',  color: '#22c55e' },
 }
 
 function ModeSwitcher({ mode, setMode, modeMenuOpen, setModeMenuOpen }: {
@@ -1771,7 +1772,7 @@ export default function App() {
     stepIndex: number; stepTotal: number; iter: number; maxIters: number
     savedAt: number
   } | null>(null)
-  const [mode, setMode] = useState<'quorum'|'code'|'seeker'>('quorum')
+  const [mode, setMode] = useState<'quorum'|'code'|'seeker'|'research'>('quorum')
 
   // ── Step 9: Remote Brain mode (phone only) ────────────────────────────────
   const [remoteBrain, setRemoteBrain] = useState(false)
@@ -1783,7 +1784,7 @@ export default function App() {
   const [remoteLanOrigin, setRemoteLanOrigin] = useState<string | null>(null)
   const screenCanvasRef = useRef<HTMLCanvasElement>(null)
   const streamEsRef = useRef<EventSource | null>(null)
-  const preBrainModeRef = useRef<'quorum'|'code'|'seeker'>('quorum')
+  const preBrainModeRef = useRef<'quorum'|'code'|'seeker'|'research'>('quorum')
   const fpsCounterRef = useRef({ count: 0, last: 0 })
   const [pipPos, setPipPos] = useState<{x:number,y:number}>({ x: 12, y: 60 })
   const pipPosRef = useRef<{x:number,y:number}>({ x: 12, y: 60 })
@@ -1989,7 +1990,7 @@ export default function App() {
   const wasThinkingRef = useRef(false)
   const passiveEsRef = useRef<EventSource | null>(null)
 
-  const classifyMode = (text: string, lastMode?: 'quorum'|'code'|'seeker'): 'quorum'|'code'|'seeker' => {
+  const classifyMode = (text: string, lastMode?: 'quorum'|'code'|'seeker'|'research'): 'quorum'|'code'|'seeker'|'research' => {
     const m = text.toLowerCase()
     const isShortFollowUp = text.trim().split(' ').length <= 3
     if (isShortFollowUp && lastMode && lastMode !== 'quorum') return lastMode
@@ -2424,6 +2425,48 @@ export default function App() {
       })
       .catch(() => {})
   }, [])
+  // Session J — drive /api/research and render its research_step / research_done events
+  // into the round's synthesis. Isolated from the main SSE consumer to keep risk low.
+  const runResearch = async (message: string, roundId: string) => {
+    let res: Response
+    try {
+      res = await apiFetch(`${API_BASE}/api/research`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+        signal: abortRef.current?.signal,
+      })
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: 'Research failed to start.', synthesisDone: true } : r))
+      return
+    }
+    if (!res.body) return
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n'); buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        const p = line.slice(6); if (p.trim() === '[DONE]') continue
+        try {
+          const ev = JSON.parse(p)
+          if (ev.type === 'research_step') {
+            const status = `Researching… ${ev.phase}${ev.sources != null ? ` · ${ev.sources} sources` : ''}`
+            setRounds(prev => prev.map(r => r.id === roundId && !r.synthesisDone ? { ...r, synthesis: status } : r))
+          } else if (ev.type === 'research_done') {
+            setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: ev.text || '', synthesisDone: true } : r))
+          } else if (ev.type === 'research_error') {
+            setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: ev.text || 'Research error.', synthesisDone: true } : r))
+          }
+        } catch { /* ignore partial */ }
+      }
+    }
+  }
+
   const send = async (overrideMessage?: string, modeOverride?: string) => {
     // In Remote Brain mode every send goes straight to the Mac agent loop.
     if (remoteBrain && !modeOverride) modeOverride = 'agent'
@@ -2453,6 +2496,16 @@ export default function App() {
     }).catch(() => {})
 
     abortRef.current = new AbortController()
+
+    // Session J: autonomous research mode streams from a dedicated endpoint with its own
+    // event shape — handled separately so the shared SSE consumer stays untouched.
+    if ((modeOverride ?? mode) === 'research' && !remoteBrain) {
+      await runResearch(userMessage, roundId)
+      setThinking(false); setAgentStartTime(null); setAgentProgress(null)
+      try { localStorage.removeItem('crucible_active_task') } catch {}
+      return
+    }
+
     let res: Response
     try {
       res = await apiFetch(`${API_BASE}/api/chat`, {
