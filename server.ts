@@ -35,6 +35,8 @@ import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
 import { defaultSystemPreamble } from './src/CrucibleEngine/agent/loop'
 import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
 import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } from './src/CrucibleEngine/taskGraph'
+import { runResearchSession } from './src/CrucibleEngine/researchMode'
+import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runMetaRouter, consult } from './src/CrucibleEngine/agent/metaRouter'
 import { runRsiCycle, rsiStatus, setRsiEnabled, type RsiDeps } from './src/CrucibleEngine/rsi/controller'
 import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/CrucibleEngine/agent/archetypes'
@@ -1699,6 +1701,41 @@ app.delete('/api/task-graph/:id', (req, res) => {
   const graph = setGraphStatus(req.params.id, status)
   if (!graph) { res.status(404).json({ error: 'Graph not found' }); return }
   res.json({ ok: true, graph })
+})
+
+// ── /api/research — Session J: autonomous research mode (SSE) ─────────────────
+// Drives the iterative search→read→extract→gap→synthesize→audit loop and streams
+// research_step / research_done events in the same SSE shape the frontend consumes.
+function pickResearchModel(): any {
+  const active = (MODEL_REGISTRY as any[]).filter(m => getCircuitState(m.id) === 'active')
+  return active.find(m => m.provider === 'groq') ?? active[0] ?? (MODEL_REGISTRY as any[])[0] ?? null
+}
+app.post('/api/research', async (req, res) => {
+  const question = (typeof req.body?.message === 'string' ? req.body.message
+    : typeof req.body?.question === 'string' ? req.body.question : '').trim()
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  const send = (p: object) => { try { res.write(`data: ${JSON.stringify(p)}\n\n`) } catch {} }
+  if (!question) { send({ type: 'research_error', text: 'A research question is required.' }); res.write('data: [DONE]\n\n'); return res.end() }
+
+  const model = pickResearchModel()
+  const deps = {
+    search: async (q: string) => {
+      try { const t = registry.get('web_search'); if (!t) return ''; const r: any = await (t as any).run({ query: q }, {}); return r?.output ?? '' } catch { return '' }
+    },
+    model: async (prompt: string) => {
+      if (!model) return ''
+      try { return await callModelInstrumented(model, [{ role: 'user', content: prompt }]) } catch { return '' }
+    },
+    readSource: async (url: string) => { try { return await read_pdf(url) } catch { return '' } },
+  }
+  try {
+    for await (const ev of runResearchSession(question, { maxIterations: 4, minSources: 4 }, deps)) send(ev)
+  } catch (e: any) {
+    send({ type: 'research_error', text: e?.message ?? 'research failed' })
+  }
+  res.write('data: [DONE]\n\n'); res.end()
 })
 
 // ── /api/config — update pipeline config at runtime ──────────────────────────
