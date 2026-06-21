@@ -376,9 +376,16 @@ export function bumpConfirmation(chunkId: string): void {
 }
 
 // Status transitions — the ONLY way content leaves "active". Never DELETE.
+const SET_STATUS_SQL = `UPDATE chunks SET status = ?, archive_reason = COALESCE(?, archive_reason), superseded_by = COALESCE(?, superseded_by) WHERE id = ?`
 export function setStatus(chunkId: string, status: ChunkStatus, reason?: string, supersededBy?: string): void {
-  getCorpusDb().prepare(`UPDATE chunks SET status = ?, archive_reason = COALESCE(?, archive_reason), superseded_by = COALESCE(?, superseded_by) WHERE id = ?`)
-    .run(status, reason ?? null, supersededBy ?? null, chunkId)
+  const meta = getCorpusDb()
+  meta.prepare(SET_STATUS_SQL).run(status, reason ?? null, supersededBy ?? null, chunkId)
+  // Propagate to the domain shard too — otherwise the shard fast-path in
+  // getChunksByDomain/queryShards keeps serving an archived/superseded chunk as 'active'.
+  try {
+    const row = meta.prepare(`SELECT domain FROM chunks WHERE id = ?`).get(chunkId) as { domain?: string } | undefined
+    if (row?.domain) openShard(row.domain).prepare(SET_STATUS_SQL).run(status, reason ?? null, supersededBy ?? null, chunkId)
+  } catch { /* shard not materialised yet — meta DB stays canonical */ }
 }
 
 export function updateRetrieval(chunkId: string, deltaValue: number): void {
