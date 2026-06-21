@@ -37,6 +37,8 @@ import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
 import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } from './src/CrucibleEngine/taskGraph'
 import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
+import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
+import { DOMAIN_SHARDS } from './src/CrucibleEngine/corpus/db'
 import { runMetaRouter, consult } from './src/CrucibleEngine/agent/metaRouter'
 import { runRsiCycle, rsiStatus, setRsiEnabled, type RsiDeps } from './src/CrucibleEngine/rsi/controller'
 import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/CrucibleEngine/agent/archetypes'
@@ -1710,6 +1712,20 @@ function pickResearchModel(): any {
   const active = (MODEL_REGISTRY as any[]).filter(m => getCircuitState(m.id) === 'active')
   return active.find(m => m.provider === 'groq') ?? active[0] ?? (MODEL_REGISTRY as any[])[0] ?? null
 }
+
+// Session E — LLM domain classifier used by the routing active-learning loop.
+async function classifyMissDomain(query: string): Promise<string> {
+  const model = pickResearchModel()
+  if (!model) return 'general'
+  try {
+    const out = await callModel(model, [{
+      role: 'user',
+      content: `Classify this query into exactly one knowledge domain from this list: ${DOMAIN_SHARDS.join(', ')}.\nReply with ONLY the domain name, nothing else.\n\nQuery: ${query}`,
+    }], { timeoutMs: 4000 })
+    const d = (out ?? '').trim().toLowerCase().split(/\s+/)[0]
+    return d || 'general'
+  } catch { return 'general' }
+}
 app.post('/api/research', async (req, res) => {
   const question = (typeof req.body?.message === 'string' ? req.body.message
     : typeof req.body?.question === 'string' ? req.body.question : '').trim()
@@ -1736,6 +1752,17 @@ app.post('/api/research', async (req, res) => {
     send({ type: 'research_error', text: e?.message ?? 'research failed' })
   }
   res.write('data: [DONE]\n\n'); res.end()
+})
+
+// POST /api/corpus/learn-routes — Session E: run the routing active-learning cycle now
+// (also runs hourly via the improvement daemon's routing_learn task).
+app.post('/api/corpus/learn-routes', async (_req, res) => {
+  try {
+    const result = await runLearningCycle(classifyMissDomain, { batch: 20, gapMs: 1500 })
+    res.json({ ok: true, ...result })
+  } catch (e: any) {
+    res.status(500).json({ ok: false, error: e?.message ?? 'learn-routes failed' })
+  }
 })
 
 // ── /api/config — update pipeline config at runtime ──────────────────────────
@@ -5802,6 +5829,7 @@ function startListening(port: number, attempt = 0) {
           if (clusters.length) scheduleMetaTask(process.cwd(), clusters.map(c => ({ label: c.label, exampleQuery: c.exampleQuery })))
         },
         cluster_detection: async () => { detectEmergentClusters(process.cwd()) },
+        routing_learn: async () => { await runLearningCycle(classifyMissDomain, { batch: 20, gapMs: 2000 }) },
         benchmark_check: async () => {
           const { runBenchmarkSuite } = await import('./src/CrucibleEngine/benchmarks')
           const reg = MODEL_REGISTRY.filter((m: any) => m.provider !== 'wildcard')
