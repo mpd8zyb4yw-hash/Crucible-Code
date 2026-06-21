@@ -1715,6 +1715,21 @@ function pickResearchModel(): any {
   return active.find(m => m.provider === 'groq') ?? active[0] ?? (MODEL_REGISTRY as any[])[0] ?? null
 }
 
+// Session N — publish the latest benchmark result to the Worker so the public dashboard
+// (GET /api/benchmarks/public) shows real data. Best-effort; only when the proxy is set.
+async function publishBenchmarks(): Promise<void> {
+  if (!PROXY_URL) return
+  try {
+    const body = fs.readFileSync(path.join(process.cwd(), '.crucible', 'smoke-last.json'), 'utf8')
+    await fetch(`${PROXY_URL}/api/benchmarks/publish`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${PROXY_JWT}` },
+      body,
+      signal: AbortSignal.timeout(8000),
+    })
+  } catch { /* best-effort — dashboard just keeps its prior value */ }
+}
+
 // Session E — LLM domain classifier used by the routing active-learning loop.
 async function classifyMissDomain(query: string): Promise<string> {
   const model = pickResearchModel()
@@ -5906,6 +5921,7 @@ function startListening(port: number, attempt = 0) {
               { role: 'user', content: question },
             ], { timeout: 12000 })
           await runBenchmarkSuite(process.cwd(), runQuery)
+          await publishBenchmarks()   // Session N: feed the public dashboard
         },
         stage_weight_rebuild: async () => {
           let sessions: any[] = []
