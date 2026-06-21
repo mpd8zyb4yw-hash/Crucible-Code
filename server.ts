@@ -39,6 +39,7 @@ import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
 import { DOMAIN_SHARDS } from './src/CrucibleEngine/corpus/db'
+import { runSelfPlayCycle } from './src/CrucibleEngine/selfPlay'
 import { runMetaRouter, consult } from './src/CrucibleEngine/agent/metaRouter'
 import { runRsiCycle, rsiStatus, setRsiEnabled, type RsiDeps } from './src/CrucibleEngine/rsi/controller'
 import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/CrucibleEngine/agent/archetypes'
@@ -5830,6 +5831,36 @@ function startListening(port: number, attempt = 0) {
         },
         cluster_detection: async () => { detectEmergentClusters(process.cwd()) },
         routing_learn: async () => { await runLearningCycle(classifyMissDomain, { batch: 20, gapMs: 2000 }) },
+        ensemble_self_play: async () => {
+          const r = await runSelfPlayCycle({
+            weakQuestions: () => {
+              try {
+                const raw = JSON.parse(fs.readFileSync(path.join(process.cwd(), '.crucible', 'benchmarks.json'), 'utf8'))
+                const arr = Array.isArray(raw) ? raw : (raw.benchmarks ?? raw.questions ?? [])
+                return arr.filter((b: any) => (b.lastScore ?? b.score ?? 1) < 0.75)
+                  .map((b: any) => b.question ?? b.prompt ?? b.q).filter(Boolean).slice(0, 20)
+              } catch { return [] }
+            },
+            generate: async (q: string) => {
+              const active = (MODEL_REGISTRY as any[]).filter(m => getCircuitState(m.id) === 'active').slice(0, 2)
+              const out: string[] = []
+              for (const m of active) { try { out.push(await callModel(m, [{ role: 'user', content: q }], { timeoutMs: 12000 })) } catch {} }
+              return out
+            },
+            critique: async (question: string, answer: string) => {
+              const model = pickResearchModel()
+              if (!model) return ''
+              try {
+                return await callModel(model, [{ role: 'user', content: `This is a flawed answer to "${question}". Identify the SPECIFIC error (factual or logical), not surface issues. If the answer is actually correct, reply exactly: NO ERROR.\n\nAnswer:\n${answer}` }], { timeoutMs: 12000 })
+              } catch { return '' }
+            },
+            onThreshold: async (_p: string, size: number) => {
+              try { const ft = await import('./src/CrucibleEngine/fineTuning'); ft.buildDPODataset(process.cwd()) } catch {}
+              debugBus.emit('system', 'self_play_threshold', { size }, { severity: 'info' })
+            },
+          }, { maxQuestions: 5, threshold: 200 })
+          debugBus.emit('system', 'ensemble_self_play', r as any, { severity: 'info' })
+        },
         benchmark_check: async () => {
           const { runBenchmarkSuite } = await import('./src/CrucibleEngine/benchmarks')
           const reg = MODEL_REGISTRY.filter((m: any) => m.provider !== 'wildcard')

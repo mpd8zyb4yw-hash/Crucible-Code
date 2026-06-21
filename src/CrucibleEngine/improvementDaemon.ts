@@ -47,6 +47,7 @@ const DEFAULT_TASKS: DaemonTask[] = [
   { name: 'context_budget_report',    intervalMs: 1 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },
   { name: 'finetune_autotrigger',     intervalMs: 6 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },  // 3.1
   { name: 'routing_learn',            intervalMs: 1 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },  // 2.4 (Session E)
+  { name: 'ensemble_self_play',       intervalMs: 7 * 24 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },  // K (weekly)
 ]
 
 export function loadDaemonState(dir: string): DaemonState {
