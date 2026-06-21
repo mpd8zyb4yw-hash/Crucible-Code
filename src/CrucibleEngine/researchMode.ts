@@ -41,6 +41,9 @@ async function ask(deps: ResearchDeps, prompt: string): Promise<string> {
 
 function countSources(text: string, seen: Set<string>): number {
   for (const m of text.match(urlRe) ?? []) seen.add(m.replace(/[.,]+$/, ''))
+  // The web_search tool returns numbered "N. Title" entries with the <a> hrefs stripped,
+  // so also count distinct result titles as sources (keyed so re-seen results don't double).
+  for (const m of text.match(/^\s*\d+\.\s+.+$/gm) ?? []) seen.add('r:' + m.trim().slice(0, 80).toLowerCase())
   return seen.size
 }
 
