@@ -194,11 +194,11 @@ Crucible at its logical conclusion is:
 - [x] **D. Domain-sharded corpus** — DONE (Batch 2, 2026-06-21). Per-domain shards + `domainRouter`; meta DB
   canonical; migration dormant-until-boot, idempotent, verified non-destructive (2703/2703 chunks on dry-run).
 - [x] **I. Task graph** — DONE (Batch 2). `taskGraph.ts` + `/api/task-graph` + open-goals preamble + Tasks UI.
-- [ ] **J. Research mode · L. TTS + Remote Brain cellular tunnel** — deferred (Batch 2 hit the usage limit before
-  they ran); no partial edits. Resume after 04:20 Europe/Rome.
-- [ ] **E. routing active-learning** — Phase 2.4; builds on D's `domainRouter` + `routing-misses.jsonl`.
-- [ ] **K. Ensemble self-play** — daemon + `fineTuning.ts`.
-- [ ] **C–F. Installers (DMG/EXE/AppImage)** — build operations; pair with Phases 1.3/4.4. May need signing certs.
+- [x] **J. Research mode** — DONE (main-loop, 2026-06-21). `researchMode.ts` + `/api/research` + Research UI.
+- [x] **L. TTS + Remote Brain cellular tunnel** — DONE. `tts.ts` + `/api/tts` + `/api/remote-brain/tunnel/start` + UI.
+- [x] **E. routing active-learning** — DONE. `routingLearner.ts` + hourly daemon task + `/api/corpus/learn-routes`.
+- [x] **K. Ensemble self-play** — DONE. `selfPlay.ts` + weekly daemon task; self-play dataset → DPO merge.
+- [ ] **C–F. Installers (DMG/EXE/AppImage)** — ONLY remaining session. Build operations; pair with Phases 1.3/4.4. May need signing certs.
 
 ---
 
@@ -1524,6 +1524,37 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-06-21 — Main-loop run (post-limit): Sessions J, E, K, L completed; git checkpoints
+
+After the Batch-2 workflow died on the usage limit, work continued in the main loop (subagents were
+blocked; the main loop still had capacity) on a dedicated branch **`crucible-northstar-sessions`**, with
+a **git commit after every verified session** so nothing is lost if cut off. Each verified against
+`vite build` (frontend) and `tsc -p tsconfig.server.json` (held at 122 baseline) plus a standalone
+module run with mock deps. All new engine modules use **injected dependencies** → zero server coupling,
+test-runnable on their own.
+
+- **J — Autonomous research mode** — DONE (backend + UI). `src/CrucibleEngine/researchMode.ts`
+  (`runResearchSession` async-gen: search→read→extract→gap→synthesize→critic, per-claim
+  [HIGH/MED/LOW] + citations, caps); `server.ts` `POST /api/research` (SSE) wiring the `web_search`
+  tool + model pool + `read_pdf`; `App.tsx` a green **Research** mode that streams into the round via an
+  isolated consumer (shared SSE parser untouched). Verified: 9 events on a 2-round mock run.
+- **E — Domain-routing active-learning** — DONE. `corpus/routingLearner.ts` (`runLearningCycle`:
+  read `routing-misses.jsonl` → LLM-classify → `learnDomainRoute` → cache → truncate); hourly
+  `routing_learn` daemon task; `server.ts` `classifyMissDomain` + `POST /api/corpus/learn-routes`.
+  Verified: mock cycle learned 2/2, cache + history written, misses cleared.
+- **K — Ensemble self-play** — DONE. `selfPlay.ts` (`runSelfPlayCycle`: weak benchmark Qs → generate →
+  Critic error-ID → `.crucible/self-play-dataset.jsonl` → DPO merge on threshold); weekly
+  `ensemble_self_play` daemon task wiring 2 models + the Critic prompt. Verified: records real errors,
+  filters NO-ERROR, threshold hook fires.
+- **L — TTS + Remote Brain cellular tunnel** — DONE (backend + UI). `tts.ts` `speak()` via macOS `say`
+  (zero-dep; Edge-TTS upgrade path; file-based input, never throws); `server.ts` `POST /api/tts` +
+  `POST /api/remote-brain/tunnel/start` (Cloudflare quick tunnel → trycloudflare wss, singleton);
+  `App.tsx` a **connect via tunnel** fallback button + speaks the agent's final answer in Remote Brain.
+
+Checkpoints (branch `crucible-northstar-sessions`): `151c872` (A,B,G,H,M,N,I,D + remote-brain) →
+`5d27da9` J-backend → `545fc71` E → `adb93f3` K → `a9d964f` L-backend → `dfcd42e` L-tunnel-UI →
+`5b411ec` J-UI → `9ffdfe1` L-talkback. Remaining: **C/F installers** (build ops, signing certs).
 
 ### 2026-06-21 — Batch 2 (interrupted by usage limit): Sessions I + D landed & verified; J + L deferred
 
