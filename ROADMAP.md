@@ -1529,6 +1529,29 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-06-21 — Live end-to-end verification (backend restarted with all new code)
+
+Restarted the backend so the running process actually loads Sessions I + D + all new endpoints
+(previously only build/mock-verified). Results against the live system:
+
+- **D — corpus sharding ran on the REAL corpus:** "Domain sharding complete — 2703 chunks across 8
+  shard(s); meta DB retained." Per-shard counts read back via a fresh Node `better-sqlite3` load:
+  philosophy 1130 · history 486 · physics 338 · networking 291 · mathematics 286 · biology 85 ·
+  economics 54 · complex-systems 33 = **2703 total = the meta DB's 2703 (zero loss)**. Backup
+  `corpus.db.premigration` written; `sharding.done` marker present.
+- **I** — `POST /api/task-graph` created `tg_…` with a decomposed node; `GET` lists it with total/done. ✓
+- **E** — `POST /api/corpus/learn-routes` → `{ok:true, processed:1, learned:1}` (learned a real logged miss). ✓
+- **J** — `POST /api/research` streamed `research_step` events through search→extract→gaps across steps 0–2. ✓
+  (Note: `sources:0` — the `web_search` backend returned no parseable URLs; a search-quality refinement,
+  not an architecture issue — the loop still synthesizes from model knowledge.)
+- **L** — `POST /api/tts` → `{ok:true}`. ✓
+
+**OPERATIONAL CAVEAT discovered:** running `electron-builder` (Sessions C/F) executes `@electron/rebuild`,
+which swaps `better-sqlite3`/`sharp` native binaries to **Electron's ABI** in the shared `node_modules` —
+breaking the `tsx` dev server with "Could not locate the bindings file" on its next restart. Fix:
+**`npm rebuild better-sqlite3` after any installer build** (or build installers in a separate checkout).
+Don't run installer builds against the same `node_modules` while relying on the dev server.
+
 ### 2026-06-21 — Session C: real Mac DMG produced (the downloadable app exists)
 
 `npm run bundle:server` → **14.0mb ESM server bundle (432ms)**, validating every new server import
