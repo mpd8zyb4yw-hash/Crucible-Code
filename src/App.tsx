@@ -2564,6 +2564,13 @@ export default function App() {
             if (parsed.type === 'final') {
               // Agent's final summary doubles as the round's synthesis text.
               setRounds(prev => prev.map(r => r.id !== roundId ? r : { ...r, synthesis: parsed.text ?? r.synthesis, synthesisDone: true }))
+              // Session L: in Remote Brain mode the Mac speaks the answer back.
+              if (remoteBrain && parsed.text) {
+                apiFetch(`${API_BASE}/api/tts`, {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text: parsed.text }),
+                }).catch(() => {})
+              }
             }
             continue
           }
