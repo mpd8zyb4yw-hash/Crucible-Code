@@ -3326,6 +3326,21 @@ export default function App() {
                           }}
                         >open on local network</button>
                       )}
+                      {/* Session L: away from the Mac's network → open a quick tunnel that
+                          points straight at the Mac, then reload onto it (wss screen stream). */}
+                      <button
+                        onClick={async () => {
+                          try {
+                            const r = await apiFetch(`${API_BASE}/api/remote-brain/tunnel/start`, { method: 'POST' })
+                            const j = await r.json()
+                            if (j?.url) window.location.href = j.url
+                          } catch { /* stay on the error screen */ }
+                        }}
+                        style={{
+                          background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
+                          color: 'rgba(255,255,255,0.6)', borderRadius: 7, padding: '5px 12px', fontSize: 11, cursor: 'pointer',
+                        }}
+                      >connect via tunnel</button>
                     </div>
                   </>
                 )}
