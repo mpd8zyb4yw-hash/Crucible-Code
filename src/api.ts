@@ -59,6 +59,14 @@ export function loginUrl(provider: 'google' | 'github'): string {
     const params = new URLSearchParams(window.location.search)
     const token = params.get('token')
     if (!token) return
+    // Only accept a strict 3-segment base64url JWT — prevents a crafted ?token=...;attr
+    // link from injecting extra cookie attributes (the value is written unencoded below).
+    if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) {
+      params.delete('token')
+      const clean = params.toString()
+      window.history.replaceState({}, '', window.location.pathname + (clean ? `?${clean}` : '') + window.location.hash)
+      return
+    }
     const secure = window.location.protocol === 'https:' ? '; Secure' : ''
     document.cookie = `crucible_session=${token}; path=/; max-age=${30 * 86400}; SameSite=Lax${secure}`
     params.delete('token')

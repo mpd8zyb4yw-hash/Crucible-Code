@@ -2444,26 +2444,31 @@ export default function App() {
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n'); buf = lines.pop() ?? ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const p = line.slice(6); if (p.trim() === '[DONE]') continue
-        try {
-          const ev = JSON.parse(p)
-          if (ev.type === 'research_step') {
-            const status = `Researching… ${ev.phase}${ev.sources != null ? ` · ${ev.sources} sources` : ''}`
-            setRounds(prev => prev.map(r => r.id === roundId && !r.synthesisDone ? { ...r, synthesis: status } : r))
-          } else if (ev.type === 'research_done') {
-            setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: ev.text || '', synthesisDone: true } : r))
-          } else if (ev.type === 'research_error') {
-            setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: ev.text || 'Research error.', synthesisDone: true } : r))
-          }
-        } catch { /* ignore partial */ }
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n'); buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const p = line.slice(6); if (p.trim() === '[DONE]') continue
+          try {
+            const ev = JSON.parse(p)
+            if (ev.type === 'research_step') {
+              const status = `Researching… ${ev.phase}${ev.sources != null ? ` · ${ev.sources} sources` : ''}`
+              setRounds(prev => prev.map(r => r.id === roundId && !r.synthesisDone ? { ...r, synthesis: status } : r))
+            } else if (ev.type === 'research_done') {
+              setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: ev.text || '', synthesisDone: true } : r))
+            } else if (ev.type === 'research_error') {
+              setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: ev.text || 'Research error.', synthesisDone: true } : r))
+            }
+          } catch { /* ignore partial */ }
+        }
       }
+    } catch (e: any) {
+      // Network drop mid-research — surface gracefully instead of an unhandled rejection.
+      if (e?.name !== 'AbortError') setRounds(prev => prev.map(r => r.id === roundId && !r.synthesisDone ? { ...r, synthesis: 'Research interrupted.', synthesisDone: true } : r))
     }
   }
 
