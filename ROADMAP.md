@@ -198,7 +198,9 @@ Crucible at its logical conclusion is:
 - [x] **L. TTS + Remote Brain cellular tunnel** — DONE. `tts.ts` + `/api/tts` + `/api/remote-brain/tunnel/start` + UI.
 - [x] **E. routing active-learning** — DONE. `routingLearner.ts` + hourly daemon task + `/api/corpus/learn-routes`.
 - [x] **K. Ensemble self-play** — DONE. `selfPlay.ts` + weekly daemon task; self-play dataset → DPO merge.
-- [ ] **C–F. Installers (DMG/EXE/AppImage)** — ONLY remaining session. Build operations; pair with Phases 1.3/4.4. May need signing certs.
+- [~] **C. Mac installer** — DONE for arm64 (2026-06-21): valid `release/Crucible-0.0.0-arm64.dmg` (~204 MB,
+  hdiutil-verified), unsigned. Remaining: code-sign+notarize (Apple cert), universal/x64 arch.
+- [ ] **F. Windows .exe + Linux AppImage** — scripts ready (`dist:win`/`dist:linux`); must run on those OSes / CI.
 
 ---
 
@@ -1524,6 +1526,21 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-06-21 — Session C: real Mac DMG produced (the downloadable app exists)
+
+`npm run bundle:server` → **14.0mb ESM server bundle (432ms)**, validating every new server import
+(research / routing / self-play / tts / vision + new endpoints) bundles cleanly. Then an unsigned arm64
+build (`CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac dmg --arm64`, run detached) produced:
+
+- **`release/Crucible-0.0.0-arm64.dmg` — ~204 MB, `hdiutil verify` = checksum VALID** (compressed UDIF).
+- Native deps rebuilt for Electron 42.4.0 arm64 (better-sqlite3, sharp); `Crucible.app` (581 MB) packaged.
+
+This is the #1 end-state line — "a downloadable app that installs on Mac with a double-click" — now real.
+**Remaining for C/F:** code-sign + notarize (needs an Apple Developer cert; built unsigned), a universal /
+x64 arch, and the **Windows .exe + Linux AppImage** (must build on those OSes or via CI — cross-compiling
+native modules from macOS isn't reliable). Minor build warnings: no app icon set; `electron-updater`
+dependency path warning (auto-update wiring — non-fatal, DMG built fine).
 
 ### 2026-06-21 — Main-loop run (post-limit): Sessions J, E, K, L completed; git checkpoints
 
