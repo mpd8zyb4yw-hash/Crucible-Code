@@ -1529,6 +1529,25 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-06-21 — Adversarial review pass + fixes (1 real bug, 2 hardenings)
+
+Ran a 5-slice adversarial-review workflow over all new session code; it hit the usage limit mid-run
+(most verify agents + 2 reviewers died), so findings were **verified manually in the main loop**. Outcome:
+
+- **REAL BUG — `setStatus` shard consistency (D)** → FIXED. `setStatus` updated only the meta DB, so
+  archived/superseded chunks stayed `active` in their domain shard and kept being served by the
+  `getChunksByDomain`/`queryShards` fast-path. Now propagates the status update to the shard. Verified:
+  insert→archive→ shard active=0, archived=1.
+- **HARDENING — `?token` cookie injection (B)** → FIXED. `api.ts` now only writes `crucible_session`
+  from `?token` when it matches a strict 3-segment base64url JWT (blocks `/?token=...;attr` injection).
+- **HARDENING — research stream error (J)** → FIXED. `runResearch` read loop wrapped so a mid-stream
+  network drop resolves the round instead of an unhandled rejection.
+- **Refuted by manual inspection** (no bug): `insertChunk` DOES dual-write meta+shard; the public
+  `/api/benchmarks/public` reads only the fixed `bench:latest` key (no KV leak); the tunnel singleton
+  clears on `cloudflared` exit; `tts.speak` is file-based (no shell injection); OAuth signed-state is
+  provider-bound + expiring; `FRONTEND_URL` is server-controlled (no open-redirect); selfPlay threshold
+  fires once on crossing; research-loop termination is bounded by maxIterations + maxMs.
+
 ### 2026-06-21 — Live end-to-end verification (backend restarted with all new code)
 
 Restarted the backend so the running process actually loads Sessions I + D + all new endpoints
