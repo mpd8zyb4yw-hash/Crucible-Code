@@ -200,7 +200,9 @@ Crucible at its logical conclusion is:
 - [x] **K. Ensemble self-play** — DONE. `selfPlay.ts` + weekly daemon task; self-play dataset → DPO merge.
 - [~] **C. Mac installer** — DONE for arm64 (2026-06-21): valid `release/Crucible-0.0.0-arm64.dmg` (~204 MB,
   hdiutil-verified), unsigned. Remaining: code-sign+notarize (Apple cert), universal/x64 arch.
-- [ ] **F. Windows .exe + Linux AppImage** — scripts ready (`dist:win`/`dist:linux`); must run on those OSes / CI.
+- [~] **F. Linux + Windows installers** — Linux DONE: valid `release/Crucible-0.0.0-arm64.AppImage` (~210 MB,
+  ELF aarch64 executable). Remaining: x64 arches; **Windows .exe** (NSIS needs Wine — absent here — or a
+  Windows box / CI); optional desktop icon + name (cosmetic build warnings).
 
 ---
 
@@ -1537,10 +1539,11 @@ build (`CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac dmg --arm64
 - Native deps rebuilt for Electron 42.4.0 arm64 (better-sqlite3, sharp); `Crucible.app` (581 MB) packaged.
 
 This is the #1 end-state line — "a downloadable app that installs on Mac with a double-click" — now real.
-**Remaining for C/F:** code-sign + notarize (needs an Apple Developer cert; built unsigned), a universal /
-x64 arch, and the **Windows .exe + Linux AppImage** (must build on those OSes or via CI — cross-compiling
-native modules from macOS isn't reliable). Minor build warnings: no app icon set; `electron-updater`
-dependency path warning (auto-update wiring — non-fatal, DMG built fine).
+**Linux too:** the same run also produced a valid **`release/Crucible-0.0.0-arm64.AppImage` (~210 MB, ELF
+aarch64 executable)** via `electron-builder --linux AppImage` (Docker present; prebuilt native binaries).
+**Remaining for C/F:** code-sign + notarize the Mac DMG (needs an Apple Developer cert; built unsigned);
+x64 arches; **Windows .exe** (NSIS needs Wine — absent on this Mac — or a Windows box / CI). Minor build
+warnings: no app icon / desktopName set; `electron-updater` dependency path warning (non-fatal).
 
 ### 2026-06-21 — Main-loop run (post-limit): Sessions J, E, K, L completed; git checkpoints
 
