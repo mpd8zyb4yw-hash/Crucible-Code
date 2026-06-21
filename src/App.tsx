@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { API_BASE, apiFetch } from './api'
+import { API_BASE, apiFetch, loginUrl } from './api'
 import CrucibleMark from './CrucibleMark'
 import './modelData'
 import ReactMarkdown from 'react-markdown'
@@ -329,6 +329,7 @@ interface AgentState {
 const AGENT_EVENT_TYPES = new Set([
   'agent_start', 'plan', 'step_status', 'tool_call', 'tool_result', 'tool_created',
   'diff', 'verify', 'thought', 'agent_done', 'plan_done', 'agent_error', 'final',
+  'task_redirected',
 ])
 
 function emptyAgentState(): AgentState {
@@ -372,6 +373,9 @@ function agentReducer(state: AgentState | null | undefined, ev: any): AgentState
       return { ...s, active: false }
     case 'final':
       return { ...s, final: ev.text, active: false }
+    case 'task_redirected':
+      // Mid-session redirect — surface it as a thought so the caption bar shows the pivot
+      return { ...s, thoughts: [...s.thoughts, `Redirecting: ${ev.to ?? ''}`.slice(0, 80)] }
     default:
       return s
   }
@@ -842,6 +846,332 @@ function narrateProcess(round: any, active: any[], dropped: any[], synthesizer: 
   }
 
   return parts.join(' ')
+}
+
+// ── Persistent task-graph binder ────────────────────────────────────────────────
+// Surfaces open multi-session goals (see src/CrucibleEngine/taskGraph.ts + the
+// /api/task-graph endpoints). A small trigger in the topbar opens a right-edge
+// drawer listing open graphs with per-node progress. Tapping one resumes its goal
+// (sends it into the agent loop); the cross dismisses (abandons) it.
+type TaskGraphNode = { id: string; goal: string; status: string; assignedArchetype: string }
+type TaskGraphItem = { id: string; goal: string; created: number; status: string; total: number; done: number; nodes: TaskGraphNode[] }
+
+const ARCHETYPE_RGB: Record<string, string> = {
+  researcher: '96,165,250', coder: '124,124,248', critic: '245,158,11', strategist: '77,184,158',
+}
+
+function TasksBinder({ onResume }: { onResume: (goal: string) => void }) {
+  const [open, setOpen]       = useState(false)
+  const [graphs, setGraphs]   = useState<TaskGraphItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded]   = useState(false)
+  const [draft, setDraft]     = useState('')
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const panelRef   = useRef<HTMLDivElement | null>(null)
+
+  const fetchGraphs = () =>
+    apiFetch(`${API_BASE}/api/task-graph`)
+      .then(r => r.json())
+      .then(d => { setGraphs(d.graphs ?? []); setLoading(false); setLoaded(true) })
+      .catch(() => { setLoading(false); setLoaded(true) })
+
+  useEffect(() => {
+    if (!open || loaded) return
+    setLoading(true)
+    fetchGraphs()
+  }, [open, loaded])
+
+  // Poll while open so progress from a running agent stays current.
+  useEffect(() => {
+    if (!open) return
+    const id = setInterval(() => fetchGraphs(), 20_000)
+    return () => clearInterval(id)
+  }, [open])
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (triggerRef.current?.contains(e.target as Node) || panelRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  // Close on ESC
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open])
+
+  const createGoal = () => {
+    const goal = draft.trim()
+    if (goal.length < 4) return
+    apiFetch(`${API_BASE}/api/task-graph`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ goal }),
+    })
+      .then(r => r.json())
+      .then(() => { setDraft(''); fetchGraphs() })
+      .catch(() => {})
+  }
+
+  const dismissGoal = (id: string) => {
+    setGraphs(prev => prev.filter(g => g.id !== id))   // optimistic
+    apiFetch(`${API_BASE}/api/task-graph/${id}`, {
+      method: 'DELETE', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'abandoned' }),
+    }).catch(() => {})
+  }
+
+  return (
+    <div className="crucible-tasks-binder" style={{ position: 'relative' }}>
+      <style>{`
+        @keyframes tasksSlideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+        @keyframes tasksScrimIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes tasksPrism { 0% { background-position: 0% 50%; } 100% { background-position: 300% 50%; } }
+      `}</style>
+
+      {/* Trigger — checklist icon, matches topbar button style */}
+      <button
+        ref={triggerRef}
+        onClick={() => setOpen(o => !o)}
+        title="Open goals"
+        style={{
+          background: open ? 'rgba(77,184,158,0.1)' : 'none',
+          border: 'none', cursor: 'pointer',
+          color: open ? '#5fd0a8' : '#555',
+          padding: '6px 7px', borderRadius: 8,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'color 0.18s, background 0.18s', position: 'relative',
+        }}
+      >
+        {/* Checklist SVG */}
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2.2 4.2l1.4 1.4 2.2-2.4"/>
+          <path d="M2.2 10.4l1.4 1.4 2.2-2.4"/>
+          <line x1="8.4" y1="4" x2="13.8" y2="4"/>
+          <line x1="8.4" y1="11" x2="13.8" y2="11"/>
+        </svg>
+        {graphs.length > 0 && (
+          <span style={{
+            position: 'absolute', top: 2, right: 1,
+            width: 6, height: 6, borderRadius: 3,
+            background: 'rgba(77,184,158,0.9)',
+            boxShadow: '0 0 4px rgba(77,184,158,0.7)',
+          }} />
+        )}
+      </button>
+
+      {/* Scrim */}
+      {open && (
+        <div
+          onClick={() => setOpen(false)}
+          style={{ position: 'fixed', inset: 0, zIndex: 89, background: 'rgba(0,0,0,0.45)', animation: 'tasksScrimIn 0.28s ease' }}
+        />
+      )}
+
+      {/* Drawer */}
+      {open && (
+        <div
+          ref={panelRef}
+          className="crucible-tasks-drawer"
+          style={{
+            position: 'fixed', top: 0, right: 0, bottom: 0,
+            width: 'min(380px, 92vw)', zIndex: 90,
+            display: 'flex', flexDirection: 'column',
+            background: 'rgba(13,13,20,0.82)',
+            backdropFilter: 'blur(40px) saturate(1.5)',
+            WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
+            borderLeft: '1px solid rgba(255,255,255,0.08)',
+            boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
+            animation: 'tasksSlideIn 0.28s cubic-bezier(0.22,1,0.36,1)',
+            overflow: 'hidden',
+          }}
+        >
+          {/* Prismatic top edge */}
+          <div style={{
+            height: 2, flexShrink: 0,
+            background: 'linear-gradient(90deg, #4db89e, #7c7cf8, #c084fc, #f59e0b, #4db89e)',
+            backgroundSize: '300% 100%', animation: 'tasksPrism 8s linear infinite', opacity: 0.65,
+          }} />
+
+          {/* Header */}
+          <div style={{
+            padding: 'calc(14px + env(safe-area-inset-top, 0px)) 16px 10px', flexShrink: 0,
+            borderBottom: '1px solid rgba(255,255,255,0.05)',
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span style={{
+              fontSize: 10, fontWeight: 700, letterSpacing: '0.14em',
+              color: 'rgba(160,200,180,0.6)', textTransform: 'uppercase', flex: 1,
+            }}>Open goals{graphs.length > 0 ? ` · ${graphs.length}` : ''}</span>
+            <button
+              onClick={() => setOpen(false)}
+              aria-label="Close"
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', color: '#666',
+                width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                borderRadius: 8, flexShrink: 0,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              </svg>
+            </button>
+          </div>
+
+          {/* New-goal creator */}
+          <div style={{ padding: '12px 16px', flexShrink: 0, borderBottom: '1px solid rgba(255,255,255,0.04)', display: 'flex', gap: 8 }}>
+            <input
+              value={draft}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') createGoal() }}
+              placeholder="Track a new goal…"
+              style={{
+                flex: 1, minWidth: 0,
+                background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.07)',
+                borderRadius: 8, padding: '8px 11px',
+                fontSize: 12.5, color: '#c8e8d8', outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+            <button
+              onClick={createGoal}
+              disabled={draft.trim().length < 4}
+              style={{
+                flexShrink: 0,
+                background: draft.trim().length < 4 ? 'rgba(255,255,255,0.04)' : 'rgba(77,184,158,0.14)',
+                border: `1px solid ${draft.trim().length < 4 ? 'rgba(255,255,255,0.06)' : 'rgba(77,184,158,0.3)'}`,
+                color: draft.trim().length < 4 ? 'rgba(255,255,255,0.25)' : 'rgba(120,220,180,0.95)',
+                borderRadius: 8, padding: '0 12px', fontSize: 12.5, fontWeight: 600,
+                cursor: draft.trim().length < 4 ? 'default' : 'pointer',
+                fontFamily: 'inherit', transition: 'background 0.15s, color 0.15s',
+              }}
+            >Add</button>
+          </div>
+
+          {/* List */}
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, WebkitOverflowScrolling: 'touch' }}>
+            {loading && (
+              <div style={{ textAlign: 'center', color: '#333', fontSize: 12, padding: '32px 0' }}>loading…</div>
+            )}
+            {!loading && graphs.length === 0 && (
+              <div style={{
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: 16, padding: '60px 24px', textAlign: 'center',
+              }}>
+                <svg width="56" height="56" viewBox="0 0 56 56" fill="none" style={{ opacity: 0.5 }}>
+                  <rect x="11" y="9" width="34" height="38" rx="4" stroke="rgba(77,184,158,0.3)" strokeWidth="1.5"/>
+                  <path d="M18 20l3 3 5-6" stroke="rgba(77,184,158,0.35)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <line x1="29" y1="20" x2="38" y2="20" stroke="rgba(124,124,248,0.3)" strokeWidth="1.5" strokeLinecap="round"/>
+                  <line x1="18" y1="33" x2="38" y2="33" stroke="rgba(124,124,248,0.25)" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                <span style={{ color: 'rgba(160,200,180,0.45)', fontSize: 12, lineHeight: 1.7 }}>
+                  No open goals — add one to track work across sessions
+                </span>
+              </div>
+            )}
+            {graphs.map(g => {
+              const pct = g.total > 0 ? Math.round((g.done / g.total) * 100) : 0
+              return (
+                <div
+                  key={g.id}
+                  style={{
+                    padding: '13px 16px 14px',
+                    borderBottom: '1px solid rgba(255,255,255,0.03)',
+                    position: 'relative',
+                  }}
+                >
+                  {/* Goal + dismiss */}
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 9 }}>
+                    <button
+                      onClick={() => { onResume(g.goal); setOpen(false) }}
+                      title="Resume this goal"
+                      style={{
+                        flex: 1, minWidth: 0, textAlign: 'left' as const,
+                        background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                        color: 'rgba(220,235,228,0.9)', fontSize: 13, fontWeight: 600,
+                        lineHeight: 1.4, fontFamily: 'inherit',
+                        overflowWrap: 'anywhere', wordBreak: 'break-word',
+                      }}
+                    >{g.goal}</button>
+                    <button
+                      onClick={() => dismissGoal(g.id)}
+                      aria-label="Dismiss goal"
+                      title="Dismiss"
+                      style={{
+                        flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer',
+                        color: 'rgba(255,255,255,0.25)', width: 22, height: 22, borderRadius: 6,
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'color 0.15s',
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.color = 'rgba(255,140,140,0.8)' }}
+                      onMouseLeave={e => { e.currentTarget.style.color = 'rgba(255,255,255,0.25)' }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+                        <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <div style={{ flex: 1, height: 4, borderRadius: 3, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+                      <div style={{
+                        width: `${pct}%`, height: '100%', borderRadius: 3,
+                        background: 'linear-gradient(90deg, rgba(77,184,158,0.8), rgba(124,124,248,0.8))',
+                        transition: 'width 0.4s cubic-bezier(0.22,1,0.36,1)',
+                      }} />
+                    </div>
+                    <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, color: 'rgba(160,200,180,0.6)', letterSpacing: '0.04em' }}>
+                      {g.done}/{g.total}
+                    </span>
+                  </div>
+
+                  {/* Node chips — archetype-colored, with done check */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                    {g.nodes.map(n => {
+                      const rgb = ARCHETYPE_RGB[n.assignedArchetype] ?? '100,100,130'
+                      const isDone = n.status === 'done'
+                      return (
+                        <span
+                          key={n.id}
+                          title={`${n.goal} — ${n.assignedArchetype} (${n.status})`}
+                          style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 4,
+                            maxWidth: '100%',
+                            fontSize: 10, padding: '2px 7px', borderRadius: 5,
+                            background: isDone ? `rgba(${rgb},0.18)` : 'rgba(255,255,255,0.04)',
+                            border: `1px solid rgba(${rgb},${isDone ? 0.4 : 0.18})`,
+                            color: isDone ? `rgba(${rgb},0.95)` : 'rgba(200,200,220,0.55)',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {isDone && (
+                            <svg width="8" height="8" viewBox="0 0 10 10" fill="none" style={{ flexShrink: 0 }}>
+                              <path d="M1.5 5l2.2 2.5L8.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {n.goal.length > 24 ? n.goal.slice(0, 24) + '…' : n.goal}
+                          </span>
+                        </span>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ── Session history binder ─────────────────────────────────────────────────────
@@ -1383,7 +1713,7 @@ function AuthScreen({ onAuth }: { onAuth: (user: { id: string; email: string }) 
           <button
             className="oauth-btn"
             style={oauthBtnStyle('rgba(255,255,255,0.06)')}
-            onClick={() => { window.location.href = `${API_BASE}/api/auth/google` }}
+            onClick={() => { window.location.href = loginUrl('google') }}
           >
             {/* Google G logo */}
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -1399,7 +1729,7 @@ function AuthScreen({ onAuth }: { onAuth: (user: { id: string; email: string }) 
           <button
             className="oauth-btn"
             style={oauthBtnStyle('rgba(255,255,255,0.06)')}
-            onClick={() => { window.location.href = `${API_BASE}/api/auth/github` }}
+            onClick={() => { window.location.href = loginUrl('github') }}
           >
             {/* GitHub mark */}
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
@@ -1447,6 +1777,10 @@ export default function App() {
   const [remoteBrain, setRemoteBrain] = useState(false)
   const [streamStatus, setStreamStatus] = useState<'connecting'|'live'|'error'>('connecting')
   const [streamFps, setStreamFps] = useState(0)
+  // Fully-local app origin (http://<mac-lan-ip>:3001) reported by the status endpoint.
+  // Offered as a one-tap escape hatch when the stream can't reach the Mac through the
+  // tunnel — loading the app from this origin makes everything direct-to-Mac.
+  const [remoteLanOrigin, setRemoteLanOrigin] = useState<string | null>(null)
   const screenCanvasRef = useRef<HTMLCanvasElement>(null)
   const streamEsRef = useRef<EventSource | null>(null)
   const preBrainModeRef = useRef<'quorum'|'code'|'seeker'>('quorum')
@@ -1454,6 +1788,8 @@ export default function App() {
   const [pipPos, setPipPos] = useState<{x:number,y:number}>({ x: 12, y: 60 })
   const pipPosRef = useRef<{x:number,y:number}>({ x: 12, y: 60 })
   const pipDragRef = useRef<{startX:number,startY:number,startPipX:number,startPipY:number}|null>(null)
+  const pipDivRef = useRef<HTMLDivElement>(null)
+  const visualVpOffsetTopRef = useRef(0)
 
   // visualViewport — tracks height AND offsetTop so we can compute the exact keyboard
   // height on iOS. When the keyboard opens, Safari fires both 'resize' (height shrinks)
@@ -1475,6 +1811,7 @@ export default function App() {
     const update = () => {
       setVisualVpHeight(vv.height)
       setVisualVpOffsetTop(vv.offsetTop)
+      visualVpOffsetTopRef.current = vv.offsetTop
       // Clamp PiP so it never gets pushed off screen when keyboard opens
       const pipH = 200
       const maxY = vv.height - pipH - 12
@@ -1540,6 +1877,7 @@ export default function App() {
     }
     setStreamStatus('connecting')
     setStreamFps(0)
+    setRemoteLanOrigin(null)
     fpsCounterRef.current = { count: 0, last: performance.now() }
 
     // Build WebSocket URL from API_BASE (http→ws, https→wss).
@@ -1548,19 +1886,36 @@ export default function App() {
     ws.binaryType = 'blob'
     streamEsRef.current = ws as unknown as EventSource
 
-    // If the status endpoint returns a LAN ws:// URL different from the current
-    // host, switch to it immediately — avoids the tunnel entirely on local WiFi.
-    apiFetch(`${API_BASE}/api/remote-brain/status`).then(r => r.json()).then((s: { screenStream?: string }) => {
-      if (!streamEsRef.current) return
-      const lanUrl = s.screenStream
-      if (lanUrl && !lanUrl.includes(window.location.hostname)) {
-        ws.close()
-        ws = new WebSocket(`${lanUrl}?t=${Date.now()}`)
-        ws.binaryType = 'blob'
-        streamEsRef.current = ws as unknown as EventSource
-        attachHandlers(ws)
+    // Ask the Mac where it actually is on the LAN. The screen-stream WS and the Mac's
+    // screen only exist on the Mac — never on the Fly origin the tunnel can resolve to —
+    // so connecting straight to the Mac's LAN IP is the only reliable path on the same
+    // network. We also stash lanOrigin so the UI can offer a fully-local fallback link.
+    const pageIsHttp = window.location.protocol === 'http:'
+    apiFetch(`${API_BASE}/api/remote-brain/status`)
+      .then(r => r.json())
+      .then((s: { screenStream?: string | null; lanOrigin?: string | null }) => {
+        if (s.lanOrigin && !s.lanOrigin.includes(window.location.hostname)) setRemoteLanOrigin(s.lanOrigin)
+        if (!streamEsRef.current) return
+        const lanUrl = s.screenStream
+        // Only switch to a different host when it actually points elsewhere. A ws:// LAN
+        // URL is mixed-content-blocked from an https page, so only auto-switch from http.
+        if (lanUrl && !lanUrl.includes(window.location.hostname) && (pageIsHttp || lanUrl.startsWith('wss://'))) {
+          ws.close()
+          ws = new WebSocket(`${lanUrl}?t=${Date.now()}`)
+          ws.binaryType = 'blob'
+          streamEsRef.current = ws as unknown as EventSource
+          attachHandlers(ws)
+        }
+      }).catch(() => {})
+
+    // Watchdog: if no frame has arrived a few seconds in, the tunnel path is dead
+    // (likely resolved to the screenless Fly origin). Surface the error state so the
+    // "open on local network" fallback shows. A live frame clears this via onmessage.
+    const watchdog = setTimeout(() => {
+      if (streamEsRef.current === (ws as unknown as EventSource) && ws.readyState !== 1) {
+        setStreamStatus('error')
       }
-    }).catch(() => {})
+    }, 6000)
 
     let pendingBitmap: ImageBitmap | null = null
     let rafId = 0
@@ -1606,6 +1961,7 @@ export default function App() {
     attachHandlers(ws)
 
     return () => {
+      clearTimeout(watchdog)
       ws.close()
       streamEsRef.current = null
       cancelAnimationFrame(rafId)
@@ -2856,6 +3212,10 @@ export default function App() {
         @keyframes arrowToRing { 0% { transform: rotate(0deg) scale(1); opacity: 1; } 60% { transform: rotate(140deg) scale(0.5); opacity: 0.5; } 100% { transform: rotate(180deg) scale(1); opacity: 1; } }
         @keyframes studioIn { from { transform: translateX(-100%); } to { transform: translateX(0); } }
         @keyframes fanIn { from { opacity:0; transform:translateX(-6px) } to { opacity:1; transform:translateX(0) } }
+        .crucible-shows-work > summary::-webkit-details-marker { display: none; }
+        .crucible-shows-work > summary::marker { content: ''; }
+        .crucible-shows-work > summary:hover { background: rgba(255,255,255,0.045) !important; border-color: rgba(255,255,255,0.1) !important; }
+        .crucible-shows-work[open] > summary .crucible-sw-caret { transform: rotate(90deg); }
       `}</style>
 
       <ShimmerBg thinking={thinking} mode={mode} />
@@ -2872,8 +3232,10 @@ export default function App() {
       ─────────────────────────────────────────────────────────────────────────── */}
       {remoteBrain && isMobile && (
         <>
-          {/* PiP draggable window */}
-          <div style={{
+          {/* PiP draggable window — position updated via direct DOM ref during drag
+              (no setState on touchMove) to avoid 60fps React re-renders that were
+              causing the stream canvas RAF loop to stutter and appear laggy. */}
+          <div ref={pipDivRef} style={{
             position: 'fixed',
             left: pipPos.x,
             top: visualVpOffsetTop + pipPos.y,
@@ -2884,11 +3246,12 @@ export default function App() {
             boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
             pointerEvents: 'auto',
             touchAction: 'none',
-            transition: pipDragRef.current ? 'none' : 'top 0.3s cubic-bezier(0.22,1,0.36,1), left 0.3s cubic-bezier(0.22,1,0.36,1)',
+            transition: 'top 0.3s cubic-bezier(0.22,1,0.36,1), left 0.3s cubic-bezier(0.22,1,0.36,1)',
           }}
             onTouchStart={e => {
               const t = e.touches[0]
-              pipDragRef.current = { startX: t.clientX, startY: t.clientY, startPipX: pipPos.x, startPipY: pipPos.y }
+              pipDragRef.current = { startX: t.clientX, startY: t.clientY, startPipX: pipPosRef.current.x, startPipY: pipPosRef.current.y }
+              if (pipDivRef.current) pipDivRef.current.style.transition = 'none'
             }}
             onTouchMove={e => {
               if (!pipDragRef.current) return
@@ -2897,9 +3260,18 @@ export default function App() {
               const dy = t.clientY - pipDragRef.current.startY
               const next = { x: pipDragRef.current.startPipX + dx, y: pipDragRef.current.startPipY + dy }
               pipPosRef.current = next
-              setPipPos(next)
+              // Direct DOM update — zero React re-renders during drag
+              if (pipDivRef.current) {
+                pipDivRef.current.style.left = next.x + 'px'
+                pipDivRef.current.style.top = (visualVpOffsetTopRef.current + next.y) + 'px'
+              }
             }}
-            onTouchEnd={() => { pipDragRef.current = null }}
+            onTouchEnd={() => {
+              pipDragRef.current = null
+              if (pipDivRef.current) pipDivRef.current.style.transition = 'top 0.3s cubic-bezier(0.22,1,0.36,1), left 0.3s cubic-bezier(0.22,1,0.36,1)'
+              // Sync React state once at drag end (one re-render vs 60fps re-renders)
+              setPipPos({ ...pipPosRef.current })
+            }}
           >
             <canvas
               ref={screenCanvasRef}
@@ -2930,13 +3302,31 @@ export default function App() {
                 ) : (
                   <>
                     <span style={{ fontSize: 11, color: 'rgba(248,113,113,0.55)' }}>stream unavailable</span>
-                    <button
-                      onClick={() => { setRemoteBrain(false); setTimeout(() => setRemoteBrain(true), 100) }}
-                      style={{
-                        background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
-                        color: '#ccc', borderRadius: 7, padding: '5px 12px', fontSize: 11, cursor: 'pointer',
-                      }}
-                    >retry</button>
+                    {/* On the same network the tunnel can resolve to the screenless cloud
+                        origin — loading the app straight from the Mac fixes it for good. */}
+                    {remoteLanOrigin && (
+                      <span style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.3)', textAlign: 'center', maxWidth: 200, lineHeight: 1.5 }}>
+                        On the same Wi-Fi as your Mac? Open Crucible locally:
+                      </span>
+                    )}
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={() => { setRemoteBrain(false); setTimeout(() => setRemoteBrain(true), 100) }}
+                        style={{
+                          background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+                          color: '#ccc', borderRadius: 7, padding: '5px 12px', fontSize: 11, cursor: 'pointer',
+                        }}
+                      >retry</button>
+                      {remoteLanOrigin && (
+                        <button
+                          onClick={() => { window.location.href = remoteLanOrigin }}
+                          style={{
+                            background: 'rgba(124,124,248,0.16)', border: '1px solid rgba(124,124,248,0.3)',
+                            color: '#a5a5ff', borderRadius: 7, padding: '5px 12px', fontSize: 11, cursor: 'pointer',
+                          }}
+                        >open on local network</button>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
@@ -3676,6 +4066,171 @@ export default function App() {
                          <CopyButton text={round.synthesis} inline title="Copy answer" />
                          <FeedbackButtons query={round.userMessage} synthesis={round.synthesis} promptType={round.promptType} />
                        </div>
+
+                       {/* ── "Shows its work" panel — collapsed by default everywhere, one tap
+                           to expand. Self-accounting: every section reads only data already
+                           present on the round; absent data → section is skipped. ─────────── */}
+                       {(() => {
+                         // Tier color tokens (reused from the app's confidence palette)
+                         const tierCol = (t: string) =>
+                           t === 'HIGH' ? 'rgba(77,220,160,0.9)'
+                           : t === 'MEDIUM' ? 'rgba(255,200,80,0.9)'
+                           : t === 'LOW' ? 'rgba(248,124,124,0.9)'
+                           : 'rgba(255,255,255,0.4)'   // UNVERIFIED → gray
+                         // Contribution-rate bar color: green high / amber mid / red low
+                         const rateCol = (r: number) =>
+                           r >= 0.5 ? 'rgba(77,220,160,0.65)'
+                           : r >= 0.25 ? 'rgba(255,200,80,0.65)'
+                           : 'rgba(248,124,124,0.6)'
+                         const sectionLabel = (text: string, color: string) => (
+                           <div style={{ fontSize: 9, letterSpacing: '0.09em', textTransform: 'uppercase' as const, color, marginBottom: 4 }}>{text}</div>
+                         )
+
+                         const geneEntries = round.genealogy
+                           ? active
+                               .filter(m => (round.genealogy![m.id] ?? 0) > 0)
+                               .sort((a, b) => (round.genealogy![b.id] ?? 0) - (round.genealogy![a.id] ?? 0))
+                           : []
+                         const specialists = round.masterpiece?.specialists ?? []
+                         // "What the system doesn't know" — low/unverified flagged claims + frontier
+                         const unknowns = flaggedClaims.filter(fc => fc.tier === 'LOW' || fc.tier === 'UNVERIFIED')
+                         const stageCount = round.complexity === 'complex' ? 4 : 3
+
+                         // One-line collapsed summary
+                         const headerBits: string[] = [`${active.length} model${active.length !== 1 ? 's' : ''}`]
+                         if (conf) headerBits.push(`${overallTier} confidence`)
+                         if (fragilityAssumption) headerBits.push('1 fragile assumption')
+                         if (round.criticProblems && round.criticProblems.length > 0)
+                           headerBits.push(`${round.criticProblems.length} critic flag${round.criticProblems.length !== 1 ? 's' : ''}`)
+
+                         return (
+                           <details className="crucible-shows-work" style={{ marginTop: 10 }}>
+                             <summary style={{
+                               fontSize: 11, letterSpacing: '0.03em', cursor: 'pointer',
+                               userSelect: 'none' as const, listStyle: 'none',
+                               display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const,
+                               padding: '7px 11px', borderRadius: 8,
+                               background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)',
+                               color: 'rgba(255,255,255,0.45)', transition: 'background 0.2s ease, border-color 0.2s ease',
+                             }}>
+                               <span className="crucible-sw-caret" style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.3)', transition: 'transform 0.2s ease', display: 'inline-block' }}>▸</span>
+                               <span style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: 'rgba(255,255,255,0.3)', fontWeight: 600 }}>shows its work</span>
+                               <span style={{ minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, color: tierColor }}>
+                                 {headerBits.join('  ·  ')}
+                               </span>
+                             </summary>
+
+                             <div className="crucible-sw-body" style={{
+                               marginTop: 8, padding: '13px 15px', borderRadius: 8,
+                               background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
+                               display: 'flex', flexDirection: 'column' as const, gap: 14,
+                               animation: 'panelUp 0.28s cubic-bezier(0.16,1,0.3,1)',
+                             }}>
+
+                               {/* Model agreement — genealogy contribution bars */}
+                               {geneEntries.length > 0 && (
+                                 <div>
+                                   {sectionLabel('model agreement', 'rgba(255,255,255,0.28)')}
+                                   {geneEntries.map(m => {
+                                     const rate = round.genealogy![m.id] ?? 0
+                                     return (
+                                       <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                                         <span style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, background: m.color ?? 'rgba(124,124,248,0.7)' }} />
+                                         <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>{m.label}</span>
+                                         <div style={{ width: 64, height: 4, borderRadius: 2, background: 'rgba(255,255,255,0.07)', overflow: 'hidden' }}>
+                                           <div style={{ width: `${Math.round(rate * 100)}%`, height: '100%', background: rateCol(rate), borderRadius: 2, transition: 'width 0.4s ease' }} />
+                                         </div>
+                                         <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.35)', fontFamily: 'monospace', width: 30, textAlign: 'right' as const }}>{Math.round(rate * 100)}%</span>
+                                       </div>
+                                     )
+                                   })}
+                                 </div>
+                               )}
+
+                               {/* Adversarial audit — critic findings, or all-clear fallback */}
+                               <div>
+                                 {sectionLabel('adversarial audit', 'rgba(248,124,124,0.5)')}
+                                 {round.criticProblems && round.criticProblems.length > 0 ? (
+                                   round.criticProblems.map((p, i) => (
+                                     <div key={i} style={{ fontSize: 11, color: 'rgba(255,255,255,0.42)', lineHeight: 1.55, paddingLeft: 8, borderLeft: '2px solid rgba(248,124,124,0.25)', marginBottom: 4, wordBreak: 'break-word' as const }}>{p}</div>
+                                   ))
+                                 ) : (
+                                   <div style={{ fontSize: 11, color: 'rgba(77,220,160,0.55)', lineHeight: 1.55 }}>No significant issues found.</div>
+                                 )}
+                               </div>
+
+                               {/* Confidence tiers — color-coded HIGH/MEDIUM/LOW/UNVERIFIED */}
+                               {conf && (
+                                 <div>
+                                   {sectionLabel('confidence', 'rgba(255,255,255,0.28)')}
+                                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                                     <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color: tierCol(overallTier) }}>{overallTier}</span>
+                                     <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', fontFamily: 'monospace' }}>{Math.round(overallScore * 100)}%</span>
+                                   </div>
+                                   <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' as const, fontSize: 10 }}>
+                                     {summary.high > 0 && <span style={{ color: tierCol('HIGH') }}>{summary.high} high</span>}
+                                     {summary.medium > 0 && <span style={{ color: tierCol('MEDIUM') }}>{summary.medium} medium</span>}
+                                     {summary.low > 0 && <span style={{ color: tierCol('LOW') }}>{summary.low} low</span>}
+                                     {summary.unverified > 0 && <span style={{ color: tierCol('UNVERIFIED') }}>{summary.unverified} unverified</span>}
+                                   </div>
+                                 </div>
+                               )}
+
+                               {/* Fragile assumption — "The answer breaks without:" */}
+                               {fragilityAssumption && (
+                                 <div>
+                                   {sectionLabel('the answer breaks without', 'rgba(255,200,80,0.5)')}
+                                   <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', lineHeight: 1.55, fontStyle: 'italic' as const, wordBreak: 'break-word' as const }}>{fragilityAssumption}</div>
+                                 </div>
+                               )}
+
+                               {/* What the system doesn't know — unverified/low claims + frontier */}
+                               {(unknowns.length > 0 || frontierQuestion) && (
+                                 <div>
+                                   {sectionLabel("what the system doesn't know", 'rgba(255,255,255,0.28)')}
+                                   {unknowns.map((fc, i) => (
+                                     <div key={i} style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)', lineHeight: 1.5, marginBottom: 3, wordBreak: 'break-word' as const }}>
+                                       <span style={{ fontSize: 9, letterSpacing: '0.06em', marginRight: 6, color: tierCol(fc.tier) }}>{fc.tier}</span>
+                                       {fc.claim}
+                                     </div>
+                                   ))}
+                                   {frontierQuestion && (
+                                     <div style={{ fontSize: 11, color: 'rgba(100,180,255,0.6)', lineHeight: 1.55, fontStyle: 'italic' as const, marginTop: unknowns.length > 0 ? 4 : 0, wordBreak: 'break-word' as const }}>{frontierQuestion}</div>
+                                   )}
+                                 </div>
+                               )}
+
+                               {/* Sources / specialists */}
+                               {specialists.length > 0 && (
+                                 <div>
+                                   {sectionLabel('specialists', 'rgba(130,160,255,0.5)')}
+                                   <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6 }}>
+                                     {specialists.map((s, i) => (
+                                       <span key={i} style={{
+                                         fontSize: 10, color: 'rgba(255,255,255,0.45)', padding: '2px 8px', borderRadius: 6,
+                                         background: 'rgba(130,160,255,0.08)', border: '1px solid rgba(130,160,255,0.15)',
+                                         maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
+                                       }}>{s.specialist} · {Math.round(s.confidence * 100)}%</span>
+                                     ))}
+                                   </div>
+                                 </div>
+                               )}
+
+                               {/* Pipeline stats */}
+                               <div>
+                                 {sectionLabel('pipeline', 'rgba(255,255,255,0.28)')}
+                                 <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 12, fontSize: 10, color: 'rgba(255,255,255,0.35)' }}>
+                                   <span>{active.length} model{active.length !== 1 ? 's' : ''}</span>
+                                   <span>{stageCount} stages</span>
+                                   {dropped.length > 0 && <span style={{ color: 'rgba(248,124,124,0.5)' }}>{dropped.length} dropped</span>}
+                                   {round.masterpiece?.elapsedMs != null && <span>{(round.masterpiece.elapsedMs / 1000).toFixed(1)}s</span>}
+                                 </div>
+                               </div>
+
+                             </div>
+                           </details>
+                         )
+                       })()}
 
                        {/* Process trail — progressive disclosure: collapsed by default on
                            mobile, expanded by default on desktop. Set once per element via

@@ -11,10 +11,12 @@ import { buildWorldContext } from './src/CrucibleEngine/state/world'
 import type { InterfaceContract } from './src/CrucibleEngine/index'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import crypto from 'crypto'
-import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad } from './modelRegistry'
+import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad, providerHealthSnapshot, registerFineTunedModel } from './modelRegistry'
 import type { SelectedModel } from './modelRegistry'
 import { createServer } from 'http'
+import { WebSocketServer as WsServer } from 'ws'
 import webpush from 'web-push'
 import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-context'
 import { createCheckpoint, rollbackToCheckpoint, getCheckpoints } from './src/CrucibleEngine/checkpoint'
@@ -25,11 +27,17 @@ import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
 import { runAgentLoop } from './src/CrucibleEngine/agent/loop'
+import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
+import { getOrCreateSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages } from './src/CrucibleEngine/agent/taskSession'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
 import { defaultSystemPreamble } from './src/CrucibleEngine/agent/loop'
-import { extractSubtasks } from './src/CrucibleEngine/goalDecomposer'
+import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
+import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } from './src/CrucibleEngine/taskGraph'
+import { runMetaRouter, consult } from './src/CrucibleEngine/agent/metaRouter'
+import { runRsiCycle, rsiStatus, setRsiEnabled, type RsiDeps } from './src/CrucibleEngine/rsi/controller'
+import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/CrucibleEngine/agent/archetypes'
 import { detectConversational, buildConversationalFallback, applyVoiceLayer } from './src/CrucibleEngine/conversationalMode'
 import { readScratch } from './src/CrucibleEngine/agent/taskScratchpad'
 import { approveGlobalGraduation } from './src/CrucibleEngine/tools/dynamicTools'
@@ -40,6 +48,75 @@ import { loadDynamicToolsInto, dynamicToolStats } from './src/CrucibleEngine/too
 import { identifyGoals, loadGoalReport, saveGoalReport } from './src/CrucibleEngine/goalEngine'
 import { metaLearningStatus } from './src/CrucibleEngine/triumvirate'
 import { writeCheckpoint, clearCheckpoint, readCheckpoint, findAllCheckpoints, sweepStaleCheckpoints } from './src/CrucibleEngine/state/checkpoint'
+import { Pool } from 'pg'
+
+// ── Postgres connection pool (cloud) / JSON file fallback (local dev) ─────────
+const pgPool = process.env.DATABASE_URL ? new Pool({ connectionString: process.env.DATABASE_URL }) : null
+
+async function initPg(): Promise<void> {
+  if (!pgPool) return
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      created_at BIGINT NOT NULL
+    )
+  `)
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS history (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT,
+      ts BIGINT NOT NULL,
+      data JSONB NOT NULL
+    )
+  `)
+  await pgPool.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      user_id TEXT NOT NULL,
+      endpoint TEXT PRIMARY KEY,
+      sub JSONB NOT NULL
+    )
+  `)
+  console.log('[Postgres] Schema ready')
+}
+
+// ── History helpers — Postgres when DATABASE_URL set, JSON file otherwise ─────
+function _historyFilePath(userId: string | null): string {
+  return userId
+    ? path.join(process.cwd(), '.crucible', `history-${userId}.json`)
+    : path.join(process.cwd(), '.crucible', 'history-default.json')
+}
+
+async function historyLoad(userId: string | null, limit = 200): Promise<any[]> {
+  if (pgPool) {
+    const r = await pgPool.query(
+      'SELECT data FROM history WHERE user_id IS NOT DISTINCT FROM $1 ORDER BY ts DESC LIMIT $2',
+      [userId, limit]
+    )
+    return r.rows.map((row: any) => row.data)
+  }
+  try { return JSON.parse(fs.readFileSync(_historyFilePath(userId), 'utf8')) } catch { return [] }
+}
+
+function historyPush(userId: string | null, entry: any): void {
+  if (pgPool) {
+    pgPool.query('INSERT INTO history (user_id, ts, data) VALUES ($1, $2, $3)',
+      [userId, entry.ts, JSON.stringify(entry)])
+      .catch((e: any) => console.error('[History] Postgres write failed:', e.message))
+    return
+  }
+  try {
+    const file = _historyFilePath(userId)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    let sessions: any[] = []
+    try { sessions = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
+    sessions.push(entry)
+    if (sessions.length > 200) sessions = sessions.slice(-200)
+    fs.writeFileSync(file, JSON.stringify(sessions, null, 2))
+  } catch (e: any) { console.error('[History] File write failed:', e.message) }
+}
 
 const CIRCUIT_STATE_FILE = path.join(process.cwd(), '.circuit-state.json')
 
@@ -112,7 +189,7 @@ export function saveCircuitState() {
 }
 
 loadCircuitState()
-import { exec, execFile } from 'child_process'
+import { exec, execFile, spawn } from 'child_process'
 import { prewarmPython } from './src/CrucibleEngine/sandbox'
 import { debugBus } from './src/CrucibleEngine/debug/bus'
 import { debugAnalyzer } from './src/CrucibleEngine/debug/analyzer'
@@ -134,7 +211,7 @@ import { distillRound, getDistillationContext } from './src/CrucibleEngine/knowl
 import { buildGraphDigest, loadGraph, expireStaleEntities } from './src/CrucibleEngine/entityGraph'
 import { applyWorldDiff, loadContradictionLog } from './src/CrucibleEngine/worldModelDiff'
 import { detectGapsFromRound, listGaps, resolveGap } from './src/CrucibleEngine/knowledgeGapQueue'
-import { readSynthesis, getSynthesisIndex } from './src/CrucibleEngine/knowledgeSynthesis'
+import { readSynthesis, getSynthesisIndex, recordSessionForCluster, writeSynthesis } from './src/CrucibleEngine/knowledgeSynthesis'
 import { buildDecisionContext } from './src/CrucibleEngine/decisionMemory'
 import { recordFeedback as recordPreferenceFeedback, getPreferenceSummary } from './src/CrucibleEngine/preferenceModel'
 import { detectEmergentClusters, loadClusters } from './src/CrucibleEngine/specializationDetector'
@@ -157,7 +234,7 @@ import { generateScaffold, buildScaffoldBlock } from './src/CrucibleEngine/reaso
 import { calibrate, getFragilityAssumption } from './src/CrucibleEngine/confidenceCalibrator'
 import { shouldRunTrace, extractFirstCodeBlock, buildTraceBlock } from './src/CrucibleEngine/executionTrace'
 import { runHypothesisTest, shouldRunHypothesis } from './src/CrucibleEngine/hypothesisTester'
-import { scheduleMetaTask, loadMetaTask, loadMetaTaskResult, clearMetaTask, appendMetaLog } from './src/CrucibleEngine/metaPipeline'
+import { scheduleMetaTask, loadMetaTask, loadMetaTaskResult, clearMetaTask, appendMetaLog, saveMetaTask } from './src/CrucibleEngine/metaPipeline'
 import { buildSFTDataset, buildDPODataset, exportSFTJsonl, exportDPOJsonl, submitFineTuneJob, loadFineTuneJobs, buildHardNegativeDataset, flagHardNegative, buildDisagreementDataset, getFineTunedModelId, buildAdversarialPairs, buildCalibrationDataset, exportCalibrationJsonl } from './src/CrucibleEngine/fineTuning'
 import { getAnchor } from './src/CrucibleEngine/contextAnchor'
 import { runMasterpieceLight, runMasterpieceDeep, renderLightEnrichment, warmCorpus } from './src/CrucibleEngine/masterpiece/orchestrator'
@@ -319,6 +396,15 @@ import { ingestDocument } from './src/CrucibleEngine/corpus/ingest'
   if (added > 0) console.log(`[Hunter] Loaded ${added} previously-discovered model(s) into registry`)
 })()
 
+// 3.2 — Re-integrate the fine-tuned model (if a fine-tune has completed) as a
+// first-class ensemble member. No-op until getFineTunedModelId returns an id.
+;(function loadFineTuned() {
+  try {
+    const ftId = getFineTunedModelId(process.cwd())
+    if (ftId) registerFineTunedModel(ftId)
+  } catch (e: any) { console.warn('[FineTune] re-integration skipped:', e?.message ?? e) }
+})()
+
 // Run hunter once at startup (after 30s delay to avoid hitting rate limits during boot),
 // then every 24h
 setTimeout(async () => {
@@ -379,9 +465,27 @@ app.use(express.json())
 // Serve the production frontend build so phones can load the app directly from :3001
 // (one hop, compressed, no Vite proxy chain). PC dev flow still uses :5173 with HMR.
 // Loaded AFTER compression so static files benefit from gzip automatically.
-const FRONTEND_BUILD = path.join(process.cwd(), 'app')
+// ── 1.2 — Data relocation support ─────────────────────────────────────────────
+// All user data lives under <cwd>/.crucible. When packaged, electron.cjs spawns
+// the server with cwd = app.getPath('userData') so ALL data (corpus DB, learned
+// state, history) relocates to ~/Library/Application Support/Crucible/ atomically
+// — every path keys off process.cwd() at call/load time. The ONLY thing that must
+// NOT relocate is the code (the frontend bundle): pin it to the script's own dir.
+const CODE_DIR = path.dirname(path.resolve(process.argv[1] || process.cwd()))
+const FRONTEND_BUILD = [path.join(CODE_DIR, 'app'), path.join(process.cwd(), 'app')]
+  .find(p => fs.existsSync(p)) ?? path.join(CODE_DIR, 'app')
 if (fs.existsSync(FRONTEND_BUILD)) {
-  app.use(express.static(FRONTEND_BUILD, { maxAge: '5m', etag: true }))
+  app.use(express.static(FRONTEND_BUILD, {
+    maxAge: '1y',
+    etag: true,
+    setHeaders(res, filePath) {
+      // Never cache the HTML shell — asset filenames are content-hashed, so
+      // a new deploy produces new hashes; the HTML must always be fresh.
+      if (filePath.endsWith('index.html') || filePath.endsWith('sw.js') || filePath.endsWith('.webmanifest')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+      }
+    },
+  }))
 }
 
 // ── Auth utilities ─────────────────────────────────────────────────────────────
@@ -420,7 +524,20 @@ function saveUsers(users: CrucibleUser[]) {
   fs.mkdirSync(CRUCIBLE_DIR, { recursive: true })
   fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2))
 }
-function upsertUser(provider: string, providerId: string, email: string): CrucibleUser {
+async function upsertUser(provider: string, providerId: string, email: string): Promise<CrucibleUser> {
+  if (pgPool) {
+    const existing = await pgPool.query(
+      'SELECT id, email, provider, provider_id as "providerId", created_at as "createdAt" FROM users WHERE provider = $1 AND provider_id = $2',
+      [provider, providerId]
+    )
+    if (existing.rows.length > 0) return existing.rows[0] as CrucibleUser
+    const user: CrucibleUser = { id: crypto.randomUUID(), email, provider, providerId, createdAt: Date.now() }
+    await pgPool.query(
+      'INSERT INTO users (id, email, provider, provider_id, created_at) VALUES ($1, $2, $3, $4, $5)',
+      [user.id, user.email, user.provider, user.providerId, user.createdAt]
+    )
+    return user
+  }
   const users = loadUsers()
   let user = users.find(u => u.provider === provider && u.providerId === providerId)
   if (!user) {
@@ -591,15 +708,35 @@ if (pushEnabled) {
 }
 const PUSH_SUBS_FILE = path.join(CRUCIBLE_DIR, 'push-subscriptions.json')
 type PushSub = { userId: string; sub: any }
-function loadPushSubs(): PushSub[] {
+async function loadPushSubs(): Promise<PushSub[]> {
+  if (pgPool) {
+    const r = await pgPool.query('SELECT user_id as "userId", sub FROM push_subscriptions')
+    return r.rows as PushSub[]
+  }
   try { return JSON.parse(fs.readFileSync(PUSH_SUBS_FILE, 'utf8')) } catch { return [] }
 }
-function savePushSubs(subs: PushSub[]) {
+async function savePushSubs(subs: PushSub[]): Promise<void> {
+  if (pgPool) {
+    const client = await pgPool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query('DELETE FROM push_subscriptions')
+      for (const s of subs) {
+        await client.query(
+          'INSERT INTO push_subscriptions (user_id, endpoint, sub) VALUES ($1, $2, $3)',
+          [s.userId, s.sub?.endpoint ?? '', JSON.stringify(s.sub)]
+        )
+      }
+      await client.query('COMMIT')
+    } catch (e) { await client.query('ROLLBACK'); throw e }
+    finally { client.release() }
+    return
+  }
   try { fs.mkdirSync(CRUCIBLE_DIR, { recursive: true }); fs.writeFileSync(PUSH_SUBS_FILE, JSON.stringify(subs)) } catch {}
 }
 async function notifyUser(userId: string | null, payload: { title: string; body: string; url?: string }) {
   if (!pushEnabled || !userId) return
-  const subs = loadPushSubs()
+  const subs = await loadPushSubs()
   const mine = subs.filter(s => s.userId === userId)
   if (mine.length === 0) return
   const dead: any[] = []
@@ -607,27 +744,27 @@ async function notifyUser(userId: string | null, payload: { title: string; body:
     try { await webpush.sendNotification(sub, JSON.stringify(payload)) }
     catch (e: any) { if (e?.statusCode === 404 || e?.statusCode === 410) dead.push(sub.endpoint) }
   }))
-  if (dead.length) savePushSubs(subs.filter(s => !dead.includes(s.sub?.endpoint)))
+  if (dead.length) await savePushSubs(subs.filter(s => !dead.includes(s.sub?.endpoint)))
 }
 
 app.get('/api/push/vapid-public', (_req: express.Request, res: express.Response) => {
   res.json({ key: pushEnabled ? VAPID_PUBLIC : null })
 })
-app.post('/api/push/subscribe', (req: express.Request, res: express.Response) => {
+app.post('/api/push/subscribe', async (req: express.Request, res: express.Response) => {
   const user = getAuthUser(req)
   if (!user) return res.status(401).json({ error: 'Unauthorized' })
   const sub = req.body?.subscription
   if (!sub?.endpoint) return res.status(400).json({ error: 'invalid subscription' })
-  const subs = loadPushSubs().filter(s => s.sub?.endpoint !== sub.endpoint)  // dedupe by endpoint
+  const subs = (await loadPushSubs()).filter(s => s.sub?.endpoint !== sub.endpoint)  // dedupe by endpoint
   subs.push({ userId: user.id, sub })
-  savePushSubs(subs)
+  await savePushSubs(subs)
   res.json({ ok: true })
 })
 
 // ── OAuth helpers ─────────────────────────────────────────────────────────────
 function issueSession(res: express.Response, user: CrucibleUser) {
   const token = signJwt({ id: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + 30 * 86400 })
-  res.cookie('crucible_session', token, { httpOnly: true, sameSite: 'lax', maxAge: 30 * 86400 * 1000 })
+  res.cookie('crucible_session', token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 30 * 86400 * 1000 })
 }
 
 // Detect the origin the browser sees so the callback can redirect back to it.
@@ -687,7 +824,7 @@ app.get('/api/auth/callback/google', async (req: express.Request, res: express.R
       headers: { Authorization: `Bearer ${tokens.access_token}` },
     })
     const profile = await userRes.json() as any
-    const user = upsertUser('google', profile.id, profile.email)
+    const user = await upsertUser('google', profile.id, profile.email)
     // Store Google tokens for API tool use
     saveTokens(user.id, {
       access_token: tokens.access_token,
@@ -750,7 +887,7 @@ app.get('/api/auth/callback/github', async (req: express.Request, res: express.R
       const emails = await emailRes.json() as any[]
       email = (emails.find((e: any) => e.primary)?.email) ?? emails[0]?.email ?? ''
     }
-    const user = upsertUser('github', String(profile.id), email)
+    const user = await upsertUser('github', String(profile.id), email)
     issueSession(res, user)
     res.redirect(`${frontendOrigin(req)}/`)
   } catch (e: any) {
@@ -981,6 +1118,107 @@ function withStaticPrefix(
   return [{ role: 'system', content: preamble }, ...messages]
 }
 
+// ── External API proxy (Cloudflare Worker) ──────────────────────────────────────
+// When PROXY_URL is set, every hosted-provider model call is routed through a
+// stateless Cloudflare Worker that holds the API keys (worker/index.ts). This is
+// what lets keys leave the server, which is what lets Crucible run off the Fly box.
+// The Worker speaks the OpenAI chat-completions protocol for every provider, so the
+// response shape here is always OpenAI-style (JSON for batch, SSE deltas for stream)
+// — identical to what the openrouter/huggingface branches already parse.
+const PROXY_URL = (process.env.PROXY_URL ?? '').replace(/\/$/, '')
+// Long-lived internal token the Worker validates (same HS256/JWT_SECRET scheme as
+// user sessions and RSI_TOKEN). Minted once at startup; only when proxying is on.
+const PROXY_JWT = PROXY_URL
+  ? signJwt({ id: 'proxy-internal', email: 'proxy@crucible.local', exp: Math.floor(Date.now() / 1000) + 10 * 365 * 86400 })
+  : ''
+// Never proxy the local Apple FM daemon — it's on loopback and needs no key.
+const PROXY_SKIP_PROVIDERS = new Set(['local'])
+
+// Extra upstream params that must survive the proxy hop to preserve direct-call
+// behaviour. Groq qwen models disable the reasoning trace (mirrors callModel).
+function proxyExtraBody(model: SelectedModel): Record<string, unknown> | undefined {
+  if (model.provider === 'groq' && model.id.includes('qwen')) return { reasoning_effort: 'none' }
+  return undefined
+}
+// Match the per-provider max_tokens caps the direct paths apply (others uncapped).
+function proxyMaxTokens(model: SelectedModel): number | undefined {
+  if (model.provider === 'huggingface') return 4096
+  const compat = OPENAI_COMPAT_PROVIDERS[model.provider]
+  if (compat) return compat.maxTokens
+  return undefined
+}
+
+async function proxyChat(
+  model: SelectedModel,
+  messages: { role: string; content: string }[],
+  signal: AbortSignal,
+): Promise<string> {
+  const res = await fetch(`${PROXY_URL}/proxy/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${PROXY_JWT}` },
+    body: JSON.stringify({
+      provider: model.provider, model: model.id, messages, stream: false,
+      max_tokens: proxyMaxTokens(model), extra: proxyExtraBody(model),
+    }),
+    signal,
+  })
+  if (!res.ok) throw new Error(`Proxy ${model.provider} ${res.status}: ${await res.text()}`)
+  const data: any = await res.json()
+  let text = data.choices?.[0]?.message?.content || ''
+  if (model.provider === 'groq' && model.id.includes('qwen')) text = stripThink(text)
+  return text
+}
+
+async function proxyChatStreaming(
+  model: SelectedModel,
+  messages: { role: string; content: string }[],
+  onChunk: (text: string) => void,
+): Promise<string> {
+  const isQwen = model.provider === 'groq' && model.id.includes('qwen')
+  const res = await fetch(`${PROXY_URL}/proxy/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${PROXY_JWT}` },
+    body: JSON.stringify({
+      provider: model.provider, model: model.id, messages, stream: true,
+      max_tokens: proxyMaxTokens(model), extra: proxyExtraBody(model),
+    }),
+  })
+  if (!res.ok) throw new Error(`Proxy ${model.provider} ${res.status}: ${await res.text()}`)
+  // A provider with no streaming surface (e.g. cloudflare) may return a single JSON
+  // even when stream:true was asked — fall back to a one-shot emit in that case.
+  const ct = res.headers.get('Content-Type') ?? ''
+  if (!ct.includes('text/event-stream')) {
+    const data: any = await res.json().catch(() => null)
+    let text = data?.choices?.[0]?.message?.content || ''
+    if (isQwen) text = stripThink(text)
+    onChunk(text)
+    return text
+  }
+  let sseBuf = '', fullText = ''
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    sseBuf += decoder.decode(value, { stream: true })
+    const lines = sseBuf.split('\n')
+    sseBuf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const data = line.slice(6).trim()
+      if (data === '[DONE]') break
+      try {
+        const j = JSON.parse(data)
+        const text = j.choices?.[0]?.delta?.content || ''
+        // qwen: buffer silently and emit only the cleaned text at the end (mirrors direct path).
+        if (text) { fullText += text; if (!isQwen) onChunk(text) }
+      } catch {}
+    }
+  }
+  if (isQwen) { const clean = stripThink(fullText); onChunk(clean); return clean }
+  return fullText
+}
+
 async function callModel(
   model: SelectedModel,
   messages: { role: string; content: string }[],
@@ -1004,6 +1242,12 @@ async function callModel(
   // in withTimeout; this guards callModel uses elsewhere (probes, synthesis, etc.).
   const callTimeoutMs = opts.timeoutMs ?? (provider === 'local' ? 30000 : 45000)
   const callAbort = AbortSignal.timeout(callTimeoutMs)
+
+  // Route every hosted provider through the Cloudflare Worker key-proxy when enabled.
+  // Local FM stays direct (loopback, no key). The Worker normalises to OpenAI shape.
+  if (PROXY_URL && !PROXY_SKIP_PROVIDERS.has(provider)) {
+    return await proxyChat(model, messages, callAbort)
+  }
 
   if (provider === 'groq') {
     const modelId = id.replace(/^groq\//, '')
@@ -1202,8 +1446,32 @@ async function callModelStreaming(
   onChunk: (text: string) => void
 ): Promise<string> {
   const { id, provider } = model
+  // Q3 hot-swap fault injection (verification only). CRUCIBLE_FORCE_FAIL is a
+  // comma-list of model ids (or "*") that should throw a HARD (non-429,
+  // non-decommission) error so the live standby-dispatch path in runStage1Model
+  // is exercised deterministically. The "503" in the message makes isServerErrS1
+  // true while keeping is429/isDead false, satisfying the hot-swap gate.
+  const _forceFail = process.env.CRUCIBLE_FORCE_FAIL
+  if (_forceFail && (_forceFail === '*' || _forceFail.split(',').map(s => s.trim()).includes(id))) {
+    throw new Error(`[forced-fail] simulated 503 for ${id} (CRUCIBLE_FORCE_FAIL)`)
+  }
   messages = withStaticPrefix(messages, model.tpmLimit)
+  // 4.2 — pre-dispatch token guard: reject before the wire so an oversized payload
+  // can never come back as a reactive 413. Mirrors the guard in callModel().
+  const streamTokenEst = estimateMessageTokens(messages)
+  if (model.tpmLimit && streamTokenEst > model.tpmLimit) {
+    const msg = `Token budget exceeded: ~${streamTokenEst} tokens estimated, limit is ${model.tpmLimit} for ${id}`
+    console.warn(`[TokenGuard] ${msg}`)
+    debugBus.emit('model', 'token_guard_reject', { model: id, provider, tokenEst: streamTokenEst, tpmLimit: model.tpmLimit }, { severity: 'warn' })
+    throw new Error(msg)
+  }
   recordProviderCall(provider)
+
+  // Route every hosted provider through the Cloudflare Worker key-proxy when enabled
+  // (local FM stays direct). Streams OpenAI-style SSE deltas straight to onChunk.
+  if (PROXY_URL && !PROXY_SKIP_PROVIDERS.has(provider)) {
+    return await proxyChatStreaming(model, messages, onChunk)
+  }
 
   if (provider === 'groq') {
     const modelId = id.replace(/^groq\//, '')
@@ -1394,6 +1662,45 @@ app.get('/api/waitlist', (_req, res) => {
   res.json(waitlistStatus(process.cwd()))
 })
 
+// ── /api/task-graph — persistent multi-session task graphs ────────────────────
+// GET    list open graphs (each with node progress for the UI)
+// POST   create a graph from { goal } (heuristic decomposition, no model call)
+// DELETE :id  mark a graph complete/abandoned (removes it from the open list)
+app.get('/api/task-graph', (_req, res) => {
+  try {
+    const graphs = getOpenGraphs().map(g => ({
+      id: g.id,
+      goal: g.goal,
+      created: g.created,
+      status: g.status,
+      total: g.nodes.length,
+      done: g.nodes.filter(n => n.status === 'done').length,
+      nodes: g.nodes.map(n => ({ id: n.id, goal: n.goal, status: n.status, assignedArchetype: n.assignedArchetype })),
+    }))
+    res.json({ graphs })
+  } catch (e: any) {
+    res.status(500).json({ error: String(e?.message ?? e) })
+  }
+})
+
+app.post('/api/task-graph', (req, res) => {
+  const goal = typeof req.body?.goal === 'string' ? req.body.goal.trim() : ''
+  if (goal.length < 4) { res.status(400).json({ error: 'Missing or too-short goal' }); return }
+  try {
+    const graph = createGraph(goal)
+    res.json({ graph })
+  } catch (e: any) {
+    res.status(500).json({ error: String(e?.message ?? e) })
+  }
+})
+
+app.delete('/api/task-graph/:id', (req, res) => {
+  const status = req.body?.status === 'done' ? 'done' : 'abandoned'
+  const graph = setGraphStatus(req.params.id, status)
+  if (!graph) { res.status(404).json({ error: 'Graph not found' }); return }
+  res.json({ ok: true, graph })
+})
+
 // ── /api/config — update pipeline config at runtime ──────────────────────────
 app.post('/api/config', (req, res) => {
   const { parallelCount, wildcardCount } = req.body
@@ -1582,6 +1889,49 @@ function detectExternalExecIntent(message: string): boolean {
     || /\b(search|find|look up)\b[\s\S]{0,60}\b(youtube|spotify|netflix|apple music)\b[\s\S]{0,60}\b(and|then)\b[\s\S]{0,40}\b(play|put on|open|watch|listen|queue)\b/.test(m)
 }
 
+// Translate a Layer-2 FM plan step (which uses the FM planner's own tool vocabulary)
+// into a registry ToolCall. Without this, registry.exec reads `.name` (undefined on the
+// raw {tool,args} step) → "Unknown tool: undefined", and the FM tool names/arg shapes
+// don't all match the registry (shell_exec→run, search_web→web_search, click_element
+// label→title). Fixing this makes Layer 2 actually execute on-device.
+function fmStepToToolCall(step: { tool: string; args: Record<string, unknown> }, i: number) {
+  const NAME_MAP: Record<string, string> = { shell_exec: 'run', search_web: 'web_search' }
+  const name = NAME_MAP[step.tool] ?? step.tool
+  const args: Record<string, unknown> = { ...(step.args ?? {}) }
+  if (step.tool === 'click_element' && 'label' in args && !('title' in args)) {
+    args.title = args.label
+    delete args.label
+  }
+  return { id: `fm_${i}`, name, args }
+}
+
+// D3 — for a vague agent goal, return a one-line assumption the agent will proceed
+// under (announced, never blocking). null when the goal is specific enough. This keeps
+// the agent fully autonomous: it states its reasonable defaults rather than asking.
+function buildAssumptionNote(message: string): string | null {
+  const m = (message ?? '').toLowerCase()
+  const words = (message ?? '').trim().split(/\s+/).length
+  const vagueVerb = /\b(improve|optimi[sz]e|fix|clean ?up|refactor|enhance|update|sort out|make .*better|polish|tidy)\b/.test(m)
+  if (vagueVerb && words < 9) {
+    return `Proceeding autonomously on "${message.slice(0, 60)}${message.length > 60 ? '…' : ''}" with sensible defaults — I'll make reasonable choices and you can redirect me at any time.`
+  }
+  return null
+}
+
+// Decide whether a goal warrants the multi-specialist meta-router (decompose →
+// specialist DAG → critic → strategist synthesis) instead of the planner/loop.
+// Gate conservatively: genuine multi-part work spanning ≥2 specialist archetypes
+// OR carrying real cross-subtask dependencies. Single-domain tasks use the cheaper path.
+function shouldUseMetaRouter(message: string): boolean {
+  try {
+    const subs = decompose(message ?? '').nodes.filter(n => n.depth > 0)
+    if (subs.length < 2) return false
+    const archetypes = new Set(subs.map(n => selectArchetype(n.goal)))
+    const hasDeps = subs.some(n => n.dependsOn.some(d => subs.some(s => s.id === d)))
+    return archetypes.size >= 2 || hasDeps
+  } catch { return false }
+}
+
 app.post('/api/chat', async (req, res) => {
   const { message, mode = 'quorum', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId } = req.body
   const chatSessionId = typeof reqSessionId === 'string' ? reqSessionId : ''
@@ -1608,6 +1958,11 @@ app.post('/api/chat', async (req, res) => {
   }
   console.log('[/api/chat] Received:', message?.slice(0, 80), '| mode:', mode, '| device:', device)
 
+  // Agentic-intent flag — hoisted above the agent branch so the Layer-2 FM planner
+  // gate (which reads it) doesn't hit a temporal dead zone. Also reused downstream by
+  // the exact-cache bypass and pipeline routing.
+  const isAgenticIntent = mode === 'agent' || detectAgentTask(message ?? '')
+
   // ── Agent mode — sustained tool loop instead of the synthesis pipeline ─────
   if (mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && detectAgentTask(message ?? '') && !isCreativeProse(message ?? ''))) {
     res.setHeader('Content-Type', 'text/event-stream')
@@ -1619,12 +1974,35 @@ app.post('/api/chat', async (req, res) => {
       if (chatSessionId) broadcastEvent(chatSessionId, line, res)
     }
 
+    // ── Intent classification — fast heuristic, no LLM ──────────────────────
+    // Classifies every agent-mode message before dispatch so we can handle
+    // conversational_redirect (mid-task corrections) separately from new tasks.
+    const agentSession = chatSessionId ? getOrCreateSession(chatSessionId) : null
+    const intentResult = classifyIntent(message ?? '', {
+      hasActiveTask: agentSession?.status === 'running',
+    })
+    console.log(`[Agent] Intent: ${intentResult.intent} (${intentResult.confidence})`)
+    debugBus.emit('agent', 'intent_classified', { intent: intentResult.intent, confidence: intentResult.confidence, sessionId: chatSessionId }, { severity: 'info' })
+
+    // Handle redirect — abort the running task and continue with new goal in context
+    if (intentResult.intent === 'conversational_redirect' && agentSession) {
+      const wasAborted = abortCurrentTask(chatSessionId)
+      if (wasAborted) {
+        send({ type: 'task_redirected', from: agentSession.currentGoal, to: message })
+        // Brief pause so the abort signal propagates to the running loop
+        await new Promise(r => setTimeout(r, 200))
+        // Fall through with the new message as the goal — task session context preserved
+      }
+    }
+
     const projectPath = req.body.projectPath
       ? path.resolve(req.body.projectPath)
       : newDesktopProjectPath()
     fs.mkdirSync(projectPath, { recursive: true })
 
-    const ac = new AbortController()
+    // Register task with the stateful session (also provides the AbortController)
+    const sessionAc = chatSessionId ? startTask(chatSessionId, message ?? '') : null
+    const ac = sessionAc ?? new AbortController()
     // res 'close' fires on client disconnect; req 'close' fires once the body is
     // consumed in Express 5, which would falsely cancel the loop.
     // Grace period before aborting on disconnect. Generous (10 min) so a code task you
@@ -1655,6 +2033,14 @@ app.post('/api/chat', async (req, res) => {
     const episodeContext = buildEpisodeContext(message)
     const graphDigest = buildGraphDigest(message)
     const decisionCtx = buildDecisionContext(message)
+    // Open goals from persistent multi-session task graphs — keeps the agent aware
+    // of unfinished work carried over from earlier sessions. Empty string when none.
+    let openGoalsCtx = ''
+    try { openGoalsCtx = buildOpenGoalsContext() } catch {}
+    // Task history from the stateful session — injected into systemPreamble for context continuity
+    const taskHistoryCtx = chatSessionId ? buildTaskContext(chatSessionId) : ''
+    // Accumulated session messages — used as initialMessages for context continuity across turns
+    const sessionMessages = chatSessionId ? getSessionMessages(chatSessionId) : []
     // Build/update codebase index non-blocking; extract relevant context for this query
     let codebaseContext = ''
     try {
@@ -1670,8 +2056,12 @@ app.post('/api/chat', async (req, res) => {
       try { reindexFiles(projectPath, absPaths) } catch {}
     }
 
+    // Track final messages for stateful session continuity
+    let lastAgentMessages: Array<Record<string, unknown>> = []
+
     // Shared checkpoint writer — called after every agent loop iteration
     const onCheckpoint = (messages: Array<Record<string, unknown>>, iter: number, extra?: Partial<Parameters<typeof writeCheckpoint>[1]>) => {
+      lastAgentMessages = messages
       writeCheckpoint(projectPath, {
         sessionId: 'active',
         goal: message,
@@ -1704,17 +2094,22 @@ app.post('/api/chat', async (req, res) => {
         }
         try {
           const { ok, summary } = await runLocalPlan(localPlan, (call) => registry.exec(call, toolCtx))
-          send({ type: 'final', text: summary })
-          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: summary, synthesisDone: true, synthStreaming: false })
-          debugBus.emit('agent', 'local_intent_done', { intent: localPlan.intent, ok }, { severity: ok ? 'info' : 'warn' })
-          console.log(`[Agent] Local fast-path ${ok ? 'completed' : 'failed'} in ${((Date.now() - t0) / 1000).toFixed(2)}s`)
+          if (ok) {
+            send({ type: 'final', text: summary })
+            patchActiveSessionRound(chatUser, chatRoundId, { synthesis: summary, synthesisDone: true, synthStreaming: false })
+            debugBus.emit('agent', 'local_intent_done', { intent: localPlan.intent, ok: true }, { severity: 'info' })
+            console.log(`[Agent] Local fast-path completed in ${((Date.now() - t0) / 1000).toFixed(2)}s`)
+            endAgent()
+            return
+          }
+          // B5 — fast-path couldn't complete it; escalate to the full agent loop below.
+          console.warn(`[Agent] Local fast-path failed — escalating to full agent loop: ${summary.slice(0, 120)}`)
+          debugBus.emit('agent', 'local_intent_fallthrough', { intent: localPlan.intent }, { severity: 'warn' })
         } catch (e: any) {
-          console.warn('[Agent] Local fast-path threw — surfacing error:', e?.message ?? e)
-          send({ type: 'final', text: `Could not complete that action locally: ${String(e?.message ?? e).slice(0, 160)}` })
-        } finally {
-          endAgent()
+          // A throw in the fast-path also escalates rather than dead-ending the user.
+          console.warn('[Agent] Local fast-path threw — escalating to full agent loop:', e?.message ?? e)
+          debugBus.emit('agent', 'local_intent_fallthrough', { intent: localPlan.intent, error: String(e?.message ?? e).slice(0, 120) }, { severity: 'warn' })
         }
-        return
       }
     }
 
@@ -1734,22 +2129,105 @@ app.post('/api/chat', async (req, res) => {
             projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
             allowMutation: true, allowDestructive: false, onFileMutated,
           }
-          const { ok, summary } = await runFmPlan(fmPlan, (call) => registry.exec(call, toolCtx))
-          send({ type: 'final', text: summary })
-          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: summary, synthesisDone: true, synthStreaming: false })
-          debugBus.emit('agent', 'layer2_fm_done', { intent: fmPlan.intent, ok }, { severity: ok ? 'info' : 'warn' })
-          console.log(`[Agent] Layer 2 FM ${ok ? 'done' : 'failed'} in ${((Date.now() - t0) / 1000).toFixed(2)}s`)
-          endAgent()
-          return
+          let fmStepIdx = 0
+          const { ok, summary } = await runFmPlan(fmPlan, (call) => registry.exec(fmStepToToolCall(call, fmStepIdx++), toolCtx))
+          if (ok) {
+            send({ type: 'final', text: summary })
+            patchActiveSessionRound(chatUser, chatRoundId, { synthesis: summary, synthesisDone: true, synthStreaming: false })
+            debugBus.emit('agent', 'layer2_fm_done', { intent: fmPlan.intent, ok: true }, { severity: 'info' })
+            console.log(`[Agent] Layer 2 FM done in ${((Date.now() - t0) / 1000).toFixed(2)}s`)
+            endAgent()
+            return
+          }
+          // B5 — FM plan failed (e.g. invalid tool, bad step). Do NOT surface the raw
+          // error as the answer; escalate to the full LLM agent loop below.
+          console.warn(`[Agent] Layer 2 FM plan failed — escalating to full agent loop: ${summary.slice(0, 120)}`)
+          debugBus.emit('agent', 'layer2_fm_fallthrough', { intent: fmPlan.intent, summary: summary.slice(0, 120) }, { severity: 'warn' })
         }
       } catch (e: any) {
         console.warn('[Agent] Layer 2 FM plan error (falling through to LLM loop):', e?.message ?? e)
       }
     }
 
+    // D3 — announce the working assumption for a vague goal and proceed (never block).
+    if (!resumable && !iterCheckpoint) {
+      const assumption = buildAssumptionNote(message)
+      if (assumption) {
+        send({ type: 'task_assumption', text: assumption })
+        debugBus.emit('agent', 'task_assumption', { note: assumption.slice(0, 120) }, { severity: 'info' })
+      }
+    }
+
     // Wrap agent execution so a throw in runPlannedTask/runAgentLoop can't leak the
     // keepalive interval or hang the SSE stream — endAgent() runs in finally.
     try {
+    let handled = false
+
+    // ── Multi-level orchestration (Track I) — the meta-router ──────────────────
+    // For genuinely multi-part goals: decompose into a specialist DAG, run each
+    // subtask with the best archetype (researcher/coder/critic/strategist) in
+    // topological waves, then critic-audit and strategist-synthesise. Falls back
+    // to the single loop on any failure so it can never regress baseline behavior.
+    if (!resumable && !iterCheckpoint && shouldUseMetaRouter(message)) {
+      try {
+        const metaTaskId = chatSessionId || newSessionId(t0)
+        // I4 — assigned just below (after buildDriveTurn exists); referenced here so
+        // every subtask loop's ToolCtx carries the consult hook.
+        let consultSpecialist: ((archetype: ArchetypeId, question: string) => Promise<string>) | undefined
+        const runLoop = (o: Parameters<typeof runAgentLoop>[0]) => runAgentLoop({
+          driveTurn: nativeDriveTurn,
+          projectPath,
+          userId: chatUser?.id,
+          emit: send,
+          signal: ac.signal,
+          onFileMutated,
+          consultSpecialist,
+          // C2 — default-on verification: a fresh verifier per subtask. Auto-passes
+          // when no runnable check exists (research/critic), gives the coder real
+          // test/compile validation + self-heal. Subtask opts can still override.
+          verify: makeVerifier({ command: req.body.verifyCommand }).verify,
+          compressCallModel: (msgs) => {
+            const { models: cm } = selectModels('general', SIMPLE_PIPELINE_CONFIG, 'simple', 'quorum')
+            const m = cm[0]
+            return m ? callModel(m, msgs) : Promise.reject(new Error('no model for compression'))
+          },
+          ...o,   // subtask overrides (goal, archetype-filtered driveTurn, per-subtask signal, maxIters, systemPreamble) win
+        })
+        const buildDriveTurn = (archetype: ArchetypeId) =>
+          ((msgs: Array<Record<string, unknown>>, _tools: any, sig?: AbortSignal) =>
+            nativeDriveTurn(msgs, buildArchetypeTools(archetype, registry.list()), sig)) as typeof nativeDriveTurn
+        // I4 — depth-1 guarded specialist consultation, injected into every subtask
+        // loop's ToolCtx via the runLoop closure above (consultSpecialist key).
+        let _consultDepth = 0
+        consultSpecialist = async (archetype, question) => {
+          if (_consultDepth >= 1) return '[consultation depth limit reached — specialists may consult once]'
+          _consultDepth++
+          try { return await consult(metaTaskId, archetype as ArchetypeId, question, runLoop, buildDriveTurn, send, projectPath, ac.signal) }
+          finally { _consultDepth-- }
+        }
+        send({ type: 'agent_meta', event: 'router_start' })
+        debugBus.emit('agent', 'metarouter_route', { goal: message.slice(0, 80) }, { severity: 'info' })
+        const metaResult = await runMetaRouter({
+          goal: message, projectPath, taskId: metaTaskId,
+          runLoop, buildDriveTurn, emit: send, signal: ac.signal,
+        })
+        const answer = (metaResult.finalAnswer ?? '').trim()
+        if (answer.length >= 20) {
+          send({ type: 'final', text: answer, meta: { subtasks: metaResult.subtasks.length, critic: !!metaResult.criticFindings, confidence: metaResult.confidence, completeness: metaResult.completeness } })
+          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+          if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+          historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-meta', models: ['meta-router'], synthesis: answer })
+          handled = true
+        } else {
+          debugBus.emit('agent', 'metarouter_fallback', { reason: 'empty_or_short_answer' }, { severity: 'warn' })
+        }
+      } catch (metaErr: any) {
+        console.warn('[Agent] metaRouter failed — falling back to single loop:', metaErr?.message ?? metaErr)
+        debugBus.emit('agent', 'metarouter_fallback', { reason: String(metaErr?.message ?? metaErr).slice(0, 120) }, { severity: 'warn' })
+      }
+    }
+
+    if (!handled) {
     if (resumable || needsPlan(message)) {
       const goal = resumable?.goal ?? message
       const sessionId = resumable?.id ?? newSessionId(t0)
@@ -1795,15 +2273,21 @@ app.post('/api/chat', async (req, res) => {
         signal: ac.signal,
         verify: verifier.verify,
         onCheckpoint: (msgs, iter) => onCheckpoint(msgs, iter),
-        initialMessages: iterCheckpoint?.messages ?? (history.length > 0 ? [
-          { role: 'system', content: '' },
-          ...history.flatMap((h: {user: string, assistant: string}) => [
-            { role: 'user', content: h.user },
-            { role: 'assistant', content: h.assistant }
-          ]),
-          { role: 'user', content: message }
-        ] : undefined),
-        systemPreamble: `${defaultSystemPreamble(projectPath)}\n\nDEVICE CONTEXT: This request came from a ${device === 'mobile' ? 'mobile phone' : 'desktop'}. When the user asks to open apps, files, or URLs — always execute the action on the Mac desktop, never on the user's phone. If the request is ambiguous, assume they want it on the Mac.\n\nUSER LOCATION: Timezone is Europe/Rome. Use this to infer the user region for location-dependent queries like weather. Never ask for location unless the query is too specific for timezone inference.${detectExternalExecIntent(message ?? '') ? '\n\nEXECUTION INTENT DETECTED: The user wants you to perform an action on an external system (open a URL, play media, launch an app). Do NOT return a link or describe how to do it. Do NOT construct YouTube URLs from memory — video IDs from training data are dead links. For YouTube: call search_youtube with a specific query, pick the best result URL from the live results, then call open_app with that URL. For other media/apps: use web_search to find the URL, then open_app. Execute — do not instruct.' : ''}\n\n${[globalMemory, episodeContext, graphDigest, decisionCtx, memoryDigest, codebaseContext].filter(Boolean).join('\n\n')}`,
+        initialMessages: iterCheckpoint?.messages ?? (
+          // Prefer accumulated session messages (stateful continuity) over raw history array
+          sessionMessages.length > 1
+            ? [...sessionMessages.filter(m => m.role !== 'user' || m !== sessionMessages[sessionMessages.length - 1]),
+               { role: 'user', content: message }]
+            : history.length > 0 ? [
+                { role: 'system', content: '' },
+                ...history.flatMap((h: {user: string, assistant: string}) => [
+                  { role: 'user', content: h.user },
+                  { role: 'assistant', content: h.assistant }
+                ]),
+                { role: 'user', content: message }
+              ] : undefined
+        ),
+        systemPreamble: `${defaultSystemPreamble(projectPath)}\n\nDEVICE CONTEXT: This request came from a ${device === 'mobile' ? 'mobile phone' : 'desktop'}. When the user asks to open apps, files, or URLs — always execute the action on the Mac desktop, never on the user's phone. If the request is ambiguous, assume they want it on the Mac.\n\nUSER LOCATION: Timezone is Europe/Rome. Use this to infer the user region for location-dependent queries like weather. Never ask for location unless the query is too specific for timezone inference.${detectExternalExecIntent(message ?? '') ? '\n\nEXECUTION INTENT DETECTED: The user wants you to perform an action on an external system (open a URL, play media, launch an app). Do NOT return a link or describe how to do it. Do NOT construct YouTube URLs from memory — video IDs from training data are dead links. For YouTube: call search_youtube with a specific query, pick the best result URL from the live results, then call open_app with that URL. For other media/apps: use web_search to find the URL, then open_app. Execute — do not instruct.' : ''}\n\n${[openGoalsCtx, taskHistoryCtx, globalMemory, episodeContext, graphDigest, decisionCtx, memoryDigest, codebaseContext].filter(Boolean).join('\n\n')}`,
         onFileMutated,
         // Inject a fast text-only model call for model-assisted context compression
         compressCallModel: (msgs) => {
@@ -1812,10 +2296,19 @@ app.post('/api/chat', async (req, res) => {
           return m ? callModel(m, msgs) : Promise.reject(new Error('no model for compression'))
         },
       })
-      if (result.ok) clearCheckpoint(projectPath)
+      // B1 — clear the checkpoint on success AND on terminal failures that a blind
+      // resume can't fix (verify_failed/stalled/max_iters/error). Only budget/cancelled
+      // stops stay resumable, so an unwinnable task can't be retried forever.
+      if (result.ok || result.stopped === 'verify_failed' || result.stopped === 'stalled' || result.stopped === 'max_iters' || result.stopped === 'error') {
+        clearCheckpoint(projectPath)
+      }
       if (result.finalText) {
         send({ type: 'final', text: result.finalText })
         patchActiveSessionRound(chatUser, chatRoundId, { synthesis: result.finalText, synthesisDone: true, synthStreaming: false })
+        // Persist task completion to stateful session for redirect context continuity
+        if (chatSessionId) {
+          completeTask(chatSessionId, result.finalText.slice(0, 200), lastAgentMessages)
+        }
       }
       // Summarise into episodic memory (non-blocking)
       if (result.finalText) {
@@ -1824,17 +2317,10 @@ app.post('/api/chat', async (req, res) => {
       // Persist agent round to session history
       if (result.finalText) {
         try {
-          const HISTORY_FILE = chatUser
-            ? path.join(process.cwd(), '.crucible', `history-${chatUser.id}.json`)
-            : path.join(process.cwd(), '.crucible', 'history-default.json')
-          fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true })
-          let sessions: any[] = []
-          try { sessions = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')) } catch {}
-          sessions.push({ ts: Date.now(), query: message, promptType: 'agent', models: ['agent-loop'], synthesis: result.finalText })
-          if (sessions.length > 200) sessions = sessions.slice(-200)
-          fs.writeFileSync(HISTORY_FILE, JSON.stringify(sessions, null, 2))
+          historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent', models: ['agent-loop'], synthesis: result.finalText })
         } catch {}
       }
+    }
     }
     console.log(`[Agent] End-to-end latency: ${((Date.now() - t0) / 1000).toFixed(1)}s`)
     } catch (agentErr: any) {
@@ -1969,7 +2455,7 @@ app.post('/api/chat', async (req, res) => {
   const cached = responseCache.get(ck)
   // Agentic-intent requests bypass cache — cached instructions must never substitute
   // for live execution (the agent needs to run, not replay a prior answer).
-  const isAgenticIntent = mode === 'agent' || detectAgentTask(message ?? '')
+  // (isAgenticIntent is computed once near the top of the handler.)
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS && !isAgenticIntent) {
     console.log('[Cache] HIT —', message?.slice(0, 60))
     diag.cacheHits++
@@ -2043,6 +2529,10 @@ app.post('/api/chat', async (req, res) => {
   // Any uncaught throw here must still close the SSE stream, or the client hangs
   // forever waiting for [DONE]. The matching catch is just before the handler ends.
   try {
+  // Keepalive pause guard — count this request as live for its entire duration so
+  // background keepalive pings skip model calls. Balanced in the finally below, so
+  // every exit path (early return, completion, throw) decrements exactly once.
+  activePipelineRequests++
 
   // ── Model selection ───────────────────────────────────────────────────────
   const promptType = classifyPrompt(message)
@@ -2119,12 +2609,22 @@ app.post('/api/chat', async (req, res) => {
     console.log(`[Quality] Predicted score: ${qualityPrediction.predictedScore} (conf: ${qualityPrediction.confidence}) → earlyExit@${qualityEarlyExitThreshold}`)
   }
 
-  // Collaboration gradient — assess whether to answer, caveat, or ask for clarification
+  // Collaboration gradient — assess whether to answer, caveat, or ask for clarification.
+  // D1 — resolve ambiguity from context the user already gave (prior turns + project
+  // memory): boost confidence so the system doesn't ask about things it can already
+  // infer. We do NOT blanket-suppress clarification — a genuinely ambiguous question
+  // that context does not resolve should still be asked. The boost just raises the bar
+  // so asking stays rare: "smart enough to do most things without added context."
+  const hasPriorContext = (Array.isArray(history) && history.length > 0) ||
+    (chatSessionId ? getSessionMessages(chatSessionId).length > 1 : false)
+  const memoryCtx = (() => { try { return readMemoryDigest(process.cwd()).length > 40 } catch { return false } })()
+  const contextBoost = (hasPriorContext ? 0.15 : 0) + (memoryCtx ? 0.08 : 0)
   const collabDecision = assessCollabMode(
     message,
     qualityPrediction.predictedScore,
     qualityPrediction.confidence,
-    qualityPrediction.sampleSize
+    qualityPrediction.sampleSize,
+    { contextBoost }
   )
   if (collabDecision.mode === 'clarify' && collabDecision.clarifyQuestion) {
     // Skip the full pipeline — return the clarifying question immediately
@@ -2181,10 +2681,23 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
-  activePipelineRequests++
   const selResult = selectModels(promptType, adaptiveConfig, complexity, mode)
   const forcedSlots = getForcedModels(promptType as any, MODEL_REGISTRY, getSpecializationWeights)
   const models = applyForcedSlots(selResult.models, forcedSlots, MODEL_REGISTRY)
+  // Track C2 — keep each participating model's recency fresh so getForcedModels'
+  // staleness gate works (without this, the forced-slot feature dies after
+  // FORCE_RECENCY_WINDOW pipeline runs because lastForcedAt stays 0 for everyone).
+  for (const m of models) recordForcedCall(m.id)
+  // Autonomous model hunter — inject any promoted probation candidates (≤2) into
+  // Stage 1 so they actually get tested in live traffic; recordProbationOutcome
+  // (below, in the Stage 1 loop) scores them and rotates out the bad ones.
+  for (const pid of getProbationIds()) {
+    if (models.some(m => m.id === pid)) continue
+    const pm = MODEL_REGISTRY.find(m => m.id === pid)
+    if (pm && getCircuitState(pm.id) !== 'tripped') {
+      models.push({ id: pm.id, provider: pm.provider, label: pm.label, isWildcard: false })
+    }
+  }
   const synthesisModelId = selResult.synthesisModelId
   const synthModel = models.find(m => m.id === synthesisModelId) ?? models[0]
 
@@ -2208,7 +2721,6 @@ app.post('/api/chat', async (req, res) => {
     sendAndRecord({ type: 'stage', stage: 5, status: 'done' })
     res.write('data: [DONE]\n\n')
     res.end()
-    activePipelineRequests--
     return
   }
   // Step 7 — Offline smoke: if pool empty and no local inference, surface honest error
@@ -2217,7 +2729,6 @@ app.post('/api/chat', async (req, res) => {
     sendAndRecord({ type: 'error', message: 'All models are currently rate-limited. Please wait a few minutes and retry.' })
     res.write('data: [DONE]\n\n')
     res.end()
-    activePipelineRequests--
     return
   }
 
@@ -2236,7 +2747,6 @@ app.post('/api/chat', async (req, res) => {
     models: models.map(m => ({ id: m.id, label: m.label, provider: m.provider, isWildcard: m.isWildcard })),
     synthesisModelId,
     promptType,
-    complexity,
   })
 
   // ── Interface Contract — lock schema before parallel execution ──────────────
@@ -2381,6 +2891,18 @@ ${worldCtx}`
   const domainInjection = domainCtx.retrievedContext
     ? `[Domain context: ${domainCtx.domain}]\n${domainCtx.retrievedContext}\n\n`
     : ''
+  // J5 — inject the cross-session "state of knowledge" doc for this query's topic
+  // cluster (written after every 20 sessions in the same cluster). Closes the read
+  // loop so accumulated cross-session expertise reaches Stage 1.
+  const synthesisDoc = uncertaintyResult.clusterId
+    ? readSynthesis(process.cwd(), uncertaintyResult.clusterId)
+    : null
+  const knowledgeSynthesisBlock = synthesisDoc
+    ? `[ACCUMULATED KNOWLEDGE — prior cross-session synthesis for this topic. Treat as established context, not as new claims to attribute:]\n${synthesisDoc.slice(0, 4000)}`
+    : ''
+  if (knowledgeSynthesisBlock) {
+    debugBus.emit('pipeline', 'knowledge_synthesis_injected', { clusterId: uncertaintyResult.clusterId, chars: synthesisDoc!.length }, { severity: 'info', requestId })
+  }
   if (domainInjection) {
     workingMessage = domainInjection + workingMessage
   }
@@ -2402,6 +2924,10 @@ ${worldCtx}`
     extendHorizonPlan(process.cwd(), message.slice(0, 80), l2Subtasks, ambientSessionKey)
     sendAndRecord({ type: 'stage', stage: 1, status: 'start' })
     try {
+      // normalizeOutput is also dynamically imported later in this handler; declare a
+      // block-scoped binding here so the L2 fast-path doesn't reference it inside the
+      // temporal dead zone of that later function-scoped const.
+      const { normalizeOutput } = await import('./src/CrucibleEngine/normalize')
       // Use the broad (complex) pool, not the fast-only simple set — sections need
       // healthy fallback models when the free-tier pool is partly rate-limited.
       const { models: sectionModels } = selectModels(promptType, PIPELINE_CONFIG, 'complex', 'quorum')
@@ -2476,7 +3002,8 @@ ${worldCtx}`
         }
         sendAndRecord({ type: 'stage', stage: 1, status: 'done', avgScores: {} })
         sendAndRecord({ type: 'stage', stage: 5, status: 'done' })
-        pipelineSynthesisText = finalMultipart
+        // (pipelineSynthesisText is declared later in this handler; the L2 path ships
+        // finalMultipart directly and returns, so no assignment is needed here.)
         sendAndRecord({ type: 'synthesis', modelId: 'ensemble', model: 'Parallel Workstreams', text: finalMultipart, done: true, replace: false })
         res.write('data: [DONE]\n\n')
         res.end()
@@ -2698,6 +3225,7 @@ ${worldCtx}`
         codebaseContext ? `// Relevant project files:\n${codebaseContext}` : '',
         adaptation.injectionBlock || '',
         horizonBlock || '',
+        knowledgeSynthesisBlock || '',   // J5: cross-session state-of-knowledge doc
         causalDigest || '',
         contradictionWarning || '',
         scaffoldBlock || '',   // Step 4: reasoning scaffold for math/reasoning complex queries
@@ -3356,9 +3884,10 @@ ${worldCtx}`
                   { role: 'system', content: 'You identify open research questions. Given a synthesis text, extract ONE specific open question that scientists or experts have not definitively answered. Output ONLY the question (1-2 sentences). If no genuinely open question exists, output NONE.' },
                   { role: 'user', content: `Synthesis:\n${finalText.slice(0, 900)}\n\nOpen question:` },
                 ],
-                requestId,
+                { requestId },
               ),
               5000,
+              '',
             ).then(r => (r && r !== 'NONE' && !r.startsWith('NONE') ? r.trim() : null)).catch(() => null)
           : Promise.resolve(null),
       ])
@@ -3660,6 +4189,45 @@ ${worldCtx}`
     } catch (e: any) {
       debugBus.emit('pipeline', 'contradiction_record_error', { error: e?.message ?? String(e) }, { severity: 'error', requestId })
     }
+
+    // ── J5 — Cross-session knowledge synthesis: count this session against its
+    // topic cluster; every SESSION_THRESHOLD (20) sessions, regenerate the
+    // cluster's state-of-knowledge document from recent history. The doc is read
+    // back at prompt-assembly time (readSynthesis, injected near the uncertainty
+    // flag) so durable cross-session conclusions reach future matching queries.
+    try {
+      const cId = uncertaintyResult.clusterId
+      const cLabel = uncertaintyResult.clusterLabel
+      if (cId && cLabel) {
+        const due = recordSessionForCluster(process.cwd(), cId, cLabel)
+        if (due) {
+          let corpus = ''
+          try {
+            const hf = chatUser
+              ? path.join(process.cwd(), '.crucible', `history-${chatUser.id}.json`)
+              : path.join(process.cwd(), '.crucible', 'history-default.json')
+            const hist: any[] = JSON.parse(fs.readFileSync(hf, 'utf8'))
+            corpus = hist.slice(-40)
+              .map(h => `Q: ${h.query}\nA: ${String(h.synthesis ?? '').slice(0, 600)}`)
+              .join('\n\n---\n\n')
+          } catch {}
+          const { models: synthModels } = selectModels('general', SIMPLE_PIPELINE_CONFIG, 'simple', 'quorum')
+          const synthModel = synthModels[0]
+          if (synthModel && corpus) {
+            const synthPrompt = `You are writing a concise "state of knowledge" document for the topic cluster "${cLabel}". Below are recent Q&A sessions in this cluster. Synthesize the durable, cross-session conclusions: what is now well-established, what remains open or contested, and the key caveats. Output markdown, 200-500 words.\n\n${corpus.slice(0, 8000)}`
+            const content = await withTimeout(
+              callModel(synthModel, [{ role: 'user', content: synthPrompt }], { requestId, timeoutMs: 15000 }),
+              15000, ''
+            ).catch(() => '')
+            if (content && content.trim().length > 80) {
+              writeSynthesis(process.cwd(), cId, cLabel, content.trim())
+            }
+          }
+        }
+      }
+    } catch (e: any) {
+      debugBus.emit('pipeline', 'knowledge_synthesis_error', { error: e?.message ?? String(e) }, { severity: 'error', requestId })
+    }
   } catch (e: any) {
     debugBus.emit('pipeline', 'post_synthesis_block_error', { error: e?.message ?? String(e) }, { severity: 'error', requestId })
   }
@@ -3671,14 +4239,8 @@ ${worldCtx}`
 
   // ── Persist to session history ───────────────────────────────────────────
   try {
-    const HISTORY_FILE = chatUser
-      ? path.join(process.cwd(), '.crucible', `history-${chatUser.id}.json`)
-      : path.join(process.cwd(), '.crucible', 'history-default.json')
-    fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true })
-    let sessions: any[] = []
-    try { sessions = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')) } catch {}
     const topScore = Math.max(...models.map(m => scores[m.id] ?? 0), 0)
-    sessions.push({
+    historyPush(chatUser?.id ?? null, {
       ts: Date.now(),
       query: message,
       promptType,
@@ -3689,8 +4251,6 @@ ${worldCtx}`
       contributionRates,
       hardeningCohort,
     })
-    if (sessions.length > 200) sessions = sessions.slice(-200)
-    fs.writeFileSync(HISTORY_FILE, JSON.stringify(sessions, null, 2))
   } catch (e: any) {
     console.error('[History] Failed to persist:', e.message)
   }
@@ -3714,6 +4274,9 @@ ${worldCtx}`
         res.end()
       } catch { /* socket already gone */ }
     }
+  } finally {
+    // Balance the keepalive pause guard for every exit path (early return, completion, throw).
+    activePipelineRequests = Math.max(0, activePipelineRequests - 1)
   }
 })
 
@@ -3903,12 +4466,9 @@ app.post('/api/verify', async (req, res) => {
   res.end()
 })
 
-app.post('/api/terminal', async (req, res) => {
-  const { command } = req.body
-  exec(command, { cwd: '/Users/justin/Desktop/crucible' }, (error, stdout, stderr) => {
-    res.json({ output: stdout || stderr || error?.message || '' })
-  })
-})
+// (Removed dead /api/terminal endpoint: it ran arbitrary unsandboxed `exec` against a
+// hardcoded, non-existent cwd and had no caller. Sandboxed execution lives at
+// /api/sandbox/run, which uses sandbox-exec with network-deny.)
 
 // ── File Tools (Agentic) ─────────────────────────────────────────────────────
 app.post('/api/file/read', (req, res) => {
@@ -4176,64 +4736,106 @@ app.post('/api/corpus/ingest-document', async (req, res) => {
 //
 // Wired up to httpServer after it is created (see bottom of file).
 function attachScreenStreamWs(httpSrv: import('http').Server) {
-  const { WebSocketServer } = require('ws') as typeof import('ws')
-  const wss = new WebSocketServer({ server: httpSrv, path: '/api/screen-stream-ws' })
+  const wss = new WsServer({ server: httpSrv, path: '/api/screen-stream-ws' })
 
+  // Singleton capture loop — one screencapture process shared across ALL connected
+  // clients. Per-connection loops were racing on the same two temp files, causing
+  // frame corruption and CPU thrash when more than one device was connected.
+  // The loop runs only while clients are active; stops itself when the set empties.
   const FRAME_INTERVAL_MS = 80
-  const rawFile   = '/tmp/crucible_screen_raw.jpg'
-  const outFile   = '/tmp/crucible_screen_frame.jpg'
+  const rawFile = '/tmp/crucible_screen_raw.jpg'
+  const outFile = '/tmp/crucible_screen_out.jpg'
   const captureCmd = `screencapture -x -t jpg ${rawFile} && sips -Z 1100 ${rawFile} --out ${outFile} -s format jpeg -s formatOptions 45 >/dev/null 2>&1 || cp ${rawFile} ${outFile}`
 
+  // Track per-client stats separately from the shared loop
+  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number }>()
+  let loopRunning = false
+  let totalBroadcasts = 0
+
+  function broadcastLoop() {
+    if (clients.size === 0) { loopRunning = false; return }
+    const loopStart = Date.now()
+    exec(captureCmd, { timeout: 5000 }, (err) => {
+      if (clients.size === 0) { loopRunning = false; return }
+      if (err) { setTimeout(broadcastLoop, FRAME_INTERVAL_MS); return }
+      fs.readFile(outFile, (readErr, frame) => {
+        if (clients.size === 0) { loopRunning = false; return }
+        if (readErr || !frame?.length) { setTimeout(broadcastLoop, FRAME_INTERVAL_MS); return }
+        const captureMs = Date.now() - loopStart
+        totalBroadcasts++
+        for (const [ws, stat] of clients) {
+          if (ws.readyState !== 1 /* OPEN */) continue
+          // Drop frame for this client if its send buffer is backing up.
+          if ((ws as any).bufferedAmount > 0) continue
+          try { ws.send(frame); stat.framesSent++ } catch { /* will be cleaned up on 'close' */ }
+        }
+        // Log capture timing every 50 frames so we can measure lag in production
+        if (totalBroadcasts % 50 === 0) {
+          debugBus.emit('model', 'screen_stream_perf', { captureMs, clients: clients.size, frame: frame.length }, { severity: 'info' })
+        }
+        const elapsed = Date.now() - loopStart
+        const delay = Math.max(0, FRAME_INTERVAL_MS - elapsed)
+        setTimeout(broadcastLoop, delay)
+      })
+    })
+  }
+
   wss.on('connection', (ws: import('ws').WebSocket) => {
-    debugBus.emit('model', 'screen_stream_start', {}, { severity: 'info' })
-    let alive = true
-    let framesSent = 0
+    const stat = { framesSent: 0, captureT0: Date.now() }
+    clients.set(ws, stat)
+    debugBus.emit('model', 'screen_stream_start', { totalClients: clients.size }, { severity: 'info' })
+    if (!loopRunning) { loopRunning = true; broadcastLoop() }
 
     ws.on('close', () => {
-      alive = false
-      debugBus.emit('model', 'screen_stream_stop', { framesSent }, { severity: 'info' })
+      clients.delete(ws)
+      debugBus.emit('model', 'screen_stream_stop', { framesSent: stat.framesSent, totalClients: clients.size }, { severity: 'info' })
     })
-    ws.on('error', () => { alive = false })
-
-    function captureFrame() {
-      if (!alive || ws.readyState !== 1 /* OPEN */) return
-      exec(captureCmd, { timeout: 5000 }, (err) => {
-        if (!alive || ws.readyState !== 1) return
-        if (err) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
-        fs.readFile(outFile, (readErr, frame) => {
-          if (!alive || ws.readyState !== 1) return
-          if (readErr || !frame?.length) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
-          // Drop frame if send buffer is backing up to prevent stale-frame pile-up.
-          if (ws.bufferedAmount > 0) { setTimeout(captureFrame, FRAME_INTERVAL_MS); return }
-          try {
-            ws.send(frame)
-            framesSent++
-          } catch { alive = false; return }
-          setTimeout(captureFrame, FRAME_INTERVAL_MS)
-        })
-      })
-    }
-    captureFrame()
+    ws.on('error', () => { clients.delete(ws) })
   })
+}
+
+// Mac's real LAN IPv4 addresses, ranked so the phone can connect DIRECTLY to this
+// machine instead of looping through the Cloudflare tunnel (which may land on the
+// Fly box that has no screen). Physical interfaces (en*) first, private ranges only.
+// Hotspot networks (172.20.10.x), home WiFi (192.168.x.x) and 10.x all qualify.
+function lanIpv4Addresses(): string[] {
+  const isPrivate = (ip: string) =>
+    /^192\.168\./.test(ip) || /^10\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip)
+  const ifaces = os.networkInterfaces()
+  const scored: { ip: string; rank: number }[] = []
+  for (const [name, addrs] of Object.entries(ifaces)) {
+    for (const a of addrs ?? []) {
+      if (a.family !== 'IPv4' || a.internal || !isPrivate(a.address)) continue
+      // en0/en1 (WiFi/Ethernet) preferred over bridge/utun/anpi virtual interfaces.
+      const rank = /^en\d/.test(name) ? 0 : /^bridge/.test(name) ? 5 : 9
+      scored.push({ ip: a.address, rank })
+    }
+  }
+  return scored.sort((a, b) => a.rank - b.rank).map(s => s.ip)
 }
 
 // GET /api/remote-brain/status — check if Remote Brain tools are available
 app.get('/api/remote-brain/status', requireAuth, (req, res) => {
+  if (process.platform !== 'darwin') {
+    return res.status(503).json({ available: false, error: 'Remote Brain requires macOS' })
+  }
   exec('osascript -e "tell application \\"System Events\\" to return name of first process whose frontmost is true"',
     { timeout: 2000 }, (err, stdout) => {
       const frontApp = err ? null : stdout.trim()
-      // Return direct backend URL so the phone streams from port 3001 directly —
-      // avoids the vite dev proxy which buffers MJPEG and kills latency. Prefer the
-      // forwarded host (the address the phone actually used) over req.hostname, which
-      // is "localhost" behind the Vite proxy and unreachable from the phone. The client
-      // now builds this URL itself from API_BASE; this stays correct for other callers.
-      const fwdHost = (req.headers['x-forwarded-host'] as string | undefined)?.split(':')[0]
-      const host = fwdHost || req.hostname  // e.g. 192.168.x.x (the Mac's LAN IP)
-      const streamUrl = `ws://${host}:3001/api/screen-stream-ws`
+      const port = Number(process.env.PORT) || 3001
+      const lanIps = lanIpv4Addresses()
+      const lanIp = lanIps[0]
+      // Direct-to-Mac stream URL. The phone uses this to bypass the tunnel entirely
+      // when it's on the same network — the only path that reliably reaches the
+      // screen, since the tunnel can resolve to the screenless Fly origin.
+      const screenStream = lanIp ? `ws://${lanIp}:${port}/api/screen-stream-ws` : null
+      const lanOrigin = lanIp ? `http://${lanIp}:${port}` : null
       res.json({
         available: !err,
         frontApp,
-        screenStream: streamUrl,
+        screenStream,      // direct-to-Mac ws:// URL (null if no LAN address found)
+        lanOrigin,         // http://<lan-ip>:<port> — the fully-local app origin
+        lanIps,            // all candidate LAN IPv4 addresses, ranked
         tools: ['get_ui_tree', 'click_element', 'type_text'],
       })
     })
@@ -4273,14 +4875,11 @@ app.get('/api/google/status', (req: express.Request, res: express.Response) => {
 })
 
 // GET /api/history — session history (persisted rounds)
-app.get('/api/history', (req, res) => {
+app.get('/api/history', async (req, res) => {
   const user = getAuthUser(req)
-  const HISTORY_FILE = user
-    ? path.join(process.cwd(), '.crucible', `history-${user.id}.json`)
-    : path.join(process.cwd(), '.crucible', 'history-default.json')
   try {
-    const sessions = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'))
-    res.json({ sessions: sessions.reverse() })
+    const sessions = await historyLoad(user?.id ?? null, 200)
+    res.json({ sessions: sessions.reverse ? sessions.reverse() : sessions })
   } catch {
     res.json({ sessions: [] })
   }
@@ -4474,6 +5073,7 @@ app.get('/api/diag', (_req, res) => {
       lastDiversityScore: diag.lastDiversityScore,
       standbyPool,
       hotSwapsThisSession: diag.hotSwapsThisSession,
+      providerHealth: providerHealthSnapshot(),   // 4.1 — live pool rebalance weights
     }
   })
 
@@ -4533,6 +5133,87 @@ app.get('/api/autonomous/status', (_req, res) => {
   res.json(autoImproveStatus())
 })
 
+// ── RSI — Recursive Self-Improvement layer ────────────────────────────────────
+// Drives autonomous shaping of the offline brain (corpus + learned scoring weights)
+// under a hard monotonic gate: every cycle snapshots known-good state, applies an
+// improvement, re-measures the FULL pipeline against a benchmark baseline, and keeps
+// the change ONLY if it holds or improves — otherwise it git-restores the snapshot.
+// Long-lived internal token so the benchmark gate can drive the real authenticated
+// pipeline (this is what makes the gate measure what RSI actually mutates).
+const RSI_TOKEN = signJwt({ id: 'rsi-internal', email: 'rsi@crucible.local', exp: Math.floor(Date.now() / 1000) + 10 * 365 * 86400 })
+
+// Extract the synthesized answer text from a /api/chat SSE response body.
+function extractSynthesisFromSSE(body: string): string {
+  let best = ''
+  for (const line of body.split('\n')) {
+    if (!line.startsWith('data: ')) continue
+    const payload = line.slice(6).trim()
+    if (payload === '[DONE]') continue
+    try {
+      const ev = JSON.parse(payload)
+      if ((ev.type === 'synthesis' || ev.type === 'final' || ev.type === 'layer1') && typeof ev.text === 'string') {
+        if (ev.text.length > best.length) best = ev.text   // the full synthesis is the longest text event
+      }
+    } catch { /* skip partial/non-JSON lines */ }
+  }
+  return best
+}
+
+function buildRsiDeps(): RsiDeps {
+  return {
+    // Run a benchmark question through the FULL authenticated pipeline (quorum, no agent),
+    // so the gate measures the scoring weights/patterns + corpus that RSI mutates.
+    runQuery: async (question: string) => {
+      const resp = await fetch(`http://localhost:${process.env.PORT || 3001}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: `crucible_session=${RSI_TOKEN}` },
+        body: JSON.stringify({ message: question, projectPath: process.cwd(), mode: 'quorum', device: 'desktop', agentMode: false }),
+      })
+      return extractSynthesisFromSSE(await resp.text())
+    },
+    // Best-effort internet→corpus acquisition for current gaps (additive, self-quarantining).
+    acquire: () => {
+      try {
+        startAcquisition(
+          {
+            callModel: (m, msgs) => callModel(m as any, msgs, {}).catch(() => ''),
+            pickFastModel: () => { try { return selectModels('general', SIMPLE_PIPELINE_CONFIG, 'simple', 'quorum').models[0] ?? null } catch { return null } },
+          },
+          { byteBudget: 25 * 1_048_576 },
+        )
+      } catch { /* acquisition is best-effort */ }
+    },
+    // Reload restored learned weights into the live SCORING_CONFIG after a revert, so a
+    // rollback takes effect immediately (not just on the next restart).
+    reloadLearnedState: () => { try { refreshScoringConfig() } catch {} },
+  }
+}
+
+// GET /api/rsi/status — RSI ledger/state snapshot
+app.get('/api/rsi/status', (_req, res) => {
+  res.json(rsiStatus(process.cwd()))
+})
+
+// POST /api/rsi/cycle — manually trigger one gated RSI cycle (runs in background; idle-gated)
+app.post('/api/rsi/cycle', (req, res) => {
+  const user = getAuthUser(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  if (activePipelineRequests > 0) return res.status(409).json({ error: 'busy — RSI runs only when idle', activePipelineRequests })
+  runRsiCycle(process.cwd(), buildRsiDeps(), { force: true })
+    .then(v => debugBus.emit('system', 'rsi_manual_cycle', { verdict: v }, { severity: 'info' }))
+    .catch(() => {})
+  res.json({ ok: true, started: true })
+})
+
+// POST /api/rsi/kill — kill switch: enable/disable all autonomous self-improvement
+app.post('/api/rsi/kill', (req, res) => {
+  const user = getAuthUser(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  const enable = req.body?.enable === true
+  setRsiEnabled(enable)
+  res.json({ ok: true, enabled: enable })
+})
+
 // ── Feedback (F2 — RLHF signal) ───────────────────────────────────────────────
 const FEEDBACK_FILE = path.join(process.cwd(), '.crucible', 'feedback.json')
 app.post('/api/feedback', (req, res) => {
@@ -4552,14 +5233,11 @@ app.post('/api/feedback', (req, res) => {
 })
 
 // GET /api/export/gold-standard — JSONL of high-quality (score>=0.8, verified, no rephrase)
-app.get('/api/export/gold-standard', (req, res) => {
+app.get('/api/export/gold-standard', async (req, res) => {
   try {
     const threshold = parseFloat((req.query.threshold as string) ?? '0.80')
     const expUser = getAuthUser(req)
-    const HISTORY_FILE = expUser
-      ? path.join(process.cwd(), '.crucible', `history-${expUser.id}.json`)
-      : path.join(process.cwd(), '.crucible', 'history-default.json')
-    const sessions: any[] = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'))
+    const sessions: any[] = await historyLoad(expUser?.id ?? null, 1000)
     const feedback: any[] = (() => { try { return JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf8')) } catch { return [] } })()
     const downvotedQueries = new Set(feedback.filter(f => f.vote === 'down').map(f => f.query))
     const gold = sessions.filter(s =>
@@ -4674,6 +5352,10 @@ app.get('/api/finetune/export', (req, res) => {
     if (type === 'dpo') {
       jsonl = exportDPOJsonl(buildDPODataset(process.cwd()))
       filename = `crucible-dpo-${Date.now()}.jsonl`
+    } else if (type === 'calibration') {
+      // K5 — confident-but-wrong calibration training set as JSONL
+      jsonl = exportCalibrationJsonl(buildCalibrationDataset(process.cwd()))
+      filename = `crucible-calibration-${Date.now()}.jsonl`
     } else {
       jsonl = exportSFTJsonl(buildSFTDataset(process.cwd(), 0.80))
       filename = `crucible-sft-${Date.now()}.jsonl`
@@ -4718,11 +5400,10 @@ app.get('/api/finetune/calibration/export', (_req, res) => {
 app.get('/api/finetune/finetuned-model-id', (_req, res) => { res.json({ modelId: getFineTunedModelId(process.cwd()) }) })
 
 // ── E2 — Hardening A/B stats endpoint ────────────────────────────────────────
-app.get('/api/debug/hardening-ab', (_req, res) => {
+app.get('/api/debug/hardening-ab', async (_req, res) => {
   try {
-    const HISTORY_FILE = path.join(process.cwd(), '.crucible', 'history-default.json')
     let sessions: any[] = []
-    try { sessions = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')) } catch {}
+    try { sessions = await historyLoad(null, 200) } catch {}
     const recent = sessions.slice(-200).filter((s: any) => s.hardeningCohort && s.topScore !== undefined)
     const hardened = recent.filter((s: any) => s.hardeningCohort === 'hardened')
     const raw = recent.filter((s: any) => s.hardeningCohort === 'raw')
@@ -4894,6 +5575,9 @@ const KEEPALIVE_STAGGER_MS  = 3_000
 const KEEPALIVE_PROMPT = [{ role: 'user' as const, content: 'Hi' }]
 
 async function runKeepaliveRound() {
+  // Keepalive pause guard — never consume free-tier quota with warmup pings while a
+  // real request is mid-flight (the counter is balanced in the /api/chat finally).
+  if (activePipelineRequests > 0) return
   const models = MODEL_REGISTRY.filter(m => {
     const state = getCircuitState(m.id)
     return state !== 'tripped'
@@ -4979,10 +5663,20 @@ app.post('/api/governance', (req, res) => {
   res.json({ id })
 })
 
+// SPA fallback — serve index.html for any non-API GET so React handles routing
+// and the phone PWA never gets a 404 on direct URL access or page refresh.
+// Must use app.use (not app.get('*')) — Express 5 / path-to-regexp v8 rejects bare '*'.
+if (fs.existsSync(FRONTEND_BUILD)) {
+  app.use((_req: express.Request, res: express.Response) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    res.sendFile(path.join(FRONTEND_BUILD, 'index.html'))
+  })
+}
+
 const httpServer = createServer(app)
 httpServer.keepAliveTimeout = 620000
 httpServer.headersTimeout   = 630000
-attachScreenStreamWs(httpServer)
+if (process.platform === 'darwin') attachScreenStreamWs(httpServer)
 
 // ── Self-healing port binding ─────────────────────────────────────────────────
 // If port 3001 is occupied by a stale Crucible/tsx process, kill it and retry.
@@ -4992,8 +5686,9 @@ import { execSync } from 'child_process'
 function startListening(port: number, attempt = 0) {
   httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Crucible server running on port ${port}`)
-    // Track S — probe the local Apple FM bridge (best-effort, never blocks start)
-    checkLocalInference().then(ok => { localInferenceAvailable = ok })
+    // Track S — probe the local Apple FM bridge (macOS only, best-effort)
+    if (process.platform === 'darwin') checkLocalInference().then(ok => { localInferenceAvailable = ok })
+    initPg().catch(e => console.error('[Postgres] Init failed:', e.message))
     sweepStaleCheckpoints()
     prewarmPython()
     debugAnalyzer.init(process.cwd())
@@ -5083,25 +5778,51 @@ function startListening(port: number, attempt = 0) {
           await runBenchmarkSuite(process.cwd(), runQuery)
         },
         stage_weight_rebuild: async () => {
-          const HISTORY_FILE = path.join(process.cwd(), '.crucible', 'history-default.json')
           let sessions: any[] = []
-          try { sessions = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')) } catch {}
+          try { sessions = await historyLoad(null, 50) } catch {}
           for (const s of sessions.slice(-50)) {
             if (s.promptType && s.topScore !== undefined) {
               recordStageWeightRound(process.cwd(), s.promptType, { stage5_synthesis: s.topScore }, s.topScore * 0.8)
             }
           }
         },
+        // 3.1 — Close the fine-tuning loop: auto-submit an SFT run when the
+        // gold-standard dataset first crosses 1000 entries, then every +500.
+        finetune_autotrigger: async () => {
+          const dir = process.cwd()
+          const markerFile = path.join(dir, '.crucible', 'finetune-autotrigger.json')
+          let marker: { lastSubmitCount: number } = { lastSubmitCount: 0 }
+          try { marker = JSON.parse(fs.readFileSync(markerFile, 'utf8')) } catch {}
+          const goldCount = buildSFTDataset(dir, 0.80).length
+          // Highest threshold crossed: 1000, then 1500, 2000, ... (every +500).
+          const threshold = goldCount >= 1000 ? 1000 + Math.floor((goldCount - 1000) / 500) * 500 : 0
+          if (threshold === 0 || threshold <= marker.lastSubmitCount) {
+            debugBus.emit('system', 'finetune_autotrigger_idle', { goldCount, nextAt: marker.lastSubmitCount === 0 ? 1000 : marker.lastSubmitCount + 500 }, { severity: 'info' })
+            return
+          }
+          const token = process.env.HF_TOKEN || process.env.VITE_HF_API_KEY
+          const repo = process.env.HF_REPO
+          if (!token || !repo) {
+            // Armed but unconfigured — do NOT advance the marker, so it fires once HF_REPO is set.
+            console.warn(`[FineTune] auto-trigger armed (gold=${goldCount} ≥ ${threshold}) but HF_REPO/HF_TOKEN unset — skipping`)
+            debugBus.emit('system', 'finetune_autotrigger_unconfigured', { goldCount, threshold }, { severity: 'warn' })
+            return
+          }
+          console.log(`[FineTune] auto-trigger: gold-standard ${goldCount} ≥ ${threshold} — submitting SFT job`)
+          const job = await submitFineTuneJob(dir, 'sft', token, repo)
+          marker.lastSubmitCount = threshold
+          try { fs.mkdirSync(path.dirname(markerFile), { recursive: true }); fs.writeFileSync(markerFile, JSON.stringify(marker, null, 2)) } catch {}
+          debugBus.emit('system', 'finetune_autotrigger_submitted', { goldCount, threshold, jobId: job.id, status: job.status }, { severity: job.status === 'failed' ? 'error' : 'success' })
+        },
       })
     }, 15 * 60 * 1000)
 
     // Self-patcher: analyse debug + quality history every 6 hours
-    const runSelfPatchCycle = () => {
+    const runSelfPatchCycle = async () => {
       try {
         const debugHistory = debugBus.history(500)
-        const HISTORY_FILE = path.join(process.cwd(), '.crucible', 'history-default.json')
         let qualityHistory: any[] = []
-        try { qualityHistory = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')) } catch {}
+        try { qualityHistory = await historyLoad(null, 200) } catch {}
         const promptTypes = ['coding', 'reasoning', 'creative', 'factual', 'math', 'general']
         const triumvirate = async (proposal: string) => {
           // Three independent judge calls — majority rules
@@ -5125,6 +5846,62 @@ function startListening(port: number, attempt = 0) {
     }
     setTimeout(runSelfPatchCycle, 60_000)  // first run 60s after startup
     setInterval(runSelfPatchCycle, 6 * 60 * 60 * 1000)  // then every 6h
+
+    // ── RSI — Recursive Self-Improvement cycle (Track RSI) ────────────────────
+    // Every 6h, ONLY when fully idle, run one monotonic self-improvement cycle:
+    // snapshot → acquire (internet→corpus) + improve (learned weights) → re-benchmark
+    // the full pipeline → keep only if it holds/improves, else git-restore. Off the
+    // request path; kill-switch via POST /api/rsi/kill or env RSI_ENABLED=0.
+    const rsiTick = () => {
+      if (activePipelineRequests > 0) { console.log('[RSI] skipped tick — system busy'); return }
+      runRsiCycle(process.cwd(), buildRsiDeps())
+        .then(v => console.log(`[RSI] scheduled cycle: ${v}`))
+        .catch(e => console.warn('[RSI] cycle error:', e?.message ?? e))
+    }
+    setInterval(rsiTick, 6 * 60 * 60 * 1000)   // every 6h, idle-gated (no run at boot)
+
+    // ── 4.3 — Automated smoke at startup ───────────────────────────────────────
+    // Run the smoke benchmark suite once shortly after boot (background, non-
+    // blocking), persist the result, and ALERT the debug bus on any regression vs
+    // the previous run. Throttled to once per 6h so rapid restarts don't burn the
+    // free-tier pool. Disable with CRUCIBLE_SMOKE_ON_BOOT=0.
+    const runStartupSmoke = () => {
+      if (process.env.CRUCIBLE_SMOKE_ON_BOOT === '0') return
+      const dir = process.cwd()
+      const resultFile = path.join(dir, '.crucible', 'smoke-last.json')
+      let prev: { ts: number; hardFailures: number; softFailures: number; passed: boolean } | null = null
+      try { prev = JSON.parse(fs.readFileSync(resultFile, 'utf8')) } catch {}
+      if (prev && Date.now() - prev.ts < 6 * 60 * 60 * 1000) {
+        console.log('[Smoke] skipped boot run — last run < 6h ago')
+        return
+      }
+      console.log('[Smoke] running boot smoke suite (background)…')
+      const child = spawn('npx', ['tsx', 'src/CrucibleEngine/smoke-benchmarks.ts'], {
+        cwd: CODE_DIR, env: { ...process.env, CRUCIBLE_API: `http://localhost:${port}` },
+      })
+      let out = ''
+      child.stdout.on('data', d => { out += d.toString() })
+      child.stderr.on('data', d => { out += d.toString() })
+      child.on('error', e => {
+        debugBus.emit('system', 'smoke_boot_error', { error: e.message }, { severity: 'warn' })
+      })
+      child.on('close', code => {
+        const grab = (re: RegExp) => { const m = out.match(re); return m ? parseInt(m[1], 10) : -1 }
+        const hardFailures = grab(/HARD failures:\s*(\d+)/)
+        const softFailures = grab(/SOFT failures:\s*(\d+)/)
+        const passed = code === 0
+        const result = { ts: Date.now(), hardFailures, softFailures, passed, exitCode: code }
+        try { fs.mkdirSync(path.dirname(resultFile), { recursive: true }); fs.writeFileSync(resultFile, JSON.stringify(result, null, 2)) } catch {}
+        const regressed = prev != null && ((prev.passed && !passed) || (hardFailures > prev.hardFailures && hardFailures >= 0))
+        debugBus.emit('system', 'smoke_boot_result', {
+          passed, hardFailures, softFailures, exitCode: code,
+          regressedFromPrevious: regressed,
+          previous: prev ? { hardFailures: prev.hardFailures, passed: prev.passed } : null,
+        }, { severity: regressed || !passed ? 'error' : 'success' })
+        console.log(`[Smoke] boot run ${passed ? 'PASSED' : 'FAILED'} (hard=${hardFailures}, soft=${softFailures}${regressed ? ', REGRESSION vs previous' : ''})`)
+      })
+    }
+    setTimeout(runStartupSmoke, 90_000)   // 90s after boot — server + pool warm
 
     // Re-probe benched models once per hour
     setInterval(() => {
@@ -5181,7 +5958,7 @@ function startListening(port: number, attempt = 0) {
   })
 }
 
-startListening(3001)
+startListening(Number(process.env.PORT) || 3001)
 process.on('SIGTERM', () => httpServer.close())
 process.on('SIGINT',  () => httpServer.close())
 setInterval(() => {}, 1 << 30)

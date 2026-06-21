@@ -2,6 +2,8 @@
 
 > **READ THIS FIRST — every model, every session, before any coding work.**
 >
+> **Newest audit: [PATH TO NORTH STAR — Phase Status (audited 2026-06-20)](#path-to-north-star--phase-status-audited-2026-06-20)** — supersedes older phase claims.
+>
 > This file is the single source of truth for what Crucible is, what exists, and what's
 > planned. All previous handoff docs have been removed in favor of this one. Do not create
 > new handoff/status docs — **edit and refine this file instead.**
@@ -31,6 +33,172 @@
 >    `src/CrucibleEngine/` runs via `tsx`, not typechecked by the app tsconfig.
 >
 > Checkbox legend: `[x]` done & verified in code · `[~]` partial (note what's missing) · `[ ]` not built.
+
+---
+
+## THE LOGICAL CONCLUSION — End State (non-negotiable definition)
+
+> This is what "done" means. Every phase, track, and session below is in service of reaching
+> exactly this. When a decision is ambiguous, the option that moves closer to this end state wins.
+> The phased plan ([PATH TO NORTH STAR](#path-to-north-star--phase-status-audited-2026-06-20)) and
+> the off-Fly session sequence (A–N) are the route; this is the destination.
+
+Crucible at its logical conclusion is:
+
+- A **downloadable app** that installs on Mac, Windows, and Linux with a double-click.
+- **Zero cloud dependency** — no Fly.io, no hosted database, no always-on server anyone pays for.
+- **API keys live locally on the user's device**, proxied through a **stateless Cloudflare Worker**
+  (100k free requests/day, no idle cost, no usage clock). ⟵ *proxy shipped (Session A); OAuth on it
+  shipped (Session B); Fly teardown is the remaining infra step.*
+- A **living ~20GB corpus on the user's own disk**, sharded by domain, queried locally in milliseconds.
+- A **pipeline that answers most queries without any external API** — from the local corpus, via the
+  on-device Foundation Model, before ever reaching a free-tier provider.
+- A **fine-tuned model hosted free on HuggingFace**, trained on this user's own query history,
+  compounding every 500 gold-standard responses.
+- A **monotonic RSI layer** that improves the system every 6 hours and can never regress what works.
+- **Remote Brain** — the phone is a live window into the Mac, driven by natural language, no cloud in
+  the loop on local Wi-Fi.
+- An **adversarial multi-agent system** that catches its own errors before they reach the user.
+- **Total cost to run, for any user: $0, permanently.**
+
+**The three load-bearing invariants** (violating any one means the build is wrong):
+1. **Free-tier is sacred** — weak output is fixed with more client-side processing, never a premium model.
+2. **Local-first** — the fastest, default path never leaves the device; cloud is fallback, not default.
+3. **Monotonic** — self-improvement can raise the floor but never lower it.
+
+---
+
+## PATH TO NORTH STAR — Phase Status (audited 2026-06-20)
+
+> North star: **"free on anyone's hardware, fast, reliable, extremely intelligent."**
+> This section is the audited truth for the phased plan toward that goal. Every item below was
+> verified against actual code (grep for callers), not assumed. Items closed this session carry
+> file refs. See the 2026-06-20 CHANGE LOG entry for full detail.
+>
+> Baseline at audit start: **128 TypeScript errors** under `tsconfig.server.json` (down from the
+> 145 the June 17 audit found; engine runs via `tsx`, untypechecked, so these don't block runtime),
+> app tsconfig clean. After this session: **122** (the 6 `tpmLimit`-on-`SelectedModel` errors are
+> gone). The remaining 122 are long-standing SDK-shape / `import.meta` / top-level-await config
+> mismatches, not regressions — tracked separately, not part of this plan.
+
+### Phase 0 — Stabilization
+- [x] **0.1 baseline** — TS error count reduced 128→122; app tsconfig clean. Pipeline paths
+  (quorum/agent/RSI) intact. Full smoke now also runs automatically at boot (see 4.3).
+- [x] **0.2a J5 writers** — DONE this session. `recordSessionForCluster` + `writeSynthesis` were
+  dead-wired; now called in the post-synthesis block (`server.ts` ~3970) AND the read loop is
+  closed: `readSynthesis` is injected into the Stage-1 prompt (`server.ts` ~2680, `knowledgeSynthesisBlock`).
+- [x] **0.2b consult_specialist (I4)** — DONE this session. `consult()` was dead code; now a
+  registered tool (`tools/registry.ts`) backed by a depth-1-guarded `consultSpecialist` closure
+  threaded through `ToolCtx` (`tools/protocol.ts`) → `AgentLoopOpts`/ctx (`agent/loop.ts`) → the
+  meta-router runLoop (`server.ts` ~2017).
+- [x] **0.2c H2 cold-start domains** — ALREADY DONE (ignored). `COLD_START_DOMAINS` in
+  `uncertaintySurface.ts:123` covers politics, predictions, statistics, medical, legal; wired via
+  `lookupUncertainty` (forceFullPipeline + raised early-exit threshold + injection flag).
+- [x] **0.2d recordForcedCall** — ALREADY DONE (ignored). Called at `server.ts:2474`.
+- [x] **0.3 hot-swap (Q3)** — path was ALREADY wired+reachable (`pickStandby` → recursive
+  `runStage1Model`, `server.ts` ~3157). Added a deterministic fault injector this session
+  (`CRUCIBLE_FORCE_FAIL` env in `callModelStreaming`) so it can be verified on demand.
+- [x] **0.4 Gemini key corruption** — ALREADY FIXED (ignored). `.env.local` `VITE_GEMINI_API_KEY`
+  has no `crucible.cam` prefix. (Note: `VITE_MISTRAL_API_KEY` has a leading space; dotenv trims it.)
+
+### Phase 1 — Local-first packaging
+- [x] **1.1 bundle server into Electron** — DONE. `npm run bundle:server` (esbuild → ESM,
+  13.9mb, ~0.4s, native deps external). `electron.cjs` spawns the bundle when present, falls back
+  to `npx tsx`. Verified: builds + `node --check` passes. (Full boot test deferred — a 2nd server
+  instance would race the live :3001 on shared `.crucible`.) Also fixed: `listen` now honors `PORT`.
+- [x] **1.2 data relocation** — DONE. `electron.cjs` spawns the server with `cwd =
+  app.getPath('userData')` + `CRUCIBLE_DATA_DIR`, relocating ALL `.crucible` data atomically
+  (every path keys off `process.cwd()`). Code stays put: `server.ts` pins `FRONTEND_BUILD` to
+  `CODE_DIR` (script dir). Dev (no env) is byte-for-byte unchanged.
+- [x] **1.3 native addon packaging** — config DONE. `electron-builder` `asarUnpack` for
+  `better-sqlite3`/`@xenova`/`onnxruntime-node`/`**/*.node`; `@electron/rebuild` added as devDep.
+  (Producing the actual prebuilt binaries requires running the build on each target arch.)
+- [x] **1.4 auto-start + menu bar** — DONE. `electron.cjs` adds a Tray with a self-authored
+  (in-process PNG) green/red status dot, a context menu (status, Open, Restart Server, Quit), and
+  `setLoginItemSettings({openAtLogin:true})` (packaged only).
+- [x] **1.5 installer config** — DONE. `package.json` `build` block: appId, mac dmg (x64+arm64
+  universal), win nsis, linux AppImage, output `release/`. `dist`/`dist:mac`/`dist:win`/`dist:linux`
+  scripts. (Producing the `.dmg` requires running `npm run dist:mac` on a Mac with deps installed.)
+
+### Phase 2 — Offline brain at scale
+- [x] **2.3 embedding persistence** — ALREADY DONE (ignored). Embeddings are stored as a `BLOB`
+  column in `corpus/db.ts` (`chunks.embedding`) and read back as `Float32Array` — query time is
+  similarity lookup, not recompute. The "embedding cache that persists" already exists.
+- [~] **2.2 acquisition pipeline** — infra EXISTS (`acquireDeliberately`, `fetchArxiv`, `fetchSEP`
+  in `corpus/acquire.ts`; RSI drives acquisition). Remaining: aggressive install-time scheduling +
+  routing acquisitions to per-domain shards (depends on 2.1).
+- [ ] **2.1 domain-sharded corpus** — NOT built. Corpus is a single `corpus.db` (`corpus/db.ts`).
+  Sharding into ~30 per-domain DBs routed by the on-device classifier is genuine multi-session
+  work (open-per-domain in `db.ts`, shard routing in `query.ts`). Large; deferred with spec.
+- [ ] **2.4 domain-routing classifier active-learning loop** — NOT built. No
+  `.crucible/routing-misses.jsonl`, no retrain. The miss-log → LLM-classify → cache → retrain loop
+  is missing; it pairs with 2.1's shard router. Deferred with spec.
+
+### Phase 3 — Intelligence compounding
+- [x] **3.1 close fine-tuning loop (auto-trigger)** — DONE. New daemon task
+  `finetune_autotrigger` (`improvementDaemon.ts` + handler in `server.ts` daemon tick) submits an
+  SFT job when the gold-standard set first crosses 1000 entries, then every +500, persisting a
+  marker in `.crucible/finetune-autotrigger.json`. Skips (without advancing) if HF_REPO/HF_TOKEN unset.
+- [x] **3.2 re-integrate fine-tuned model** — DONE (guarded). `registerFineTunedModel()` in
+  `modelRegistry.ts` adds the completed fine-tune as a first-class ensemble member; called at
+  startup with `getFineTunedModelId()`. No-op until a fine-tune actually completes (zero risk now).
+- [x] **3.3 calibration training (K5)** — was mostly ALREADY DONE (cross-ref `buildCalibrationDataset`
+  for HIGH-confidence + hard-negative, and `GET /api/finetune/calibration`). Added the missing JSONL
+  export branch (`type=calibration` in `/api/finetune/export`).
+- [x] **3.4 cross-session knowledge synthesis (J5)** — DONE (same as 0.2a).
+
+### Phase 4 — Reliability & distribution
+- [x] **4.1 provider rebalance on trip** — DONE. `rebalancePool()` in `modelRegistry.ts` recomputes
+  per-provider health (active/total free models, floored) on every `tripCircuitBreaker`/
+  `resetCircuitBreaker`; folds `providerHealthFactor(provider)` into the selection score. Surfaced in
+  `/api/diag` → `substrate.providerHealth`.
+- [x] **4.2 pre-dispatch token estimator** — DONE. `tpmLimit` added to `SelectedModel` and
+  propagated through selection; the streaming dispatch path (`callModelStreaming`) now has the same
+  estimate-and-reject guard `callModel` had — a 413 is impossible, not reactive.
+- [x] **4.3 smoke at startup** — DONE. `runStartupSmoke()` runs the suite once ~90s after boot
+  (throttled to 6h via `.crucible/smoke-last.json`), diffs the previous run, and emits a debug-bus
+  alert on regression. Disable with `CRUCIBLE_SMOKE_ON_BOOT=0`.
+- [x] **4.4 Windows/Linux builds** — config DONE (win nsis + linux AppImage in the `build` block).
+  Producing the artifacts requires the prebuilt native binaries per arch (4.4 ⊂ 1.3).
+- [x] **4.5 auto-update** — config + wiring DONE. `electron-updater` added; guarded `autoUpdater`
+  block in `electron.cjs` (packaged only, GitHub Releases via the `publish` config — set the owner).
+
+### Phase 5 — Demo & public benchmark
+- [~] **5.3 public benchmark endpoint** — `GET /api/benchmarks` + `POST /api/benchmarks/run` exist
+  and the daemon `benchmark_check` runs every 6h. Remaining: confirm no-auth + the external static
+  Cloudflare Pages dashboard page.
+- [ ] **5.1 "shows its work" panel** — NOT built. The DATA exists (confidence tiers, critic
+  findings, counterfactuals, debug bus), so this is a frontend-only collapsible panel in
+  `src/App.tsx`; deferred (needs preview verification of the UI).
+- [ ] **5.2 replayable comparison export** — NOT built (only `/api/export/gold-standard` exists).
+  Needs a per-run trace export endpoint + side-by-side render. Deferred with spec.
+
+### Off-Fly infrastructure (handoff Sessions A–N) — the $0-forever off-ramp
+- [x] **A. Cloudflare Worker API key-proxy** — DONE this session. Stateless `worker/index.ts` +
+  `wrangler.toml`: JWT-gated `POST /proxy/chat` attaches provider keys (Worker secrets) and pipes the
+  response back; every registry provider routed via its OpenAI-compat endpoint. Server-side opt-in
+  `PROXY_URL` path in `callModel`/`callModelStreaming` (`proxyChat`/`proxyChatStreaming`), internal
+  `PROXY_JWT` minted at startup. Verified locally end-to-end (`wrangler dev` + a full pipeline query
+  with every model call traversing the Worker). See the 2026-06-20 CHANGE LOG entry. **Ship step
+  (user/next session): `wrangler secret put` the keys, `wrangler deploy`, set `PROXY_URL` Fly secret.**
+- [~] **B. Migrate OAuth to the Worker + shut down Fly** — CODE DONE this session. Google/GitHub
+  login + callbacks + signed-state CSRF + KV user store live in `worker/index.ts`; frontend routes
+  login through the Worker and captures the `?token=` redirect. Verified a Worker-signed JWT is
+  accepted by the server. **Remaining (user): register callback URLs in the provider consoles,
+  `wrangler secret put` the OAuth secrets, create the `CRUCIBLE_USERS` KV namespace, then
+  `fly apps destroy crucible-api`.** See the 2026-06-20 CHANGE LOG entry.
+- [x] **G. "Shows its work" panel** — DONE (Batch 1, 2026-06-21). Collapsible reasoning panel in `App.tsx`.
+- [x] **H. Multimodal grounding** — DONE (Batch 1). `read_image`/`read_pdf` via Gemini Flash, wired to tools/Researcher.
+- [x] **M. VS Code extension** — DONE (Batch 1). `vscode-extension/` — Review/Explain/Improve commands + webview.
+- [x] **N. Public benchmark dashboard** — DONE (Batch 1). Worker `/api/benchmarks/public` + static `dashboard/`.
+- [x] **D. Domain-sharded corpus** — DONE (Batch 2, 2026-06-21). Per-domain shards + `domainRouter`; meta DB
+  canonical; migration dormant-until-boot, idempotent, verified non-destructive (2703/2703 chunks on dry-run).
+- [x] **I. Task graph** — DONE (Batch 2). `taskGraph.ts` + `/api/task-graph` + open-goals preamble + Tasks UI.
+- [ ] **J. Research mode · L. TTS + Remote Brain cellular tunnel** — deferred (Batch 2 hit the usage limit before
+  they ran); no partial edits. Resume after 04:20 Europe/Rome.
+- [ ] **E. routing active-learning** — Phase 2.4; builds on D's `domainRouter` + `routing-misses.jsonl`.
+- [ ] **K. Ensemble self-play** — daemon + `fineTuning.ts`.
+- [ ] **C–F. Installers (DMG/EXE/AppImage)** — build operations; pair with Phases 1.3/4.4. May need signing certs.
 
 ---
 
@@ -88,21 +256,23 @@ audit is the first time the real pipeline has actually run end-to-end on a real 
 
 ### New roadmap items from this audit
 
-- **[~] Provider resilience target** — minimum 6 distinct providers, no single provider exceeding
+- **[x] Provider resilience target** — minimum 6 distinct providers, no single provider exceeding
   25% of the active pool, automatic rebalancing when a provider trips its circuit breaker.
   Candidate providers to add: Together AI, Cerebras, Cohere, Perplexity API, Fireworks AI, Deep
-  Infra. *(This session: 5 providers wired into the registry + a generic OpenAI-compatible
-  transport. Automatic rebalancing-on-trip not yet built.)*
-- **[~] Automated smoke-test CI** — run the benchmark suite automatically at the start/end of every
-  significant implementation session, before marking any track complete. This audit found a
-  pipeline-breaking TDZ bug that sat undetected for hours; a 2-minute smoke test after each session
-  would have caught it immediately. *(This session: benchmark suite added — `npm run smoke`. The
-  run-it-automatically-every-session hook is not yet built.)*
-- **[ ] Token budget guard** — no Stage 1 or Stage 5 model call should fire without a pre-dispatch
+  Infra. *(CLOSED 2026-06-20: `rebalancePool()` recomputes per-provider health on every
+  trip/reset and folds `providerHealthFactor()` into the selection score — the pool reweights
+  toward healthy providers, not just excluding the tripped model. Surfaced at `/api/diag` →
+  `substrate.providerHealth`.)*
+- **[x] Automated smoke-test CI** — run the benchmark suite automatically at the start/end of every
+  significant implementation session, before marking any track complete. *(CLOSED 2026-06-20:
+  `runStartupSmoke()` runs the suite ~90s after boot (throttled 6h via `.crucible/smoke-last.json`),
+  diffs the previous run, and emits a debug-bus regression alert. `CRUCIBLE_SMOKE_ON_BOOT=0` disables.)*
+- **[x] Token budget guard** — no Stage 1 or Stage 5 model call should fire without a pre-dispatch
   token estimate check against the target model's context window. `413` errors should be
   *architecturally impossible*, not handled reactively by circuit breakers after the fact.
-  *(The Stage 5 `boundedSynthEntries()` cap is a partial mitigation; the general pre-dispatch
-  estimator is not built.)*
+  *(CLOSED 2026-06-20: `tpmLimit` added to `SelectedModel` + propagated through selection; the
+  streaming dispatch path `callModelStreaming` now has the same estimate-and-reject guard `callModel`
+  had — `boundedSynthEntries()` remains as the Stage-5 entry cap.)*
 
 ---
 
@@ -889,7 +1059,7 @@ knowledge injection:
 Each archetype is a configuration (system prompt + tool subset) layered on top of the
 existing agent loop infrastructure — no new loop code required.
 
-**I2 — Meta-agent task router [x]**
+**I2 — Meta-agent task router [x]** *(WIRED 2026-06-17 — `runMetaRouter` is now invoked from `/api/chat` for genuinely multi-part goals, gated by `shouldUseMetaRouter()` (≥2 subtasks spanning ≥2 archetypes OR with real dependency edges). It was rewritten to consume the real `goalDecomposer` interface (`tree.nodes`/`.goal`/`.dependsOn` — it previously read non-existent `tree.subtasks`/`.intent` and would have crashed), and now executes the dependency DAG in topological waves with per-subtask timeout, retry/reroute on failure, and blocked-dependent propagation. Verified end-to-end: a research+code+review query ran researcher→coder→critic→strategist and returned a synthesized answer with a completeness=1/confidence signal. Falls back to the single loop on any failure so it can't regress baseline.)*
 A thin orchestration layer that sits above the agent loop. Given a goal, the meta-agent
 decomposes it into subtasks (using the existing `goalDecomposer.ts` heuristic) and
 assigns each subtask to the best specialist archetype. The meta-agent then:
@@ -913,7 +1083,11 @@ keyed by task ID, with `read_scratchpad(key?)` and `write_scratchpad(key, value,
 tools registered to all specialist loops. Cleared on task completion, persisted to
 `.crucible/scratchpad-<taskId>.json` for replay/debug.
 
-**I4 — Agent-to-agent consultation [x]**
+**I4 — Agent-to-agent consultation [x]** *(CLOSED 2026-06-20: `consult_specialist` tool registered
+in `tools/registry.ts`, backed by a `consultSpecialist` hook on `ToolCtx` (`tools/protocol.ts`) →
+`AgentLoopOpts`/ctx (`agent/loop.ts`) → a depth-1-guarded closure in the meta-router runLoop
+(`server.ts` ~2017) that invokes `consult()`. Specialists in the DAG can now consult each other
+once; recursion is bounded by a depth counter.)*
 A specialist can formally ask another specialist a question mid-task and block until it gets
 a structured answer. This enables: Coder asks Researcher "what is the correct API endpoint
 for X?" and gets a cited answer before generating code. Strategist asks Critic "what is the
@@ -989,7 +1163,12 @@ daemon (G1) picks up the top-3 gaps each cycle, runs a focused research agent (R
 archetype, Track I1) on each, and writes the results into the world model. The next time a
 similar query arrives, the system already did its homework.
 
-**J5 — Cross-session knowledge synthesis [x]**
+**J5 — Cross-session knowledge synthesis [x]** *(CLOSED 2026-06-20: writers wired into the
+post-synthesis block (`server.ts` ~3970) — every session counts against its topic cluster, and at
+the 20-session threshold a state-of-knowledge doc is generated from cluster history and written.
+The read loop is also closed: `readSynthesis` is injected into the Stage-1 prompt
+(`knowledgeSynthesisBlock`, `server.ts` ~2680). The read endpoints `GET /api/knowledge-synthesis[/:clusterId]`
+now return real data once a cluster accumulates 20 sessions.)*
 After every 20 sessions on the same emergent topic cluster (Track G2), run a synthesis pass:
 a Researcher agent reads all episodic memory summaries in that cluster, the relevant world
 model subgraph, and the contradiction log, and produces a "state of knowledge" document
@@ -1344,7 +1523,501 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ---
 
-## CHANGE LOG  *(newest first — append a dated entry per working session)*  *(newest first — append a dated entry per working session)*
+## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-06-21 — Batch 2 (interrupted by usage limit): Sessions I + D landed & verified; J + L deferred
+
+The Batch-2 workflow (D ∥ I→J→L + verify + adversarial migration audit + fix) was cut off partway when
+the account hit its **session/usage limit** (resets 04:20 Europe/Rome) — every remaining agent died on the
+limit. State was assessed and verified by hand (main loop) afterward:
+
+- **I — Persistent multi-session task graph** — DONE & compiles. `src/CrucibleEngine/taskGraph.ts`
+  (createGraph/getOpenGraphs/setGraphStatus/buildOpenGoalsContext, persisted to `.crucible/task-graph/`);
+  `server.ts` GET/POST/DELETE `/api/task-graph` + open-goals injected into the agent preamble; `App.tsx`
+  Tasks UI. `vite build` PASS, server tsc **122 (baseline)**.
+- **D — Domain-sharded corpus** — DONE, compiles, and **migration verified non-destructive by hand**
+  (the workflow's adversarial auditor never ran). Design: `corpus.db` stays the canonical FULL-schema meta
+  DB (so every legacy `getCorpusDb()` raw-SQL caller works byte-for-byte); writes dual-write to meta + the
+  routed `${'`${domain}.db`'}` shard; domain-routed reads hit one shard. New `corpus/domainRouter.ts`
+  (keyword/TF-IDF, no model). The one-time `ensureSharded()` migration is **dormant until next boot**,
+  idempotent (marker `sharding.done` + `INSERT OR IGNORE`), backs up `corpus.db`→`.premigration` before any
+  write, and bails (data intact) if `shardTotal != total`. **Dry-run proof on a copy: 2703/2703 chunks
+  preserved across 8 shards, backup taken, live corpus untouched.**
+- **J — research mode** and **L — TTS + Remote Brain tunnel**: NOT started (agents died on the limit);
+  their files (`researchMode.ts`, `tts.ts`) do not exist. No partial/broken edits — the tree builds.
+
+**State is clean and consistent:** `vite build` passes, server tsc at 122 baseline. The **running server
+(:3001) is on the old in-memory code** (tsx doesn't hot-reload `server.ts`), so it's unaffected. **To
+activate I + D, restart the backend** — that boot will run D's (verified-safe) migration once.
+**Resume after 04:20 Europe/Rome:** re-run Batch 2 for J + L (the workflow caches I/D), then Batch 3 (K, E, C/F).
+
+### 2026-06-21 — Batch 1 (parallel workflow): Sessions G, H, M, N shipped + verified
+
+Four self-contained sessions implemented concurrently (disjoint file footprints), then verified as a
+batch — full `vite build` PASS, server tsc held at the **122 baseline** (zero new errors), worker
+`deploy --dry-run` SUCCESS, all four wired. Smoke-confirmed against the live local stack.
+
+- **H — Multimodal grounding** (`src/CrucibleEngine/tools/visionTools.ts` + registry + archetypes):
+  `read_image` / `read_pdf` send local-file or URL bytes as `inline_data` to Gemini Flash
+  (`gemini-2.0-flash`, existing free `VITE_GEMINI_API_KEY`), 10s timeout, never throw (return a
+  bracketed error string). Registered like `read_file`; added to the `read` tool category and the
+  Researcher's prompt nudges it to read papers/charts itself. (Read-only tools are visible to all
+  archetypes by existing design — researcher-exclusivity would need a new `allowedToolNames` mechanism.)
+- **N — Public benchmark dashboard** (`dashboard/index.html` + 2 worker routes): authed
+  `POST /api/benchmarks/publish` → KV `bench:latest`; public no-auth `GET /api/benchmarks/public`
+  (CORS `*`, friendly default when empty). Static dark dashboard fetches it, renders pass/fail +
+  category table + honest methodology section; both degrade gracefully without KV. (Daemon weekly-post
+  wiring deliberately left for the daemon-owning session.)
+- **M — VS Code extension** (`vscode-extension/**`): Review/Explain/Improve-with-Crucible context
+  commands → POST the selection to `${endpoint}/api/chat` (default crucible.cam, `crucible.apiKey`
+  JWT), parse the SSE pipeline stream (synthesis/confidence/critic), render into a CSP-locked,
+  no-script webview styled like the app. Standalone package (not in the app/worker build).
+- **G — "Shows its work" panel** (`src/App.tsx`): collapsed-by-default `<details>` beneath each
+  synthesis — model-agreement bars (genealogy), adversarial-audit findings (with all-clear fallback),
+  color-coded confidence tiers, "the answer breaks without" (fragilityAssumption), what-it-doesn't-know
+  (LOW/UNVERIFIED claims + frontier question), specialists, pipeline stats. Reads only existing round
+  data; one-line tier-colored header summary; `panelUp` ease animation; mobile+desktop safe.
+  (Note: a separate pre-existing "process trail" panel still exists below synthesis — a later session
+  could consolidate the two; left intact here to stay surgical.)
+
+### 2026-06-20 — Session B: OAuth login moved to the Worker (Fly's last job removed) + full stack up
+
+Continues the Fly off-ramp. Session A moved model keys to the Worker; this moves the only other
+Fly-bound responsibility — OAuth login — onto the same Worker, so once the user registers the new
+callback URLs and flips `PROXY_URL`/`VITE_PROXY_URL`, **Fly can be destroyed**.
+
+**Worker (`worker/index.ts`)** — added Google + GitHub login:
+- `GET /auth/login/{google,github}` → redirect to the provider with `redirect_uri =
+  <worker-origin>/auth/callback/...` and a **stateless signed CSRF state** (a short-lived
+  `signJwt({k:'oauth',p:provider})` — no server memory needed at the edge).
+- `GET /auth/callback/{google,github}` → verify state, exchange the code (faithful port of the
+  server routes incl. GitHub's `/user/emails` private-email fallback), `upsertUser`, sign a session
+  JWT with the **same HS256/`JWT_SECRET` scheme and `{id,email,exp}` shape the Mac server uses**, and
+  redirect to `${FRONTEND_URL}/?token=<jwt>`.
+- `upsertUser` writes to a **Cloudflare KV** namespace (`CRUCIBLE_USERS`) when bound; without KV it
+  derives a stable deterministic id from `sha256(provider:providerId)` so login still works. (Postgres
+  on Fly is no longer needed — the JWT is self-contained; the server never queries the user store.)
+- New `signJwt` (Web Crypto, byte-identical to the server's). `wrangler.toml`: OAuth secret docs,
+  `[vars] FRONTEND_URL`, commented `[[kv_namespaces]]` + the callback URLs to register.
+
+**Frontend (`src/api.ts`, `src/App.tsx`)** — `PROXY_BASE` (localStorage `crucible_proxy_base` →
+`VITE_PROXY_URL` → empty) and `loginUrl(provider)` route the Continue-with-Google/GitHub buttons
+through the Worker when configured, else the server's `/api/auth/*` (no pre-migration regression). A
+module-load hook promotes `?token=<jwt>` from the post-login redirect into the `crucible_session`
+cookie the server reads, then scrubs the URL.
+
+**Verified:** login redirects build correct provider URLs + signed state (round-trips); **a
+Worker-signed session JWT is accepted by the server's `/api/auth/me` (HTTP 200, exact `{id,email}`)** —
+the load-bearing cross-system check; `vite build` clean; full local stack up (backend 3001, Vite
+5180, Worker 8787, Vite `/api`+ws proxy). Real Google/GitHub token exchange needs a browser + console
+callback-URL registration (the one remaining user action) — the exchange code is a faithful port.
+
+**Remaining to shut Fly down (user/next):** register `…/auth/callback/{google,github}` on the Worker
+origin in the Google Cloud + GitHub consoles; `wrangler secret put` the 4 OAuth secrets; create the
+`CRUCIBLE_USERS` KV namespace; set `VITE_PROXY_URL` for the build; then `fly apps destroy crucible-api`
+once crucible.cam points at the Mac tunnel only (see the dual-bound-tunnel note in deployment memory).
+
+### 2026-06-20 — Session A: Cloudflare Worker API key-proxy (Fly off-ramp) + Remote Brain screen fix
+
+Two pieces this session: a Remote Brain screen-stream bugfix, and Session A of the handoff
+(the stateless key-proxy that lets API keys leave the server — the first step off Fly).
+
+**Remote Brain — "doesn't show the computer screen" (root cause: stream routed to the wrong origin):**
+The screen-stream WS handler and `/api/remote-brain/status` only exist on the Mac (`process.platform
+=== 'darwin'`), but the phone reaches the app through the shared `crucible.cam` tunnel whose tunnel
+ID is bound to BOTH the Mac and the Fly Linux box. When a request lands on Fly there is no WS handler
+and no screen → the socket never opens → canvas stays `opacity:0` → blank. The built-in "switch to
+LAN" fast-path couldn't help: `status` derived the LAN URL from the *request host* (so over the
+tunnel it returned `ws://crucible.cam:3001`, never the Mac's real IP), and an https page can't open
+an insecure `ws://` anyway (mixed content). Verified the Mac stream itself is healthy — WS upgrade
+returns `101` and streams JPEG frames on `:3001` (bound `0.0.0.0`), reachable at the Mac's hotspot IP
+`172.20.10.5`.
+- **Server (`server.ts`)** — `/api/remote-brain/status` now reports the Mac's REAL LAN IP(s) via
+  `os.networkInterfaces()` (en* ranked first, private ranges only) and returns a direct-to-Mac
+  `screenStream` ws URL + `lanOrigin` (`http://<ip>:3001`) + `lanIps`. New `lanIpv4Addresses()` helper.
+- **Frontend (`src/App.tsx`)** — protocol-safe LAN switch (only auto-try a `ws://` LAN URL from an
+  `http:` page — never mixed-content-blocked from https); prefers the direct-to-Mac path; a 6s
+  watchdog flips to the error state if no frame arrives (tunnel resolved to the screenless origin),
+  surfacing a one-tap **"open on local network"** button that loads the verified-working
+  `http://<mac-lan-ip>:3001` origin. `remoteLanOrigin` state added.
+- Verified: status returns `172.20.10.5` (matches `ipconfig getifaddr en0`); WS upgrade `101` on both
+  `127.0.0.1:3001` and `172.20.10.5:3001`; `npx vite build` clean.
+
+**Session A — stateless Cloudflare Worker key-proxy (`worker/index.ts`, `wrangler.toml`):**
+Removes the need for API keys to live on an always-on server, which is what lets Crucible run off the
+Fly box (Cloudflare free tier = 100k req/day, no idle clock). The Worker is a transparent pipe:
+`POST /proxy/chat` → validate internal JWT (HS256, same `JWT_SECRET`) → attach the provider key (held
+only as a Worker secret) → forward to the provider's OpenAI-compatible endpoint → stream the response
+straight back. CORS locked to `https://crucible.cam` (+ localhost dev), preflight handled, unknown
+provider → 400. Every registry provider is routed (groq/openrouter/gemini/huggingface/mistral/
+cloudflare + together/cerebras/cohere/fireworks/deepinfra); gemini & cloudflare use their OpenAI-compat
+surfaces so the shape is uniform. `workers_dev=true` gives an immediate URL with no DNS work.
+- **Server (`server.ts`)** — opt-in `PROXY_URL` env path. When set, `callModel` and `callModelStreaming`
+  short-circuit at the top through `proxyChat` / `proxyChatStreaming` (every hosted provider; local FM
+  stays direct on loopback). A long-lived `PROXY_JWT` is minted at startup. Per-provider quirks
+  preserved: groq-qwen `reasoning_effort:'none'` + `stripThink`, and the huggingface/compat
+  `max_tokens` caps. Provider-routing knowledge unchanged; only the HTTP destination moves.
+- **Verified end-to-end:** JWT cross-check (Node sign → Worker Web-Crypto verify) passes for valid /
+  wrong-secret / expired / tampered; `wrangler dev` returns real Groq content (batch + 9-line SSE
+  stream); a full authed `/api/chat` pipeline query completed with **every model call traversing the
+  Worker** (27×200) and a streamed synthesis. All non-200s are genuine upstream realities (429 free-tier
+  quota; 401/403/404/422 for providers whose keys aren't set locally) — faithfully passed through, not
+  proxy bugs. Configured providers (groq/hf/cloudflare/mistral) all return 200.
+- **Remaining (next session / user action):** `wrangler secret put` for each key + `JWT_SECRET`;
+  `wrangler deploy`; set `PROXY_URL` as a Fly secret and redeploy. Then Session B migrates OAuth and
+  Fly is shut down. The local server stays in direct mode (PROXY_URL unset) until then.
+
+### 2026-06-20 — Bugfix: compound OS command opened a hallucinated YouTube URL
+
+Live failure report: "open settings, turn brightness to 100 then open my videos and show me a
+nature video" opened YouTube to a **hallucinated** `watch?v=` URL instead of doing the steps.
+
+Root cause (two layers of the offline-first agent stack mishandling compound + media intent):
+- **Layer 2 (`localFmPlanner.ts`)** told the small on-device Apple FM *"For URLs always use open_app
+  with the full URL as target"* — so for "show me a nature video" it invented a `youtube.com/watch?v=<fake>`
+  URL and `open_app` opened the dead link. The validator never checked for model-constructed video URLs.
+- **Layer 0 (`localIntentRouter.ts`)** matches the FIRST resolver and silently drops the rest of a
+  compound request (the stale log shows it doing just "open settings"). No multi-step guard.
+
+Fix (verified with a unit test of the pure resolvers):
+- Both layers now **defer compound/sequenced requests** (contain "then"/"and then", or ≥3 action
+  verbs) to the full LLM agent loop, which can plan + execute in sequence and already carries the
+  strong "NEVER construct youtube.com/watch URLs — use search_youtube" guidance + the execution-intent
+  preamble.
+- Layer 2's system prompt now mandates `search_youtube` for any specific video/song and forbids
+  constructing media URLs; a hard post-validation net rejects any plan whose `open_app` target looks
+  like a constructed `watch?v=`/`youtu.be`/`vimeo` URL (→ escalates to the loop).
+- Single commands ("open spotify") and the deterministic "play X on youtube" path (which already uses
+  `search_youtube` → `open_app` with real IDs) are unchanged.
+- Files: `src/CrucibleEngine/agent/localFmPlanner.ts`, `src/CrucibleEngine/agent/localIntentRouter.ts`.
+- **Requires a server restart to take effect** (engine runs via `tsx`, no hot reload). This bug was
+  pre-existing and unrelated to the 16 north-star items below.
+
+### 2026-06-20 — Path-to-north-star audit + 16 items closed (Phases 0/1/3/4)
+
+Audited the "free on anyone's hardware, fast, reliable, extremely intelligent" plan item-by-item
+against actual code (grep for callers, not assumptions), implemented everything that was genuinely
+missing/dead-wired, ignored what already existed, and recorded the audited truth in the new
+[PATH TO NORTH STAR — Phase Status](#path-to-north-star--phase-status-audited-2026-06-20) section.
+Net TS errors: **128 → 122** (the 6 `tpmLimit`-on-`SelectedModel` errors eliminated; zero added
+across all edits — verified after every change).
+
+**Closed this session (16):**
+- **0.2a / 3.4 — J5 cross-session knowledge synthesis (was dead-wired).** Wired the writers into
+  the post-synthesis block (`server.ts` ~3970): every session counts against its uncertainty-surface
+  topic cluster (`recordSessionForCluster`); at the 20-session threshold a "state of knowledge" doc
+  is generated from recent cluster history and written (`writeSynthesis`). **Also closed the read
+  loop the audit flagged:** `readSynthesis` is now injected into the Stage-1 system prompt
+  (`knowledgeSynthesisBlock`, `server.ts` ~2680) so accumulated expertise actually reaches new queries.
+- **0.2b — consult_specialist tool / I4 (was missing; `consult()` was dead code).** Registered the
+  tool in `tools/registry.ts`; added a `consultSpecialist` hook to `ToolCtx` (`tools/protocol.ts`)
+  and `AgentLoopOpts`/ctx (`agent/loop.ts`); the meta-router runLoop closure (`server.ts` ~2017)
+  supplies a depth-1-guarded implementation that calls `consult()`. Specialists in the DAG can now
+  consult each other once (recursion bounded by a depth counter).
+- **0.3 — hot-swap fault injector (path was already live; verification was not).** Added
+  `CRUCIBLE_FORCE_FAIL` (comma-list of ids or `*`) at the top of `callModelStreaming`; throws a
+  hard "503" so the live `pickStandby` → recursive `runStage1Model` swap can be exercised on demand.
+- **3.1 — fine-tuning auto-trigger (loop was open).** New daemon task `finetune_autotrigger`
+  (`improvementDaemon.ts` + handler in the `server.ts` tick) submits an SFT job when the
+  gold-standard SFT set first crosses 1000 entries, then every +500, with a persisted marker; skips
+  without advancing if `HF_REPO`/`HF_TOKEN` are unset.
+- **3.2 — fine-tuned model re-integration.** `registerFineTunedModel()` (`modelRegistry.ts`) adds a
+  completed fine-tune as a first-class ensemble member (full selection/viability/roster/hot-swap);
+  called at startup with `getFineTunedModelId()`. No-op until a fine-tune actually finishes.
+- **3.3 — K5 calibration export.** Cross-ref + JSON endpoint already existed; added the
+  `type=calibration` JSONL branch to `/api/finetune/export`.
+- **4.1 — provider rebalance on circuit trip.** `rebalancePool()` (`modelRegistry.ts`) recomputes
+  per-provider health (active/total free models, floored at 0.15) on every trip/reset and folds
+  `providerHealthFactor()` into the selection score — the pool reweights toward healthy providers,
+  not just excluding the tripped model. Exposed at `/api/diag` → `substrate.providerHealth`.
+- **4.2 — pre-dispatch token estimator.** Added `tpmLimit` to `SelectedModel` (+ propagation through
+  `selectModels`/`pickStandby`), and gave `callModelStreaming` the same estimate-and-reject guard
+  `callModel` already had — 413s are now structurally impossible, not handled reactively. (This also
+  removed the 6 recurring `tpmLimit` type errors.)
+- **4.3 — automated smoke at startup.** `runStartupSmoke()` runs the suite ~90s after boot
+  (background, throttled 6h via `.crucible/smoke-last.json`), diffs the previous run, and emits a
+  debug-bus alert on regression. `CRUCIBLE_SMOKE_ON_BOOT=0` disables.
+- **1.1 — server bundling.** `npm run bundle:server` (esbuild → ESM `server-dist/server.js`,
+  13.9mb, ~0.4s; `better-sqlite3`/`@xenova`/`electron` external). Verified builds + `node --check`.
+- **1.2 — data relocation.** Driven by spawn `cwd` (electron sets it to `userData`); `server.ts`
+  pins `FRONTEND_BUILD` to `CODE_DIR` so only data relocates, not code. Dev unchanged.
+- **1.3 — native addon packaging config** (asarUnpack + `@electron/rebuild`).
+- **1.4 — tray + auto-start.** Self-authored in-process PNG status dot, context menu, login item.
+- **1.5 — electron-builder config** (dmg universal / nsis / AppImage) + `dist*` scripts.
+- **4.4 — win/linux build config** (folds into 1.5).
+- **4.5 — auto-update** via guarded `electron-updater` + GitHub Releases publish config.
+- Bonus: `startListening` now honors `process.env.PORT` (matched the existing `process.env.PORT ||
+  3001` usages elsewhere that the hardcoded `listen(3001)` ignored).
+
+**Verified already-done, left untouched (per "ignore what exists"):** 0.2c cold-start domains,
+0.2d `recordForcedCall`, 0.4 Gemini key, 2.3 embedding persistence (BLOB column), and the hot-swap
+dispatch path itself.
+
+**Honestly still open (documented, not built):** 2.1 domain-sharded corpus (large), 2.2 install-time
+acquisition scheduling (depends on 2.1), 2.4 routing-classifier active-learning loop (depends on
+2.1), 5.1 "shows its work" UI panel (frontend; data already emitted), 5.2 replayable run export,
+5.3 external benchmark dashboard page. See the phase-status section for per-item specs.
+
+**Files touched:** `server.ts`, `modelRegistry.ts`, `electron.cjs`, `package.json`,
+`src/CrucibleEngine/improvementDaemon.ts`, `src/CrucibleEngine/tools/registry.ts`,
+`src/CrucibleEngine/tools/protocol.ts`, `src/CrucibleEngine/agent/loop.ts`.
+
+### 2026-06-17 — RSI layer: monotonic (never-regress) recursive self-improvement
+
+Added a Recursive Self-Improvement layer that autonomously shapes the OFFLINE BRAIN (the
+living corpus + the learned scoring weights/patterns the pipeline uses) and pulls knowledge
+from the internet to fill its own gaps — under a hard guarantee that it can only move forward.
+
+**Critical safety fix found first (the existing loop could silently regress):** the autonomous
+rollback guard `rollbackIfDegraded(trend)` only fires on `trend==='down'`, but
+`qualityPredictor.stats().trend` was **hardcoded to `'flat'`** (qualityPredictor.ts:191) — so the
+degradation guard never engaged, and `autoImprove` was committing learned-weight/pattern changes
+with zero regression verification. Fixed `stats()` to compute the real trend (last-10 vs prior-10),
+re-enabling the live-traffic guard.
+
+**Snapshots are FILE-COPY, not git (important):** `.crucible/` is gitignored (it holds
+`jwt_secret` + session state, so it must stay out of git) — which means git snapshot/restore of
+learned state is hollow. The existing `autoImprove` git-commit approach has the same flaw (0
+autonomous commits ever landed in repo history). So the RSI controller snapshots the specific
+learned-state files (`scoring-weights.json`, `learned-patterns.json`, `stage-weights.json`,
+`preference-weights.json`) by file copy into `.crucible/rsi-snapshots/baseline/`, and on regression
+restores them + reloads weights into live memory via `refreshScoringConfig()`. The corpus DB is
+excluded (additive + self-quarantining). **Proven**: a round-trip test corrupted a weights file then
+restored it — fully reverted.
+
+**The monotonic guarantee (new `src/CrucibleEngine/rsi/controller.ts`):** every cycle —
+1. SNAPSHOT — file-copy the learned-state files as known-good + record a baseline benchmark
+   pass-rate run through the FULL authenticated pipeline (an internal long-lived RSI token drives
+   `/api/chat`, so the gate measures the very thing RSI mutates, not a single isolated model);
+2. ACQUIRE — drive internet→corpus acquisition for current gaps (additive, self-quarantining);
+3. IMPROVE — `triggerImprovementPass()` (learned weights/patterns, already triumvirate-gated);
+4. RE-MEASURE — re-run the benchmark suite through the full pipeline;
+5. GATE — keep the change ONLY if `candidate ≥ baseline − EPSILON` (EPSILON=0, strict) AND the
+   live quality trend isn't declining; otherwise `git checkout` the baseline `.crucible/` (hard
+   restore) — the system ratchets flat-or-up, never down;
+6. LEDGER — append verdict + score delta to `.crucible/rsi-ledger.jsonl`.
+
+**Safety invariants:** off the request path, idle-only (skips if `activePipelineRequests>0`),
+6-hourly; touches ONLY learned state under `.crucible/` + the corpus (source code is NOT modified
+by RSI in v1 — highest blast radius, deferred behind the gate+triumvirate); git snapshot + auto-
+restore per cycle; durable baseline in `.crucible/rsi-state.json`; kill switch (`POST /api/rsi/kill`
+or env `RSI_ENABLED=0`); append-only ledger. Endpoints: `GET /api/rsi/status`, `POST /api/rsi/cycle`
+(manual, idle-gated), `POST /api/rsi/kill`. Verified: boots clean, git-backed (rollback available),
+15 benchmarks present (real gate signal), endpoints + kill switch work; first live gated cycle run.
+
+**v1 scope note:** RSI improves the offline brain (corpus + scoring weights/patterns) — the targets
+that make the local/offline path smarter. Autonomous source-code self-modification is intentionally
+out of v1; the gate + git-snapshot + triumvirate infrastructure is in place to extend to it safely later.
+
+### 2026-06-17 — Agentic upgrade: multi-level orchestration, robustness, verification, autonomy
+
+Goal: full multi-level complex-query handling end-to-end with high confidence/accuracy, asking
+the user only when genuinely necessary. Implemented in four waves over the agent subsystem; each
+wave typechecked + the live paths verified against a running server (simple query stays on the
+cheap path; a research+code+review query runs the full specialist DAG; clarification logic
+unit-checked).
+
+**Wave 1 — loop/planner robustness:**
+- `loop.ts` STALL-BREAKER: tracks the tool-call signature (names+args); on the 2nd identical
+  repeat it injects one corrective hint, on the 3rd it hard-stops with a new `'stalled'` stop
+  reason and returns the best partial — a thrashing model can no longer burn the whole iteration
+  budget and mis-report `max_iters`.
+- `planner.ts` ESCALATION: replans are diversified ("don't repeat the failed approach"), the
+  empty-replan case now escalates instead of silently re-running the failed step, and a per-step
+  failure-fingerprint set escalates on a true loop (same step + same error) or no-progress replan.
+  Default `maxReplans` 1→2.
+- `server.ts` B1: terminal single-loop failures (`verify_failed`/`stalled`/`max_iters`/`error`)
+  clear the checkpoint so an unwinnable task can't be resumed forever; budget/cancelled stay
+  resumable.
+
+**Wave 2 — multi-level orchestration (Track I now LIVE):** see the I2 entry above. metaRouter
+rewritten to the real decomposer interface + topological DAG waves + per-subtask timeout +
+retry/reroute + blocked-dependent propagation; wired into `/api/chat` with a conservative gate and
+a graceful single-loop fallback. `archetypes.ts` gained `buildArchetypeTools()` so specialist tool
+separation is REAL (verified: researcher has search but no write/run; coder has write+execute but
+no web_search; critic/strategist read-only).
+
+**Wave 3 — verification & confidence:**
+- C1: metaRouter runs a goal-completion audit — every sub-goal must produce a real result; gaps
+  are fed to the strategist as explicit caveats rather than papered over.
+- C5: a confidence signal (high/medium/low) derived from completeness + critic findings, emitted
+  and attached to the final answer.
+- C3: the planner now evaluates each step's `doneCheck` as a mini-verification (a strict PASS/FAIL
+  judge) instead of only passing it as text — catches silently-skipped sub-goals when no runnable
+  test exists.
+- C2: default-on verification for metaRouter subtasks (fresh verifier each; auto-passes when no
+  check exists, gives the coder real test/compile + self-heal).
+
+**Wave 4 — autonomy & clarification (per the "ask only if necessary" refinement):**
+- `ask_user` tool: the agent can ask ONE focused clarifying question when it genuinely cannot
+  proceed (missing fact only the user has, real fork in intent, or before a destructive action).
+  The loop intercepts it, surfaces a `clarification_request`, and ends the turn cleanly; session
+  context carries the reply into the next turn. Excluded from metaRouter specialists (the
+  orchestrator owns user contact). Preamble guidance: default to autonomous completion with smart
+  defaults; never ask for confirmation theater; asking-when-you-could-proceed is as much a failure
+  as guessing-wrong-when-you-should-ask.
+- D1: `assessCollabMode` accepts a `contextBoost` from prior turns + project memory, so the
+  synthesis path doesn't ask about things it can already infer — but it does NOT blanket-suppress
+  clarification; a genuinely ambiguous question with no resolving context can still be asked.
+- D3: a non-blocking `task_assumption` announcement for vague-but-proceedable agent goals.
+
+**Post-review hardening (adversarial multi-agent review of the above, each finding verified):**
+- **ask_user mislabeled as success in multi-step paths (HIGH)** — a clarification returned
+  `stopped:'final'`/`ok:true`, so the planner treated the *question* as a completed step and
+  advanced (or replanned it away). Added a distinct `'clarification'` stop reason (`ok:false`);
+  the planner now detects it, pauses the plan at the current step (kept resumable), and surfaces
+  the question instead of advancing. Verified live: "Send the quarterly report to my manager" now
+  asks *"Which file… and the manager's email?"* rather than guessing.
+- **ask_user dropping co-emitted tool calls (MEDIUM)** — if the model emitted real work + ask_user
+  in one turn, the work was discarded. Now ask_user is only honored as the sole call; otherwise the
+  real calls run and the premature question is deferred.
+- **Wave-loop guard too small (MEDIUM)** — the metaRouter wave cap was a magic 40; now scales with
+  subtask count (`plans.length + 2`) so large decompositions aren't truncated, with a post-loop
+  safety sweep marking any unreached subtask blocked.
+- **write_global_memory granted to read-only archetypes (MEDIUM)** — `toolCategory` matched
+  `/memory/` before the write check, so a disk-writing tool reached the read-only strategist. Write
+  tools are now categorized first; `write_global_memory` is `mutates:true`. Verified: only the coder
+  gets it.
+- **doneCheck FAIL kept `stopped:'final'` (LOW)**, **metaRouter scratch cleanup deleted its own
+  crash-safe file + ran outside try/catch (LOW×2)** — all fixed.
+- **Layer 2 FM planner never actually executed (root cause found during verification)** — `runFmPlan`
+  called `exec({tool,args})` but `registry.exec` reads `.name` → every FM step failed with "Unknown
+  tool: undefined", and the FM tool vocabulary didn't match the registry (`shell_exec`→`run`,
+  `search_web`→`web_search`, `click_element` arg `label`→`title`). Added `fmStepToToolCall()`
+  translation so Layer 2 executes on-device correctly. Plus **B5**: Layer 0/2 fast-path failures now
+  **escalate to the full agent loop** instead of surfacing the raw error as the answer — a bad
+  fast-path plan can never dead-end the user.
+
+### 2026-06-17 — Full codebase audit: TDZ crash sweep, feature-gap repair, cruft cleanup
+
+Multi-agent audit (5 read-only dimensions, each finding adversarially re-verified against the
+actual code) + manual follow-up. tsc-under-`tsconfig.server.json` error count 145 → 130 (the
+remaining ~130 are type-strictness only and harmless under `tsx`, which strips types at runtime).
+Server boot + live `quorum` and `agent` queries verified end-to-end after the fixes (both reach
+`[DONE]`, no hang).
+
+**Critical / high runtime bugs fixed (all were latent — `tsc` did not flag the nested-block TDZs):**
+- **TDZ `isAgenticIntent` (server.ts ~1862, signature silent-crash).** Used in the Layer-2 FM-planner
+  gate inside the agent branch, but the only `const` declaration was ~250 lines below at the cache
+  check. On macOS with the Apple FM bridge up (`localInferenceAvailable === true` — the offline-first
+  scenario), every agent request that fell through Layer 0 hit the `&&`-short-circuit, evaluated the
+  const in its TDZ, and threw a `ReferenceError` **outside** any try → leaked the keepalive interval,
+  never sent `[DONE]`, hung the SSE stream. Fixed by hoisting one `const isAgenticIntent` above the
+  agent branch and deleting the duplicate. **Live-verified:** agent query now reaches
+  `[Agent] Layer 2 FM plan: …` (the line right after the gate) and completes.
+- **TDZ `pipelineSynthesisText` (server.ts L2 fast-path).** The "Parallel Workstreams" success branch
+  assigned it before its `let` (declared far below on the full-pipeline path), so the entire L2
+  optimisation always threw, fell through, and double-emitted stage events. Removed the dead assignment
+  (the branch ships `finalMultipart` directly and returns).
+- **TDZ `normalizeOutput` (server.ts L2 block).** Referenced before the later function-scoped dynamic
+  import shadowed it. Added a block-scoped `await import()` at the top of the L2 try.
+- **TDZ `synthesis` (masterpiece/orchestrator.ts ~327).** Assigned before its `let` declaration →
+  **MASTERPIECE deep mode was entirely dead at runtime** (failed safe via the caller's try/catch, so
+  deep mode silently never produced output). Fixed by declaring at first assignment.
+- **Missing import `saveMetaTask` (server.ts:232).** Called 3× in the B4 meta-pipeline poller but never
+  imported → `ReferenceError` whenever a meta-task was pending; B4 self-improvement was 100% dead.
+- **Missing import `debugBus` (agent/driver.ts).** Referenced on the 413/token-size fallback path but
+  never imported → guaranteed `ReferenceError` on that path. Added the import.
+- **`withTimeout` misuse in the H5 frontier call (server.ts).** `requestId` was passed where the
+  timeout-ms belongs and the fallback arg was missing; also `callModel`'s 3rd arg was a bare string
+  instead of `{ requestId }`. Corrected to match the H4 sibling pattern.
+- **Duplicate object key `complexity`** in the `model_selection` event — removed the redundant key.
+- **Dead/dangerous `/api/terminal` endpoint removed.** Ran arbitrary unsandboxed `exec()` for any
+  authenticated user against a hardcoded **non-existent** cwd (`/Users/justin/Desktop/crucible`, not
+  `-local`), and had no caller. Sandboxed execution already lives at `/api/sandbox/run` (sandbox-exec,
+  network-deny).
+- **`activePipelineRequests` leak + unwired reader.** The keepalive pause guard incremented but only
+  decremented on two early-return paths → the counter grew unbounded, and `runKeepaliveRound` never
+  checked it. Moved the increment to the top of the pipeline `try`, balanced it in a new `finally`
+  (covers every exit path), removed the two manual decrements, and wired `runKeepaliveRound` to skip
+  model calls while `activePipelineRequests > 0` — completing the documented feature.
+
+**Feature gaps closed (half-wired subsystems):**
+- **Track C2 specialization forcing** — `recordForcedCall()` was imported but never called, so
+  `modelLastForcedAt` stayed empty and the staleness gate skipped **all** forced slots after the first
+  `FORCE_RECENCY_WINDOW` (50) pipeline runs. Now records each participating model per round.
+- **Autonomous model hunter probation** — `getProbationIds()` ("inject into pipeline") was never
+  called, so promoted candidates were only tested by luck. Now injects the ≤2 active probation models
+  into Stage 1 (their outcomes were already being scored by the wired `recordProbationOutcome`).
+- **`masterpiece_shard_progress`** added to the `MasterpieceSSEType` union (ROADMAP P12 claimed the
+  event but the type rejected it).
+
+**Drift recorded (designed features not wired — corrected the checkboxes, did NOT silently delete):**
+- **I2 / I4 (meta-agent router + consultation)** → re-marked `[ ]`: `metaRouter.ts` exports
+  `runMetaRouter`/`consult` but neither is imported or called anywhere. Dead module.
+- **J5 (cross-session knowledge synthesis)** → re-marked `[~]`: read endpoints wired, but the writers
+  (`recordSessionForCluster`/`writeSynthesis`) are never called, so the index is permanently empty.
+
+**Cruft / hygiene:**
+- Deleted committed junk: a 685 KB stray JPEG literally named `-`, `server.ts.save` (176 KB stale
+  backup), `crucible@0.0.0` and `wait-on` (0-byte npm-typo artifacts), `_cfdbg.ts` + the two orphan
+  `agent/test-*.ts` dev scripts (unreferenced; the latter also threw top-level-await tsc errors),
+  empty `build/` and `server-dist/`.
+- Fixed corrupted `.env.local` line 1 (`https://crucible.cam` had been pasted in front of
+  `VITE_GEMINI_API_KEY=`, so that key was undefined and Gemini was unconfigured). Removed the now-
+  redundant `.env.clean` recovery copy.
+- Untracked build artifacts (`tsconfig.node.tsbuildinfo`, `.crucible-checkpoints.json`); added
+  `*.tsbuildinfo`, `*.save`, `.env.clean` to `.gitignore`; slimmed `.dockerignore` (excludes `.git`,
+  `data/`, `.crucible/`, build outputs, docs); removed the broken `build:app` npm script (referenced a
+  nonexistent `setup-crucible.sh`).
+
+**Known tech-debt left as-is (too risky to refactor blind):**
+- `callModel` and `callModelStreaming` duplicate per-provider transport dispatch (~160 lines each).
+  Real redundancy, but it is the hottest path and each provider's streaming vs non-streaming response
+  handling genuinely differs; consolidating without live API keys to exercise every provider would risk
+  the whole pipeline. Recommend a shared transport abstraction in a dedicated, test-covered session.
+
+### 2026-06-16 — Fly.io cloud deployment prep
+
+**Goal:** make `server.ts` runnable on Linux (Fly.io) without breaking local Mac dev.
+
+**Mac-specific code made conditional:**
+- `attachScreenStreamWs` — only attached when `process.platform === 'darwin'`. On Linux, the WebSocket endpoint simply doesn't exist (no screen to capture).
+- `/api/remote-brain/status` — returns `503 { available: false }` immediately on non-Darwin; the `osascript` call is skipped entirely.
+- `checkLocalInference()` — only invoked at startup on Darwin. `localInferenceAvailable` stays `false` on Linux; all Apple FM routing paths already guard on this flag so they fail-soft silently.
+
+**Postgres for user data (replaces JSON files):**
+- `DATABASE_URL` env var triggers a `pg` Pool connection at startup.
+- `initPg()` auto-creates `users`, `history`, and `push_subscriptions` tables on first boot.
+- `upsertUser`, `loadPushSubs`, `savePushSubs` — all made async; use Postgres when `DATABASE_URL` is set, fall back to JSON files in local dev.
+- All 9 history read/write sites replaced with `historyLoad(userId, limit)` / `historyPush(userId, entry)` helpers that transparently route to Postgres or the old `.crucible/history-*.json` files.
+- No change to AI pipeline logic or scoring.
+
+**SQLite corpus on Fly volume:**
+- `src/CrucibleEngine/masterpiece/corpus/db.ts` — DB path now uses `DATA_DIR` env var (default `./data`). Set `DATA_DIR=/data` on Fly and mount a persistent volume at `/data`.
+
+**Deployment files added:**
+- `Dockerfile` — Node 22 slim, native deps for `better-sqlite3`, `npm ci --omit=dev`, `npx tsx server.ts`.
+- `fly.toml` — app `crucible-api`, region `iad`, port 3001, 1 GB persistent volume at `/data`, HTTPS forced.
+
+**Fly.io first-deploy checklist:**
+```bash
+fly postgres create                         # provisions DATABASE_URL secret
+fly volumes create crucible_data --size 1   # persistent volume for SQLite corpus
+fly secrets set \
+  GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
+  GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... \
+  JWT_SECRET=... VAPID_PUBLIC=... VAPID_PRIVATE=... \
+  OPENROUTER_API_KEY=... GROQ_API_KEY=... # etc.
+fly deploy
+```
+
+### 2026-06-16 — Stream lag fix + agentic control (intent classifier, stateful sessions, redirect)
+
+**Problem 1 — Screen stream lag:**
+Root cause: `require('ws')` inside `attachScreenStreamWs` crashed with `ReferenceError` under ESM (`"type": "module"` in package.json). The server was dead since the WebSocket screen-stream commit landed. Fixed with a top-level `import { WebSocketServer as WsServer } from 'ws'`.
+
+**Stream singleton broadcast:** Replaced per-connection `screencapture` loop with a shared broadcast loop. All connected WebSocket clients now share one `screencapture + sips` cycle. Old design had N concurrent screencapture processes racing on the same temp files `/tmp/crucible_screen_raw.jpg` + `/tmp/crucible_screen_out.jpg` — caused frame corruption and CPU thrash. Perf telemetry: `screen_stream_perf` event logged every 50 frames.
+
+**PiP drag zero-rerender:** `touchMove` previously called `setPipPos` at 60fps → 60fps React re-renders → main thread contention → RAF loop stutter. Fixed: direct DOM update via `pipDivRef.current.style` during drag, `setPipPos` fires once on `touchEnd`. `visualVpOffsetTopRef` tracks viewport offset so DOM update stays correct when keyboard is open.
+
+**Problem 2 — Deep agentic control:**
+- `src/CrucibleEngine/agent/intentClassifier.ts`: fast heuristic classifier (no LLM) → `simple_command | complex_task | conversational_redirect | conversational_reply`. Wired into server.ts agent path before every dispatch.
+- `src/CrucibleEngine/agent/taskSession.ts`: in-memory session store keyed by `sessionId`. Maintains task stack, accumulated messages, live AbortController. `completeTask` saves context across turns; `abortCurrentTask` signals the running loop on redirect.
+- Redirect flow: detect `conversational_redirect` → abort running task via AbortController → emit `task_redirected` SSE → resume new goal with accumulated session context. Frontend `agentReducer` handles the event.
+- New `navigate_browser` tool: opens URL or activates named app (AppleScript `activate`), 600ms settle before subsequent `get_ui_tree`.
+- `get_ui_tree` now handles: no focused window, accessibility permission denied, empty tree.
+- `click_element` now tries menu-item fallback + 300ms settle delay post-click.
 
 ### 2026-06-15 — Track O Layer 1 + Remote Brain fixes (stream size, send button, semantic corpus)
 
@@ -3265,16 +3938,17 @@ Project Gutenberg (classics), RFC editor (distributed-systems standards), arXiv 
   command/deepseek/owl). **Verified live:** a complex query selected 5 slots across 4 providers
   (openrouter×2, gemini, groq, huggingface) and 5 families instead of clustering on openrouter
   (which holds 8 of the active pool — the exact concentration this defends against).
-- [~] Q3 — **Standby hot-swap.** `pickStandby(promptType, complexity, excludeIds)` returns the best
+- [x] Q3 — **Standby hot-swap.** `pickStandby(promptType, complexity, excludeIds)` returns the best
   eligible replacement not in flight, preferring a provider+family not already used. Wired into
   Stage 1: on a **hard** failure (not quota/decommission — those trip the breaker and are excluded
   by pickStandby) **before the ensemble has a leader** (`!firstDone`), a standby is dispatched,
   appended to `models` (so downstream rollback/critique/synthesis include it), and re-enters the
   same `runStage1Model()` — awaited inline so the stage barrier waits for it. Budget: max 2 swaps/
   request; a standby that itself fails is not re-swapped. Emits `hot_swap` to the debug bus + a
-  `model_selection` update to the UI. **Code-verified & correctly gated; not yet observed firing
-  live** — no qualifying hard mid-flight failure occurred in test runs (failures were quota trips /
-  post-leader timeouts). Needs a forced-failure test to confirm the live swap path end-to-end.
+  `model_selection` update to the UI. **CLOSED 2026-06-20:** added a deterministic fault injector —
+  set `CRUCIBLE_FORCE_FAIL='<model-id>'` (or `'*'`) and the matching `callModelStreaming` dispatch
+  throws a hard "503", exercising the live swap path on demand. Verify via console
+  `[Substrate] Hot-swap…` + `/api/diag` → `substrate.hotSwapsThisSession`.
 - [x] Q4 — **Substrate debug surface.** `GET /api/debug/substrate` → per-model viability/samples/
   successRate/medianLatency (sorted by viability) + live provider & family spread of the healthy
   pool. Verified live.
@@ -3330,10 +4004,18 @@ Project Gutenberg (classics), RFC editor (distributed-systems standards), arXiv 
 ### Agentic execution fixes
 - **search_youtube tool** `[x]` — scrapes `ytInitialData` JSON from YouTube search results page to retrieve real, verified video IDs. Replaces hallucinated URL generation. Verifies availability via oembed endpoint before opening. Registered in agent tool registry. Agent must never construct YouTube URLs from model knowledge — live search only.
 - **Agentic cache bypass** `[x]` — `isAgenticIntent` flag derived from `detectAgentTask(message)` bypasses both exact and semantic cache; wired in server.ts at both cache check sites.
-- **Intent classifier: natural language action detection** `[ ]` — detect executable intent directed at external systems (YouTube, files, browser, calendar). Verbs like "put on", "open", "play", "search and find" directed at external systems dispatch to agent execution, not text response.
+- **Intent classifier** `[x]` — `src/CrucibleEngine/agent/intentClassifier.ts`. Fast regex+heuristic classifier (no LLM) that runs before every agent-mode message and emits `simple_command | complex_task | conversational_redirect | conversational_reply`. Wired into server.ts agent path; dispatch logged to debugBus as `intent_classified`.
+- **Stateful task session** `[x]` — `src/CrucibleEngine/agent/taskSession.ts`. In-memory session store keyed by `sessionId`. Maintains task stack (current goal + completed step history), accumulated conversation messages for cross-turn context, and a live `AbortController` per session. Stale sessions purged after 2 hours.
+- **Conversational redirect handling** `[x]` — when a `conversational_redirect` intent is detected on an in-flight task: (1) aborts the current agent via stored `AbortController`, (2) emits `task_redirected` SSE event to frontend, (3) resumes with new goal using accumulated session context. Frontend `agentReducer` handles `task_redirected` event and displays a "Redirecting" caption.
+- **`navigate_browser` tool** `[x]` — `macTools.ts` + registry. Opens a URL in the default browser, or brings a named app to the foreground (activates via AppleScript, launches if not running). 600ms settle delay after activation before get_ui_tree is called.
+- **`get_ui_tree` robustness** `[x]` — now handles: no focused window (graceful message), accessibility permission denied (instructs user), empty tree (descriptive fallback). Was silently returning blank before.
+- **`click_element` robustness** `[x]` — added menu-item fallback in AppleScript, 300ms settle delay post-click. Error message unchanged format so `ok` flag derivation still works.
+- **Screen stream singleton broadcast** `[x]` — replaced per-connection `screencapture` loop with a shared broadcast loop in `attachScreenStreamWs`. One `screencapture` process serves ALL connected WebSocket clients; loop starts on first connect, stops when client set empties. Eliminates the shared-file race condition (`/tmp/crucible_screen_raw.jpg`) that caused frame corruption and lag when multiple devices connected simultaneously. Perf event `screen_stream_perf` emitted every 50 frames with `captureMs`, `clients`, `frame` size.
+- **WebSocket import ESM fix** `[x]` — `require('ws')` inside `attachScreenStreamWs` crashed at startup under Node.js ESM (`"type": "module"` in package.json). Replaced with top-level `import { WebSocketServer as WsServer } from 'ws'`. Server was dead since the screen-stream WebSocket commit.
+- **PiP drag zero-rerender** `[x]` — PiP `touchMove` previously called `setPipPos` at 60fps causing React re-renders that stuttered the stream RAF loop. Now uses a `pipDivRef` to update `style.left/top` directly on the DOM during drag; `setPipPos` fires once on `touchEnd` to sync React state. `visualVpOffsetTopRef` tracks viewport offset for DOM-layer clamping during drag.
 - **Simple commands**: small fast model (already in registry) handles "open Spotify", "close window" etc
 - **Complex tasks**: full agent loop, same as today
-- **TTS**: Edge-TTS (Microsoft free, no key) speaks confirmation/status back to user
+- **TTS**: Edge-TTS (Microsoft free, no key) speaks confirmation/status back to user `[ ]`
 
 ### Design principles
 - Not a feature inside Crucible — a MODE Crucible enters

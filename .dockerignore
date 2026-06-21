@@ -1,0 +1,29 @@
+node_modules
+.git
+.gitignore
+.env
+.env.local
+.env.clean
+*.log
+
+# Build outputs (frontend is rebuilt inside the image)
+dist
+build
+server-dist
+app
+release
+.vite
+*.tsbuildinfo
+
+# Runtime state / data (provided by Fly volumes + env at runtime)
+data
+.crucible
+.crucible-checkpoints.json
+.circuit-state.json
+
+# Desktop/editor cruft and docs not needed in the server image
+.DS_Store
+Crucible.app
+ROADMAP.md
+NEXT_SESSION.md
+CLAUDE.md

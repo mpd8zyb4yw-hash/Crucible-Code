@@ -45,6 +45,7 @@ const DEFAULT_TASKS: DaemonTask[] = [
   { name: 'contradiction_sweep',      intervalMs: 2 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },
   { name: 'confidence_calibration',   intervalMs: 4 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },
   { name: 'context_budget_report',    intervalMs: 1 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },
+  { name: 'finetune_autotrigger',     intervalMs: 6 * 60 * 60 * 1000, lastRunAt: 0, runCount: 0 },  // 3.1
 ]
 
 export function loadDaemonState(dir: string): DaemonState {

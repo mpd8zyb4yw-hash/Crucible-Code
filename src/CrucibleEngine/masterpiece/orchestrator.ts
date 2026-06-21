@@ -35,6 +35,7 @@ import type {
 export type MasterpieceSSEType =
   | 'masterpiece_start'
   | 'masterpiece_shard'
+  | 'masterpiece_shard_progress'
   | 'masterpiece_triadic'
   | 'masterpiece_abductive'
   | 'masterpiece_escalation'
@@ -324,13 +325,11 @@ export async function runMasterpieceDeep(
         .join('\n')
     : ''
 
-  synthesis = ensembleSynthesis + connectionInsights
-
   // No model call for assembly — concatenate refined shards directly.
   // This avoids coding models reformatting prose as // comments regardless
   // of prompt instructions. The refined shards are already high quality
   // from the MoE specialist pass; a model call adds latency and format risk.
-  let synthesis: string
+  let synthesis = ensembleSynthesis + connectionInsights
 
   // Strip code-comment formatting if a coding model wrapped the synthesis in // notation.
   // This is a safety net — the assembler prompt now prohibits it, but defense in depth.

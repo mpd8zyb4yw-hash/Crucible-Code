@@ -10,7 +10,8 @@ import { compileTool, saveDynamicTool, listDynamicTools, recordToolSuccess, type
 import { appendGlobalMemory } from '../state/session'
 import { buildGraphDigest, findEntities, upsertEntity, touchEntities } from '../entityGraph'
 import { gFetch, googleServicesStatus } from './googleApis'
-import { getUITree, clickElement, typeText } from '../macTools'
+import { getUITree, clickElement, typeText, navigateBrowser } from '../macTools'
+import { read_image, read_pdf } from './visionTools'
 
 const tools = new Map<string, ToolDef>()
 
@@ -241,6 +242,76 @@ registry.register({
     const numbered = slice.map((l, i) => `${offset + i}\t${l}`).join('\n')
     const { output, truncated } = capOutput(numbered)
     return { ok: true, output, truncated: truncated || offset - 1 + limit < lines.length, meta: { totalLines: lines.length } }
+  },
+})
+
+registry.register({
+  name: 'read_image',
+  description:
+    'Read an image (chart, screenshot, diagram, photo, scanned page) from a local file path OR ' +
+    'a URL and get back a detailed description plus a verbatim transcription of any visible text. ' +
+    'Use this instead of asking the user to describe or paste what an image contains.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Local image file path (absolute or relative to project root) OR an http(s) image URL' },
+    },
+    required: ['path'],
+  },
+  async run(args) {
+    const target = String(args.path ?? '').trim()
+    if (!target) return { ok: false, output: 'A non-empty "path" (file path or URL) is required.' }
+    const output = await read_image(target)
+    const ok = !output.startsWith('[read_image failed')
+    const { output: capped, truncated } = capOutput(output)
+    return { ok, output: capped, truncated }
+  },
+})
+
+registry.register({
+  name: 'read_pdf',
+  description:
+    'Read a PDF (paper, report, spec, scanned document) from a local file path OR a URL and get ' +
+    'back its extracted text with structure preserved (headings, sections, lists, tables). ' +
+    'Use this instead of asking the user to paste the contents of a PDF.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Local PDF file path (absolute or relative to project root) OR an http(s) PDF URL' },
+    },
+    required: ['path'],
+  },
+  async run(args) {
+    const target = String(args.path ?? '').trim()
+    if (!target) return { ok: false, output: 'A non-empty "path" (file path or URL) is required.' }
+    const output = await read_pdf(target)
+    const ok = !output.startsWith('[read_pdf failed')
+    const { output: capped, truncated } = capOutput(output)
+    return { ok, output: capped, truncated }
+  },
+})
+
+registry.register({
+  name: 'ask_user',
+  description:
+    'Ask the user ONE focused clarifying question — ONLY when you genuinely cannot proceed ' +
+    'correctly without information that only the user has (a missing constraint, a real fork in ' +
+    'intent, or confirmation before a destructive/irreversible action). Do NOT use this for ' +
+    'things you can reasonably infer or decide yourself: prefer sensible defaults and proceed. ' +
+    'Asking ends your turn; the user will reply and you continue with their answer.',
+  params: {
+    type: 'object',
+    properties: {
+      question: { type: 'string', description: 'The single, specific question to ask the user.' },
+    },
+    required: ['question'],
+  },
+  // The agent loop intercepts ask_user to end the turn and surface the question. This
+  // run() is only a fallback (e.g. if called outside the loop) — it echoes the question.
+  async run(args, ctx) {
+    const q = String(args.question ?? 'Could you clarify how you would like me to proceed?')
+    try { ctx.emit?.({ type: 'clarification_request', question: q }) } catch {}
+    return { ok: true, output: q }
   },
 })
 
@@ -775,6 +846,7 @@ registry.register({
     properties: { fact: { type: 'string', description: 'A concise fact to remember globally, e.g. "User prefers TypeScript over JavaScript" or "User timezone is Europe/Rome, in Italy"' } },
     required: ['fact'],
   },
+  mutates: true,   // writes to disk — gated by allowMutation + denied to read-only archetypes
   async run(args) {
     const fact = String(args.fact ?? '').trim()
     if (!fact) return { ok: false, output: 'fact must not be empty' }
@@ -819,6 +891,38 @@ registry.register({
     if (entities.length) touchEntities(entities.map(e => e.label))
     if (!digest) return { ok: true, output: 'No relevant entries found in world model for this topic.' }
     return { ok: true, output: digest }
+  },
+})
+
+// I4 — agent-to-agent consultation: ask another specialist a focused question.
+registry.register({
+  name: 'consult_specialist',
+  description:
+    'Ask another specialist agent (researcher | coder | critic | strategist) ONE focused ' +
+    'question and get its answer back. Use to get a second opinion or domain expertise mid-task ' +
+    '(e.g. a coder asks the critic to review an approach, or the strategist asks the researcher ' +
+    'for facts). Consultation depth is limited to 1 — the consulted specialist cannot itself consult.',
+  params: {
+    type: 'object',
+    properties: {
+      archetype: { type: 'string', enum: ['researcher', 'coder', 'critic', 'strategist'], description: 'Which specialist to consult' },
+      question: { type: 'string', description: 'The single focused question to ask the specialist' },
+    },
+    required: ['archetype', 'question'],
+  },
+  mutates: false,
+  async run(args, ctx) {
+    const archetype = String(args.archetype ?? '') as 'researcher' | 'coder' | 'critic' | 'strategist'
+    const question = String(args.question ?? '').trim()
+    if (!['researcher', 'coder', 'critic', 'strategist'].includes(archetype)) {
+      return { ok: false, output: 'archetype must be one of: researcher, coder, critic, strategist' }
+    }
+    if (!question) return { ok: false, output: 'question is required' }
+    if (!ctx.consultSpecialist) {
+      return { ok: false, output: 'consult_specialist is unavailable in this context (no orchestrator wiring).' }
+    }
+    const answer = await ctx.consultSpecialist(archetype, question)
+    return { ok: true, output: answer }
   },
 })
 
@@ -1431,5 +1535,26 @@ registry.register({
   async run(args) {
     const result = await typeText(String(args.text ?? ''))
     return { ok: !result.startsWith('Type failed'), output: result }
+  },
+})
+
+registry.register({
+  name: 'navigate_browser',
+  description:
+    'Open a URL in the default browser, or bring a named app to the foreground (and launch it if not running). ' +
+    'For URLs: pass the full https:// URL. For apps: pass the app name exactly as it appears in Applications (e.g. "Safari", "YouTube", "Settings"). ' +
+    'Use this before get_ui_tree when the target app may not be in the foreground. ' +
+    'For YouTube searches: use search_youtube to get the real URL first, then pass that URL here.',
+  params: {
+    type: 'object',
+    properties: {
+      target: { type: 'string', description: 'A URL (https://...) or an app name to bring to focus' },
+    },
+    required: ['target'],
+  },
+  mutates: true,
+  async run(args) {
+    const result = await navigateBrowser(String(args.target ?? ''))
+    return { ok: !result.startsWith('navigate_browser failed') && !result.startsWith('App not found'), output: result }
   },
 })

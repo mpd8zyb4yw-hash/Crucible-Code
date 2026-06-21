@@ -1,0 +1,51 @@
+name = "crucible-proxy"
+main = "worker/index.ts"
+compatibility_date = "2026-06-20"
+
+# Gives an immediate https://crucible-proxy.<your-subdomain>.workers.dev URL with no
+# DNS setup — point the server's PROXY_URL at it to go live right away.
+workers_dev = true
+
+# Optional stable custom domain. Requires the crucible.cam zone on the same Cloudflare
+# account as `wrangler login` (it is — the tunnel lives there). Uncomment once ready;
+# then PROXY_URL = https://proxy.crucible.cam
+# [[routes]]
+# pattern = "proxy.crucible.cam/*"
+# zone_name = "crucible.cam"
+
+# Secrets (NOT vars — all sensitive). Set each with:
+#   wrangler secret put JWT_SECRET
+#   wrangler secret put VITE_GROQ_API_KEY
+#   wrangler secret put VITE_OPENROUTER_API_KEY
+#   wrangler secret put VITE_GEMINI_API_KEY
+#   wrangler secret put VITE_HF_API_KEY
+#   wrangler secret put VITE_MISTRAL_API_KEY
+#   wrangler secret put CLOUDFLARE_API_KEY
+#   wrangler secret put CLOUDFLARE_ACCOUNT_ID
+# Optional (only if you use these providers):
+#   wrangler secret put TOGETHER_API_KEY
+#   wrangler secret put CEREBRAS_API_KEY
+#   wrangler secret put COHERE_API_KEY
+#   wrangler secret put FIREWORKS_API_KEY
+#   wrangler secret put DEEPINFRA_TOKEN
+#
+# Session B — OAuth login (moves login off Fly):
+#   wrangler secret put GOOGLE_CLIENT_ID
+#   wrangler secret put GOOGLE_CLIENT_SECRET
+#   wrangler secret put GITHUB_CLIENT_ID
+#   wrangler secret put GITHUB_CLIENT_SECRET
+
+# Where the browser is sent back to after login (with ?token=<jwt>). Non-secret.
+[vars]
+FRONTEND_URL = "https://crucible.cam"
+
+# User identities (keyed by provider:providerId). Create the namespace then paste its id:
+#   wrangler kv namespace create CRUCIBLE_USERS
+# [[kv_namespaces]]
+# binding = "CRUCIBLE_USERS"
+# id = "<paste-namespace-id-here>"
+#
+# OAuth callback URLs to register in the provider consoles (point at THIS worker):
+#   Google:  https://proxy.crucible.cam/auth/callback/google
+#   GitHub:  https://proxy.crucible.cam/auth/callback/github
+# (use the workers.dev origin instead if you haven't enabled the custom domain yet)

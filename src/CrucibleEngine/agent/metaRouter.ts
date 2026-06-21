@@ -4,7 +4,7 @@
 
 import { decompose } from '../goalDecomposer'
 import { selectArchetype, getArchetype, type ArchetypeId } from './archetypes'
-import { writeScratch, readScratch, buildScratchContext, persistScratch } from './taskScratchpad'
+import { writeScratch, readScratch, buildScratchContext, persistScratch, clearScratch } from './taskScratchpad'
 import { debugBus } from '../debug/bus'
 import type { AgentLoopOpts, AgentLoopResult } from './loop'
 
@@ -33,73 +33,156 @@ export interface MetaRouterResult {
   finalAnswer: string
   subtasks: SubtaskPlan[]
   criticFindings: string | null
+  completeness: number          // 0-1: fraction of sub-goals that produced a real result
+  confidence: 'high' | 'medium' | 'low'
+  incompleteSubtasks: string[]  // descriptions of sub-goals that could not be completed
 }
 
-// I2 — top-level orchestrator
+/** Wall-clock cap per subtask so one hung specialist can't stall the whole wave. */
+const SUBTASK_TIMEOUT_MS = 120_000
+/** Iteration cap per specialist loop — subtasks are focused sub-problems. */
+const SUBTASK_MAX_ITERS = 8
+
+/** A reroute target distinct from the first-choice archetype. */
+function fallbackArchetype(a: ArchetypeId): ArchetypeId {
+  if (a === 'coder') return 'strategist'
+  if (a === 'researcher') return 'strategist'
+  if (a === 'strategist') return 'researcher'
+  return 'researcher'
+}
+
+// I2 — top-level orchestrator. Decomposes the goal into a dependency DAG, runs
+// each subtask with the best specialist archetype in topological waves (parallel
+// within a wave), retries/reroutes failures, blocks dependents of failed work,
+// then runs an adversarial critic and a strategist synthesis.
 export async function runMetaRouter(opts: MetaRouterOpts): Promise<MetaRouterResult> {
   const { goal, projectPath, taskId, runLoop, buildDriveTurn, emit, signal } = opts
 
   debugBus.emit('agent', 'meta_router_start', { taskId, goal: goal.slice(0, 80) }, { severity: 'info' })
 
-  // Decompose goal into subtasks
+  // Decompose into the real dependency tree. decompose() returns { nodes } where each
+  // SubtaskNode has { id, goal, dependsOn[] }. The root (depth 0) is the overall goal;
+  // the actual subtasks are the depth>0 nodes.
   const tree = decompose(goal)
-  const plans: SubtaskPlan[] = tree.subtasks.map((s, i) => ({
-    id: `st_${i}`,
-    description: s.intent,
-    archetype: selectArchetype(s.intent),
-    dependsOn: i === 0 ? [] : [],  // heuristic: first pass all parallel; seq only if explicit dep
+  const subNodes = tree.nodes.filter(n => n.depth > 0)
+  const subIds = new Set(subNodes.map(n => n.id))
+  const plans: SubtaskPlan[] = subNodes.map(n => ({
+    id: n.id,
+    description: n.goal,
+    archetype: selectArchetype(n.goal),
+    // Keep only dependencies that are themselves subtasks (drop the root edge).
+    dependsOn: n.dependsOn.filter(d => subIds.has(d)),
     result: undefined,
     done: false,
   }))
 
-  // If no meaningful decomposition, fall back to single researcher pass
+  // No meaningful decomposition → single best-archetype pass over the whole goal.
   if (!plans.length) {
-    plans.push({ id: 'st_0', description: goal, archetype: 'researcher', dependsOn: [], result: undefined, done: false })
+    plans.push({ id: 'st_0', description: goal, archetype: selectArchetype(goal), dependsOn: [], result: undefined, done: false })
   }
 
-  emit({ type: 'agent_meta', event: 'plan', subtasks: plans.map(p => ({ id: p.id, archetype: p.archetype, description: p.description })) })
+  emit({ type: 'agent_meta', event: 'plan', subtasks: plans.map(p => ({ id: p.id, archetype: p.archetype, description: p.description, dependsOn: p.dependsOn })) })
 
-  // Execute subtasks — parallel where no deps, sequential where deps exist
-  const pending = [...plans]
-  let iters = 0
-  while (pending.some(p => !p.done) && iters < 20) {
-    iters++
-    // Find runnable (all deps done)
-    const runnable = pending.filter(p => !p.done && p.dependsOn.every(dep => plans.find(pl => pl.id === dep)?.done))
-    if (!runnable.length) break
+  const byId = new Map(plans.map(p => [p.id, p]))
+  const failed = new Set<string>()
+  const blocked = new Set<string>()
 
-    await Promise.all(runnable.map(async (subtask) => {
+  /** Run one subtask with a wall-clock timeout, retrying once via a fallback archetype. */
+  async function runSubtask(subtask: SubtaskPlan): Promise<void> {
+    const tryArchetypes: ArchetypeId[] = [subtask.archetype, fallbackArchetype(subtask.archetype)]
+    for (let attempt = 0; attempt < tryArchetypes.length; attempt++) {
       if (signal?.aborted) return
-      const archetype = getArchetype(subtask.archetype)
+      const arche = tryArchetypes[attempt]
+      const archetype = getArchetype(arche)
       const scratchContext = buildScratchContext(taskId)
       const systemPreamble = archetype.systemPrompt + (scratchContext ? `\n\n${scratchContext}` : '')
 
-      debugBus.emit('agent', 'meta_subtask_start', { taskId, subtaskId: subtask.id, archetype: subtask.archetype }, { severity: 'info' })
-      emit({ type: 'agent_meta', event: 'subtask_start', subtaskId: subtask.id, archetype: subtask.archetype })
+      emit({ type: 'agent_meta', event: 'subtask_start', subtaskId: subtask.id, archetype: arche, attempt: attempt + 1 })
+      debugBus.emit('agent', 'meta_subtask_start', { taskId, subtaskId: subtask.id, archetype: arche, attempt: attempt + 1 }, { severity: 'info' })
 
+      // Per-subtask abort: fires on timeout or when the parent signal aborts.
+      const subAc = new AbortController()
+      const onParentAbort = () => subAc.abort()
+      signal?.addEventListener('abort', onParentAbort)
+      const timer = setTimeout(() => subAc.abort(), SUBTASK_TIMEOUT_MS)
       try {
         const result = await runLoop({
           goal: subtask.description,
           projectPath,
-          driveTurn: buildDriveTurn(subtask.archetype),
+          driveTurn: buildDriveTurn(arche),
           emit,
-          signal,
-          maxIters: 6,
+          signal: subAc.signal,
+          maxIters: SUBTASK_MAX_ITERS,
           systemPreamble,
         })
-        subtask.result = result.finalText
-        subtask.done = true
-        // Write result to scratchpad so other archetypes can read it
-        writeScratch(taskId, subtask.id, result.finalText, subtask.archetype)
-        emit({ type: 'agent_meta', event: 'subtask_done', subtaskId: subtask.id, archetype: subtask.archetype })
-        debugBus.emit('agent', 'meta_subtask_done', { taskId, subtaskId: subtask.id }, { severity: 'success' })
+        if (result.ok && result.finalText.trim()) {
+          subtask.result = result.finalText
+          subtask.archetype = arche
+          subtask.done = true
+          writeScratch(taskId, subtask.id, result.finalText, arche)
+          persistScratch(taskId, projectPath)   // durable after each subtask (crash-safe)
+          emit({ type: 'agent_meta', event: 'subtask_done', subtaskId: subtask.id, archetype: arche })
+          debugBus.emit('agent', 'meta_subtask_done', { taskId, subtaskId: subtask.id }, { severity: 'success' })
+          return
+        }
+        // Not ok (verify_failed / stalled / max_iters / empty) → try the fallback archetype.
+        debugBus.emit('agent', 'meta_subtask_retry', { taskId, subtaskId: subtask.id, from: arche, stopped: result.stopped }, { severity: 'warn' })
       } catch (e: any) {
-        subtask.done = true  // mark done even on failure so we don't loop forever
-        subtask.result = `[${subtask.archetype} failed: ${e.message}]`
-        debugBus.emit('agent', 'meta_subtask_error', { taskId, subtaskId: subtask.id, error: e.message }, { severity: 'error' })
+        debugBus.emit('agent', 'meta_subtask_error', { taskId, subtaskId: subtask.id, archetype: arche, error: e?.message }, { severity: 'error' })
+      } finally {
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', onParentAbort)
       }
+    }
+    // All attempts exhausted.
+    subtask.done = true
+    failed.add(subtask.id)
+    subtask.result = `[${subtask.archetype} could not complete this subtask after retries]`
+    emit({ type: 'agent_meta', event: 'subtask_failed', subtaskId: subtask.id })
+  }
+
+  // Topological execution: run all dependency-satisfied subtasks in parallel, await
+  // the wave, recompute the ready set, repeat. Dependents of failed/blocked work are
+  // skipped (blocked) rather than run blind.
+  // A valid DAG needs at most one wave per subtask (linear chain); +2 slack. Scaling
+  // with plan count means large decompositions aren't silently truncated, while still
+  // bounding against a pathological cycle.
+  let guard = 0
+  const maxWaves = plans.length + 2
+  while (plans.some(p => !p.done) && guard++ < maxWaves) {
+    if (signal?.aborted) break
+    const ready = plans.filter(p => !p.done && p.dependsOn.every(d => byId.get(d)?.done ?? true))
+    if (!ready.length) {
+      // Remaining subtasks have an unsatisfiable dependency (cycle or all-blocked) — stop.
+      plans.filter(p => !p.done).forEach(p => { p.done = true; blocked.add(p.id); p.result = '[blocked: dependency never completed]' })
+      break
+    }
+    await Promise.all(ready.map(async (subtask) => {
+      // If a dependency failed or was blocked, skip this subtask as blocked.
+      if (subtask.dependsOn.some(d => failed.has(d) || blocked.has(d))) {
+        subtask.done = true
+        blocked.add(subtask.id)
+        subtask.result = '[blocked: a prerequisite subtask did not complete]'
+        emit({ type: 'agent_meta', event: 'subtask_blocked', subtaskId: subtask.id })
+        return
+      }
+      await runSubtask(subtask)
     }))
   }
+  // Safety sweep — if the guard ever exhausts (pathological input), don't leave subtasks
+  // dangling: mark any still-undone plan as blocked so the audit/synthesis sees the gap.
+  plans.filter(p => !p.done).forEach(p => { p.done = true; blocked.add(p.id); p.result = '[blocked: not reached before wave limit]' })
+
+  // C1 — goal-completion audit: every planned sub-goal must have produced a real,
+  // non-trivial result. Anything failed/blocked/empty is an explicit gap the synthesis
+  // must surface rather than paper over.
+  const isIncomplete = (p: SubtaskPlan) =>
+    failed.has(p.id) || blocked.has(p.id) || !p.result ||
+    p.result.trim().length < 40 || /^\[(blocked|.*failed|.*could not)/i.test(p.result.trim())
+  const incompletePlans = plans.filter(isIncomplete)
+  const completeness = plans.length ? (plans.length - incompletePlans.length) / plans.length : 0
+  emit({ type: 'agent_meta', event: 'completeness', completed: plans.length - incompletePlans.length, total: plans.length, score: +completeness.toFixed(2) })
+  debugBus.emit('agent', 'meta_completeness', { completed: plans.length - incompletePlans.length, total: plans.length, incomplete: incompletePlans.map(p => p.id) }, { severity: incompletePlans.length ? 'warn' : 'success' })
 
   // Critic pass (I5) — adversarial audit of all completed subtask results
   const draftAnswer = plans.filter(p => p.result).map(p => `[${p.archetype}]: ${p.result}`).join('\n\n')
@@ -121,11 +204,15 @@ export async function runMetaRouter(opts: MetaRouterOpts): Promise<MetaRouterRes
   } catch {}
 
   // Strategist synthesizes final answer with all context available
+  const gapNote = incompletePlans.length
+    ? `\n\nIMPORTANT — these sub-goals could NOT be completed: ${incompletePlans.map(p => `"${p.description.slice(0, 80)}"`).join('; ')}. ` +
+      `Explicitly tell the user these parts are incomplete (and why, if known) rather than pretending they were done.`
+    : ''
   let finalAnswer = draftAnswer
   try {
     const synthContext = buildScratchContext(taskId)
     const strategistResult = await runLoop({
-      goal: `Synthesize a final answer for: "${goal.slice(0, 120)}". Draw on all specialist outputs in the scratchpad. If the Critic flagged problems, address them or explicitly caveat them. Return the complete answer the user should see.`,
+      goal: `Synthesize a final answer for: "${goal.slice(0, 120)}". Draw on all specialist outputs in the scratchpad. If the Critic flagged problems, address them or explicitly caveat them. Return the complete answer the user should see.${gapNote}`,
       projectPath,
       driveTurn: buildDriveTurn('strategist'),
       emit,
@@ -133,13 +220,29 @@ export async function runMetaRouter(opts: MetaRouterOpts): Promise<MetaRouterRes
       maxIters: 4,
       systemPreamble: getArchetype('strategist').systemPrompt + (synthContext ? `\n\n${synthContext}` : ''),
     })
-    finalAnswer = strategistResult.finalText
+    if (strategistResult.finalText.trim()) finalAnswer = strategistResult.finalText
   } catch {}
 
-  persistScratch(taskId, projectPath)
-  debugBus.emit('agent', 'meta_router_done', { taskId, subtaskCount: plans.length }, { severity: 'success' })
+  // C5 — confidence signal: full completion + no significant critic findings → high.
+  const criticFlaggedMajor = !!criticFindings && /significant|wrong|incorrect|critical|missing|flaw|contradic/i.test(criticFindings)
+  const confidence: MetaRouterResult['confidence'] =
+    incompletePlans.length === 0
+      ? (criticFlaggedMajor ? 'medium' : 'high')
+      : (completeness >= 0.5 ? 'medium' : 'low')
+  emit({ type: 'agent_meta', event: 'confidence', confidence, completeness: +completeness.toFixed(2) })
 
-  return { finalAnswer, subtasks: plans, criticFindings }
+  // Best-effort cleanup — a filesystem hiccup here must never discard the finished answer.
+  // Persist the durable record, then free ONLY the in-memory pad (no dir arg) so the
+  // crash-safe scratchpad file survives for post-hoc inspection/recovery.
+  try {
+    persistScratch(taskId, projectPath)
+    clearScratch(taskId)
+  } catch (e: any) {
+    debugBus.emit('agent', 'meta_scratch_cleanup_error', { taskId, error: e?.message }, { severity: 'warn' })
+  }
+  debugBus.emit('agent', 'meta_router_done', { taskId, subtaskCount: plans.length, completeness: +completeness.toFixed(2), confidence }, { severity: 'success' })
+
+  return { finalAnswer, subtasks: plans, criticFindings, completeness, confidence, incompleteSubtasks: incompletePlans.map(p => p.description) }
 }
 
 // I4 — agent-to-agent consultation: specialist asks another specialist a focused question

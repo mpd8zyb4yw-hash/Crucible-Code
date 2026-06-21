@@ -39,13 +39,25 @@ export async function replan(goal: string, steps: Step[], failure: string, planM
     {
       role: 'user',
       content: `Task: ${goal}\nAlready completed: ${doneSteps.map(s => s.intent).join('; ') || '(none)'}\n` +
-        `The plan failed with:\n${failure.slice(0, 1500)}\nProduce a NEW plan for the remaining work only.`,
+        `The previous approach FAILED with:\n${failure.slice(0, 1500)}\n\n` +
+        `Produce a NEW plan for the remaining work only. Do NOT repeat the failed approach — ` +
+        `diagnose why it failed and choose a fundamentally different method (different tool, ` +
+        `different decomposition, or a smaller verifiable step).`,
     },
   ])
   const fresh = parseSteps(raw)
-  if (!fresh.length) return steps
+  // Empty replan → return only the done steps (no pending). The caller detects the
+  // lack of new pending work and escalates instead of silently re-running failures.
+  if (!fresh.length) return doneSteps
   let nextId = Math.max(0, ...doneSteps.map(s => s.id)) + 1
   return [...doneSteps, ...fresh.map(s => ({ ...s, id: nextId++, status: 'pending' as const }))]
+}
+
+/** Stable signature of a failure — step id + the first error-ish line, normalized. */
+function failFingerprint(stepId: number, failure: string): string {
+  const sig = (failure.split('\n').find(l => /error|fail|exception|cannot|undefined|not found/i.test(l)) ?? failure.slice(0, 120))
+    .replace(/0x[0-9a-f]+/gi, '').replace(/\d+/g, 'N').trim().slice(0, 100)
+  return `${stepId}:${sig}`
 }
 
 function parseSteps(raw: string): Step[] {
@@ -123,7 +135,10 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
   onPersist?.(steps, completedSummaries, 'running')
 
   let replans = 0
-  const maxReplans = opts.maxReplans ?? 1
+  const maxReplans = opts.maxReplans ?? 2
+  // Track per-step failure fingerprints so we escalate on a true loop (same step,
+  // same error twice) instead of replanning into the same wall forever.
+  const seenFailures = new Set<string>()
 
   for (let i = 0; i < steps.length; i++) {
     if (signal?.aborted) return { ok: false, steps, summary: 'Cancelled.' }
@@ -156,7 +171,39 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
         : undefined,
     })
 
-    if (result.ok) {
+    // Clarification — the agent called ask_user and genuinely needs input to proceed.
+    // Pause the plan WITHOUT marking the step done or failed (and without replanning):
+    // surface the question and keep the task resumable so the user's reply re-enters
+    // this exact step. Must be checked before the ok/done-check path so a question is
+    // never mistaken for step completion.
+    if (result.stopped === 'clarification') {
+      step.status = 'pending'
+      emit({ type: 'step_status', id: step.id, status: 'awaiting_input', intent: step.intent })
+      onPersist?.(steps, completedSummaries, 'running')
+      return { ok: false, steps, summary: result.finalText }
+    }
+
+    // C3 — done-check mini-verification: confirm the step actually satisfied its
+    // acceptance criterion, not merely that the loop stopped. This catches silently
+    // skipped sub-goals, especially when no runnable test exists (verify auto-passes).
+    let doneCheckFailed = false
+    if (result.ok && step.doneCheck && result.finalText.trim()) {
+      try {
+        const verdict = await planModel([
+          { role: 'system', content: 'You are a strict step-completion judge. Reply with exactly "PASS" or "FAIL: <one-line reason>". Be skeptical: only PASS if the result clearly satisfies the criterion.' },
+          { role: 'user', content: `Step intent: ${step.intent}\nAcceptance criterion: ${step.doneCheck}\n\nResult produced:\n${result.finalText.slice(0, 1500)}\n\nDid the result satisfy the acceptance criterion?` },
+        ])
+        if (/^\s*FAIL/i.test(verdict)) {
+          doneCheckFailed = true
+          // Reflect the real reason so the escalation summary doesn't read 'final'.
+          result.stopped = 'verify_failed'
+          result.finalText = `Step did not satisfy its done-check ("${step.doneCheck}"): ${verdict.replace(/^\s*FAIL:?\s*/i, '').slice(0, 200)}\n\n${result.finalText}`
+          emit({ type: 'step_status', id: step.id, status: 'donecheck_failed', intent: step.intent })
+        }
+      } catch { /* judge unavailable (quota) — accept the step rather than block on judge error */ }
+    }
+
+    if (result.ok && !doneCheckFailed) {
       step.status = 'done'
       completedSummaries.push(`${step.intent} → ${compressObservation(result.finalText, 300)}`)
       emit({ type: 'step_status', id: step.id, status: 'done', intent: step.intent })
@@ -167,12 +214,24 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
     step.status = 'failed'
     emit({ type: 'step_status', id: step.id, status: 'failed', intent: step.intent, stopped: result.stopped })
     if (result.stopped === 'cancelled') { onPersist?.(steps, completedSummaries, 'running'); return { ok: false, steps, summary: 'Cancelled.' } }
-    if (replans >= maxReplans) {
+
+    // Escalate on a true loop: this exact step has already failed with this exact error.
+    const fp = failFingerprint(step.id, result.finalText || result.stopped)
+    const repeatedFailure = seenFailures.has(fp)
+    seenFailures.add(fp)
+    if (repeatedFailure || replans >= maxReplans) {
+      emit({ type: 'step_stuck', id: step.id, intent: step.intent, reason: repeatedFailure ? 'repeated_failure' : 'replans_exhausted' })
       onPersist?.(steps, completedSummaries, 'failed')
-      return { ok: false, steps, summary: `Stopped at step ${step.id} ("${step.intent}"): ${result.stopped}.\n${result.finalText}` }
+      return { ok: false, steps, summary: `Stopped at step ${step.id} ("${step.intent}"): ${repeatedFailure ? 'the same failure recurred' : result.stopped}.\n${result.finalText}` }
     }
     replans++
-    steps = await replan(goal, steps, result.finalText || result.stopped, planModel)
+    const replanned = await replan(goal, steps, result.finalText || result.stopped, planModel)
+    // No new pending work produced (empty/degenerate replan) → escalate rather than loop.
+    if (!replanned.some(s => s.status === 'pending')) {
+      onPersist?.(steps, completedSummaries, 'failed')
+      return { ok: false, steps, summary: `Stopped at step ${step.id} ("${step.intent}"): could not form a recovery plan.\n${result.finalText}` }
+    }
+    steps = replanned
     emit({ type: 'plan', steps: publicSteps(steps), replanned: true })
     onPersist?.(steps, completedSummaries, 'running')
     i = steps.findIndex(s => s.status !== 'done') - 1   // resume at first pending

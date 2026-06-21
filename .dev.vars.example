@@ -1,0 +1,17 @@
+# Local secrets for `wrangler dev`. Copy to `.dev.vars` (gitignored) and fill in the
+# same values from .env.local. These mirror the secrets set in production via
+# `wrangler secret put`. Do NOT commit the real .dev.vars.
+JWT_SECRET=
+VITE_GROQ_API_KEY=
+VITE_OPENROUTER_API_KEY=
+VITE_GEMINI_API_KEY=
+VITE_HF_API_KEY=
+VITE_MISTRAL_API_KEY=
+CLOUDFLARE_API_KEY=
+CLOUDFLARE_ACCOUNT_ID=
+# Optional:
+TOGETHER_API_KEY=
+CEREBRAS_API_KEY=
+COHERE_API_KEY=
+FIREWORKS_API_KEY=
+DEEPINFRA_TOKEN=

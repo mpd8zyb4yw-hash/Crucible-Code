@@ -69,9 +69,20 @@ Allowed tools and their required args:
 Rules:
 - Use 1–3 steps only. No chaining beyond that.
 - Only use tools from the list above.
-- For URLs always use open_app with the full URL as target.
+- For a specific video, song, or clip the user wants to watch/play: use search_youtube. NEVER
+  construct a youtube.com/watch or youtu.be URL yourself — invented video IDs are dead links.
+- Use open_app with a URL ONLY for a site the user names by domain (e.g. "go to github.com").
 - If you cannot confidently plan with the given tools, output: {"intent":"pass","steps":[],"summary":""}
 - Output ONLY the JSON object, nothing else.`
+
+// Model-constructed media/watch URLs are almost always hallucinated (dead video IDs).
+// Any plan that opens one is rejected → the full LLM loop replans with search_youtube.
+const HALLUCINATED_MEDIA_URL = /(youtube\.com\/watch|youtu\.be\/|\/watch\?v=|vimeo\.com\/\d|dailymotion\.com\/video)/i
+
+// Multi-step / sequenced requests ("open settings, set brightness, then play a video") exceed
+// Layer 2's 1–3 simple-step scope — hand them to the LLM loop which can truly plan + iterate.
+const MULTI_STEP = /\b(?:then|after that|and then)\b/i
+const ACTION_VERB = /\b(?:open|turn|set|play|show|find|search|close|launch|go to|put on|click|type|increase|decrease|adjust|mute|change|switch)\b/gi
 
 export type LocalSynth = (system: string, user: string) => Promise<string>
 
@@ -86,6 +97,8 @@ export async function localFmPlan(
   const q = (message ?? '').trim()
   if (q.length < 4 || q.length > MAX_INPUT_CHARS) return null
   if (HARD_PASS.test(q)) return null
+  // Compound / sequenced request → exceeds Layer 2's simple-step scope; let the LLM loop plan it.
+  if (MULTI_STEP.test(q) || (q.match(ACTION_VERB)?.length ?? 0) >= 3) return null
 
   let raw: string
   try {
@@ -116,6 +129,11 @@ export async function localFmPlan(
     if (typeof step?.tool !== 'string') return null
     if (!ALLOWED_TOOLS.has(step.tool)) return null
     if (typeof step?.args !== 'object' || step.args === null) return null
+    // Safety net: never execute a model-constructed video/watch URL — the FM hallucinates
+    // video IDs (dead links). Reject the whole plan so the LLM loop replans via search_youtube.
+    if (step.tool === 'open_app' && HALLUCINATED_MEDIA_URL.test(String((step.args as any).target ?? ''))) {
+      return null
+    }
   }
 
   return {

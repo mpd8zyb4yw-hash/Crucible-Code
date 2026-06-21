@@ -222,6 +222,7 @@ export function tripCircuitBreaker(modelId: string, cooldownMs?: number, reason 
   const ms = Math.min(Math.max(cooldownMs ?? DEFAULT_COOLDOWN_MS, MIN_COOLDOWN_MS), MAX_COOLDOWN_MS)
   circuitBreakers[modelId] = { state: 'tripped', trippedAt: Date.now(), cooldownMs: ms, failReason: reason }
   console.log(`[Circuit] ${modelId} tripped — cooldown ${Math.round(ms/1000)}s (${reason})`)
+  rebalancePool()   // 4.1 — reweight selection toward providers that are still healthy
 }
 
 export function getCircuitState(modelId: string): CircuitState {
@@ -241,6 +242,66 @@ export function getCircuitState(modelId: string): CircuitState {
 export function resetCircuitBreaker(modelId: string): void {
   delete circuitBreakers[modelId]
   console.log(`[Circuit] ${modelId} restored to active`)
+  rebalancePool()
+}
+
+// ── 4.1 — Pool rebalancing on circuit trip ───────────────────────────────────
+// Circuit breakers already EXCLUDE a tripped model from selection. Rebalancing
+// goes further: when a provider loses models to trips, the whole pool reweights
+// AWAY from that provider and TOWARD providers that are still healthy — so the
+// remaining ensemble draws from diverse, live substrate instead of repeatedly
+// re-selecting a degraded provider's survivors. Health = fraction of a provider's
+// free models currently active, floored so a provider is never zeroed by health
+// alone (individual circuit state already handles per-model exclusion).
+const providerHealth: Record<string, number> = {}
+
+export function rebalancePool(): void {
+  const byProvider: Record<string, { total: number; active: number }> = {}
+  for (const m of MODEL_REGISTRY) {
+    if (!m.free) continue
+    const p = m.provider
+    const rec = (byProvider[p] ||= { total: 0, active: 0 })
+    rec.total += 1
+    if (getCircuitState(m.id) === 'active') rec.active += 1
+  }
+  for (const [p, { total, active }] of Object.entries(byProvider)) {
+    providerHealth[p] = total > 0 ? Math.max(0.15, active / total) : 1
+  }
+}
+
+/** Selection-weight multiplier for a provider based on live pool health (4.1). */
+export function providerHealthFactor(provider: string): number {
+  return providerHealth[provider] ?? 1
+}
+
+/** Snapshot of current provider-health weights (for /api/diag). */
+export function providerHealthSnapshot(): Record<string, number> {
+  return { ...providerHealth }
+}
+
+// ── 3.2 — Fine-tuned model re-integration ─────────────────────────────────────
+// Once a fine-tune completes on HuggingFace, register it as a first-class ensemble
+// member so it gets specialization memory, roster rotation, viability scoring, and
+// hot-swap — everything every other model gets. Called at startup with the id from
+// getFineTunedModelId(); a no-op (returns false) until a fine-tune has actually
+// finished, so it's safe to call on every boot.
+export function registerFineTunedModel(modelId: string): boolean {
+  if (!modelId) return false
+  const id = modelId.startsWith('huggingface/') ? modelId : `huggingface/${modelId}`
+  if (MODEL_REGISTRY.some(m => m.id === id)) return false
+  MODEL_REGISTRY.push({
+    id,
+    params: 7,
+    free: true,
+    label: 'Crucible Fine-tuned (HF)',
+    quality: 7,                 // tuned on this user's own winning outputs — strong prior
+    provider: 'huggingface',
+    speed: 'standard',
+    fit: { coding: 7, reasoning: 7, creative: 7, factual: 7, math: 6, general: 7 },
+    family: 'crucible-finetuned',
+  })
+  console.log(`[FineTune] Registered fine-tuned model into ensemble: ${id}`)
+  return true
 }
 
 const PROVIDER_FALLBACK_COOLDOWN_MS: Record<string, number> = {
@@ -681,6 +742,7 @@ export interface SelectedModel {
   label: string
   provider: ModelEntry['provider']
   isWildcard: boolean
+  tpmLimit?: number   // tokens-per-minute hard cap, carried from ModelEntry for the pre-dispatch token guard (4.2)
 }
 
 export interface SelectionResult {
@@ -847,7 +909,7 @@ export function selectModels(
       const specBias = specWeights[m.id] != null ? 1 + (specWeights[m.id] - 0.5) * 0.15 : 1
       return {
         ...m,
-        score: m.quality * m.fit[promptType] * rateLimitPenalty(m.provider) * predictivePenalty(m.provider) * modelFailurePenalty(m.id) * viabilityScore(m.id) * (mode === 'code' ? m.fit.coding / 10 + 0.5 : 1) * specBias,
+        score: m.quality * m.fit[promptType] * rateLimitPenalty(m.provider) * predictivePenalty(m.provider) * providerHealthFactor(m.provider) * modelFailurePenalty(m.id) * viabilityScore(m.id) * (mode === 'code' ? m.fit.coding / 10 + 0.5 : 1) * specBias,
       }
     })
     .sort((a, b) => b.score - a.score)
@@ -876,8 +938,8 @@ export function selectModels(
   }
 
   const selected: SelectedModel[] = [
-    ...deterministic.map(m => ({ id: m.id, label: m.label, provider: m.provider, isWildcard: false })),
-    ...wildcards.map(m => ({ id: m.id, label: m.label, provider: m.provider, isWildcard: true })),
+    ...deterministic.map(m => ({ id: m.id, label: m.label, provider: m.provider, isWildcard: false, tpmLimit: m.tpmLimit })),
+    ...wildcards.map(m => ({ id: m.id, label: m.label, provider: m.provider, isWildcard: true, tpmLimit: m.tpmLimit })),
   ]
 
   // Synthesis = highest raw score among selected — purely merit-based, no provider preference
@@ -1004,7 +1066,7 @@ export function pickStandby(
     !usedProviders.has(m.provider) && !usedFamilies.has(familyOf(m)))
   const chosen = diverse ?? eligible[0]
   if (!chosen) return null
-  return { id: chosen.id, label: chosen.label, provider: chosen.provider, isWildcard: true }
+  return { id: chosen.id, label: chosen.label, provider: chosen.provider, isWildcard: true, tpmLimit: chosen.tpmLimit }
 }
 
 /**

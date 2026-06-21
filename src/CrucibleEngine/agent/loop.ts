@@ -54,6 +54,8 @@ export interface AgentLoopOpts {
   stepIntent?: string
   /** Called when a file-mutating tool writes; used to keep the codebase index fresh. */
   onFileMutated?: (absPaths: string[]) => void
+  /** I4 — lets the consult_specialist tool ask another archetype a focused question. */
+  consultSpecialist?: ToolCtx['consultSpecialist']
   /** Optional text-only model call for model-assisted context compression.
    *  When provided, compression summaries are model-generated for higher fidelity.
    *  Falls back to structural summarisation when absent. */
@@ -65,7 +67,7 @@ export interface AgentLoopResult {
   finalText: string
   iters: number
   toolCallCount: number
-  stopped: 'final' | 'max_iters' | 'budget' | 'cancelled' | 'error' | 'verify_failed'
+  stopped: 'final' | 'max_iters' | 'budget' | 'cancelled' | 'error' | 'verify_failed' | 'stalled' | 'clarification'
 }
 
 const APPROX_CHARS_PER_TOKEN = 4
@@ -95,6 +97,8 @@ ${worldCtx}
 RULE 1 — NEVER ask for a specific confirmation phrase or script. If the user asks you to do something, DO IT with your tools. If they say yes/proceed/go ahead/do it/confirm, EXECUTE IMMEDIATELY.
 RULE 2 — NEVER output a Python or shell script for the user to run. You have tools. Use them.
 RULE 3 — Work step by step: inspect with tools, make changes, verify, then give a final answer. When done, reply with your summary and no tool calls.
+
+AUTONOMY & CLARIFICATION: Default to understanding the request and implementing it to completion with sensible, well-reasoned defaults — you should handle the large majority of tasks end-to-end without asking anything. Only call the ask_user tool when you genuinely cannot proceed correctly: a required fact that only the user has, a real fork in intent where guessing wrong would waste significant work, or confirmation before a destructive/irreversible action. Ask ONE focused question, then continue once answered. Never ask about things you can reasonably infer, look up with web_search, or decide yourself — and never ask merely to confirm permission to act (you already have it). Asking when you could have proceeded is as much a failure as guessing wrong on something you should have asked about.
 ${workspaceNote}
 IMPORTANT — delegation: for the single hardest algorithmic core of a task (a tricky function, non-obvious algorithm, or subtle edge-case logic), you MUST call ensemble_solve with a self-contained subprompt instead of writing it yourself. The ensemble runs several models in parallel and returns the highest-scored implementation, which is more reliable than your first draft. Then write that candidate to a file and verify it. Use ensemble_solve at most once or twice per task, only for the genuinely hard part — routine glue code you write directly.
 
@@ -138,6 +142,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     allowMutation: opts.allowMutation ?? true,
     budget: { remainingTokens: budgetTokens },
     onFileMutated: opts.onFileMutated,
+    consultSpecialist: opts.consultSpecialist,
   }
 
   const tools = registry.list()
@@ -162,6 +167,12 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   // Error-pattern tracker — detects the agent spinning on the same failure.
   let lastErrorFingerprint = ''
   let consecutiveErrorCount = 0
+
+  // Stall detector (B2) — detects the agent repeating the EXACT same tool-call
+  // signature (same tool names + same args). One corrective hint on the 2nd repeat,
+  // hard stop on the 3rd so a thrashing model cannot burn the whole iteration budget.
+  let lastTurnSig = ''
+  let repeatTurnCount = 0
 
   /** Inject a corrective hint when the model is looping on the same failure. */
   function maybePushErrorHint(toolResults: Array<{ ok: boolean; output: string; tool: string }>) {
@@ -251,6 +262,38 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     if (turn.text.trim()) emit({ type: 'thought', text: turn.text, iter })
 
     if (turn.toolCalls.length > 0) {
+      // ask_user — genuine clarification. The agent asks ONLY when it cannot proceed
+      // correctly without information the user alone has (or before a costly/irreversible
+      // action). Surface the question and end the turn with a DISTINCT 'clarification'
+      // status (ok=false) so multi-step consumers (planner) pause for the answer instead
+      // of treating the question as a completed step. The user's reply continues the task
+      // since session context is preserved across turns.
+      const askCall = turn.toolCalls.find(c => c.name === 'ask_user')
+      if (askCall) {
+        if (turn.toolCalls.length === 1) {
+          const question = String((askCall.args as Record<string, unknown>)?.question ?? turn.text ?? 'Could you clarify how you would like me to proceed?').trim()
+          emit({ type: 'clarification_request', question })
+          debugBus.emit('agent', 'ask_user', { question: question.slice(0, 160) }, { severity: 'info' })
+          return done('clarification', question, iter)
+        }
+        // ask_user was co-emitted with real tool calls — complete the actual work this
+        // turn and drop the premature question; the model can re-ask next turn if still
+        // blocked. (Never silently discard the other calls.)
+        emit({ type: 'thought', text: '[Deferring ask_user — finishing the other actions in this turn first]', iter })
+        turn.toolCalls = turn.toolCalls.filter(c => c.name !== 'ask_user')
+      }
+
+      // Stall detection — compare this turn's tool-call signature to the previous one.
+      const turnSig = turn.toolCalls.map(c => `${c.name}:${JSON.stringify(c.args)}`).sort().join('|')
+      if (turnSig && turnSig === lastTurnSig) repeatTurnCount++
+      else { repeatTurnCount = 0; lastTurnSig = turnSig }
+      if (repeatTurnCount >= 2) {
+        // Third identical action in a row — it will keep producing the same result.
+        emit({ type: 'thought', text: '[Stalled — repeated the same action 3× without progress; stopping]', iter })
+        debugBus.emit('agent', 'loop_stalled', { iter, sig: turnSig.slice(0, 120) }, { severity: 'warn' })
+        return done('stalled', turn.text || 'Stopped: the same action repeated without making progress.', iter)
+      }
+
       messages.push({
         role: 'assistant',
         content: turn.text || null,
@@ -269,6 +312,10 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       })
       // Detect repetitive failures and inject a corrective hint before the next turn
       maybePushErrorHint(turn.toolCalls.map((c, i) => ({ ok: results[i].ok, output: results[i].output, tool: c.name })))
+      // Anti-repeat nudge on the 2nd identical action (the 3rd hard-stops above).
+      if (repeatTurnCount === 1) {
+        messages.push({ role: 'user', content: 'SYSTEM HINT: You just repeated the exact same tool call as the previous step — it produces the same result. Use the result you already have and move on, or take a fundamentally different action. Do not repeat it again.' })
+      }
       squashOldObservations(messages, spentTokens, budgetTokens)
 
       // Context compression — fires when raw transcript exceeds ~15k tokens.

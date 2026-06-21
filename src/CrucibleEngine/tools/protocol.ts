@@ -24,6 +24,10 @@ export interface ToolCtx {
   /** Called after a successful mutating tool call with the abs paths that were written.
    *  Used by the codebase indexer to stay fresh without coupling registry to codebaseIndex. */
   onFileMutated?: (absPaths: string[]) => void
+  /** I4 — agent-to-agent consultation. When the orchestrator provides this, the
+   *  consult_specialist tool can ask another archetype a focused question and
+   *  return its answer. Absent in non-orchestrated contexts (tool then no-ops). */
+  consultSpecialist?: (archetype: 'researcher' | 'coder' | 'critic' | 'strategist', question: string) => Promise<string>
 }
 
 export interface ToolResult {

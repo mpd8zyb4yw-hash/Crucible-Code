@@ -12,3 +12,8 @@ app/
 .vite/
 .crucible/
 .crucible-checkpoints.json
+*.tsbuildinfo
+*.save
+.env.clean
+.dev.vars
+.wrangler/

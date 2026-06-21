@@ -13,6 +13,7 @@ import type { ModelEntry } from '../../../modelRegistry'
 import { toOpenAITools, fromOpenAIToolCalls } from '../tools/protocol'
 import type { ToolCall, ToolDef } from '../tools/protocol'
 import type { DriveTurn, DriveTurnResult } from './loop'
+import { debugBus } from '../debug/bus'
 
 let _groq: Groq | null = null
 let _mistral: Mistral | null = null

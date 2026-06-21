@@ -1,0 +1,76 @@
+{
+  "name": "crucible-vscode",
+  "displayName": "Crucible",
+  "description": "Review, explain, and improve the selected code with the Crucible multi-model pipeline.",
+  "version": "0.1.0",
+  "publisher": "crucible",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "crucible.reviewSelection",
+        "title": "Review with Crucible"
+      },
+      {
+        "command": "crucible.explainSelection",
+        "title": "Explain with Crucible"
+      },
+      {
+        "command": "crucible.improveSelection",
+        "title": "Improve with Crucible"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "crucible.reviewSelection",
+          "when": "editorHasSelection",
+          "group": "crucible@1"
+        },
+        {
+          "command": "crucible.explainSelection",
+          "when": "editorHasSelection",
+          "group": "crucible@2"
+        },
+        {
+          "command": "crucible.improveSelection",
+          "when": "editorHasSelection",
+          "group": "crucible@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Crucible",
+      "properties": {
+        "crucible.endpoint": {
+          "type": "string",
+          "default": "https://crucible.cam",
+          "description": "Base URL of your Crucible pipeline endpoint. Commands POST to ${endpoint}/api/chat."
+        },
+        "crucible.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Your Crucible session JWT. Sent as the crucible_session cookie and as a Bearer Authorization header."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

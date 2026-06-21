@@ -8,7 +8,7 @@ import path from 'path'
 import fs from 'fs'
 
 const DB_VERSION = 1
-const DB_PATH = path.resolve(process.cwd(), 'data', 'masterpiece-corpus.db')
+const DB_PATH = path.resolve(process.env.DATA_DIR ?? path.join(process.cwd(), 'data'), 'masterpiece-corpus.db')
 
 let _db: Database.Database | null = null
 

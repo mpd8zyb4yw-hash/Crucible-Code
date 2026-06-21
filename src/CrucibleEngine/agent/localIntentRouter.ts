@@ -180,9 +180,17 @@ const RESOLVERS = [resolvePlayMedia, resolveEmptyTrash, resolveOpen, resolveClic
  * Resolve a message to a deterministic tool plan, or null if no high-confidence
  * match. Pure function — safe to unit-test in isolation.
  */
+// Multi-step / sequenced requests ("open settings, set brightness, then play a video")
+// must NOT be served by a single-action resolver — that silently drops every step after
+// the first. Hand them to the full LLM agent loop, which can plan + execute in sequence.
+const MULTI_STEP_LOCAL = /\b(?:then|after that|and then)\b/i
+const ACTION_VERB_LOCAL = /\b(?:open|turn|set|play|show|find|search|close|launch|go to|put on|click|type|increase|decrease|adjust|mute|change|switch)\b/gi
+
 export function resolveLocalIntent(message: string): LocalPlan | null {
   const m = (message ?? '').trim()
   if (!m || m.length > 200) return null  // long prose → not a simple command
+  // Compound request → not a simple command. Precision over recall: defer to the loop.
+  if (MULTI_STEP_LOCAL.test(m) || (m.match(ACTION_VERB_LOCAL)?.length ?? 0) >= 3) return null
   for (const r of RESOLVERS) {
     const plan = r(m)
     if (plan) return plan

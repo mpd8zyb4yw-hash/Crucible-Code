@@ -10,16 +10,47 @@
     "smoke": "tsx src/CrucibleEngine/smoke-benchmarks.ts",
     "diag": "curl -s http://localhost:3001/api/diag | python3 -m json.tool",
     "build": "tsc -b && vite build",
-    "build:app": "bash setup-crucible.sh",
+    "bundle:server": "esbuild server.ts --bundle --platform=node --format=esm --outfile=server-dist/server.js --external:better-sqlite3 --external:@xenova/transformers --external:electron",
+    "dist": "npm run bundle:server && vite build && electron-builder",
+    "dist:mac": "npm run bundle:server && vite build && electron-builder --mac",
+    "dist:win": "npm run bundle:server && vite build && electron-builder --win",
+    "dist:linux": "npm run bundle:server && vite build && electron-builder --linux",
     "lint": "eslint .",
     "preview": "vite preview",
     "electron": "wait-on --timeout 30000 http://localhost:5173 http://localhost:3001 && sleep 3 && npx electron electron.cjs",
     "predev": "pkill -f \"tsx server\" || true; pkill -f \"vite\" || true; lsof -ti:5173 | xargs kill -9 2>/dev/null || true; lsof -ti:3001 | xargs kill -9 2>/dev/null || true; sleep 1"
   },
+  "build": {
+    "appId": "com.crucible.local",
+    "productName": "Crucible",
+    "directories": { "output": "release", "buildResources": "build-resources" },
+    "extraMetadata": { "main": "electron.cjs" },
+    "files": [
+      "electron.cjs",
+      "server-dist/**/*",
+      "app/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/@xenova/**/*",
+      "node_modules/onnxruntime-node/**/*",
+      "node_modules/sharp/**/*",
+      "**/*.node"
+    ],
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "category": "public.app-category.productivity"
+    },
+    "win": { "target": ["nsis"] },
+    "linux": { "target": ["AppImage"], "category": "Utility" },
+    "publish": [{ "provider": "github", "owner": "REPLACE_WITH_GH_OWNER", "repo": "crucible" }]
+  },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
     "@mistralai/mistralai": "^2.2.5",
     "@types/compression": "^1.8.1",
+    "@types/pg": "^8.20.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@xenova/transformers": "^2.17.2",
     "better-sqlite3": "^12.10.1",
@@ -28,15 +59,19 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "groq-sdk": "^1.2.1",
+    "pg": "^8.21.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
+    "esbuild": "^0.28.0",
     "@types/node": "^24.12.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

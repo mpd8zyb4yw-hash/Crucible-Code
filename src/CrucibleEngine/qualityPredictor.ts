@@ -184,11 +184,17 @@ class QualityPredictor {
     }
   }
 
-  stats(): { sampleSize: number; recentAvg: number; trend: string } {
+  stats(): { sampleSize: number; recentAvg: number; trend: 'up' | 'flat' | 'down' } {
     if (!this.history.length) return { sampleSize: 0, recentAvg: 0, trend: 'flat' }
-    const recent = this.history.slice(-20).map(e => e.compositeScore)
+    // Real trend (was hardcoded 'flat', which silently disabled rollbackIfDegraded):
+    // compare the last-10 average against the prior-10, same logic as predict().
+    const recent = this.history.slice(-10).map(e => e.compositeScore)
+    const prior  = this.history.slice(-20, -10).map(e => e.compositeScore)
     const recentAvg = recent.reduce((s, v) => s + v, 0) / recent.length
-    return { sampleSize: this.history.length, recentAvg: parseFloat(recentAvg.toFixed(3)), trend: 'flat' }
+    const priorAvg  = prior.length ? prior.reduce((s, v) => s + v, 0) / prior.length : recentAvg
+    const trend: 'up' | 'flat' | 'down' =
+      recentAvg > priorAvg + 0.03 ? 'up' : recentAvg < priorAvg - 0.03 ? 'down' : 'flat'
+    return { sampleSize: this.history.length, recentAvg: parseFloat(recentAvg.toFixed(3)), trend }
   }
 }
 

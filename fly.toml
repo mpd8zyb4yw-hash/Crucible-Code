@@ -1,0 +1,39 @@
+app = "crucible-api"
+primary_region = "iad"
+
+[build]
+
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 80
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "15s"
+    method = "GET"
+    path = "/api/diag"
+    timeout = "10s"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[env]
+  PORT = "3001"
+  NODE_ENV = "production"
+  DATA_DIR = "/data"
+
+[[mounts]]
+  source = "crucible_data"
+  destination = "/data"
+  initial_size = "1gb"
