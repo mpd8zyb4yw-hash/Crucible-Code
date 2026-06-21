@@ -40,6 +40,7 @@ import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
 import { DOMAIN_SHARDS } from './src/CrucibleEngine/corpus/db'
 import { runSelfPlayCycle } from './src/CrucibleEngine/selfPlay'
+import { speak } from './src/CrucibleEngine/tts'
 import { runMetaRouter, consult } from './src/CrucibleEngine/agent/metaRouter'
 import { runRsiCycle, rsiStatus, setRsiEnabled, type RsiDeps } from './src/CrucibleEngine/rsi/controller'
 import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/CrucibleEngine/agent/archetypes'
@@ -1764,6 +1765,39 @@ app.post('/api/corpus/learn-routes', async (_req, res) => {
   } catch (e: any) {
     res.status(500).json({ ok: false, error: e?.message ?? 'learn-routes failed' })
   }
+})
+
+// ── Session L: TTS + Remote Brain cellular tunnel ────────────────────────────
+// POST /api/tts — speak text on the Mac's speakers (Remote Brain agent talkback).
+// Fire-and-forget: returns immediately so the response path is never blocked.
+app.post('/api/tts', (req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text : ''
+  if (text.trim()) speak(text).catch(() => {})
+  res.json({ ok: true })
+})
+
+// A single quick tunnel reused across calls so we don't spawn one per request.
+let _remoteTunnel: { url: string } | null = null
+// POST /api/remote-brain/tunnel/start — spin up a Cloudflare quick tunnel that points
+// DIRECTLY at this Mac (origin localhost:3001), giving the phone an https/wss path to
+// the screen stream from cellular / a different network. Returns the trycloudflare URL.
+app.post('/api/remote-brain/tunnel/start', (_req, res) => {
+  if (process.platform !== 'darwin') return res.status(503).json({ ok: false, error: 'Remote Brain tunnel requires macOS' })
+  if (_remoteTunnel) return res.json({ ok: true, url: _remoteTunnel.url, reused: true })
+  let done = false
+  const finish = (status: number, body: any) => { if (done) return; done = true; res.status(status).json(body) }
+  try {
+    const cp = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', `http://localhost:${Number(process.env.PORT) || 3001}`], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const onData = (buf: Buffer) => {
+      const m = buf.toString().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
+      if (m) { _remoteTunnel = { url: m[0] }; finish(200, { ok: true, url: m[0] }) }
+    }
+    cp.stdout.on('data', onData)
+    cp.stderr.on('data', onData)   // cloudflared prints the assigned URL to stderr
+    cp.on('error', (e) => finish(500, { ok: false, error: e.message }))
+    cp.on('exit', () => { if (!done) finish(500, { ok: false, error: 'cloudflared exited before announcing a URL' }); _remoteTunnel = null })
+    setTimeout(() => finish(504, { ok: false, error: 'tunnel did not start within 25s' }), 25000)
+  } catch (e: any) { finish(500, { ok: false, error: e?.message ?? 'spawn failed' }) }
 })
 
 // ── /api/config — update pipeline config at runtime ──────────────────────────
