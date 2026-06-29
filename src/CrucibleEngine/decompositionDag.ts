@@ -195,7 +195,9 @@ export function classifyDag(
     index?: SemanticIndex
   } = {},
 ): TaskDag {
-  const classifyFn = opts.classifyFn ?? classify
+  // Default classifier threads the semantic index into the router so it can tell
+  // local (known) from external (unknown) references. A custom classifyFn overrides.
+  const classifyFn = opts.classifyFn ?? ((t: RouterTask) => classify(t, { index: opts.index }))
   for (const node of dag.nodes) {
     node.route = classifyFn({
       goal: node.goal,
