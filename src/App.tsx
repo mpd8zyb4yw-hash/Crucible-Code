@@ -32,7 +32,10 @@ const MODES = [
   { id: 'code',   label: 'CODE',   color: '#4db89e' },
   { id: 'seeker', label: 'SEEKER', color: '#f87171' },
 ] as const
-type Mode = typeof MODES[number]['id']
+// 'research' is a real app mode (state + MODE_META + classifyMode) but intentionally
+// not a user-selectable entry in the MODES menu, so it's added to the type union here
+// rather than to MODES (which would add a menu item / change behavior).
+type Mode = typeof MODES[number]['id'] | 'research'
 
 const MODE_META: Record<string, { label: string; hint: string; color: string }> = {
   quorum: { label: 'Ensemble', hint: 'Multi-model pipeline', color: '#7c7cf8' },
@@ -1176,7 +1179,9 @@ function TasksBinder({ onResume }: { onResume: (goal: string) => void }) {
 }
 
 // ── Session history binder ─────────────────────────────────────────────────────
-type HistorySession = { ts: number; query: string; promptType: string; models: string[]; synthesis: string }
+// A conversation = one whole chat thread, grouped + searchable. Reopening loads the
+// full thread and continues it (the parent's onRestore fetches the rounds).
+type HistorySession = { id: string; title: string; mode: string; snippet: string; updatedAt: number; roundCount: number }
 
 const PTYPE_COLOR: Record<string, string> = {
   code: '124,124,248', math: '192,132,252', creative: '77,184,158',
@@ -1200,9 +1205,9 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
   const panelRef   = useRef<HTMLDivElement | null>(null)
 
   const fetchHistory = () =>
-    apiFetch('/api/history')
+    apiFetch('/api/conversations')
       .then(r => r.json())
-      .then(d => { setSessions(d.sessions ?? []); setLoading(false); setLoaded(true) })
+      .then(d => { setSessions(d.conversations ?? []); setLoading(false); setLoaded(true) })
       .catch(() => { setLoading(false); setLoaded(true) })
 
   useEffect(() => {
@@ -1242,8 +1247,8 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
 
   const filtered = sessions.filter(s =>
     !search ||
-    s.query.toLowerCase().includes(search.toLowerCase()) ||
-    s.synthesis.toLowerCase().includes(search.toLowerCase())
+    (s.title ?? '').toLowerCase().includes(search.toLowerCase()) ||
+    (s.snippet ?? '').toLowerCase().includes(search.toLowerCase())
   )
 
   // Relative timestamp — "just now" / "2 hours ago" / "3 days ago" / a date.
@@ -1259,12 +1264,6 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
     return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' })
   }
 
-  // Auto-label — first 7 words of the query, ellipsised.
-  const autoLabel = (q: string) => {
-    const words = q.trim().split(/\s+/)
-    return words.slice(0, 7).join(' ') + (words.length > 7 ? '…' : '')
-  }
-
   // Bucket a timestamp into Today / Yesterday / This Week / Earlier.
   const bucketOf = (ts: number): string => {
     const d = new Date(ts), now = new Date()
@@ -1277,7 +1276,7 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
   const BUCKET_ORDER = ['Today', 'Yesterday', 'This Week', 'Earlier']
   // Ordered [bucketLabel, sessions[]] pairs, preserving the filtered (recency) order within.
   const grouped = BUCKET_ORDER
-    .map(b => [b, filtered.filter(s => bucketOf(s.ts) === b)] as const)
+    .map(b => [b, filtered.filter(s => bucketOf(s.updatedAt) === b)] as const)
     .filter(([, items]) => items.length > 0)
 
   return (
@@ -1435,12 +1434,12 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
                   color: 'rgba(160,160,200,0.4)', textTransform: 'uppercase',
                 }}>{bucket}</div>
                 {items.map(s => {
-                  const rgb = ptypeRgb(s.promptType)
-                  const isHov = hoveredIdx === s.ts
+                  const rgb = ptypeRgb(s.mode === 'code' ? 'code' : 'general')
+                  const isHov = hoveredIdx === s.updatedAt
                   return (
                     <div
-                      key={s.ts}
-                      onMouseEnter={() => setHoveredIdx(s.ts)}
+                      key={s.id}
+                      onMouseEnter={() => setHoveredIdx(s.updatedAt)}
                       onMouseLeave={() => setHoveredIdx(null)}
                       onClick={() => { onRestore(s); setOpen(false) }}
                       style={{
@@ -1458,33 +1457,27 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
                         transition: 'background 0.2s',
                       }} />
 
-                      {/* Auto-label (first 7 words) */}
+                      {/* Conversation title */}
                       <div style={{
                         fontSize: 12.5, lineHeight: 1.5, fontWeight: 500,
                         color: isHov ? '#e4e4f8' : 'rgba(170,170,210,0.8)',
                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         transition: 'color 0.16s',
                       }}>
-                        {autoLabel(s.query)}
+                        {s.title || 'New chat'}
                       </div>
 
-                      {/* Badges + model count + relative timestamp */}
+                      {/* Message count + relative timestamp */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 5 }}>
-                        <span style={{
-                          fontSize: 8, fontWeight: 700, letterSpacing: '0.1em',
-                          color: `rgba(${rgb},0.6)`, textTransform: 'uppercase',
-                          background: `rgba(${rgb},0.08)`, padding: '2px 6px',
-                          borderRadius: 3, border: `1px solid rgba(${rgb},0.13)`,
-                        }}>{s.promptType || 'general'}</span>
-                        {s.models.length > 0 && (
+                        {s.roundCount > 0 && (
                           <span style={{ fontSize: 9, color: 'rgba(160,160,200,0.4)' }}>
-                            {s.models.length} model{s.models.length === 1 ? '' : 's'}
+                            {s.roundCount} message{s.roundCount === 1 ? '' : 's'}
                           </span>
                         )}
-                        <span style={{ fontSize: 9, color: '#2f2f48', marginLeft: 'auto' }}>{relTime(s.ts)}</span>
+                        <span style={{ fontSize: 9, color: '#2f2f48', marginLeft: 'auto' }}>{relTime(s.updatedAt)}</span>
                       </div>
 
-                      {/* Hover-expand: synthesis preview + actions */}
+                      {/* Hover-expand: last-answer preview + actions */}
                       <div className={`hrow-expand${isHov ? ' open' : ''}`}>
                         <div>
                           <div style={{ paddingTop: 8 }}>
@@ -1494,18 +1487,16 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
                               maxHeight: 110, overflowY: 'auto',
                               whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                             }}>
-                              {s.synthesis.length > 280 ? s.synthesis.slice(0, 280) + '…' : s.synthesis || '—'}
+                              {(s.snippet ?? '').length > 280 ? s.snippet.slice(0, 280) + '…' : s.snippet || '—'}
                             </div>
                             <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
-                              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.10em', color: `rgba(${rgb},0.5)`, textTransform: 'uppercase' }}>tap to restore</span>
+                              <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.10em', color: `rgba(${rgb},0.5)`, textTransform: 'uppercase' }}>tap to open</span>
                               <button
                                 onClick={e => {
                                   e.stopPropagation()
-                                  const md = `# ${s.query}\n\n**${s.promptType || 'general'}** · ${new Date(s.ts).toLocaleString()}\n\n**Models:** ${s.models.join(', ')}\n\n---\n\n${s.synthesis}`
-                                  const a = document.createElement('a')
-                                  a.href = URL.createObjectURL(new Blob([md], { type: 'text/markdown' }))
-                                  a.download = `crucible-${s.ts}.md`
-                                  a.click()
+                                  apiFetch(`/api/conversations/${s.id}`, { method: 'DELETE', credentials: 'include' })
+                                    .then(() => setSessions(prev => prev.filter(c => c.id !== s.id)))
+                                    .catch(() => {})
                                 }}
                                 style={{
                                   background: 'none', border: `1px solid rgba(${rgb},0.2)`, borderRadius: 4,
@@ -1513,7 +1504,7 @@ function HistoryBinder({ onRestore }: { onRestore: (session: HistorySession) => 
                                   letterSpacing: '0.08em', textTransform: 'uppercase', padding: '3px 8px',
                                   cursor: 'pointer', transition: 'border-color 0.15s, color 0.15s',
                                 }}
-                              >export md</button>
+                              >delete</button>
                             </div>
                           </div>
                         </div>
@@ -1984,6 +1975,16 @@ export default function App() {
     return sid
   })
 
+  // conversationId — the grouped chat thread. FRESH on every page load (not persisted),
+  // so a refresh always starts a NEW conversation; the previous one is archived to the
+  // searchable conversation store and reopenable from the history drawer. Reopening a
+  // past conversation adopts its id so new messages append to that thread.
+  const [conversationId, setConversationId] = useState<string>(
+    () => 'conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+  )
+  const conversationIdRef = useRef(conversationId)
+  useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
+
   // ── Reconnect state (Task 5) ──────────────────────────────────────────────
   const [reconnecting, setReconnecting] = useState(false)
 
@@ -2188,54 +2189,29 @@ export default function App() {
   // when we left — keeps polling. The server patches the active session the moment
   // the pipeline/agent finishes (even with no client connected), so a query we left
   // unanswered fills itself in instead of sitting dead.
-  useEffect(() => {
-    if (!authUser || authUser === 'loading') return
-    let cancelled = false
-    let pollTimer: ReturnType<typeof setTimeout> | null = null
-    let attempts = 0
-    const MAX_ATTEMPTS = 100  // ~5 min ceiling at 3s cadence
-
-    const tick = (isFirst: boolean) => {
-      apiFetch(`${API_BASE}/api/session/restore`, { credentials: 'include' })
-        .then(r => r.json())
-        .then(({ session }) => {
-          if (cancelled || !session?.rounds?.length) return
-          // This device is actively streaming — the live stream is authoritative here.
-          if (wasThinkingRef.current) return
-          const serverRounds: any[] = session.rounds
-          if (isFirst) {
-            setRounds(serverRounds)
-            if (session.mode) setMode(session.mode)
-          } else {
-            // Merge by id: only fill in answers that just finished — never drop a
-            // round the user added locally after returning.
-            const byId = new Map(serverRounds.map(r => [r.id, r]))
-            setRounds(prev => prev.length === 0 ? serverRounds : prev.map(r => {
-              const s = byId.get(r.id)
-              return (s && s.synthesisDone && !r.synthesisDone) ? { ...r, ...s } : r
-            }))
-          }
-          const last = serverRounds[serverRounds.length - 1]
-          const stillGenerating = !!last && !!last.userMessage && !last.synthesisDone
-          if (stillGenerating && attempts++ < MAX_ATTEMPTS) {
-            pollTimer = setTimeout(() => tick(false), 3000)
-          }
-        })
-        .catch(() => {})
-    }
-    tick(true)
-    return () => { cancelled = true; if (pollTimer) clearTimeout(pollTimer) }
-  }, [authUser])
+  // Every page load starts a FRESH conversation (blank chat) — by design. The previous
+  // conversation is archived to the searchable conversation store (saved continuously
+  // below) and reopenable from the history drawer. We deliberately do NOT restore the
+  // prior active session into the live view here; "refresh = new instance".
+  // (Server-side completion still fills finished answers into the archived conversation
+  //  via the roundId→conversationId registry, so nothing is lost mid-stream.)
 
   // ── Debounced session save helper (Task 2) ────────────────────────────────
   const sessionSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const saveSession = useCallback((currentRounds: typeof rounds, currentMode: typeof mode) => {
     if (sessionSaveTimer.current) clearTimeout(sessionSaveTimer.current)
     sessionSaveTimer.current = setTimeout(() => {
+      // Legacy active-session blob (kept for back-compat; harmless).
       apiFetch(`${API_BASE}/api/session/save`, {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rounds: currentRounds, mode: currentMode }),
+      }).catch(() => {})
+      // Grouped conversation store — the source of truth for searchable history.
+      apiFetch(`${API_BASE}/api/conversations/save`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: conversationIdRef.current, mode: currentMode, rounds: currentRounds }),
       }).catch(() => {})
     }, 1000)
   }, [])
@@ -2260,6 +2236,11 @@ export default function App() {
           method: 'POST', credentials: 'include', keepalive: true,
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ rounds, mode, timestamp: Date.now() }),
+        }).catch(() => {})
+        fetch(`${API_BASE}/api/conversations/save`, {
+          method: 'POST', credentials: 'include', keepalive: true,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: conversationIdRef.current, mode, rounds }),
         }).catch(() => {})
       } catch {}
     }
@@ -2313,7 +2294,11 @@ export default function App() {
       .then(({ session }) => {
         if (!session?.rounds?.length) return
         setRounds(prev => {
-          if (prev.length === 0) return session.rounds
+          // A fresh load starts blank by design — do NOT adopt the old active session
+          // into an empty view (that resurrected the previous chat on every refresh).
+          // Finished answers live in the conversation store / history now. Only merge a
+          // just-completed answer into a round that is ALREADY on screen (reconnect case).
+          if (prev.length === 0) return prev
           const serverLast = session.rounds[session.rounds.length - 1]
           const localLast = prev[prev.length - 1]
           if (serverLast?.id === localLast?.id && (serverLast?.synthesis?.length ?? 0) > (localLast?.synthesis?.length ?? 0)) {
@@ -2499,6 +2484,13 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ rounds: nextRounds, mode, timestamp: Date.now() }),
     }).catch(() => {})
+    // Archive into the grouped conversation store immediately so a brand-new chat shows
+    // up in history the moment the first message is sent (not only after it finishes).
+    apiFetch(`${API_BASE}/api/conversations/save`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: conversationIdRef.current, mode, rounds: nextRounds }),
+    }).catch(() => {})
 
     abortRef.current = new AbortController()
 
@@ -2520,6 +2512,7 @@ export default function App() {
           message: userMessage,
           mode: modeOverride ?? mode,
           sessionId,
+          conversationId,  // groups this round into the current conversation thread
           roundId,  // lets the server patch the finished answer into THIS round if we disconnect
           prewarmToken: prewarmTokenRef.current,
           device: /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "mobile" : "desktop",
@@ -3578,17 +3571,40 @@ export default function App() {
               animation: 'pulse 1.4s ease infinite',
             }}>reconnecting…</span>
           )}
-          <HistoryBinder onRestore={session => {
-              const restored: Round = {
-                ...emptyRound(`hist-${session.ts}`, session.query),
-                promptType: session.promptType,
-                synthesis: session.synthesis,
-                synthesisDone: true,
-                models: session.models.map(id => ({ id, label: id, provider: '', isWildcard: false, color: '#7c7cf8', rgb: '124,124,248' })),
-                done: Object.fromEntries(session.models.map(id => [id, true])),
-              }
-              setRounds(prev => [...prev, restored])
+          <HistoryBinder onRestore={summary => {
+              // Reopen the full conversation thread and adopt its id so new messages
+              // continue it (ChatGPT-style). Fetches the stored rounds verbatim.
+              apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
+                .then(r => r.json())
+                .then(({ conversation }) => {
+                  if (!conversation?.rounds) return
+                  setConversationId(conversation.id)
+                  if (conversation.mode) setMode(conversation.mode)
+                  setRounds(conversation.rounds)
+                })
+                .catch(() => {})
             }} />
+          {/* Open goals — cross-session task graphs; clicking one resumes it as a new query */}
+          <TasksBinder onResume={goal => { void send(goal) }} />
+          {/* New chat — clears the view and starts a fresh conversation thread */}
+          <button
+            className="crucible-newchat-btn"
+            onClick={() => {
+              setRounds([])
+              setConversationId('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))
+            }}
+            title="New chat"
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              color: '#555', padding: '6px 7px', borderRadius: 8,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'color 0.18s, background 0.18s',
+            }}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+              <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+          </button>
 <button className="crucible-menu-btn" onClick={() => setMenuOpen(o => !o)} style={{
             background: 'none', border: 'none', cursor: 'pointer',
             color: '#555', padding: '6px 8px', borderRadius: 8,
