@@ -33,7 +33,11 @@ let serverReady = false;
 // Fall back to `npx tsx server.ts` for source/dev runs (20s+ start).
 const BUNDLE = path.join(__dirname, 'server-dist', 'server.js');
 const SERVER_TS = path.join(__dirname, 'server.ts');
-const USE_BUNDLE = fs.existsSync(BUNDLE);
+// Use the precompiled bundle ONLY when packaged (no tsx/source available). In a
+// source run a leftover server-dist/ must NOT hijack the launch — always run the
+// fresh server.ts via tsx so the running code matches the repo. (A stale bundle was
+// failing with "Dynamic require of fs is not supported" and wedging server startup.)
+const USE_BUNDLE = app.isPackaged && fs.existsSync(BUNDLE);
 
 // In production the express server serves the built frontend on :3001.
 // In dev, Vite serves it on :5173 with HMR.
