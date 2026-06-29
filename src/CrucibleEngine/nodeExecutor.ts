@@ -30,6 +30,8 @@ import path from 'path'
 import type { DagNode, TaskDag, VerificationGate } from './decompositionDag'
 import { applyVerified, syntacticVerify, type FileChange, type VerifyFn, type ApplyResult } from './apply/applyLayer'
 import { fingerprint, extractHints } from './agent/verify'
+import { resolveAmbiguity } from './ambiguity'
+import type { SemanticIndex } from './state/semanticIndex'
 
 /** What the executor asks the synthesizer to produce for one attempt. */
 export interface SynthRequest {
@@ -65,6 +67,10 @@ export interface ExecContext {
   maxAttempts?: number
   /** Pre-fetched retrieval grounding (Tier 1.3) injected into the spec for retrieve-routed nodes. */
   retrievalBlock?: string
+  /** Tier 1.2 index — when present, an ambiguity gate (Tier 2.4) runs before synthesis:
+   *  an unresolvable/underspecified node abstains with a clarification instead of guessing.
+   *  Resolved references rewrite the node's spec to name a concrete target. */
+  index?: SemanticIndex
   dryRun?: boolean
 }
 
@@ -126,7 +132,19 @@ export async function executeNode(node: DagNode, ctx: ExecContext): Promise<Node
     return { ...base, status: 'abstained', attempts: 0, reason }
   }
 
-  let spec = buildNodeSpec(node, node.route?.route === 'retrieve' ? ctx.retrievalBlock : undefined)
+  // ABSTAIN EXIT (Tier 2.4): if the request can't be pinned down, ask rather than guess.
+  let effectiveGoal = node.goal
+  if (ctx.index) {
+    const amb = resolveAmbiguity(node.goal, { index: ctx.index })
+    if (amb.ambiguous) {
+      const reason = `abstained (ambiguous): ${amb.clarification}`
+      ledger(ctx.projectPath, { event: 'abstain', nodeId: node.id, stage: 'ambiguity', confidence: amb.confidence, reason })
+      return { ...base, status: 'abstained', attempts: 0, reason }
+    }
+    if (amb.rewrittenGoal) effectiveGoal = amb.rewrittenGoal  // concrete target for synthesis
+  }
+
+  let spec = buildNodeSpec({ ...node, goal: effectiveGoal }, node.route?.route === 'retrieve' ? ctx.retrievalBlock : undefined)
   let priorHints: string[] = []
   const seenFingerprints = new Set<string>()
 
