@@ -100,7 +100,7 @@ export function decompose(prompt: string): DecompositionTree {
     })
   } else {
     // No list structure — split by "and", "then", "also" connectors
-    const connectors = prompt.split(/\b(?:and then|then|also|additionally|furthermore)\b/i)
+    const connectors = prompt.split(/\b(?:and then|then|also|additionally|furthermore|finally|lastly)\b/i)
     if (connectors.length >= 2) {
       connectors.forEach((part, i) => {
         const text = part.trim()
