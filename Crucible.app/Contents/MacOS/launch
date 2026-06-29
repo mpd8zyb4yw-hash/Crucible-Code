@@ -1,26 +1,24 @@
 #!/bin/bash
-cd /Users/justin/crucible-local
+# Crucible.app launcher — opens the app with ZERO terminal interaction.
+# Double-click → Electron starts from the source repo and handles everything itself
+# (build-if-changed → self-heal → server → window) via electron.cjs in CRUCIBLE_APP_MODE.
+# No Terminal window, no manual steps. Logs go to ~/Library/Logs for diagnostics.
+REPO="/Users/justin/Desktop/crucible-local"
+LOG="$HOME/Library/Logs/Crucible-launch.log"
 
-BACKEND_RUNNING=$(lsof -ti tcp:3001 2>/dev/null)
-FRONTEND_RUNNING=$(lsof -ti tcp:5173 2>/dev/null)
+cd "$REPO" 2>/dev/null || { osascript -e "display alert \"Crucible\" message \"Repo not found at $REPO\"" 2>/dev/null; exit 1; }
 
-if [ -n "$BACKEND_RUNNING" ] && [ -n "$FRONTEND_RUNNING" ]; then
-  open http://172.20.10.4:5173
-  exit 0
+# LaunchServices gives us a bare environment — restore the toolchain PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+export CRUCIBLE_APP_MODE=1
+
+mkdir -p "$HOME/Library/Logs" 2>/dev/null
+
+ELECTRON="$REPO/node_modules/.bin/electron"
+if [ -x "$ELECTRON" ]; then
+  # `exec` replaces this script with Electron, so the .app process IS the app — no
+  # stray shell, no terminal. Output is redirected to the log file.
+  exec "$ELECTRON" "$REPO/electron.cjs" >"$LOG" 2>&1
+else
+  exec npx electron "$REPO/electron.cjs" >"$LOG" 2>&1
 fi
-
-[ -n "$BACKEND_RUNNING" ] && kill $BACKEND_RUNNING 2>/dev/null
-[ -n "$FRONTEND_RUNNING" ] && kill $FRONTEND_RUNNING 2>/dev/null
-sleep 1
-
-osascript -e 'tell application "Terminal" to do script "cd /Users/justin/crucible-local && bash launch-mobile.sh"'
-
-for i in {1..15}; do
-  sleep 1
-  if curl -s http://localhost:3001 > /dev/null 2>&1; then
-    open http://172.20.10.4:5173
-    exit 0
-  fi
-done
-
-open http://172.20.10.4:5173

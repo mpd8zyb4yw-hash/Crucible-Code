@@ -20,9 +20,12 @@ app.setPath('userData', path.join(app.getPath('appData'), 'crucible-local'));
 const DATA_DIR = app.getPath('userData');
 
 let mainWindow;
+let loadingWindow;
 let tray = null;
 let serverProc;
 let viteProc;
+let buildProc;
+let healProc;
 let serverReady = false;
 
 // ── Server entry resolution (1.1) ─────────────────────────────────────────────
@@ -88,6 +91,8 @@ function spawnBackend() {
 function killBackend() {
   if (serverProc) { serverProc.kill(); serverProc = null; }
   if (viteProc) { viteProc.kill(); viteProc = null; }
+  if (buildProc) { try { buildProc.kill(); } catch (e) {} buildProc = null; }
+  if (healProc) { try { healProc.kill(); } catch (e) {} healProc = null; }
 }
 
 function restartBackend() {
@@ -151,7 +156,12 @@ function updateTray() {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: serverReady ? 'Server: running' : 'Server: stopped', enabled: false },
     { type: 'separator' },
-    { label: 'Open Crucible', click: () => { if (!mainWindow) createWindow(); else { mainWindow.show(); mainWindow.focus(); } } },
+    { label: 'Open Crucible', click: () => {
+        if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+        else if (serverReady) { createWindow(); }
+        else if (loadingWindow) { loadingWindow.show(); loadingWindow.focus(); }
+        else { createLoadingWindow().then(boot); }
+      } },
     { label: 'Restart Server', click: restartBackend },
     { type: 'separator' },
     { label: 'Quit Crucible', click: () => { killBackend(); app.quit(); } },
@@ -162,6 +172,185 @@ function createTray() {
   if (tray) return;
   tray = new Tray(serverReady ? DOT_GREEN() : DOT_RED());
   updateTray();
+}
+
+// ── Loading / status window ────────────────────────────────────────────────────
+// Shown immediately on launch so the user sees the app come alive — never a terminal.
+// Clean Crucible wordmark + a status line; on a build failure it shows the error and
+// a Retry button (no terminal dump). Self-authored HTML, no external assets (UI rule).
+function loadingHTML() {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;height:100%;background:#09090b;color:#e7e7ea;overflow:hidden;
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;-webkit-user-select:none;cursor:default}
+    .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;padding:0 28px}
+    .mark{font-size:30px;font-weight:600;letter-spacing:.34em;padding-left:.34em;color:#f4f4f6}
+    .bar{width:170px;height:2px;border-radius:2px;background:rgba(255,255,255,.08);overflow:hidden}
+    .bar>i{display:block;height:100%;width:38%;border-radius:2px;
+      background:linear-gradient(90deg,#4db89e,#7c7cf8);animation:slide 1.15s cubic-bezier(.4,0,.2,1) infinite}
+    @keyframes slide{0%{transform:translateX(-110%)}100%{transform:translateX(340%)}}
+    .status{font-size:12px;letter-spacing:.06em;color:rgba(200,205,215,.55);min-height:16px;text-align:center}
+    .err{display:none;flex-direction:column;align-items:center;gap:14px;max-width:100%}
+    .err .t{font-size:13px;font-weight:600;color:#f2b8b8}
+    .err pre{max-width:520px;max-height:180px;overflow:auto;text-align:left;font-size:10.5px;line-height:1.5;
+      color:#f2b8b8;background:rgba(255,90,90,.06);border:1px solid rgba(255,90,90,.18);
+      border-radius:8px;padding:10px 12px;white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace}
+    .btn{cursor:pointer;border:1px solid rgba(124,124,248,.4);background:rgba(124,124,248,.14);
+      color:#cfd0ff;font:inherit;font-size:12px;font-weight:600;padding:7px 20px;border-radius:8px}
+    .hidden{display:none!important}
+  </style></head><body><div class="wrap">
+    <div class="mark">CRUCIBLE</div>
+    <div id="live" class="bar"><i></i></div>
+    <div id="status" class="status">Starting…</div>
+    <div id="err" class="err">
+      <div class="t">Build failed</div>
+      <pre id="errmsg"></pre>
+      <button class="btn" onclick="document.title='RETRY'">Retry</button>
+    </div>
+  </div><script>
+    window.setStatus=t=>{var s=document.getElementById('status');if(s)s.textContent=t};
+    window.setError=m=>{document.getElementById('live').classList.add('hidden');
+      document.getElementById('status').classList.add('hidden');
+      document.getElementById('errmsg').textContent=m;document.getElementById('err').style.display='flex'};
+    window.clearError=()=>{document.getElementById('live').classList.remove('hidden');
+      document.getElementById('status').classList.remove('hidden');
+      document.getElementById('err').style.display='none';document.title='Crucible'};
+  </script></body></html>`;
+}
+
+function createLoadingWindow() {
+  loadingWindow = new BrowserWindow({
+    width: 460, height: 320, resizable: false, frame: false, center: true,
+    backgroundColor: '#09090b', show: false,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+  // Retry button signals the main process via the page title (no preload needed).
+  loadingWindow.webContents.on('page-title-updated', (e, title) => {
+    if (title === 'RETRY' && !mainWindow) { loadingSay('Retrying…'); boot(); }
+  });
+  loadingWindow.on('closed', () => { loadingWindow = null; });
+  const ready = new Promise(res => loadingWindow.webContents.once('did-finish-load', res));
+  loadingWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(loadingHTML()));
+  loadingWindow.once('ready-to-show', () => loadingWindow && loadingWindow.show());
+  return ready;
+}
+
+function loadingSay(text) {
+  if (!loadingWindow || loadingWindow.isDestroyed()) return;
+  loadingWindow.webContents.executeJavaScript(`window.setStatus(${JSON.stringify(text)})`).catch(() => {});
+}
+function loadingError(text) {
+  if (!loadingWindow || loadingWindow.isDestroyed()) return;
+  loadingWindow.webContents.executeJavaScript(`window.clearError();window.setError(${JSON.stringify(text)})`).catch(() => {});
+}
+function closeLoading() {
+  if (loadingWindow && !loadingWindow.isDestroyed()) loadingWindow.close();
+  loadingWindow = null;
+}
+
+// ── Auto-build / self-heal (source runs only; packaged apps ship prebuilt) ───────
+function bin(name) {
+  for (const d of ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']) {
+    const p = path.join(d, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return name;
+}
+const BUILD_SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'app', 'release', '.crucible', 'server-dist', '.turbo', '.cache']);
+function newestMtime(p) {
+  try {
+    const st = fs.statSync(p);
+    if (st.isFile()) return st.mtimeMs;
+    let m = st.mtimeMs;
+    for (const e of fs.readdirSync(p)) { if (!BUILD_SKIP.has(e) && !e.startsWith('.')) m = Math.max(m, newestMtime(path.join(p, e))); }
+    return m;
+  } catch (e) { return 0; }
+}
+// Rebuild only if a frontend source is newer than the last build output (app/index.html).
+function sourcesChanged() {
+  let builtAt;
+  try { builtAt = fs.statSync(path.join(__dirname, 'app', 'index.html')).mtimeMs; } catch (e) { return true; }
+  const srcs = ['src', 'index.html', 'vite.config.ts', 'package.json'].map(s => newestMtime(path.join(__dirname, s)));
+  return Math.max.apply(null, srcs) > builtAt;
+}
+
+function buildEnv() {
+  return {
+    ...process.env,
+    PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
+    FORCE_COLOR: '0',
+  };
+}
+
+function runBuild() {
+  return new Promise(resolve => {
+    let out = '';
+    buildProc = spawn(bin('npm'), ['run', 'build'], { cwd: __dirname, shell: false, env: buildEnv() });
+    buildProc.stdout.on('data', d => { out += d.toString(); });
+    buildProc.stderr.on('data', d => { out += d.toString(); });
+    buildProc.on('error', err => { buildProc = null; resolve({ ok: false, out: out + '\n' + err.message }); });
+    buildProc.on('close', code => { buildProc = null; resolve({ ok: code === 0, out }); });
+  });
+}
+
+function runHeal(buildOut) {
+  return new Promise(resolve => {
+    healProc = spawn(bin('npx'), ['tsx', path.join('scripts', 'selfHeal.ts')], { cwd: __dirname, shell: false, env: buildEnv() });
+    healProc.stdout.on('data', d => console.log('[heal]', d.toString().trim()));
+    healProc.stderr.on('data', d => console.error('[heal:err]', d.toString().trim()));
+    healProc.on('error', () => { healProc = null; resolve(false); });
+    healProc.on('close', code => { healProc = null; resolve(code === 0); });
+    try { healProc.stdin.write(buildOut || ''); healProc.stdin.end(); } catch (e) {}
+  });
+}
+
+// Returns true to proceed to launch, false if a fatal build error is being shown.
+async function ensureBuilt() {
+  // Only source runs with the app-mode flag auto-build. Packaged apps ship prebuilt;
+  // plain `npm run electron` keeps its existing (no-gate) behavior — no regression.
+  if (app.isPackaged || process.env.CRUCIBLE_APP_MODE !== '1') return true;
+  if (!fs.existsSync(path.join(__dirname, 'server.ts'))) return true; // not a source checkout
+  loadingSay('Checking build…');
+  if (!sourcesChanged()) return true;
+
+  loadingSay('Building…');
+  let r = await runBuild();
+  if (!r.ok) {
+    loadingSay('Build failed — self-healing…');
+    await runHeal(r.out);
+    loadingSay('Rebuilding…');
+    r = await runBuild();
+  }
+  if (!r.ok) {
+    const lines = r.out.split('\n').filter(l => /error TS\d+|error:|Error:/.test(l));
+    loadingError((lines.length ? lines.slice(0, 14).join('\n') : r.out.slice(-1200)).trim() || 'Unknown build error.');
+    return false;
+  }
+  return true;
+}
+
+// ── Boot sequence: build (if needed) → server → window. All inside the app. ──────
+async function boot() {
+  loadingSay('Starting…');
+  if (!serverReady) {
+    const okToLaunch = await ensureBuilt();
+    if (!okToLaunch) return; // error screen + Retry is showing
+
+    loadingSay('Starting server…');
+    if (!serverProc) spawnBackend();
+    try {
+      const ports = app.isPackaged ? [waitForPort(3001)] : [waitForPort(3001), waitForPort(5173)];
+      await Promise.all(ports);
+      serverReady = true;
+      updateTray();
+    } catch (err) {
+      loadingError('Server did not start on port 3001.\n' + err.message);
+      return;
+    }
+  }
+  loadingSay('Ready');
+  // Brief settle so the React app paints before we reveal it (avoids a white flash).
+  await new Promise(r => setTimeout(r, app.isPackaged ? 400 : 1500));
+  createWindow();
 }
 
 function createWindow() {
@@ -180,6 +369,9 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
+  // Hand off from the loading window only once the React app has actually painted.
+  mainWindow.webContents.once('did-finish-load', closeLoading);
+  setTimeout(closeLoading, 8000); // safety net so the loader never lingers
   mainWindow.loadURL(FRONTEND_URL);
 }
 
@@ -209,21 +401,14 @@ if (!gotTheLock) {
     }
 
     createTray();
-    spawnBackend();
-    console.log(`[electron] waiting for server${app.isPackaged ? '' : ' + vite'}… (${USE_BUNDLE ? 'bundle' : 'tsx'})`);
-    try {
-      const ports = app.isPackaged ? [waitForPort(3001)] : [waitForPort(3001), waitForPort(5173)];
-      await Promise.all(ports);
-      serverReady = true;
-      updateTray();
-      console.log('[electron] ready — waiting for React…');
-      await new Promise(r => setTimeout(r, app.isPackaged ? 500 : 2500));
-      console.log('[electron] launching window');
-      createWindow();
-    } catch (err) {
-      console.error('[electron] startup failed:', err.message);
-      updateTray();
-    }
+    // Show the loading window immediately, then run the full boot sequence inside the
+    // app: build-if-needed → self-heal → server → main window. Zero terminal interaction.
+    await createLoadingWindow();
+    console.log(`[electron] boot${app.isPackaged ? '' : ' (source)'}… (${USE_BUNDLE ? 'bundle' : 'tsx'})`);
+    boot().catch(err => {
+      console.error('[electron] boot failed:', err.message);
+      loadingError('Startup failed.\n' + (err && err.message ? err.message : String(err)));
+    });
   });
 
   app.on('window-all-closed', () => {
