@@ -1,0 +1,527 @@
+[
+  {
+    "id": "variance-pop",
+    "filename": "variancePopulation",
+    "summary": "variancePop computes the population variance of a numeric array, returning NaN for an empty input.",
+    "defaultPath": "src/variancePopulation.ts",
+    "exports": [
+      "variancePop"
+    ],
+    "patterns": [
+      {
+        "re": "\\bvariancePop\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "population variance",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bvariance\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "numeric array",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function variancePop(arr: number[]): number {\n  const n = arr.length;\n  if (n === 0) return NaN;\n  let mean = 0;\n  for (const x of arr) mean += x;\n  mean /= n;\n  let sum = 0;\n  for (const x of arr) {\n    const d = x - mean;\n    sum += d * d;\n  }\n  return sum / n;\n}\n",
+    "tests": [
+      {
+        "desc": "empty array yields NaN",
+        "call": "Number.isNaN(variancePop([]))",
+        "want": "true"
+      },
+      {
+        "desc": "single element has zero variance",
+        "call": "variancePop([5])",
+        "want": "0"
+      },
+      {
+        "desc": "constant array has zero variance",
+        "call": "variancePop([2,2,2])",
+        "want": "0"
+      },
+      {
+        "desc": "simple sequence",
+        "call": "variancePop([1,2,3,4,5])",
+        "want": "2"
+      },
+      {
+        "desc": "two element pair",
+        "call": "variancePop([1,2])",
+        "want": "0.25"
+      },
+      {
+        "desc": "symmetric around zero",
+        "call": "variancePop([-1,1])",
+        "want": "1"
+      },
+      {
+        "desc": "larger spread",
+        "call": "variancePop([10,20,30,40])",
+        "want": "125"
+      }
+    ]
+  },
+  {
+    "id": "standard-deviation-pop",
+    "filename": "standardDeviationPop",
+    "summary": "standardDeviation computes the population standard deviation of a numeric array, returning NaN for an empty input.",
+    "defaultPath": "src/standardDeviationPop.ts",
+    "exports": [
+      "standardDeviation"
+    ],
+    "patterns": [
+      {
+        "re": "\\bstandardDeviation\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "population standard deviation",
+        "weight": 0.2
+      },
+      {
+        "re": "standard deviation",
+        "weight": 0.15
+      },
+      {
+        "re": "numeric array",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function standardDeviation(arr: number[]): number {\n  const n = arr.length;\n  if (n === 0) return NaN;\n  let mean = 0;\n  for (const x of arr) mean += x;\n  mean /= n;\n  let sum = 0;\n  for (const x of arr) {\n    const d = x - mean;\n    sum += d * d;\n  }\n  return Math.sqrt(sum / n);\n}\n",
+    "tests": [
+      {
+        "desc": "empty array yields NaN",
+        "call": "Number.isNaN(standardDeviation([]))",
+        "want": "true"
+      },
+      {
+        "desc": "single element is zero",
+        "call": "standardDeviation([5])",
+        "want": "0"
+      },
+      {
+        "desc": "constant array is zero",
+        "call": "standardDeviation([2,2,2])",
+        "want": "0"
+      },
+      {
+        "desc": "symmetric around zero",
+        "call": "standardDeviation([-1,1])",
+        "want": "1"
+      },
+      {
+        "desc": "sqrt of variance two",
+        "call": "standardDeviation([1,2,3,4,5])",
+        "want": "Math.sqrt(2)"
+      },
+      {
+        "desc": "larger spread sqrt 125",
+        "call": "standardDeviation([10,20,30,40])",
+        "want": "Math.sqrt(125)"
+      },
+      {
+        "desc": "matches manual two element",
+        "call": "standardDeviation([1,2])",
+        "want": "0.5"
+      }
+    ]
+  },
+  {
+    "id": "percentile-value-interp",
+    "filename": "percentileValueInterp",
+    "summary": "percentileValue returns the p-th percentile (0 to 100) of a numeric array using linear interpolation between closest ranks on a sorted copy.",
+    "defaultPath": "src/percentileValueInterp.ts",
+    "exports": [
+      "percentileValue"
+    ],
+    "patterns": [
+      {
+        "re": "\\bpercentileValue\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "percentile",
+        "weight": 0.2
+      },
+      {
+        "re": "linear interpolation",
+        "weight": 0.15
+      },
+      {
+        "re": "sorted copy",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function percentileValue(arr: number[], p: number): number {\n  const n = arr.length;\n  if (n === 0) return NaN;\n  const s = [...arr].sort((a, b) => a - b);\n  if (n === 1) return s[0];\n  const rank = (p / 100) * (n - 1);\n  const lo = Math.floor(rank);\n  const hi = Math.ceil(rank);\n  if (lo === hi) return s[lo];\n  const frac = rank - lo;\n  return s[lo] + frac * (s[hi] - s[lo]);\n}\n",
+    "tests": [
+      {
+        "desc": "empty array yields NaN",
+        "call": "Number.isNaN(percentileValue([], 50))",
+        "want": "true"
+      },
+      {
+        "desc": "single element returns it",
+        "call": "percentileValue([10], 50)",
+        "want": "10"
+      },
+      {
+        "desc": "median interpolates between ranks",
+        "call": "percentileValue([1,2,3,4], 50)",
+        "want": "2.5"
+      },
+      {
+        "desc": "zeroth percentile is min",
+        "call": "percentileValue([1,2,3,4], 0)",
+        "want": "1"
+      },
+      {
+        "desc": "hundredth percentile is max",
+        "call": "percentileValue([1,2,3,4], 100)",
+        "want": "4"
+      },
+      {
+        "desc": "sorts an unsorted copy",
+        "call": "percentileValue([3,1,2], 50)",
+        "want": "2"
+      },
+      {
+        "desc": "quartile lands on exact rank",
+        "call": "percentileValue([1,2,3,4,5], 25)",
+        "want": "2"
+      },
+      {
+        "desc": "upper quartile exact rank",
+        "call": "percentileValue([1,2,3,4,5], 75)",
+        "want": "4"
+      }
+    ]
+  },
+  {
+    "id": "pearson-correlation-coeff",
+    "filename": "pearsonCorrelationCoeff",
+    "summary": "pearsonCorrelation computes the Pearson correlation coefficient between two equal-length numeric arrays.",
+    "defaultPath": "src/pearsonCorrelationCoeff.ts",
+    "exports": [
+      "pearsonCorrelation"
+    ],
+    "patterns": [
+      {
+        "re": "\\bpearsonCorrelation\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "Pearson correlation coefficient",
+        "weight": 0.2
+      },
+      {
+        "re": "correlation",
+        "weight": 0.15
+      },
+      {
+        "re": "numeric arrays",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function pearsonCorrelation(x: number[], y: number[]): number {\n  const n = x.length;\n  let mx = 0, my = 0;\n  for (let i = 0; i < n; i++) { mx += x[i]; my += y[i]; }\n  mx /= n; my /= n;\n  let num = 0, dx = 0, dy = 0;\n  for (let i = 0; i < n; i++) {\n    const a = x[i] - mx;\n    const b = y[i] - my;\n    num += a * b;\n    dx += a * a;\n    dy += b * b;\n  }\n  const den = Math.sqrt(dx * dy);\n  if (den === 0) return 0;\n  return num / den;\n}\n",
+    "tests": [
+      {
+        "desc": "perfect positive correlation",
+        "call": "pearsonCorrelation([1,2,3],[2,4,6])",
+        "want": "1"
+      },
+      {
+        "desc": "perfect negative correlation",
+        "call": "pearsonCorrelation([1,2,3],[6,4,2])",
+        "want": "-1"
+      },
+      {
+        "desc": "constant y gives zero",
+        "call": "pearsonCorrelation([1,2,3],[5,5,5])",
+        "want": "0"
+      },
+      {
+        "desc": "identical arrays correlate fully",
+        "call": "pearsonCorrelation([3,1,4,1,5],[3,1,4,1,5])",
+        "want": "1"
+      },
+      {
+        "desc": "partial correlation value",
+        "call": "pearsonCorrelation([1,2,3,4,5],[2,4,5,4,5])",
+        "want": "0.7745966692414834"
+      },
+      {
+        "desc": "scaled positive still one",
+        "call": "pearsonCorrelation([0,10,20],[0,5,10])",
+        "want": "1"
+      },
+      {
+        "desc": "offset preserves correlation",
+        "call": "pearsonCorrelation([1,2,3,4],[101,102,103,104])",
+        "want": "1"
+      }
+    ]
+  },
+  {
+    "id": "linear-regression-lsq",
+    "filename": "linearRegressionLsq",
+    "summary": "linearRegression computes the least-squares slope and intercept fit for two equal-length numeric arrays.",
+    "defaultPath": "src/linearRegressionLsq.ts",
+    "exports": [
+      "linearRegression"
+    ],
+    "patterns": [
+      {
+        "re": "\\blinearRegression\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "least-squares",
+        "weight": 0.2
+      },
+      {
+        "re": "slope and intercept",
+        "weight": 0.15
+      },
+      {
+        "re": "regression",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function linearRegression(x: number[], y: number[]): { slope: number; intercept: number } {\n  const n = x.length;\n  let sx = 0, sy = 0, sxy = 0, sxx = 0;\n  for (let i = 0; i < n; i++) {\n    sx += x[i];\n    sy += y[i];\n    sxy += x[i] * y[i];\n    sxx += x[i] * x[i];\n  }\n  const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);\n  const intercept = (sy - slope * sx) / n;\n  return { slope, intercept };\n}\n",
+    "tests": [
+      {
+        "desc": "proportional line through origin",
+        "call": "linearRegression([1,2,3],[2,4,6])",
+        "want": "{\"slope\":2,\"intercept\":0}"
+      },
+      {
+        "desc": "line with positive intercept",
+        "call": "linearRegression([0,1,2,3],[1,3,5,7])",
+        "want": "{\"slope\":2,\"intercept\":1}"
+      },
+      {
+        "desc": "noisy fit",
+        "call": "linearRegression([1,2,3,4],[6,5,7,10])",
+        "want": "{\"slope\":1.4,\"intercept\":3.5}"
+      },
+      {
+        "desc": "flat horizontal line",
+        "call": "linearRegression([1,2,3,4],[5,5,5,5])",
+        "want": "{\"slope\":0,\"intercept\":5}"
+      },
+      {
+        "desc": "negative slope",
+        "call": "linearRegression([1,2,3],[6,4,2])",
+        "want": "{\"slope\":-2,\"intercept\":8}"
+      },
+      {
+        "desc": "slope extracted from object",
+        "call": "linearRegression([0,1,2,3],[1,3,5,7]).slope",
+        "want": "2"
+      },
+      {
+        "desc": "intercept extracted from object",
+        "call": "linearRegression([1,2,3],[2,4,6]).intercept",
+        "want": "0"
+      }
+    ]
+  },
+  {
+    "id": "exponential-moving-average",
+    "filename": "exponentialMovingAvg",
+    "summary": "exponentialMovingAverage produces the EMA series of a numeric array given a smoothing alpha, seeding the first value with arr[0].",
+    "defaultPath": "src/exponentialMovingAvg.ts",
+    "exports": [
+      "exponentialMovingAverage"
+    ],
+    "patterns": [
+      {
+        "re": "\\bexponentialMovingAverage\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "EMA series",
+        "weight": 0.2
+      },
+      {
+        "re": "smoothing alpha",
+        "weight": 0.15
+      },
+      {
+        "re": "numeric array",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function exponentialMovingAverage(arr: number[], alpha: number): number[] {\n  if (arr.length === 0) return [];\n  const out: number[] = [arr[0]];\n  for (let i = 1; i < arr.length; i++) {\n    out.push(alpha * arr[i] + (1 - alpha) * out[i - 1]);\n  }\n  return out;\n}\n",
+    "tests": [
+      {
+        "desc": "empty array returns empty",
+        "call": "exponentialMovingAverage([], 0.5)",
+        "want": "[]"
+      },
+      {
+        "desc": "single element seeds itself",
+        "call": "exponentialMovingAverage([7], 0.3)",
+        "want": "[7]"
+      },
+      {
+        "desc": "alpha one tracks input exactly",
+        "call": "exponentialMovingAverage([5,10,15], 1)",
+        "want": "[5,10,15]"
+      },
+      {
+        "desc": "alpha zero holds the seed",
+        "call": "exponentialMovingAverage([5,10,15], 0)",
+        "want": "[5,5,5]"
+      },
+      {
+        "desc": "half smoothing",
+        "call": "exponentialMovingAverage([1,2,3,4], 0.5)",
+        "want": "[1,1.5,2.25,3.125]"
+      },
+      {
+        "desc": "first element always equals seed",
+        "call": "exponentialMovingAverage([9,1,1], 0.7)[0]",
+        "want": "9"
+      },
+      {
+        "desc": "length matches input",
+        "call": "exponentialMovingAverage([1,2,3,4,5], 0.2).length",
+        "want": "5"
+      }
+    ]
+  },
+  {
+    "id": "zscore-normalize",
+    "filename": "zScoreNormalizeArr",
+    "summary": "zScoreNormalize maps each value of a numeric array to its z-score using the population standard deviation, returning all zeros when the standard deviation is zero.",
+    "defaultPath": "src/zScoreNormalizeArr.ts",
+    "exports": [
+      "zScoreNormalize"
+    ],
+    "patterns": [
+      {
+        "re": "\\bzScoreNormalize\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "z-score",
+        "weight": 0.2
+      },
+      {
+        "re": "population standard deviation",
+        "weight": 0.15
+      },
+      {
+        "re": "numeric array",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function zScoreNormalize(arr: number[]): number[] {\n  const n = arr.length;\n  if (n === 0) return [];\n  let mean = 0;\n  for (const x of arr) mean += x;\n  mean /= n;\n  let v = 0;\n  for (const x of arr) {\n    const d = x - mean;\n    v += d * d;\n  }\n  v /= n;\n  const sd = Math.sqrt(v);\n  if (sd === 0) return arr.map(() => 0);\n  return arr.map((x) => (x - mean) / sd);\n}\n",
+    "tests": [
+      {
+        "desc": "empty array returns empty",
+        "call": "zScoreNormalize([])",
+        "want": "[]"
+      },
+      {
+        "desc": "constant array all zeros",
+        "call": "zScoreNormalize([5,5,5])",
+        "want": "[0,0,0]"
+      },
+      {
+        "desc": "single element is zero",
+        "call": "zScoreNormalize([42])",
+        "want": "[0]"
+      },
+      {
+        "desc": "symmetric three values",
+        "call": "zScoreNormalize([1,2,3])",
+        "want": "[-1.224744871391589,0,1.224744871391589]"
+      },
+      {
+        "desc": "four value spread",
+        "call": "zScoreNormalize([2,4,6,8])",
+        "want": "[-1.3416407864998738,-0.4472135954999579,0.4472135954999579,1.3416407864998738]"
+      },
+      {
+        "desc": "mean maps to zero",
+        "call": "zScoreNormalize([1,2,3])[1]",
+        "want": "0"
+      },
+      {
+        "desc": "length preserved",
+        "call": "zScoreNormalize([2,4,6,8]).length",
+        "want": "4"
+      }
+    ]
+  },
+  {
+    "id": "moving-median-window",
+    "filename": "movingMedianWindow",
+    "summary": "movingMedian computes the median over each rolling window of length k across a list of numbers; returns an empty list when k exceeds the input length.",
+    "defaultPath": "src/movingMedianWindow.ts",
+    "exports": [
+      "movingMedian"
+    ],
+    "patterns": [
+      {
+        "re": "\\bmovingMedian\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "rolling window",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bmedian\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "list of numbers",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function movingMedian(arr: number[], window: number): number[] {\n  const n = arr.length;\n  if (window <= 0 || window > n) return [];\n  const out: number[] = [];\n  for (let i = 0; i + window <= n; i++) {\n    const w = arr.slice(i, i + window).sort((a, b) => a - b);\n    const mid = Math.floor(window / 2);\n    out.push(window % 2 === 1 ? w[mid] : (w[mid - 1] + w[mid]) / 2);\n  }\n  return out;\n}\n",
+    "tests": [
+      {
+        "desc": "window larger than input is empty",
+        "call": "movingMedian([1,2], 5)",
+        "want": "[]"
+      },
+      {
+        "desc": "zero window is empty",
+        "call": "movingMedian([1,2,3], 0)",
+        "want": "[]"
+      },
+      {
+        "desc": "window of one is identity",
+        "call": "movingMedian([5,1,3], 1)",
+        "want": "[5,1,3]"
+      },
+      {
+        "desc": "odd window of three",
+        "call": "movingMedian([1,3,2,5,4], 3)",
+        "want": "[2,3,4]"
+      },
+      {
+        "desc": "even window averages middle two",
+        "call": "movingMedian([1,3,2,5], 2)",
+        "want": "[2,2.5,3.5]"
+      },
+      {
+        "desc": "full even window once",
+        "call": "movingMedian([4,1,3,2], 4)",
+        "want": "[2.5]"
+      },
+      {
+        "desc": "sorts within each window",
+        "call": "movingMedian([9,1,5], 3)",
+        "want": "[5]"
+      }
+    ]
+  }
+]

@@ -101,17 +101,65 @@ export async function fetchSEP(slug: string): Promise<string | null> {
   return text.length > 2000 ? text : null
 }
 
+// ── Programming-domain connector ──────────────────────────────────────────────
+// Fetches MDN reference pages, TypeScript handbook, Node.js docs, and npm README
+// bodies — all key-free, direct HTTPS. Strips boilerplate before ingest.
+
+export async function fetchMdnPage(slug: string): Promise<string | null> {
+  // MDN serves JSON: https://developer.mozilla.org/en-US/docs/Web/<slug>/index.json
+  // slug should NOT include the leading "Web/" — it is injected here.
+  const prefix = slug.startsWith('Web/') ? '' : 'Web/'
+  const json = await fetchText(`https://developer.mozilla.org/en-US/docs/${prefix}${slug}/index.json`)
+  if (!json) return null
+  try {
+    const obj = JSON.parse(json)
+    // doc.body is an array of sections: { type, value: { content: '<html>' } }
+    const html = (obj.doc?.body ?? []).map((b: any) => b.value?.content ?? b.value ?? '').join(' ')
+    const text = stripHtml(html)
+    return text.length > 500 ? text : null
+  } catch { return null }
+}
+
+export async function fetchNpmReadme(pkg: string): Promise<string | null> {
+  // registry.npmjs.org/<pkg> returns the full package metadata JSON (readme field)
+  const json = await fetchText(`https://registry.npmjs.org/${encodeURIComponent(pkg)}`)
+  if (!json) return null
+  try {
+    const obj = JSON.parse(json)
+    const readme: string = obj.readme ?? ''
+    // Strip markdown header fences and badges, keep prose + code
+    const stripped = readme
+      .replace(/!\[.*?\]\(.*?\)/g, '')        // remove image links
+      .replace(/\[!\[.*?\]\(.*?\)\]\(.*?\)/g, '') // remove badge links
+      .replace(/^\s*#+\s*/gm, '')             // remove markdown headings
+      .replace(/`{3,}[\s\S]*?`{3,}/g, m => m.slice(0, 800)) // truncate long code blocks
+    return stripped.length > 300 ? stripped.slice(0, 8000) : null
+  } catch { return null }
+}
+
+export async function fetchRawUrl(url: string): Promise<string | null> {
+  const text = await fetchText(url)
+  if (!text || text.length < 500) return null
+  // If it looks like HTML, strip tags; otherwise return as-is (markdown, plain text)
+  if (text.trimStart().startsWith('<')) return stripHtml(text)
+  // Strip markdown badge lines and trim
+  return text.replace(/^\[!\[.*$/gm, '').trim()
+}
+
 // ── Deliberate curation manifest ──────────────────────────────────────────────
 // Maps the spec's priority allocation to concrete, key-free fetches. Each entry's
 // reliability + staleness class are set per source type.
 interface ManifestEntry {
-  kind: 'gutenberg' | 'rfc' | 'arxiv' | 'sep'
+  kind: 'gutenberg' | 'rfc' | 'arxiv' | 'sep' | 'mdn' | 'npm' | 'raw'
   domain: string
   reliability: number
   staleness: SourceDoc['stalenessClass']
   ids?: number[]            // gutenberg ids / rfc numbers
   arxivCats?: string[]      // arxiv categories
   sepSlugs?: string[]       // SEP entry slugs
+  mdnSlugs?: string[]       // MDN /en-US/docs/<slug>
+  npmPkgs?: string[]        // npm package names
+  rawUrls?: Array<{ url: string; label: string }>  // raw markdown/text URLs
 }
 
 export const CURATION_MANIFEST: ManifestEntry[] = [
@@ -131,6 +179,94 @@ export const CURATION_MANIFEST: ManifestEntry[] = [
   // Priority 3/4 — formal reasoning & systems
   { kind: 'rfc', domain: 'networking', reliability: 0.85, staleness: 'engineering',
     ids: [791 /* IP */, 793 /* TCP */, 1122 /* host requirements */, 2616 /* HTTP/1.1 */, 5246 /* TLS */, 6455 /* WebSocket */, 7540 /* HTTP/2 */, 8446 /* TLS 1.3 */] },
+
+  // Priority 5 — programming / CS (new 2026-06-30)
+  // MDN Web Docs: JavaScript language reference (key APIs, always-fresh source of truth)
+  { kind: 'mdn', domain: 'programming', reliability: 0.95, staleness: 'engineering',
+    mdnSlugs: [
+      'JavaScript/Reference/Global_Objects/Array',
+      'JavaScript/Reference/Global_Objects/Array/map',
+      'JavaScript/Reference/Global_Objects/Array/filter',
+      'JavaScript/Reference/Global_Objects/Array/reduce',
+      'JavaScript/Reference/Global_Objects/Array/sort',
+      'JavaScript/Reference/Global_Objects/Array/flat',
+      'JavaScript/Reference/Global_Objects/Array/flatMap',
+      'JavaScript/Reference/Global_Objects/Array/find',
+      'JavaScript/Reference/Global_Objects/Array/findIndex',
+      'JavaScript/Reference/Global_Objects/Array/every',
+      'JavaScript/Reference/Global_Objects/Array/some',
+      'JavaScript/Reference/Global_Objects/Array/includes',
+      'JavaScript/Reference/Global_Objects/Promise',
+      'JavaScript/Reference/Global_Objects/Promise/all',
+      'JavaScript/Reference/Global_Objects/Promise/allSettled',
+      'JavaScript/Reference/Global_Objects/Promise/race',
+      'JavaScript/Reference/Global_Objects/Map',
+      'JavaScript/Reference/Global_Objects/Set',
+      'JavaScript/Reference/Global_Objects/Object/assign',
+      'JavaScript/Reference/Global_Objects/Object/entries',
+      'JavaScript/Reference/Global_Objects/Object/keys',
+      'JavaScript/Reference/Global_Objects/Object/fromEntries',
+      'JavaScript/Reference/Global_Objects/String/split',
+      'JavaScript/Reference/Global_Objects/String/replace',
+      'JavaScript/Reference/Global_Objects/String/replaceAll',
+      'JavaScript/Reference/Global_Objects/String/trim',
+      'JavaScript/Reference/Global_Objects/String/padStart',
+      'JavaScript/Reference/Global_Objects/RegExp',
+      'JavaScript/Reference/Operators/Destructuring_assignment',
+      'JavaScript/Reference/Operators/Spread_syntax',
+      'JavaScript/Reference/Functions/Arrow_functions',
+      'JavaScript/Reference/Statements/async_function',
+      'JavaScript/Reference/Operators/await',
+    ],
+  },
+  // TypeScript handbook chapters (raw markdown from GitHub)
+  { kind: 'raw', domain: 'programming', reliability: 0.95, staleness: 'engineering',
+    rawUrls: [
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Basics.md', label: 'ts-handbook-basics' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Everyday%20Types.md', label: 'ts-handbook-everyday-types' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Narrowing.md', label: 'ts-handbook-narrowing' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/More%20on%20Functions.md', label: 'ts-handbook-functions' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Object%20Types.md', label: 'ts-handbook-object-types' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Generics.md', label: 'ts-handbook-generics' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Utility%20Types.md', label: 'ts-handbook-utility-types' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Conditional%20Types.md', label: 'ts-handbook-conditional-types' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Type%20Manipulation/Mapped%20Types.md', label: 'ts-handbook-mapped-types' },
+      { url: 'https://raw.githubusercontent.com/microsoft/TypeScript-Website/v2/packages/documentation/copy/en/handbook-v2/Classes.md', label: 'ts-handbook-classes' },
+    ],
+  },
+  // npm top-library READMEs (rich API surface, widely-referenced patterns)
+  { kind: 'npm', domain: 'programming', reliability: 0.85, staleness: 'engineering',
+    npmPkgs: [
+      'lodash', 'ramda', 'rxjs', 'zod', 'yup', 'express', 'fastify', 'axios',
+      'date-fns', 'dayjs', 'uuid', 'nanoid', 'commander', 'yargs', 'chalk',
+      'dotenv', 'joi', 'prisma', 'typeorm', 'drizzle-orm', 'kysely',
+      'openai', 'stripe', 'nodemailer', 'ws', 'socket.io',
+      'jest', 'vitest', 'mocha', 'sinon', 'supertest',
+      'webpack', 'esbuild', 'vite', 'rollup', 'tsup',
+      'react', 'vue', 'svelte', 'solid-js', 'preact',
+      'next', 'nuxt', 'remix', 'astro',
+      'tailwindcss', 'clsx', 'classnames',
+      'immer', 'zustand', 'jotai', 'recoil', 'mobx',
+      'graphql', 'apollo-server', 'trpc', 'hono',
+      'better-sqlite3', 'pg', 'mysql2', 'mongoose', 'redis',
+      'mime', 'ms', 'semver', 'cross-spawn', 'execa',
+    ],
+  },
+  // Node.js API docs (raw markdown from GitHub — stable versioned source)
+  { kind: 'raw', domain: 'programming', reliability: 0.9, staleness: 'engineering',
+    rawUrls: [
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/fs.md', label: 'nodejs-fs' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/path.md', label: 'nodejs-path' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/http.md', label: 'nodejs-http' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/stream.md', label: 'nodejs-stream' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/crypto.md', label: 'nodejs-crypto' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/events.md', label: 'nodejs-events' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/child_process.md', label: 'nodejs-child-process' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/worker_threads.md', label: 'nodejs-workers' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/url.md', label: 'nodejs-url' },
+      { url: 'https://raw.githubusercontent.com/nodejs/node/main/doc/api/buffer.md', label: 'nodejs-buffer' },
+    ],
+  },
 ]
 
 // ── Driver ────────────────────────────────────────────────────────────────────
@@ -170,6 +306,21 @@ export async function acquireDeliberately(deps: IngestDeps, opts: AcquireOptions
         for (const cat of entry.arxivCats ?? []) {
           const papers = await fetchArxiv(cat, 25)
           for (const p of papers) docs.push({ text: `${p.title}. ${p.abstract}`, domain: entry.domain, source: `arxiv:${cat}`, sourceReliability: entry.reliability, stalenessClass: entry.staleness })
+        }
+      } else if (entry.kind === 'mdn') {
+        for (const slug of entry.mdnSlugs ?? []) {
+          const text = await fetchMdnPage(slug)
+          if (text) docs.push({ text, domain: entry.domain, source: `mdn:${slug}`, sourceReliability: entry.reliability, stalenessClass: entry.staleness })
+        }
+      } else if (entry.kind === 'npm') {
+        for (const pkg of entry.npmPkgs ?? []) {
+          const text = await fetchNpmReadme(pkg)
+          if (text) docs.push({ text, domain: entry.domain, source: `npm:${pkg}`, sourceReliability: entry.reliability, stalenessClass: entry.staleness })
+        }
+      } else if (entry.kind === 'raw') {
+        for (const { url, label } of entry.rawUrls ?? []) {
+          const text = await fetchRawUrl(url)
+          if (text) docs.push({ text, domain: entry.domain, source: `raw:${label}`, sourceReliability: entry.reliability, stalenessClass: entry.staleness })
         }
       }
     } catch (e: any) {

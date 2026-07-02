@@ -1,5 +1,5 @@
 import dotenv from 'dotenv'
-dotenv.config({ path: '.env.local' })
+dotenv.config({ path: process.env.CRUCIBLE_ENV_PATH || '.env.local' })
 import express from 'express'
 import cors from 'cors'
 import compression from 'compression'
@@ -13,7 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
-import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad, providerHealthSnapshot, registerFineTunedModel } from './modelRegistry'
+import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad, providerHealthSnapshot, registerFineTunedModel, providerHasKey } from './modelRegistry'
 import type { SelectedModel } from './modelRegistry'
 import { createServer } from 'http'
 import { WebSocketServer as WsServer } from 'ws'
@@ -28,14 +28,18 @@ import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/to
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
 import { runAgentLoop } from './src/CrucibleEngine/agent/loop'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
-import { getOrCreateSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages } from './src/CrucibleEngine/agent/taskSession'
+import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages } from './src/CrucibleEngine/agent/taskSession'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
+import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
+import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
+import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
 import { defaultSystemPreamble } from './src/CrucibleEngine/agent/loop'
 import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
 import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } from './src/CrucibleEngine/taskGraph'
 import { runResearchSession } from './src/CrucibleEngine/researchMode'
+import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
 import { DOMAIN_SHARDS } from './src/CrucibleEngine/corpus/db'
@@ -124,6 +128,70 @@ function historyPush(userId: string | null, entry: any): void {
   } catch (e: any) { console.error('[History] File write failed:', e.message) }
 }
 
+// ── Chat conversations store ──────────────────────────────────────────────────
+// A "conversation" is a whole chat thread (many rounds), grouped under one id —
+// the ChatGPT/Claude model. Refresh starts a NEW conversation; prior ones live here,
+// searchable and reopenable. Distinct from history-*.json (loose per-round analytics
+// rows) and active-session-*.json (the legacy single-session resume blob).
+const MAX_CONVERSATIONS = 100
+function _conversationsFilePath(userId: string | null): string {
+  return path.join(process.cwd(), '.crucible', `conversations-${userId ?? 'anon'}.json`)
+}
+function loadConversations(userId: string | null): any[] {
+  try { return JSON.parse(fs.readFileSync(_conversationsFilePath(userId), 'utf8')) } catch { return [] }
+}
+function conversationTitle(rounds: any[]): string {
+  const first = Array.isArray(rounds) ? rounds.find(r => r && r.userMessage) : null
+  const q = (first?.userMessage ?? '').trim().replace(/\s+/g, ' ')
+  if (!q) return 'New chat'
+  const words = q.split(' ')
+  return words.slice(0, 8).join(' ') + (words.length > 8 ? '…' : '')
+}
+// Upsert a conversation by id. Empty (no rounds) conversations are ignored so a bare
+// refresh never litters the history with blank entries.
+function saveConversationEntry(userId: string | null, conv: { id: string; mode?: string; rounds: any[] }): void {
+  if (!conv?.id || !Array.isArray(conv.rounds) || conv.rounds.length === 0) return
+  try {
+    const file = _conversationsFilePath(userId)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const list = loadConversations(userId)
+    const now = Date.now()
+    const idx = list.findIndex(c => c.id === conv.id)
+    const startedAt = idx >= 0 ? (list[idx].startedAt ?? now) : now
+    const entry = { id: conv.id, title: conversationTitle(conv.rounds), mode: conv.mode ?? 'quorum', rounds: conv.rounds, startedAt, updatedAt: now }
+    if (idx >= 0) list[idx] = entry; else list.push(entry)
+    list.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    fs.writeFileSync(file, JSON.stringify(list.slice(0, MAX_CONVERSATIONS), null, 2))
+  } catch (e: any) { console.error('[Conversations] write failed:', e.message) }
+}
+function getConversationById(userId: string | null, id: string): any | null {
+  return loadConversations(userId).find(c => c.id === id) ?? null
+}
+function deleteConversationById(userId: string | null, id: string): void {
+  try {
+    const file = _conversationsFilePath(userId)
+    const list = loadConversations(userId).filter(c => c.id !== id)
+    fs.writeFileSync(file, JSON.stringify(list, null, 2))
+  } catch (e: any) { console.error('[Conversations] delete failed:', e.message) }
+}
+// roundId → conversationId, registered at request start so the server-authoritative
+// completion patch can write the finished answer into the right conversation even if
+// the client disconnected mid-stream.
+const roundConversation = new Map<string, string>()
+function patchConversationRound(userId: string | null, conversationId: string, roundId: string, patch: Record<string, unknown>): void {
+  if (!conversationId || !roundId) return
+  try {
+    const list = loadConversations(userId)
+    const conv = list.find(c => c.id === conversationId)
+    if (!conv || !Array.isArray(conv.rounds)) return
+    const ri = conv.rounds.findIndex((r: any) => r && r.id === roundId)
+    if (ri < 0) return
+    conv.rounds[ri] = { ...conv.rounds[ri], ...patch }
+    conv.updatedAt = Date.now()
+    fs.writeFileSync(_conversationsFilePath(userId), JSON.stringify(list, null, 2))
+  } catch (e: any) { console.error('[Conversations] patch failed:', e.message) }
+}
+
 const CIRCUIT_STATE_FILE = path.join(process.cwd(), '.circuit-state.json')
 
 // ── Keepalive pause guard ─────────────────────────────────────────────────────
@@ -205,7 +273,7 @@ import { loadTriumvirateLog, loadPendingQueue } from './src/CrucibleEngine/trium
 import { createExperiment, getActiveExperiments, assignCohort, recordObservation, runAutoDecisions, getExperimentStats, loadExperiments } from './src/CrucibleEngine/abTesting'
 import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/CrucibleEngine/episodicMemory'
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
-import { domainVerify } from './src/CrucibleEngine/domainVerifiers'
+import { domainVerify, correctArithmetic } from './src/CrucibleEngine/domainVerifiers'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
 import { runSelfPatcher, loadPatches } from './src/CrucibleEngine/selfPatcher'
@@ -416,6 +484,10 @@ import { ingestDocument } from './src/CrucibleEngine/corpus/ingest'
 setTimeout(async () => {
   const apiKey = process.env.VITE_OPENROUTER_API_KEY ?? ''
   if (!apiKey) return
+  // Standing constraint: under CRUCIBLE_OFFLINE=strict, NO external calls — ever.
+  // The Hunter probes OpenRouter (boot + 24h). They never touch the chat path, but they
+  // are external network calls; strict must mean strict literally (decided 2026-07-01).
+  if ((process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict') return
   await runModelHunter(process.cwd(), apiKey, MODEL_REGISTRY as any, m => {
     MODEL_REGISTRY.push(m as any)
     console.log(`[Hunter] Live-added to registry: ${m.label}`)
@@ -424,6 +496,10 @@ setTimeout(async () => {
 setInterval(async () => {
   const apiKey = process.env.VITE_OPENROUTER_API_KEY ?? ''
   if (!apiKey) return
+  // Standing constraint: under CRUCIBLE_OFFLINE=strict, NO external calls — ever.
+  // The Hunter probes OpenRouter (boot + 24h). They never touch the chat path, but they
+  // are external network calls; strict must mean strict literally (decided 2026-07-01).
+  if ((process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict') return
   await runModelHunter(process.cwd(), apiKey, MODEL_REGISTRY as any, m => {
     MODEL_REGISTRY.push(m as any)
     enqueueModel(process.cwd(), {
@@ -437,6 +513,8 @@ setInterval(async () => {
 setInterval(async () => {
   const apiKey = process.env.VITE_OPENROUTER_API_KEY ?? ''
   if (!apiKey) return
+  // Strict = no external calls. The waitlist scorer hits OpenRouter benchmarks (decided 2026-07-01).
+  if ((process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict') return
   await updateWaitlistScores(process.cwd(), apiKey)
   promoteNextFromWaitlist(process.cwd())
 }, 6 * 60 * 60 * 1000)
@@ -776,16 +854,20 @@ function issueSession(res: express.Response, user: CrucibleUser) {
 // Detect the origin the browser sees so the callback can redirect back to it.
 // In dev: frontend is :5173, backend is :3001 — redirect to :5173 after OAuth.
 // In prod: they share the same origin — redirect to /.
+function isLocal(): boolean {
+  return !!process.env.CRUCIBLE_DATA_DIR // set by electron for local runs
+}
+
 function serverBase(req: express.Request): string {
-  if (OAUTH_BASE_URL) return OAUTH_BASE_URL
+  if (OAUTH_BASE_URL && !isLocal()) return OAUTH_BASE_URL
   return `http://${req.hostname}:3001`
 }
 
 function frontendOrigin(req: express.Request): string {
-  if (OAUTH_BASE_URL) return OAUTH_BASE_URL
+  if (OAUTH_BASE_URL && !isLocal()) return OAUTH_BASE_URL
   const origin = req.headers.origin ?? req.headers.referer ?? ''
   if (origin.includes(':5173')) return 'http://localhost:5173'
-  return `${req.protocol}://${req.hostname}`
+  return `http://localhost:5173`
 }
 
 // ── Auth endpoints ────────────────────────────────────────────────────────────
@@ -941,23 +1023,61 @@ app.get('/api/session/restore', (req: express.Request, res: express.Response) =>
 // query. Read-modify-write preserves the rest of the thread the client already saved.
 function patchActiveSessionRound(user: { id: string } | null | undefined, roundId: string, patch: Record<string, unknown>) {
   if (!roundId) return
+  // 1) Legacy active-session blob — best-effort. Only patch a round the client already
+  // persisted; if it's missing, skip THIS write (don't abort the whole function).
   const file = path.join(CRUCIBLE_DIR, `active-session-${user?.id ?? 'anon'}.json`)
   try {
     let data: any = {}
     try { data = JSON.parse(fs.readFileSync(file, 'utf8')) } catch {}
     const rounds: any[] = Array.isArray(data.rounds) ? data.rounds : []
     const idx = rounds.findIndex(r => r && r.id === roundId)
-    // Only patch a round the client already persisted (full Round shape). If it's missing
-    // — client closed before its first save landed — skip rather than write a partial round
-    // that could break rendering. No regression vs. today; the immediate save makes this rare.
-    if (idx < 0) return
-    rounds[idx] = { ...rounds[idx], ...patch }
-    fs.mkdirSync(CRUCIBLE_DIR, { recursive: true })
-    fs.writeFileSync(file, JSON.stringify({ ...data, rounds, timestamp: Date.now() }))
+    if (idx >= 0) {
+      rounds[idx] = { ...rounds[idx], ...patch }
+      fs.mkdirSync(CRUCIBLE_DIR, { recursive: true })
+      fs.writeFileSync(file, JSON.stringify({ ...data, rounds, timestamp: Date.now() }))
+    }
   } catch (e: any) {
     console.error('[Session] patchActiveSessionRound failed:', e?.message)
   }
+  // 2) Grouped conversation store (source of truth for history) — ALWAYS attempt, even
+  // if the legacy blob lacked the round, so a finished answer lands in history even when
+  // the client disconnected/refreshed mid-stream.
+  const convId = roundConversation.get(roundId)
+  if (convId) patchConversationRound(user?.id ?? null, convId, roundId, patch)
 }
+
+// ── Chat conversations API (grouped, searchable, reopenable threads) ──────────
+// Save/upsert the current conversation. Client calls this continuously (debounced).
+app.post('/api/conversations/save', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)
+  const { id, mode, rounds } = req.body ?? {}
+  if (typeof id !== 'string' || !id) return res.status(400).json({ error: 'id required' })
+  saveConversationEntry(user?.id ?? null, { id, mode, rounds: Array.isArray(rounds) ? rounds : [] })
+  res.json({ ok: true })
+})
+// List conversation summaries (newest first) for the history drawer.
+app.get('/api/conversations', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)
+  const list = loadConversations(user?.id ?? null)
+  res.json({
+    conversations: list.map((c: any) => {
+      const lastAnswer = Array.isArray(c.rounds) ? [...c.rounds].reverse().find((r: any) => r?.synthesis)?.synthesis ?? '' : ''
+      return { id: c.id, title: c.title, mode: c.mode, startedAt: c.startedAt, updatedAt: c.updatedAt, roundCount: Array.isArray(c.rounds) ? c.rounds.length : 0, snippet: String(lastAnswer).slice(0, 240) }
+    }),
+  })
+})
+// Full conversation (all rounds) to reopen and continue.
+app.get('/api/conversations/:id', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)
+  const conv = getConversationById(user?.id ?? null, req.params.id)
+  if (!conv) return res.status(404).json({ error: 'not found' })
+  res.json({ conversation: conv })
+})
+app.delete('/api/conversations/:id', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)
+  deleteConversationById(user?.id ?? null, req.params.id)
+  res.json({ ok: true })
+})
 
 // ── Passive SSE stream for cross-device broadcast (Task 3) ────────────────────
 app.get('/api/session/stream', (req: express.Request, res: express.Response) => {
@@ -1042,6 +1162,61 @@ async function callLocalModel(systemPrompt: string, userMessage: string, timeout
 
 const stripThink = (text: string) =>
   text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+
+// ── Offline-first gate — THE single chokepoint ───────────────────────────────
+// Every server-side external model call funnels through callModel /
+// callModelStreaming (Stage 1-5, MASTERPIECE via mpDeps, compressCallModel,
+// probes, synthesis). Gating here makes the model-cost-independent contract hold
+// BY CONSTRUCTION: a new call site cannot silently leak, because the leak path
+// itself is gated. Mirrors the activeDriveTurn contract on the agentic side
+// (the agentic driver.ts is self-contained and gated separately — untouched).
+//   '1' / default — local Apple FM first; on empty/failed FM, fall to external
+//   'strict'      — local FM only; THROW rather than ever escalate (abstain≡abstain)
+//   '0'           — external only (offline brain opted out)
+class OfflineStrictError extends Error {
+  constructor(provider: string) {
+    super(`[offline-strict] external escalation to "${provider}" blocked; local FM unavailable`)
+    this.name = 'OfflineStrictError'
+  }
+}
+
+async function callLocalFromMessages(
+  messages: { role: string; content: string }[],
+  timeoutMs = 30000,
+): Promise<string> {
+  try {
+    const res = await fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'apple-fm', messages, max_tokens: 1024, temperature: 0.7 }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) return ''
+    const data = await res.json()
+    return stripThink(data.choices?.[0]?.message?.content ?? '')
+  } catch {
+    return ''
+  }
+}
+
+// Returns { handled:true, text } when offline served the call locally; { handled:false }
+// to proceed with the external dispatch. Throws OfflineStrictError under 'strict' when
+// the local FM can't serve it — callers that must degrade (mpDeps) catch and return ''.
+async function offlineGate(
+  provider: string,
+  messages: { role: string; content: string }[],
+): Promise<{ handled: boolean; text?: string }> {
+  const offline = process.env.CRUCIBLE_OFFLINE ?? '1'
+  if (offline === '0' || provider === 'local') return { handled: false }
+  const local = await callLocalFromMessages(messages)
+  if (local) {
+    debugBus.emit('model', 'offline_local_served', { provider, mode: offline }, { severity: 'info' })
+    return { handled: true, text: local }
+  }
+  if (offline === 'strict') throw new OfflineStrictError(provider)
+  debugBus.emit('model', 'offline_local_miss_escalate', { provider }, { severity: 'warn' })
+  return { handled: false }
+}
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -1231,6 +1406,11 @@ async function callModel(
   opts: { requestId?: string; timeoutMs?: number } = {},
 ): Promise<string> {
   const { id, provider } = model
+  // Offline-first gate (see offlineGate): local FM first under offline modes;
+  // 'strict' throws rather than escalate. Runs before token guards so an oversized
+  // external payload never blocks a request the local FM can serve.
+  const _g = await offlineGate(provider, messages)
+  if (_g.handled) return _g.text!
   messages = withStaticPrefix(messages, model.tpmLimit)
   const tokenEst = estimateMessageTokens(messages)
   if (model.tpmLimit && tokenEst > model.tpmLimit) {
@@ -1258,20 +1438,17 @@ async function callModel(
   if (provider === 'groq') {
     const modelId = id.replace(/^groq\//, '')
     const isQwen = modelId.includes('qwen')
-    const res = await groq.chat.completions.create({
-      model: modelId,
-      messages,
-      stream: false,
-      ...(isQwen ? { reasoning_effort: 'none' } : {}),
-      signal: callAbort,
-    } as any)
+    const res = await groq.chat.completions.create(
+      { model: modelId, messages, stream: false, ...(isQwen ? { reasoning_effort: 'none' } : {}) } as any,
+      { signal: callAbort },
+    )
     const text = res.choices[0]?.message?.content || ''
     return isQwen ? stripThink(text) : text
   }
 
   if (provider === 'mistral') {
     const modelId = id.replace(/^mistral\//, '')
-    const res = await mistral.chat.complete({ model: modelId, messages, signal: callAbort } as any)
+    const res = await mistral.chat.complete({ model: modelId, messages } as any, { signal: callAbort } as any)
     return (res.choices?.[0]?.message?.content as string) || ''
   }
 
@@ -1461,6 +1638,10 @@ async function callModelStreaming(
   if (_forceFail && (_forceFail === '*' || _forceFail.split(',').map(s => s.trim()).includes(id))) {
     throw new Error(`[forced-fail] simulated 503 for ${id} (CRUCIBLE_FORCE_FAIL)`)
   }
+  // Offline-first gate (see offlineGate). On a local hit the full text is emitted as
+  // a single chunk — token-by-token streaming is the documented tradeoff of offline mode.
+  const _g = await offlineGate(provider, messages)
+  if (_g.handled) { onChunk(_g.text!); return _g.text! }
   messages = withStaticPrefix(messages, model.tpmLimit)
   // 4.2 — pre-dispatch token guard: reject before the wire so an oversized payload
   // can never come back as a reactive 413. Mirrors the guard in callModel().
@@ -1752,21 +1933,36 @@ app.post('/api/research', async (req, res) => {
   const send = (p: object) => { try { res.write(`data: ${JSON.stringify(p)}\n\n`) } catch {} }
   if (!question) { send({ type: 'research_error', text: 'A research question is required.' }); res.write('data: [DONE]\n\n'); return res.end() }
 
-  const model = pickResearchModel()
-  const deps = {
-    search: async (q: string) => {
-      try { const t = registry.get('web_search'); if (!t) return ''; const r: any = await (t as any).run({ query: q }, {}); return r?.output ?? '' } catch { return '' }
-    },
-    model: async (prompt: string) => {
-      if (!model) return ''
-      try { return await callModelInstrumented(model, [{ role: 'user', content: prompt }]) } catch { return '' }
-    },
-    readSource: async (url: string) => { try { return await read_pdf(url) } catch { return '' } },
-  }
-  try {
-    for await (const ev of runResearchSession(question, { maxIterations: 4, minSources: 4 }, deps)) send(ev)
-  } catch (e: any) {
-    send({ type: 'research_error', text: e?.message ?? 'research failed' })
+  // V2: Gen-2 research DAG (local FM + provenance oracle, no external model).
+  // Falls back to Gen-1 (runResearchSession) only when CRUCIBLE_RESEARCH_V1=1 is set.
+  if (process.env.CRUCIBLE_RESEARCH_V1 === '1') {
+    const model = pickResearchModel()
+    const deps = {
+      search: async (q: string) => {
+        try { const t = registry.get('web_search'); if (!t) return ''; const r: any = await (t as any).run({ query: q }, {}); return r?.output ?? '' } catch { return '' }
+      },
+      model: async (prompt: string) => {
+        if (!model) return ''
+        try { return await callModelInstrumented(model, [{ role: 'user', content: prompt }]) } catch { return '' }
+      },
+      readSource: async (url: string) => { try { return await read_pdf(url) } catch { return '' } },
+    }
+    try {
+      for await (const ev of runResearchSession(question, { maxIterations: 4, minSources: 4 }, deps)) send(ev)
+    } catch (e: any) {
+      send({ type: 'research_error', text: e?.message ?? 'research failed' })
+    }
+  } else {
+    try {
+      for await (const ev of runResearchDag(question, {
+        projectDir: process.cwd(),
+        maxLeafNodes: 6,
+        maxWebPages: 10,
+        maxMs: 90_000,
+      })) send(ev)
+    } catch (e: any) {
+      send({ type: 'research_error', text: e?.message ?? 'research DAG failed' })
+    }
   }
   res.write('data: [DONE]\n\n'); res.end()
 })
@@ -1949,7 +2145,9 @@ function detectAgentTask(message: string): boolean {
     || /\b(download|fetch|grab|save)\b[\s\S]{0,40}\b(image|photo|file|url|link)\b/.test(m)
     || /\b(create|make|open|launch)\b[\s\S]{0,30}\b(folder|directory)\b/.test(m)
     || /\b(write|save|create)\b[\s\S]{0,40}\b(file|markdown|document|note|report)\b/.test(m)
-    || /\b(write|implement|create|build|make)\b[\s\S]{0,60}\b(function|class|algorithm|solution|program|script|module|library)\b/.test(m)
+    // "write a function/class" = code display in chat (stays in pipeline); only trigger
+    // agent if there's also a file target (.py extension, "to file", "save to", etc.)
+    // || /\b(write|implement|create|build|make)\b[\s\S]{0,60}\b(function|class|algorithm|solution|program|script|module|library)\b/.test(m)
     || /\b(with a test|and test|and verify|that works|make it run|and run it)\b/.test(m)
     || /\b(search|find|look up)\b[\s\S]{0,40}\b(and|then)\b[\s\S]{0,40}\b(save|write|create|download|open)\b/.test(m)
     || /\b(open|show|reveal)\b[\s\S]{0,20}\b(finder|folder|directory|desktop)\b/.test(m)
@@ -1972,6 +2170,33 @@ function detectAgentTask(message: string): boolean {
   const isConfirmation = /^\s*(yes|yeah|yep|ok|okay|sure|proceed|go ahead|do it|confirm|continue|approved|affirmative|correct|right|exactly|please do|go for it)[\.!]?\s*$/i.test(m)
   if (wantsDisplay && !wantsBuild && !wantsExternalExec && !wantsMacControl && !isConfirmation) return false
   return wantsBuild || wantsExternalExec || wantsMacControl || isConfirmation
+}
+
+// A short repair/continuation reply ("try again", "fix it", "another way?", "run it",
+// "it didn't work") that only makes sense as a follow-up to an in-progress agent task.
+// Used for STICKY AGENTIC ROUTING: combined with a recent agent task in the same chat
+// session, these keep the conversation on the tool-capable agent path instead of
+// silently bouncing to the tool-less quorum pipeline (which can only hallucinate about
+// file/system state — the "fix and try again → unrelated regex answer" failure).
+function isContinuationPhrase(message: string): boolean {
+  const m = (message ?? '').trim().toLowerCase()
+  if (!m) return false
+  if (/\b(try again|retry|another way|other way|different (way|approach)|keep going|go on|run it|do it now|now (run|try|do|open|fix|change|delete|move)|did(n'?t| not) work|does(n'?t| not) work|still (broken|failing|not working|fails?|errors?)|same error|that failed|it failed|fix (it|that|this|the error|the bug|manually))\b/.test(m)) return true
+  const words = m.split(/\s+/).length
+  if (words <= 6 && /\b(fix|run|try|open|continue|retry|again|execute|build|rebuild|change|update|delete|move|undo|redo|finish)\b/.test(m)) return true
+  return false
+}
+
+// Sticky-routing signal: does this chat session have an agent task running now, or one
+// completed within the last 15 minutes? If so, ambiguous follow-ups belong on the agent
+// path. Pure read — never creates a session.
+function hasRecentAgentTask(sessionId: string | null | undefined): boolean {
+  if (!sessionId) return false
+  const s = getSession(sessionId)
+  if (!s) return false
+  if (s.status === 'running') return true
+  const last = s.taskStack[s.taskStack.length - 1]
+  return !!last && (Date.now() - last.completedAt) < 15 * 60_000
 }
 
 // Hard execution signals — a real artifact/run is unambiguously requested. Used to
@@ -2032,12 +2257,29 @@ function buildAssumptionNote(message: string): string | null {
   return null
 }
 
+// A task whose deliverable is WRITTEN CODE at specific paths belongs on the coding loop
+// (planner/single-loop with the full Coder toolset + execution verification), NOT the
+// meta-router. The meta-router decomposes and `selectArchetype` DEFAULTS ambiguous
+// subtasks to the Researcher — which then web-searches and returns prose (a coding bench
+// run produced research about Go LRU caches instead of a TypeScript module, and wrote no
+// file). The single/planned coding loop still has web_search if it needs to look something
+// up, and actually writes + runs the code.
+function isCodeImplementationTask(message: string): boolean {
+  const m = message ?? ''
+  const buildVerb = /\b(implement|build|write|create|develop|code|scaffold|refactor)\b/i.test(m)
+  const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
+  const codeNoun = /\b(function|class|module|interface|api|endpoint|algorithm|parser|engine|component|library|package|cli|data structure|test suite|self-test)\b/i.test(m)
+  return buildVerb && (hasCodePath || codeNoun)
+}
+
 // Decide whether a goal warrants the multi-specialist meta-router (decompose →
 // specialist DAG → critic → strategist synthesis) instead of the planner/loop.
 // Gate conservatively: genuine multi-part work spanning ≥2 specialist archetypes
 // OR carrying real cross-subtask dependencies. Single-domain tasks use the cheaper path.
 function shouldUseMetaRouter(message: string): boolean {
   try {
+    // Pure code-implementation goals bypass the meta-router (see above) → coding loop.
+    if (isCodeImplementationTask(message)) return false
     const subs = decompose(message ?? '').nodes.filter(n => n.depth > 0)
     if (subs.length < 2) return false
     const archetypes = new Set(subs.map(n => selectArchetype(n.goal)))
@@ -2047,9 +2289,15 @@ function shouldUseMetaRouter(message: string): boolean {
 }
 
 app.post('/api/chat', async (req, res) => {
-  const { message, mode = 'quorum', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId } = req.body
+  const { message, mode = 'quorum', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId } = req.body
   const chatSessionId = typeof reqSessionId === 'string' ? reqSessionId : ''
   const chatRoundId = typeof reqRoundId === 'string' ? reqRoundId : ''
+  // Register roundId → conversationId so the completion patch can update the grouped
+  // conversation store even if the client disconnects before the answer finishes.
+  if (chatRoundId && typeof reqConversationId === 'string' && reqConversationId) {
+    roundConversation.set(chatRoundId, reqConversationId)
+    if (roundConversation.size > 500) roundConversation.delete(roundConversation.keys().next().value as string)
+  }
 
   const chatUser = getAuthUser(req)
   // ── Register this run as a server-owned task and buffer its event stream ──────
@@ -2075,10 +2323,17 @@ app.post('/api/chat', async (req, res) => {
   // Agentic-intent flag — hoisted above the agent branch so the Layer-2 FM planner
   // gate (which reads it) doesn't hit a temporal dead zone. Also reused downstream by
   // the exact-cache bypass and pipeline routing.
-  const isAgenticIntent = mode === 'agent' || detectAgentTask(message ?? '')
+  // Sticky agentic follow-up: a continuation/repair reply in a session that just ran
+  // an agent task stays on the agent path (keeps tool access for "fix it / try again").
+  const agenticFollowup = isContinuationPhrase(message ?? '') && hasRecentAgentTask(chatSessionId)
+  const isAgenticIntent = mode === 'agent' || detectAgentTask(message ?? '') || agenticFollowup
+  if (agenticFollowup && !detectAgentTask(message ?? '')) {
+    console.log('[/api/chat] Sticky agentic routing — continuation of a recent agent task')
+    debugBus.emit('agent', 'sticky_agentic_route', { message: (message ?? '').slice(0, 80) }, { severity: 'info' })
+  }
 
   // ── Agent mode — sustained tool loop instead of the synthesis pipeline ─────
-  if (mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && detectAgentTask(message ?? '') && !isCreativeProse(message ?? ''))) {
+  if (mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -2277,25 +2532,115 @@ app.post('/api/chat', async (req, res) => {
     try {
     let handled = false
 
+    // ── PURE-CODE SYNTHESIS FAST-PATH — "Crucible IS the model" ────────────────
+    // Before invoking ANY model (free pool or on-device), try to produce the deliverable
+    // with PURE CODE and ZERO model inference, via the no-model cascade:
+    //   L0 — exact match to a library-verified primitive (instant), then
+    //   L1 — bottom-up enumerative program search from the spec's worked examples, which
+    //        REASONS about a novel task it has no primitive for, gated by the execution
+    //        oracle (tsc + spec-derived tests) so a search bug can never ship wrong code.
+    // A verified result → emit the files + finish, model-cost-independent. Any miss (no primitive,
+    // no enumerable program, under-specified spec) falls through to the model-driven agent
+    // loop below — honest escalation, never plausible-wrong code. The oracle runs async so
+    // an in-request verification never stalls other in-flight SSE streams.
+    if (!resumable && !iterCheckpoint && isCodeImplementationTask(message ?? '')) {
+      try {
+        const pc = await synthesizePureCode(message ?? '', { enumTimeBudgetMs: 2500, projectPath })
+        if (pc.verified && pc.files.length && pc.source) {
+          const how = pc.source === 'primitive'
+            ? `verified '${pc.skillId}' primitive`
+            : 'pure-code enumerative program search'
+          send({ type: 'synth_match', skill: pc.skillId ?? pc.source, confidence: 1, source: pc.source })
+          debugBus.emit('agent', 'synth_match', { skill: pc.skillId ?? pc.source, source: pc.source }, { severity: 'info' })
+          const written: string[] = []
+          for (const f of pc.files) {
+            const abs = path.join(projectPath, f.path)
+            fs.mkdirSync(path.dirname(abs), { recursive: true })
+            fs.writeFileSync(abs, f.content)
+            written.push(abs)
+            send({ type: 'tool_call', tool: 'write_file', args: { path: f.path } })
+            send({ type: 'tool_result', tool: 'write_file', ok: true, output: `Synthesized ${f.path} via ${how} (no model)` })
+          }
+          onFileMutated(written)
+          // L0 primitives are verified once by `npm run synth:prove` (tested-stdlib model); L1
+          // results are oracle-verified in-line (tsc + spec-derived behavioral tests) inside
+          // synthesizePureCode before we get here. Either way the emitted code is proven.
+          const report = pc.source === 'primitive'
+            ? `Verified primitive '${pc.skillId}' (proven by synth:prove).`
+            : `Oracle-verified pure-code search — tsc + ${pc.testsDerived} spec-derived test(s), no model.`
+          send({ type: 'verify', passed: true, signal: pc.source === 'primitive' ? 'compile' : 'test', report })
+          const answer = `Synthesized ${pc.files.map(f => f.path).join(', ')} via ${how} — deterministic, model-cost-independent, zero model calls.`
+          send({ type: 'final', text: answer, meta: { synthesized: true, skill: pc.skillId ?? pc.source, source: pc.source, confidence: 1 } })
+          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+          if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+          historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-synth', models: ['crucible-synth'], synthesis: answer })
+          handled = true
+        }
+
+        // Phase F — honest-escalation UX: tell the client WHY we're falling through.
+        // This is the spec-dependence ceiling signal — never wrong-ships, but also
+        // never silently "trying AI" when offline synthesis was attempted and missed.
+        if (!handled) {
+          if (pc.testsDerived === 0) {
+            // Spec has no derivable worked examples → oracle cannot verify novel code offline.
+            // The most common case: a prose-only description with no f(args)===output pins.
+            send({
+              type: 'synth_miss',
+              reason: 'no-examples',
+              detail: 'No worked examples in spec — offline synthesis needs at least one f(args)===output pair to oracle-verify. Handing off to AI.',
+            })
+            debugBus.emit('agent', 'synth_miss', { reason: 'no-examples', tests: 0 }, { severity: 'info' })
+          } else {
+            // Tests exist but no pure-code solution found (novel logic beyond the skill library).
+            send({
+              type: 'synth_miss',
+              reason: 'no-match',
+              detail: `Offline synthesis attempted (${pc.testsDerived} derivable test${pc.testsDerived === 1 ? '' : 's'}) — no pure-code solution found. Handing off to AI.`,
+            })
+            debugBus.emit('agent', 'synth_miss', { reason: 'no-match', tests: pc.testsDerived, detail: pc.detail }, { severity: 'info' })
+          }
+        }
+      } catch (synthErr: any) {
+        debugBus.emit('agent', 'synth_error', { error: String(synthErr?.message ?? synthErr).slice(0, 120) }, { severity: 'warn' })
+        // fall through to the model-driven loop
+      }
+    }
+
     // ── Multi-level orchestration (Track I) — the meta-router ──────────────────
     // For genuinely multi-part goals: decompose into a specialist DAG, run each
     // subtask with the best archetype (researcher/coder/critic/strategist) in
     // topological waves, then critic-audit and strategist-synthesise. Falls back
     // to the single loop on any failure so it can never regress baseline behavior.
-    if (!resumable && !iterCheckpoint && shouldUseMetaRouter(message)) {
+    if (!handled && !resumable && !iterCheckpoint && shouldUseMetaRouter(message)) {
       try {
         const metaTaskId = chatSessionId || newSessionId(t0)
+        // Phase E: model-cost-independent driver.
+        //   CRUCIBLE_OFFLINE=strict — offline-only (Apple FM + synth; no external models)
+        //   CRUCIBLE_OFFLINE=0      — external models only (opt-out of offline brain)
+        //   default                 — offline-first with external fallback (production default)
+        const _offlineDrive = makeOfflineDriveTurn(projectPath)
+        const _offlineMode = process.env.CRUCIBLE_OFFLINE ?? '1'
+        const activeDriveTurn = _offlineMode === 'strict'
+          ? _offlineDrive
+          : _offlineMode === '0'
+          ? nativeDriveTurn
+          : withOfflineFallback(_offlineDrive, nativeDriveTurn)
+
         // I4 — assigned just below (after buildDriveTurn exists); referenced here so
         // every subtask loop's ToolCtx carries the consult hook.
         let consultSpecialist: ((archetype: ArchetypeId, question: string) => Promise<string>) | undefined
         const runLoop = (o: Parameters<typeof runAgentLoop>[0]) => runAgentLoop({
-          driveTurn: nativeDriveTurn,
+          driveTurn: activeDriveTurn,
           projectPath,
           userId: chatUser?.id,
           emit: send,
           signal: ac.signal,
           onFileMutated,
           consultSpecialist,
+          // Per-subtask grounding off — the meta-router's critic+strategist audit
+          // already validates the combined result, so a self-check per subtask is
+          // redundant latency. The single-loop / planned-task paths keep it on.
+          groundFinal: false,
           // C2 — default-on verification: a fresh verifier per subtask. Auto-passes
           // when no runnable check exists (research/critic), gives the coder real
           // test/compile validation + self-heal. Subtask opts can still override.
@@ -2307,9 +2652,11 @@ app.post('/api/chat', async (req, res) => {
           },
           ...o,   // subtask overrides (goal, archetype-filtered driveTurn, per-subtask signal, maxIters, systemPreamble) win
         })
+        // buildDriveTurn uses the offline-first activeDriveTurn so critic/strategist
+        // passes also route through Apple FM before falling back to external models.
         const buildDriveTurn = (archetype: ArchetypeId) =>
           ((msgs: Array<Record<string, unknown>>, _tools: any, sig?: AbortSignal) =>
-            nativeDriveTurn(msgs, buildArchetypeTools(archetype, registry.list()), sig)) as typeof nativeDriveTurn
+            activeDriveTurn(msgs, buildArchetypeTools(archetype, registry.list()), sig)) as typeof nativeDriveTurn
         // I4 — depth-1 guarded specialist consultation, injected into every subtask
         // loop's ToolCtx via the runLoop closure above (consultSpecialist key).
         let _consultDepth = 0
@@ -2342,16 +2689,35 @@ app.post('/api/chat', async (req, res) => {
     }
 
     if (!handled) {
+    // Same model-cost-independent driver selection as the meta-router path above —
+    // this block runs when shouldUseMetaRouter() is false, so it needs its own copy.
+    const _offlineDriveSingle = makeOfflineDriveTurn(projectPath)
+    const _offlineModeSingle = process.env.CRUCIBLE_OFFLINE ?? '1'
+    const activeDriveTurn = _offlineModeSingle === 'strict'
+      ? _offlineDriveSingle
+      : _offlineModeSingle === '0'
+      ? nativeDriveTurn
+      : withOfflineFallback(_offlineDriveSingle, nativeDriveTurn)
+
     if (resumable || needsPlan(message)) {
       const goal = resumable?.goal ?? message
       const sessionId = resumable?.id ?? newSessionId(t0)
       const persist = (steps: any[], completedSummaries: string[], status: 'running' | 'done' | 'failed') =>
         saveSession({ id: sessionId, goal, projectPath, steps, completedSummaries, status, createdAt: resumable?.createdAt ?? t0, updatedAt: t0 })
+      // Use FM for planning when offline-first mode is on; fall back to external driver.
+      const offlinePlanMode = process.env.CRUCIBLE_OFFLINE ?? '1'
+      const planModelFn = offlinePlanMode === '0'
+        ? driverComplete
+        : async (msgs: Array<{ role: string; content: string }>, cls?: 'glue' | 'hard') => {
+            const fmAns = await fmComplete(msgs)
+            if (fmAns) return fmAns
+            return driverComplete(msgs, cls)
+          }
       const result = await runPlannedTask({
         goal,
         projectPath,
-        driveTurn: nativeDriveTurn,
-        planModel: driverComplete,
+        driveTurn: activeDriveTurn,
+        planModel: planModelFn,
         emit: send,
         signal: ac.signal,
         makeVerify: () => makeVerifier({ command: req.body.verifyCommand }).verify,
@@ -2382,10 +2748,13 @@ app.post('/api/chat', async (req, res) => {
         goal: message,
         projectPath,
         userId: chatUser?.id,
-        driveTurn: nativeDriveTurn,
+        driveTurn: activeDriveTurn,
         emit: send,
         signal: ac.signal,
         verify: verifier.verify,
+        // Adversarial harden pass — self-gates on a passing execution check, so it only
+        // fires for code-producing tasks (catches edge-case bugs the agent's tests miss).
+        hardenFinal: true,
         onCheckpoint: (msgs, iter) => onCheckpoint(msgs, iter),
         initialMessages: iterCheckpoint?.messages ?? (
           // Prefer accumulated session messages (stateful continuity) over raw history array
@@ -2554,12 +2923,32 @@ app.post('/api/chat', async (req, res) => {
   // Runs before cache so filler queries never hit the pipeline or get cached.
   // Every tier still feeds the learning loop.
   const FILLER_RX = /^(ok|okay|thanks|thank you|cool|got it|great|nice|sure|sounds good|perfect|awesome|yes|no|yep|nope|lol|haha|k|thx)[\s!.]*$/i
-  const SIMPLE_RX = /^(what (is|are|was|were) .{3,60}\??)$|^(define |who (is|was) |when (is|was|did) |where is |how (many|much|old|tall|far|long) )/i
+  // Reasoning / multi-step / code / multi-fact-calc signals — these earn the full ensemble,
+  // never collapse to the single fast model even if short. Keeps quality on the hard ones.
+  const NEEDS_ENSEMBLE_RX = /\b(divided by|step by step|prove|derive|compare|contrast|pros and cons|trade-?offs?|debug|refactor|optimi[sz]e|analy[sz]e|implement|architect|write (a |an |me )?(function|code|program|script|class|method|sql|query|regex|algorithm)|design (a|an|the))\b|\bif\b[^?]+\bthen\b|\d[\d,. ]*\s*(\/|÷|×|·|\*|\^)\s*\d|\b\d+\s*x\s*\d/i
+  // Obviously-simple knowledge / lookup / short-list questions — one good model answers in
+  // 1-3 sentences. Broadened 2026-06-21: was missing name/list/why/which/tell-me, so trivial
+  // queries like "Name three bridges" fell into the 6-model pipeline (~27s instead of ~1s).
+  const SIMPLE_RX = /^(what('?s| is| are| was| were)\b|who\b|when (is|was|did|does|will|would|did)\b|where('?s| is| are| did| was| were)\b|why (is|are|was|do|does|did|can|would)\b|which\b|how (many|much|old|tall|far|long|big|deep|fast|hot|cold)\b|how (do|does|can|would) (you|i|we|it|they)\b|define\b|name (a |an |the |some |several |two |three |four |five |\d)|list (a |an |the |some |several |two |three |four |five |\d)|give me (a |an |some |several |two |three |four |five |\d)|tell me about\b|explain\b[^.?!]{0,80}\b(briefly|simply|in (one|a|a few|two|three) (sentence|word|line)s?))/i
+  // Premise-bearing explanatory / temporal-event questions presuppose a state of affairs
+  // ("why is X <surprising property>", "why did X <happen>", "when did X <event>"). A single
+  // fast local-model call can only continue the presupposition from parametric memory — it has
+  // no way to VERIFY the embedded claim, so it parrots false premises whenever the correction
+  // isn't already memorized (Great-Wall-from-space, Alaska-from-Canada). These must reach the
+  // research DAG (full tier → solveNonCodeTurn) where retrieval + the grounding check can test
+  // the premise against evidence rather than assume it. Pure factoid lookups (what/who/where/
+  // define/list) assert no contestable premise and stay 'simple'. This is a SHAPE rule, not a
+  // list of known-false facts. See server.ts:3056 (offline full path) + synthDriver.ts grounding.
+  const PREMISE_RX = /^(why (is|are|was|were|do|does|did|can|could|would|will)|when (did|was|were|do|does|will|had|has)|how (did|does|do) [^?]*\b(only|never|always|impossible|fail|failed|cause[ds]?)\b)\b/i
   type TriageTier = 'filler' | 'simple' | 'full'
   function triageQuery(q: string): TriageTier {
     const trimmed = q.trim()
     if (FILLER_RX.test(trimmed)) return 'filler'
-    if (trimmed.length < 120 && SIMPLE_RX.test(trimmed)) return 'simple'
+    // Premise-bearing questions never collapse to a single fast call — route to the DAG
+    // so the embedded claim is verified against evidence, not parroted from memory.
+    if (PREMISE_RX.test(trimmed)) return 'full'
+    const qMarks = (trimmed.match(/\?/g) || []).length
+    if (trimmed.length <= 160 && qMarks <= 1 && SIMPLE_RX.test(trimmed) && !NEEDS_ENSEMBLE_RX.test(trimmed)) return 'simple'
     return 'full'
   }
   const triageTier = mode === 'agent' ? 'full' : triageQuery(message)
@@ -2597,10 +2986,53 @@ app.post('/api/chat', async (req, res) => {
 
   // ── Simple triage — single fast model ───────────────────────────────────
   if (triageTier === 'simple') {
+    // Standing constraint: under CRUCIBLE_OFFLINE=strict, NO external calls — ever.
+    // The Apple FM daemon is deliberately NOT in MODEL_REGISTRY (see modelRegistry.ts),
+    // so the external fastModelEntry lookup below would silently fall back to Groq/qwen
+    // under strict. Pin strict simple-triage to a single DIRECT local FM call instead:
+    // one concise callLocalModel (same fast, single-call shape this branch intends),
+    // gated on daemon liveness. If the daemon is down, abstain honestly — never external.
+    const _offlineTriageMode = process.env.CRUCIBLE_OFFLINE ?? '1'
+    if (_offlineTriageMode === 'strict') {
+      const simplePT = classifyPrompt(message)
+      learnClassification(message, regexClassify(message))
+      send({ type: 'contract', promptType: simplePT, requiredStructure: [], forbiddenAntipatterns: [] })
+      send({ type: 'stage', stage: 1, status: 'start' })
+      let localReply = ''
+      if (localInferenceAvailable) {
+        const t0l = Date.now()
+        try {
+          localReply = (await callLocalModel('Answer concisely and accurately in 1-3 sentences.', message, 30000)).trim()
+        } catch { /* fall through to abstain */ }
+        if (localReply) {
+          send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: localReply, done: true })
+          send({ type: 'stage', stage: 1, status: 'done' })
+          send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: localReply, done: true, replace: false })
+          send({ type: 'stage', stage: 5, status: 'done' })
+          recordModelOutcome('local/apple-fm', true, Date.now() - t0l)
+          triggerImprovementPass()
+          summariseSession(message, localReply, process.cwd(), 'success', callModel).catch(() => {})
+          debugBus.emit('pipeline', 'triage_simple_strict_local', { query: message.slice(0, 60), latencyMs: Date.now() - t0l }, { severity: 'info', requestId })
+          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
+          return
+        }
+      }
+      // Daemon down or empty reply — abstain honestly; strict never escalates externally.
+      const text = "I can't answer this reliably offline right now (the local model is unavailable), and strict mode disables external escalation."
+      send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text, done: true, replace: false })
+      send({ type: 'stage', stage: 5, status: 'done' })
+      debugBus.emit('pipeline', 'triage_simple_strict_abstain', { query: message.slice(0, 60) }, { severity: 'warn', requestId })
+      if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
+      return
+    }
+    // Non-strict (default / '0'): unchanged — prefer local FM entry if registered, else
+    // a fast/free external model with a key.
     const fastModelEntry = MODEL_REGISTRY.find(m =>
       m.provider === 'apple-foundation-models' && getCircuitState(m.id) === 'active'
-    ) || MODEL_REGISTRY.find(m =>
-      m.id === 'cloudflare/@cf/meta/llama-3.2-3b-instruct' && getCircuitState(m.id) === 'active'
+    ) || (MODEL_REGISTRY as any[]).find(m =>
+      m.speed === 'fast' && getCircuitState(m.id) === 'active' && providerHasKey(m.provider)
+    ) || (MODEL_REGISTRY as any[]).find(m =>
+      m.free && getCircuitState(m.id) === 'active' && providerHasKey(m.provider)
     )
     if (fastModelEntry) {
       const fastModel: SelectedModel = { id: fastModelEntry.id, provider: fastModelEntry.provider, label: fastModelEntry.label, isWildcard: false }
@@ -2633,8 +3065,90 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
+  // ── Offline-first conversational path (option C — measured 2026-06-30) ───────
+  // Under offline mode the full multi-model ensemble below collapses onto ONE local
+  // FM daemon, serialized: every per-stage timeout (6/12/20s, tuned for fast external
+  // models) blows and the synthesis degrades to fallback text. Measured: ~110s/prompt,
+  // keyword coverage 0.17 vs 0.89 external. Instead, route the full-tier conversational
+  // turn through the proven offline brain (solveNonCodeTurn: research DAG → FM ReAct →
+  // FM direct) for ONE coherent local answer. Simple-triage above already collapses to
+  // a single gated FM call, so it is left untouched.
+  //   'strict' — local only; on FM-daemon-down or empty, abstain honestly (never external)
+  //   default  — local first; on OfflineEscalateError, fall through to the ensemble
+  const _offlineConvMode = process.env.CRUCIBLE_OFFLINE ?? '1'
+  if (_offlineConvMode !== '0' && mode !== 'agent' && mode !== 'seeker' && mode !== 'code' && triageTier === 'full' && !isAgenticIntent) {
+    const abstain = (text: string) => {
+      send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text, done: true, replace: false })
+      send({ type: 'stage', stage: 5, status: 'done' })
+      if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
+    }
+    try {
+      const convPT = classifyPrompt(message)
+      send({ type: 'contract', promptType: convPT, requiredStructure: [], forbiddenAntipatterns: [] })
+      send({ type: 'stage', stage: 1, status: 'start' })
+      const t0o = Date.now()
+      let answer = await solveNonCodeTurn(message)
+      const latencyMs = Date.now() - t0o
+      // Deterministic arithmetic guard (ZERO inference): the free-tier model does mental
+      // math token-by-token and ships wrong products (47×53 → "2,591"). Before sending,
+      // splice the oracle-computed value into any "EXPR = NUMBER" claim whose EXPR is
+      // cleanly evaluable and whose stated NUMBER is wrong. Non-evaluable claims (variables,
+      // factorials, π/√) are left untouched — no guessing. No external call, no fanout.
+      if (answer && answer.trim()) {
+        try {
+          const { text: fixed, corrections } = correctArithmetic(answer)
+          if (corrections.length) {
+            answer = fixed
+            debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections }, { severity: 'info', requestId })
+          }
+        } catch { /* non-blocking: ship the original answer */ }
+      }
+      if (answer && answer.trim()) {
+        send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: answer, done: true })
+        send({ type: 'stage', stage: 1, status: 'done' })
+        send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: answer, done: true, replace: false })
+        send({ type: 'stage', stage: 5, status: 'done' })
+        recordModelOutcome('local/apple-fm', true, latencyMs)
+        triggerImprovementPass()
+        summariseSession(message, answer, process.cwd(), 'success', callModel).catch(() => {})
+        debugBus.emit('pipeline', 'offline_conversational', { query: message.slice(0, 60), latencyMs, mode: _offlineConvMode }, { severity: 'info', requestId })
+        if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
+        return
+      }
+      // Empty local answer: strict abstains; default falls through to the ensemble.
+      if (_offlineConvMode === 'strict') { abstain("I can't answer this reliably offline right now (local model returned nothing), and strict mode disables external escalation."); return }
+      debugBus.emit('pipeline', 'offline_conversational_empty', { query: message.slice(0, 60) }, { severity: 'warn', requestId })
+    } catch (e: any) {
+      // Tier-3 fmDirectAnswer (synthDriver.ts) is unguarded, so the raw callFm
+      // error (fmReact.ts) surfaces here as-is. Distinguish a slow-but-healthy
+      // daemon (FM_TIMEOUT_MS abort, e.name === 'TimeoutError') from a genuinely
+      // unreachable one (OfflineEscalateError from the upfront health check, or
+      // ECONNREFUSED) — these were previously collapsed into one mislabeled
+      // "daemon is unreachable" string, which cost real diagnostic time.
+      const isTimeout = e?.name === 'TimeoutError'
+      const isUnreachable = !isTimeout && (/daemon unavailable/i.test(String(e?.message ?? '')) || e?.cause?.code === 'ECONNREFUSED' || e?.cause?.code === 'ECONNRESET')
+      const reason = isTimeout
+        ? 'the local model is taking too long to respond (timed out)'
+        : isUnreachable
+          ? 'the local model daemon is unreachable'
+          : 'the local model could not produce an answer'
+      debugBus.emit('pipeline', 'offline_conversational_escalate', { reason: String(e?.message ?? e).slice(0, 100), errName: e?.name, mode: _offlineConvMode }, { severity: 'warn', requestId })
+      if (_offlineConvMode === 'strict') { abstain(`I can't answer this offline right now — ${reason}, and strict mode blocks external escalation.`); return }
+      // default: fall through to the external ensemble below.
+    }
+  }
+
   const cacheEvents: object[] = []
+  // Models dropped by the Stage 1 straggler timer — their layer1 streaming events
+  // are still sent to the client (UI shows the work) but NOT recorded in cacheEvents,
+  // so a cache replay never replays a straggler that arrived after synthesis.
+  const timerDropped = new Set<string>()
   const sendAndRecord = (payload: object) => {
+    const p = payload as any
+    if (p.type === 'layer1' && p.modelId && timerDropped.has(p.modelId)) {
+      send(payload)  // still stream to UI, just don't cache
+      return
+    }
     cacheEvents.push(payload)
     send(payload)
   }
@@ -3166,6 +3680,11 @@ ${worldCtx}`
     // Returning '' on failure lets each masterpiece/ANIMA sub-stage degrade to its
     // own fallback (heuristic shard split, default coherence, original shard text)
     // instead of all-or-nothing. The deep assembler guards against an empty result.
+    // Offline-first is enforced universally inside callModel (offlineGate) — no
+    // per-site gating here. This wrapper only degrades failures (incl. the strict
+    // OfflineStrictError) to '' so a 429 / abstain in one MASTERPIECE sub-stage
+    // degrades that stage to its own heuristic fallback instead of aborting the
+    // whole deep pipeline via an un-caught rejection in Promise.all.
     callModel: (m: { id: string; label: string; provider: string; isWildcard: boolean }, msgs: { role: string; content: string }[], opts?: { requestId?: string }) =>
       callModel(m as any, msgs, { requestId: opts?.requestId ?? requestId })
         .catch((e: any) => { console.error('[mpDeps.callModel] model failed (degrading):', e?.message?.slice(0, 120)); return '' }),
@@ -3238,7 +3757,17 @@ ${worldCtx}`
       ? 'You are the synthesis layer of an adversarial AI pipeline. You have attack analyses from multiple models. Your job: produce a ranked vulnerability report. Lead with the most critical finding. Be precise, not exhaustive. Format: numbered list, most critical first. Plain text only — never use emojis or decorative pictographs.'
       : mode === 'code'
       ? 'You are the synthesis layer of a multi-model AI pipeline specialising in code. You have revised responses from different models. Your job: produce ONE definitive, working code solution. Prefer correctness over brevity. Include all necessary code. ALWAYS put the code inside a single fenced code block with the correct language tag (```language … ```) — this is required, not optional. Explain key decisions briefly in prose after the code block. Plain text only — never use emojis or decorative pictographs.'
-      : 'You are the synthesis layer of a multi-model AI debate pipeline. You have revised responses from different models. Your job: produce ONE definitive, high-quality answer. Combine the strongest elements. Eliminate redundancy. Resolve contradictions using best reasoning. Write as a single coherent response, not a comparison. Write in natural prose — never wrap the answer in code blocks, quotation marks, or a variable assignment unless the user explicitly asked for code. Plain text only — never use emojis or decorative pictographs.'
+      : 'You are the final synthesis layer of a multi-model AI pipeline. You have been given multiple independent responses to the same question.\n\n' +
+        'Your job is to produce the SINGLE BEST POSSIBLE answer — authoritative, precise, and genuinely useful. You are writing THE answer, not summarising the responses.\n\n' +
+        'How to synthesize well:\n' +
+        '1. Anchor on the most rigorous reasoning — pick the strongest track and build from it\n' +
+        '2. Cross-verify facts and numbers; where responses disagree, reason through which is correct\n' +
+        '3. Fill gaps — if all responses miss something the user clearly needs, supply it from your own knowledge\n' +
+        '4. Lead with a direct, decisive answer; follow with the most important supporting context\n' +
+        '5. Be concrete — specific numbers, names, mechanisms, and examples beat vague generalities\n\n' +
+        'CRITICAL: Never reference the source responses or mention which model said what. Write as a single unified voice — the reader should not know this answer came from a pipeline. ' +
+        'Plain text only — never use emojis or decorative pictographs. ' +
+        'For code requests: always put code in a fenced code block with the correct language tag, then explain briefly after. Never describe the code in prose without showing it.'
 
   const { normalizeOutput: normalizeForSynth } = await import('./src/CrucibleEngine/normalize')
   const distillationCtx = getDistillationContext(process.cwd(), promptType, 3)
@@ -3255,11 +3784,13 @@ ${worldCtx}`
       .sort((a, b) => (scores[b] ?? 0) - (scores[a] ?? 0))
     let budget = SYNTH_ENTRY_BUDGET
     const parts: string[] = []
-    for (const id of ranked) {
+    const letters = 'ABCDEFGHIJKLMNOP'
+    for (let i = 0; i < ranked.length; i++) {
       if (budget <= 200) break
-      const label = models.find(m => m.id === id)?.label ?? id
+      const id = ranked[i]
       const text = normalizeForSynth(store[id]).slice(0, Math.min(SYNTH_PER_MODEL_CAP, budget))
-      parts.push(`${label} revised response:\n${text}`)
+      // Anonymous labels prevent synthesis from referencing specific model names in output
+      parts.push(`Response ${letters[i] ?? i + 1}:\n${text}`)
       budget -= text.length
     }
     return parts.join('\n\n')
@@ -3377,6 +3908,13 @@ ${worldCtx}`
           ''
         )
       }
+      // If the straggler timer already dropped this model while it was streaming,
+      // bail out — don't write to shared state or run linting. The timer already
+      // resolved modelResolvers[model.id], so the pipeline has moved on.
+      if (timerDropped.has(model.id)) {
+        console.log(`[Stage 1] ${model.label} finished after straggler drop — ignoring late response`)
+        return
+      }
       responses[model.id] = text
       // Track Q — viability fingerprint: Stage 1 streams (bypasses _emitModelResult),
       // so record the success outcome here. Empty text = timeout fallback = failure.
@@ -3396,13 +3934,18 @@ ${worldCtx}`
         const waitMs = complexity === 'simple'
           ? 2000
           : preLinterscore >= qualityEarlyExitThreshold ? 2500
+          : promptType === 'factual' ? (preLinterscore >= 0.55 ? 2500 : 3500)
           : preLinterscore >= 0.65 ? 4000
           : 6000
         console.log(`[Stage 1] First response (${model.label}, score: ${preLinterscore.toFixed(2)}) — straggler clock starts, wait ${waitMs}ms`)
         adaptiveTimer = setTimeout(() => {
           for (const m of models) {
-            if (scores[m.id] === 0 && !responses[m.id]) {
+            // Drop any model that hasn't fully scored yet — this catches both models
+            // that haven't finished streaming AND models stuck in linter remediation.
+            // scores[m.id] is only set after all linting completes (line ~3493).
+            if (scores[m.id] === 0) {
               console.log(`[Stage 1] Adaptive timeout — dropping ${m.label}`)
+              timerDropped.add(m.id)
               recordModelFailure(m.id)
               recordModelOutcome(m.id, false)
               modelResolvers[m.id]?.()
@@ -3412,9 +3955,21 @@ ${worldCtx}`
       }
 
       // ── Linter Gate — one remediation pass if contract violated ────────────
-      // Only remediate coding queries (contract strictness matters most there).
-      // Tight timeout (8s) so linter never meaningfully blocks Stage 1 wall-clock.
+      // Only remediate coding queries where the response actually contains code.
+      // If the response is prose (no code blocks), the linter can't help — skip it.
+      // This guards against misclassified analytical queries (e.g. "compare SQL vs NoSQL"
+      // landing as promptType=coding) triggering futile 8s remediation cycles.
+      const hasCodeBlock = /```[\w]*\n[\s\S]+?```/.test(text)
+      // Only lint responses that have actual function/class definitions — SQL queries,
+      // simple scripts, and one-liners won't satisfy language-agnostic quality gates
+      // (error handling, type annotations) so linting them just adds latency for no gain.
+      const hasFunctionDef = /\b(def |function |const\s+\w+\s*=\s*(async\s+)?\(|class\s+\w+|impl\s+\w+|fn\s+\w+)/.test(text)
+      // Never remediate on simple queries — the straggler timer fires at 2000ms
+      // and would drop the only responding model before the 8s linting call returns.
       const wantsLinterRemediation = promptType === 'coding' &&
+        hasCodeBlock &&
+        hasFunctionDef &&
+        complexity !== 'simple' &&
         !result.shouldAccept && result.score.compositeScore < 0.75 &&
         result.score.critiques.some(c => c.severity === 'blocking' || c.severity === 'major')
       if (wantsLinterRemediation) {
@@ -3438,6 +3993,14 @@ ${worldCtx}`
           8000,
           text
         )
+
+        // Straggler timer fired while we were awaiting remediation — keep the
+        // original response and pre-linting score so synthesis still has material.
+        if (timerDropped.has(model.id)) {
+          scores[model.id] = preLinterscore
+          console.log(`[Linter] ${model.label} dropped during remediation — keeping original (score: ${preLinterscore.toFixed(2)})`)
+          return
+        }
 
         if (remediated && remediated !== text && remediated.length > 50) {
           responses[model.id] = remediated
@@ -3515,8 +4078,13 @@ ${worldCtx}`
   }
   const stage1Work = models.map(model => runStage1Model(model))
 
-  await Promise.all([...stage1Work, ...modelPromises])
+  // Gate ONLY on modelPromises — they resolve when each model finishes OR when the
+  // straggler timer drops them. Straggler work continues in background (the early-return
+  // inside runStage1Model prevents it from writing to shared state once dropped).
+  await Promise.all(modelPromises)
   if (adaptiveTimer) clearTimeout(adaptiveTimer)
+  // Suppress unhandled-rejection warnings from background stragglers
+  for (const p of stage1Work) p.catch(() => {})
   console.log('[Stage 1] All done')
 
   // ── Stage 2 — scores ──────────────────────────────────────────────────────
@@ -3528,6 +4096,7 @@ ${worldCtx}`
   const rolledBack = new Set<string>(
     models
       .filter(m =>
+        timerDropped.has(m.id) ||    // dropped by straggler timer
         !responses[m.id] ||
         responses[m.id].startsWith('Error:') ||
         responses[m.id].length < 20 ||
@@ -5829,7 +6398,13 @@ function startListening(port: number, attempt = 0) {
           try { return selectModels('general', SIMPLE_PIPELINE_CONFIG, 'simple', 'quorum').models[0] ?? null } catch { return null }
         },
       },
-      { autoAcquire: process.env.CORPUS_AUTOACQUIRE !== '0', byteBudget: 50 * 1_048_576 },
+      {
+        // Standing constraint: under CRUCIBLE_OFFLINE=strict, NO external calls — ever.
+        // Deliberate-curation acquisition fetches from external sources (e.g. arxiv.org);
+        // strict must mean strict literally (decided 2026-07-01).
+        autoAcquire: (process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict' ? false : process.env.CORPUS_AUTOACQUIRE !== '0',
+        byteBudget: 50 * 1_048_576,
+      },
     )
     // Pre-warm the ONNX embedder in the background so the first query doesn't pay
     // the 20-30s cold-load cost inside the corpus-first gate. Fire-and-forget.

@@ -156,6 +156,66 @@ function resolveEmptyTrash(m: string): LocalPlan | null {
   return null
 }
 
+// System settings ("set brightness to 50%", "dark mode on", "turn wifi off", "mute",
+// "lock the screen", "battery level"). These MUST be deterministic — routing them through
+// the LLM loop makes it drive the System Settings UI via Accessibility, which fails
+// ("Can't set «class tabg» … to 0.5, -10006"), loops, and steals focus. control_mac runs
+// the reliable native command and verifies it. Backed by the macCapabilities recipe library.
+function cm(intent: string, label: string, args: Record<string, unknown> = {}): LocalPlan {
+  return { intent: 'control_mac', label, steps: [{ tool: 'control_mac', args: { intent, ...args } }] }
+}
+
+function resolveSystemControl(m: string): LocalPlan | null {
+  const lower = m.toLowerCase()
+
+  // ── Toggles (no number needed) ──────────────────────────────────────────────
+  // Mute / unmute
+  if (/^\s*(un)?mute\b/.test(lower) ||
+      /\b(mute|unmute)\b.*\b(volume|sound|audio)\b/.test(lower) ||
+      /\b(volume|sound|audio)\b.*\b(mute|unmute)\b/.test(lower)) {
+    const on = !/\bunmute\b/.test(lower)
+    return cm('mute', on ? 'Muting.' : 'Unmuting.', { on })
+  }
+  // Dark / light mode
+  if (/\b(dark|light)\s*(mode|theme|appearance)\b/.test(lower) || /\bappearance\b/.test(lower)) {
+    const on = /\bdark\b/.test(lower)
+    return cm('dark_mode', on ? 'Switching to Dark mode.' : 'Switching to Light mode.', { on })
+  }
+  // Wi-Fi on/off (connect-to-network is left to the loop — needs SSID/password parsing)
+  if (/\b(wi-?fi|wireless|airport)\b/.test(lower) && !/\b(connect|join|password|network named)\b/.test(lower)) {
+    const off = /\b(off|disable|turn off|disconnect)\b/.test(lower)
+    return cm('wifi', off ? 'Turning Wi-Fi off.' : 'Turning Wi-Fi on.', { on: !off })
+  }
+  // Lock screen
+  if (/\block\b.{0,12}\b(screen|mac|computer|it)\b/.test(lower) || /^\s*lock\s*$/.test(lower)) {
+    return cm('lock_screen', 'Locking the screen.')
+  }
+  // Sleep (Mac vs display)
+  if (/\b(turn off|sleep)\b.{0,12}\b(screen|display|monitor)\b/.test(lower)) {
+    return cm('display_sleep', 'Turning the display off.')
+  }
+  if (/\b(go to sleep|sleep the (mac|computer)|put .* to sleep)\b/.test(lower) || /^\s*sleep\s*$/.test(lower)) {
+    return cm('sleep', 'Putting the Mac to sleep.')
+  }
+  // Battery (read-only)
+  if (/\bbattery\b/.test(lower) || /\b(charge|power)\s*(level|status|percentage)\b/.test(lower)) {
+    return cm('battery', 'Checking battery.')
+  }
+
+  // ── Level setters (need an absolute number) ─────────────────────────────────
+  const isBrightness = /\bbrightness\b/.test(lower) || /\b(dim|brighten)\b.{0,15}\b(screen|display)\b/.test(lower)
+  const isVolume = /\bvolume\b/.test(lower) || /\b(set|turn|change|adjust)\b.{0,15}\b(sound|audio)\b/.test(lower)
+  if (!isBrightness && !isVolume) return null
+
+  // Absolute target only — "50%", "50 percent", "to 50", else any bare number.
+  // Relative ("a bit brighter") is left to the loop: precision over recall.
+  const pm = lower.match(/(\d{1,3})\s*(?:%|percent)/) || lower.match(/\bto\s+(\d{1,3})\b/) || lower.match(/\b(\d{1,3})\b/)
+  if (!pm) return null
+  const percent = Math.max(0, Math.min(100, parseInt(pm[1], 10)))
+  const intent = isBrightness ? 'brightness' : 'volume'
+  return cm(intent, `Setting ${intent} to ${percent}%.`, { percent })
+}
+
 // "click the <X> button" / "click <X>" / "tap <X>"  (Remote Brain Mac control)
 function resolveClick(m: string): LocalPlan | null {
   const match = m.match(/\b(?:click|tap|press)\b\s+(?:on\s+)?(?:the\s+)?(.+?)(?:\s+(?:button|link|tab|icon|menu item|item))?\s*$/i)
@@ -174,7 +234,7 @@ function resolveType(m: string): LocalPlan | null {
   return { intent: 'type_text', label: `Typing "${text.slice(0, 40)}${text.length > 40 ? '…' : ''}".`, steps: [{ tool: 'type_text', args: { text } }] }
 }
 
-const RESOLVERS = [resolvePlayMedia, resolveEmptyTrash, resolveOpen, resolveClick, resolveType]
+const RESOLVERS = [resolveSystemControl, resolvePlayMedia, resolveEmptyTrash, resolveOpen, resolveClick, resolveType]
 
 /**
  * Resolve a message to a deterministic tool plan, or null if no high-confidence
@@ -226,5 +286,10 @@ export async function runLocalPlan(
       return { ok: false, outputs, summary: `Step ${i + 1} (${step.tool}) failed: ${result.output.slice(0, 200)}` }
     }
   }
-  return { ok: true, outputs, summary: plan.label }
+  // For single-step plans the tool's own output is the verified, informative result
+  // (e.g. "Battery: 27%, charging" or "Volume set to 35% (confirmed: 35%)") — surface it
+  // instead of the generic label. Multi-step plans keep the clean label as the summary.
+  const lastOut = outputs[outputs.length - 1]?.output?.trim()
+  const summary = plan.steps.length === 1 && lastOut ? lastOut : plan.label
+  return { ok: true, outputs, summary }
 }

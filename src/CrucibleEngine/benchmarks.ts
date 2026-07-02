@@ -30,7 +30,7 @@ const runFile       = (dir: string) => path.join(dir, '.crucible', 'benchmark-ru
 function ensureDir(f: string) { fs.mkdirSync(path.dirname(f), { recursive: true }) }
 
 // Seed benchmarks — diverse, unambiguous, stable
-const SEED_BENCHMARKS: Benchmark[] = [
+export const SEED_BENCHMARKS: Benchmark[] = [
   { id: 'b001', question: 'What is the time complexity of binary search?', promptType: 'reasoning', expectedKeywords: ['o(log n)', 'logarithmic'], forbiddenKeywords: ['o(n)', 'linear'], addedAt: 0, source: 'seed' },
   { id: 'b002', question: 'What does the CAP theorem state?', promptType: 'factual', expectedKeywords: ['consistency', 'availability', 'partition'], forbiddenKeywords: [], addedAt: 0, source: 'seed' },
   { id: 'b003', question: 'What is 17 × 23?', promptType: 'math', expectedKeywords: ['391'], forbiddenKeywords: [], addedAt: 0, source: 'seed' },

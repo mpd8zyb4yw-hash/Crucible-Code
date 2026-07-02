@@ -1705,7 +1705,11 @@ function AuthScreen({ onAuth }: { onAuth: (user: { id: string; email: string }) 
           <button
             className="oauth-btn"
             style={oauthBtnStyle('rgba(255,255,255,0.06)')}
-            onClick={() => { window.location.href = loginUrl('google') }}
+            onClick={() => {
+  const url = loginUrl('google');
+  if (window.electronIPC) { window.electronIPC.send('oauth-open', url); }
+  else { window.location.href = url; }
+}}
           >
             {/* Google G logo */}
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -1721,7 +1725,11 @@ function AuthScreen({ onAuth }: { onAuth: (user: { id: string; email: string }) 
           <button
             className="oauth-btn"
             style={oauthBtnStyle('rgba(255,255,255,0.06)')}
-            onClick={() => { window.location.href = loginUrl('github') }}
+            onClick={() => {
+  const url = loginUrl('github');
+  if (window.electronIPC) { window.electronIPC.send('oauth-open', url); }
+  else { window.location.href = url; }
+}}
           >
             {/* GitHub mark */}
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">

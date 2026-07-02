@@ -1,0 +1,106 @@
+# Desktop builds — Windows / macOS / Linux — on free GitHub-hosted runners.
+#
+# Why this exists: producing the Windows (.exe NSIS) installer needs a Windows
+# machine. GitHub Actions gives one for free (windows-latest), so no local Windows
+# box is required. Public repo = unlimited Actions minutes; private repo = 2000
+# min/month (Windows counts 2x, macOS 10x) — which is why builds run ONLY on a
+# version tag or a manual dispatch, never on every push.
+#
+# No paid developer account / code-signing certificate is used (CSC auto-discovery
+# is disabled): installers ship UNSIGNED. Windows SmartScreen / macOS Gatekeeper
+# will show a one-time "unidentified developer" prompt — expected and free-forever.
+#
+# Trigger a release build:   git tag v0.1.0 && git push origin v0.1.0
+# Trigger a Windows-only test build:  Actions tab -> "build" -> Run workflow.
+
+name: build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Which OS(es) to build on'
+        type: choice
+        default: windows
+        options: [windows, all, mac, linux]
+
+# Releases need write access to upload the installers + electron-updater metadata
+# (latest.yml / latest-mac.yml / latest-linux.yml).
+permissions:
+  contents: write
+
+# A newer tag/dispatch cancels an in-flight run so we never burn double minutes.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Resolve the runner matrix. Tag pushes build all three OSes (a real release);
+  # a manual dispatch defaults to Windows-only to keep minutes cheap.
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          WIN='{"os":"windows-latest","script":"dist:win"}'
+          MAC='{"os":"macos-latest","script":"dist:mac"}'
+          LIN='{"os":"ubuntu-latest","script":"dist:linux"}'
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.platforms }}" = "all" ]; then
+            echo "include=[$WIN,$MAC,$LIN]" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.platforms }}" = "mac" ]; then
+            echo "include=[$MAC]" >> "$GITHUB_OUTPUT"
+          elif [ "${{ inputs.platforms }}" = "linux" ]; then
+            echo "include=[$LIN]" >> "$GITHUB_OUTPUT"
+          else
+            echo "include=[$WIN]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: matrix
+    strategy:
+      fail-fast: false           # a flaky mac build must not kill the Windows artifact
+      matrix:
+        include: ${{ fromJSON(needs.matrix.outputs.include) }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Linux AppImage runtime deps (no-op on win/mac runners).
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+
+      - name: Install dependencies
+        run: npm ci
+
+      # bundle:server (esbuild) + vite build + electron-builder for this OS.
+      # On a tag we publish to the GitHub Release (uploads installers + the
+      # latest*.yml metadata electron-updater reads); otherwise we never publish.
+      - name: Build installer
+        run: npm run ${{ matrix.script }} -- --publish ${{ startsWith(github.ref, 'refs/tags/') && 'always' || 'never' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}        # electron-builder GitHub publish
+          CSC_IDENTITY_AUTO_DISCOVERY: false           # no paid signing cert — unsigned build
+
+      # Always keep the artifacts downloadable from the run (esp. dispatch test builds).
+      - name: Upload installers as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crucible-${{ matrix.os }}
+          if-no-files-found: error
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/latest*.yml

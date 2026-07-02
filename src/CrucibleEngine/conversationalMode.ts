@@ -21,8 +21,9 @@ const CASUAL_PATTERNS = [
 ]
 
 const DOMAIN_SIGNAL_WORDS = [
-  'how', 'why', 'what', 'when', 'where', 'which', 'explain', 'describe', 'tell me',
-  'compare', 'difference', 'help me', 'write', 'create', 'build', 'fix', 'debug',
+  'how', 'why', 'what', 'when', 'where', 'which', 'who',
+  'name', 'tell', 'count', 'translate', 'summarize', 'summarise', 'convert', 'estimate', 'predict',
+  'explain', 'describe', 'compare', 'difference', 'help me', 'write', 'create', 'build', 'fix', 'debug',
   'analyze', 'analyse', 'calculate', 'find', 'show', 'give me', 'list', 'define',
   'implement', 'solve', 'code', 'function', 'class', 'algorithm',
 ]

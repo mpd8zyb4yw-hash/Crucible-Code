@@ -56,13 +56,56 @@ export const LOCAL_MODEL = {
 // ── Driver tier (orchestrator/worker split) ──────────────────────────────────
 // The driver is the best available instruction-follower with native tool-calling;
 // the cheap ensemble stays the worker tier (exposed to the driver as ensemble_solve).
-export function selectDriverCandidates(): ModelEntry[] {
-  return MODEL_REGISTRY
-    .filter(m => m.tools && m.free && getCircuitState(m.id) === 'active')
-    .sort((a, b) =>
+/** Ms until the soonest tool-capable free model's circuit recovers (0 if any is usable now).
+ *  Lets the driver wait out a transient full-trip instead of instant-failing a task. */
+export function msUntilDriverRecovery(): number {
+  let soonest = Infinity
+  for (const m of MODEL_REGISTRY) {
+    if (!m.tools || !m.free || m.provider === 'mistral') continue   // mistral can't drive (see below)
+    if (getCircuitState(m.id) !== 'tripped') return 0   // something is usable right now
+    const cb = circuitBreakers[m.id]
+    if (cb) soonest = Math.min(soonest, Math.max(0, cb.cooldownMs - (Date.now() - cb.trippedAt)))
+  }
+  return soonest === Infinity ? 0 : soonest
+}
+
+/**
+ * Tool-capable driver candidates, ordered for the kind of turn being run.
+ * - 'hard' (default): quality-first — the strongest coder (GPT-OSS-120B) leads. Use for
+ *   implementation turns and any turn right after a verification failure.
+ * - 'glue': speed-first — fast adequate models (Llama-3.3-70B) lead, slow ones trail. Use
+ *   for latency-tolerant judge/plan/read turns (grounding, harden, reflection, planning,
+ *   done-check); routing them off the slow 120B substrate is the dominant wall-clock win.
+ * In BOTH cases 'active' models rank before 'probing' ones (cooldown expired, not yet
+ * re-confirmed). Including probing — not just active — is what lets the driver self-heal
+ * after a full pool trip; a successful turn resets the model to active (see nativeDriveTurn).
+ */
+export function selectDriverCandidates(turnClass: 'glue' | 'hard' = 'hard'): ModelEntry[] {
+  // Mistral is EXCLUDED entirely: it 400s on the message shapes we build ("Tool call id
+  // has to be defined", 3051) so it can never drive. Leaving it as a last-resort fallback
+  // means a pool degraded to only-Mistral instant-fails the task on its 400 instead of
+  // waiting for a real model to recover — so it must never be a candidate at all.
+  const usable = MODEL_REGISTRY.filter(m => m.tools && m.free && m.provider !== 'mistral' && getCircuitState(m.id) !== 'tripped')
+  if (usable.length === 0) return usable
+  const probing = (m: ModelEntry) => getCircuitState(m.id) === 'probing' ? 1 : 0
+  if (turnClass === 'glue') {
+    // A glue model must still handle a coding-sized request: tiny/low-TPM models (e.g.
+    // llama-3.1-8b-instant: q6, 6000 TPM) 413 on a real transcript and fall back to the
+    // slow tier anyway — net slower AND lower quality. Lead with FAST + adequate models
+    // (quality>=7, no sub-8000 TPM cap), then the rest, so a degraded pool never empties.
+    const adequate = (m: ModelEntry) => m.quality >= 7 && (m.tpmLimit == null || m.tpmLimit >= 8000)
+    const rank = (m: ModelEntry) => (adequate(m) ? 2 : 0) + (m.speed === 'fast' ? 1 : 0)
+    return usable.sort((a, b) =>
+      (probing(a) - probing(b)) ||
+      (rank(b) - rank(a)) ||
       (b.quality - a.quality) ||
-      ((b.speed === 'fast' ? 1 : 0) - (a.speed === 'fast' ? 1 : 0)) ||
       (b.params - a.params))
+  }
+  return usable.sort((a, b) =>
+    (probing(a) - probing(b)) ||
+    (b.quality - a.quality) ||
+    ((b.speed === 'fast' ? 1 : 0) - (a.speed === 'fast' ? 1 : 0)) ||
+    (b.params - a.params))
 }
 
 // ── Pipeline configuration ────────────────────────────────────────────────────
@@ -240,6 +283,7 @@ export function getCircuitState(modelId: string): CircuitState {
 }
 
 export function resetCircuitBreaker(modelId: string): void {
+  if (!circuitBreakers[modelId]) return   // already active — no-op (avoids per-turn rebalance churn)
   delete circuitBreakers[modelId]
   console.log(`[Circuit] ${modelId} restored to active`)
   rebalancePool()
@@ -638,7 +682,7 @@ export function getModelEntry(id: string): ModelEntry | undefined {
 
 const CODING_KEYWORDS    = /\b(code|function|class|implement|debug|refactor|typescript|javascript|python|rust|sql|api|algorithm|bug|error|compile|syntax)\b/i
 const MATH_KEYWORDS      = /\b(calculate|equation|integral|derivative|matrix|probability|statistics|proof|theorem|algebra|geometry|calculus)\b/i
-const REASONING_KEYWORDS = /\b(analyse|analyze|reason|logic|argument|fallacy|compare|contrast|pros|cons|trade.?off|explain why|should i|decision)\b/i
+const REASONING_KEYWORDS = /\b(analyse|analyze|reason|logic|argument|fallacy|compare|contrast|pros|cons|trade.?offs?|difference|versus|\bvs\b|explain why|should i|decision|tradeoffs?|when (to|should)|advantages|disadvantages|implications)\b/i
 const CREATIVE_KEYWORDS  = /\b(write|story|poem|creative|fiction|imagine|narrative|character|plot|essay|blog|script|song)\b/i
 const FACTUAL_KEYWORDS   = /\b(what is|who is|when did|where is|history|define|explain|summary|overview|fact)\b/i
 
@@ -650,11 +694,13 @@ const STRONG_CREATIVE = /\b(story|short story|poem|poetry|haiku|sonnet|novel|fic
 // Regex baseline — always available, O(1)
 export function regexClassify(message: string): PromptType {
   if (STRONG_CREATIVE.test(message))    return 'creative'
-  if (CODING_KEYWORDS.test(message))    return 'coding'
   if (MATH_KEYWORDS.test(message))      return 'math'
+  // REASONING before CODING: "analyze tradeoffs between SQL and NoSQL" → reasoning, not coding
   if (REASONING_KEYWORDS.test(message)) return 'reasoning'
-  if (CREATIVE_KEYWORDS.test(message))  return 'creative'
+  // FACTUAL before CODING: "what is a REST API" → factual, not coding
   if (FACTUAL_KEYWORDS.test(message))   return 'factual'
+  if (CODING_KEYWORDS.test(message))    return 'coding'
+  if (CREATIVE_KEYWORDS.test(message))  return 'creative'
   return 'general'
 }
 
@@ -664,8 +710,8 @@ export function regexClassify(message: string): PromptType {
 // improves over time as the history covers edge cases and diverse prompts).
 
 const CLASSIFIER_FILE = path.join(process.cwd(), '.crucible', 'classifier-history.json')
-const MIN_SAMPLES = 20
-const CK_NEIGHBORS = 5
+const MIN_SAMPLES = 100  // needs enough diverse data before overriding the regex baseline
+const CK_NEIGHBORS = 7   // wider vote window reduces noise at higher sample counts
 const CLS_STOPWORDS = new Set(['the','a','an','is','are','was','were','have','has','do','does','did','will','would','of','in','on','at','to','for','with','by','from','and','or','but','not','this','that','it','i','you','we','they'])
 
 interface ClassifierEntry { tokens: [string, number][]; promptType: PromptType }

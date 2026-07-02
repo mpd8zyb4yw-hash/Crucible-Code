@@ -139,6 +139,12 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
   // Track per-step failure fingerprints so we escalate on a true loop (same step,
   // same error twice) instead of replanning into the same wall forever.
   const seenFailures = new Set<string>()
+  // Transient (transport/driver/budget) errors are NOT logic failures — retry the same
+  // step a couple times before resorting to a destructive replan that throws away the
+  // scaffolding already built. A baseline coding run died because one flaky driver 400
+  // ('assistant message must have content or tool_calls') replanned the whole task away.
+  const transientRetries = new Map<number, number>()
+  const MAX_TRANSIENT_RETRIES = 2
 
   for (let i = 0; i < steps.length; i++) {
     if (signal?.aborted) return { ok: false, steps, summary: 'Cancelled.' }
@@ -157,7 +163,14 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
       emit,
       signal,
       verify: opts.makeVerify?.(),
-      maxIters: 20,
+      // Adversarial harden pass on each step (self-gates on a passing execution check, so
+      // it only fires for steps that actually built+ran code) — catches edge-case bugs the
+      // agent's own happy-path tests miss before the step is accepted.
+      hardenFinal: true,
+      // 32 (was 20): a complex coding step (e.g. a WAL+LRU+TTL store) builds a real module,
+      // runs it, then self-heals failures — that legitimately needs >20 turns on free models.
+      // At 20 the agent was being cut off mid-fix with a working-but-imperfect module.
+      maxIters: 32,
       stepIndex: i,
       stepTotal: steps.length,
       stepIntent: step.intent,
@@ -183,11 +196,31 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
       return { ok: false, steps, summary: result.finalText }
     }
 
+    // Transient driver/transport/budget error — NOT a logic failure. Retry the SAME step
+    // (keeping any files already written) a bounded number of times before falling through
+    // to the failure/replan path, so a flaky API call can't discard the whole plan.
+    if (!result.ok && (result.stopped === 'error' || result.stopped === 'budget')) {
+      const tr = transientRetries.get(step.id) ?? 0
+      if (tr < MAX_TRANSIENT_RETRIES && !signal?.aborted) {
+        transientRetries.set(step.id, tr + 1)
+        step.status = 'pending'
+        emit({ type: 'step_status', id: step.id, status: 'retrying', intent: step.intent, attempt: tr + 1 })
+        onPersist?.(steps, completedSummaries, 'running')
+        i--   // re-run this exact step on the next iteration
+        continue
+      }
+    }
+
     // C3 — done-check mini-verification: confirm the step actually satisfied its
     // acceptance criterion, not merely that the loop stopped. This catches silently
     // skipped sub-goals, especially when no runnable test exists (verify auto-passes).
+    // BUT when a real execution check already passed (the code compiled/ran/tested), trust
+    // that over a prose-only LLM judge — the judge sees only the agent's summary, not the
+    // passing test output, so it was rejecting working, verified code and forcing wasteful
+    // restarts (a coding-bench KV-store built + ran green, then got restarted by the judge).
     let doneCheckFailed = false
-    if (result.ok && step.doneCheck && result.finalText.trim()) {
+    const executionVerified = !!result.verifiedSignal && result.verifiedSignal !== 'none'
+    if (result.ok && step.doneCheck && result.finalText.trim() && !executionVerified) {
       try {
         const verdict = await planModel([
           { role: 'system', content: 'You are a strict step-completion judge. Reply with exactly "PASS" or "FAIL: <one-line reason>". Be skeptical: only PASS if the result clearly satisfies the criterion.' },

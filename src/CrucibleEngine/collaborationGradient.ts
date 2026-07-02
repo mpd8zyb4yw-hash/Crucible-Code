@@ -22,7 +22,8 @@ const AMBIGUITY_SIGNALS = [
   { pattern: /\b(my|our|the)\s+(app|project|codebase|system)\b/i, dimension: 'context', question: 'Can you describe the scale and constraints of your system?' },
   { pattern: /\b(should I|should we)\b/i,                     dimension: 'intent',   question: 'What outcome are you optimising for?' },
   { pattern: /\b(latest|current|now|today|recent)\b/i,        dimension: 'time',     question: 'Are you asking about the current state or a specific version?' },
-  { pattern: /\b(vs|versus|or|compare|difference between)\b/i, dimension: 'scope',   question: 'Are you choosing between these options, or trying to understand both?' },
+  // "vs / compare / difference between" removed — comparison queries have clear
+  // analytical intent and should never require a clarifying question.
 ]
 
 export interface CollabOpts {

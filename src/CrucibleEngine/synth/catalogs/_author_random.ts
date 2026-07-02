@@ -1,0 +1,160 @@
+import fs from 'fs'; import path from 'path'; import { fileURLToPath } from 'url'
+const HERE = path.dirname(fileURLToPath(import.meta.url))
+
+const entries = [
+  {
+    id: 'mulberry32-prng', filename: 'mulberry32Prng',
+    summary: 'mulberry32 returns a deterministic PRNG function seeded with a 32-bit integer, yielding values in [0,1).',
+    defaultPath: 'src/mulberry32Prng.ts', exports: ['mulberry32'],
+    patterns: [{ re: '\\bmulberry32\\b', weight: 0.6 }, { re: 'seeded.*prng|deterministic.*random', weight: 0.3 }],
+    impl: `export function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed)
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t
+    return ((t ^ t >>> 14) >>> 0) / 4294967296
+  }
+}`,
+    tests: [
+      { desc: 'returns function', call: 'typeof mulberry32(42)', want: '"function"' },
+      { desc: 'deterministic', call: 'mulberry32(42)() === mulberry32(42)()', want: 'true' },
+      { desc: 'in range 0-1', call: '(() => { const r = mulberry32(1)(); return r >= 0 && r < 1 })()', want: 'true' },
+      { desc: 'different seeds differ', call: 'mulberry32(1)() !== mulberry32(2)()', want: 'true' },
+      { desc: 'sequence reproducible', call: '(() => { const a = mulberry32(99); return [a(),a(),a()] })()', want: '[mulberry32(99)(),mulberry32(99)(),mulberry32(99)()]' },
+    ],
+  },
+  {
+    id: 'shuffle-seeded', filename: 'shuffleSeeded',
+    summary: 'shuffleSeeded performs a deterministic Fisher-Yates shuffle of an array using a seeded PRNG, without mutating the input.',
+    defaultPath: 'src/shuffleSeeded.ts', exports: ['shuffleSeeded'],
+    patterns: [{ re: '\\bshuffleSeeded\\b', weight: 0.6 }, { re: 'seeded.*shuffle|shuffle.*seed', weight: 0.3 }],
+    impl: `export function shuffleSeeded(arr, seed) {
+  let s = seed | 0
+  const rng = () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+  const out = arr.slice()
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1));[out[i], out[j]] = [out[j], out[i]] }
+  return out
+}`,
+    tests: [
+      { desc: 'length preserved', call: 'shuffleSeeded([1,2,3,4,5],42).length', want: '5' },
+      { desc: 'same elements', call: 'shuffleSeeded([1,2,3],42).sort((a,b)=>a-b)', want: '[1,2,3]' },
+      { desc: 'deterministic', call: 'JSON.stringify(shuffleSeeded([1,2,3,4],7)) === JSON.stringify(shuffleSeeded([1,2,3,4],7))', want: 'true' },
+      { desc: 'different seeds', call: 'JSON.stringify(shuffleSeeded([1,2,3,4,5,6],1)) !== JSON.stringify(shuffleSeeded([1,2,3,4,5,6],2))', want: 'true' },
+      { desc: 'no mutate', call: '(() => { const a=[1,2,3]; shuffleSeeded(a,5); return a })()', want: '[1,2,3]' },
+    ],
+  },
+  {
+    id: 'weighted-choice', filename: 'weightedChoice',
+    summary: 'weightedChoice picks an item from an array using cumulative weights and a random float r in [0,1).',
+    defaultPath: 'src/weightedChoice.ts', exports: ['weightedChoice'],
+    patterns: [{ re: '\\bweightedChoice\\b', weight: 0.6 }, { re: 'weighted.*random|random.*weight', weight: 0.3 }],
+    impl: `export function weightedChoice(items, weights, r) {
+  const total = weights.reduce((a, b) => a + b, 0)
+  let cum = 0; const threshold = r * total
+  for (let i = 0; i < items.length; i++) { cum += weights[i]; if (threshold < cum) return items[i] }
+  return items[items.length - 1]
+}`,
+    tests: [
+      { desc: 'first when r=0', call: 'weightedChoice(["a","b","c"],[1,1,1],0)', want: '"a"' },
+      { desc: 'last when r near 1', call: 'weightedChoice(["a","b","c"],[1,1,1],0.9999)', want: '"c"' },
+      { desc: 'heavy first', call: 'weightedChoice(["a","b"],[100,1],0)', want: '"a"' },
+      { desc: 'single item', call: 'weightedChoice(["only"],[1],0.5)', want: '"only"' },
+    ],
+  },
+  {
+    id: 'random-int-inclusive', filename: 'randomIntInclusive',
+    summary: 'randomIntInclusive returns a random integer in [min, max] using an injected rng function returning values in [0,1).',
+    defaultPath: 'src/randomIntInclusive.ts', exports: ['randomIntInclusive'],
+    patterns: [{ re: '\\brandomIntInclusive\\b', weight: 0.6 }, { re: 'random.*integer.*range|integer.*between.*injected', weight: 0.3 }],
+    impl: `export function randomIntInclusive(min, max, rng) {
+  return Math.floor(rng() * (max - min + 1)) + min
+}`,
+    tests: [
+      { desc: 'min when rng=0', call: 'randomIntInclusive(5,10,()=>0)', want: '5' },
+      { desc: 'max when rng near 1', call: 'randomIntInclusive(5,10,()=>0.9999)', want: '10' },
+      { desc: 'mid range', call: 'randomIntInclusive(0,9,()=>0.5)', want: '5' },
+      { desc: 'single value', call: 'randomIntInclusive(7,7,()=>0)', want: '7' },
+      { desc: 'is integer', call: 'Number.isInteger(randomIntInclusive(1,100,()=>0.4))', want: 'true' },
+    ],
+  },
+  {
+    id: 'random-string-from', filename: 'randomStringFrom',
+    summary: 'randomStringFrom builds a string of a given length by drawing from an alphabet using an injected rng.',
+    defaultPath: 'src/randomStringFrom.ts', exports: ['randomStringFrom'],
+    patterns: [{ re: '\\brandomStringFrom\\b', weight: 0.6 }, { re: 'random.*string.*alphabet|string.*from.*alphabet', weight: 0.3 }],
+    impl: `export function randomStringFrom(length, alphabet, rng) {
+  let out = ''
+  for (let i = 0; i < length; i++) out += alphabet[Math.floor(rng() * alphabet.length)]
+  return out
+}`,
+    tests: [
+      { desc: 'correct length', call: 'randomStringFrom(5,"abc",()=>0).length', want: '5' },
+      { desc: 'uses alphabet', call: 'randomStringFrom(3,"a",()=>0)', want: '"aaa"' },
+      { desc: 'zero length', call: 'randomStringFrom(0,"abc",()=>0)', want: '""' },
+      { desc: 'picks index', call: 'randomStringFrom(1,"xyz",()=>0.5)', want: '"y"' },
+    ],
+  },
+  {
+    id: 'sample-without-replacement', filename: 'sampleWithoutReplacement',
+    summary: 'sampleWithoutReplacement draws k distinct elements from an array using a seeded PRNG, without mutating.',
+    defaultPath: 'src/sampleWithoutReplacement.ts', exports: ['sampleWithoutReplacement'],
+    patterns: [{ re: '\\bsampleWithoutReplacement\\b', weight: 0.6 }, { re: 'sample.*without.*replacement|draw.*k.*distinct', weight: 0.3 }],
+    impl: `export function sampleWithoutReplacement(arr, k, seed) {
+  if (k >= arr.length) return arr.slice()
+  let s = seed | 0
+  const rng = () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+  const pool = arr.slice()
+  const out = []
+  for (let i = 0; i < k; i++) { const j = i + Math.floor(rng() * (pool.length - i));[pool[i], pool[j]] = [pool[j], pool[i]]; out.push(pool[i]) }
+  return out
+}`,
+    tests: [
+      { desc: 'correct size', call: 'sampleWithoutReplacement([1,2,3,4,5],3,42).length', want: '3' },
+      { desc: 'no duplicates', call: '(() => { const s = sampleWithoutReplacement([1,2,3,4,5],5,1); return new Set(s).size })()', want: '5' },
+      { desc: 'deterministic', call: 'JSON.stringify(sampleWithoutReplacement([1,2,3,4],2,9)) === JSON.stringify(sampleWithoutReplacement([1,2,3,4],2,9))', want: 'true' },
+      { desc: 'no mutate', call: '(() => { const a=[1,2,3]; sampleWithoutReplacement(a,2,1); return a })()', want: '[1,2,3]' },
+      { desc: 'k >= len returns all', call: 'sampleWithoutReplacement([1,2],5,1).sort((a,b)=>a-b)', want: '[1,2]' },
+    ],
+  },
+  {
+    id: 'roll-dice', filename: 'rollDice',
+    summary: 'rollDice returns the sum of rolling count dice each with the given number of sides, using an injected rng.',
+    defaultPath: 'src/rollDice.ts', exports: ['rollDice'],
+    patterns: [{ re: '\\brollDice\\b', weight: 0.6 }, { re: 'roll.*dice|dice.*roll', weight: 0.3 }],
+    impl: `export function rollDice(sides, count, rng) {
+  let total = 0
+  for (let i = 0; i < count; i++) total += Math.floor(rng() * sides) + 1
+  return total
+}`,
+    tests: [
+      { desc: 'min when rng=0', call: 'rollDice(6,1,()=>0)', want: '1' },
+      { desc: 'max when rng near 1', call: 'rollDice(6,1,()=>0.9999)', want: '6' },
+      { desc: 'two dice', call: 'rollDice(6,2,()=>0)', want: '2' },
+      { desc: 'zero dice', call: 'rollDice(6,0,()=>0)', want: '0' },
+      { desc: 'd20', call: 'rollDice(20,1,()=>0.95)', want: '20' },
+    ],
+  },
+  {
+    id: 'reservoir-sample-seeded', filename: 'reservoirSampleSeeded',
+    summary: 'reservoirSampleSeeded picks k elements from an array via reservoir sampling using a seeded PRNG.',
+    defaultPath: 'src/reservoirSampleSeeded.ts', exports: ['reservoirSampleSeeded'],
+    patterns: [{ re: '\\breservoirSampleSeeded\\b', weight: 0.6 }, { re: 'reservoir.*sample|sample.*reservoir', weight: 0.3 }],
+    impl: `export function reservoirSampleSeeded(arr, k, seed) {
+  let s = seed | 0
+  const rng = () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296 }
+  const res = arr.slice(0, k)
+  for (let i = k; i < arr.length; i++) { const j = Math.floor(rng() * (i + 1)); if (j < k) res[j] = arr[i] }
+  return res
+}`,
+    tests: [
+      { desc: 'correct size', call: 'reservoirSampleSeeded([1,2,3,4,5,6,7,8,9,10],3,42).length', want: '3' },
+      { desc: 'k larger returns all', call: 'reservoirSampleSeeded([1,2,3],10,1).length', want: '3' },
+      { desc: 'deterministic', call: 'JSON.stringify(reservoirSampleSeeded([1,2,3,4,5],2,7)) === JSON.stringify(reservoirSampleSeeded([1,2,3,4,5],2,7))', want: 'true' },
+      { desc: 'elements from input', call: '(() => { const src=[10,20,30,40]; const s=new Set(src); return reservoirSampleSeeded(src,2,1).every(x=>s.has(x)) })()', want: 'true' },
+    ],
+  },
+]
+
+const out = path.join(HERE, 'randomUtils.json')
+fs.writeFileSync(out, JSON.stringify(entries, null, 2))
+console.log(`wrote ${entries.length} -> ${out}`)

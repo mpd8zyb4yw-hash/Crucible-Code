@@ -10,27 +10,55 @@ export interface VerifyResult {
 
 // ── Math verifier — extract numeric claims and check them symbolically ────────
 // Uses JS arithmetic for simple expressions; catches the most common errors.
-function extractNumericClaims(text: string): Array<{ expr: string; claimed: number }> {
-  const results: Array<{ expr: string; claimed: number }> = []
-  // Match patterns like "3x + 5 = 14 so x = 3" or "17 × 23 = 391"
-  const eqPattern = /(\d[\d\s×\*\+\-\/\.\^x]+)\s*=\s*(\-?\d+(?:\.\d+)?)/g
+//
+// A claim is one "EXPR = NUMBER" shape. We keep enough positional info (the matched
+// number's offset/raw text) that the deterministic corrector below can splice the
+// computed value back into the original prose without reconstructing surrounding text.
+interface NumericClaim {
+  expr: string        // left side, e.g. "47 × 53"
+  claimed: number     // right side parsed to a number (commas stripped)
+  numStart: number    // index in `text` where the claimed-number token begins
+  numRaw: string      // the claimed-number token exactly as it appears (e.g. "2,591")
+}
+function extractNumericClaims(text: string): NumericClaim[] {
+  const results: NumericClaim[] = []
+  // Match patterns like "3x + 5 = 14 so x = 3" or "17 × 23 = 391" or "47 * 53 = 2,491".
+  // Right side allows thousands-separator commas (stripped before parsing) — without this,
+  // "2,491" parsed as claimed=2 and false-flagged every comma-formatted correct answer.
+  const eqPattern = /(\d[\d\s×·\*\+\-\/\.\^x]*?)\s*=\s*(-?\d[\d,]*(?:\.\d+)?)/g
   let m: RegExpExecArray | null
   while ((m = eqPattern.exec(text)) !== null) {
-    const claimed = parseFloat(m[2])
-    if (!isNaN(claimed)) results.push({ expr: m[1].trim(), claimed })
+    const numRaw = m[2]
+    const claimed = parseFloat(numRaw.replace(/,/g, ''))
+    if (isNaN(claimed)) continue
+    // Group 2 sits at the end of the full match → its start is match-end minus its length.
+    const numStart = m.index + m[0].length - numRaw.length
+    results.push({ expr: m[1].trim(), claimed, numStart, numRaw })
   }
   return results.slice(0, 10)
 }
 
+// Deterministically evaluate a pure-arithmetic expression. Normalizes the unicode
+// multiplication glyphs (× ·) to * and ^ to ** BEFORE the whitelist — otherwise the
+// most common multiplication rendering ("47 × 53") fails the whitelist and never checks.
+// Returns null for anything that isn't cleanly evaluable (e.g. contains a variable `x`,
+// a factorial `!`, π, √) so callers can "leave as-is, don't guess".
 function tryEval(expr: string): number | null {
   try {
-    // Safe eval: only digits, operators, parens, spaces
-    if (!/^[\d\s\+\-\*\/\.\(\)\^]+$/.test(expr)) return null
-    const cleaned = expr.replace(/\^/g, '**')
+    const cleaned = expr.replace(/×/g, '*').replace(/·/g, '*').replace(/\^/g, '**')
+    // Safe eval: only digits, operators, parens, spaces (note: * covers the ** from ^).
+    if (!/^[\d\s\+\-\*\/\.\(\)]+$/.test(cleaned)) return null
     // eslint-disable-next-line no-new-func
     const result = Function(`"use strict"; return (${cleaned})`)()
     return typeof result === 'number' && isFinite(result) ? result : null
   } catch { return null }
+}
+
+// Format a computed number for splicing back into prose: plain integer where exact,
+// otherwise trimmed to at most 6 decimals. Never produces a "(corrected: …)" string.
+function fmtNumber(n: number): string {
+  if (Number.isInteger(n)) return String(n)
+  return String(parseFloat(n.toFixed(6)))
 }
 
 export function verifyMath(synthesis: string, _question: string): VerifyResult {
@@ -50,6 +78,30 @@ export function verifyMath(synthesis: string, _question: string): VerifyResult {
     issues,
     confidence: checked > 0 ? 0.8 : 0.2,
   }
+}
+
+// ── Deterministic arithmetic corrector (ZERO inference) ───────────────────────
+// For each "EXPR = NUMBER" claim where EXPR is cleanly evaluable and the stated NUMBER
+// is wrong, splice the computed value into the text in place of the stated token. Leaves
+// non-evaluable claims (variables, factorials, π/√, ranges) untouched — never guesses.
+// Replacements are applied right-to-left so earlier offsets stay valid.
+export interface ArithmeticCorrection { expr: string; was: string; now: string }
+export function correctArithmetic(text: string): { text: string; corrections: ArithmeticCorrection[] } {
+  const claims = extractNumericClaims(text)
+  const fixes: Array<{ start: number; len: number; now: string; corr: ArithmeticCorrection }> = []
+  for (const c of claims) {
+    const actual = tryEval(c.expr)
+    if (actual === null) continue
+    if (Math.abs(actual - c.claimed) <= 0.01) continue // already correct
+    const now = fmtNumber(actual)
+    fixes.push({ start: c.numStart, len: c.numRaw.length, now, corr: { expr: c.expr, was: c.numRaw, now } })
+  }
+  if (!fixes.length) return { text, corrections: [] }
+  let out = text
+  for (const f of fixes.sort((a, b) => b.start - a.start)) {
+    out = out.slice(0, f.start) + f.now + out.slice(f.start + f.len)
+  }
+  return { text: out, corrections: fixes.map(f => f.corr) }
 }
 
 // ── Factual verifier — cross-reference key claims against search ──────────────

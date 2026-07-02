@@ -10,6 +10,7 @@ import { buildWorldContext, buildReflectionPrompt, appendWorldFact, appendReflec
 import type { ToolCall, ToolCtx, ToolDef } from '../tools/protocol'
 import { maybeCompressMessages } from '../contextManager'
 import { createAnchor, validateCompression, deleteAnchor } from '../contextAnchor'
+import { renderPlaybook } from './macCapabilities'
 
 export interface DriveTurnResult {
   text: string
@@ -20,6 +21,9 @@ export type DriveTurn = (
   messages: Array<Record<string, unknown>>,
   tools: ToolDef[],
   signal?: AbortSignal,
+  /** 'hard' = quality-first (top coder); 'glue' = speed-first (fast judge/plan/read turns).
+   *  Optional + defaulted by the driver, so existing callers are unaffected. */
+  turnClass?: 'glue' | 'hard',
 ) => Promise<DriveTurnResult>
 
 export interface VerifyResult {
@@ -60,6 +64,16 @@ export interface AgentLoopOpts {
    *  When provided, compression summaries are model-generated for higher fidelity.
    *  Falls back to structural summarisation when absent. */
   compressCallModel?: (messages: Array<{ role: string; content: string }>) => Promise<string>
+  /** Grounding gate — before accepting a final answer on an action task (one that
+   *  used tools), audit the claimed outcome against the actual tool evidence and
+   *  force a correction when they contradict. Default ON; pass false for inner/
+   *  subtask loops that already have a downstream critic (e.g. meta-router). */
+  groundFinal?: boolean
+  /** Adversarial harden pass — after the code verifies, run ONE senior-reviewer critic
+   *  that hunts for correctness bugs / missing edge cases the agent's own tests didn't
+   *  cover, and bounce the findings back for a fix. Only fires when a real execution check
+   *  passed (a coding task). Default OFF; the server enables it for coding loops. */
+  hardenFinal?: boolean
 }
 
 export interface AgentLoopResult {
@@ -68,6 +82,10 @@ export interface AgentLoopResult {
   iters: number
   toolCallCount: number
   stopped: 'final' | 'max_iters' | 'budget' | 'cancelled' | 'error' | 'verify_failed' | 'stalled' | 'clarification'
+  /** The execution check that passed for this run, if any ('test'/'runtime'/'compile').
+   *  'none' or undefined means no runnable check existed. Lets the planner trust real
+   *  execution evidence and skip a redundant (and over-strict) LLM done-check. */
+  verifiedSignal?: VerifyResult['signal']
 }
 
 const APPROX_CHARS_PER_TOKEN = 4
@@ -102,11 +120,27 @@ AUTONOMY & CLARIFICATION: Default to understanding the request and implementing 
 ${workspaceNote}
 IMPORTANT — delegation: for the single hardest algorithmic core of a task (a tricky function, non-obvious algorithm, or subtle edge-case logic), you MUST call ensemble_solve with a self-contained subprompt instead of writing it yourself. The ensemble runs several models in parallel and returns the highest-scored implementation, which is more reliable than your first draft. Then write that candidate to a file and verify it. Use ensemble_solve at most once or twice per task, only for the genuinely hard part — routine glue code you write directly.
 
+CODING DISCIPLINE — you are a senior engineer; ship complete, correct code:
+1. IMPLEMENT THE REAL LOGIC FIRST. Write the actual working implementation before tests or extra config. Do NOT spend your iteration budget on scaffolding/tooling — minimal setup, then the substance. A file left as a placeholder, stub, \`export {}\`, "// TODO", or "implementation goes here" is a FAILED task, not a step.
+2. NO GAMING THE CHECK. Tests must genuinely exercise the behavior — real inputs, expected outputs, edge cases (empty/zero, boundaries, overflow, expiry, errors), and failure paths. A trivial test that asserts \`true === true\` or only the happy path to make the check go green is a serious failure; the real correctness bar is hidden from you and WILL catch it.
+3. MATCH THE SPEC EXACTLY. If the task names specific file paths, exported names, or function signatures, create them verbatim — they may be imported by an external audit.
+4. PROVE IT RUNS. Before your final answer, actually execute the code (run the entry/tests) and confirm real output. If a requirement isn't met, fix it and re-run — never report done on unverified or partial work.
+
+TOOL SELECTION DISCIPLINE: Before calling any tool, ask: "Does this tool plausibly help answer the user's actual question?" Personal data tools (drive_search, drive_read, fitness_activity, contacts_search, gmail_search, gmail_read, calendar_events, youtube_search_api, analytics_report) exist for queries explicitly about the user's own data. NEVER call them for general research, factual questions, coding tasks, or world knowledge — even if you think there might be a tangential connection. If a query is about fusion energy, geopolitics, code, science, or anything external — do not touch personal data tools. Use web_search, consult_specialist, and ensemble_solve instead. If mid-task you genuinely discover personal data is needed (e.g. "compare this news to my own calendar"), call only the specific tool you need, once. STRATEGY SWITCH ON REPEATED FAILURE: if any tool fails twice in a row with the same error, STOP calling it — move on and complete the task with what you have.
+
 AUTONOMOUS RESEARCH: When you encounter something you don't know, can't find in the project, or are unsure about — use web_search immediately. Do not guess. Do not say "I don't have access to real-time information." Search for it, read the results, and use what you find. For coding problems: search for the error message, the library docs, or the approach. For factual questions: search and answer from results. For tasks involving files or images: use download_file to fetch what you need directly.
 
 FILE SYSTEM: You can write files to the project folder, ~/Desktop, ~/Downloads, and ~/Documents. Use absolute paths with ~ expanded (e.g. /Users/justin/Desktop/myfile.txt). For everything else, ask the user first.
 
-MAC CONTROL: You can run any shell command via the run tool. To open apps: open -a AppName. To open URLs: open -a Safari https://url. To create folders: mkdir -p ~/Desktop/FolderName. Execute immediately — never ask the user to run commands themselves.
+MAC CONTROL — PREFER NATIVE COMMANDS OVER CLICKING: The Mac is controlled through reliable native interfaces, NOT by driving the UI. Order of preference, always:
+1. control_mac — for system settings/actions (brightness, volume, mute, dark mode, wifi, sleep, lock, battery, …). It runs the correct native command and reads the state back to confirm. Use it for ANYTHING in the playbook below.
+2. run (shell/osascript) — for anything else the OS exposes via command line: \`osascript -e '…'\` (AppleScript/JXA for scriptable apps + System Events), \`defaults\`, \`networksetup\`, \`pmset\`, \`mdfind\`, \`open -a AppName\`, \`open -a Safari https://url\`, \`mkdir -p ~/Desktop/Folder\`. Almost every macOS capability is reachable this way.
+3. get_ui_tree / click_element / type_text — LAST RESORT, ONLY for apps that have no scriptable or command-line interface. NEVER use UI automation to change a system setting (dragging the System Settings sliders fails with -10006 and loops). If you catch yourself about to open System Settings to change something, stop and use control_mac or osascript instead.
+
+SYSTEM CONTROL PLAYBOOK (call via control_mac with {intent, …args}):
+${renderPlaybook()}
+
+EXTENDING YOURSELF: If a system task is NOT in the playbook and no tool covers it, do this — (1) find the native command (you likely know the osascript/defaults/CLI incantation; if unsure, web_search it), (2) run it via the run tool and verify it worked by reading the state back, (3) once it works, call create_tool to persist a small recipe so it is instant next time. This is how your capabilities grow — by solving a task once natively, then keeping it. Do NOT fall back to clicking the UI just because there's no pre-made tool.
 
 GLOBAL MEMORY: Use write_global_memory to save durable facts about the USER that should persist across ALL future sessions — preferences, timezone, recurring tools, communication style. Call it whenever you learn something genuinely reusable, not just task-specific. Examples: "User prefers concise responses", "User works in TypeScript", "User is based in Italy". Project-specific facts go in the per-project memory automatically; global memory is only for things true across all projects.
 
@@ -116,7 +150,13 @@ EXECUTION OVER SCRIPTING: When the user asks you to delete, move, download, orga
 
 CONFIRMATION POLICY: You already have permission to act. Do NOT ask the user to confirm with a specific phrase or repeat themselves. If a user says "proceed", "yes", "do it", "go ahead", or similar — that IS confirmation. Execute immediately using your tools.
 
-VERIFY BEFORE REPORTING: After ANY file operation (delete, download, move, rename), you MUST use list_dir or run "ls -la <path>" to confirm the actual state of the folder before reporting results to the user. Never report success based on assumption — only report what you can confirm with a tool call. If the result does not match what was requested, fix it before responding.
+VERIFY BEFORE REPORTING: After ANY file operation (delete, download, move, rename), you MUST use list_dir or run "ls -la <path>" to confirm the actual state of the folder before reporting results to the user. Never report success based on assumption — only report what you can confirm with a tool call. If the result does not match what was requested, fix it before responding. For a state change (a setting, a config value), read the value BACK after writing it and confirm it actually changed — if the read-back shows the old value, the change did NOT take effect and you must not report success.
+
+EXECUTION ENVIRONMENT — choose an approach that can actually work and be observed:
+- You run commands in a CAPTURED, NON-INTERACTIVE shell (no real TTY). Terminal-UI programs that need a live terminal — Python curses, ncurses, anything calling initscr() / addstr, vim, top, less — will crash (e.g. "setupterm: could not find terminal", "addwstr() returned ERR") or hang. Do NOT use them.
+- When you launch something in a SEPARATE window (e.g. \`osascript -e 'tell application "Terminal" to do script ...'\` or \`open -a\`), you CANNOT see its output, so you cannot know it succeeded. Never claim it worked from a do-script launch alone. To verify, run the program in your own captured shell (headless), or have it write to a log file and then read that file back.
+- For VISUAL / animation / graphics / "show me" requests: prefer a self-contained HTML file (canvas/SVG/CSS/JS) opened in the browser with \`open -a "Google Chrome" file:///abs/path.html\` (or Safari) — it is reliable, observable, and needs no extra runtime. Use a real GUI toolkit (pygame, tkinter) only if the user asked for a native window; never a terminal TUI for an animation.
+- STRATEGY SWITCH ON REPEATED FAILURE: if the same approach fails about twice, STOP retrying cosmetic variations of it (different flags, env vars, quoting). The approach itself is wrong for this environment — step back and use a fundamentally different method (e.g. switch from curses-in-terminal to an HTML canvas in the browser). Repeating a doomed approach wastes the whole task.
 
 Paths may be relative to the project root. Keep outputs concise.
 
@@ -125,7 +165,9 @@ TYPESCRIPT PROJECTS: When creating a new TypeScript project, always follow these
 2. Always use tsx to run TypeScript files — never ts-node. Command: npx tsx src/index.ts
 3. Use CommonJS-style imports (no .js extensions on relative imports).
 4. Always verify the project runs after scaffolding: use the run tool with npx tsx <entrypoint>.
-5. tsconfig.json must have "module": "commonjs" and "esModuleInterop": true.`
+5. tsconfig.json must have "module": "commonjs" and "esModuleInterop": true.
+6. DO NOT run a build: never call \`tsc\`, \`tsc --init\`, or \`tsc --build\`, and do not emit .js/.d.ts. tsx runs TypeScript directly — verify by running \`npx tsx src/index.ts\` and reading its output, not by compiling. If \`tsc\` reports errors, do NOT spiral on tsconfig edits; just make the code run under tsx.
+7. Keep tsconfig MINIMAL (module commonjs, esModuleInterop, target es2020, skipLibCheck). Don't enable strict/declaration/composite — they create build friction without changing whether the program runs. Spend your effort on the implementation, not on the compiler config.`
 }
 
 export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult> {
@@ -156,6 +198,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
 
   let spentTokens = 0
   let toolCallCount = 0
+  let verifiedSignal: VerifyResult['signal'] | undefined
   const start = Date.now()
 
   // Context anchor — immutable record of the original goal for compression validation
@@ -173,6 +216,25 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   // hard stop on the 3rd so a thrashing model cannot burn the whole iteration budget.
   let lastTurnSig = ''
   let repeatTurnCount = 0
+
+  // All-failures detector — catches a loop that THRASHES with varying args (so the
+  // exact-signature stall check above never trips) but every call fails anyway, e.g.
+  // repeatedly poking a System Settings slider it can't set (-10006). Counts turns
+  // where every tool call failed; hard-stops after MAX_CONSECUTIVE_FAILED_TURNS.
+  let consecutiveFailedTurns = 0
+  const MAX_CONSECUTIVE_FAILED_TURNS = 4
+
+  // Grounding gate state — bounds how many times a rejected final answer can be
+  // bounced back for correction, so a stubborn checker can never loop forever.
+  const groundFinal = opts.groundFinal ?? true
+  let groundingRetries = 0
+  const MAX_GROUNDING_RETRIES = 2
+
+  // Adversarial harden pass state — one round of senior-reviewer critique after the code
+  // verifies, to catch edge-case bugs the agent's own happy-path tests missed.
+  const hardenFinal = opts.hardenFinal ?? false
+  let hardenRounds = 0
+  const MAX_HARDEN_ROUNDS = 2
 
   /** Inject a corrective hint when the model is looping on the same failure. */
   function maybePushErrorHint(toolResults: Array<{ ok: boolean; output: string; tool: string }>) {
@@ -310,6 +372,20 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         spend(compressed.length)
         messages.push({ role: 'tool', tool_call_id: c.id, content: `(${results[i].ok ? 'ok' : 'error'}) ${compressed}` })
       })
+      // All-failures hard stop — if every tool call in this turn failed, count it.
+      // A run of fully-failed turns means the agent is stuck on a dead-end approach
+      // (even if it varies the args each time); stop rather than burn the budget.
+      if (results.length > 0 && results.every(r => !r.ok)) {
+        consecutiveFailedTurns++
+        if (consecutiveFailedTurns >= MAX_CONSECUTIVE_FAILED_TURNS) {
+          const lastErr = results[0].output.slice(0, 160)
+          emit({ type: 'thought', text: `[Stopped — ${MAX_CONSECUTIVE_FAILED_TURNS} turns of repeated failures; this approach isn't working]`, iter })
+          debugBus.emit('agent', 'loop_all_failed', { iter, turns: consecutiveFailedTurns, lastErr }, { severity: 'warn' })
+          return done('stalled', turn.text || `Stopped: this action kept failing (${lastErr}). It may not be possible this way.`, iter)
+        }
+      } else {
+        consecutiveFailedTurns = 0
+      }
       // Detect repetitive failures and inject a corrective hint before the next turn
       maybePushErrorHint(turn.toolCalls.map((c, i) => ({ ok: results[i].ok, output: results[i].output, tool: c.name })))
       // Anti-repeat nudge on the 2nd identical action (the 3rd hard-stops above).
@@ -363,6 +439,61 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         })
         continue
       }
+      // A real execution check passed — record it so the planner can trust the running
+      // code over a redundant LLM done-check (which judges only the prose summary).
+      if (v.signal !== 'none') verifiedSignal = v.signal
+    }
+
+    // Grounding gate — for ACTION tasks (the agent actually used tools), audit the
+    // final claim against the real tool evidence before accepting it. This catches
+    // false "success" reports — e.g. "language set to Spanish" when the read-back
+    // showed en-US, or "file written" after a write that errored. Fail-OPEN: any
+    // checker error or unparseable verdict accepts the answer, so it can never wedge
+    // a task. Bounded by MAX_GROUNDING_RETRIES so a stubborn checker can't loop.
+    if (groundFinal && toolCallCount > 0 && turn.text.trim() && groundingRetries < MAX_GROUNDING_RETRIES) {
+      const verdict = await checkGrounding(goal, turn.text, messages, driveTurn, signal)
+      if (verdict && !verdict.grounded) {
+        groundingRetries++
+        debugBus.emit('agent', 'grounding_rejected', { iter, issue: verdict.issue.slice(0, 160) }, { severity: 'warn' })
+        emit({ type: 'thought', text: `[Self-check: ${verdict.issue || 'the result is not yet confirmed by the evidence'}]`, iter })
+        messages.push({ role: 'assistant', content: turn.text })
+        messages.push({
+          role: 'user',
+          content: `SELF-CHECK FAILED — do not claim success yet. ${verdict.fix_directive || 'The tool evidence does not confirm the outcome you described.'} ` +
+            `Re-check the actual tool output (read state back if needed), take any corrective action, and only then give your final answer. If the action genuinely cannot be completed, say so honestly instead of claiming it worked.`,
+        })
+        continue
+      }
+    }
+
+    // Adversarial harden pass — once, after the code has actually verified (compiled/ran/
+    // tested), a senior-reviewer critic hunts for correctness bugs and missing edge cases
+    // the agent's OWN happy-path tests didn't cover (e.g. a KV store whose overwrite or
+    // WAL-replay path is subtly wrong but its smoke test passes). Findings are bounced back
+    // for a fix + added coverage. Bounded to one round and fail-OPEN (any critic/parse
+    // error accepts the answer) so it can never wedge a task.
+    // Gate on having source to review (NOT on a prior clean verify): the review is static
+    // (reads the code, runs nothing), so it is safe — and a run interrupted before a clean
+    // verify (e.g. a turn timeout) is EXACTLY when buggy code ships, so harden must still
+    // fire. readProjectSources null-guards the no-code case.
+    if (hardenFinal && hardenRounds < MAX_HARDEN_ROUNDS) {
+      const sources = readProjectSources(projectPath)
+      if (sources) {
+        const review = await runHardenReview(goal, sources, driveTurn, signal)
+        if (review && !review.solid && review.findings.trim()) {
+          hardenRounds++
+          debugBus.emit('agent', 'harden_findings', { iter, findings: review.findings.slice(0, 200) }, { severity: 'info' })
+          emit({ type: 'thought', text: '[Hardening review — found likely correctness gaps; fixing before finalizing]', iter })
+          messages.push({ role: 'assistant', content: turn.text })
+          messages.push({
+            role: 'user',
+            content: `FINAL CODE REVIEW — a senior reviewer found likely correctness bugs or unhandled edge cases. ` +
+              `Fix EACH one in the implementation, add a test that exercises it, and re-run your tests to confirm everything passes. ` +
+              `Only give your final answer once the code handles all of these correctly:\n\n${review.findings}`,
+          })
+          continue
+        }
+      }
     }
     return done('final', turn.text, iter)
   }
@@ -378,7 +509,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         try {
           const reflectionPrompt = buildReflectionPrompt(goal, finalText)
           const reflectionResult = await driveTurn(
-            [{ role: 'user', content: reflectionPrompt }], [], signal
+            [{ role: 'user', content: reflectionPrompt }], [], signal, 'glue'
           )
           const raw = reflectionResult.text.replace(/```json|```/g, '').trim()
           const parsed = JSON.parse(raw)
@@ -404,8 +535,133 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         }
       })
     }
-    return { ok, finalText, iters, toolCallCount, stopped }
+    return { ok, finalText, iters, toolCallCount, stopped, verifiedSignal }
   }
+}
+
+/** Compact "calls + results" digest of the transcript for the grounding auditor. */
+function buildEvidenceDigest(messages: Array<Record<string, unknown>>): string {
+  const ev: string[] = []
+  for (const m of messages) {
+    if (m.role === 'assistant' && Array.isArray((m as any).tool_calls)) {
+      for (const tc of (m as any).tool_calls) {
+        const fn = tc?.function ?? {}
+        ev.push(`CALL ${fn.name}(${String(fn.arguments ?? '').slice(0, 200)})`)
+      }
+    } else if (m.role === 'tool') {
+      ev.push(`RESULT ${String(m.content ?? '').slice(0, 400)}`)
+    }
+  }
+  return ev.slice(-30).join('\n')   // most recent ~30 lines of evidence
+}
+
+export interface GroundingVerdict { grounded: boolean; issue: string; fix_directive: string }
+
+/**
+ * Strict outcome auditor — judges ONLY whether the agent's final answer is truthful
+ * and supported by the actual tool evidence. Returns null (→ fail-open accept) on any
+ * checker/transport/parse error so it can never block a task.
+ */
+export async function checkGrounding(
+  goal: string,
+  finalText: string,
+  messages: Array<Record<string, unknown>>,
+  driveTurn: DriveTurn,
+  signal?: AbortSignal,
+): Promise<GroundingVerdict | null> {
+  const digest = buildEvidenceDigest(messages)
+  if (!digest) return null   // no tool evidence to audit against
+  const prompt = `You are a strict verification auditor for an automation/coding agent. Judge ONLY whether the agent's FINAL ANSWER is truthful and actually supported by the TOOL EVIDENCE below. Look hard for:
+- success claimed but a command exited non-zero / errored
+- a state change claimed but the read-back shows the OLD value (e.g. claims "language is Spanish" but a read shows en-US)
+- a file/edit claimed but the write or patch errored, or the file was never confirmed
+- "I opened/ran it" when the output was never actually observed and could have failed
+
+USER GOAL:
+${goal}
+
+AGENT FINAL ANSWER:
+${finalText.slice(0, 1500)}
+
+TOOL EVIDENCE (calls and their results, most recent last):
+${digest}
+
+Be conservative: mark grounded=false ONLY when the evidence clearly contradicts or fails to support a success claim. If evidence is merely incomplete but nothing contradicts the claim, mark grounded=true. Reply with ONLY a JSON object, no prose:
+{"grounded": true|false, "issue": "<one sentence; empty if grounded>", "fix_directive": "<one imperative sentence telling the agent what to verify or fix; empty if grounded>"}`
+  try {
+    const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'glue')
+    const raw = r.text.replace(/```json|```/g, '').trim()
+    const s = raw.indexOf('{'), e = raw.lastIndexOf('}')
+    if (s === -1 || e <= s) return null
+    const j = JSON.parse(raw.slice(s, e + 1))
+    if (typeof j.grounded !== 'boolean') return null
+    return { grounded: j.grounded, issue: String(j.issue ?? ''), fix_directive: String(j.fix_directive ?? '') }
+  } catch { return null }
+}
+
+/** Collect the agent-authored source (implementation, not tests) for the harden review. */
+function readProjectSources(projectPath: string): string {
+  const exts = /\.(ts|tsx|js|mjs|cjs|py|go|rs)$/
+  const skip = new Set(['node_modules', '.git', '.crucible', '__audit__', 'dist', 'build', 'coverage'])
+  const out: string[] = []
+  let total = 0
+  const CAP = 12000
+  const walk = (dir: string, depth: number) => {
+    if (depth > 3 || total > CAP) return
+    let entries: fs.Dirent[] = []
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (total > CAP) break
+      if (e.name.startsWith('.') || skip.has(e.name)) continue
+      const p = path.join(dir, e.name)
+      if (e.isDirectory()) walk(p, depth + 1)
+      else if (exts.test(e.name) && !/\.(test|spec|d)\./.test(e.name)) {
+        try {
+          const c = fs.readFileSync(p, 'utf8')
+          out.push(`// ===== ${path.relative(projectPath, p)} =====\n${c}`)
+          total += c.length
+        } catch { /* unreadable — skip */ }
+      }
+    }
+  }
+  walk(projectPath, 0)
+  return out.join('\n\n').slice(0, CAP)
+}
+
+export interface HardenReview { solid: boolean; findings: string }
+
+/**
+ * Senior-reviewer correctness pass. Returns {solid:true} when the code looks correct &
+ * complete, {solid:false, findings} with concrete bugs otherwise, or null on any error
+ * (→ fail-open accept). Focuses ONLY on correctness/edge cases, never style.
+ */
+export async function runHardenReview(
+  goal: string,
+  sources: string,
+  driveTurn: DriveTurn,
+  signal?: AbortSignal,
+): Promise<HardenReview | null> {
+  const prompt = `You are a meticulous senior software engineer doing a FINAL correctness review before merge.
+
+TASK:
+${goal.slice(0, 900)}
+
+IMPLEMENTATION:
+${sources}
+
+Find ONLY real correctness problems: logic bugs, unhandled edge cases (empty input, boundaries, off-by-one, overflow, TTL/expiry, eviction order, concurrency, persistence/replay), wrong return values, or requirements from the task that are not actually met. Ignore style, naming, and formatting entirely. For each problem, state the symptom and a concrete failing input or scenario.
+
+If the code is genuinely correct and complete for the stated task, reply with EXACTLY the single word: PASS
+Otherwise list at most 3 problems, most severe first.`
+  try {
+    const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'glue')
+    const text = (r.text || '').trim()
+    if (!text) return null
+    if (/^pass\b/i.test(text) || /\bno (significant|real|correctness|actual) (issues|problems|bugs)\b/i.test(text)) {
+      return { solid: true, findings: '' }
+    }
+    return { solid: false, findings: text.slice(0, 1400) }
+  } catch { return null }
 }
 
 /** Never feed raw tool output back verbatim — cap it, keeping head and tail. */

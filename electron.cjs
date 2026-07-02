@@ -61,6 +61,7 @@ function spawnBackend() {
     PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
     FORCE_COLOR: '0',
     CRUCIBLE_DATA_DIR: DATA_DIR,
+    CRUCIBLE_ENV_PATH: require('path').join(__dirname, '.env.local'),
   };
 
   if (USE_BUNDLE) {
@@ -369,6 +370,7 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: false,
+      preload: require('path').join(__dirname, 'preload.cjs'),
     },
   });
 
@@ -378,6 +380,44 @@ function createWindow() {
   setTimeout(closeLoading, 8000); // safety net so the loader never lingers
   mainWindow.loadURL(FRONTEND_URL);
 }
+
+
+// OAuth popup — opens a small browser window for Google/GitHub login, then closes
+// itself once the server redirects back to the frontend. The main window never navigates.
+function openOAuthPopup(url) {
+  const popup = new BrowserWindow({
+    width: 520,
+    height: 680,
+    resizable: false,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+  popup.loadURL(url);
+
+  function checkAndClose(navUrl) {
+    // Match any redirect back to the frontend (port 5173 dev or 3001 if served from express)
+    const isFrontend = navUrl.startsWith('http://localhost:5173') ||
+                       navUrl.startsWith('http://127.0.0.1:5173') ||
+                       navUrl.startsWith('http://localhost:3001') ||
+                       navUrl.startsWith('http://127.0.0.1:3001');
+    // But NOT the OAuth callback path itself
+    const isCallback = navUrl.includes('/api/auth/callback');
+    if (isFrontend && !isCallback) {
+      if (mainWindow) mainWindow.webContents.reload();
+      setImmediate(() => popup.destroy());
+      return true;
+    }
+    return false;
+  }
+
+  popup.webContents.on('will-navigate', (_e, navUrl) => { console.log('[oauth:will-navigate]', navUrl); checkAndClose(navUrl); });
+  popup.webContents.on('did-navigate', (_e, navUrl) => { console.log('[oauth:did-navigate]', navUrl); checkAndClose(navUrl); });
+  popup.webContents.on('did-finish-load', () => { const u = popup.webContents.getURL(); console.log('[oauth:did-finish-load]', u); checkAndClose(u); });
+  popup.webContents.on('did-redirect-navigation', (_e, navUrl) => { console.log('[oauth:did-redirect]', navUrl); checkAndClose(navUrl); });
+}
+
+// IPC — renderer sends 'oauth-open' with the provider URL
+const { ipcMain } = require('electron');
+ipcMain.on('oauth-open', (_e, url) => openOAuthPopup(url));
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {

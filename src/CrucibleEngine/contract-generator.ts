@@ -31,35 +31,85 @@ const STRUCTURE_BY_TYPE: Record<PromptType, string[]> = {
     'named constants instead of magic numbers',
     'single responsibility — one function per concern',
     'edge case handling (empty input, null, boundary values)',
+    'brief usage example or call-site demonstration',
   ],
   reasoning: [
-    'structured argument with clear premise and conclusion',
-    'explicit acknowledgement of counterarguments',
+    'all given information restated and verified before reasoning begins',
+    'explicit step-by-step logical chain from premises to conclusion',
+    'alternative interpretations or edge cases considered',
     'evidence or reasoning cited for each claim',
     'clear separation of facts from inferences',
+    'final conclusion stated explicitly',
   ],
   math: [
-    'step-by-step derivation shown',
+    'problem restated in own words before computing',
+    'all variables and knowns identified',
+    'step-by-step derivation shown with each step labeled',
     'units and domains stated explicitly',
-    'edge cases identified (division by zero, overflow)',
-    'final answer clearly labeled',
+    'arithmetic verified or sense-checked',
+    'final answer clearly labeled with correct units',
   ],
   creative: [
     'clear narrative arc or structural form',
     'consistent voice and tone throughout',
     'concrete sensory details over abstract statements',
+    'distinctive choices that avoid generic templates',
   ],
   factual: [
-    'direct answer in the first sentence',
-    'source quality indicated where relevant',
+    'direct answer in the first sentence with specific detail (not vague generality)',
+    'concrete specifics: dates, numbers, names, magnitudes where relevant',
+    'mechanism or reasoning behind the fact — not just the bare fact',
     'uncertainty explicitly stated when present',
     'no hallucinated citations',
   ],
   general: [
     'direct answer to the question asked',
-    'supporting reasoning provided',
-    'appropriate scope — not over-broad',
+    'substantive depth — concrete examples or specifics, not vague generalities',
+    'supporting reasoning or context provided',
+    'appropriate scope — addresses what the user actually wants to know',
   ],
+}
+
+// Per-type instruction on HOW to think before writing — injected into the contract
+// system prompt to activate chain-of-thought reasoning and depth standards.
+const REASONING_MODE_BY_TYPE: Record<PromptType, string> = {
+  reasoning:
+    '### THINK FIRST\n' +
+    'Before writing your response: (1) identify ALL given information and constraints, ' +
+    '(2) map the logical chain step-by-step, (3) check for hidden assumptions or edge cases, ' +
+    '(4) verify your conclusion before presenting it. Show your reasoning chain explicitly — ' +
+    'do not jump to conclusions. A wrong answer with visible reasoning is more useful than a right answer with none.',
+
+  math:
+    '### THINK FIRST\n' +
+    'Before computing: (1) restate what the question is asking in your own words, ' +
+    '(2) identify all given values and unknowns, (3) choose the right approach, ' +
+    '(4) execute step-by-step showing ALL work, (5) verify your answer with a sanity check. ' +
+    'Show the full chain. Label every step. If the numbers feel off, say so.',
+
+  factual:
+    '### DEPTH STANDARD\n' +
+    'Go beyond surface facts. Provide specific details: dates, names, magnitudes, mechanisms. ' +
+    'Address WHY or HOW, not just WHAT. If there are common misconceptions about this topic, correct them. ' +
+    'Draw on the full breadth of your knowledge — the user should leave with a richer understanding than a one-line lookup.',
+
+  general:
+    '### DEPTH STANDARD\n' +
+    'Think about what the user ACTUALLY wants to know (not just the literal words). ' +
+    'Be concrete and specific — give examples, numbers, context, implications. ' +
+    'Avoid vague generalities. A substantive 3-sentence answer beats a padded paragraph.',
+
+  coding:
+    '### CODE QUALITY STANDARD\n' +
+    'Before writing: understand the full requirements, consider edge cases, choose the right algorithm. ' +
+    'Write correct code first, then idiomatic. Every function should have a clear single purpose. ' +
+    'Think about what can go wrong at runtime and handle it.',
+
+  creative:
+    '### CREATIVE STANDARD\n' +
+    'Commit fully. Make distinctive choices in voice, structure, and imagery. ' +
+    'Avoid generic templates and clichéd openings. The work should feel genuinely crafted. ' +
+    'Surprise the reader at least once.',
 }
 
 const FORBIDDEN_BY_TYPE: Record<PromptType, string[]> = {
@@ -226,6 +276,8 @@ export function generateContract(
     'You are one of several parallel models in a multi-agent debate pipeline.',
     'Your response will be scored, critiqued by peer models, and synthesized.',
     'Conform strictly to this contract or your output will be rejected.',
+    '',
+    REASONING_MODE_BY_TYPE[promptType],
     '',
     '### REQUIRED STRUCTURAL ELEMENTS',
     ...required.map(r => `- ${r}`),

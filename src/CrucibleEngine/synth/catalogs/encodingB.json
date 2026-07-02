@@ -1,0 +1,372 @@
+[
+  {
+    "id": "crc32-checksum",
+    "filename": "crc32Checksum",
+    "summary": "crc32 computes the CRC-32 checksum of a string as an unsigned 32-bit integer.",
+    "defaultPath": "src/crc32Checksum.ts",
+    "exports": [
+      "crc32"
+    ],
+    "patterns": [
+      {
+        "re": "\\bcrc32\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "crc.?32|cyclic redundancy",
+        "weight": 0.3
+      }
+    ],
+    "impl": "const TABLE = new Uint32Array(256)\nfor (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; TABLE[i] = c }\nexport function crc32(str: string): number {\n  let crc = 0xFFFFFFFF\n  for (const ch of Buffer.from(str, 'utf8')) crc = TABLE[(crc ^ ch) & 0xFF] ^ (crc >>> 8)\n  return (crc ^ 0xFFFFFFFF) >>> 0\n}",
+    "tests": [
+      {
+        "desc": "hello",
+        "call": "crc32(\"hello\")",
+        "want": "907060870"
+      },
+      {
+        "desc": "empty",
+        "call": "crc32(\"\")",
+        "want": "0"
+      },
+      {
+        "desc": "deterministic",
+        "call": "crc32(\"abc\") === crc32(\"abc\")",
+        "want": "true"
+      },
+      {
+        "desc": "different inputs",
+        "call": "crc32(\"a\") !== crc32(\"b\")",
+        "want": "true"
+      },
+      {
+        "desc": "unsigned 32-bit",
+        "call": "crc32(\"x\") >= 0",
+        "want": "true"
+      }
+    ]
+  },
+  {
+    "id": "fnv1a-hash",
+    "filename": "fnv1aHash",
+    "summary": "fnv1aHash computes the 32-bit FNV-1a hash of a string as an unsigned integer.",
+    "defaultPath": "src/fnv1aHash.ts",
+    "exports": [
+      "fnv1aHash"
+    ],
+    "patterns": [
+      {
+        "re": "\\bfnv1aHash\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "fnv.?1a|fowler.*noll.*vo",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function fnv1aHash(str: string): number {\n  let h = 2166136261\n  for (const ch of Buffer.from(str, 'utf8')) { h ^= ch; h = Math.imul(h, 16777619) >>> 0 }\n  return h\n}",
+    "tests": [
+      {
+        "desc": "hello",
+        "call": "fnv1aHash(\"hello\")",
+        "want": "1335831723"
+      },
+      {
+        "desc": "empty",
+        "call": "fnv1aHash(\"\")",
+        "want": "2166136261"
+      },
+      {
+        "desc": "deterministic",
+        "call": "fnv1aHash(\"test\") === fnv1aHash(\"test\")",
+        "want": "true"
+      },
+      {
+        "desc": "unsigned",
+        "call": "fnv1aHash(\"x\") >= 0",
+        "want": "true"
+      }
+    ]
+  },
+  {
+    "id": "caesar-cipher",
+    "filename": "caesarCipher",
+    "summary": "caesarCipher shifts letters by a number (wrapping within a-z/A-Z); non-letters are unchanged; negative shift decodes.",
+    "defaultPath": "src/caesarCipher.ts",
+    "exports": [
+      "caesarCipher"
+    ],
+    "patterns": [
+      {
+        "re": "\\bcaesarCipher\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "caesar.*cipher|shift.*letter|letter.*shift",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function caesarCipher(s: string, shift: number): string {\n  return s.replace(/[a-zA-Z]/g, c => {\n    const base = c <= 'Z' ? 65 : 97\n    return String.fromCharCode(((c.charCodeAt(0) - base + ((shift % 26) + 26)) % 26) + base)\n  })\n}",
+    "tests": [
+      {
+        "desc": "hello shift 3",
+        "call": "caesarCipher(\"hello\",3)",
+        "want": "\"khoor\""
+      },
+      {
+        "desc": "wrap",
+        "call": "caesarCipher(\"xyz\",3)",
+        "want": "\"abc\""
+      },
+      {
+        "desc": "uppercase",
+        "call": "caesarCipher(\"ABC\",1)",
+        "want": "\"BCD\""
+      },
+      {
+        "desc": "decode",
+        "call": "caesarCipher(\"khoor\",-3)",
+        "want": "\"hello\""
+      },
+      {
+        "desc": "preserve non-alpha",
+        "call": "caesarCipher(\"hello, world!\",13)",
+        "want": "\"uryyb, jbeyq!\""
+      },
+      {
+        "desc": "shift 0",
+        "call": "caesarCipher(\"hello\",0)",
+        "want": "\"hello\""
+      }
+    ]
+  },
+  {
+    "id": "to-hex-string",
+    "filename": "toHexString",
+    "summary": "toHexString converts an array of bytes (0-255) to a lowercase hex string and fromHexString converts back.",
+    "defaultPath": "src/toHexString.ts",
+    "exports": [
+      "toHexString",
+      "fromHexString"
+    ],
+    "patterns": [
+      {
+        "re": "\\btoHexString\\b|\\bfromHexString\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "bytes.*hex|hex.*bytes",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function toHexString(bytes: number[]): string {\n  return bytes.map(b => (b & 0xFF).toString(16).padStart(2,'0')).join('')\n}\nexport function fromHexString(hex: string): number[] {\n  const out: number[] = []\n  for (let i = 0; i < hex.length; i += 2) out.push(parseInt(hex.slice(i,i+2),16))\n  return out\n}",
+    "tests": [
+      {
+        "desc": "bytes to hex",
+        "call": "toHexString([0,255,16,32])",
+        "want": "\"00ff1020\""
+      },
+      {
+        "desc": "empty",
+        "call": "toHexString([])",
+        "want": "\"\""
+      },
+      {
+        "desc": "hex to bytes",
+        "call": "fromHexString(\"00ff1020\")",
+        "want": "[0,255,16,32]"
+      },
+      {
+        "desc": "roundtrip",
+        "call": "toHexString(fromHexString(\"deadbeef\"))",
+        "want": "\"deadbeef\""
+      },
+      {
+        "desc": "single byte",
+        "call": "toHexString([1])",
+        "want": "\"01\""
+      }
+    ]
+  },
+  {
+    "id": "percent-encode",
+    "filename": "percentEncode",
+    "summary": "percentEncode applies RFC3986 percent encoding to a string and percentDecode reverses it; they roundtrip.",
+    "defaultPath": "src/percentEncode.ts",
+    "exports": [
+      "percentEncode",
+      "percentDecode"
+    ],
+    "patterns": [
+      {
+        "re": "\\bpercentEncode\\b|\\bpercentDecode\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "percent.*encod|url.*encod",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function percentEncode(s: string): string {\n  return encodeURIComponent(s).replace(/[!'()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())\n}\nexport function percentDecode(s: string): string {\n  return decodeURIComponent(s)\n}",
+    "tests": [
+      {
+        "desc": "space",
+        "call": "percentEncode(\"hello world\")",
+        "want": "\"hello%20world\""
+      },
+      {
+        "desc": "special chars",
+        "call": "percentEncode(\"a+b=c\")",
+        "want": "\"a%2Bb%3Dc\""
+      },
+      {
+        "desc": "decode",
+        "call": "percentDecode(\"hello%20world\")",
+        "want": "\"hello world\""
+      },
+      {
+        "desc": "roundtrip",
+        "call": "percentDecode(percentEncode(\"hello/world?q=1\"))",
+        "want": "\"hello/world?q=1\""
+      },
+      {
+        "desc": "plain passthrough",
+        "call": "percentEncode(\"abc\")",
+        "want": "\"abc\""
+      }
+    ]
+  },
+  {
+    "id": "rot47",
+    "filename": "rot47",
+    "summary": "rot47 applies ROT-47 over printable ASCII characters 33 to 126; it is an involution.",
+    "defaultPath": "src/rot47.ts",
+    "exports": [
+      "rot47"
+    ],
+    "patterns": [
+      {
+        "re": "\\brot47\\b|\\brot.?47\\b",
+        "weight": 0.7
+      },
+      {
+        "re": "printable.*ascii.*rotate",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function rot47(s: string): string {\n  return s.replace(/[!-~]/g, c => String.fromCharCode(33 + (c.charCodeAt(0) - 33 + 47) % 94))\n}",
+    "tests": [
+      {
+        "desc": "hello",
+        "call": "rot47(\"Hello, World!\")",
+        "want": "\"w6==@[ (@C=5P\""
+      },
+      {
+        "desc": "involution",
+        "call": "rot47(rot47(\"Hello, World!\"))",
+        "want": "\"Hello, World!\""
+      },
+      {
+        "desc": "space preserved",
+        "call": "rot47(\"a b\")",
+        "want": "\"2 3\""
+      },
+      {
+        "desc": "involution abc",
+        "call": "rot47(rot47(\"abc\"))",
+        "want": "\"abc\""
+      }
+    ]
+  },
+  {
+    "id": "to-base64-url",
+    "filename": "toBase64Url",
+    "summary": "toBase64Url encodes a string to URL-safe base64 (no padding) and fromBase64Url decodes it; they roundtrip.",
+    "defaultPath": "src/toBase64Url.ts",
+    "exports": [
+      "toBase64Url",
+      "fromBase64Url"
+    ],
+    "patterns": [
+      {
+        "re": "\\btoBase64Url\\b|\\bfromBase64Url\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "base64.*url|url.?safe.*base64",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function toBase64Url(s: string): string {\n  return Buffer.from(s,'utf8').toString('base64').replace(/\\+/g,'-').replace(/\\//g,'_').replace(/=/g,'')\n}\nexport function fromBase64Url(s: string): string {\n  const padded = s.replace(/-/g,'+').replace(/_/g,'/') + '==='.slice((s.length + 3) % 4)\n  return Buffer.from(padded,'base64').toString('utf8')\n}",
+    "tests": [
+      {
+        "desc": "encode hello",
+        "call": "toBase64Url(\"hello\")",
+        "want": "\"aGVsbG8\""
+      },
+      {
+        "desc": "no padding",
+        "call": "toBase64Url(\"hello\").includes(\"=\")",
+        "want": "false"
+      },
+      {
+        "desc": "no slash",
+        "call": "toBase64Url(\"hello world\").includes(\"/\")",
+        "want": "false"
+      },
+      {
+        "desc": "roundtrip",
+        "call": "fromBase64Url(toBase64Url(\"Hello, World!\"))",
+        "want": "\"Hello, World!\""
+      },
+      {
+        "desc": "decode hello",
+        "call": "fromBase64Url(\"aGVsbG8\")",
+        "want": "\"hello\""
+      }
+    ]
+  },
+  {
+    "id": "base32-encode",
+    "filename": "base32Encode",
+    "summary": "base32Encode encodes a string to RFC4648 base32 with padding and base32Decode reverses it.",
+    "defaultPath": "src/base32Encode.ts",
+    "exports": [
+      "base32Encode",
+      "base32Decode"
+    ],
+    "patterns": [
+      {
+        "re": "\\bbase32Encode\\b|\\bbase32Decode\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "base32|rfc4648",
+        "weight": 0.3
+      }
+    ],
+    "impl": "const ALPHA = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'\nexport function base32Encode(s: string): string {\n  const bytes = Buffer.from(s,'utf8')\n  let bits = 0, value = 0, out = ''\n  for (const b of bytes) { value = (value << 8) | b; bits += 8; while (bits >= 5) { out += ALPHA[(value >>> (bits-5)) & 31]; bits -= 5 } }\n  if (bits > 0) out += ALPHA[(value << (5-bits)) & 31]\n  while (out.length % 8) out += '='\n  return out\n}\nexport function base32Decode(s: string): string {\n  const input = s.replace(/=/g,'')\n  let bits = 0, value = 0; const bytes: number[] = []\n  for (const c of input) { value = (value << 5) | ALPHA.indexOf(c); bits += 5; if (bits >= 8) { bytes.push((value >>> (bits-8)) & 255); bits -= 8 } }\n  return Buffer.from(bytes).toString('utf8')\n}",
+    "tests": [
+      {
+        "desc": "encode hello",
+        "call": "base32Encode(\"hello\")",
+        "want": "\"NBSWY3DP\""
+      },
+      {
+        "desc": "length multiple of 8",
+        "call": "base32Encode(\"hello\").length % 8 === 0",
+        "want": "true"
+      },
+      {
+        "desc": "roundtrip",
+        "call": "base32Decode(base32Encode(\"Hello World\"))",
+        "want": "\"Hello World\""
+      },
+      {
+        "desc": "empty",
+        "call": "base32Encode(\"\")",
+        "want": "\"\""
+      }
+    ]
+  }
+]

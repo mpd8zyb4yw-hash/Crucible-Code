@@ -238,3 +238,9 @@ export async function takeScreenshot(quality = 60): Promise<Buffer | null> {
     return null
   }
 }
+
+// NOTE: macOS system settings (brightness, volume, mute, dark mode, wifi, sleep, lock,
+// battery) now live in the verified recipe library at agent/macCapabilities.ts, surfaced
+// through the single `control_mac` tool. Driving the System Settings UI via Accessibility
+// (the old path) was fragile — "Can't set «class tabg» … to 0.5 (-10006)" — so it was
+// replaced with native commands (osascript/networksetup/pmset) that also read state back.

@@ -1,0 +1,582 @@
+[
+  {
+    "id": "luhn-check",
+    "filename": "luhnCheck",
+    "summary": "luhnCheck validates a numeric string against the Luhn checksum algorithm, ignoring spaces and requiring digits only.",
+    "defaultPath": "src/luhnCheck.ts",
+    "exports": [
+      "luhnCheck"
+    ],
+    "patterns": [
+      {
+        "re": "\\bluhnCheck\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "\\bLuhn\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bchecksum\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bdigits\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function luhnCheck(num: string): boolean {\n  const d = num.replace(/\\s+/g, '');\n  if (d.length === 0 || !/^\\d+$/.test(d)) return false;\n  let sum = 0;\n  let alt = false;\n  for (let i = d.length - 1; i >= 0; i--) {\n    let n = d.charCodeAt(i) - 48;\n    if (alt) {\n      n *= 2;\n      if (n > 9) n -= 9;\n    }\n    sum += n;\n    alt = !alt;\n  }\n  return sum % 10 === 0;\n}\n",
+    "tests": [
+      {
+        "desc": "valid 16-digit card with spaces",
+        "call": "luhnCheck(\"4539 1488 0343 6467\")",
+        "want": "true"
+      },
+      {
+        "desc": "classic valid Luhn number",
+        "call": "luhnCheck(\"79927398713\")",
+        "want": "true"
+      },
+      {
+        "desc": "invalid last digit",
+        "call": "luhnCheck(\"79927398710\")",
+        "want": "false"
+      },
+      {
+        "desc": "empty string is invalid",
+        "call": "luhnCheck(\"\")",
+        "want": "false"
+      },
+      {
+        "desc": "non-digit characters rejected",
+        "call": "luhnCheck(\"abc\")",
+        "want": "false"
+      },
+      {
+        "desc": "single zero is valid (sum 0)",
+        "call": "luhnCheck(\"0\")",
+        "want": "true"
+      },
+      {
+        "desc": "two-digit valid case 18",
+        "call": "luhnCheck(\"18\")",
+        "want": "true"
+      },
+      {
+        "desc": "doubling overflow case 59",
+        "call": "luhnCheck(\"59\")",
+        "want": "true"
+      }
+    ]
+  },
+  {
+    "id": "is-isbn",
+    "filename": "isISBN",
+    "summary": "isISBN validates whether a string is a valid ISBN-10 or ISBN-13 book number, ignoring hyphens and spaces.",
+    "defaultPath": "src/isISBN.ts",
+    "exports": [
+      "isISBN"
+    ],
+    "patterns": [
+      {
+        "re": "\\bisISBN\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "\\bISBN\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bbook\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bvalid\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function isISBN(s: string): boolean {\n  const c = s.replace(/[\\s-]/g, '');\n  if (/^\\d{9}[\\dX]$/.test(c)) {\n    let sum = 0;\n    for (let i = 0; i < 9; i++) sum += (10 - i) * (c.charCodeAt(i) - 48);\n    sum += c[9] === 'X' ? 10 : c.charCodeAt(9) - 48;\n    return sum % 11 === 0;\n  }\n  if (/^\\d{13}$/.test(c)) {\n    let sum = 0;\n    for (let i = 0; i < 13; i++) sum += (i % 2 === 0 ? 1 : 3) * (c.charCodeAt(i) - 48);\n    return sum % 10 === 0;\n  }\n  return false;\n}\n",
+    "tests": [
+      {
+        "desc": "valid ISBN-10",
+        "call": "isISBN(\"0306406152\")",
+        "want": "true"
+      },
+      {
+        "desc": "valid ISBN-10 with hyphens",
+        "call": "isISBN(\"0-306-40615-2\")",
+        "want": "true"
+      },
+      {
+        "desc": "valid ISBN-10 ending in X check digit",
+        "call": "isISBN(\"097522980X\")",
+        "want": "true"
+      },
+      {
+        "desc": "valid ISBN-13",
+        "call": "isISBN(\"9780306406157\")",
+        "want": "true"
+      },
+      {
+        "desc": "another valid ISBN-13",
+        "call": "isISBN(\"9783161484100\")",
+        "want": "true"
+      },
+      {
+        "desc": "invalid 10-digit checksum",
+        "call": "isISBN(\"1234567890\")",
+        "want": "false"
+      },
+      {
+        "desc": "empty string invalid",
+        "call": "isISBN(\"\")",
+        "want": "false"
+      },
+      {
+        "desc": "12 digits is neither length",
+        "call": "isISBN(\"978030640615\")",
+        "want": "false"
+      }
+    ]
+  },
+  {
+    "id": "is-ean13",
+    "filename": "isEAN13",
+    "summary": "isEAN13 validates a 13-digit EAN-13 barcode by verifying its modulo-10 checksum digit, ignoring spaces and hyphens.",
+    "defaultPath": "src/isEAN13.ts",
+    "exports": [
+      "isEAN13"
+    ],
+    "patterns": [
+      {
+        "re": "\\bisEAN13\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "\\bEAN-13\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bbarcode\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bchecksum\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function isEAN13(s: string): boolean {\n  const c = s.replace(/[\\s-]/g, '');\n  if (!/^\\d{13}$/.test(c)) return false;\n  let sum = 0;\n  for (let i = 0; i < 12; i++) sum += (i % 2 === 0 ? 1 : 3) * (c.charCodeAt(i) - 48);\n  const check = (10 - (sum % 10)) % 10;\n  return check === c.charCodeAt(12) - 48;\n}\n",
+    "tests": [
+      {
+        "desc": "valid EAN-13 barcode",
+        "call": "isEAN13(\"4006381333931\")",
+        "want": "true"
+      },
+      {
+        "desc": "another valid EAN-13",
+        "call": "isEAN13(\"5901234123457\")",
+        "want": "true"
+      },
+      {
+        "desc": "invalid check digit",
+        "call": "isEAN13(\"4006381333930\")",
+        "want": "false"
+      },
+      {
+        "desc": "empty string invalid",
+        "call": "isEAN13(\"\")",
+        "want": "false"
+      },
+      {
+        "desc": "all zeros has check digit zero",
+        "call": "isEAN13(\"0000000000000\")",
+        "want": "true"
+      },
+      {
+        "desc": "valid EAN-13 with spaces",
+        "call": "isEAN13(\"4006 381 333931\")",
+        "want": "true"
+      },
+      {
+        "desc": "too short rejected",
+        "call": "isEAN13(\"400638133393\")",
+        "want": "false"
+      },
+      {
+        "desc": "non-digit rejected",
+        "call": "isEAN13(\"400638133393X\")",
+        "want": "false"
+      }
+    ]
+  },
+  {
+    "id": "is-e164-phone",
+    "filename": "isE164Phone",
+    "summary": "isE164Phone validates a phone number in E.164 format: a plus sign followed by 1 to 15 digits with no leading zero.",
+    "defaultPath": "src/isE164Phone.ts",
+    "exports": [
+      "isE164Phone"
+    ],
+    "patterns": [
+      {
+        "re": "\\bisE164Phone\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "\\bE\\.164\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bphone\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bdigits\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function isE164Phone(s: string): boolean {\n  return /^\\+[1-9]\\d{0,14}$/.test(s);\n}\n",
+    "tests": [
+      {
+        "desc": "valid US E.164 number",
+        "call": "isE164Phone(\"+14155552671\")",
+        "want": "true"
+      },
+      {
+        "desc": "minimal single-digit number",
+        "call": "isE164Phone(\"+1\")",
+        "want": "true"
+      },
+      {
+        "desc": "leading zero after plus rejected",
+        "call": "isE164Phone(\"+0123\")",
+        "want": "false"
+      },
+      {
+        "desc": "missing plus rejected",
+        "call": "isE164Phone(\"14155552671\")",
+        "want": "false"
+      },
+      {
+        "desc": "plus only rejected",
+        "call": "isE164Phone(\"+\")",
+        "want": "false"
+      },
+      {
+        "desc": "16 digits exceeds max",
+        "call": "isE164Phone(\"+1234567890123456\")",
+        "want": "false"
+      },
+      {
+        "desc": "exactly 15 digits allowed",
+        "call": "isE164Phone(\"+123456789012345\")",
+        "want": "true"
+      },
+      {
+        "desc": "spaces rejected",
+        "call": "isE164Phone(\"+44 20\")",
+        "want": "false"
+      }
+    ]
+  },
+  {
+    "id": "is-uuid-v4-strict",
+    "filename": "isUUIDv4Strict",
+    "summary": "isUUIDv4Strict validates a string as a strict RFC 4122 version 4 UUID with correct version and variant nibbles.",
+    "defaultPath": "src/isUUIDv4Strict.ts",
+    "exports": [
+      "isUUIDv4Strict"
+    ],
+    "patterns": [
+      {
+        "re": "\\bisUUIDv4Strict\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "\\bUUID\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bversion 4\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bvariant\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function isUUIDv4Strict(s: string): boolean {\n  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);\n}\n",
+    "tests": [
+      {
+        "desc": "valid v4 UUID",
+        "call": "isUUIDv4Strict(\"550e8400-e29b-41d4-a716-446655440000\")",
+        "want": "true"
+      },
+      {
+        "desc": "version 1 rejected",
+        "call": "isUUIDv4Strict(\"550e8400-e29b-11d4-a716-446655440000\")",
+        "want": "false"
+      },
+      {
+        "desc": "bad variant nibble rejected",
+        "call": "isUUIDv4Strict(\"550e8400-e29b-41d4-c716-446655440000\")",
+        "want": "false"
+      },
+      {
+        "desc": "uppercase accepted",
+        "call": "isUUIDv4Strict(\"550E8400-E29B-41D4-A716-446655440000\")",
+        "want": "true"
+      },
+      {
+        "desc": "empty string rejected",
+        "call": "isUUIDv4Strict(\"\")",
+        "want": "false"
+      },
+      {
+        "desc": "missing hyphens rejected",
+        "call": "isUUIDv4Strict(\"550e8400e29b41d4a716446655440000\")",
+        "want": "false"
+      },
+      {
+        "desc": "non-hex character rejected",
+        "call": "isUUIDv4Strict(\"550e8400-e29b-41d4-a716-44665544000g\")",
+        "want": "false"
+      }
+    ]
+  },
+  {
+    "id": "is-mac-address",
+    "filename": "isMacAddress",
+    "summary": "isMacAddress validates a 6-octet MAC address using consistent colon or hyphen separators between hex pairs.",
+    "defaultPath": "src/isMacAddress.ts",
+    "exports": [
+      "isMacAddress"
+    ],
+    "patterns": [
+      {
+        "re": "\\bisMacAddress\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "\\bMAC address\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "\\boctet\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bhex\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function isMacAddress(s: string): boolean {\n  return /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(s) || /^([0-9a-f]{2}-){5}[0-9a-f]{2}$/i.test(s);\n}\n",
+    "tests": [
+      {
+        "desc": "valid colon-separated MAC",
+        "call": "isMacAddress(\"01:23:45:67:89:ab\")",
+        "want": "true"
+      },
+      {
+        "desc": "valid hyphen-separated uppercase MAC",
+        "call": "isMacAddress(\"01-23-45-67-89-AB\")",
+        "want": "true"
+      },
+      {
+        "desc": "mixed separators rejected",
+        "call": "isMacAddress(\"01:23-45:67:89:ab\")",
+        "want": "false"
+      },
+      {
+        "desc": "too few octets rejected",
+        "call": "isMacAddress(\"01:23:45:67:89\")",
+        "want": "false"
+      },
+      {
+        "desc": "empty string rejected",
+        "call": "isMacAddress(\"\")",
+        "want": "false"
+      },
+      {
+        "desc": "all-FF broadcast MAC valid",
+        "call": "isMacAddress(\"AA:BB:CC:DD:EE:FF\")",
+        "want": "true"
+      },
+      {
+        "desc": "non-hex character rejected",
+        "call": "isMacAddress(\"0g:23:45:67:89:ab\")",
+        "want": "false"
+      }
+    ]
+  },
+  {
+    "id": "is-credit-card-type",
+    "filename": "isCreditCardType",
+    "summary": "isCreditCardType identifies the credit card brand visa mastercard amex or discover by prefix and length, ignoring spaces.",
+    "defaultPath": "src/isCreditCardType.ts",
+    "exports": [
+      "isCreditCardType"
+    ],
+    "patterns": [
+      {
+        "re": "\\bisCreditCardType\\b",
+        "weight": 0.5
+      },
+      {
+        "re": "\\bcredit card\\b",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bbrand\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bprefix\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "export function isCreditCardType(s: string): string {\n  const d = s.replace(/\\s+/g, '');\n  if (d.length === 0 || !/^\\d+$/.test(d)) return 'unknown';\n  if ((d.length === 13 || d.length === 16 || d.length === 19) && /^4/.test(d)) return 'visa';\n  if (d.length === 15 && /^3[47]/.test(d)) return 'amex';\n  if (d.length === 16) {\n    const p2 = parseInt(d.slice(0, 2), 10);\n    const p4 = parseInt(d.slice(0, 4), 10);\n    if (p2 >= 51 && p2 <= 55) return 'mastercard';\n    if (p4 >= 2221 && p4 <= 2720) return 'mastercard';\n  }\n  if (d.length === 16 || d.length === 19) {\n    if (/^6011/.test(d)) return 'discover';\n    if (/^65/.test(d)) return 'discover';\n    const p3 = parseInt(d.slice(0, 3), 10);\n    if (p3 >= 644 && p3 <= 649) return 'discover';\n  }\n  return 'unknown';\n}\n",
+    "tests": [
+      {
+        "desc": "Visa 16-digit with spaces",
+        "call": "isCreditCardType(\"4111 1111 1111 1111\")",
+        "want": "\"visa\""
+      },
+      {
+        "desc": "Visa 13-digit",
+        "call": "isCreditCardType(\"4222222222222\")",
+        "want": "\"visa\""
+      },
+      {
+        "desc": "Amex 15-digit",
+        "call": "isCreditCardType(\"3782 822463 10005\")",
+        "want": "\"amex\""
+      },
+      {
+        "desc": "Mastercard 55 prefix",
+        "call": "isCreditCardType(\"5555555555554444\")",
+        "want": "\"mastercard\""
+      },
+      {
+        "desc": "Mastercard 2221 new range",
+        "call": "isCreditCardType(\"2221000000000009\")",
+        "want": "\"mastercard\""
+      },
+      {
+        "desc": "Discover 6011 prefix",
+        "call": "isCreditCardType(\"6011111111111117\")",
+        "want": "\"discover\""
+      },
+      {
+        "desc": "Discover 65 prefix",
+        "call": "isCreditCardType(\"6500000000000002\")",
+        "want": "\"discover\""
+      },
+      {
+        "desc": "unrecognized number",
+        "call": "isCreditCardType(\"1234567812345678\")",
+        "want": "\"unknown\""
+      },
+      {
+        "desc": "empty string unknown",
+        "call": "isCreditCardType(\"\")",
+        "want": "\"unknown\""
+      },
+      {
+        "desc": "non-digit unknown",
+        "call": "isCreditCardType(\"4111a\")",
+        "want": "\"unknown\""
+      }
+    ]
+  },
+  {
+    "id": "semver-satisfies",
+    "filename": "semverSatisfies",
+    "summary": "semverSatisfies reports whether a version string fulfills a constraint expressed with exact, caret, tilde, or >= operators.",
+    "defaultPath": "src/semverSatisfies.ts",
+    "exports": [
+      "semverSatisfies"
+    ],
+    "patterns": [
+      {
+        "re": "\\bsemverSatisfies\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "\\bsatisf",
+        "weight": 0.2
+      },
+      {
+        "re": "\\bconstraint\\b",
+        "weight": 0.15
+      },
+      {
+        "re": "\\bversion\\b",
+        "weight": 0.1
+      }
+    ],
+    "impl": "function parseVer(v: string): [number, number, number] | null {\n  const m = /^(\\d+)\\.(\\d+)\\.(\\d+)$/.exec(v.trim());\n  if (!m) return null;\n  return [Number(m[1]), Number(m[2]), Number(m[3])];\n}\n\nfunction cmp(a: [number, number, number], b: [number, number, number]): number {\n  for (let i = 0; i < 3; i++) {\n    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;\n  }\n  return 0;\n}\n\nexport function semverSatisfies(version: string, range: string): boolean {\n  const v = parseVer(version);\n  if (!v) return false;\n  const r = range.trim();\n  if (r.startsWith('^')) {\n    const b = parseVer(r.slice(1));\n    if (!b) return false;\n    if (cmp(v, b) < 0) return false;\n    if (b[0] > 0) return v[0] === b[0];\n    if (b[1] > 0) return v[0] === 0 && v[1] === b[1];\n    return v[0] === 0 && v[1] === 0 && v[2] === b[2];\n  }\n  if (r.startsWith('~')) {\n    const b = parseVer(r.slice(1));\n    if (!b) return false;\n    if (cmp(v, b) < 0) return false;\n    return v[0] === b[0] && v[1] === b[1];\n  }\n  if (r.startsWith('>=')) {\n    const b = parseVer(r.slice(2));\n    if (!b) return false;\n    return cmp(v, b) >= 0;\n  }\n  const b = parseVer(r);\n  if (!b) return false;\n  return cmp(v, b) === 0;\n}\n",
+    "tests": [
+      {
+        "desc": "exact match satisfied",
+        "call": "semverSatisfies(\"1.2.3\",\"1.2.3\")",
+        "want": "true"
+      },
+      {
+        "desc": "exact mismatch fails",
+        "call": "semverSatisfies(\"1.2.4\",\"1.2.3\")",
+        "want": "false"
+      },
+      {
+        "desc": "caret allows higher minor",
+        "call": "semverSatisfies(\"1.5.0\",\"^1.2.3\")",
+        "want": "true"
+      },
+      {
+        "desc": "caret blocks major bump",
+        "call": "semverSatisfies(\"2.0.0\",\"^1.2.3\")",
+        "want": "false"
+      },
+      {
+        "desc": "caret blocks lower than base",
+        "call": "semverSatisfies(\"1.2.2\",\"^1.2.3\")",
+        "want": "false"
+      },
+      {
+        "desc": "caret 0.x locks minor and allows patch",
+        "call": "semverSatisfies(\"0.2.5\",\"^0.2.3\")",
+        "want": "true"
+      },
+      {
+        "desc": "caret 0.x blocks minor bump",
+        "call": "semverSatisfies(\"0.3.0\",\"^0.2.3\")",
+        "want": "false"
+      },
+      {
+        "desc": "tilde allows patch",
+        "call": "semverSatisfies(\"1.2.9\",\"~1.2.3\")",
+        "want": "true"
+      },
+      {
+        "desc": "tilde blocks minor bump",
+        "call": "semverSatisfies(\"1.3.0\",\"~1.2.3\")",
+        "want": "false"
+      },
+      {
+        "desc": "gte satisfied by higher",
+        "call": "semverSatisfies(\"2.0.0\",\">=1.2.3\")",
+        "want": "true"
+      },
+      {
+        "desc": "gte fails for lower",
+        "call": "semverSatisfies(\"1.0.0\",\">=1.2.3\")",
+        "want": "false"
+      },
+      {
+        "desc": "malformed version fails",
+        "call": "semverSatisfies(\"1.2\",\">=1.0.0\")",
+        "want": "false"
+      }
+    ]
+  }
+]

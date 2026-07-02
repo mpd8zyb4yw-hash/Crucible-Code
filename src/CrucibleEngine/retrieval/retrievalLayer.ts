@@ -94,27 +94,35 @@ function rawGet(url: string, timeout = 6000, redirectsLeft = 4): Promise<string>
 }
 
 // ── Capability: web search ───────────────────────────────────────────────────────
-// Keyless DuckDuckGo HTML endpoint — returns real result links + snippets (the
-// instant-answer API used by webGrounding only covers a narrow slice). Parsed with
-// tolerant regex; on any failure returns [] so callers degrade to no-grounding.
+// Multi-tier search: tries DuckDuckGo HTML first (keyless), falls back to
+// Wikipedia search API (also keyless). Both are graceful — failures yield [].
 
 export async function search(query: string): Promise<SearchResult[]> {
   const key = query.trim().toLowerCase()
   const cached = searchCache.get(key)
   if (cached) return cached
+
+  // Tier A: DuckDuckGo HTML endpoint (keyless, no API key)
   let results: SearchResult[] = []
   try {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-    const html = await rawGet(url, 6000)
+    const html = await rawGet(url, 7000)
     results = parseDuckResults(html)
   } catch { results = [] }
+
+  // Tier B: Wikipedia search API fallback (always keyless, very reliable)
+  if (results.length === 0) {
+    try {
+      results = await searchWikipedia(query)
+    } catch { results = [] }
+  }
+
   searchCache.set(key, results)
   return results
 }
 
 function parseDuckResults(html: string): SearchResult[] {
   const out: SearchResult[] = []
-  // Result anchors carry class="result__a"; snippets class="result__snippet".
   const anchorRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
   const snippetRe = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
   const snippets: string[] = []
@@ -134,6 +142,46 @@ function decodeDuckUrl(href: string): string {
   const m = href.match(/[?&]uddg=([^&]+)/)
   if (m) { try { return decodeURIComponent(m[1]) } catch { /* fall through */ } }
   return href.startsWith('//') ? `https:${href}` : href
+}
+
+// Wikipedia search API — keyless, structured JSON, very reliable for factual queries.
+// Uses full-text search (action=query&list=search) so it finds content not just titles.
+async function searchWikipedia(query: string): Promise<SearchResult[]> {
+  // Full-text search — finds articles containing the query, even if title differs
+  const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=1&srlimit=5`
+  const raw = await rawGet(searchUrl, 7000)
+  const data = JSON.parse(raw) as any
+  const hits = data?.query?.search ?? []
+  if (hits.length === 0) return []
+
+  const results: SearchResult[] = []
+  for (const hit of hits.slice(0, 5)) {
+    const title = hit.title ?? ''
+    const snippet = stripTags(hit.snippet ?? '')
+    const url = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`
+    results.push({ url, title, snippet })
+  }
+
+  // Eagerly fetch the intro extract for the top result and cache it so
+  // the subsequent fetch() call hits in-memory cache instead of doing another request.
+  if (results[0]) {
+    try {
+      const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&titles=${encodeURIComponent(results[0].title)}&format=json&redirects=1&exchars=3000`
+      const extractRaw = await rawGet(extractUrl, 7000)
+      const extractData = JSON.parse(extractRaw) as any
+      const pages = extractData?.query?.pages ?? {}
+      const page = Object.values(pages)[0] as any
+      if (page?.extract) {
+        const text = stripTags(page.extract)
+        if (!pageCache.has(results[0].url)) {
+          pageCache.set(results[0].url, text)
+        }
+        // Richer snippet from the actual intro extract
+        results[0].snippet = text.slice(0, 300)
+      }
+    } catch { /* graceful */ }
+  }
+  return results
 }
 
 // ── Capability: page fetch ───────────────────────────────────────────────────────

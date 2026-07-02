@@ -11,6 +11,7 @@ import { appendGlobalMemory } from '../state/session'
 import { buildGraphDigest, findEntities, upsertEntity, touchEntities } from '../entityGraph'
 import { gFetch, googleServicesStatus } from './googleApis'
 import { getUITree, clickElement, typeText, navigateBrowser } from '../macTools'
+import { runCapability, capabilityIntents } from '../agent/macCapabilities'
 import { read_image, read_pdf } from './visionTools'
 
 const tools = new Map<string, ToolDef>()
@@ -71,7 +72,14 @@ export function resolveSafe(p: string, ctx: ToolCtx, { allowOutside = false } = 
   if (!p || typeof p !== 'string' || !p.trim()) {
     throw new Error('A non-empty "path" argument is required.')
   }
-  const abs = path.isAbsolute(p) ? path.normalize(p) : path.resolve(ctx.projectPath, p)
+  // Expand a leading ~ to the user's home dir so file tools agree with the shell.
+  // The `run` tool executes via zsh, which expands ~; without this, "~/Desktop/x"
+  // resolves to "<projectRoot>/~/Desktop/x" and write_file/run disagree on the
+  // file's actual location (the "No such file or directory" cascade).
+  let raw = p.trim()
+  const home = process.env.HOME
+  if (home && (raw === '~' || raw.startsWith('~/'))) raw = home + raw.slice(1)
+  const abs = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(ctx.projectPath, raw)
   if (!allowOutside) {
     const root = path.resolve(ctx.projectPath) + path.sep
     if (!(abs + path.sep).startsWith(root)) {
@@ -133,13 +141,22 @@ export function capOutput(s: string, max = MAX_OUTPUT_CHARS): { output: string; 
 // hunk's declared position outward), so stale line numbers still apply.
 export function applyUnifiedPatch(text: string, patch: string): { ok: boolean; text?: string; hunks?: number; error?: string } {
   const lines = text.split('\n')
-  const patchLines = patch.split('\n')
+  // Strip Codex-style envelope lines ("*** Begin Patch", "*** Update File: …",
+  // "*** End Patch", "*** Add/Delete File: …") that codex-trained models such as
+  // GPT-OSS wrap their hunks in. They aren't part of the diff body.
+  const patchLines = patch.split('\n').filter(l => !/^\*\*\*\s/.test(l.trimStart()))
   let hunks = 0
   let i = 0
+  // If a model emitted +/- lines with no @@ header at all, treat the whole body as
+  // one implicit hunk located by its context lines.
+  if (!patchLines.some(l => l.startsWith('@@'))) patchLines.unshift('@@ @@')
   while (i < patchLines.length) {
-    const header = patchLines[i].match(/^@@\s*-(\d+)(?:,\d+)?\s*\+\d+(?:,\d+)?\s*@@/)
-    if (!header) { i++; continue }
-    const declaredStart = parseInt(header[1], 10) - 1
+    // Accept BOTH unified headers ("@@ -a,b +c,d @@") and bare/context Codex headers
+    // ("@@" or "@@ functionName"). Line numbers are used as a hint when present; the
+    // hunk is always located by context scan (findBlock), so a bare @@ still applies.
+    if (!patchLines[i].startsWith('@@')) { i++; continue }
+    const header = patchLines[i].match(/^@@\s*-(\d+)/)
+    const declaredStart = header ? parseInt(header[1], 10) - 1 : 0
     const oldBlock: string[] = []
     const newBlock: string[] = []
     i++
@@ -368,12 +385,12 @@ registry.register({
 
 registry.register({
   name: 'apply_patch',
-  description: 'Apply a unified diff to a file (multi-hunk). Hunks are located by context lines, so slightly-off line numbers still apply.',
+  description: 'Apply a diff to a file (multi-hunk). Accepts both unified diffs (@@ -a,b +c,d @@) and the Codex apply_patch format (*** Begin Patch / @@ context / *** End Patch). Hunks are located by their context lines, so line numbers may be omitted or slightly off.',
   params: {
     type: 'object',
     properties: {
       path: { type: 'string', description: 'File to patch' },
-      patch: { type: 'string', description: 'Unified diff body (@@ hunks with context, -, + lines)' },
+      patch: { type: 'string', description: 'Diff body: @@ hunk headers (line numbers optional) followed by context, -, and + lines. Codex *** Begin/End Patch envelopes are accepted and ignored.' },
     },
     required: ['path', 'patch'],
   },
@@ -1535,6 +1552,38 @@ registry.register({
   async run(args) {
     const result = await typeText(String(args.text ?? ''))
     return { ok: !result.startsWith('Type failed'), output: result }
+  },
+})
+
+registry.register({
+  name: 'control_mac',
+  description:
+    'Control macOS system settings and actions via reliable native commands — NEVER UI automation. ' +
+    'This is ONE tool with many capabilities; always prefer it over get_ui_tree/click_element for ' +
+    'system settings (clicking the System Settings sliders is slow, fragile, and fails with -10006). ' +
+    'Most actions read the state back to confirm they took effect. ' +
+    `Supported intents: ${capabilityIntents().join(', ')}. ` +
+    'Examples: {intent:"brightness", percent:50}; {intent:"volume", percent:30}; {intent:"mute", on:true}; ' +
+    '{intent:"dark_mode", on:true}; {intent:"wifi", on:false}; {intent:"wifi_connect", ssid:"Home", password:"…"}; ' +
+    '{intent:"battery"}; {intent:"sleep"}; {intent:"lock_screen"}. ' +
+    'If the action you need is NOT in the supported list, do NOT force it here — use the run tool ' +
+    '(shell/osascript), verify it worked, then create_tool to persist a new recipe for next time.',
+  params: {
+    type: 'object',
+    properties: {
+      intent: { type: 'string', enum: capabilityIntents(), description: 'Which capability to invoke' },
+      percent: { type: 'number', description: 'Target level 0–100 (brightness, volume)' },
+      on: { type: 'boolean', description: 'On/off or true/false (mute, dark_mode, wifi)' },
+      ssid: { type: 'string', description: 'Wi-Fi network name (wifi_connect)' },
+      password: { type: 'string', description: 'Wi-Fi password (wifi_connect)' },
+    },
+    required: ['intent'],
+  },
+  mutates: true,
+  async run(args) {
+    const { intent, ...rest } = args as Record<string, unknown>
+    const res = await runCapability(String(intent ?? ''), rest)
+    return { ok: res.ok, output: res.output }
   },
 })
 

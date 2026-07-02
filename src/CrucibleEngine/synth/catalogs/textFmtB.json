@@ -1,0 +1,393 @@
+[
+  {
+    "id": "format-currency",
+    "filename": "formatCurrency",
+    "summary": "formatCurrency formats a number as currency with a symbol, two decimal places, and thousand separators; negatives use \"-$x\" form.",
+    "defaultPath": "src/formatCurrency.ts",
+    "exports": [
+      "formatCurrency"
+    ],
+    "patterns": [
+      {
+        "re": "\\bformatCurrency\\b",
+        "weight": 0.9
+      },
+      {
+        "re": "currency.*symbol.*thousand|negatives.*-\\$",
+        "weight": 0.6
+      }
+    ],
+    "impl": "export function formatCurrency(amount: number, symbol: string): string {\n  const abs = Math.abs(amount)\n  const [int, dec] = abs.toFixed(2).split('.')\n  const intFmt = int.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ',')\n  const formatted = symbol + intFmt + '.' + dec\n  return amount < 0 ? '-' + formatted : formatted\n}",
+    "tests": [
+      {
+        "desc": "basic",
+        "call": "formatCurrency(1234.50,\"$\")",
+        "want": "\"$1,234.50\""
+      },
+      {
+        "desc": "negative",
+        "call": "formatCurrency(-1234.50,\"$\")",
+        "want": "\"-$1,234.50\""
+      },
+      {
+        "desc": "zero",
+        "call": "formatCurrency(0,\"\u20ac\")",
+        "want": "\"\u20ac0.00\""
+      },
+      {
+        "desc": "millions",
+        "call": "formatCurrency(1000000,\"\u00a3\")",
+        "want": "\"\u00a31,000,000.00\""
+      },
+      {
+        "desc": "small",
+        "call": "formatCurrency(9.99,\"$\")",
+        "want": "\"$9.99\""
+      }
+    ]
+  },
+  {
+    "id": "ordinal-word",
+    "filename": "ordinalWord",
+    "summary": "ordinalWord returns \"first\" through \"tenth\" for 1-10 and the ordinal suffix form like \"11th\" or \"21st\" for other integers.",
+    "defaultPath": "src/ordinalWord.ts",
+    "exports": [
+      "ordinalWord"
+    ],
+    "patterns": [
+      {
+        "re": "\\bordinalWord\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "ordinal.*word|number.*word.*first",
+        "weight": 0.3
+      }
+    ],
+    "impl": "const WORDS = ['','first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth']\nexport function ordinalWord(n: number): string {\n  if (n >= 1 && n <= 10) return WORDS[n]\n  const abs = Math.abs(n), mod10 = abs % 10, mod100 = abs % 100\n  const suffix = mod100 >= 11 && mod100 <= 13 ? 'th' : mod10 === 1 ? 'st' : mod10 === 2 ? 'nd' : mod10 === 3 ? 'rd' : 'th'\n  return n + suffix\n}",
+    "tests": [
+      {
+        "desc": "one",
+        "call": "ordinalWord(1)",
+        "want": "\"first\""
+      },
+      {
+        "desc": "five",
+        "call": "ordinalWord(5)",
+        "want": "\"fifth\""
+      },
+      {
+        "desc": "ten",
+        "call": "ordinalWord(10)",
+        "want": "\"tenth\""
+      },
+      {
+        "desc": "11th",
+        "call": "ordinalWord(11)",
+        "want": "\"11th\""
+      },
+      {
+        "desc": "21st",
+        "call": "ordinalWord(21)",
+        "want": "\"21st\""
+      },
+      {
+        "desc": "22nd",
+        "call": "ordinalWord(22)",
+        "want": "\"22nd\""
+      },
+      {
+        "desc": "23rd",
+        "call": "ordinalWord(23)",
+        "want": "\"23rd\""
+      },
+      {
+        "desc": "112th",
+        "call": "ordinalWord(112)",
+        "want": "\"112th\""
+      }
+    ]
+  },
+  {
+    "id": "humanize-list",
+    "filename": "humanizeList",
+    "summary": "humanizeList formats an array of strings as \"a\", \"a and b\", or \"a, b and c\"; empty array returns empty string.",
+    "defaultPath": "src/humanizeList.ts",
+    "exports": [
+      "humanizeList"
+    ],
+    "patterns": [
+      {
+        "re": "\\bhumanizeList\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "humanize.*list|list.*human.*readable",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function humanizeList(items: string[]): string {\n  if (!items.length) return ''\n  if (items.length === 1) return items[0]\n  if (items.length === 2) return items[0] + ' and ' + items[1]\n  return items.slice(0,-1).join(', ') + ' and ' + items[items.length-1]\n}",
+    "tests": [
+      {
+        "desc": "empty",
+        "call": "humanizeList([])",
+        "want": "\"\""
+      },
+      {
+        "desc": "one",
+        "call": "humanizeList([\"a\"])",
+        "want": "\"a\""
+      },
+      {
+        "desc": "two",
+        "call": "humanizeList([\"a\",\"b\"])",
+        "want": "\"a and b\""
+      },
+      {
+        "desc": "three",
+        "call": "humanizeList([\"a\",\"b\",\"c\"])",
+        "want": "\"a, b and c\""
+      },
+      {
+        "desc": "four",
+        "call": "humanizeList([\"a\",\"b\",\"c\",\"d\"])",
+        "want": "\"a, b, c and d\""
+      }
+    ]
+  },
+  {
+    "id": "abbreviate-number",
+    "filename": "abbreviateNumber",
+    "summary": "abbreviateNumber abbreviates large numbers to 1.2K, 1.5M, or 1B format with one decimal trimmed if trailing zero.",
+    "defaultPath": "src/abbreviateNumber.ts",
+    "exports": [
+      "abbreviateNumber"
+    ],
+    "patterns": [
+      {
+        "re": "\\babbreviateNumber\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "abbreviat.*number|compact.*number",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function abbreviateNumber(n: number): string {\n  const abs = Math.abs(n), sign = n < 0 ? '-' : ''\n  const fmt = (v: number, s: string) => sign + (Math.round(v*10)/10).toString().replace(/\\.0$/, '') + s\n  if (abs >= 1e9) return fmt(abs/1e9, 'B')\n  if (abs >= 1e6) return fmt(abs/1e6, 'M')\n  if (abs >= 1e3) return fmt(abs/1e3, 'K')\n  return String(n)\n}",
+    "tests": [
+      {
+        "desc": "1200",
+        "call": "abbreviateNumber(1200)",
+        "want": "\"1.2K\""
+      },
+      {
+        "desc": "1500000",
+        "call": "abbreviateNumber(1500000)",
+        "want": "\"1.5M\""
+      },
+      {
+        "desc": "1000000000",
+        "call": "abbreviateNumber(1000000000)",
+        "want": "\"1B\""
+      },
+      {
+        "desc": "small",
+        "call": "abbreviateNumber(999)",
+        "want": "\"999\""
+      },
+      {
+        "desc": "exact 1K",
+        "call": "abbreviateNumber(1000)",
+        "want": "\"1K\""
+      },
+      {
+        "desc": "negative",
+        "call": "abbreviateNumber(-2000)",
+        "want": "\"-2K\""
+      }
+    ]
+  },
+  {
+    "id": "mask-string",
+    "filename": "maskString",
+    "summary": "maskString replaces all but the last visible characters with asterisks.",
+    "defaultPath": "src/maskString.ts",
+    "exports": [
+      "maskString"
+    ],
+    "patterns": [
+      {
+        "re": "\\bmaskString\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "mask.*string|redact.*string",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function maskString(s: string, visible: number): string {\n  if (visible >= s.length) return s\n  return '*'.repeat(s.length - visible) + s.slice(s.length - visible)\n}",
+    "tests": [
+      {
+        "desc": "basic",
+        "call": "maskString(\"1234567890\",4)",
+        "want": "\"******7890\""
+      },
+      {
+        "desc": "all visible",
+        "call": "maskString(\"hello\",10)",
+        "want": "\"hello\""
+      },
+      {
+        "desc": "none visible",
+        "call": "maskString(\"hello\",0)",
+        "want": "\"*****\""
+      },
+      {
+        "desc": "one visible",
+        "call": "maskString(\"secret\",1)",
+        "want": "\"*****t\""
+      },
+      {
+        "desc": "empty",
+        "call": "maskString(\"\",3)",
+        "want": "\"\""
+      }
+    ]
+  },
+  {
+    "id": "title-case-smart",
+    "filename": "titleCaseSmart",
+    "summary": "titleCaseSmart applies title case but keeps small words (a, an, the, of, and, or, in, on, to) lowercase unless first word.",
+    "defaultPath": "src/titleCaseSmart.ts",
+    "exports": [
+      "titleCaseSmart"
+    ],
+    "patterns": [
+      {
+        "re": "\\btitleCaseSmart\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "smart.*title.*case|title.*case.*small.*word",
+        "weight": 0.3
+      }
+    ],
+    "impl": "const SMALL = new Set(['a','an','the','of','and','or','in','on','to','for','but','nor'])\nexport function titleCaseSmart(s: string): string {\n  return s.split(' ').map((w,i) => {\n    const lower = w.toLowerCase()\n    return (i === 0 || !SMALL.has(lower)) ? lower.replace(/^./, c=>c.toUpperCase()) : lower\n  }).join(' ')\n}",
+    "tests": [
+      {
+        "desc": "small word",
+        "call": "titleCaseSmart(\"the quick brown fox\")",
+        "want": "\"The Quick Brown Fox\""
+      },
+      {
+        "desc": "keeps small mid",
+        "call": "titleCaseSmart(\"war and peace\")",
+        "want": "\"War and Peace\""
+      },
+      {
+        "desc": "and at start",
+        "call": "titleCaseSmart(\"and then\")",
+        "want": "\"And Then\""
+      },
+      {
+        "desc": "single word",
+        "call": "titleCaseSmart(\"hello\")",
+        "want": "\"Hello\""
+      },
+      {
+        "desc": "empty",
+        "call": "titleCaseSmart(\"\")",
+        "want": "\"\""
+      }
+    ]
+  },
+  {
+    "id": "slugify-unicode",
+    "filename": "slugifyUnicode",
+    "summary": "slugifyUnicode converts a string to a lowercase ASCII slug: spaces become hyphens, non-alphanumeric is stripped, hyphens are collapsed and trimmed.",
+    "defaultPath": "src/slugifyUnicode.ts",
+    "exports": [
+      "slugifyUnicode"
+    ],
+    "patterns": [
+      {
+        "re": "\\bslugifyUnicode\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "slugif.*unicode|unicode.*slug",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function slugifyUnicode(s: string): string {\n  return s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase()\n    .replace(/\\s+/g,'-').replace(/[^a-z0-9-]/g,'').replace(/-+/g,'-').replace(/^-|-$/g,'')\n}",
+    "tests": [
+      {
+        "desc": "basic",
+        "call": "slugifyUnicode(\"Hello World\")",
+        "want": "\"hello-world\""
+      },
+      {
+        "desc": "special chars",
+        "call": "slugifyUnicode(\"Hello, World!\")",
+        "want": "\"hello-world\""
+      },
+      {
+        "desc": "multiple spaces",
+        "call": "slugifyUnicode(\"  foo   bar  \")",
+        "want": "\"foo-bar\""
+      },
+      {
+        "desc": "accents",
+        "call": "slugifyUnicode(\"caf\u00e9\")",
+        "want": "\"cafe\""
+      },
+      {
+        "desc": "empty",
+        "call": "slugifyUnicode(\"\")",
+        "want": "\"\""
+      }
+    ]
+  },
+  {
+    "id": "pad-columns",
+    "filename": "padColumns",
+    "summary": "padColumns pads each column to its maximum width and joins cells with a single space per row.",
+    "defaultPath": "src/padColumns.ts",
+    "exports": [
+      "padColumns"
+    ],
+    "patterns": [
+      {
+        "re": "\\bpadColumns\\b",
+        "weight": 0.6
+      },
+      {
+        "re": "pad.*column|column.*align",
+        "weight": 0.3
+      }
+    ],
+    "impl": "export function padColumns(rows: string[][]): string[] {\n  if (!rows.length) return []\n  const cols = rows[0].length\n  const widths = Array.from({length: cols}, (_,c) => Math.max(...rows.map(r=>(r[c]??'').length)))\n  return rows.map(r => r.map((cell,c) => cell.padEnd(widths[c])).join(' ').trimEnd())\n}",
+    "tests": [
+      {
+        "desc": "single row",
+        "call": "padColumns([[\"a\",\"bb\",\"ccc\"]])",
+        "want": "[\"a bb ccc\"]"
+      },
+      {
+        "desc": "aligns cols",
+        "call": "padColumns([[\"a\",\"bb\"],[\"aaa\",\"b\"]])",
+        "want": "[\"a   bb\",\"aaa b\"]"
+      },
+      {
+        "desc": "empty",
+        "call": "padColumns([])",
+        "want": "[]"
+      },
+      {
+        "desc": "one col",
+        "call": "padColumns([[\"hi\"],[\"hello\"]])",
+        "want": "[\"hi\",\"hello\"]"
+      }
+    ]
+  }
+]

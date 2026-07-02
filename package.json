@@ -8,6 +8,15 @@
     "dev": "concurrently \"npx tsx server.ts\" \"npx vite\"",
     "server": "tsx server.ts",
     "smoke": "tsx src/CrucibleEngine/smoke-benchmarks.ts",
+    "smoke:code": "tsx src/CrucibleEngine/coding-benchmarks.ts",
+    "smoke:code:offline": "CRUCIBLE_OFFLINE=strict tsx src/CrucibleEngine/coding-benchmarks.ts",
+    "synth:prove": "tsx src/CrucibleEngine/synth/synth-prove.ts",
+    "bench:ocb": "tsx src/CrucibleEngine/synth/ocb-runner.ts",
+    "synth:taxonomy": "tsx src/CrucibleEngine/synth/synth-taxonomy.ts",
+    "census": "tsx src/CrucibleEngine/synth/coverage-census.ts",
+    "validate:batch": "tsx src/CrucibleEngine/synth/validate-batch.ts",
+    "prove:all": "tsx src/CrucibleEngine/synth/prove-all.ts",
+    "generate:skills": "tsx src/CrucibleEngine/synth/generate.ts",
     "diag": "curl -s http://localhost:3001/api/diag | python3 -m json.tool",
     "build": "tsc -b && vite build",
     "bundle:server": "esbuild server.ts --bundle --platform=node --format=esm --outfile=server-dist/server.js --external:better-sqlite3 --external:@xenova/transformers --external:electron",
@@ -18,13 +27,22 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "electron": "wait-on --timeout 30000 http://localhost:5173 http://localhost:3001 && sleep 3 && npx electron electron.cjs",
-    "predev": "pkill -f \"tsx server\" || true; pkill -f \"vite\" || true; lsof -ti:5173 | xargs kill -9 2>/dev/null || true; lsof -ti:3001 | xargs kill -9 2>/dev/null || true; sleep 1"
+    "predev": "pkill -f \"tsx server\" || true; pkill -f \"vite\" || true; lsof -ti:5173 | xargs kill -9 2>/dev/null || true; lsof -ti:3001 | xargs kill -9 2>/dev/null || true; sleep 1",
+    "synth:universal": "tsx src/CrucibleEngine/synth/universal-prove.ts",
+    "synth:enum": "tsx src/CrucibleEngine/synth/enumerative-prove.ts",
+    "synth:fm-bench": "tsx src/CrucibleEngine/synth/fm-bench.ts",
+    "research:bench": "tsx src/CrucibleEngine/research/researchBenchmark.ts"
   },
   "build": {
     "appId": "com.crucible.local",
     "productName": "Crucible",
-    "directories": { "output": "release", "buildResources": "build-resources" },
-    "extraMetadata": { "main": "electron.cjs" },
+    "directories": {
+      "output": "release",
+      "buildResources": "build-resources"
+    },
+    "extraMetadata": {
+      "main": "electron.cjs"
+    },
     "files": [
       "electron.cjs",
       "server-dist/**/*",
@@ -39,12 +57,42 @@
       "**/*.node"
     ],
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
       "category": "public.app-category.productivity"
     },
-    "win": { "target": ["nsis"] },
-    "linux": { "target": ["AppImage"], "category": "Utility" },
-    "publish": [{ "provider": "github", "owner": "REPLACE_WITH_GH_OWNER", "repo": "crucible" }]
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "mpd8zyb4yw-hash",
+        "repo": "Crucible"
+      }
+    ]
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

@@ -72,7 +72,11 @@ export function toGeminiTools(defs: ToolDef[]) {
 export function fromOpenAIToolCalls(message: any): ToolCall[] {
   const calls = message?.tool_calls ?? []
   return calls.map((c: any, i: number) => ({
-    id: c.id ?? `call_${i}`,
+    // Treat an empty/whitespace id as missing (??-only would pass '' through) — some
+    // providers return a blank tool-call id, which then fails the NEXT request with
+    // "Tool call id has to be defined" (error 3051). This id is reused for the matching
+    // tool-result message, so assigning it here keeps both sides consistent.
+    id: (c.id && String(c.id).trim()) || `call_${i}`,
     name: c.function?.name ?? '',
     args: safeParseJSON(c.function?.arguments) ?? {},
   })).filter((c: ToolCall) => c.name)

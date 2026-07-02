@@ -6,12 +6,15 @@ compatibility_date = "2026-06-20"
 # DNS setup — point the server's PROXY_URL at it to go live right away.
 workers_dev = true
 
-# Optional stable custom domain. Requires the crucible.cam zone on the same Cloudflare
-# account as `wrangler login` (it is — the tunnel lives there). Uncomment once ready;
-# then PROXY_URL = https://proxy.crucible.cam
-# [[routes]]
-# pattern = "proxy.crucible.cam/*"
-# zone_name = "crucible.cam"
+# Stable custom domain — the canonical origin for the proxy AND for OAuth callbacks.
+# `custom_domain = true` makes `wrangler deploy` auto-provision the DNS record + edge
+# cert for proxy.crucible.cam (zone is on this same `wrangler login` account — the tunnel
+# lives there). This gives a fixed callback URL you register in the OAuth consoles ONCE.
+# The workers.dev URL above still works as a fallback, but login + callbacks use this.
+#   PROXY_URL / VITE_PROXY_URL = https://proxy.crucible.cam
+[[routes]]
+pattern = "proxy.crucible.cam"
+custom_domain = true
 
 # Secrets (NOT vars — all sensitive). Set each with:
 #   wrangler secret put JWT_SECRET
@@ -39,13 +42,16 @@ workers_dev = true
 [vars]
 FRONTEND_URL = "https://crucible.cam"
 
-# User identities (keyed by provider:providerId). Create the namespace then paste its id:
-#   wrangler kv namespace create CRUCIBLE_USERS
-# [[kv_namespaces]]
-# binding = "CRUCIBLE_USERS"
-# id = "<paste-namespace-id-here>"
+# User identities (keyed by provider:providerId). Namespaces created 2026-06-21 (free tier).
+# `id` = production binding; `preview_id` = used by `wrangler dev`. Recreate with:
+#   wrangler kv namespace create CRUCIBLE_USERS            # -> id
+#   wrangler kv namespace create CRUCIBLE_USERS --preview  # -> preview_id
+[[kv_namespaces]]
+binding = "CRUCIBLE_USERS"
+id = "54c5ee1ae4a9446bb6ab5b0a0e617b98"
+preview_id = "d7de46b730a245cdaa181de42d02482b"
 #
-# OAuth callback URLs to register in the provider consoles (point at THIS worker):
+# OAuth callback URLs to register in the provider consoles (point at THIS worker's
+# canonical custom-domain origin above — they must match byte-for-byte):
 #   Google:  https://proxy.crucible.cam/auth/callback/google
 #   GitHub:  https://proxy.crucible.cam/auth/callback/github
-# (use the workers.dev origin instead if you haven't enabled the custom domain yet)
