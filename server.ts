@@ -33,6 +33,7 @@ import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
+import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
 import { defaultSystemPreamble } from './src/CrucibleEngine/agent/loop'
@@ -2854,6 +2855,20 @@ app.post('/api/chat', async (req, res) => {
   // "test" → "Ready when you are" not a dictionary definition.
   // No ensemble, no calibration, no web grounding — just a natural response.
   if (mode !== 'agent' && mode !== 'seeker' && mode !== 'code') {
+    // Ambiguity pre-check runs BEFORE the casual-mode short-circuit below: a terse
+    // imperative like "Book it for tomorrow." has no DOMAIN_SIGNAL_WORDS hit, so
+    // detectConversational() would misclassify it as small talk and instruct the
+    // local model to "mirror exactly what was sent" — which just echoes the command
+    // back. Ask what's missing instead of treating it as chit-chat.
+    const earlyClarify = detectConversationalClarify(message)
+    if (earlyClarify.needsClarification) {
+      send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: earlyClarify.question, done: true, replace: false })
+      send({ type: 'stage', stage: 5, status: 'done' })
+      res.write('data: [DONE]\n\n')
+      res.end()
+      debugBus.emit('pipeline', 'conversational_clarify_early', { query: message.slice(0, 60) }, { severity: 'info' })
+      return
+    }
     const convDecision = detectConversational(message)
     if (convDecision.isConversational) {
       // S4b — casual replies don't need frontier quality. When the local Apple

@@ -6,6 +6,79 @@
 
 ---
 
+## SESSION LOG — 2026-07-02 (cl001/cl003 clarify-wiring — IMPLEMENTED, VERIFIED, CLOSED)
+
+**Mandate: pick up the parked clarify-wiring thread (cl001/cl003, stuck at 0.500±0.000
+across every prior sweep). Diagnose in isolation, fix, confirm against the full
+CONVOEDGE_50 sweep before closing.**
+
+**Also closed as a side effect of session-start housekeeping:** the working tree had
+gone a long stretch with zero commits (757 files / ~48k lines of accumulated,
+undocumented WIP across many sessions — a new chat-conversations store, synthDriver.ts,
+researchDag.ts, retrievalLayer.ts wiring, the synth skill library, Electron launch
+pipeline, Off-Fly cutover staging, and the corpus-acquisition strict-mode gate this
+doc had flagged as still-open — that gate was in fact already fixed, just uncommitted).
+All of it is now one checkpoint commit on `crucible-northstar-sessions`. Recommend
+committing at the end of every session going forward instead of letting this
+accumulate again.
+
+**Root cause — TWO bugs, not one:**
+1. The offline-conversational path (`solveNonCodeTurn`, server.ts ~3090) had no
+   pre-check for under-specified requests at all — unlike the code-agent path, which
+   has a dedicated Tier 2.4 (`ambiguity.ts`) that resolves-or-asks before synthesis.
+   Conversational turns just got handed straight to the FM, which always tries to
+   produce a confident answer.
+2. Compounding it: Track M1's casual-mode short-circuit (`detectConversational` in
+   `conversationalMode.ts`, server.ts ~2857) treats any message ≤4 words with no
+   `DOMAIN_SIGNAL_WORDS` hit as small talk, and instructs the local model to "mirror
+   exactly what was sent." "Book it for tomorrow." (4 words, no domain-signal word —
+   `book` isn't in that list) fell into this bucket and got echoed back verbatim
+   before ever reaching the conversational pipeline. `translate`/`fix` *are* in
+   DOMAIN_SIGNAL_WORDS, so cl002/cl004 were already skipping M1 — this is why the
+   bug looked partial rather than total across the 4 clarify cases.
+
+**Fix — new file `src/CrucibleEngine/conversationalClarify.ts`:**
+Pure, deterministic, zero-inference — same philosophy as the abstain/false-premise
+checks, extended to the "under-specified" failure mode. Three narrow detectors:
+- action verb (book/schedule/translate/send/order/buy/...) + a bare dangling pronoun
+  object (it/this/that/them) in a short command → ask what it refers to.
+- immediate-tense weather question with no location given → ask which location.
+  Deliberately excludes far-future/impossible-horizon phrasing (digits, "in exactly
+  N days") so it never intercepts a006-style abstain cases — those must still abstain,
+  not ask for a location that wouldn't help anyway.
+- "fix/solve/debug/resolve the bug/issue/error" with no file path, error text, or
+  code identifier → ask which bug/file.
+
+Wired in at TWO points originally (before M1's casual short-circuit, and again before
+`solveNonCodeTurn`); the second was provably dead code once the first was in place
+(strict subset of the same guard condition, same message, no way to reach it with
+`needsClarification` still true) — removed it, kept only the M1-level check.
+
+**Verification (empirical, not assumed):**
+- Pure-function check against all 50 CONVOEDGE_50 prompts (no server): exactly the 4
+  `cl0xx` prompts fire, zero false positives on the other 46 — including a006
+  ("weather... in exactly 100 days"), which stays correctly unintercepted (still
+  reaches the FM's own abstain behavior).
+- Live N=1 full CONVOEDGE_50 sweep on `:3011` strict, post-fix:
+  - **clarify: 1.00 / 1.00 (was 0.500 ± 0.000)** — all 4 pass, ~0ms each (short-circuits
+    before any model call).
+  - general 1.00, abstain 1.00, false-premise 1.00, reasoning 1.00 — all held their
+    prior clean bands exactly.
+  - definition 0.88 — the one miss is d005, the same pre-existing surface-form flip
+    already documented in the prior session's log, not a new regression (only
+    definition-path-independent code changed this session).
+  - explain 0.50 — unchanged, still parked, not touched.
+- Re-confirmed live after removing the dead second insertion — all 4 cl0xx still pass.
+
+**Not done / open for next session:** N=5 confirmation sweep (this session ran N=1
+live + the full-50 pure-function check, per the standing "isolate then confirm"
+pattern, but hasn't yet repeated the live sweep 5x the way the daemon-timeout fix did
+before updating the baseline of record). Composite baseline not yet formally updated —
+do that after an N=5 run. explain category and Frontier-SWE-gap phase remain parked,
+untouched this session.
+
+---
+
 ## SESSION LOG — 2026-07-02 (daemon-timeout fix — IMPLEMENTED, VERIFIED, CLOSED)
 
 **Mandate: implement fix (d) mislabeled error string + fix (a) FM_TIMEOUT_MS 30s→45s,
