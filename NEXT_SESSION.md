@@ -17,19 +17,27 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-03, after commit `0516961` + uncommitted follow-ups: filterModule's hidden-suite esbuild-crash fix, and a runtime-verified closure of the simple-triage strict-mode Groq-leak check)
+## CURRENT STATE (last updated 2026-07-03, after commit `cd07758`: protected-file tool-layer guard, on top of `c7f0a43` (prior session's uncommitted filterModule/esbuild + doc fixes) and `0516961`)
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-1. **`filterModule` benchmark task is flaky under the live agent (NEW, most concrete lead).**
-   5 fires this session, only 2 clean. Three distinct failure modes recur: overwrites the
-   "do not modify" `users.ts` scaffold file (2/5), produces 2 wrong logic results (1/5), fails
-   to produce `src/filter.ts` at all (1/5). Explicit "do NOT modify" line added to the task
-   prompt did NOT fix it (3/3 RED on retest after the prompt change). This is a real
-   reliability gap on repo-context tasks (existing files + new file + a constraint to respect),
-   not a quick bug — matches the queued Frontier-SWE-gap phase (Workstream 1 critic tooling /
-   Workstream 2 ambiguity surfacing) better than a one-off fix. Full detail in ROADMAP.md
-   CHANGE LOG 2026-07-03 entry.
+1. **`filterModule` overwrite failure mode — ROOT-CAUSED AND FIXED this session (was item 1,
+   partially closed).** The agent overwriting `users.ts` was never a prompt-wording problem:
+   `write_file`/`edit_file`/`apply_patch` (`src/CrucibleEngine/tools/registry.ts`) had NO
+   tool-layer concept of a protected file — `write_file` blindly `fs.writeFileSync()`s
+   anything, no existence check, no confirmation. Added `protectedFileReason()`: any file
+   whose first line matches `do not modify`/`read-only` is now refused by all three mutating
+   tools. Verified directly against the registry (refuses marked files, no false positives on
+   unmarked/new files) AND via 3 live `smoke:code filterModule` fires post-fix — the overwrite
+   never recurred (grep confirms the guard never even had to fire, i.e. no attempt was made).
+   **Still open:** the other two failure modes from before (wrong logic 1/5, missing file
+   entirely) are NOT addressed by this fix and are confounded right now by a degraded
+   free-tier pool (GPT OSS 120B/Llama 3.3 70B/Qwen3 32B all circuit-tripped mid-run, agent
+   fell back to a much weaker GPT OSS 20B and produced no file twice in a row) — see
+   [[crucible-l2-pool-dependency]]. Re-run `filterModule` a handful of times once those
+   circuits reset (Llama 3.3 70B cooldown was 24h as of this session) before drawing
+   conclusions about remaining agent-reliability vs. pool-health. Full detail in ROADMAP.md
+   CHANGE LOG 2026-07-03 "(cont. 2)" entry.
 2. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
    competing agent-execution stacks exist: `agent/planner.ts` + `agent/loop.ts` (live path) vs
    `router/capabilityRouter.ts` → `decompositionDag.ts` → `nodeExecutor.ts` (proven only in
@@ -48,6 +56,11 @@
    open work; do not loosen `PREMISE_RX` or add a no-evidence FM fallback (reopens fp001-004).
 
 **Done this session (2026-07-03, this update):**
+- Committed the previous session's uncommitted work as `c7f0a43` (filterModule esbuild fix +
+  prompt do-not-modify line + doc updates — see below, carried over from the prior pass).
+- **Root-caused and fixed the filterModule overwrite failure mode at the tool layer** —
+  `protectedFileReason()` guard added to `write_file`/`edit_file`/`apply_patch` in
+  `registry.ts`, committed `cd07758`. See item 1 above and ROADMAP.md for full detail.
 - `verify.ts` false-positive on "nothing to check" — fixed, committed `0516961`. Added
   `unverified?: boolean` to `VerifyResult`, true only on the nothing-runnable branch, threaded
   into the emitted debug event. `passed` left `true` (no loop-thrash change). Confirmed via

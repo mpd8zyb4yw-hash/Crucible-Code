@@ -1810,6 +1810,46 @@ capability improvement).
 GREEN across all runs this session (no regression from the `verify.ts`/`loop.ts` change).
 `filterModule` variance described above is a separate, pre-existing-but-newly-surfaced issue.
 
+### 2026-07-03 (cont. 2) — filterModule overwrite failure mode: tool-layer root cause found + fixed
+
+**Root cause of failure mode (a) above (agent overwrites `users.ts`) — found.** Traced the
+agent's file tools (`write_file`/`edit_file`/`apply_patch` in
+`src/CrucibleEngine/tools/registry.ts`): there was **no tool-layer concept of a protected
+file at all**. `write_file` calls `fs.writeFileSync()` unconditionally — no existence check,
+no diff, no confirmation. `edit_file`/`apply_patch` require matching existing content first,
+but that's a coincidental speed bump, not a "do not modify" check. The only two gates in the
+whole tool layer are (1) `deniedTools` per archetype (blocks a tool *name* for a whole
+archetype, not a file) and (2) `ctx.allowMutation` (blanket on/off for all mutating tools).
+This is *why* the prompt-line fix from the previous entry did nothing: there was nothing
+downstream of the model to catch it if the model didn't comply.
+
+**Fixed:** added `protectedFileReason()` to `registry.ts` — if a file's first line matches
+`/do not modify|do not edit|read-?only/i` (the exact convention the filterModule scaffold and
+other existing-code comments already use), `write_file`/`edit_file`/`apply_patch` now refuse
+the call and tell the agent to write elsewhere instead of silently complying. This is a
+general tool-layer safety fix (protects any file with that marker, in any task), not a
+benchmark-specific patch.
+
+**Verified two ways:**
+1. Direct registry test (bypasses live-LLM flakiness): calling `write_file`/`edit_file`
+   against a marked file → refused; against an unmarked file → succeeds; creating a brand
+   new file → succeeds. No false positives.
+2. 3 live `smoke:code filterModule` fires post-fix: 1 GREEN, 2 RED. Zero occurrences of the
+   overwrite failure mode (grep for "Refusing to overwrite/edit" across all 3 runs: never
+   fired, confirming the agent didn't attempt it — consistent with the guard having closed
+   that path rather than merely going untested). The 2 REDs were a *different* failure mode
+   (`src/filter.ts` missing entirely) with the driver log showing `GPT OSS 120B` /
+   `Llama 3.3 70B` / `Qwen3 32B` all circuit-tripped on 429s within the same run, falling back
+   to the much weaker `GPT OSS 20B`. That's the already-tracked free-tier pool degradation
+   issue, not this bug — see the L2 pool-dependency note. Not re-litigated further this
+   session.
+
+**Still open:** failure modes (b) wrong logic and (c) missing file are not addressed by this
+fix and may still recur, especially under a degraded pool. Recommend re-running
+`filterModule` a handful of times once the OpenRouter/Groq free-tier circuits have reset
+(Llama 3.3 70B cooldown was 24h as of this session) to get a cleaner reliability read
+decoupled from pool health.
+
 ### 2026-06-29 (cont.) — synthDriver.ts: research/factual turns now offline-routed
 
 **Gap closed:** `makeOfflineDriveTurn` previously threw `OfflineEscalateError` immediately
