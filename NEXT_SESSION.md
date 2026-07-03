@@ -3,6 +3,158 @@
 > This document is a handoff for the next engineering session.
 > Read ROADMAP.md first for full architectural context.
 > These are the gaps that matter most, in priority order.
+>
+> **STANDING RULE (added 2026-07-03, keep this at the top forever):** the section immediately
+> below — CURRENT STATE — is the only part of this file guaranteed to be current. It must be
+> REPLACED (not appended to) at the end of every session, before that session ends. Everything
+> under "SESSION LOG" further down is a dated archive: useful for history/rationale, but NOT to
+> be treated as the current open-items list. This rule exists because a stale, pre-session-N
+> snapshot of this file has already been fed as live context to a later session at least once
+> (2026-07-03) — the fix is a summary block that gets overwritten, not just more appending.
+> If you are reading this file and it does NOT have a CURRENT STATE section immediately below,
+> or that section's "last updated" commit/date looks old relative to `git log -1`, treat it as
+> untrustworthy and re-derive open items from the SESSION LOG archive and a live repro instead.
+
+---
+
+## CURRENT STATE (last updated 2026-07-03, after commit `9f400a0`, by the session that fixed the ROADMAP.md Tier 0-2 claim + the verify.ts false-positive)
+
+**Open threads, no priority order implied — pick based on what the user asks for:**
+
+1. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
+   competing agent-execution stacks exist: `agent/planner.ts` + `agent/loop.ts` (what a live
+   `/api/chat` request actually runs) vs `router/capabilityRouter.ts` → `decompositionDag.ts` →
+   `nodeExecutor.ts` (built, proven via `prove:all`, but NOT imported by `server.ts` — verified
+   live by grep, 2026-07-03). Someone has to decide: wire the second stack into the live path
+   (replace or merge with the first), or mark it experimental/parked. Documented in ROADMAP.md's
+   build-order section as of this update. Don't build more on either stack until this is settled.
+   **Not started this session** — explicitly deferred pending user direction, per the doc's own
+   instruction not to commit to an architecture call without sign-off.
+2. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
+   ("Solar-powered refrigerator" Wikipedia article over the general one) for "how does a
+   refrigerator keep food cold?". Root-caused 2026-07-03 (see SESSION LOG below); not a
+   cache-poisoning issue (ruled out same session); needs its own scoping conversation, bigger
+   than a quick fix.
+3. **e005 (explain category) remaining gap** — post-truncation-fix, the grounded source is
+   accurate but framed around water mass-balance rather than evaporation/condensation. A
+   retrieval-content-relevance gap, distinct from the truncation bug already fixed in `311ae9f`.
+4. **e003 (explain category)** — NOT a bug. Accepted strict-mode corpus-coverage tradeoff,
+   decided 2026-07-01. Do not "fix" by loosening `PREMISE_RX` or adding a no-evidence FM
+   fallback — that reopens fp001-004. Listed here only so it isn't mistaken for open work.
+5. **Frontier-SWE-gap phase gate** — ROADMAP.md's gating condition (timeout verification,
+   clarify wiring, false-premise/trust diagnosis) no longer names an unresolved item verbatim as
+   of 2026-07-03 (timeout and clarify are closed; premise-gate hardened same session). Whether
+   that means the gate is now open is a judgment call for the user, not decided yet.
+
+**`verify.ts` false-positive on "nothing to check" — FIXED this session (uncommitted as of this
+write-up).** Previously returned `{passed: true, signal: 'none', report: 'No runnable check
+detected.'}` with no way to distinguish it from a genuine pass. Added a `unverified?: boolean`
+field to `VerifyResult` (`agent/loop.ts`), set `unverified: true` only on the nothing-ran branch
+(`agent/verify.ts:54`), and threaded it into the `emit({type:'verify', ...})` debug event so
+`/api/debug/history` now shows this state explicitly instead of a bare `passed:true`. Deliberately
+did NOT flip `passed` to `false` — that would make the agent loop retry/thrash trying to "fix" a
+check that doesn't exist. `passed` still controls loop accept/retry (unchanged behavior);
+`unverified` is the new, honest signal for any consumer (debug history, future audits) deciding
+whether a `[x]` mark backed by an agent run was actually checked. Verified live: ran
+`makeVerifier().verify()` against an empty scratch dir (no package.json/tests/py files) via tsx,
+confirmed output is `{passed:true, signal:'none', report:'No runnable check detected.',
+unverified:true}`. `npx tsc --noEmit` clean on the touched files. Two other unrelated
+`VerifyResult` interfaces exist (`domainVerifiers.ts`, `apply/applyLayer.ts`) — confirmed
+separate types, not touched. Did not re-run the full `smoke:code` benchmark (model-call-heavy;
+the change is additive/type-safe with no control-flow change, so risk is low) — flag this as the
+one thing NOT independently confirmed via a full agent-loop repro, only via direct unit-level call.
+
+**Docs discipline note:** the CLAUDE.md instructions injected into a prior turn of this same
+session were a stale, pre-session-N snapshot of this file (missing the 2026-07-02 and earlier
+2026-07-03 session logs). Fixed going forward — see STANDING RULE above and the matching note
+added to `CLAUDE.md`. Also fixed ROADMAP.md's Tier 0-2 `[x]` claims to say "built + proven in
+isolation, not live-wired" instead of implying live end-to-end proof (see item 1 above).
+
+**Composite benchmark baseline as of last confirmed sweep (2026-07-03, N=3 post premise-gate
+fix):** pass 0.920 ± 0.000, cov not restated this update — see SESSION LOG entry below for the
+full per-category breakdown before treating this number as current. Not re-run after the
+verify.ts fix (no reason to expect it moves the composite — the fix only affects the coding-agent
+debug signal, not the conversational benchmark suite these numbers come from).
+
+---
+
+## SESSION LOG — 2026-07-03 (N=5 confirmation + premise-gate explain-category fix — IMPLEMENTED, VERIFIED, PARTIALLY CLOSED)
+
+**Mandate: run the N=5 confirmation sweep parked from last session, then work down the
+open-items list (explain category / Frontier-SWE-gap) as far as comfortable, flagging
+decision points rather than guessing priorities.**
+
+**N=5 confirmation sweep — DONE, cl001/cl003 fix CONFIRMED ROBUST:**
+- clarify **1.00 / 1.00 across all 5 runs**, zero flips — not a single-run fluke.
+- Composite baseline (pre-fix, N=5): pass **0.924 ± 0.008** [0.92, 0.94], cov **0.942 ± 0.004**.
+- All other categories held their clean bands (general/definition/abstain/reasoning/
+  false-premise all 1.000 ± 0.000). Only `explain` (0.526 ± 0.052) and one flipper
+  (e007, GPS wording variance) kept the composite off a perfect 1.0.
+- Infra note: the sandbox environment reset mid-run once (port 3001, FM daemon, and all
+  `/tmp` scratch state wiped simultaneously, mid-background-process). Git tree was
+  untouched. Recovered by restarting the FM daemon (`local-inference/crucible-fm-daemon`,
+  not yet a launchd service — see [[crucible-track-s-local-inference]]) and the server,
+  then relaunching the sweep from scratch. If this recurs, treat any long
+  background/scheduled-wakeup run as possibly needing a full respawn, not just a log check.
+
+**Root-caused explain-category always-fail (e002, e005) — NOT what prior sessions assumed:**
+Prior handoffs called this "pre-existing DAG-mangles-explainers." Actual mechanism, traced
+via `/api/debug/history` on live fires:
+- `checkPremiseGrounding` (`researchDag.ts` — the "Bug A" false-premise fix from an earlier
+  session) ran **unconditionally on every research-DAG answer**, not just questions with an
+  embedded false premise. On ordinary "explain how X works" questions, the on-device FM
+  still gets asked "does the verified fact contradict this question's presupposition?" and
+  answers yes with high confidence — hallucinating a contradiction where none exists.
+- **e005** ("Explain the water cycle"): a good, complete, grounded 677-char answer was
+  discarded in favor of the FM's "correction," which cut off mid-word.
+- **e002** ("How does a refrigerator keep food cold?"): the FM's "correction" directly
+  negated its own cited source — "Solar-powered refrigerators do **not** keep food cold"
+  while the quoted evidence says they can. Confidently wrong AND self-contradicting.
+- e003 ("Why is the sky blue?") is unrelated — genuine leaf-level abstain (no source found),
+  the already-accepted strict-mode corpus-coverage tradeoff from 2026-07-01. Not a bug.
+
+**Fix — `isPremiseBearing` gate, committed `311ae9f`:**
+New primitive in `leafPrimitives.ts` (Primitive 3a) classifies the question as
+CLAIM (myth/trivia-shaped, checkable assertion about a named subject — reaches the
+existing correction path) or MECHANISM (explaining a well-established phenomenon — skips
+it, keeps the grounded synthesis untouched). Wired into `researchDag.ts` ahead of
+`checkPremiseGrounding`.
+
+**Verified over 3 fresh full CONVOEDGE_50 sweeps post-fix:** zero regressions.
+false-premise held **1.00 ± 0.000** across all 3 (fp001-4 untouched — they're
+CLAIM-classified and still reach the correction path). All other categories unchanged.
+Composite passRate rock-stable at **0.920 ± 0.000** across the 3 runs. The truncation and
+self-contradiction bugs are gone — confirmed by direct re-fire, not just aggregate score.
+
+**Cache-poisoning side-investigation (e002) — dead end, real finding:**
+`.crucible/research-claims.json` had a stale claim keyed to "how does a refrigerator keep
+food cold" mapping to an off-topic *solar-powered*-refrigerator fact — looked like classic
+cache poisoning. Purged it (backed up first to `/tmp/research-claims.json.bak-preclean`,
+user-confirmed before the destructive write — the auto-mode safety classifier correctly
+blocked two earlier attempts as under-authorized). **Did not fix e002**: fresh live
+retrieval reproduces the identical mismatch. The real root cause is the web-search/ranking
+layer itself consistently preferring the "Solar-powered refrigerator" Wikipedia article over
+the general one for this query — a retrieval-ranking issue, not a cache/data issue. Bigger
+and differently-scoped than what was authorized this session; explicitly NOT investigated
+further — flagged for a future session to pick up deliberately.
+
+**Current state (post-session, N=1 spot-check):** overall passRate 0.92–0.94 depending on
+run (e007 remains a wording-variance flipper, not a regression). explain 0.5–0.63 (e001,
+e004, e006, e008 clean; e002/e003/e005 fail for three now well-characterized, distinct
+reasons — see above).
+
+**STILL OPEN (unchanged from before, plus one new item):**
+- e002 — retrieval/web-search ranking prefers an over-specific source. NEW finding this
+  session, not previously diagnosed at this depth. Needs its own scoping conversation.
+- e003 — accepted strict-mode corpus-coverage tradeoff (2026-07-01 decision), unchanged.
+- e005's remaining gap (post-fix) — the grounded source is accurate but framed around
+  water mass-balance rather than evaporation/condensation; a retrieval-content-relevance
+  gap, distinct from the truncation bug just fixed.
+- Frontier-SWE-gap phase — still untouched. Note: ROADMAP.md's gating condition
+  ("timeout verification/regression, clarify wiring, and any still-open false-premise/trust
+  diagnosis") no longer names an unresolved item verbatim — timeout and clarify are closed,
+  and today's fix hardened the false-premise/trust path further. Whether that means the gate
+  is now open is a judgment call left to the user, not decided here.
 
 ---
 

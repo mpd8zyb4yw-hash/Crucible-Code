@@ -15,3 +15,10 @@ Non-negotiables (full detail in ROADMAP.md):
 
 After completing work, append a dated entry to the CHANGE LOG in `ROADMAP.md` and cross off any
 items you finished.
+
+**Before ending any session, also update `NEXT_SESSION.md`'s CURRENT STATE section** (replace
+it, don't just append below it) so it lists exactly what's open right now. A stale copy of that
+file has already been fed as live context to a later session once (2026-07-03) and caused a full
+session to start from an outdated open-items list — this is the durable fix, not a one-off.
+Session logs further down in that file are historical archive; only the CURRENT STATE block at
+the top is guaranteed fresh, and only if every session actually rewrites it.

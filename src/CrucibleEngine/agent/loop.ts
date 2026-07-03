@@ -33,6 +33,11 @@ export interface VerifyResult {
   hints?: string[]
   /** Set by the verifier when healing should stop (heal cap hit or repeated failure fingerprint). */
   escalate?: boolean
+  /** True only when signal === 'none': nothing was actually run to produce `passed`.
+   *  `passed` stays true so the loop doesn't thrash retrying a check that doesn't exist —
+   *  but callers/consumers (debug history, audits) must not read `passed: true` here as
+   *  "verification succeeded." It means "nothing was verified." */
+  unverified?: boolean
 }
 
 export interface AgentLoopOpts {
@@ -423,7 +428,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     // No tool calls — model thinks it's done. Verify before accepting.
     if (verify) {
       const v = await verify(turn.text, ctx)
-      emit({ type: 'verify', passed: v.passed, signal: v.signal, report: v.report.slice(0, 1500), escalate: v.escalate ?? false })
+      emit({ type: 'verify', passed: v.passed, signal: v.signal, report: v.report.slice(0, 1500), escalate: v.escalate ?? false, unverified: v.unverified ?? false })
       if (!v.passed && v.escalate) {
         // Heal cap hit or same failure repeating — stop honestly instead of thrashing.
         const honest = `Verification is still failing after repeated fix attempts (${v.signal}).\n\nLast report:\n${v.report.slice(0, 2000)}\n\nModel's last summary:\n${turn.text}`

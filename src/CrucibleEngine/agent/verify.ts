@@ -51,7 +51,7 @@ export function makeVerifier(opts: { command?: string } = {}): Verifier {
         }
         if (!plan) return { passed: true, signal: 'lint', report: lint.output.slice(0, 2000) }
       }
-      if (!plan) return { passed: true, signal: 'none', report: 'No runnable check detected.' }
+      if (!plan) return { passed: true, signal: 'none', report: 'No runnable check detected.', unverified: true }
 
       // For TS projects, ALSO typecheck FIRST — with a generated LENIENT config (the exact
       // options the coding audit uses), NOT the agent's own (often strict tsc --init) one.
