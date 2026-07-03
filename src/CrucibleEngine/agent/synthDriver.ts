@@ -195,17 +195,45 @@ function isEditIntent(goal: string): boolean {
 }
 
 /**
- * Extract all TS/JS file paths mentioned in the goal, in order of appearance.
- * Primary (implementation) file is first; test/index files come after.
+ * Paths named inside a "do not modify" / "don't edit" clause of the goal text — these are
+ * existing, protected files mentioned for context only and must never be picked as a write
+ * target. Mirrors the tool-layer PROTECTED_MARKER_RE convention in tools/registry.ts, but
+ * matches the natural-language goal phrasing ("Do NOT modify X and Y") rather than a file's
+ * first-line comment.
+ */
+function extractProtectedGoalPaths(goal: string): Set<string> {
+  const protectedPaths = new Set<string>()
+  // Capture lazily up to an em-dash or a sentence-ending period (period + space + capital
+  // letter, or end of string) rather than the next literal '.' — a bare [^.]* boundary would
+  // truncate at the first '.' inside a file extension like "src/types.ts" itself.
+  const clauseRe = /\b(?:do\s*not|don'?t)\s*(?:modify|edit)\s+([\s\S]*?)(?=—|\.\s+[A-Z]|\.\s*$|$)/gi
+  let m: RegExpExecArray | null
+  while ((m = clauseRe.exec(goal))) {
+    for (const p of m[1].matchAll(/\b((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs))\b/g)) {
+      protectedPaths.add(p[1])
+    }
+  }
+  return protectedPaths
+}
+
+/**
+ * Extract all TS/JS file paths mentioned in the goal, in order of appearance, EXCLUDING
+ * paths the goal explicitly marks as protected ("do not modify"). Primary (implementation)
+ * file is first; test/index files come after. Without the exclusion, a prompt that lists
+ * existing protected files before the actual new target (a natural way to phrase "don't
+ * touch X, only add Y") would wrongly select the protected file as goalPaths[0] — the write
+ * target the whole S0-S6 state machine keys off of.
  */
 function extractGoalPaths(goal: string): string[] {
+  const protectedPaths = extractProtectedGoalPaths(goal)
   const all = Array.from(
     goal.matchAll(/\b((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs))\b/g),
     m => m[1],
   )
-  // Dedupe preserving order, skip obvious doc references like tsconfig.json
+  // Dedupe preserving order, skip obvious doc references like tsconfig.json, skip protected.
   const seen = new Set<string>()
   return all.filter(p => {
+    if (protectedPaths.has(p)) return false
     if (seen.has(p)) return false
     seen.add(p)
     return true
@@ -324,6 +352,21 @@ function parseCurrentState(messages: Array<Record<string, unknown>>): CurrentSta
 
 // ── Synthesize code for a target file ────────────────────────────────────────
 
+/**
+ * Strip "Exact public API (<path>):" contract blocks that describe a file OTHER than
+ * targetPath. deriveTests/derivePropertyTests (synth/derive.ts) scan the full spec text
+ * for `export function/class/const Name` regardless of which file is being synthesized —
+ * so a secondary file's spec (e.g. a self-test) that still contains the primary file's
+ * full API block gets held to the PRIMARY file's export contract (e.g. src/index.ts
+ * expected to itself export filterUsers). Keeps only the block matching targetPath, if any.
+ */
+function stripForeignApiBlocks(goal: string, targetPath: string): string {
+  return goal.replace(
+    /Exact public API \(([^)]+)\):\n(?:[ \t]+.*\n?)*/g,
+    (block, path) => (path.trim() === targetPath ? block : ''),
+  )
+}
+
 async function solveCodeWrite(
   targetPath: string,
   state: CurrentState,
@@ -340,10 +383,12 @@ async function solveCodeWrite(
     ? `\n\nNote: the implementation file ${state.goalPaths[0]} has already been written. Write ${targetPath} to test/exercise it per the original goal.`
     : ''
 
+  const goalForSpec = isSecondary ? stripForeignApiBlocks(state.goal, targetPath) : state.goal
+
   const spec = state.existingFileContent && !isSecondary
     ? buildEditSpec(state.goal, targetPath, state.existingFileContent, errors)
     : [
-        state.goal,
+        goalForSpec,
         errors ? `\nPrevious errors to fix:\n${errors}` : '',
         primaryNote,
         `\n\nTarget file: ${targetPath}`,
