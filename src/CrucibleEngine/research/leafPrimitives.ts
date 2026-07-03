@@ -187,6 +187,57 @@ function parseContradictionCheck(raw: string): ContradictionCheck {
   return { contradicts, explanation, confidence }
 }
 
+// ── Primitive 3a: isPremiseBearing (FM-guided classification gate) ──────────
+// premiseGrounding (3b below) asks the FM to identify AND correct a false premise
+// in one shot — a compound task that misfires on ordinary "explain how X works"
+// questions with no embedded claim to check, producing a hallucinated "correction"
+// that overwrites an otherwise-correct grounded answer (observed on explain-category
+// questions like "explain the water cycle" and "how does a refrigerator keep food
+// cold" — the FM invented a contradiction where none existed). This gate runs FIRST
+// and asks a narrower, easier question: does this question presuppose a specific,
+// checkable factual claim about a named subject/event (myth/trivia-shaped, like "why
+// did Einstein fail math" or "why is X the only Y"), or does it ask to explain the
+// general mechanism of a real, well-established phenomenon (like "how does a
+// refrigerator work" or "why is the sky blue")? Only the former should ever reach
+// premiseGrounding's correction-generation step.
+
+export interface PremiseRiskCheck {
+  bearsClaim: boolean
+  confidence: number
+}
+
+const PREMISE_RISK_SYSTEM =
+  'Classify the QUESTION into exactly one of two types.\n' +
+  'CLAIM: the question presupposes a specific, checkable factual claim about a named ' +
+  'subject or event (a trivia/myth-shaped question like "why did X fail Y" or "why is ' +
+  'X the only Y") — the claim itself could turn out to be true or false.\n' +
+  'MECHANISM: the question asks to explain the general mechanism, process, or cause of ' +
+  'a real, well-established phenomenon (e.g. "how does X work", "why does X happen", ' +
+  '"explain X") — there is no specific disputable claim embedded, just a request to ' +
+  'explain something already known to be true.\n' +
+  'Reply in this EXACT format (2 lines, nothing else):\n' +
+  'TYPE: CLAIM|MECHANISM\n' +
+  'CONFIDENCE: <0.1-1.0>'
+
+export async function isPremiseBearing(
+  question: string,
+  fmCall: FmCall = defaultFmCall,
+): Promise<PremiseRiskCheck> {
+  const raw = await fmCall(PREMISE_RISK_SYSTEM, `QUESTION: ${question.slice(0, 200)}`, 12000)
+  const lines = raw.split('\n').map(l => l.trim()).filter(Boolean)
+  let bearsClaim = false
+  let confidence = 0.5
+  for (const line of lines) {
+    if (/^TYPE:/i.test(line)) {
+      bearsClaim = /claim/i.test(line.replace(/^TYPE:\s*/i, ''))
+    } else if (/^CONFIDENCE:/i.test(line)) {
+      const n = parseFloat(line.replace(/^CONFIDENCE:\s*/i, ''))
+      if (!isNaN(n)) confidence = Math.max(0.1, Math.min(1.0, n))
+    }
+  }
+  return { bearsClaim, confidence }
+}
+
 // ── Primitive 3b: premiseGrounding ───────────────────────────────────────────
 // A question can PRESUPPOSE a claim ("When did the US buy Alaska from Canada?"
 // presupposes "the US bought Alaska from Canada"; "Why is the Moon made of cheese?"

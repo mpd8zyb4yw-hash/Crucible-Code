@@ -36,7 +36,7 @@ import { writeScratch, buildScratchContext, clearScratch } from '../agent/taskSc
 import { debugBus } from '../debug/bus'
 import {
   snippetAnswers, decomposeQuestion, groundedSynthesis, buildSearchQuery,
-  readReliabilityVote, pingLocalFm, checkPremiseGrounding, type FmCall, defaultFmCall,
+  readReliabilityVote, pingLocalFm, checkPremiseGrounding, isPremiseBearing, type FmCall, defaultFmCall,
 } from './leafPrimitives'
 import {
   verifyClaim, filterGroundedSentences,
@@ -512,15 +512,23 @@ export async function* runResearchDag(
     // answer with the evidence-grounded correction. This is a verification/control-flow
     // gate, not a "be skeptical" instruction: the FM is a classifier here, and the
     // correction text comes from the verified facts.
+    //
+    // Gated by isPremiseBearing first (Bug: explain-category regression): running the
+    // full check unconditionally on every question made the FM invent contradictions
+    // for ordinary "explain how X works" questions with no embedded claim, overwriting
+    // good synthesized answers. Only myth/trivia-shaped questions reach the full check.
     let premiseCorrection = ''
     try {
-      const premise = await checkPremiseGrounding(question, factsList, fmCall)
-      if (premise.contradicted && premise.confidence >= 0.6) {
-        premiseCorrection = premise.correction.trim()
-        debugBus.emit('pipeline', 'research_premise_corrected', {
-          question: question.slice(0, 80), confidence: premise.confidence,
-          correction: premiseCorrection.slice(0, 120),
-        }, { severity: 'success' })
+      const risk = await isPremiseBearing(question, fmCall)
+      if (risk.bearsClaim) {
+        const premise = await checkPremiseGrounding(question, factsList, fmCall)
+        if (premise.contradicted && premise.confidence >= 0.6) {
+          premiseCorrection = premise.correction.trim()
+          debugBus.emit('pipeline', 'research_premise_corrected', {
+            question: question.slice(0, 80), confidence: premise.confidence,
+            correction: premiseCorrection.slice(0, 120),
+          }, { severity: 'success' })
+        }
       }
     } catch (e: any) {
       debugBus.emit('pipeline', 'research_premise_check_fail', {
