@@ -1842,7 +1842,15 @@ app.delete('/api/checkpoint', (req, res) => {
 })
 
 app.get('/api/config', (_req, res) => {
-  res.json({ parallelCount: PIPELINE_CONFIG.parallelCount, wildcardCount: PIPELINE_CONFIG.wildcardCount })
+  res.json({
+    parallelCount: PIPELINE_CONFIG.parallelCount,
+    wildcardCount: PIPELINE_CONFIG.wildcardCount,
+    // The server reads CRUCIBLE_OFFLINE from its OWN process env at startup — a client
+    // setting this var on itself (e.g. a benchmark script) has no effect on this value.
+    // Exposed so callers can verify the running server is actually in the mode they think
+    // it's in, instead of silently testing whatever mode happened to be live.
+    offlineMode: process.env.CRUCIBLE_OFFLINE ?? '1',
+  })
 })
 
 // ── /api/waitlist — waitlist + probation status ───────────────────────────────

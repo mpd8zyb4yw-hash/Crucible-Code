@@ -233,6 +233,11 @@ from './users', passes the result to filterUsers with various opts, and confirms
 interface FireResult {
   done: boolean; finalText: string; agentError: string | null
   iters: number; selfTestPassed: boolean | null; events: number; elapsedMs: number
+  // 'catalog'  — server matched a proven skill-catalog primitive, zero model inference.
+  // 'generated' — no catalog match; the task actually stressed the FM/model generation path.
+  // A task can only ever be a valid signal on generative capability when this is 'generated' —
+  // 'catalog' GREENs prove catalog coverage, not the offline agent's ability to write new code.
+  synthPath: 'catalog' | 'generated' | null
 }
 async function fireTask(task: Task, dir: string, token: string): Promise<FireResult> {
   const t0 = Date.now()
@@ -240,6 +245,7 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
   const timer = setTimeout(() => ctrl.abort(), PER_TASK_TIMEOUT_MS)
   let done = false, finalText = '', agentError: string | null = null
   let iters = 0, events = 0, selfTestPassed: boolean | null = null
+  let synthPath: 'catalog' | 'generated' | null = null
   try {
     const res = await fetch(`${API}/api/chat`, {
       method: 'POST',
@@ -267,6 +273,8 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
           if (ev.type === 'verify' && typeof ev.passed === 'boolean') selfTestPassed = ev.passed
           if (ev.type === 'agent_error') agentError = String(ev.error ?? 'agent_error').slice(0, 200)
           if (ev.type === 'final' && typeof ev.text === 'string') { finalText = ev.text; done = true }
+          if (ev.type === 'synth_match') synthPath = 'catalog'
+          if (ev.type === 'synth_miss') synthPath = 'generated'
         } catch { /* keepalive / non-JSON */ }
       }
     }
@@ -274,7 +282,7 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
     if (e?.name !== 'AbortError') agentError = String(e?.message ?? e).slice(0, 200)
     else agentError = `timeout after ${(PER_TASK_TIMEOUT_MS / 1000).toFixed(0)}s`
   } finally { clearTimeout(timer) }
-  return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0 }
+  return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0, synthPath }
 }
 
 // ── audit: checks the agent never saw ─────────────────────────────────────────────
@@ -371,6 +379,7 @@ async function rubricScore(dir: string): Promise<number | null> {
 interface TaskScore extends AuditResult {
   id: string; title: string; fired: boolean; agentError: string | null
   selfTestPassed: boolean | null; rubric: number | null; iters: number; elapsedMs: number
+  synthPath: 'catalog' | 'generated' | null
 }
 
 async function serverUp(token: string): Promise<boolean> {
@@ -378,6 +387,25 @@ async function serverUp(token: string): Promise<boolean> {
     const res = await fetch(`${API}/api/diag`, { signal: AbortSignal.timeout(4000), headers: { 'Cookie': `crucible_session=${token}` } })
     return res.ok
   } catch { return false }
+}
+
+// This benchmark is an HTTP client to an already-running, separately-launched server
+// process. CRUCIBLE_OFFLINE set on THIS process (e.g. via `npm run smoke:code:offline`)
+// has zero effect on that server's routing — the server reads its own env once, at its
+// own startup. Silently firing tasks at a server in the wrong mode produced a whole
+// session's worth of meaningless "rate-limit exhaustion" data before this check existed
+// (the real bug turned out to be an offline-driver capability gap, not free-tier quota —
+// see ROADMAP.md). Fetch what the live server is actually running and fail loud on mismatch.
+async function liveOfflineMode(token: string): Promise<string> {
+  const res = await fetch(`${API}/api/config`, { signal: AbortSignal.timeout(4000), headers: { 'Cookie': `crucible_session=${token}` } })
+  const cfg = await res.json() as { offlineMode?: string }
+  return cfg.offlineMode ?? '1'
+}
+
+function describeMode(mode: string): string {
+  return mode === 'strict' ? 'offline-only, no external fallback'
+    : mode === '0' ? 'external-only, offline brain opted out'
+    : 'offline-first with external fallback (production default)'
 }
 
 function loadPrevious(): Record<string, TaskScore> {
@@ -401,6 +429,19 @@ async function main() {
     console.error(`\nFAIL — server not reachable/authorized at ${API}. Start it:\n  nohup npx tsx server.ts > /tmp/crucible-server.log 2>&1 < /dev/null & disown`)
     process.exit(2)
   }
+
+  const requestedMode = process.env.CRUCIBLE_OFFLINE
+  const liveMode = await liveOfflineMode(token)
+  if (requestedMode && requestedMode !== liveMode) {
+    console.error(
+      `\nFAIL — this script was launched with CRUCIBLE_OFFLINE=${requestedMode}, but that only sets the env of ` +
+      `THIS process. The live server at ${API} is a separate, already-running process and reads CRUCIBLE_OFFLINE ` +
+      `from its OWN env at its own startup — it is actually running in mode "${liveMode}" (${describeMode(liveMode)}). ` +
+      `Restart the server itself with CRUCIBLE_OFFLINE=${requestedMode} in its launch command, then re-run this.`
+    )
+    process.exit(2)
+  }
+  console.log(`Live server offline mode: ${liveMode} (${describeMode(liveMode)})`)
 
   const prev = loadPrevious()
   const scores: TaskScore[] = []
@@ -436,7 +477,8 @@ async function main() {
     const rubric = await rubricScore(frozen)
     const score: TaskScore = {
       id: task.id, title: task.title, fired: fire.done || !!audit.moduleExists, agentError: fire.agentError,
-      selfTestPassed: fire.selfTestPassed, rubric, iters: fire.iters, elapsedMs: fire.elapsedMs, ...audit,
+      selfTestPassed: fire.selfTestPassed, rubric, iters: fire.iters, elapsedMs: fire.elapsedMs,
+      synthPath: fire.synthPath, ...audit,
     }
     scores.push(score)
     console.log(`  [HARD] module exists : ${audit.moduleExists ? 'PASS' : 'FAIL'}`)
@@ -444,6 +486,7 @@ async function main() {
     console.log(`  [HARD] hidden suite  : ${audit.hiddenPassed ? 'PASS' : 'FAIL'}  :: ${audit.hiddenDetail}`)
     console.log(`  [SOFT] self-test     : ${score.selfTestPassed === null ? 'n/a' : score.selfTestPassed ? 'PASS' : 'FAIL'}`)
     console.log(`  [SOFT] LLM rubric    : ${rubric === null ? 'n/a' : rubric + '/100'}`)
+    console.log(`  [INFO] synth path    : ${fire.synthPath ?? 'unknown'}${fire.synthPath === 'catalog' ? ' — proven-skill match, zero model inference; not a generative-capability signal' : ''}`)
   }
 
   // ── scorecard + regression check ────────────────────────────────────────────────
@@ -454,9 +497,21 @@ async function main() {
   console.log('\n=== SCORECARD ===')
   for (const s of scores) {
     const hard = s.moduleExists && s.compiled && s.hiddenPassed
-    console.log(`  ${hard ? 'GREEN' : ' RED '}  ${s.id.padEnd(12)} compile=${s.compiled ? 'Y' : 'n'} hidden=${s.hiddenPassed ? 'Y' : 'n'} self=${s.selfTestPassed === null ? '-' : s.selfTestPassed ? 'Y' : 'n'} rubric=${s.rubric ?? '-'} ${(s.elapsedMs / 1000).toFixed(0)}s`)
+    const path = s.synthPath === 'catalog' ? 'catalog' : s.synthPath === 'generated' ? 'gen' : '?'
+    console.log(`  ${hard ? 'GREEN' : ' RED '}  ${s.id.padEnd(12)} compile=${s.compiled ? 'Y' : 'n'} hidden=${s.hiddenPassed ? 'Y' : 'n'} self=${s.selfTestPassed === null ? '-' : s.selfTestPassed ? 'Y' : 'n'} rubric=${s.rubric ?? '-'} path=${path.padEnd(7)} ${(s.elapsedMs / 1000).toFixed(0)}s`)
   }
   console.log(`\n  Claude-level (all HARD green): ${passedHard}/${scores.length} tasks`)
+  // A 'catalog' GREEN proves proven-skill coverage, NOT that the offline agent can generate
+  // new code — it never touched the model. Only 'generated' tasks stress real capability;
+  // conflating the two is exactly what produced last session's misleading 4/5 "Claude-level"
+  // read on filterModule's rate-limit investigation. Report them separately, always.
+  const genScores = scores.filter(s => s.synthPath === 'generated')
+  const genPassed = genScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
+  const catScores = scores.filter(s => s.synthPath === 'catalog')
+  const catPassed = catScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
+  console.log(`    of which via catalog-primitive match (zero inference): ${catPassed}/${catScores.length} green`)
+  console.log(`    of which via genuine model generation (real signal)  : ${genPassed}/${genScores.length} green`)
+  if (genScores.length === 0) console.log(`    ⚠ no task in this run exercised genuine generation — the summary above says nothing about offline-agent coding capability`)
 
   // Regression = a task that previously passed a HARD check now fails it.
   const regressions: string[] = []
