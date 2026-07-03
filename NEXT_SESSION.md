@@ -17,45 +17,82 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-03, after commit `cd07758`: protected-file tool-layer guard, on top of `c7f0a43` (prior session's uncommitted filterModule/esbuild + doc fixes) and `0516961`)
+## CURRENT STATE (last updated 2026-07-03, after this session's `smoke:code` strict-mode audit — commits pending)
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-1. **`filterModule` overwrite failure mode — ROOT-CAUSED AND FIXED this session (was item 1,
-   partially closed).** The agent overwriting `users.ts` was never a prompt-wording problem:
+1. **The "rate-limit exhaustion" theory for `filterModule`'s remaining REDs was WRONG — root
+   cause found, and it's much more important than quota.** All prior `smoke:code` runs
+   (including last session's) fired at a `:3001` server with no `CRUCIBLE_OFFLINE` set, i.e.
+   the DEFAULT hybrid mode (`withOfflineFallback` — offline-first, external-fallback,
+   `server.ts` ~2623). Worse: the `smoke:code:offline` npm script that appears to test strict
+   mode was DEAD — it set `CRUCIBLE_OFFLINE=strict` only on the benchmark's own client
+   process; the benchmark is an HTTP client to an already-running, separately-launched server,
+   which reads that env from ITS OWN startup, not the client's. `coding-benchmarks.ts` never
+   read or forwarded the var. **Every GREEN/RED this harness has ever produced — including
+   last session's protected-file-guard verification — was against hybrid mode.** Fixed:
+   `/api/config` now reports the live server's actual `offlineMode`; `coding-benchmarks.ts`
+   fetches it before firing and hard-fails with an actionable message on any mismatch between
+   requested and live mode (verified both directions: mismatch fails loud, match runs clean).
+2. **Ran the real strict-mode (`CRUCIBLE_OFFLINE=strict`, server restarted with it in its own
+   env) suite — and found a second, bigger problem than the rate-limit one.** `kvstore` /
+   `ratelimiter` / `scheduler` / `regex` all GREEN, `filterModule` RED exactly as before —
+   BUT `/api/debug/history` shows the 4 GREENs are `synth_match` events (`source: "primitive"`,
+   zero model inference — matched proven skill-catalog primitives `lru-ttl-wal-store`,
+   `rate-limiter`, `graph-topology`, `regex-engine`) while `filterModule` is `synth_miss` →
+   genuine FM generation attempt → `[offline-escalate] no oracle-passing code for src/types.ts:
+   FM could not produce an oracle-passing candidate in 3 rounds`, and strict mode has no
+   fallback so it hard-fails. **The "Claude-level 4/5" scorecard was never testing generative
+   coding capability for 4 of its 5 tasks — it was testing skill-catalog coverage of canonical
+   CS primitives.** The one task requiring real generation against existing repo context is the
+   one that fails. True generative signal from this suite: **0/1, not 4/5.** Fixed:
+   `coding-benchmarks.ts` now captures `synth_match`/`synth_miss` from the SSE stream per task,
+   labels each scorecard row `path=catalog|gen`, and the summary breaks GREENs into
+   catalog-primitive vs. genuine-generation counts (with a warning if zero tasks in a run
+   exercised real generation) so this can't be silently conflated again.
+   **Still open:** why FM can't produce oracle-passing code for `src/types.ts`/`src/users.ts`
+   in 3 rounds on a repo-context task — is it the 3-round cap, the oracle strictness, prompt
+   framing, or a genuine capability ceiling? Needs its own investigation. Also: the suite is
+   structurally 4-catalog/1-generated — to get real coverage on generative capability, add
+   more `filterModule`-shaped (repo-context, no catalog match) tasks; a 4:1 catalog:generated
+   ratio will keep reporting misleadingly high scores no matter how the one generated task does.
+3. **Frontier-SWE-gap phase gate — do NOT treat as advanced by last session's guard fix.**
+   That fix (item, below) is real and verified, but it addressed a tool-layer bug, not
+   generative capability, and the actual generative-capability signal (item 2 above) is 0/1,
+   not 4/5. This materially changes the phase-gate judgment call flagged previously — flag to
+   the user before treating this gate as closer to open.
+4. **`filterModule` overwrite failure mode — ROOT-CAUSED AND FIXED prior session, still holds.**
+   The agent overwriting `users.ts` was never a prompt-wording problem:
    `write_file`/`edit_file`/`apply_patch` (`src/CrucibleEngine/tools/registry.ts`) had NO
    tool-layer concept of a protected file — `write_file` blindly `fs.writeFileSync()`s
    anything, no existence check, no confirmation. Added `protectedFileReason()`: any file
    whose first line matches `do not modify`/`read-only` is now refused by all three mutating
    tools. Verified directly against the registry (refuses marked files, no false positives on
-   unmarked/new files) AND via 3 live `smoke:code filterModule` fires post-fix — the overwrite
-   never recurred (grep confirms the guard never even had to fire, i.e. no attempt was made).
-   **Still open:** the other two failure modes from before (wrong logic 1/5, missing file
-   entirely) are NOT addressed by this fix and are confounded right now by a degraded
-   free-tier pool (GPT OSS 120B/Llama 3.3 70B/Qwen3 32B all circuit-tripped mid-run, agent
-   fell back to a much weaker GPT OSS 20B and produced no file twice in a row) — see
-   [[crucible-l2-pool-dependency]]. Re-run `filterModule` a handful of times once those
-   circuits reset (Llama 3.3 70B cooldown was 24h as of this session) before drawing
-   conclusions about remaining agent-reliability vs. pool-health. Full detail in ROADMAP.md
-   CHANGE LOG 2026-07-03 "(cont. 2)" entry.
-2. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
+   unmarked/new files) AND via live `smoke:code filterModule` fires post-fix — the overwrite
+   never recurred. Unrelated to and unaffected by items 1-2 above.
+5. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
    competing agent-execution stacks exist: `agent/planner.ts` + `agent/loop.ts` (live path) vs
    `router/capabilityRouter.ts` → `decompositionDag.ts` → `nodeExecutor.ts` (proven only in
    isolation, NOT imported by `server.ts` — verified live by grep, 2026-07-03). Wire the second
    stack into the live path, or mark it experimental/parked. Don't build more on either stack
    until settled.
-3. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
+6. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
    for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
    needs its own scoping conversation, bigger than a quick fix.
-4. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
+7. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
    mass-balance rather than evaporation/condensation; a retrieval-content-relevance gap.
-5. **Frontier-SWE-gap phase gate** — ROADMAP.md's gating condition no longer names an
-   unresolved item verbatim (timeout/clarify closed, premise-gate hardened). Whether the gate
-   is now open is a judgment call for the user.
-6. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
+8. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
    open work; do not loosen `PREMISE_RX` or add a no-evidence FM fallback (reopens fp001-004).
 
 **Done this session (2026-07-03, this update):**
+- **Disproved the rate-limit theory and found the real bug** — `smoke:code` has never fired
+  against a strict-mode server; the `smoke:code:offline` script was dead (client-side env, no
+  effect on the separate server process). Fixed `/api/config` + `coding-benchmarks.ts` to
+  detect and hard-fail on mode mismatch (see item 1 above).
+- **Ran a real strict-mode suite and found the scorecard conflates catalog-primitive hits with
+  genuine generation** — 4/5 "GREEN" were zero-inference skill-catalog matches; the only
+  genuinely-generated task (`filterModule`) is 0/1. Fixed `coding-benchmarks.ts` to label and
+  separately tally catalog vs. generated results going forward (see item 2 above).
 - Committed the previous session's uncommitted work as `c7f0a43` (filterModule esbuild fix +
   prompt do-not-modify line + doc updates — see below, carried over from the prior pass).
 - **Root-caused and fixed the filterModule overwrite failure mode at the tool layer** —

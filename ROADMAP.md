@@ -1716,6 +1716,75 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-03 (cont. 3) — `smoke:code` was never testing strict mode; catalog-hits were masquerading as generative capability
+
+**Trigger:** a handoff framed the remaining `filterModule` REDs as free-tier rate-limit
+exhaustion and proposed re-running off-peak or via a paid-tier fallback to isolate it. That
+was flagged as wrong before any code ran: the external Groq/OpenRouter pipeline is frozen and
+being phased out, so stabilizing its rate-limit handling doesn't move toward the
+`CRUCIBLE_OFFLINE=strict` goal even if true — and a paid-tier fallback would violate the
+free-tier-only rule ([[crucible-philosophy]]) regardless. The real question was whether
+`filterModule` was even running in strict mode.
+
+**Finding 1 — it wasn't, and the reason is structural, not an oversight.**
+`coding-benchmarks.ts` is an HTTP client to an already-running, separately-launched `:3001`
+server. Checked the live server process's actual env directly (`ps eww <pid>`): no
+`CRUCIBLE_OFFLINE` set at all → default hybrid mode, `withOfflineFallback(_offlineDrive,
+nativeDriveTurn)` (`server.ts` ~2623-2628). The `smoke:code:offline` npm script
+(`CRUCIBLE_OFFLINE=strict tsx coding-benchmarks.ts`) sets that var only on the benchmark's own
+process — `coding-benchmarks.ts` never reads or forwards `CRUCIBLE_OFFLINE` anywhere (grep
+confirms zero references). The server reads its own env once, at its own startup; the
+client-side var has no channel to reach it. This script has probably never tested the strict
+path since it was written. Every `smoke:code` GREEN/RED ever produced — including the
+protected-file-guard verification from the prior session — was against hybrid mode.
+
+Note this is a *different bug class* than the earlier simple-triage strict-mode leak (that was
+strict-mode-set-but-silently-bypassed; this is strict-mode-never-engaged-at-all, because the
+mechanism to engage it from the benchmark was broken).
+
+**Fix:** `/api/config` (`server.ts` ~1844) now reports `offlineMode: process.env.CRUCIBLE_OFFLINE
+?? '1'`. `coding-benchmarks.ts` fetches this before firing any task and hard-fails with an
+actionable message if it doesn't match what the script itself was launched with (e.g. "you
+asked for strict, the live server is actually in mode X, restart the server itself with the
+right env"). Verified both directions: deliberate mismatch → loud exit(2); matched mode → runs
+normally and prints the confirmed live mode at the top of every run.
+
+**Finding 2 — with strict mode actually engaged, a bigger problem than rate limits appeared.**
+Restarted the `:3001` server with `CRUCIBLE_OFFLINE=strict` in its own launch env (clean
+restart sequence per [[crucible-run-commands]]) and ran the full 5-task suite against it:
+`kvstore`/`ratelimiter`/`scheduler`/`regex` GREEN, `filterModule` RED — same shape as before.
+But cross-referencing `/api/debug/history` (event types, not assumption) showed the 4 GREENs
+are `synth_match` events (`source: "primitive"`, matching pre-proven skill-catalog entries
+`lru-ttl-wal-store`/`rate-limiter`/`graph-topology`/`regex-engine` — see
+[[crucible-skill-factory]]) with **zero model inference** (consistent with `elapsed=0s,
+iters=0` on every one of them). `filterModule` is `synth_miss` (`reason: "no-examples"`) →
+falls through to genuine FM generation (`offline_synth`, `source: "fm-distilled"`) → repeatedly
+fails to produce oracle-passing code for `src/types.ts`/`src/users.ts` in 3 rounds → honest
+`OfflineEscalateError`, which hard-fails under strict (no fallback available).
+
+**This means the "Claude-level 4/5" scorecard was never measuring the offline agent's ability
+to write new code for 4 of its 5 tasks — it was measuring skill-catalog coverage of canonical
+CS-primitive shapes** (LRU+TTL store, token-bucket limiter, topo sort, regex engine — all
+exactly the kind of textbook algorithm a proven-skill catalog would target). The catalog match
+is legitimate, intentional architecture (not gaming), but conflating it with generative
+capability in the scorecard is exactly what let last session read this as "real progress
+toward the Frontier-SWE-gap phase gate." The actual generative signal is **0/1, not 4/5**, and
+the suite is structurally 4-catalog/1-generated, which will keep producing misleadingly high
+scores regardless of how the one generated task performs.
+
+**Fix:** `coding-benchmarks.ts` now captures `synth_match`/`synth_miss` off the per-task SSE
+stream (both event types are already emitted there by `server.ts`, just previously unread),
+threads a `synthPath: 'catalog' | 'generated' | null` field through `FireResult`/`TaskScore`
+(persisted in the JSON scorecard too), labels every scorecard row `path=catalog|gen`, and
+splits the summary line into catalog-vs-generated GREEN counts with an explicit warning if a
+run contains zero generated-path tasks. This can't silently regress to a misleading composite
+again.
+
+**Still open:** why FM can't produce oracle-passing code for a repo-context task in 3 rounds
+(3-round cap vs. oracle strictness vs. prompt framing vs. genuine capability ceiling — not yet
+isolated). Also: the phase-gate judgment call flagged in the prior handoff needs to be revised
+downward given the real generative signal is 0/1, not the 4/5 it looked like.
+
 ### 2026-07-03 (cont. 2) — Verified: simple-triage strict-mode Groq leak is CLOSED (no new fix needed)
 
 **Status check requested by handoff doc, item resolved as already-fixed, not open.** The
