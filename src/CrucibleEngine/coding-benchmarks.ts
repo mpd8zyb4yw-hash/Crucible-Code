@@ -227,6 +227,133 @@ Rules:
 Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that calls getAllUsers()
 from './users', passes the result to filterUsers with various opts, and confirms correctness.`,
   },
+  {
+    id: 'sortModule',
+    title: 'Add sortProducts to an existing catalog module (repo-context, multi-key sort + tie-break)',
+    modulePath: 'src/sort.ts',
+    scaffold: [
+      {
+        path: 'src/types.ts',
+        content:
+`// Existing type definitions — do not modify.
+export interface Product {
+  id: number
+  name: string
+  category: string
+  price: number
+  inStock: boolean
+}
+`,
+      },
+      {
+        path: 'src/catalog.ts',
+        content:
+`// Existing product catalog — do not modify.
+import type { Product } from './types'
+
+export function getAllProducts(): Product[] {
+  return [
+    { id: 1, name: 'Widget',      category: 'tools',   price: 19.99, inStock: true  },
+    { id: 2, name: 'Gadget',      category: 'tools',   price: 9.99,  inStock: false },
+    { id: 3, name: 'Sprocket',    category: 'tools',   price: 19.99, inStock: false },
+    { id: 4, name: 'Doohickey',   category: 'novelty', price: 4.99,  inStock: true  },
+    { id: 5, name: 'Contraption', category: 'novelty', price: 29.99, inStock: true  },
+  ]
+}
+`,
+      },
+    ],
+    prompt:
+`The project already has src/types.ts (defines Product) and src/catalog.ts (defines getAllProducts).
+Do NOT modify src/types.ts or src/catalog.ts — they are existing, correct code; only add new
+files. Add src/sort.ts to this project. ${CONTRACT_NOTE}
+
+Exact public API (src/sort.ts):
+  import type { Product } from './types'
+  export interface SortOpts {
+    by: 'price' | 'name'          // primary sort key
+    direction?: 'asc' | 'desc'    // default 'asc'
+    inStockFirst?: boolean        // if true, ALL in-stock products sort before ALL out-of-stock ones
+  }
+  export function sortProducts(products: Product[], opts: SortOpts): Product[]
+
+Rules:
+- When inStockFirst is true: split into an in-stock group and an out-of-stock group, sort each
+  group independently by by/direction, then return the in-stock group followed by the out-of-stock
+  group.
+- When inStockFirst is false or omitted: sort the whole list by by/direction with no grouping.
+- direction defaults to 'asc' when omitted.
+- Ties on the primary sort key break by id ascending, regardless of direction.
+- The function must not mutate the input array.
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that calls getAllProducts()
+from './catalog', passes the result to sortProducts with various opts, and confirms correctness.`,
+  },
+  {
+    id: 'summaryModule',
+    title: 'Add summarizeByAccount to an existing transaction log (repo-context, group-by aggregation)',
+    modulePath: 'src/summary.ts',
+    scaffold: [
+      {
+        path: 'src/types.ts',
+        content:
+`// Existing type definitions — do not modify.
+export interface Transaction {
+  id: number
+  accountId: string
+  amount: number
+  type: 'credit' | 'debit'
+}
+`,
+      },
+      {
+        path: 'src/transactions.ts',
+        content:
+`// Existing transaction log — do not modify.
+import type { Transaction } from './types'
+
+export function getAllTransactions(): Transaction[] {
+  return [
+    { id: 1, accountId: 'acct-A', amount: 100, type: 'credit' },
+    { id: 2, accountId: 'acct-A', amount: 30,  type: 'debit'  },
+    { id: 3, accountId: 'acct-B', amount: 50,  type: 'credit' },
+    { id: 4, accountId: 'acct-A', amount: 20,  type: 'debit'  },
+    { id: 5, accountId: 'acct-B', amount: 50,  type: 'debit'  },
+    { id: 6, accountId: 'acct-C', amount: 75,  type: 'credit' },
+  ]
+}
+`,
+      },
+    ],
+    prompt:
+`The project already has src/types.ts (defines Transaction) and src/transactions.ts (defines
+getAllTransactions). Do NOT modify src/types.ts or src/transactions.ts — they are existing,
+correct code; only add new files. Add src/summary.ts to this project. ${CONTRACT_NOTE}
+
+Exact public API (src/summary.ts):
+  import type { Transaction } from './types'
+  export interface AccountSummary {
+    credits: number
+    debits: number
+    balance: number
+  }
+  export function summarizeByAccount(transactions: Transaction[]): Record<string, AccountSummary>
+
+Rules:
+- Group transactions by accountId.
+- credits = sum of amount for that account's 'credit' transactions; debits = sum of amount for
+  that account's 'debit' transactions.
+- balance = credits - debits.
+- Every account present in the input gets an entry with all three fields, even if one side (e.g.
+  no debits) is 0 — never omit the credits or debits key.
+- An account with no transactions at all must not appear in the result.
+- The function must not mutate the input array.
+- An empty input array returns an empty object.
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that calls
+getAllTransactions() from './transactions', passes the result to summarizeByAccount, and confirms
+correctness.`,
+  },
 ]
 
 // ── SSE fire: send the task to the live agent, collect the outcome ─────────────────

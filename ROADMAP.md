@@ -1716,6 +1716,102 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-04 (cont.) — filterModule's "capability ceiling" root-caused: wrong write target, not FM incapacity; two new generation-stressing tasks added
+
+**Root cause found:** `extractGoalPaths()` in `src/CrucibleEngine/agent/synthDriver.ts` picked the
+first `.ts` path mentioned anywhere in the goal TEXT as the write target (`goalPaths[0]`), with no
+awareness of "do NOT modify" instructions. The `filterModule` prompt lists the protected scaffold
+files (`src/types.ts`, `src/users.ts`) before the actual new file (`src/filter.ts`), so the driver
+asked the FM to synthesize a `filterUsers`-shaped rewrite of `types.ts` — an unwinnable task,
+misread by the prior handoff as a generative capability ceiling (the exact escalate message,
+`no oracle-passing code for src/types.ts`, matches this precisely).
+
+**Fix:** added `extractProtectedGoalPaths()` — parses "do not modify X" / "don't edit X" clauses
+out of the goal text (lazy match up to an em-dash or sentence-ending period, careful not to
+truncate at the `.` inside a file extension) and excludes those paths from `extractGoalPaths()`'s
+output. Committed `f43cb6e` (this commit also inadvertently bundled the already-landed
+`stripForeignApiBlocks` fix from the entry below — both were being edited in the same working tree
+concurrently; no functional conflict, just an imprecise commit message).
+
+**Verified — target-selection bug is fully fixed, but a separate, real generation-flakiness signal
+emerged:** ran `filterModule` 5 times total against a fresh isolated strict-mode server (1 initial
++ 4 more via `CRUCIBLE_API=http://localhost:3013 CRUCIBLE_OFFLINE=strict npx tsx
+src/CrucibleEngine/coding-benchmarks.ts filterModule`, `:3001` untouched throughout). **All 5 runs
+correctly targeted `src/filter.ts`** — the wrong-target bug never recurred. But only **2/5 scored
+GREEN** (169s/iters=3, 154s/iters=5); the other 3 failed identically fast (77–86s, iters=2) with
+`[offline-escalate] no oracle-passing code for src/filter.ts: FM could not produce an
+oracle-passing candidate in 3 rounds`. This is genuine FM-generation variance within the 3-round
+budget, not a regression from this fix — still the open question flagged in the prior handoff (is
+3 rounds too tight? oracle too strict? prompt framing?), now measured empirically instead of just
+theorized.
+
+**Two new generation-stressing tasks added** (the 4-catalog/1-generated task mix couldn't give a
+trustworthy generative-capability read on its own): `sortModule` (multi-key sort with an
+in-stock-first grouping rule and an id-ascending tie-break — deliberately bespoke, not a named
+algorithm, so it can't skill-catalog-match the way kvstore/ratelimiter/scheduler/regex did) and
+`summaryModule` (group-by-account credit/debit/balance aggregation). Confirmed neither exists as a
+catalog primitive (`grep` across `synth/skills/` and `synth/catalogs/` — no hit) before wiring
+them in; a candidate third task (an already-built but unwired `levenshtein.hidden.ts` hidden suite)
+was rejected for this purpose after confirming `editDistance`/Levenshtein IS already a proven
+catalog primitive (`synth/skills/editDistance.ts`) — wiring it in would have just added another
+catalog hit, not generation stress. New files: `coding-bench/sortModule.hidden.ts` (13 checks),
+`coding-bench/summaryModule.hidden.ts` (14 checks) — both hand-verified against reference
+implementations before ever firing at the live agent (`ALL PASS` on a correct impl, confirming the
+oracle itself isn't buggy).
+
+**First live fire, both RED — real, concrete generation-capability data, not task-authoring bugs:**
+- `sortModule`: FM produced no module at all in 3 rounds (module file missing/empty).
+- `summaryModule`: module WAS produced, compiled clean, but failed 3/14 hidden checks. Root cause
+  inspected directly (`~/Desktop/crucible-bench/summaryModule/src/summary.ts`): the generated code
+  correctly accumulates `credits`/`debits` per account but **never sets `balance = credits -
+  debits`** anywhere — it stays hardcoded at the initialized `0`. A genuine, narrow miss (forgot a
+  derived field), not a wrong-target or wrong-approach failure.
+
+**Task mix is now 4 catalog / 3 generation** (was 4/1). Not yet enough runs on the two new tasks to
+know their steady-state pass rate — this was a single first fire each, primarily to confirm harness
+wiring (SSE fire → audit pipeline) works correctly for new tasks, which it does.
+
+**Still open, now better-scoped:** why does FM fail a meaningful fraction of `filterModule`-shaped
+generation attempts within `MAX_FM_ROUNDS=3`? The `summaryModule` miss (correct structure, one
+forgotten derived field) suggests at least part of this may be "ran out of rounds to self-correct"
+rather than "doesn't understand the spec" — worth testing whether raising `CRUCIBLE_OFFLINE_FM_ROUNDS`
+changes the pass rate before concluding it's a hard capability ceiling. Not attempted this session.
+
+**Not done — explicitly deferred, not an oversight:** did not attempt to fix the FM's generation
+reliability itself (round-cap tuning, prompt framing, oracle strictness) — that's real design-space
+work belonging to the "still open" investigation, not a corollary of the target-selection fix.
+Frontier-SWE-gap phase gate intentionally NOT opened this session (per J's own call, logged in
+NEXT_SESSION.md CURRENT STATE) — one/few runs per task isn't enough evidence given filterModule's
+now-confirmed flakiness and the still-thin catalog/generation task mix.
+
+### 2026-07-04 — synthDriver.ts: secondary-file spec no longer inherits the primary file's export contract
+
+**Bug (low priority, non-blocking):** `solveCodeWrite()` in `src/CrucibleEngine/agent/synthDriver.ts`
+built the spec for a secondary goal file (e.g. the self-test `src/index.ts` written after the
+primary implementation file) as `[state.goal, errors, primaryNote, 'Target file: ...'].join('\n')`
+— this included the **entire original goal verbatim**, including the primary file's `Exact public
+API (src/filter.ts): ...` block. `extractFeatures()` (`synth/synthEngine.ts`) regex-scans the full
+spec text for `export function/class/const Name` with no awareness of which file is being
+synthesized, so `deriveTests`/`derivePropertyTests` (`synth/derive.ts`) derived tests holding the
+*secondary* file to the *primary* file's contract — e.g. expecting `src/index.ts` to itself export
+`filterUsers`. Observed live: `npm run smoke:code filterModule` under strict mode threw
+`[offline-escalate] no oracle-passing code for src/index.ts: FM could not produce an
+oracle-passing candidate in 3 rounds`, even though `src/filter.ts` synthesized correctly and the
+task still scored GREEN overall (self-test is SOFT-scored, not part of HARD pass criteria).
+
+**Fix:** added `stripForeignApiBlocks(goal, targetPath)` to `synthDriver.ts` — strips any `Exact
+public API (<path>):` block whose path doesn't match the file currently being synthesized, applied
+only when building a secondary-file spec (primary-file specs are untouched). Confirmed via direct
+`extractFeatures()` call that the stripped spec's `exports` goes from `['FilterOpts',
+'filterUsers']` to `[]` for `src/index.ts`, while the primary file's spec still correctly retains
+`['FilterOpts', 'filterUsers']`.
+
+**Verified end-to-end:** fresh strict-mode server (`PORT=3099 CRUCIBLE_OFFLINE=strict`), then
+`CRUCIBLE_API=http://localhost:3099 CRUCIBLE_OFFLINE=strict npx tsx
+src/CrucibleEngine/coding-benchmarks.ts filterModule` → self-test now **PASS** (was previously
+escalating for `src/index.ts` specifically). Server log shows zero `escalate` occurrences for the
+run. Scorecard: GREEN, compile=Y hidden=Y self=Y rubric=90, synth path=generated, no regressions.
+
 ### 2026-07-03 (cont. 3) — `smoke:code` was never testing strict mode; catalog-hits were masquerading as generative capability
 
 **Trigger:** a handoff framed the remaining `filterModule` REDs as free-tier rate-limit

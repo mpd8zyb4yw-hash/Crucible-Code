@@ -17,110 +17,78 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-03, after this session's `smoke:code` strict-mode audit — commits pending)
+## CURRENT STATE (last updated 2026-07-04, after root-causing filterModule's "capability ceiling" + adding 2 generation-stressing tasks — commit `f43cb6e`, plus uncommitted new-task work this update)
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-1. **The "rate-limit exhaustion" theory for `filterModule`'s remaining REDs was WRONG — root
-   cause found, and it's much more important than quota.** All prior `smoke:code` runs
-   (including last session's) fired at a `:3001` server with no `CRUCIBLE_OFFLINE` set, i.e.
-   the DEFAULT hybrid mode (`withOfflineFallback` — offline-first, external-fallback,
-   `server.ts` ~2623). Worse: the `smoke:code:offline` npm script that appears to test strict
-   mode was DEAD — it set `CRUCIBLE_OFFLINE=strict` only on the benchmark's own client
-   process; the benchmark is an HTTP client to an already-running, separately-launched server,
-   which reads that env from ITS OWN startup, not the client's. `coding-benchmarks.ts` never
-   read or forwarded the var. **Every GREEN/RED this harness has ever produced — including
-   last session's protected-file-guard verification — was against hybrid mode.** Fixed:
-   `/api/config` now reports the live server's actual `offlineMode`; `coding-benchmarks.ts`
-   fetches it before firing and hard-fails with an actionable message on any mismatch between
-   requested and live mode (verified both directions: mismatch fails loud, match runs clean).
-2. **Ran the real strict-mode (`CRUCIBLE_OFFLINE=strict`, server restarted with it in its own
-   env) suite — and found a second, bigger problem than the rate-limit one.** `kvstore` /
-   `ratelimiter` / `scheduler` / `regex` all GREEN, `filterModule` RED exactly as before —
-   BUT `/api/debug/history` shows the 4 GREENs are `synth_match` events (`source: "primitive"`,
-   zero model inference — matched proven skill-catalog primitives `lru-ttl-wal-store`,
-   `rate-limiter`, `graph-topology`, `regex-engine`) while `filterModule` is `synth_miss` →
-   genuine FM generation attempt → `[offline-escalate] no oracle-passing code for src/types.ts:
-   FM could not produce an oracle-passing candidate in 3 rounds`, and strict mode has no
-   fallback so it hard-fails. **The "Claude-level 4/5" scorecard was never testing generative
-   coding capability for 4 of its 5 tasks — it was testing skill-catalog coverage of canonical
-   CS primitives.** The one task requiring real generation against existing repo context is the
-   one that fails. True generative signal from this suite: **0/1, not 4/5.** Fixed:
-   `coding-benchmarks.ts` now captures `synth_match`/`synth_miss` from the SSE stream per task,
-   labels each scorecard row `path=catalog|gen`, and the summary breaks GREENs into
-   catalog-primitive vs. genuine-generation counts (with a warning if zero tasks in a run
-   exercised real generation) so this can't be silently conflated again.
-   **Still open:** why FM can't produce oracle-passing code for `src/types.ts`/`src/users.ts`
-   in 3 rounds on a repo-context task — is it the 3-round cap, the oracle strictness, prompt
-   framing, or a genuine capability ceiling? Needs its own investigation. Also: the suite is
-   structurally 4-catalog/1-generated — to get real coverage on generative capability, add
-   more `filterModule`-shaped (repo-context, no catalog match) tasks; a 4:1 catalog:generated
-   ratio will keep reporting misleadingly high scores no matter how the one generated task does.
-3. **Frontier-SWE-gap phase gate — do NOT treat as advanced by last session's guard fix.**
-   That fix (item, below) is real and verified, but it addressed a tool-layer bug, not
-   generative capability, and the actual generative-capability signal (item 2 above) is 0/1,
-   not 4/5. This materially changes the phase-gate judgment call flagged previously — flag to
-   the user before treating this gate as closer to open.
-4. **`filterModule` overwrite failure mode — ROOT-CAUSED AND FIXED prior session, still holds.**
-   The agent overwriting `users.ts` was never a prompt-wording problem:
-   `write_file`/`edit_file`/`apply_patch` (`src/CrucibleEngine/tools/registry.ts`) had NO
-   tool-layer concept of a protected file — `write_file` blindly `fs.writeFileSync()`s
-   anything, no existence check, no confirmation. Added `protectedFileReason()`: any file
-   whose first line matches `do not modify`/`read-only` is now refused by all three mutating
-   tools. Verified directly against the registry (refuses marked files, no false positives on
-   unmarked/new files) AND via live `smoke:code filterModule` fires post-fix — the overwrite
-   never recurred. Unrelated to and unaffected by items 1-2 above.
-5. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
+1. **`filterModule`'s apparent capability ceiling was a wrong-write-target bug — FOUND AND FIXED,
+   committed `f43cb6e`.** `extractGoalPaths()` (`agent/synthDriver.ts`) picked the first `.ts`
+   path mentioned anywhere in the goal TEXT as the write target, with no "do not modify"
+   awareness — the `filterModule` prompt lists the protected files before the real target, so the
+   driver asked the FM to rewrite `types.ts` as if it were `filter.ts`'s spec. Fixed with
+   `extractProtectedGoalPaths()`. **Verified: target-selection is now correct in 5/5 live runs**
+   (never mis-targets `types.ts` again). **But a separate, real signal emerged: only 2/5 of those
+   runs scored GREEN** — the FM sometimes can't produce oracle-passing `filter.ts` in
+   `MAX_FM_ROUNDS=3`. This is genuine generation flakiness, not a regression from the fix.
+2. **Central open question, now better-scoped (not yet answered):** why does FM fail a real
+   fraction of `filterModule`-shaped generation attempts within 3 rounds? One data point toward
+   an answer: firing the two new tasks below, `summaryModule`'s generated code was structurally
+   correct (right shape, compiled clean, accumulated `credits`/`debits` correctly) but **forgot to
+   ever set `balance = credits - debits`** — a narrow, single-field miss, not confusion about the
+   task. Suggests "ran out of rounds to self-correct a near-miss" may be at least part of the
+   story, not purely "doesn't understand the spec." **Untested idea for next session:** try
+   `CRUCIBLE_OFFLINE_FM_ROUNDS=5` (or higher) against the same tasks and see if pass rate moves —
+   cheap experiment, not yet run.
+3. **Two new generation-stressing tasks added this session (uncommitted):** `sortModule`
+   (multi-key sort + in-stock-first grouping + id tie-break) and `summaryModule` (group-by-account
+   credit/debit/balance aggregation). Both deliberately bespoke — confirmed NOT catalog primitives
+   (grepped `synth/skills/`, `synth/catalogs/`) before adding, unlike a discarded third candidate
+   (`levenshtein` — already a proven catalog primitive, would've been a false generation-stress
+   signal). Hidden suites hand-verified against reference implementations first (ALL PASS) so the
+   oracle itself isn't in question. **First live fire: both RED** — `sortModule` produced no
+   module in 3 rounds; `summaryModule` hit the balance-field miss above. Task mix is now
+   4-catalog/3-generation (was 4/1) but these two have only ONE fire each — no steady-state read
+   yet, unlike filterModule's now-5-run sample. Needs the same multi-run treatment before treating
+   a single RED as signal rather than noise.
+4. **Frontier-SWE-gap phase gate — still NOT opened, deliberately.** One-to-few runs per
+   generation task isn't enough evidence given filterModule's now-confirmed 2/5 flakiness and the
+   still-thin catalog/generation mix. This is a standing call, not a fresh ask each session — only
+   revisit once the tasks above have multi-run pass-rate data.
+5. **`:3001` still needs a manual restart** to pick up this session's code (all confirmation runs
+   fired against isolated throwaway strict-mode instances — `:3012`, `:3013`, both torn down after
+   use — `:3001` itself was never touched or restarted; killing it was correctly blocked by the
+   permission classifier since that process wasn't started this session).
+6. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
    competing agent-execution stacks exist: `agent/planner.ts` + `agent/loop.ts` (live path) vs
    `router/capabilityRouter.ts` → `decompositionDag.ts` → `nodeExecutor.ts` (proven only in
-   isolation, NOT imported by `server.ts` — verified live by grep, 2026-07-03). Wire the second
-   stack into the live path, or mark it experimental/parked. Don't build more on either stack
-   until settled.
-6. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
+   isolation, NOT imported by `server.ts`). Wire the second stack into the live path, or mark it
+   experimental/parked. Don't build more on either stack until settled.
+7. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
    for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
    needs its own scoping conversation, bigger than a quick fix.
-7. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
+8. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
    mass-balance rather than evaporation/condensation; a retrieval-content-relevance gap.
-8. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
+9. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
    open work; do not loosen `PREMISE_RX` or add a no-evidence FM fallback (reopens fp001-004).
 
-**Done this session (2026-07-03, this update):**
-- **Disproved the rate-limit theory and found the real bug** — `smoke:code` has never fired
-  against a strict-mode server; the `smoke:code:offline` script was dead (client-side env, no
-  effect on the separate server process). Fixed `/api/config` + `coding-benchmarks.ts` to
-  detect and hard-fail on mode mismatch (see item 1 above).
-- **Ran a real strict-mode suite and found the scorecard conflates catalog-primitive hits with
-  genuine generation** — 4/5 "GREEN" were zero-inference skill-catalog matches; the only
-  genuinely-generated task (`filterModule`) is 0/1. Fixed `coding-benchmarks.ts` to label and
-  separately tally catalog vs. generated results going forward (see item 2 above).
-- Committed the previous session's uncommitted work as `c7f0a43` (filterModule esbuild fix +
-  prompt do-not-modify line + doc updates — see below, carried over from the prior pass).
-- **Root-caused and fixed the filterModule overwrite failure mode at the tool layer** —
-  `protectedFileReason()` guard added to `write_file`/`edit_file`/`apply_patch` in
-  `registry.ts`, committed `cd07758`. See item 1 above and ROADMAP.md for full detail.
-- `verify.ts` false-positive on "nothing to check" — fixed, committed `0516961`. Added
-  `unverified?: boolean` to `VerifyResult`, true only on the nothing-runnable branch, threaded
-  into the emitted debug event. `passed` left `true` (no loop-thrash change). Confirmed via
-  direct unit call AND via `smoke:code` regression run afterward (see below) — no regression.
-- `filterModule.hidden.ts` esbuild top-level-await crash — fixed (async IIFE + `.catch()`
-  instead of top-level `await`). This was masking the real hidden-suite result entirely;
-  confirmed fixed (crash never recurs across 8+ subsequent fires this session).
-- `smoke:code` regression check: kvstore/ratelimiter/scheduler/regex hold clean GREEN across
-  every run this session. `filterModule` variance (item 1 above) is real and NOT caused by the
-  `verify.ts`/`loop.ts` change — it reproduces identically with or without that change present,
-  and the failure modes are agent-output variance, not a crash.
-- ROADMAP.md Tier 0-2 `[x]` claims corrected to say "proven in isolation, not live-wired."
-- Doc-staleness fix: CURRENT STATE block convention (this section) + matching CLAUDE.md rule.
-- **Simple-triage strict-mode Groq-leak check — CONFIRMED ALREADY FIXED, not open.** A stale
-  handoff (predating this file's own CURRENT STATE mechanism — see the doc-staleness item above)
-  asked to re-verify whether `simple-triage` leaks to external Groq under `CRUCIBLE_OFFLINE=strict`.
-  Traced the fix to commit `0e5847d` (`server.ts` ~3010: strict mode calls `callLocalModel`
-  directly, never the external `fastModelEntry` lookup, abstains honestly if the FM daemon is
-  down). Confirmed live: ran a second server on port 3099 with `CRUCIBLE_OFFLINE=strict` (port
-  3001 dev server untouched), fired an authed `/api/chat` "Who wrote Hamlet?" query, and saw
-  `triage_simple_strict_local` (not `triage_simple`) in `/api/debug/history`, served by
-  `local/apple-fm`. Full writeup in ROADMAP.md CHANGE LOG, 2026-07-03 "(cont. 2)" entry. This item
-  should NOT be re-flagged as open in a future handoff.
+**Done this session (2026-07-04, this update) — full narrative in ROADMAP.md CHANGE LOG:**
+- Root-caused and fixed `filterModule`'s wrong-write-target bug (`extractProtectedGoalPaths()`),
+  committed `f43cb6e`. See item 1 above.
+- A concurrent session/worktree independently fixed a related bug in the same file
+  (`stripForeignApiBlocks()` — secondary-file specs no longer inherit the primary file's export
+  contract) and it got inadvertently bundled into the same `f43cb6e` commit (both editing the
+  working tree at once; no functional conflict). Confirmed present and working, not reverted.
+- Ran 5 total live `filterModule` fires against isolated strict-mode servers (`:3012`, `:3013`,
+  both torn down after; `:3001` untouched) to confirm the fix holds beyond one run. Target
+  selection correct 5/5; overall pass rate 2/5 — see item 1-2 above.
+- Added `sortModule` and `summaryModule` to `coding-benchmarks.ts` + their hidden suites
+  (`coding-bench/sortModule.hidden.ts`, `coding-bench/summaryModule.hidden.ts`), each hand-verified
+  against a reference implementation before firing at the live agent. Not yet committed.
+- Investigated an `offline_local_served` debug-history event showing `provider: groq/mistral/
+  openrouter/huggingface/cloudflare` under `mode: strict` — looked like a strict-mode leak at
+  first glance but is NOT one: `offlineGate()` (`server.ts` ~1206) logs the ORIGINAL intended
+  external provider name for context even when it successfully redirects the call to the local FM
+  instead. Verified by reading the gate's source before reporting — false alarm, not a bug.
 
 **Composite benchmark baseline (conversational suite) as of last confirmed sweep (2026-07-03,
 N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-run by this update's
