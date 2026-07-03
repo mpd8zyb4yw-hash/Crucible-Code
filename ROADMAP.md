@@ -1716,6 +1716,72 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-04 (cont. 2) — Tier 0-2 fork resolved (parked), sortModule/summaryModule oracle bugs fixed, FM daemon launchd fixed
+
+**Tier 0-2 fork decision resolved.** Two competing agent-execution stacks existed:
+`agent/planner.ts`+`agent/loop.ts`+`synthDriver.ts` (live — the only path a real `/api/chat`
+request takes) vs. `router/capabilityRouter.ts`→`decompositionDag.ts`→`nodeExecutor.ts` (proven
+only in isolation/tests, never imported by `server.ts`). This was flagged in `NEXT_SESSION.md` as
+blocking further build-out on either stack pending a decision. **Decision: park the isolated
+stack** rather than merge it into live traffic piecemeal — the live stack carries hard-won,
+battle-tested fixes (protected-file tool-layer enforcement, wrong-write-target guard,
+secondary-file spec isolation) that a rewrite/merge would have to re-earn, and merging without
+re-deriving those fixes risks silently reintroducing already-closed bugs. Added explicit
+"EXPERIMENTAL — PARKED, NOT LIVE" banners to all three files, committed `44f9bb9`.
+
+**sortModule/summaryModule's confirmed 0/3 failures were (at least partly) oracle bugs, not a
+pure FM capability ceiling.** Root-caused two real bugs in the synthesis oracle, committed
+`c88a0b0`:
+
+1. `derive.ts`'s `'sort'` property family had two compounding bugs: (a) its `/[Ss]ort/` name
+   filter also matched a co-declared `SortOpts` INTERFACE name, so `sorters[0]` sometimes picked
+   the interface instead of the actual sorter function; (b) even with the correct name, the
+   family's tests call `name([3,1,2])` (single-arg numeric array) — a real multi-arg sorter like
+   `sortProducts(products: Product[], opts: SortOpts)` failed `tsc` on the auto-generated test
+   ITSELF, rejecting every candidate the FM proposed regardless of its actual correctness. This
+   is very likely the true explanation for sortModule "never producing a module" in 3/3 prior
+   live fires — a false-negative, self-inflicted oracle failure that had been read as a
+   generation-capability wall. Fixed by excluding interface/type-declared names before treating
+   them as callable sorters, and by arity-gating the family to single-arg signatures (falls
+   through cleanly for multi-arg sorters instead of emitting a broken test).
+2. Added `synth/deriveInvariant.ts` — a new context-invariant test family for grouped-aggregation
+   specs: detects a `Record<string, X>` return shape plus a spec sentence pinning one field down
+   as the difference of two others (e.g. "balance = credits - debits"), and — when repo context
+   is present — finds the project's own existing zero-arg getter (already staged as context) and
+   builds a REAL runtime test: call the live getter, run the candidate, assert the relationship
+   on every output entry. No synthetic data invention; only fires when it can check something
+   actually true about the numbers. This directly closes the confirmed summaryModule bug
+   (`balance` silently left at its zero initializer while `credits`/`debits` accumulate
+   correctly — invisible to a compile-only gate, reproduced byte-for-byte across 3 prior fires).
+   Verified directly with a hand-written buggy/correct implementation pair: the buggy one is
+   rejected with a precise `got 0, expected 50`-style message; the correct one is accepted.
+
+**Live-refired both tasks against a fresh isolated `:3014` strict instance (torn down after,
+`:3001` untouched):**
+- `sortModule`: now produces a compiling module and reaches the hidden suite for the first time
+  ever (previously: no module at all, any round budget). Result still RED — 8/13 hidden checks
+  failed on real logic edge cases (`inStockFirst: false` handled differently from omitted) — but
+  this is now genuine generation-quality signal, not a masked oracle bug.
+- `summaryModule`: now correctly **escalates** ("FM could not produce an oracle-passing candidate
+  in 3 rounds") instead of silently shipping the wrong balance value past a gate-A-only check
+  with no real behavioral oracle at all. Still RED this run (no GREEN yet), but the WRONG=0
+  invariant is now actually enforced for this task, which it demonstrably was not before.
+
+Neither task is GREEN yet — the oracle-gap fix does not by itself guarantee generation success,
+and the remaining gap for both is genuine FM generation quality within `MAX_FM_ROUNDS=3`. But the
+tasks are no longer silently mis-scored, which is the precondition for any future pass-rate
+number here being trustworthy. **Regression check: `synth:prove` 4/4, `prove:all` 250/250,
+`synth:taxonomy` 89% moat coverage — all unchanged.**
+
+**FM daemon launchd plist fixed and verified.** `~/Library/LaunchAgents/
+com.crucible.fm-daemon.plist`'s `ProgramArguments`/log paths were stale (pre-dated the project's
+move to `~/crucible-local/crucible-local`), which is why `launchctl list` showed exit code 78
+(path-not-found) and the daemon has needed a manual restart every session since. Corrected the
+paths, `launchctl unload`+`load`. Verified the fix actually works (not just that the plist
+changed): killed the daemon's PID directly and confirmed launchd auto-respawned it via
+`KeepAlive` — new PID, fresh start timestamp, `/health` OK. First time this has demonstrably
+worked since the move.
+
 ### 2026-07-04 (cont.) — filterModule's "capability ceiling" root-caused: wrong write target, not FM incapacity; two new generation-stressing tasks added
 
 **Root cause found:** `extractGoalPaths()` in `src/CrucibleEngine/agent/synthDriver.ts` picked the

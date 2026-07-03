@@ -17,82 +17,97 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-04, after root-causing filterModule's "capability ceiling" + adding 2 generation-stressing tasks — commit `f43cb6e`, plus uncommitted new-task work this update)
+## CURRENT STATE (last updated 2026-07-04, after closing the Tier 0-2 fork decision, fixing two
+oracle-gap bugs behind sortModule/summaryModule, and fixing the FM daemon launchd plist —
+commits `c88a0b0`, `44f9bb9`; correction note: `coding-benchmarks.ts`'s sortModule/summaryModule
+tasks were already committed at `311e57a`, NOT uncommitted as a prior update of this file said)
+
+**CORRECTION to the previous update:** item 3 below (old numbering) said sortModule/summaryModule
+were "not yet committed" — false, `git log -- coding-benchmarks.ts` shows they landed in `311e57a`.
+Flagging so nobody re-derives "uncommitted work" from a doc that already drifted from `git log`
+once before (see the STANDING RULE at the top of this file).
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-1. **`filterModule`'s apparent capability ceiling was a wrong-write-target bug — FOUND AND FIXED,
-   committed `f43cb6e`.** `extractGoalPaths()` (`agent/synthDriver.ts`) picked the first `.ts`
-   path mentioned anywhere in the goal TEXT as the write target, with no "do not modify"
-   awareness — the `filterModule` prompt lists the protected files before the real target, so the
-   driver asked the FM to rewrite `types.ts` as if it were `filter.ts`'s spec. Fixed with
-   `extractProtectedGoalPaths()`. **Verified: target-selection is now correct in 5/5 live runs**
-   (never mis-targets `types.ts` again). **But a separate, real signal emerged: only 2/5 of those
-   runs scored GREEN** — the FM sometimes can't produce oracle-passing `filter.ts` in
-   `MAX_FM_ROUNDS=3`. This is genuine generation flakiness, not a regression from the fix.
-2. **Central open question, now better-scoped (not yet answered):** why does FM fail a real
-   fraction of `filterModule`-shaped generation attempts within 3 rounds? One data point toward
-   an answer: firing the two new tasks below, `summaryModule`'s generated code was structurally
-   correct (right shape, compiled clean, accumulated `credits`/`debits` correctly) but **forgot to
-   ever set `balance = credits - debits`** — a narrow, single-field miss, not confusion about the
-   task. Suggests "ran out of rounds to self-correct a near-miss" may be at least part of the
-   story, not purely "doesn't understand the spec." **Untested idea for next session:** try
-   `CRUCIBLE_OFFLINE_FM_ROUNDS=5` (or higher) against the same tasks and see if pass rate moves —
-   cheap experiment, not yet run.
-3. **Two new generation-stressing tasks added this session (uncommitted):** `sortModule`
-   (multi-key sort + in-stock-first grouping + id tie-break) and `summaryModule` (group-by-account
-   credit/debit/balance aggregation). Both deliberately bespoke — confirmed NOT catalog primitives
-   (grepped `synth/skills/`, `synth/catalogs/`) before adding, unlike a discarded third candidate
-   (`levenshtein` — already a proven catalog primitive, would've been a false generation-stress
-   signal). Hidden suites hand-verified against reference implementations first (ALL PASS) so the
-   oracle itself isn't in question. **First live fire: both RED** — `sortModule` produced no
-   module in 3 rounds; `summaryModule` hit the balance-field miss above. Task mix is now
-   4-catalog/3-generation (was 4/1) but these two have only ONE fire each — no steady-state read
-   yet, unlike filterModule's now-5-run sample. Needs the same multi-run treatment before treating
-   a single RED as signal rather than noise.
-4. **Frontier-SWE-gap phase gate — still NOT opened, deliberately.** One-to-few runs per
-   generation task isn't enough evidence given filterModule's now-confirmed 2/5 flakiness and the
-   still-thin catalog/generation mix. This is a standing call, not a fresh ask each session — only
-   revisit once the tasks above have multi-run pass-rate data.
-5. **`:3001` still needs a manual restart** to pick up this session's code (all confirmation runs
-   fired against isolated throwaway strict-mode instances — `:3012`, `:3013`, both torn down after
-   use — `:3001` itself was never touched or restarted; killing it was correctly blocked by the
-   permission classifier since that process wasn't started this session).
-6. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
-   competing agent-execution stacks exist: `agent/planner.ts` + `agent/loop.ts` (live path) vs
-   `router/capabilityRouter.ts` → `decompositionDag.ts` → `nodeExecutor.ts` (proven only in
-   isolation, NOT imported by `server.ts`). Wire the second stack into the live path, or mark it
-   experimental/parked. Don't build more on either stack until settled.
-7. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
+1. **Tier 0-2 fork decision — RESOLVED this session, no longer blocking.** Two competing
+   agent-execution stacks existed: `agent/planner.ts`+`agent/loop.ts`+`synthDriver.ts` (live) vs.
+   `router/capabilityRouter.ts`→`decompositionDag.ts`→`nodeExecutor.ts` (proven only in
+   isolation). Decision: **park the isolated stack**, don't merge it piecemeal — the live stack
+   carries hard-won fixes (protected-file enforcement, wrong-write-target guard, secondary-file
+   spec isolation) a rewrite would have to re-earn. Added explicit "EXPERIMENTAL — PARKED, NOT
+   LIVE" banners to all three files (commit `44f9bb9`) so ROADMAP.md's `[x]` marks for these
+   components are never mistaken for live coverage again. Re-open only if there's a concrete
+   reason to migrate, not by default.
+2. **sortModule/summaryModule's 0/3 failures were (at least partly) ORACLE bugs, not a pure FM
+   capability ceiling — two real bugs found and fixed, commit `c88a0b0`.**
+   - `derive.ts`'s `'sort'` property family had two bugs: (a) its `/[Ss]ort/` name filter also
+     matched a co-declared `SortOpts` INTERFACE, so `sorters[0]` sometimes picked the interface
+     name instead of the actual function; (b) even with the right name, the family's tests call
+     `name([3,1,2])` (single-arg numeric array) — a real 2-arg sorter like
+     `sortProducts(products, opts)` failed tsc on the auto-generated test ITSELF, rejecting every
+     candidate regardless of correctness. This is very likely the actual reason sortModule
+     "never produced a module" in 3/3 prior fires — a false-negative self-inflicted oracle
+     failure. Fixed: exclude interface/type-declared names before treating them as callable;
+     arity-gate the family to single-arg signatures.
+   - Added `deriveInvariant.ts`: a new context-invariant test family for grouped-aggregation
+     specs (`Record<string, X>` + a spec sentence pinning one field as the difference of two
+     others, e.g. "balance = credits - debits"). Builds a REAL runtime test using the project's
+     own existing getter (already staged as repo context), rather than inventing synthetic data.
+     Directly closes the confirmed summaryModule bug (balance silently left at its zero
+     initializer — invisible to a compile-only gate). Verified directly with a hand-written
+     buggy/correct pair: buggy rejected with a precise `got 0, expected 50`-style message,
+     correct accepted.
+   - **Live-refired both against an isolated `:3014` strict instance (torn down after):**
+     sortModule now produces a compiling module and reaches the hidden suite for the first time
+     ever (was: no module at all) — result RED, but on real logic edge cases (`inStockFirst:
+     false` vs omitted), 8/13 hidden checks failed, a genuine generation-quality signal now
+     visible instead of a masked oracle bug. summaryModule now correctly **escalates** instead of
+     silently shipping the wrong balance value (was: shipped wrong code past a gate-A-only check
+     with no real oracle at all) — still RED this run, but the WRONG=0 invariant is now actually
+     enforced for this task, which it wasn't before. **Neither is GREEN yet.** The remaining gap
+     for both is genuine FM generation quality within `MAX_FM_ROUNDS=3`, not an oracle artifact.
+   - Regression check: `synth:prove` 4/4, `prove:all` 250/250, `synth:taxonomy` 89% moat coverage
+     — all unchanged, no regressions from the `derive.ts` changes.
+   - **Suggested next step, not yet done:** re-fire sortModule/summaryModule N≥3 each against a
+     fresh isolated instance to get a real pass-rate read now that the oracle isn't the
+     confound; investigate the specific sortModule hidden-suite misses (`inStockFirst=false`
+     treated differently from omitted) as a possible narrow prompt-clarity fix.
+3. **FM daemon launchd plist — FIXED and verified this session.** `~/Library/LaunchAgents/
+   com.crucible.fm-daemon.plist` had a stale `ProgramArguments`/log path from before the project
+   moved to `~/crucible-local/crucible-local` (see [[crucible-project]]); `launchctl list` showed
+   exit code 78 (path-not-found class), explaining the "needs manual restart every session"
+   pattern. Corrected the plist to the current project root, `launchctl unload`+`load`. **Verified
+   the fix actually works, not just that the file changed**: killed the daemon PID directly and
+   confirmed launchd auto-respawned it (new PID, fresh start timestamp, `/health` OK) — this is
+   the first time `KeepAlive` has demonstrably worked since the project moved.
+4. **`filterModule` — unchanged this session, still ~2/5 GREEN.** Not re-tested; carried forward
+   from the prior update. `extractProtectedGoalPaths()` fix (commit `f43cb6e`) still holds
+   (target-selection correct), remaining flakiness is genuine FM generation quality.
+5. **Round-cap conclusion still holds — do not re-litigate.** `MAX_FM_ROUNDS` 3→5 gave no
+   improvement on any of the 3 generation tasks (prior session's `:3013` experiment). Not
+   re-tested this session since the oracle-bug fixes above are a more likely lever; if pursued
+   again, retest AFTER a fresh multi-run pass-rate read on the now-fixed oracles, since the old
+   5-vs-3 comparison was confounded by the sort/summary oracle bugs on 2 of the 3 tasks.
+6. **Frontier-SWE-gap phase gate — still NOT opened, deliberately.** Still true, arguably more so
+   now: the previous "flat 0/3" read on sortModule/summaryModule is now known to have been
+   partly an oracle artifact, so even the thin evidence base it rested on needs a re-read before
+   any phase-gate decision. Revisit only once fresh multi-run data exists post-oracle-fix.
+7. **`:3001` — not touched or restarted this session.** All new work fired against a throwaway
+   `:3014` strict instance, torn down after use. Whatever `:3001` is currently serving predates
+   this session's commits (`c88a0b0`, `44f9bb9`) — restart it before trusting it reflects the
+   sortModule/summaryModule oracle fixes.
+8. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
    for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
    needs its own scoping conversation, bigger than a quick fix.
-8. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
+9. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
    mass-balance rather than evaporation/condensation; a retrieval-content-relevance gap.
-9. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
-   open work; do not loosen `PREMISE_RX` or add a no-evidence FM fallback (reopens fp001-004).
-
-**Done this session (2026-07-04, this update) — full narrative in ROADMAP.md CHANGE LOG:**
-- Root-caused and fixed `filterModule`'s wrong-write-target bug (`extractProtectedGoalPaths()`),
-  committed `f43cb6e`. See item 1 above.
-- A concurrent session/worktree independently fixed a related bug in the same file
-  (`stripForeignApiBlocks()` — secondary-file specs no longer inherit the primary file's export
-  contract) and it got inadvertently bundled into the same `f43cb6e` commit (both editing the
-  working tree at once; no functional conflict). Confirmed present and working, not reverted.
-- Ran 5 total live `filterModule` fires against isolated strict-mode servers (`:3012`, `:3013`,
-  both torn down after; `:3001` untouched) to confirm the fix holds beyond one run. Target
-  selection correct 5/5; overall pass rate 2/5 — see item 1-2 above.
-- Added `sortModule` and `summaryModule` to `coding-benchmarks.ts` + their hidden suites
-  (`coding-bench/sortModule.hidden.ts`, `coding-bench/summaryModule.hidden.ts`), each hand-verified
-  against a reference implementation before firing at the live agent. Not yet committed.
-- Investigated an `offline_local_served` debug-history event showing `provider: groq/mistral/
-  openrouter/huggingface/cloudflare` under `mode: strict` — looked like a strict-mode leak at
-  first glance but is NOT one: `offlineGate()` (`server.ts` ~1206) logs the ORIGINAL intended
-  external provider name for context even when it successfully redirects the call to the local FM
-  instead. Verified by reading the gate's source before reporting — false alarm, not a bug.
+10. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
+    open work; do not loosen `PREMISE_RX` or add a no-evidence FM fallback (reopens fp001-004).
 
 **Composite benchmark baseline (conversational suite) as of last confirmed sweep (2026-07-03,
 N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-run by this update's
-coding-agent work; see the SESSION LOG entry below for the full per-category breakdown.
+coding-agent/architecture work; see the SESSION LOG entry below for the full per-category
+breakdown.
 
 ---
 
