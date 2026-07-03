@@ -16,58 +16,65 @@ function check(desc: string, got: unknown, want: unknown) {
   ok ? passed++ : failed++
 }
 
-// Dynamic import so a missing file gives a clear error (not a silent crash).
-const { filterUsers } = await import(path.join(SRC, 'filter.js')).catch(
-  () => import(path.join(SRC, 'filter.ts') as string),
-) as { filterUsers: (users: any[], opts: any) => any[] }
+// Wrapped in an async IIFE, driven with .catch() (NOT top-level await): the frozen
+// snapshot dir this file gets copied into for grading has no package.json up its
+// directory tree, so esbuild/tsx defaults to CJS output there — which doesn't support
+// top-level await and hard-crashes the whole hidden suite with a TransformError before
+// a single check runs. `await` must not appear at module top level anywhere in this file.
+;(async () => {
+  // Dynamic import so a missing file gives a clear error (not a silent crash).
+  const { filterUsers } = await import(path.join(SRC, 'filter.js')).catch(
+    () => import(path.join(SRC, 'filter.ts') as string),
+  ) as { filterUsers: (users: any[], opts: any) => any[] }
 
-const { getAllUsers } = await import(path.join(SRC, 'users.js')).catch(
-  () => import(path.join(SRC, 'users.ts') as string),
-) as { getAllUsers: () => any[] }
+  const { getAllUsers } = await import(path.join(SRC, 'users.js')).catch(
+    () => import(path.join(SRC, 'users.ts') as string),
+  ) as { getAllUsers: () => any[] }
 
-const users = getAllUsers()  // [Alice/active, Bob/inactive, Charlie/active, Diana/active, Eve/inactive]
+  const users = getAllUsers()  // [Alice/active, Bob/inactive, Charlie/active, Diana/active, Eve/inactive]
 
-// ── Empty opts returns all users unchanged ────────────────────────────────────
-check('empty opts — returns all 5', filterUsers(users, {}).length, 5)
+  // ── Empty opts returns all users unchanged ────────────────────────────────────
+  check('empty opts — returns all 5', filterUsers(users, {}).length, 5)
 
-// ── active=true ───────────────────────────────────────────────────────────────
-const actives = filterUsers(users, { active: true })
-check('active=true — count', actives.length, 3)
-check('active=true — all active', actives.every((u: any) => u.active), true)
+  // ── active=true ───────────────────────────────────────────────────────────────
+  const actives = filterUsers(users, { active: true })
+  check('active=true — count', actives.length, 3)
+  check('active=true — all active', actives.every((u: any) => u.active), true)
 
-// ── active=false ──────────────────────────────────────────────────────────────
-const inactives = filterUsers(users, { active: false })
-check('active=false — count', inactives.length, 2)
-check('active=false — none active', inactives.every((u: any) => !u.active), true)
+  // ── active=false ──────────────────────────────────────────────────────────────
+  const inactives = filterUsers(users, { active: false })
+  check('active=false — count', inactives.length, 2)
+  check('active=false — none active', inactives.every((u: any) => !u.active), true)
 
-// ── query matches name (case-insensitive) ─────────────────────────────────────
-const aliSearch = filterUsers(users, { query: 'ali' })
-check('query=ali — finds Alice', aliSearch.length, 1)
-check('query=ali — correct user', aliSearch[0]?.name, 'Alice')
+  // ── query matches name (case-insensitive) ─────────────────────────────────────
+  const aliSearch = filterUsers(users, { query: 'ali' })
+  check('query=ali — finds Alice', aliSearch.length, 1)
+  check('query=ali — correct user', aliSearch[0]?.name, 'Alice')
 
-// ── query matches email ───────────────────────────────────────────────────────
-const corpSearch = filterUsers(users, { query: 'corp.com' })
-check('query=corp.com — finds Diana', corpSearch.length, 1)
-check('query=corp.com — correct user', corpSearch[0]?.name, 'Diana')
+  // ── query matches email ───────────────────────────────────────────────────────
+  const corpSearch = filterUsers(users, { query: 'corp.com' })
+  check('query=corp.com — finds Diana', corpSearch.length, 1)
+  check('query=corp.com — correct user', corpSearch[0]?.name, 'Diana')
 
-// ── query is case-insensitive ─────────────────────────────────────────────────
-const upperSearch = filterUsers(users, { query: 'CHARLIE' })
-check('query=CHARLIE (upper) — finds Charlie', upperSearch.length, 1)
+  // ── query is case-insensitive ─────────────────────────────────────────────────
+  const upperSearch = filterUsers(users, { query: 'CHARLIE' })
+  check('query=CHARLIE (upper) — finds Charlie', upperSearch.length, 1)
 
-// ── both filters compose ──────────────────────────────────────────────────────
-const both = filterUsers(users, { active: true, query: 'example.com' })
-check('active=true + query=example.com — count', both.length, 2)
-check('active=true + query=example.com — all active', both.every((u: any) => u.active), true)
-check('active=true + query=example.com — names', both.map((u: any) => u.name).sort(), ['Alice', 'Charlie'])
+  // ── both filters compose ──────────────────────────────────────────────────────
+  const both = filterUsers(users, { active: true, query: 'example.com' })
+  check('active=true + query=example.com — count', both.length, 2)
+  check('active=true + query=example.com — all active', both.every((u: any) => u.active), true)
+  check('active=true + query=example.com — names', both.map((u: any) => u.name).sort(), ['Alice', 'Charlie'])
 
-// ── does not mutate input ─────────────────────────────────────────────────────
-const snapshot = JSON.parse(JSON.stringify(users))
-filterUsers(users, { active: false, query: 'eve' })
-check('no input mutation', users, snapshot)
+  // ── does not mutate input ─────────────────────────────────────────────────────
+  const snapshot = JSON.parse(JSON.stringify(users))
+  filterUsers(users, { active: false, query: 'eve' })
+  check('no input mutation', users, snapshot)
 
-// ── query with no match returns empty ─────────────────────────────────────────
-check('no-match query', filterUsers(users, { query: 'zzznomatch' }).length, 0)
+  // ── query with no match returns empty ─────────────────────────────────────────
+  check('no-match query', filterUsers(users, { query: 'zzznomatch' }).length, 0)
 
-// ── result ────────────────────────────────────────────────────────────────────
-console.log(`\n${passed + failed} checks — ${failed === 0 ? 'ALL PASS' : `${failed} FAILURE(s)`}`)
-if (failed > 0) process.exit(1)
+  // ── result ──────────────────────────────────────────────────────────────────
+  console.log(`\n${passed + failed} checks — ${failed === 0 ? 'ALL PASS' : `${failed} FAILURE(s)`}`)
+  if (failed > 0) process.exitCode = 1
+})().catch((e) => { console.error(e); process.exitCode = 1 })

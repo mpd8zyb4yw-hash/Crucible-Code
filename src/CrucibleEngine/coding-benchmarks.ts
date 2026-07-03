@@ -207,7 +207,8 @@ export function getAllUsers(): User[] {
     ],
     prompt:
 `The project already has src/types.ts (defines User) and src/users.ts (defines getAllUsers).
-Add src/filter.ts to this project. ${CONTRACT_NOTE}
+Do NOT modify src/types.ts or src/users.ts — they are existing, correct code; only add new
+files. Add src/filter.ts to this project. ${CONTRACT_NOTE}
 
 Exact public API (src/filter.ts):
   import type { User } from './types'

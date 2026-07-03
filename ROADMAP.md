@@ -1716,6 +1716,100 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-03 (cont. 2) — Verified: simple-triage strict-mode Groq leak is CLOSED (no new fix needed)
+
+**Status check requested by handoff doc, item resolved as already-fixed, not open.** The
+prior handoff flagged "verify strict-mode Groq leak status" as the first task of this session,
+citing a finding that `simple-triage` was silently calling external Groq under
+`CRUCIBLE_OFFLINE=strict`. Investigation:
+
+- The fast/simple triage path lives at `server.ts` ~3002 (`// ── Simple triage — single fast
+  model ──`). It already carries an explicit strict-mode branch (~3010-3042): under
+  `CRUCIBLE_OFFLINE=strict` it calls `callLocalModel` directly (never the `fastModelEntry`
+  external lookup) and abstains honestly if the local FM daemon is down — never escalates
+  externally. The code comment at ~3004-3009 names the exact bug from the prior finding
+  (external `fastModelEntry` silently falling back to Groq/qwen under strict) and documents
+  the fix.
+- `git log -S` on that comment string traces the fix to commit `0e5847d` ("checkpoint:
+  accumulated session work through 2026-07-02"), which predates this session. **Already
+  committed — not a live gap.**
+- **Confirmed at runtime, not just by reading code:** started a second server instance
+  (`CRUCIBLE_OFFLINE=strict PORT=3099 npx tsx server.ts`, existing port-3001 dev server left
+  untouched) and fired an authed `/api/chat` request ("Who wrote Hamlet?") designed to hit the
+  simple-triage path. `/api/debug/history` showed `type: "triage_simple_strict_local"` (the
+  strict-only local-FM branch), not `triage_simple` (the external-model branch). Response was
+  served by `local/apple-fm`.
+- Also inspected the recurring `offline_local_served` events seen in debug history (cycling
+  `provider: openrouter/huggingface/cloudflare/gemini/together/cerebras/cohere` with
+  `mode: "strict"`) — initially looked suspicious. Traced to `offlineGate()` (`server.ts`
+  ~1206): this is the general dispatch-time gate that intercepts every external-provider call
+  site, tries local FM first via `callLocalFromMessages` (which only ever fetches
+  `LOCAL_INFERENCE_URL`), and — on a local hit — logs the *intercepted* provider's name for
+  observability. No fetch to any external host occurs on that path. Not a leak.
+
+**Conclusion:** simple-triage strict-mode leak was fixed before this session started (commit
+`0e5847d`). Sections 2 and 3 of the prior handoff (verify.ts fix, filterModule flakiness
+finding) are NOT contaminated by this and can be trusted as-is.
+
+### 2026-07-03 (cont.) — verify.ts honest-unverified fix, ROADMAP Tier 0-2 correction, doc-staleness fix, filterModule hidden-suite bug
+
+**Doc staleness (fixed the mechanism, not just the instance):** the context handed to this
+session was a stale, pre-session-N snapshot of `NEXT_SESSION.md` — real file on disk had
+already moved through 2+ later sessions. Added a CURRENT STATE block to `NEXT_SESSION.md`
+that must be REPLACED (not appended to) at the end of every session, plus a matching rule in
+`CLAUDE.md`. See both files for the standing rule text.
+
+**ROADMAP.md Tier 0-2 claim corrected:** confirmed live by grep that `server.ts` still does
+not import `nodeExecutor.ts`/`capabilityRouter.ts`/`decompositionDag.ts` — that stack is
+built and proven only via `prove:all` (isolation), not on the path a real `/api/chat` request
+takes (that's `agent/planner.ts` + `agent/loop.ts`). Relabeled the affected `[x]` marks in the
+MISSION build-order section instead of leaving them implying live end-to-end proof. The
+product decision (wire the unused stack into the live path, or park it) is still open —
+tracked in `NEXT_SESSION.md`, needs user sign-off before more code goes on either stack.
+
+**`verify.ts` false-positive on "nothing to check" — FIXED, commit `0516961`.** Added
+`unverified?: boolean` to `VerifyResult` (`agent/loop.ts`), set true only on the
+nothing-runnable branch (`agent/verify.ts:54`), threaded into the emitted `verify` debug
+event. `passed` stays `true` there (unchanged loop control flow — no thrash), but `unverified`
+now makes the "nothing was actually checked" state explicit to any consumer of
+`/api/debug/history`. Verified via direct `makeVerifier().verify()` call against an empty
+scratch project; `tsc --noEmit` clean. `npm run smoke:code` run afterward for regression
+check (see below).
+
+**`filterModule` hidden-suite crash — FIXED.** `smoke:code` showed 4/5 GREEN, 1 RED
+(`filterModule`, "Transform failed with 2 errors" from esbuild). Root cause: the harness's
+own `filterModule.hidden.ts` fixture used top-level `await import(...)`; the frozen snapshot
+directory it gets copied into for grading has no `package.json` anywhere up its directory
+tree, so esbuild/tsx defaults to CJS output there, which doesn't support top-level await —
+crashing the entire hidden suite before a single check ran. This was a pre-existing latent
+bug in the harness fixture itself (unrelated to the `verify.ts` change), just never triggered
+before. Fixed by wrapping the fixture body in an async IIFE driven with `.catch()` instead of
+`await` at module top level. Verified: the esbuild crash is gone in every subsequent run.
+
+**`filterModule` task is genuinely FLAKY under the live agent — NOT fixed, don't paper over
+it.** Once the esbuild crash stopped masking the real result, repeated fires (5 total across
+this session) showed only 2/5 clean; failure modes varied across runs: (a) `users.ts`
+(marked "do not modify" in-file, an existing-scaffold file the agent isn't supposed to touch)
+got overwritten with duplicate `filterUsers` logic, breaking `getAllUsers` — happened 2/5
+runs; (b) agent produced 2 wrong check results out of 15 (a real logic bug in one fire) —
+1/5; (c) agent failed to produce `src/filter.ts` at all — 1/5. Tried the obvious fix: the
+task prompt never actually told the agent not to modify `users.ts`/`types.ts` (only an
+in-file comment did, no tool-level enforcement) — added an explicit "Do NOT modify
+src/types.ts or src/users.ts" line to the prompt (`coding-benchmarks.ts` filterModule task).
+**Re-tested 3x after that prompt fix: still 3/3 RED**, same three distinct failure modes
+recurring. The prompt fix is still worth keeping (more correct instruction regardless) but it
+is NOT what's causing the flakiness — this is a genuine reliability gap in the live agent on
+repo-context tasks (existing files + new file + "don't touch X"), not a quick-fixable bug.
+Matches the already-queued "Closing the Frontier-SWE Gap" phase (Workstream 1: deterministic
+critic tooling; Workstream 2: upfront elicitation/ambiguity surfacing) more than it matches a
+one-off bug — flagged in `NEXT_SESSION.md` as a high-tier item rather than force-fixed via
+more prompt engineering (which would be curve-fitting to this one benchmark task, not a real
+capability improvement).
+
+**Regression check:** `smoke:code` full suite: kvstore/ratelimiter/scheduler/regex hold clean
+GREEN across all runs this session (no regression from the `verify.ts`/`loop.ts` change).
+`filterModule` variance described above is a separate, pre-existing-but-newly-surfaced issue.
+
 ### 2026-06-29 (cont.) — synthDriver.ts: research/factual turns now offline-routed
 
 **Gap closed:** `makeOfflineDriveTurn` previously threw `OfflineEscalateError` immediately

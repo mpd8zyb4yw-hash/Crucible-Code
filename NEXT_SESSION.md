@@ -17,64 +17,64 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-03, after commit `9f400a0`, by the session that fixed the ROADMAP.md Tier 0-2 claim + the verify.ts false-positive)
+## CURRENT STATE (last updated 2026-07-03, after commit `0516961` + uncommitted follow-ups: filterModule's hidden-suite esbuild-crash fix, and a runtime-verified closure of the simple-triage strict-mode Groq-leak check)
 
-**Open threads, no priority order implied — pick based on what the user asks for:**
+**NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-1. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
-   competing agent-execution stacks exist: `agent/planner.ts` + `agent/loop.ts` (what a live
-   `/api/chat` request actually runs) vs `router/capabilityRouter.ts` → `decompositionDag.ts` →
-   `nodeExecutor.ts` (built, proven via `prove:all`, but NOT imported by `server.ts` — verified
-   live by grep, 2026-07-03). Someone has to decide: wire the second stack into the live path
-   (replace or merge with the first), or mark it experimental/parked. Documented in ROADMAP.md's
-   build-order section as of this update. Don't build more on either stack until this is settled.
-   **Not started this session** — explicitly deferred pending user direction, per the doc's own
-   instruction not to commit to an architecture call without sign-off.
-2. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
-   ("Solar-powered refrigerator" Wikipedia article over the general one) for "how does a
-   refrigerator keep food cold?". Root-caused 2026-07-03 (see SESSION LOG below); not a
-   cache-poisoning issue (ruled out same session); needs its own scoping conversation, bigger
-   than a quick fix.
-3. **e005 (explain category) remaining gap** — post-truncation-fix, the grounded source is
-   accurate but framed around water mass-balance rather than evaporation/condensation. A
-   retrieval-content-relevance gap, distinct from the truncation bug already fixed in `311ae9f`.
-4. **e003 (explain category)** — NOT a bug. Accepted strict-mode corpus-coverage tradeoff,
-   decided 2026-07-01. Do not "fix" by loosening `PREMISE_RX` or adding a no-evidence FM
-   fallback — that reopens fp001-004. Listed here only so it isn't mistaken for open work.
-5. **Frontier-SWE-gap phase gate** — ROADMAP.md's gating condition (timeout verification,
-   clarify wiring, false-premise/trust diagnosis) no longer names an unresolved item verbatim as
-   of 2026-07-03 (timeout and clarify are closed; premise-gate hardened same session). Whether
-   that means the gate is now open is a judgment call for the user, not decided yet.
+1. **`filterModule` benchmark task is flaky under the live agent (NEW, most concrete lead).**
+   5 fires this session, only 2 clean. Three distinct failure modes recur: overwrites the
+   "do not modify" `users.ts` scaffold file (2/5), produces 2 wrong logic results (1/5), fails
+   to produce `src/filter.ts` at all (1/5). Explicit "do NOT modify" line added to the task
+   prompt did NOT fix it (3/3 RED on retest after the prompt change). This is a real
+   reliability gap on repo-context tasks (existing files + new file + a constraint to respect),
+   not a quick bug — matches the queued Frontier-SWE-gap phase (Workstream 1 critic tooling /
+   Workstream 2 ambiguity surfacing) better than a one-off fix. Full detail in ROADMAP.md
+   CHANGE LOG 2026-07-03 entry.
+2. **Tier 0-2 fork decision (product call, needs user sign-off before more code).** Two
+   competing agent-execution stacks exist: `agent/planner.ts` + `agent/loop.ts` (live path) vs
+   `router/capabilityRouter.ts` → `decompositionDag.ts` → `nodeExecutor.ts` (proven only in
+   isolation, NOT imported by `server.ts` — verified live by grep, 2026-07-03). Wire the second
+   stack into the live path, or mark it experimental/parked. Don't build more on either stack
+   until settled.
+3. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
+   for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
+   needs its own scoping conversation, bigger than a quick fix.
+4. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
+   mass-balance rather than evaporation/condensation; a retrieval-content-relevance gap.
+5. **Frontier-SWE-gap phase gate** — ROADMAP.md's gating condition no longer names an
+   unresolved item verbatim (timeout/clarify closed, premise-gate hardened). Whether the gate
+   is now open is a judgment call for the user.
+6. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
+   open work; do not loosen `PREMISE_RX` or add a no-evidence FM fallback (reopens fp001-004).
 
-**`verify.ts` false-positive on "nothing to check" — FIXED this session (uncommitted as of this
-write-up).** Previously returned `{passed: true, signal: 'none', report: 'No runnable check
-detected.'}` with no way to distinguish it from a genuine pass. Added a `unverified?: boolean`
-field to `VerifyResult` (`agent/loop.ts`), set `unverified: true` only on the nothing-ran branch
-(`agent/verify.ts:54`), and threaded it into the `emit({type:'verify', ...})` debug event so
-`/api/debug/history` now shows this state explicitly instead of a bare `passed:true`. Deliberately
-did NOT flip `passed` to `false` — that would make the agent loop retry/thrash trying to "fix" a
-check that doesn't exist. `passed` still controls loop accept/retry (unchanged behavior);
-`unverified` is the new, honest signal for any consumer (debug history, future audits) deciding
-whether a `[x]` mark backed by an agent run was actually checked. Verified live: ran
-`makeVerifier().verify()` against an empty scratch dir (no package.json/tests/py files) via tsx,
-confirmed output is `{passed:true, signal:'none', report:'No runnable check detected.',
-unverified:true}`. `npx tsc --noEmit` clean on the touched files. Two other unrelated
-`VerifyResult` interfaces exist (`domainVerifiers.ts`, `apply/applyLayer.ts`) — confirmed
-separate types, not touched. Did not re-run the full `smoke:code` benchmark (model-call-heavy;
-the change is additive/type-safe with no control-flow change, so risk is low) — flag this as the
-one thing NOT independently confirmed via a full agent-loop repro, only via direct unit-level call.
+**Done this session (2026-07-03, this update):**
+- `verify.ts` false-positive on "nothing to check" — fixed, committed `0516961`. Added
+  `unverified?: boolean` to `VerifyResult`, true only on the nothing-runnable branch, threaded
+  into the emitted debug event. `passed` left `true` (no loop-thrash change). Confirmed via
+  direct unit call AND via `smoke:code` regression run afterward (see below) — no regression.
+- `filterModule.hidden.ts` esbuild top-level-await crash — fixed (async IIFE + `.catch()`
+  instead of top-level `await`). This was masking the real hidden-suite result entirely;
+  confirmed fixed (crash never recurs across 8+ subsequent fires this session).
+- `smoke:code` regression check: kvstore/ratelimiter/scheduler/regex hold clean GREEN across
+  every run this session. `filterModule` variance (item 1 above) is real and NOT caused by the
+  `verify.ts`/`loop.ts` change — it reproduces identically with or without that change present,
+  and the failure modes are agent-output variance, not a crash.
+- ROADMAP.md Tier 0-2 `[x]` claims corrected to say "proven in isolation, not live-wired."
+- Doc-staleness fix: CURRENT STATE block convention (this section) + matching CLAUDE.md rule.
+- **Simple-triage strict-mode Groq-leak check — CONFIRMED ALREADY FIXED, not open.** A stale
+  handoff (predating this file's own CURRENT STATE mechanism — see the doc-staleness item above)
+  asked to re-verify whether `simple-triage` leaks to external Groq under `CRUCIBLE_OFFLINE=strict`.
+  Traced the fix to commit `0e5847d` (`server.ts` ~3010: strict mode calls `callLocalModel`
+  directly, never the external `fastModelEntry` lookup, abstains honestly if the FM daemon is
+  down). Confirmed live: ran a second server on port 3099 with `CRUCIBLE_OFFLINE=strict` (port
+  3001 dev server untouched), fired an authed `/api/chat` "Who wrote Hamlet?" query, and saw
+  `triage_simple_strict_local` (not `triage_simple`) in `/api/debug/history`, served by
+  `local/apple-fm`. Full writeup in ROADMAP.md CHANGE LOG, 2026-07-03 "(cont. 2)" entry. This item
+  should NOT be re-flagged as open in a future handoff.
 
-**Docs discipline note:** the CLAUDE.md instructions injected into a prior turn of this same
-session were a stale, pre-session-N snapshot of this file (missing the 2026-07-02 and earlier
-2026-07-03 session logs). Fixed going forward — see STANDING RULE above and the matching note
-added to `CLAUDE.md`. Also fixed ROADMAP.md's Tier 0-2 `[x]` claims to say "built + proven in
-isolation, not live-wired" instead of implying live end-to-end proof (see item 1 above).
-
-**Composite benchmark baseline as of last confirmed sweep (2026-07-03, N=3 post premise-gate
-fix):** pass 0.920 ± 0.000, cov not restated this update — see SESSION LOG entry below for the
-full per-category breakdown before treating this number as current. Not re-run after the
-verify.ts fix (no reason to expect it moves the composite — the fix only affects the coding-agent
-debug signal, not the conversational benchmark suite these numbers come from).
+**Composite benchmark baseline (conversational suite) as of last confirmed sweep (2026-07-03,
+N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-run by this update's
+coding-agent work; see the SESSION LOG entry below for the full per-category breakdown.
 
 ---
 
