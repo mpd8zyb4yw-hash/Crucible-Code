@@ -15,6 +15,22 @@ export interface DerivedTests { testFile: SynthFile; count: number }
 
 const SEP = /\s*(?:===|==>|=>|->|→|\breturns?\b|\bgives?\b)\s*/
 
+/** Escape a string for embedding in a RegExp constructor. */
+function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
+
+/** Count top-level (bracket-depth-0) comma-separated params in a signature's param string. */
+function countTopLevelParams(params: string): number {
+  const trimmed = params.trim()
+  if (!trimmed) return 0
+  let depth = 0, count = 1
+  for (const ch of trimmed) {
+    if ('<([{'.includes(ch)) depth++
+    else if ('>)]}'.includes(ch)) depth--
+    else if (ch === ',' && depth === 0) count++
+  }
+  return count
+}
+
 export function deriveTests(spec: string, modulePath: string): DerivedTests | null {
   const feats = extractFeatures(spec)
   const names = feats.exports
@@ -112,18 +128,44 @@ export function derivePropertyTests(spec: string, modulePath: string): PropertyT
 
   // ── Sort: *[Ss]ort → output is sorted permutation (must look like comparison sort) ──────
   // Exclude topological sorts (take nodes+edges) and similar structural sorts.
+  //
+  // TWO BUGS FOUND 2026-07-04 root-causing sortModule's 0/3 "never produces a module":
+  // 1. The `/[Ss]ort/` name filter also matches a co-declared `SortOpts` INTERFACE (e.g.
+  //    "export interface SortOpts { ... }" alongside "export function sortProducts(...)") —
+  //    `feats.exports` lists the interface first, so `sorters[0]` picked 'SortOpts' (not a
+  //    function at all) as "the sorter" and generated a test calling it as one. Fixed by
+  //    excluding names the spec declares via `interface`/`type` before treating them as a
+  //    callable sorter.
+  // 2. Even with the right name, this family's tests call `name([3,1,2])` — a single-arg
+  //    numeric-array signature. A sorter like `sortProducts(products: Product[], opts:
+  //    SortOpts)` takes TWO args, so the generated test itself fails tsc (wrong arity/type)
+  //    regardless of whether the candidate is correct — a false-negative self-inflicted
+  //    oracle failure, not a real generation-capability gap. Only apply this family when the
+  //    spec's own declared signature for the sorter is single-arg (or no signature is found
+  //    at all, preserving old behavior for looser specs).
   const isTopo = /topolog|topo[_\s-]?sort|dependency/i.test(lower)
-  const sorters = feats.exports.filter(n => /[Ss]ort/.test(n) && !/topo|topolog/i.test(n))
+  const sorters = feats.exports.filter(n =>
+    /[Ss]ort/.test(n) && !/topo|topolog/i.test(n) &&
+    !new RegExp(`\\b(?:interface|type)\\s+${escapeRe(n)}\\b`).test(spec),
+  )
   if (!family && sorters.length && !isTopo) {
-    family = 'sort'
     const name = sorters[0]
-    assertions.push(
-      `prop('${name} returns array', Array.isArray(${name}([])))`,
-      `prop('${name} sorted [3,1,2]', (() => { const r=${name}([3,1,2]); return r[0]<=r[1] && r[1]<=r[2] })())`,
-      `prop('${name} preserves length', ${name}([5,3,1,4,2]).length === 5)`,
-      `prop('${name} empty', ${name}([]).length === 0)`,
-      `prop('${name} same elements', JSON.stringify(${name}([3,1,2]).slice().sort((a,b)=>a-b)) === '[1,2,3]')`,
-    )
+    const sig = spec.match(new RegExp(`\\bfunction\\s+${escapeRe(name)}\\s*\\(([^)]*)\\)`))
+      ?? spec.match(new RegExp(`\\b${escapeRe(name)}\\s*\\(([^)]*)\\)\\s*:`))
+    const arity = sig ? countTopLevelParams(sig[1]) : 1
+    if (arity <= 1) {
+      family = 'sort'
+      assertions.push(
+        `prop('${name} returns array', Array.isArray(${name}([])))`,
+        `prop('${name} sorted [3,1,2]', (() => { const r=${name}([3,1,2]); return r[0]<=r[1] && r[1]<=r[2] })())`,
+        `prop('${name} preserves length', ${name}([5,3,1,4,2]).length === 5)`,
+        `prop('${name} empty', ${name}([]).length === 0)`,
+        `prop('${name} same elements', JSON.stringify(${name}([3,1,2]).slice().sort((a,b)=>a-b)) === '[1,2,3]')`,
+      )
+    }
+    // arity >= 2 (e.g. items+opts) falls through — a multi-key/opts sorter is a different
+    // shape than this family covers; skip rather than emit a broken test. May be picked up
+    // by deriveInvariantTests (context-getter-fed runtime checks) or fall to gate-A-only.
   }
 
   // ── String transform: single export, takes string → returns string ─────────

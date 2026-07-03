@@ -24,6 +24,7 @@
 // ============================================================================
 import { extractFeatures, type SynthFile } from './index'
 import { deriveTests, derivePropertyTests } from './derive'
+import { deriveInvariantTests } from './deriveInvariant'
 import { verifyCandidateAsync } from './oracle'
 import { synthesizePureCode, distillToSkill } from './pureCode'
 import { buildRepoContext, withRetrieval, type OracleContextFile } from './repoContext'
@@ -152,7 +153,13 @@ export async function synthesizeUniversal(
   // and generates inline assertions from the function signature. These are better than compile-
   // gate-only: they catch logic bugs like `opts.active && !user.active` for active=false.
   const propertyDerived = derived ? null : derivePropertyTests(spec, modulePath)
-  const effectiveDerived = derived ?? propertyDerived
+  // ── Context-invariant tests: repo-getter-fed runtime checks for grouped-aggregation specs
+  // property/behavioral derivation can't reach (e.g. "balance = credits - debits" summarized
+  // by account). Needs contextFiles, so only tried when a project context is present.
+  const invariantDerived = (derived || propertyDerived || !contextFiles.length)
+    ? null
+    : deriveInvariantTests(spec, modulePath, contextFiles)
+  const effectiveDerived = derived ?? propertyDerived ?? invariantDerived
 
   // ── L3: reason a candidate with the on-device FM, GATED by the oracle. ─────────────────
   if (effectiveDerived) {
@@ -173,7 +180,11 @@ export async function synthesizeUniversal(
         // Only distill exact behavioral tests — property tests are not strong enough to be
         // promoted to primitives (they might accept incorrect implementations on other inputs).
         if (opts.distill !== false && derived) distillToSkill(spec, modulePath, candidate)
-        const kind = derived ? 'behavioral' : `property (${(effectiveDerived as any).family ?? 'unknown'})`
+        const kind = derived
+          ? 'behavioral'
+          : invariantDerived
+            ? `context-invariant (${invariantDerived.family})`
+            : `property (${(effectiveDerived as any).family ?? 'unknown'})`
         return { files, source: 'fm-distilled', verified: true, testsDerived: effectiveDerived.count, fmCalls, detail: `FM proposed → oracle-verified (${effectiveDerived.count} ${kind} tests)` }
       }
       priorError = v.detail
