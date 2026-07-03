@@ -122,6 +122,19 @@ export function destructiveReason(command: string): string | null {
   return null
 }
 
+// ── Protected-file guard ───────────────────────────────────────────────────────
+// write_file blindly replaces a file's full content with no read-back check (unlike
+// edit_file/apply_patch, which must match existing content first) — that makes it the one
+// tool that can silently destroy an existing, correct file the agent only meant to leave
+// alone. A "do not modify" / "read-only" marker on the file's first line is a convention
+// already used for existing/scaffolded code; enforce it here at the tool layer instead of
+// relying on the model to honor a natural-language instruction in the prompt or a comment.
+const PROTECTED_MARKER_RE = /\b(?:do not modify|do not edit|don'?t modify|don'?t edit|read-?only)\b/i
+function protectedFileReason(existingContent: string): string | null {
+  const firstLine = existingContent.slice(0, 200).split('\n', 1)[0]
+  return PROTECTED_MARKER_RE.test(firstLine) ? firstLine.trim() : null
+}
+
 const MAX_OUTPUT_CHARS = 24_000
 
 /** Read a file for mutation tools, returning a clean error (never throwing EISDIR/ENOENT). */
@@ -346,6 +359,10 @@ registry.register({
   mutates: true,
   async run(args, ctx) {
     const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    if (fs.existsSync(abs) && !fs.statSync(abs).isDirectory()) {
+      const reason = protectedFileReason(fs.readFileSync(abs, 'utf-8'))
+      if (reason) return { ok: false, output: `Refusing to overwrite ${abs} — marked protected ("${reason}"). Write to a different path instead; this file must not change.` }
+    }
     fs.mkdirSync(path.dirname(abs), { recursive: true })
     fs.writeFileSync(abs, String(args.content ?? ''), 'utf-8')
     ctx.onFileMutated?.([abs])
@@ -370,6 +387,8 @@ registry.register({
     const abs = resolveSafe(String(args.path ?? ''), ctx)
     const read = readFileChecked(abs)
     if (!read.ok) return read
+    const protectedReason = protectedFileReason(read.content)
+    if (protectedReason) return { ok: false, output: `Refusing to edit ${abs} — marked protected ("${protectedReason}"). This file must not change.` }
     const oldStr = String(args.old ?? ''), newStr = String(args.new ?? '')
     if (!oldStr) return { ok: false, output: 'old must be non-empty' }
     const content = read.content
@@ -399,6 +418,8 @@ registry.register({
     const abs = resolveSafe(String(args.path ?? ''), ctx)
     const read = readFileChecked(abs)
     if (!read.ok) return read
+    const protectedReason = protectedFileReason(read.content)
+    if (protectedReason) return { ok: false, output: `Refusing to patch ${abs} — marked protected ("${protectedReason}"). This file must not change.` }
     const patchBody = String(args.patch ?? '')
     if (!patchBody.trim()) return { ok: false, output: 'A non-empty "patch" argument (unified diff) is required.' }
     const result = applyUnifiedPatch(read.content, patchBody)
