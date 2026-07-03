@@ -60,6 +60,11 @@ function failFingerprint(stepId: number, failure: string): string {
   return `${stepId}:${sig}`
 }
 
+// A weak model sometimes echoes the schema example from PLAN_SYSTEM back verbatim
+// (e.g. "<imperative step>") instead of filling it in. Treat that as no plan at all
+// rather than executing the literal placeholder text as a real step.
+const isPlaceholder = (s: unknown): boolean => typeof s === 'string' && /^<.*>$/.test(s.trim())
+
 function parseSteps(raw: string): Step[] {
   // Tolerant: find the first [...] array, else a fenced block.
   const arrText = raw.match(/\[[\s\S]*\]/)?.[0]
@@ -70,13 +75,13 @@ function parseSteps(raw: string): Step[] {
   }
   if (!Array.isArray(parsed)) return []
   return parsed
-    .filter((s: any) => s && typeof s.intent === 'string')
+    .filter((s: any) => s && typeof s.intent === 'string' && !isPlaceholder(s.intent))
     .slice(0, 8)
     .map((s: any, i: number) => ({
       id: Number(s.id ?? i + 1),
       intent: s.intent,
       files: Array.isArray(s.files) ? s.files.map(String) : undefined,
-      doneCheck: typeof s.doneCheck === 'string' ? s.doneCheck : undefined,
+      doneCheck: typeof s.doneCheck === 'string' && !isPlaceholder(s.doneCheck) ? s.doneCheck : undefined,
       status: 'pending' as const,
     }))
 }
