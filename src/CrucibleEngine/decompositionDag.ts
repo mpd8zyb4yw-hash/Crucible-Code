@@ -1,3 +1,7 @@
+// EXPERIMENTAL — PARKED, NOT LIVE (decided 2026-07-04). See the banner in
+// router/capabilityRouter.ts for the full fork-decision rationale — server.ts never imports
+// this module; the live coding-agent path is agent/planner.ts + agent/loop.ts + synthDriver.ts.
+//
 // Tier 1.1 — Task Decomposition → Dependency DAG.
 //
 // A natural-language request comes in; the output is an ordered DAG where the DAG

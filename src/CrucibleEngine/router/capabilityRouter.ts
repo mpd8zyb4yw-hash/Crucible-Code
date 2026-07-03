@@ -1,3 +1,14 @@
+// EXPERIMENTAL — PARKED, NOT LIVE (decided 2026-07-04, Tier 0-2 fork resolution).
+// server.ts does not import this module. The code path a real /api/chat request takes is
+// agent/planner.ts + agent/loop.ts + agent/synthDriver.ts. This file (and decompositionDag.ts,
+// nodeExecutor.ts) is proven correct only in isolation/tests. Decision: keep it parked as a
+// design reference and a candidate for a future deliberate migration, rather than merge it into
+// the live path piecemeal — the live stack already carries hard-won, battle-tested fixes
+// (protected-file tool-layer enforcement, wrong-write-target guard, secondary-file spec
+// isolation) that a rewrite would have to re-earn. Do not build further on this stack without
+// first re-opening the fork decision; do not treat "[x]" in ROADMAP.md's mission build order as
+// "live" for these three files.
+//
 // Capability Router + Escalation Policy — the foundation layer (mission Tier 0).
 //
 // Before any task touches the FM or the synthesis engine, it is classified here.
