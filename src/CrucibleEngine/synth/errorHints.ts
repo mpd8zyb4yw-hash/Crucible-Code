@@ -43,5 +43,16 @@ export function distillHint(detail: string, _spec: string): string | null {
     return 'You are mutating the input array (Array.prototype.sort sorts IN PLACE). Copy it first: `[...items].sort(...)` — never call .sort() directly on the parameter.'
   }
 
+  // filter-opts: one-sided case-insensitive comparison (query not lowercased, only the field is).
+  if (/FAIL — query filter case-insensitive/.test(detail)) {
+    return 'Your case-insensitive search only lowercases the FIELD, not the search term itself. Lowercase BOTH sides: `field.toLowerCase().includes(query.toLowerCase())`, not `field.toLowerCase().includes(query)`.'
+  }
+
+  // filter-opts: active:false silently unfiltered (classic `opts.active && ...` guard bug —
+  // false && anything is false, so the filter never runs when explicitly filtering for false).
+  if (/FAIL — active=false returns only inactive/.test(detail)) {
+    return 'Your active-filter check is likely `if (opts.active && ...)`, which is FALSE (and thus skipped) when `opts.active` is explicitly `false` — so filtering for inactive users does nothing. Check `opts.active !== undefined` to detect "was a filter given at all," then compare `user.active !== opts.active` to decide whether to exclude.'
+  }
+
   return null
 }

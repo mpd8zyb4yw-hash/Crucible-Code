@@ -148,6 +148,45 @@ function repairDefaultDirectionCheck(candidate: string, detail: string): string 
 }
 
 /**
+ * One-sided case-insensitive comparison — confirmed live 2026-07-04 on a filterModule fire
+ * (found via the `testTail` fix that stopped hiding this failure from the retry prompt): the
+ * candidate lowercases the FIELD being searched (`user.name.toLowerCase()`) but never
+ * lowercases the SEARCH TERM itself (`opts.query`), so `.includes(opts.query)` only matches
+ * when the query happens to already be lowercase — searching "ALPHA" misses "alpha". Repair:
+ * wrap the `.includes(...)` argument in `.toLowerCase()` wherever it's compared against an
+ * already-lowercased field and isn't already lowercased itself.
+ */
+function repairOneSidedCaseInsensitive(candidate: string, detail: string): string | null {
+  if (!/FAIL — query filter case-insensitive/.test(detail)) return null
+  const rx = /\.toLowerCase\(\)\.includes\(\s*([A-Za-z_][\w.]*)\s*\)/g
+  let changed = false
+  const repaired = candidate.replace(rx, (whole, arg) => {
+    if (/\.toLowerCase\(\)$/.test(arg)) return whole   // already lowercased, not the bug
+    changed = true
+    return `.toLowerCase().includes(${arg}.toLowerCase())`
+  })
+  return changed ? repaired : null
+}
+
+/**
+ * Classic `if (opts.active && !user.active) continue` guard bug — confirmed live 2026-07-04 on
+ * the SAME filterModule fire as the case-insensitive bug above. `opts.active && ...` is FALSE
+ * (so the guard is skipped, filtering nothing) whenever `opts.active` is explicitly `false` —
+ * the exact case the caller wants to filter ON. The correct check needs to distinguish "no
+ * filter given" (`undefined`) from "filter for false" — `opts.active !== undefined` — then
+ * exclude on inequality (`user.active !== opts.active`), not truthiness. Repair targets the
+ * exact syntactic shape found live: `<field>.active && !<item>.active` used as a skip/continue
+ * condition, rewritten to the undefined-aware inequality form.
+ */
+function repairActiveFalseGuard(candidate: string, detail: string): string | null {
+  if (!/FAIL — active=false returns only inactive/.test(detail)) return null
+  const rx = /(\w+)\.active\s*&&\s*!\s*(\w+)\.active\b/g
+  if (!rx.test(candidate)) return null
+  const repaired = candidate.replace(rx, "$1.active !== undefined && $2.active !== $1.active")
+  return repaired !== candidate ? repaired : null
+}
+
+/**
  * Spurious Array.isArray guard on a non-array opts parameter — the FM copy-pastes the
  * (correct) items-array validation onto the singular opts object, making the function throw
  * on every legitimate call. Strip exactly that guard.
@@ -171,6 +210,8 @@ const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string
   repairArrayGuard,
   repairDynamicKeyIndex,
   repairDefaultDirectionCheck,
+  repairOneSidedCaseInsensitive,
+  repairActiveFalseGuard,
 ]
 
 /** Propose zero or more deterministically-repaired variants of a rejected candidate. */
