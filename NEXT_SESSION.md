@@ -104,9 +104,9 @@ said)
    genuinely red. This is a judgment call for the next session/user: open the gate on the
    strength of one task's clean pass-rate, or wait for a broader base (filterModule audit +
    sortModule's structural gap addressed or accepted).
-8. **`:3001` — needs a restart onto this session's final commits** (the isolated `:3016`/`:3015`/
-   `:3014` instances used for all testing were always torn down after use; `:3001` itself was
-   last restarted mid-session, not onto the final `cff548b`).
+8. **`:3001` — restarted onto commit `542887b` (end of session), single-listener verified,
+   clean boot log.** Reflects all of tonight's work: Tier 0-2 park, all five oracle/repair
+   fixes, and the launchd fix.
 9. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
    for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
    needs its own scoping conversation, bigger than a quick fix.
