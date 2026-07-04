@@ -95,9 +95,9 @@ correction note: `coding-benchmarks.ts`'s sortModule/summaryModule tasks were al
    0/3 GREEN on both generation-stress tasks — opening the gate needs GREEN runs, not just an
    honest read. Revisit once either task lands a real pass, or once the two candidate levers in
    item 2 have been tried.
-7. **`:3001` — restarted this session onto commit `4d97ddc`, but NOT onto `fecd6fc`** (the
-   opts-transform-smoke fix landed after that restart). Restart again before trusting `:3001`
-   reflects tonight's full fix set.
+7. **`:3001` — restarted again onto commit `5df5f17` (end of this session), new PID verified
+   single-listener, clean boot log.** Reflects all of tonight's work: the Tier 0-2 park, both
+   oracle-gap fixes, and the launchd fix.
 8. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
    for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
    needs its own scoping conversation, bigger than a quick fix.
