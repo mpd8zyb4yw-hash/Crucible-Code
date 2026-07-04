@@ -1716,6 +1716,49 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-04 (cont. 3) — second oracle gap closed (opts-transform smoke test), fresh multi-run pass-rate read on sortModule/summaryModule
+
+**Found and fixed a second oracle gap behind sortModule, commit `fecd6fc`.** The arity-gate fix
+from the previous entry correctly stopped the `'sort'` property family from testing `fn(items,
+opts)`-shaped sorters with a broken single-arg test — but that left the shape with NO oracle at
+all, shipping via gate-A-only (compile-check only). Confirmed live: sortModule's FM output
+reproducibly (2/2 identical fires) wrote `if (!Array.isArray(opts)) throw new TypeError(...)` —
+a copy-paste mistake mirroring the correct array-check on `products` but wrongly applied to the
+singular `opts` object, throwing on every legitimate call, invisible to a compile-only gate since
+throwing at runtime is still valid TypeScript. Added `deriveOptsTransformSmokeTest` to
+`deriveInvariant.ts`: reuses the getter-discovery helper from the grouped-ledger family to call
+the candidate with a minimal well-formed opts object (derived from the first required
+string-literal-union field in the spec) and assert it doesn't throw, returns an array, preserves
+length, and doesn't mutate its input. Deliberately weaker than a full behavioral test (no
+sort-order correctness assertion) but closes the "ships a function that throws on every call"
+gap. Verified directly with the exact confirmed buggy/correct pair: buggy rejected with `threw:
+TypeError: opts must be an array of SortOpts objects`; correct accepted. Excludes `filter*`-named
+exports (already covered by derive.ts's more precise `filter-opts` family).
+
+**Fresh multi-run pass-rate read, now that both oracle gaps are closed** (isolated `:3015`,
+torn down after, `:3001` untouched):
+- `sortModule`, 3 fires: 0/3 GREEN. 2/3 honestly escalated (oracle correctly rejected 3 rounds of
+  bad candidates — no module shipped, which is the smoke test working as intended). 1/3 reached
+  the hidden suite (LLM rubric 80/100, up from 40 pre-fix) and failed 8/13 checks on one specific
+  narrow gap: `inStockFirst: false` handled differently from `inStockFirst` omitted, when the
+  spec says both should behave identically. Zero throws, zero silently-wrong-shipped this round.
+- `summaryModule`, 3 fires: 0/3 GREEN, 3/3 honestly escalated — consistent, no wrong code shipped
+  in any run. The FM is not managing to self-correct the balance-assignment gap within
+  `MAX_FM_ROUNDS=3` even with a precise oracle message (`got 0, expected 50`-style) telling it
+  exactly what's wrong.
+
+**Read on this data:** still 0/3 GREEN on both tasks — this does NOT open the Frontier-SWE-gap
+phase gate, which needs actual passes, not just an honest read. But the failure mode changed from
+"silently wrong or falsely blocked by a broken test" to "narrow logic gap" (sortModule) or "can't
+use precise feedback to self-correct within round budget" (summaryModule) — real new information,
+not a restated failure. Two untried next levers, flagged in NEXT_SESSION.md: a prompt-clarity fix
+for sortModule's `inStockFirst=false`-vs-omitted gap, and inspecting summaryModule's actual
+round-2/round-3 FM inputs (not currently instrumented) to see whether the precise oracle feedback
+is even reaching the retry prompt saliently.
+
+Regression check across all three fix commits this session (`c88a0b0`, `44f9bb9`, `fecd6fc`):
+`synth:prove` 4/4, `prove:all` 250/250, `synth:taxonomy` 89% moat coverage — unchanged throughout.
+
 ### 2026-07-04 (cont. 2) — Tier 0-2 fork resolved (parked), sortModule/summaryModule oracle bugs fixed, FM daemon launchd fixed
 
 **Tier 0-2 fork decision resolved.** Two competing agent-execution stacks existed:
