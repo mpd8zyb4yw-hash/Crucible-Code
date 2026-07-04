@@ -17,20 +17,32 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-04 late, after tripwire RECALIBRATION 2→3 on real
-ledger evidence + live verification sweep of the phase-open work — see SESSION LOG below)
+## CURRENT STATE (last updated 2026-07-04 night, after gate-ran/gate-skipped TELEMETRY
+shipped for every fail-open critic, commit `c79da7c` — see SESSION LOG below)
 
-**HEADLINE: Frontier-SWE-gap phase ACTIVE; its first two deliverables now VERIFIED against
-real data. Tripwire threshold recalibrated 2→3 consecutive identical fingerprints: replaying
-fm-rounds.jsonl (18 attempts) showed the 2-round threshold would have killed 2 of the 8
-eventual wins (both recovered on round 3 after two identical failures) to save ≤1 round each
-in the 7 genuine non-converging runs. Post-recalibration live smoke:code: 6/7 green (gen 2/3),
-no lint false positives, tripwire fired live twice on sortModule (compile-only, round 3/3)
-with the honest abstain. `prove:all` 250/250 green. Also found+fixed: `@typescript-eslint/parser`
-was an UNDECLARED transitive dep — Gate A2 would silently fail open on any install that
-dropped it; now pinned ^8.61.0 in devDependencies.**
+**HEADLINE: Fail-open gate telemetry LIVE (`c79da7c`). Every fail-open critic —
+`gateA2_lint` (synth/lintGate.ts), `grounding` and `harden` (agent/loop.ts) — now records
+every ran/skipped decision with a reason to `.crucible/gate-telemetry.jsonl` via
+`debug/gateTelemetry.ts` (append-only, best-effort, console.warns once per gate per process
+on first skip). Verified end-to-end: `:3001` restarted onto `c79da7c`, live smoke:code 6/7
+green (filterModule GREEN again — an earlier red this session was the OLD server binary +
+FM variance, failed at tsc stage, unrelated to the change), prove:all 250/250, tsc clean.
+NEW FINDING FROM THE FIRST INSTRUMENTED SWEEP — the exact §4-pattern dark gate, again:
+`grounding` failed open on 2/2 invocations ("unparseable verdict — no JSON object in
+reply") and `harden` on 3/3 ("empty reviewer reply"). Both agent-loop critics have been
+providing ZERO protection on the live path; the FM 'glue' turn is not returning usable
+verdicts. gateA2_lint meanwhile ran 11/11 and caught one real `no-dupe-keys` live.
+NOTE: prove:all and the catalog path generate NO telemetry — they bypass the oracle's
+verifyCandidate entirely (own spawnSync harness); only gen-path smoke traffic exercises it.**
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
+
+0. **NEW, TOP: dark grounding/harden critics** — first instrumented sweep shows both
+   agent-loop critics fail open 100% of the time (grounding: no JSON in glue-turn reply;
+   harden: empty reviewer reply). Diagnose the FM glue turn (`driveTurn(..., 'glue')`) —
+   wrong model tier, prompt too long for the on-device FM, or transport issue. Until fixed,
+   the grounding + harden "protections" are decorative. Telemetry ledger has the evidence:
+   `.crucible/gate-telemetry.jsonl`.
 
 1. ~~Restart `:3001`~~ DONE 2026-07-04 late — restarted onto the recalibration commit.
 2. ~~Real smoke:code sweep with Gate A2 + tripwire live~~ DONE — see headline. NOTE:
@@ -38,10 +50,17 @@ dropped it; now pinned ^8.61.0 in devDependencies.**
    12/13 hidden checks pass; only single-element-list + a frozen-types tsc mismatch failed)
    vs the "never produces a module" characterization — the accepted-boundary write-up is
    already partially stale. Re-check it every sweep; do not let it calcify.
-2b. **Gate A2 packaged-app check still OPEN:** eslint + parser are devDeps; in a packaged
-   Electron/asar build the gate fails open BY DESIGN but silently. Decide: promote to prod
-   deps, or log once at startup when `ran:false` so absence is visible.
-   (`~/Desktop/Crucible.app/Contents/Resources` has no asar — packaging story unclear, verify.)
+2a. ~~Stale `CRUCIBLE_SESSION_HANDOFF.md` landmine~~ DEFUSED 2026-07-04 late — marked
+   SUPERSEDED with a banner pointing here + ROADMAP.md (kept as history, safe to delete;
+   file remains untracked).
+2b. ~~Gate A2 packaged-app check~~ RESOLVED 2026-07-04 late: `Crucible.app` is NOT a
+   packaged build — it's a launcher script (`Contents/MacOS/launch`) that execs Electron
+   straight from the source repo with full node_modules, so devDeps ARE present at runtime
+   and the devDep pin is sufficient. No prod-dep promotion needed UNLESS a real
+   asar/electron-builder packaging step is ever added — if that happens, revisit. The
+   "log once at startup when gate `ran:false`" idea folds into item 3 (fail-open telemetry).
+2c. ~~Fail-open gate telemetry~~ DONE 2026-07-04 night (`c79da7c`) — see headline. It
+   immediately caught item 0.
 3. **Second Workstream 1 critic** — candidates per ROADMAP: contract/interface checking
    between decomposed pieces, or property-based/fuzz testing via a vetted local tool
    (fast-check is the obvious Lego-piece candidate; would also be the 2nd external-tool
@@ -65,6 +84,19 @@ N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-ru
 coding-engine work.
 
 ---
+
+## SESSION LOG — 2026-07-04 night (fail-open gate telemetry — IMPLEMENTED, VERIFIED, CLOSED; found grounding+harden dark)
+
+Shipped `debug/gateTelemetry.ts` + wiring into gateA2_lint/grounding/harden (`c79da7c`).
+Full detail in ROADMAP CHANGE LOG (2026-07-04 cont. 8). Key facts a future session needs:
+- `.crucible/gate-telemetry.jsonl` is the ledger; console.warn fires once per gate per
+  process on first skip. recordGate() is best-effort and must stay that way.
+- smoke:code verifies THROUGH the running `:3001` server process — telemetry (and any
+  in-process change) is invisible until the server is restarted onto the new commit.
+  prove:all and the catalog path bypass the oracle's verifyCandidate entirely and will
+  never generate gate telemetry; only gen-path traffic exercises it.
+- First instrumented sweep: grounding 0/2 usable verdicts, harden 0/3 — both fail open
+  every time (FM glue turn returns no JSON / empty text). This is now CURRENT STATE item 0.
 
 ## SESSION LOG — 2026-07-03 (N=5 confirmation + premise-gate explain-category fix — IMPLEMENTED, VERIFIED, PARTIALLY CLOSED)
 

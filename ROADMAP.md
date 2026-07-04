@@ -1740,6 +1740,25 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-04 (cont. 8) — Fail-open gate telemetry lands; first instrumented sweep finds grounding+harden dark
+- **`debug/gateTelemetry.ts` (new, `c79da7c`)**: `recordGate()` appends every fail-open
+  critic's ran/skipped decision + reason to `.crucible/gate-telemetry.jsonl` (append-only,
+  best-effort — telemetry can never break the pipeline it observes) and console.warns once
+  per gate per process on first skip. Wired into `gateA2_lint` (synth/lintGate.ts) and
+  `grounding`/`harden` (agent/loop.ts), each fail-open exit tagged with a distinct reason.
+- **Verified end-to-end, not just in isolation** (per the §4 replay-don't-trust rule):
+  probe script exercised clean/rejected/skip paths; then `:3001` restarted onto the commit
+  and a live smoke:code sweep generated real ledger traffic. First sweep on the OLD server
+  produced ZERO telemetry — which itself exposed that smoke:code verifies through the
+  running server process, and that prove:all/catalog paths bypass the oracle entirely.
+- **Immediate payoff — the dark-gate pattern, third instance**: on the instrumented sweep,
+  `grounding` failed open 2/2 ("unparseable verdict — no JSON object in reply") and
+  `harden` 3/3 ("empty reviewer reply"). Both agent-loop critics have been decorative on
+  the live path. Promoted to next session's top item. `gateA2_lint` ran 11/11, one real
+  `no-dupe-keys` catch live.
+- Floor held: smoke:code 6/7 green (filterModule GREEN; its earlier red this session was
+  the pre-change server + FM variance at the tsc stage), prove:all 250/250, tsc clean.
+
 ### 2026-07-04 (cont. 7) — Tripwire recalibrated 2→3 on real ledger evidence; phase-open work verified live
 
 - **Calibration audit (Workstream 3):** replayed `failureFingerprint` over the full
