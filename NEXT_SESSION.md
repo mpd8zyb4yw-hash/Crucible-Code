@@ -17,32 +17,101 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-04 night, after gate-ran/gate-skipped TELEMETRY
-shipped for every fail-open critic, commit `c79da7c` — see SESSION LOG below)
+## CURRENT STATE (last updated 2026-07-04 late-night — sortModule/filterModule 413 TPM
+starvation ROOT-CAUSED + FIXED: it was a missing TPM guard on the driver tier, NOT pool
+pressure. Prior session's grounding/harden split-routing fix is unrelated and stands.)
 
-**HEADLINE: Fail-open gate telemetry LIVE (`c79da7c`). Every fail-open critic —
-`gateA2_lint` (synth/lintGate.ts), `grounding` and `harden` (agent/loop.ts) — now records
-every ran/skipped decision with a reason to `.crucible/gate-telemetry.jsonl` via
-`debug/gateTelemetry.ts` (append-only, best-effort, console.warns once per gate per process
-on first skip). Verified end-to-end: `:3001` restarted onto `c79da7c`, live smoke:code 6/7
-green (filterModule GREEN again — an earlier red this session was the OLD server binary +
-FM variance, failed at tsc stage, unrelated to the change), prove:all 250/250, tsc clean.
-NEW FINDING FROM THE FIRST INSTRUMENTED SWEEP — the exact §4-pattern dark gate, again:
-`grounding` failed open on 2/2 invocations ("unparseable verdict — no JSON object in
-reply") and `harden` on 3/3 ("empty reviewer reply"). Both agent-loop critics have been
-providing ZERO protection on the live path; the FM 'glue' turn is not returning usable
-verdicts. gateA2_lint meanwhile ran 11/11 and caught one real `no-dupe-keys` live.
+**HEADLINE (this session): the `413 TPM-limit (llama-3.1-8b-instant, Limit 6000)` that
+regressed sortModule/filterModule was NOT pool pressure (that theory is FALSIFIED — it
+reproduced on a verified-clean pool, 32/32 active, on the first inference call). Root cause:
+`selectDriverCandidates('hard')` in modelRegistry.ts had ZERO TPM-awareness (only the 'glue'
+branch did), so the two 6000-TPM Groq models (qwen3-32b q8 — ranks HIGH; llama-3.1-8b q6)
+were eligible for repo-context 'hard' prompts (7–15k tokens) and 413'd. AND there was no real
+pre-dispatch token guard in the agent driver (the `SelectedModel.tpmLimit` "4.2" comment
+described one that was never implemented) — the driver dispatched then reacted to the 413,
+LOSING the task when a low-TPM model was the last candidate after bigger ones quota-tripped.
+FIX (3 layers, modelRegistry.ts + agent/driver.ts): (1) 'hard' candidate ranking now
+de-prioritizes sub-`HARD_TPM_FLOOR` (12000) models behind every uncapped model — soft, so a
+degraded pool never empties; (2) genuine pre-dispatch token guard in `nativeDriveTurn`: drops
+any candidate whose `tpmLimit` can't hold `estRequestTokens + 1000` output reserve, so the
+wait-loop rides out pool recovery instead of guaranteeing a 413; (3) CRITICAL — that estimate
+counts `messages` AND the `tools` JSON schemas (1.5–3k tokens): the first two layers alone
+still 413'd because emergency compression shrinks `messages` below the cap, then `turnOnModel`
+appends tools and busts it. VERIFIED on a clean pool: `npm run smoke:code` → ZERO 413s across
+the whole sweep (was 1–2 per run); filterModule GREEN (was RED), summaryModule GREEN (413'd
+last run, now clean). sortModule STILL RED but on a DIFFERENT, EXTERNAL failure: OpenRouter's
+daily free-tier cap (`free-models-per-day`, 50/day, 429) — exhausted by ~4 smoke runs today,
+NOT a code defect and not fixable by code. The assigned TPM bug is closed.**
+
+**PRIOR HEADLINE (still valid, unrelated fix): Item 0 (dark grounding/harden critics)
+DIAGNOSED and FIXED. Root cause was NOT
+model tier or prompt length — it was a routing bug. Critic glue calls
+(`driveTurn([{user, prompt}], [], signal, 'glue')`) were flowing into
+`makeOfflineDriveTurn` (synthDriver.ts), which is a CODING-LOOP state machine. It ran
+`parseCurrentState` on the one-shot critic prompt, found a "file path" inside the embedded
+source/tool-evidence, and returned `{text:'', toolCalls:[write_file|read_file]}` — empty
+text every time. That empty string is exactly what tripped grounding "no JSON object" and
+harden "empty reviewer reply". The gates were structurally DARK, not weak. FIX (2 layers):
+(1) synthDriver.ts `makeOfflineDriveTurn` now intercepts `turnClass==='glue'` at the top and
+routes the raw prompt to `fmComplete` (direct Apple-FM completion), escalating to online only
+if the FM is down / returns empty — glue is a one-shot completion, never a code-loop step.
+(2) driver.ts (the online-escalation glue path) now: threads `turnClass` into `turnOnModel`;
+sends `reasoning:{effort:'low'}` for OpenRouter glue turns so a reasoning model (gpt-oss /
+nemotron / R1) can't burn its whole output budget in the reasoning channel and return
+`content:null` (reproduced: max_tokens 120 → reasoning_tokens 117, content null,
+finish_reason 'length'); and a new `messageText()` helper falls back to the `reasoning`
+field when visible `content` is empty. VERIFIED: telemetry now records `grounding ran:true`
+and `harden ran:true` (was 100% ran:false); end-to-end probe through the real
+`checkGrounding`/`runHardenReview` returns parseable verdicts; tsc clean; `:3001` restarted
+onto the fix; confirming smoke:code sweep in flight.
+
+SECONDARY (ALSO FIXED THIS SESSION): with the gates LIVE, the on-device FM's JUDGMENT quality
+was the next concern — and a new labeled characterization harness `agent/__critic_bench.ts`
+(6 grounding + 4 harden hand-labeled cases; run `npx tsx src/CrucibleEngine/agent/__critic_bench.ts`)
+MEASURED it: the tiny FM scored 2/4 on harden AT BOTH prompt extremes (flags every correct
+function, OR passes every buggy one — at chance on subtle-but-real bugs), 5/6 grounding. The
+FREE online pool (gpt-oss-120b) scored 4/4 harden and caught the grounding case the FM missed.
+Conclusion: correctness-judging is a genuine FM capability boundary, NOT a prompt bug. FIX:
+new `'critic'` turnClass routes a critic straight to the strong online free pool (FULL
+reasoning, bypassing the FM) — `withOfflineFallback` short-circuits `turnClass==='critic'` to
+the online turn; `driver.ts` maps 'critic' to the 'hard' candidate tier and keeps full
+reasoning (only 'glue' gets effort:low). SPLIT ROUTING (final, deliberate): only HARDEN uses
+'critic' (FM at chance there) — GROUNDING stays on the LOCAL FM ('glue'): it scores 5/6 on the
+FM (misses only the subtle en-US-vs-Spanish semantic contradiction) and can fire repeatedly
+per action task, so keeping it local avoids adding online-pool pressure. Escalate only what
+needs it. Also tightened both critic prompts (harden: default-PASS + two-shot correct→PASS /
+bug→FLAG + explicit "don't flag defensive/out-of-scope"; grounding: "empty command output =
+success"). Bench: harden 4/4, grounding 5/6 on FM = 9/10 (was 6/6 when grounding also rode
+online — the 1-point drop is the deliberate pool-pressure tradeoff).
+POOL-PRESSURE FINDING that drove the split — ***FALSIFIED THIS SESSION***: the prior session
+blamed the sortModule `413 TPM-limit` (llama-3.1-8b-instant) regression on online-critic pool
+pressure and "fixed" it by moving grounding back local. WRONG LEVER. The 413 reproduced on a
+verified-clean pool (32/32 active, 0 tripped) on the FIRST inference call of the run — it is a
+missing-TPM-guard bug in candidate selection, now fixed (see this session's HEADLINE at top).
+The grounding→local split is still fine as a pool-pressure hygiene choice, but it was NOT what
+fixed sortModule and should not be credited with it.
+
 NOTE: prove:all and the catalog path generate NO telemetry — they bypass the oracle's
 verifyCandidate entirely (own spawnSync harness); only gen-path smoke traffic exercises it.**
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-0. **NEW, TOP: dark grounding/harden critics** — first instrumented sweep shows both
-   agent-loop critics fail open 100% of the time (grounding: no JSON in glue-turn reply;
-   harden: empty reviewer reply). Diagnose the FM glue turn (`driveTurn(..., 'glue')`) —
-   wrong model tier, prompt too long for the on-device FM, or transport issue. Until fixed,
-   the grounding + harden "protections" are decorative. Telemetry ledger has the evidence:
-   `.crucible/gate-telemetry.jsonl`.
+0. ~~dark grounding/harden critics~~ LARGELY CLOSED this session — BOTH the structural darkness
+   (glue misrouted through the coding-loop state machine → empty text) AND the judgment quality
+   (harden: tiny FM at chance → routed to strong online free pool via new `'critic'` turnClass;
+   grounding: kept LOCAL on FM at 5/6 to limit pool pressure). Bench `agent/__critic_bench.ts`:
+   harden 4/4, grounding 5/6. See headline. RE-VERIFIED this session on a clean pool.
+   Watch items: (a) harden still depends on online-pool health — under quota pressure it fails
+   OPEN (telemetry `ran:false, "checker error"`), the documented pool-dependency tradeoff;
+   (b) re-run the bench after any critic-prompt change.
+
+0b. ~~sortModule/filterModule 413 TPM starvation~~ ROOT-CAUSED + FIXED this session (see
+   HEADLINE). Missing TPM-awareness on the 'hard' driver tier + no tool-inclusive pre-dispatch
+   token guard. filterModule + summaryModule now GREEN, zero 413s on a clean-pool sweep.
+   REMAINING: sortModule is still RED but now on OpenRouter's daily free-tier cap
+   (`free-models-per-day`, 50/day, 429), exhausted by repeated same-day smoke runs — external
+   account quota, not code. To confirm sortModule compiles clean, re-run smoke:code on a day
+   with fresh OpenRouter quota (or add credits). It is NOT a regression and NOT the TPM bug.
 
 1. ~~Restart `:3001`~~ DONE 2026-07-04 late — restarted onto the recalibration commit.
 2. ~~Real smoke:code sweep with Gate A2 + tripwire live~~ DONE — see headline. NOTE:
@@ -67,7 +136,11 @@ verifyCandidate entirely (own spawnSync harness); only gen-path smoke traffic ex
    adoption that unlocks considering a registry per the new external-tool invariant).
    `tsc` is ALREADY Gate A — do not re-plan it as a critic.
 4. **Workstream 2 (upfront elicitation)** — untouched; planning-workflow change, needs a real
-   bounded feature task as its test. Design before building.
+   bounded feature task as its test. Design before building. **NEW (2026-07-04): a full
+   novice-first design exists — `HITL_PLANNING_TRACK.md`** (stakes-aware HITL/automation
+   router, `grill-me`/`explain-this`/`to-plan`/… skill library, self-directed tool selection,
+   plain-language narration/glossary/undo). SPECULATIVE, nothing built — a PARALLEL planning/UX
+   track, NOT competing with engine priorities. Read it before building Workstream 2.
 5. **Tripwire scope note** — current signal is exact-fingerprint repetition (3 consecutive,
    recalibrated 2026-07-04 late on ledger evidence — see headline).
    sortModule's later rounds sometimes show *fresh, non-repeating* type errors — those still
