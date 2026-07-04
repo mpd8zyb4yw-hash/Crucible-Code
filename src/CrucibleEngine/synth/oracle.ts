@@ -95,7 +95,28 @@ function writeTsConfig(cfgDir: string, scratch: string, projectPath?: string): s
 }
 
 function firstTsError(out: string): string { return out.split('\n').find(l => /error TS/.test(l)) ?? out.slice(0, 200) }
-function testTail(out: string): string { return out.split('\n').filter(l => /PASS|FAIL|ALL PASS|FAILURE|Error|✓|✗/.test(l)).slice(-4).join(' | ') }
+
+/**
+ * Summarize a test run's console output for the retry prompt / audit trail.
+ *
+ * BUG FOUND 2026-07-04 (filterModule ledger audit): this used to be a fixed `.slice(-4)` over
+ * every PASS/FAIL line. A property family with more than ~4 assertions (filter-opts has 8) can
+ * have MULTIPLE real failures, and the fixed last-4 window silently dropped the earlier ones —
+ * confirmed live: a candidate with 4 real bugs (active=false unfiltered, query-by-name broken,
+ * query case-insensitivity broken, both-filters-compose broken) only ever showed the FM the
+ * LAST 2 of those 4 in its retry prompt (`query case-insensitive`, `both filters compose`) —
+ * the other two were true failures the FM never got a chance to see, let alone fix. Now:
+ * include EVERY failing assertion line plus the final tally, dropping only the noise (PASS
+ * lines carry no retry-actionable signal). Capped by total length, not line count, so a test
+ * with many failures still fits a bounded prompt.
+ */
+function testTail(out: string): string {
+  const lines = out.split('\n').filter(l => /PASS|FAIL|ALL PASS|FAILURE|Error|✓|✗/.test(l))
+  const isSummary = (l: string) => /^ALL PASS$/.test(l.trim()) || /^\d+ FAILURE\(S\)$/.test(l.trim())
+  const fails = lines.filter(l => !isSummary(l) && (/FAIL|✗/.test(l) || (/Error/.test(l) && !/PASS/.test(l))))
+  const summary = lines.filter(isSummary)
+  return [...fails, ...summary].join(' | ').slice(0, 2000)
+}
 
 /**
  * Verify candidate files. `testFile` (optional) is a spec-derived tsx script that imports
