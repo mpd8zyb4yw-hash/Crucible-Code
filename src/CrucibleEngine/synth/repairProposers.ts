@@ -96,6 +96,58 @@ function repairDerivedField(candidate: string, spec: string): string | null {
 }
 
 /**
+ * "Dynamic key extracted then used as a bracket-index" bug — confirmed live 2026-07-04 on a
+ * sortModule fire: `const key = opts.by === 'price' ? a.price : a.name` correctly extracts the
+ * comparison VALUE for `a`, but the comparator then writes `b[key]` — indexing `b` by that
+ * VALUE (a number/string) instead of mirroring the same field-selection ternary on `b`. Since
+ * `b[19.99]` is `undefined`, every comparison degenerates and the sort order breaks, caught by
+ * the opts-transform-smoke family's spec-gated "sorted ascending when direction omitted" check.
+ * Deterministic repair: mirror the exact ternary structure that built the key for `a` onto the
+ * bracket-indexed variable, replacing `b[key]` with `(opts.by === 'price' ? b.price : b.name)`.
+ * Gated on BOTH the syntactic pattern AND the specific sortedness-check failure, keeping it
+ * closed-world (tied to an assertion family we ourselves derive) rather than a generic rewrite.
+ */
+function repairDynamicKeyIndex(candidate: string, detail: string): string | null {
+  if (!/FAIL — sorted ascending by \w+ when direction omitted/.test(detail)) return null
+  const decl = candidate.match(
+    /const\s+(\w+)\s*=\s*([\w.]+)\s*===\s*('[^']*'|"[^"]*")\s*\?\s*(\w+)\.(\w+)\s*:\s*\4\.(\w+)/,
+  )
+  if (!decl) return null
+  const [, keyVar, condExpr, condValue, itemVar, field1, field2] = decl
+  const otherVars = new Set(
+    Array.from(candidate.matchAll(new RegExp(`\\b${itemVar}\\s*,\\s*(\\w+)\\)\\s*=>`, 'g')), m => m[1]),
+  )
+  let repaired = candidate
+  let changed = false
+  for (const other of otherVars) {
+    const bracketRx = new RegExp(`\\b${other}\\[${keyVar}\\]`, 'g')
+    if (bracketRx.test(repaired)) {
+      changed = true
+      repaired = repaired.replace(bracketRx, `(${condExpr} === ${condValue} ? ${other}.${field1} : ${other}.${field2})`)
+    }
+  }
+  return changed ? repaired : null
+}
+
+/**
+ * "Explicit-value check instead of default-negative check" on an optional 'asc'|'desc' field —
+ * confirmed live 2026-07-04 alongside the dynamic-key-index bug on the SAME sortModule fire:
+ * the comparator gates ascending behavior on `opts.direction === 'asc'`, which is FALSE when
+ * `direction` is omitted (undefined !== 'asc'), so the else branch — written for 'desc' — runs
+ * by default. The spec pins `direction` default to 'asc'; the exhaustive, safe fix for a field
+ * typed `'asc' | 'desc' | undefined` is to treat everything that ISN'T explicitly 'desc' as
+ * ascending. Gated on the same sortedness-check failure as the repair above so it only fires
+ * when we have a concrete, derived reason to suspect the default branch is wrong.
+ */
+function repairDefaultDirectionCheck(candidate: string, detail: string): string | null {
+  if (!/FAIL — sorted ascending by \w+ when direction omitted/.test(detail)) return null
+  const rx = /(\w+)\.direction\s*===\s*'asc'/g
+  if (!rx.test(candidate)) return null
+  const repaired = candidate.replace(rx, "$1.direction !== 'desc'")
+  return repaired !== candidate ? repaired : null
+}
+
+/**
  * Spurious Array.isArray guard on a non-array opts parameter — the FM copy-pastes the
  * (correct) items-array validation onto the singular opts object, making the function throw
  * on every legitimate call. Strip exactly that guard.
@@ -109,19 +161,38 @@ function repairArrayGuard(candidate: string, detail: string): string | null {
   return repaired !== candidate ? repaired : null
 }
 
+// Detail-driven single-bug fixes. More than one can legitimately apply to the SAME candidate
+// (confirmed live 2026-07-04: one sortModule fire had both the dynamic-key-index bug and the
+// default-direction-check bug at once) — `proposeRepairs` below tries each alone AND all of
+// them composed in sequence, so a candidate with N independent slips gets one shot at a fully
+// repaired variant instead of needing N separate rounds to discover each in isolation.
+const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string | null> = [
+  repairMissingField,
+  repairArrayGuard,
+  repairDynamicKeyIndex,
+  repairDefaultDirectionCheck,
+]
+
 /** Propose zero or more deterministically-repaired variants of a rejected candidate. */
 export function proposeRepairs(candidate: string, detail: string, spec: string): string[] {
-  // Stage 1: detail-driven repairs, seeded with the original so spec-driven repairs below can
-  // also apply to it standalone (covers the case where only the assignment is missing).
-  const stage1 = [candidate]
-  const missing = repairMissingField(candidate, detail)
-  if (missing) stage1.push(missing)
-  const noGuard = repairArrayGuard(candidate, detail)
-  if (noGuard) stage1.push(noGuard)
+  const stage1 = [candidate]   // seed so spec-driven repairs below can apply standalone too
+  for (const repair of DETAIL_DRIVEN_REPAIRS) {
+    const r = repair(candidate, detail)
+    if (r) stage1.push(r)
+  }
+  // Composed variant: apply every applicable detail-driven repair in sequence to one candidate,
+  // for the case where several independent slips co-occur (each fix is self-gated by its own
+  // pattern match, so applying a non-matching one is a safe no-op).
+  let composed = candidate
+  for (const repair of DETAIL_DRIVEN_REPAIRS) {
+    const r = repair(composed, detail)
+    if (r) composed = r
+  }
+  if (composed !== candidate) stage1.push(composed)
 
   const out = new Set<string>()
   for (const c of stage1) {
-    if (c !== candidate) out.add(c)               // the detail-driven repair alone
+    if (c !== candidate) out.add(c)               // the detail-driven repair(s) alone
     const withDerived = repairDerivedField(c, spec)
     if (withDerived && withDerived !== candidate) out.add(withDerived)   // composed with spec-driven
   }
