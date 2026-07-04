@@ -8,6 +8,9 @@
 //
 // Gate A (static):     tsc --noEmit under a lenient config — kills hallucinated APIs / type
 //                      errors before anything runs.
+// Gate A2 (lint):      curated correctness-only ESLint pass (lintGate.ts) — kills known-
+//                      always-wrong shapes tsc can't see (dupe keys, self-compare, NaN ===…).
+//                      In-process, local tool, fails open if ESLint is unavailable.
 // Gate B (behavioral): write the candidate + a spec-derived test into a throwaway scratch
 //                      dir and run it via `tsx`; accepted iff the test exits 0.
 // model-cost-independent, sandboxed to a tmp dir, time-bounded so a runaway candidate is reaped.
@@ -18,6 +21,7 @@ import os from 'os'
 import { spawnSync, spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import type { SynthFile } from './synthEngine'
+import { lintCandidates } from './lintGate'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CODE_DIR = path.resolve(HERE, '../../..')   // repo root (has tsx/tsc + @types/node)
@@ -133,6 +137,8 @@ export function verifyCandidate(
   try {
     const tc = run('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000)
     if (!tc.ok) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${firstTsError(tc.out)}`, ranAssertions: false }
+    const lv = lintCandidates(files)
+    if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
     const tb = run('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
     return {
@@ -162,6 +168,8 @@ export async function verifyCandidateAsync(
   try {
     const tc = await runAsync('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000)
     if (!tc.ok) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${firstTsError(tc.out)}`, ranAssertions: false }
+    const lv = lintCandidates(files)
+    if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
     const tb = await runAsync('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
     return {

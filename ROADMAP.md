@@ -34,7 +34,31 @@
 > **Tier 2:** 5. Apply layer + RSI gate `[x, live only via scripts/selfHeal.ts]` (`apply/applyLayer.ts` — snapshot→baseline→apply→verify→keep-if-not-worse else hard-restore; path-escape refused, kill switch, dry-run, ledger). Not reachable from the live coding-agent path (see correction above). · 6. Mock/stub injection `[x, not live-wired]` (`synth/mockInjection.ts` — ambient declare-module + relative stub files + type stubs; prefers real index/retrieved shapes; proven via tsc Program). · 7. Relevance-ranked context assembly `[x]` (`contextAssembly.ts` — fuses tf + graph proximity, budget-fit). · 8. Ambiguity resolution `[x, not live-wired]` (`ambiguity.ts` — resolve definite refs via index; abstain+clarify when unresolvable; wired into nodeExecutor pre-synth gate, not into agent/loop.ts).
 > **Tier 3:** 9. Benchmark overhaul — externally-anchored (SWE-bench-style), per-bucket honest (verified / FM-pattern / retrieval-grounded / escalated / abstained). Moat number = verified + FM-pattern only.
 >
-> ### Queued phase — Closing the Frontier-SWE Gap (do not start until current trust bugs close)
+> ### ACTIVE phase — Closing the Frontier-SWE Gap (gate OPENED 2026-07-04)
+>
+> **Gate decision (2026-07-04):** opened on a 2/3 clean base. `summaryModule` and
+> `filterModule` hold repeatable 5/5 GREEN sweeps; `sortModule` is documented as an
+> **accepted capability boundary** (the FM unconditionally groups by in-stock status against
+> an explicit no-grouping spec, non-converging across rounds — a structural reasoning gap,
+> not an oracle artifact; see NEXT_SESSION 2026-07-04). Rationale: the original blocker
+> ("no task has ever landed a genuine repeatable pass") no longer holds, and sortModule's
+> failure profile is precisely what Workstream 3's tripwire exists to handle honestly —
+> holding the gate closed until it passes would invert the phase's purpose.
+> **First Workstream 1 critic chosen and LIVE (2026-07-04):** Gate A2, a curated
+> correctness-only ESLint pass (`synth/lintGate.ts`, wired into both oracle verify paths) —
+> also the first proof of the "adopt a vetted local open-source tool as a Lego piece"
+> approach (in-process, no subprocess, no network, fails open; `prove:all` 250/250 green
+> with it live). Note `tsc --noEmit` was already Gate A — do not re-plan it as a new critic.
+> **First Workstream 3 signal LIVE (2026-07-04):** out-of-depth tripwire in
+> `synth/universal.ts` — identical oracle-rejection fingerprint two consecutive rounds ⇒
+> early honest abstain with a structural diagnosis, in both the behavioral and compile-only
+> FM loops (ledger-logged as `tripwire: true`).
+> **External-tool invariant (2026-07-04, applies to all future "Lego piece" adoptions):**
+> a locally-executed open-source tool (npm package, binary, WASM, subprocess) is in-bounds;
+> anything that is itself a hosted API call — including "free tier" hosted services — is
+> out-of-bounds, because metered/rate-limited dependencies violate model-cost-independence.
+> Defer any auto-discovery/vetting registry until at least two hand-picked tools have
+> proven the wrapper pattern (Gate A2/ESLint is the first).
 >
 > **Purpose:** push Crucible toward reliable, fully client-side agentic coding/reasoning on
 > consumer hardware without pretending the local FM has frontier-model judgment. The target
@@ -1715,6 +1739,35 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-07-04 (cont. 6) — Frontier-SWE-gap gate OPENED; Gate A2 lint critic + out-of-depth tripwire land
+
+- **Gate decision:** opened the Frontier-SWE-gap phase on the 2/3 clean base (summaryModule +
+  filterModule repeatable 5/5 GREEN). `sortModule` documented as an accepted capability
+  boundary, not a blocker — its failure profile (structural miss recurring across rounds) is
+  the tripwire's target case, so holding the gate for it inverted the phase's purpose.
+- **Gate A2 (`synth/lintGate.ts`)** — first Workstream 1 critic, and first "Lego piece"
+  (vetted local open-source tool, ESLint already a devDep, in-process `Linter` API, fails
+  open). Curated correctness-only ruleset (no-self-compare, no-dupe-else-if, use-isnan,
+  no-unsafe-negation, …) — shapes tsc cannot see. Wired into BOTH `verifyCandidate` and
+  `verifyCandidateAsync` after Gate A, before Gate B. The compile-only FM path is
+  deliberately unaffected (it checks `gateA` only, preserving its documented "no
+  anti-pattern rejection without a runnable oracle" decision). Pitfall found live: flat
+  config passed to `Linter.verify` silently matches nothing without an explicit
+  `files: ['**/*.ts']` matcher — it returns a severity-1 "No matching configuration" message
+  instead of erroring.
+- **Out-of-depth tripwire (`synth/universal.ts`)** — first Workstream 3 signal. Oracle
+  rejections are normalized to a fingerprint (digits/paths masked); identical fingerprint
+  two consecutive rounds ⇒ early honest abstain with a structural diagnosis, in both the
+  behavioral and compile-only loops. Ledger-logged (`tripwire: true` in fm-rounds.jsonl).
+- **Verified:** targeted oracle tests (tsc-clean/lint-dirty candidate rejected at A2 with a
+  retry-actionable detail; good candidate still passes end-to-end); stubbed-FM tripwire test
+  (identical wrong candidate → abstain after round 2, ledger confirms); **`prove:all`
+  250/250 green with Gate A2 live** — zero lint false positives across the proven corpus.
+- **External-tool invariant** written into the phase header: local tool in-bounds, hosted
+  API (even free-tier) out; registry deferred until ≥2 hand-picked tools prove the pattern.
+- Pre-existing, untouched: `synth/catalogs/_author_parsers2.ts` has a TS1109 syntax error
+  under `tsconfig.server.json` at HEAD (`d8b6c5f`) — not from this session's changes.
 
 ### 2026-07-04 (cont. 5) — filterModule ledger audit finds a general testTail truncation bug + 2 more repairs; first-ever 5/5 GREEN sweep
 

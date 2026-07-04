@@ -17,94 +17,46 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-04, after the filterModule ledger audit found a general
-`testTail` truncation bug + 2 more repair proposers, landing filterModule's first-ever clean
-5/5 GREEN sweep — commits through `13bce9f`; correction note: `coding-benchmarks.ts`'s
-sortModule/summaryModule tasks were already committed at `311e57a`, NOT uncommitted as a much
-earlier update of this file said)
+## CURRENT STATE (last updated 2026-07-04 evening, after the Frontier-SWE-gap gate was
+OPENED and the first Workstream 1 critic + first Workstream 3 tripwire landed and verified —
+see ROADMAP CHANGE LOG "2026-07-04 (cont. 6)")
 
-**HEADLINE: two of the three generation-stress tasks (`summaryModule`, `filterModule`) now have
-confirmed, repeatable 5/5 GREEN sweeps this session — both were previously confirmed-broken
-(0/3 and ~2/5 respectively). `sortModule` remains genuinely red after 3 real bug fixes, on a
-4th, structural bug that looks like an actual FM reasoning-capacity gap, not an oracle artifact.**
+**HEADLINE: the Frontier-SWE-gap phase is now ACTIVE. Gate opened on the 2/3 clean base
+(summaryModule + filterModule repeatable 5/5 GREEN); sortModule documented as an accepted
+capability boundary. Two phase deliverables already live and verified: Gate A2 (curated
+correctness-only ESLint critic inside the oracle, `synth/lintGate.ts`) and the out-of-depth
+tripwire (identical-rejection-fingerprint early abstain in `synth/universal.ts`).
+`prove:all` 250/250 green with both live.**
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-1. **Tier 0-2 fork decision — RESOLVED, no longer blocking.** Parked
-   `router/capabilityRouter.ts`→`decompositionDag.ts`→`nodeExecutor.ts` (proven only in
-   isolation) rather than merge into the live `agent/planner.ts`+`agent/loop.ts`+`synthDriver.ts`
-   path — explicit "EXPERIMENTAL — PARKED, NOT LIVE" banners added (`44f9bb9`). Re-open only with
-   a concrete reason to migrate.
-2. **summaryModule: first-ever GREEN, confirmed 5/5 GREEN in a fresh multi-run sweep.** Chain:
-   `deriveInvariantTests` (new context-invariant test family, closes the "balance never assigned"
-   oracle gap `c88a0b0`) → found `class-stateful` family also misfired on interface names
-   (`3539cf4`) → `repairProposers.ts` added (`6325722`) — deterministic, oracle-re-gated repair
-   of a REJECTED candidate — → found a second summaryModule failure shape (missing field
-   entirely, TS2741) and composed a stub-then-compute repair chain (`a3001c7`). **Result: 5/5
-   GREEN**, hidden suite ALL PASS every time (isolated `:3016`, torn down after).
-3. **filterModule: first-ever clean 5/5 GREEN sweep, up from ~2/5 — found via reading the
-   fm-rounds ledger, same discipline as summaryModule.** The key finding was NOT filterModule-
-   specific: `oracle.ts`'s `testTail()` (the function that summarizes a test run for BOTH the
-   audit trail and the FM's retry prompt) used a fixed `.slice(-4)` over PASS/FAIL lines. Any
-   property family with more than ~4 assertions (filter-opts has 8) could have MULTIPLE
-   simultaneous real failures with the EARLIER ones silently dropped from the retry prompt —
-   confirmed live: a candidate with 4 real bugs only ever showed the FM the last 2 (`9a4005b`).
-   Fixed to include every failing line + the tally, capped by length not line count — this
-   improves retry feedback for every family in the engine, not just filterModule. That fix alone
-   surfaced 2 more real, mechanically-fixable bugs (`13bce9f`): a one-sided case-insensitive
-   comparison (field lowercased, search term not) and the classic `opts.active && !user.active`
-   guard bug (silently no-ops when explicitly filtering for `active:false`). **Result: 5/5
-   GREEN**, hidden suite 15/15 ALL PASS every time (isolated `:3017`, torn down after).
-4. **sortModule: three real bug classes found and repaired this session, but still 0/N —
-   genuinely capability-limited now, not oracle-masked.** `repairDynamicKeyIndex` (a ternary
-   extracts a comparison value into `key`, then the comparator wrongly indexes `b[key]` — using
-   the VALUE as a property name — instead of mirroring the ternary onto `b`) and
-   `repairDefaultDirectionCheck` (`opts.direction === 'asc'` is false when omitted, so the
-   'desc'-written else branch runs by default, inverted from spec) — both verified individually
-   and composed together against a real candidate with both bugs at once (required refactoring
-   `proposeRepairs` around a `DETAIL_DRIVEN_REPAIRS` list, since multiple bugs can co-occur —
-   `cff548b`). **Fresh re-fires still show 0/N, with the SAME structural bug recurring**: the
-   FM's code unconditionally groups by in-stock status and concatenates, even when
-   `inStockFirst` is false/omitted — contradicting the spec's explicit "no grouping" rule.
-   Deliberately did NOT force a narrow repair for this — it's a control-flow miss, not a
-   mechanical slip with a safe closed-world rewrite, and forcing one risks the exact
-   task-specific-overfitting failure mode this repair layer exists to avoid. Later rounds also
-   show fresh, non-repeating type errors rather than convergence. **Read: sortModule's remaining
-   gap looks like genuine FM reasoning capacity on this specific multi-key/conditional-grouping
-   shape** — three real bug classes found and fixed, still red on a fourth, more structural one.
-5. **Infrastructure added this session, now proven valuable twice:** `.crucible/fm-rounds.jsonl`
-   (per-round debug ledger — prompt error context, candidate head, verdict, for every FM round
-   AND repair attempt) directly surfaced the class-stateful bug, sortModule's 2nd/3rd bugs, AND
-   led to inspecting `testTail` which turned out to be a general engine-wide bug. **Reading this
-   ledger before guessing has now found 6 of the 8 real bugs fixed this session** — worth making
-   this the default first step for any future flaky-task investigation, not just a fallback.
-   `errorHints.ts` (imperative retry-instruction distillation) is wired in but its independent
-   effect vs. the repair proposers hasn't been isolated — not yet decomposed, low priority now
-   given the repairs alone demonstrably work.
-6. **FM daemon launchd plist — FIXED and verified** (stale pre-move paths corrected;
-   `launchctl unload`+`load`; confirmed `KeepAlive` auto-respawns after a direct kill).
-7. **Frontier-SWE-gap phase gate — still NOT opened, but the case for opening it is now
-   materially stronger.** Two of three generation-stress tasks (`summaryModule`, `filterModule`)
-   now have clean, repeatable 5/5 GREEN sweeps — the gate's prior blocker ("no task has ever
-   landed a genuine repeatable pass") no longer holds for 2/3 tasks. `sortModule` remains
-   genuinely capability-limited on one structural gap. This is a judgment call for the next
-   session/user: open the gate on a 2/3 clean base, or hold for sortModule's structural gap to
-   be addressed or explicitly accepted as an honest boundary.
-8. **`:3001` — restarted onto commit `9d639df` (end of session), single-listener verified,
-   clean boot log.** Reflects all of tonight's work: Tier 0-2 park, the launchd fix, and all 8
-   oracle/repair fixes across summaryModule/sortModule/filterModule.
-9. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
-   for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
-   needs its own scoping conversation, bigger than a quick fix.
-10. **e005 (explain category) remaining gap** — grounded source accurate but framed around water
-    mass-balance rather than evaporation/condensation; a retrieval-content-relevance gap.
-11. **e003** — NOT a bug, accepted tradeoff (2026-07-01). Listed only so it isn't mistaken for
-    open work; do not loosen `PREMISE_RX` or add a no-evidence FM fallback (reopens fp001-004).
+1. **Restart `:3001`** onto a commit containing tonight's work (Gate A2 + tripwire are in the
+   oracle/universal path the live server imports) — it is still running pre-gate code.
+   Changes are uncommitted as of this update; commit first.
+2. **Fire a real smoke:code sweep with Gate A2 + tripwire live** — confirm (a) no lint false
+   positives on real FM candidates, (b) the tripwire fires on sortModule and produces the
+   honest structural-diagnosis abstain instead of grinding 3 rounds. sortModule is now the
+   tripwire's canonical test case, not an open bug.
+3. **Second Workstream 1 critic** — candidates per ROADMAP: contract/interface checking
+   between decomposed pieces, or property-based/fuzz testing via a vetted local tool
+   (fast-check is the obvious Lego-piece candidate; would also be the 2nd external-tool
+   adoption that unlocks considering a registry per the new external-tool invariant).
+   `tsc` is ALREADY Gate A — do not re-plan it as a critic.
+4. **Workstream 2 (upfront elicitation)** — untouched; planning-workflow change, needs a real
+   bounded feature task as its test. Design before building.
+5. **Tripwire scope note** — current signal is exact-fingerprint repetition (2 consecutive).
+   sortModule's later rounds sometimes show *fresh, non-repeating* type errors — those still
+   burn all rounds by design. A "no two rounds share any failure overlap → also not
+   converging" second signal is possible but unproven; only add it with ledger evidence.
+6. **Pre-existing, not mine, worth a look:** `synth/catalogs/_author_parsers2.ts` fails
+   `tsc -p tsconfig.server.json` with TS1109 at HEAD `d8b6c5f` (untouched by this session).
+7. **e002 / e005 (explain category)** — unchanged from 2026-07-03: retrieval-ranking and
+   content-relevance gaps, need their own scoping conversation. e003 remains NOT a bug
+   (accepted tradeoff; do not loosen `PREMISE_RX`).
 
 **Composite benchmark baseline (conversational suite) as of last confirmed sweep (2026-07-03,
-N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-run by this update's
-coding-agent/architecture work; see the SESSION LOG entry below for the full per-category
-breakdown.
+N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-run by tonight's
+coding-engine work.
 
 ---
 

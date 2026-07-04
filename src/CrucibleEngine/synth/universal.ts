@@ -69,6 +69,25 @@ function logFmRound(entry: Record<string, unknown>) {
   } catch { /* debug-only */ }
 }
 
+/**
+ * Out-of-depth tripwire (Frontier-SWE-gap Workstream 3, first concrete signal).
+ * Normalizes an oracle rejection into a structural fingerprint so the round loop can
+ * detect "the FM is producing the SAME wrong shape again" — sortModule's signature
+ * failure mode (2026-07-04: unconditional in-stock grouping recurring across fresh
+ * rounds while the retry prompt clearly said not to). Two consecutive identical
+ * fingerprints ⇒ the model is not converging; abstain honestly instead of grinding
+ * the remaining rounds. Numbers/paths are masked so line-number drift between rounds
+ * doesn't defeat the comparison.
+ */
+function failureFingerprint(detail: string): string {
+  return detail
+    .toLowerCase()
+    .replace(/\/[^\s|]+/g, '<path>')
+    .replace(/\d+/g, '#')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 /** Default proposer: the on-device Apple FM (offline). Injectable for tests / other backends. */
 async function defaultLocalSynth(system: string, user: string): Promise<string> {
   const res = await fetch(`${LOCAL_FM_URL}/v1/chat/completions`, {
@@ -162,6 +181,7 @@ export async function synthesizeUniversal(
   // and deriveTests see only the raw spec — keeps the pure-code path unaffected.
   const sigBlock = fmSpecPrefix ? fmSpecPrefix + spec : spec
   let priorError = ''
+  let priorFingerprint = ''
   let fmCalls = 0
 
   const oracleOpts = contextFiles.length ? { contextFiles } : {}
@@ -238,6 +258,16 @@ export async function synthesizeUniversal(
           }
         }
       }
+      // ── Out-of-depth tripwire: same rejection shape two rounds running ⇒ not converging.
+      const fp = failureFingerprint(v.detail)
+      if (fp && fp === priorFingerprint) {
+        logFmRound({ modulePath, gate: kindLabel, round: r + 1, of: rounds, tripwire: true, fingerprint: fp.slice(0, 300) })
+        return {
+          files: [], source: null, verified: false, testsDerived: effectiveDerived.count, fmCalls,
+          detail: `out-of-depth tripwire: oracle rejected consecutive candidates with an identical failure shape (${v.detail.slice(0, 160)}) — FM is not converging on this structure; abstaining early instead of grinding ${rounds - r - 1} more round(s)`,
+        }
+      }
+      priorFingerprint = fp
       // ── Distill the failure into an imperative, code-shaped instruction where we can —
       // the small FM demonstrably does not translate a raw test transcript into a fix.
       const hint = distillHint(v.detail, spec)
@@ -287,6 +317,17 @@ export async function synthesizeUniversal(
     if (v.gateA) {
       return { files, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → tsc-clean (no behavioral test derivable; downstream verify required)` }
     }
+    // ── Out-of-depth tripwire (same signal as the behavioral loop): identical tsc failure
+    // shape two rounds running ⇒ not converging; abstain early.
+    const fp = failureFingerprint(v.detail)
+    if (fp && fp === priorFingerprint) {
+      logFmRound({ modulePath, gate: 'compile-only', round: r + 1, of: rounds, tripwire: true, fingerprint: fp.slice(0, 300) })
+      return {
+        files: [], source: null, verified: false, testsDerived: 0, fmCalls,
+        detail: `out-of-depth tripwire: identical tsc failure shape across consecutive rounds (${v.detail.slice(0, 160)}) — abstaining early instead of grinding ${rounds - r - 1} more round(s)`,
+      }
+    }
+    priorFingerprint = fp
     priorError = v.detail
   }
   return { files: [], source: null, verified: false, testsDerived: 0, fmCalls, detail: `FM could not produce tsc-clean code in ${rounds} rounds — escalating honestly` }
