@@ -150,6 +150,41 @@ export function deriveOptsTransformSmokeTest(
   const importCandidate = '../' + modulePath.replace(/\.tsx?$/, '')
   const importGetter = '../' + getter.rel.replace(/\.tsx?$/, '')
 
+  // ── Spec-gated extra assertions (each fires ONLY when the spec pins the behavior down in
+  // so many words — no guessed semantics, same closed-world discipline as the base checks).
+  const extraChecks: string[] = []
+
+  // (a) false ≡ omitted equivalence: for each optional boolean opts field the spec explicitly
+  // says "<field> is false or omitted", assert fn(data, {req, field:false}) deep-equals
+  // fn(data, {req}). This is EXACTLY the sortModule gap the hidden suite caught (2026-07-04,
+  // `inStockFirst: false` grouped like true) — converting it from a hidden-suite-only miss
+  // into an oracle check the FM gets retry feedback on.
+  const optionalBools = Array.from(ifaceMatch[1].matchAll(/(\w+)\s*\?\s*:\s*boolean/g), m => m[1])
+  for (const f of optionalBools) {
+    if (new RegExp(`\\b${f}\\b[^.\\n]{0,40}\\bfalse or omitted\\b`, 'i').test(spec)) {
+      extraChecks.push(
+        `if (threw === null) {
+  let withFalse: any = null, withOmitted: any = null
+  try { withFalse = ${fn}(data, { ${requiredField}: '${requiredLiteral}', ${f}: false } as any); withOmitted = ${fn}(data, { ${requiredField}: '${requiredLiteral}' } as any) } catch { /* base no-throw check already covers */ }
+  check('${f}:false identical to ${f} omitted', JSON.stringify(withFalse) === JSON.stringify(withOmitted))
+}`)
+    }
+  }
+
+  // (b) default-ascending order: only when (1) the fn name says sort, (2) the spec literally
+  // says direction defaults to 'asc', and (3) the required literal-union field is a
+  // sort-key-style name whose literal names an actual item field — then the default call's
+  // output must be non-decreasing on that item field.
+  const isSortFn = /[Ss]ort/.test(fn)
+  const specSaysDefaultAsc = /default\s*'asc'/.test(spec)
+  const keyStyleField = /^(by|sortBy|key|field)$/.test(requiredField)
+  if (isSortFn && specSaysDefaultAsc && keyStyleField) {
+    extraChecks.push(
+      `if (threw === null && Array.isArray(result) && data.some((x: any) => x != null && x['${requiredLiteral}'] !== undefined)) {
+  check('sorted ascending by ${requiredLiteral} when direction omitted', result.every((x: any, i: number) => i === 0 || result[i - 1]['${requiredLiteral}'] <= x['${requiredLiteral}']))
+}`)
+  }
+
   const content = `// Context-invariant smoke test (opts-transform shape — Crucible synth/deriveInvariant).
 import { ${fn} } from '${importCandidate}'
 import { ${getter.name} } from '${importGetter}'
@@ -169,13 +204,14 @@ if (threw === null) {
   check('returns an array', Array.isArray(result))
   check('preserves length', Array.isArray(result) && result.length === data.length)
 }
+${extraChecks.join('\n')}
 check('does not mutate input', JSON.stringify(data) === JSON.stringify(snapshot))
 console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
 process.exit(failures === 0 ? 0 : 1)
 `
   return {
     testFile: { path: '__invariant__/spec.test.ts', content },
-    count: recordHint,
+    count: recordHint + extraChecks.length,
     family: 'opts-transform-smoke',
   }
 }

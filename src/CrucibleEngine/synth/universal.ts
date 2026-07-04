@@ -22,9 +22,13 @@
 // unverified:true only for a pre-verified primitive, else escalate). Truly arbitrary novel
 // logic with no checkable spec is undecidable — there the engine escalates, by design.
 // ============================================================================
+import fs from 'fs'
+import path from 'path'
 import { extractFeatures, type SynthFile } from './index'
 import { deriveTests, derivePropertyTests } from './derive'
 import { deriveInvariantTests, deriveOptsTransformSmokeTest } from './deriveInvariant'
+import { distillHint } from './errorHints'
+import { proposeRepairs } from './repairProposers'
 import { verifyCandidateAsync } from './oracle'
 import { synthesizePureCode, distillToSkill } from './pureCode'
 import { buildRepoContext, withRetrieval, type OracleContextFile } from './repoContext'
@@ -49,6 +53,20 @@ function stripFences(raw: string): string {
   const fence = t.match(/```(?:[a-zA-Z]+)?\n([\s\S]*?)```/)
   if (fence) t = fence[1].trim()
   return t.replace(/^```[a-zA-Z]*\n?/, '').replace(/```$/, '').trim()
+}
+
+/**
+ * Per-round FM debug ledger (.crucible/fm-rounds.jsonl). Diagnosis instrument for the
+ * "why doesn't the FM self-correct across rounds?" class of question — records what each
+ * round was actually asked, what it produced, and why the oracle rejected it. Append-only,
+ * best-effort, content truncated; never allowed to break synthesis.
+ */
+function logFmRound(entry: Record<string, unknown>) {
+  try {
+    const dir = path.join(process.cwd(), '.crucible')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(path.join(dir, 'fm-rounds.jsonl'), JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n')
+  } catch { /* debug-only */ }
 }
 
 /** Default proposer: the on-device Apple FM (offline). Injectable for tests / other backends. */
@@ -170,6 +188,13 @@ export async function synthesizeUniversal(
 
   // ── L3: reason a candidate with the on-device FM, GATED by the oracle. ─────────────────
   if (effectiveDerived) {
+    const kindLabel = derived
+      ? 'behavioral'
+      : invariantDerived
+        ? `context-invariant (${invariantDerived.family})`
+        : smokeDerived
+          ? `context-invariant (${smokeDerived.family})`
+          : `property (${(effectiveDerived as any).family ?? 'unknown'})`
     // Full behavioral oracle: tsc + spec-derived test.
     for (let r = 0; r < rounds; r++) {
       const system = 'You are a precise TypeScript engineer. Output ONLY the complete contents of the requested .ts file — no prose, no markdown fences, no explanations. It must compile under strict-off TypeScript and export EXACTLY the requested symbols.'
@@ -183,20 +208,40 @@ export async function synthesizeUniversal(
       if (!candidate) { priorError = 'empty output'; continue }
       const files: SynthFile[] = [{ path: modulePath, content: candidate }]
       const v = await verifyCandidateAsync(files, effectiveDerived.testFile, oracleOpts)
+      logFmRound({
+        modulePath, gate: kindLabel, round: r + 1, of: rounds,
+        priorError: priorError.slice(0, 400) || null,
+        candidate: candidate.slice(0, 1200),
+        accepted: v.accepted, verdict: v.detail.slice(0, 400),
+      })
       if (v.accepted) {
         // Only distill exact behavioral tests — property tests are not strong enough to be
         // promoted to primitives (they might accept incorrect implementations on other inputs).
         if (opts.distill !== false && derived) distillToSkill(spec, modulePath, candidate)
-        const kind = derived
-          ? 'behavioral'
-          : invariantDerived
-            ? `context-invariant (${invariantDerived.family})`
-            : smokeDerived
-              ? `context-invariant (${smokeDerived.family})`
-              : `property (${(effectiveDerived as any).family ?? 'unknown'})`
-        return { files, source: 'fm-distilled', verified: true, testsDerived: effectiveDerived.count, fmCalls, detail: `FM proposed → oracle-verified (${effectiveDerived.count} ${kind} tests)` }
+        return { files, source: 'fm-distilled', verified: true, testsDerived: effectiveDerived.count, fmCalls, detail: `FM proposed → oracle-verified (${effectiveDerived.count} ${kindLabel} tests)` }
       }
-      priorError = v.detail
+      // ── Deterministic repair proposers: pure-code mutations of the rejected candidate,
+      // keyed off the closed-world failure shapes our own derivers emit, re-gated by the SAME
+      // oracle. A wrong transform is rejected like any wrong candidate — WRONG=0 untouched.
+      for (const repaired of proposeRepairs(candidate, v.detail, spec)) {
+        const rv = await verifyCandidateAsync([{ path: modulePath, content: repaired }], effectiveDerived.testFile, oracleOpts)
+        logFmRound({
+          modulePath, gate: kindLabel, round: r + 1, of: rounds, repair: true,
+          accepted: rv.accepted, verdict: rv.detail.slice(0, 400),
+        })
+        if (rv.accepted) {
+          if (opts.distill !== false && derived) distillToSkill(spec, modulePath, repaired)
+          return {
+            files: [{ path: modulePath, content: repaired }], source: 'fm-distilled', verified: true,
+            testsDerived: effectiveDerived.count, fmCalls,
+            detail: `FM proposed → deterministic repair → oracle-verified (${effectiveDerived.count} ${kindLabel} tests)`,
+          }
+        }
+      }
+      // ── Distill the failure into an imperative, code-shaped instruction where we can —
+      // the small FM demonstrably does not translate a raw test transcript into a fix.
+      const hint = distillHint(v.detail, spec)
+      priorError = hint ? `${v.detail}\n\nACTION REQUIRED — apply this exact fix: ${hint}` : v.detail
     }
     return { files: [], source: null, verified: false, testsDerived: effectiveDerived.count, fmCalls, detail: `FM could not produce an oracle-passing candidate in ${rounds} rounds — escalating honestly` }
   }
@@ -233,6 +278,12 @@ export async function synthesizeUniversal(
     const files: SynthFile[] = [{ path: modulePath, content: candidate }]
     // Gate A only (no testFile). Pass contextFiles so tsc finds project imports.
     const v = await verifyCandidateAsync(files, undefined, oracleOpts)
+    logFmRound({
+      modulePath, gate: 'compile-only', round: r + 1, of: rounds,
+      priorError: priorError.slice(0, 400) || null,
+      candidate: candidate.slice(0, 1200),
+      accepted: v.gateA, verdict: v.detail.slice(0, 400),
+    })
     if (v.gateA) {
       return { files, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → tsc-clean (no behavioral test derivable; downstream verify required)` }
     }
