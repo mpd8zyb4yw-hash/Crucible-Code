@@ -6,6 +6,7 @@ import fs from 'fs'
 import path from 'path'
 import { registry } from '../tools/registry'
 import { debugBus } from '../debug/bus'
+import { recordGate } from '../debug/gateTelemetry'
 import { buildWorldContext, buildReflectionPrompt, appendWorldFact, appendReflection, touchNode, loadGraph, saveGraph } from '../state/world'
 import type { ToolCall, ToolCtx, ToolDef } from '../tools/protocol'
 import { maybeCompressMessages } from '../contextManager'
@@ -575,7 +576,12 @@ export async function checkGrounding(
   signal?: AbortSignal,
 ): Promise<GroundingVerdict | null> {
   const digest = buildEvidenceDigest(messages)
-  if (!digest) return null   // no tool evidence to audit against
+  if (!digest) {
+    // Not a fail-open failure — there is genuinely nothing to audit. Still recorded
+    // (ran:false) so the ledger distinguishes "never had evidence" from "errored".
+    recordGate({ gate: 'grounding', ran: false, reason: 'no tool evidence to audit' })
+    return null
+  }
   const prompt = `You are a strict verification auditor for an automation/coding agent. Judge ONLY whether the agent's FINAL ANSWER is truthful and actually supported by the TOOL EVIDENCE below. Look hard for:
 - success claimed but a command exited non-zero / errored
 - a state change claimed but the read-back shows the OLD value (e.g. claims "language is Spanish" but a read shows en-US)
@@ -597,11 +603,21 @@ Be conservative: mark grounded=false ONLY when the evidence clearly contradicts 
     const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'glue')
     const raw = r.text.replace(/```json|```/g, '').trim()
     const s = raw.indexOf('{'), e = raw.lastIndexOf('}')
-    if (s === -1 || e <= s) return null
+    if (s === -1 || e <= s) {
+      recordGate({ gate: 'grounding', ran: false, reason: 'unparseable verdict (no JSON object in reply)' })
+      return null
+    }
     const j = JSON.parse(raw.slice(s, e + 1))
-    if (typeof j.grounded !== 'boolean') return null
+    if (typeof j.grounded !== 'boolean') {
+      recordGate({ gate: 'grounding', ran: false, reason: 'unparseable verdict (grounded not boolean)' })
+      return null
+    }
+    recordGate({ gate: 'grounding', ran: true, reason: j.grounded ? 'grounded' : 'rejected' })
     return { grounded: j.grounded, issue: String(j.issue ?? ''), fix_directive: String(j.fix_directive ?? '') }
-  } catch { return null }
+  } catch (e: any) {
+    recordGate({ gate: 'grounding', ran: false, reason: `checker error: ${String(e?.message ?? e).slice(0, 120)}` })
+    return null
+  }
 }
 
 /** Collect the agent-authored source (implementation, not tests) for the harden review. */
@@ -661,12 +677,20 @@ Otherwise list at most 3 problems, most severe first.`
   try {
     const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'glue')
     const text = (r.text || '').trim()
-    if (!text) return null
+    if (!text) {
+      recordGate({ gate: 'harden', ran: false, reason: 'empty reviewer reply' })
+      return null
+    }
     if (/^pass\b/i.test(text) || /\bno (significant|real|correctness|actual) (issues|problems|bugs)\b/i.test(text)) {
+      recordGate({ gate: 'harden', ran: true, reason: 'pass' })
       return { solid: true, findings: '' }
     }
+    recordGate({ gate: 'harden', ran: true, reason: 'findings' })
     return { solid: false, findings: text.slice(0, 1400) }
-  } catch { return null }
+  } catch (e: any) {
+    recordGate({ gate: 'harden', ran: false, reason: `reviewer error: ${String(e?.message ?? e).slice(0, 120)}` })
+    return null
+  }
 }
 
 /** Never feed raw tool output back verbatim — cap it, keeping head and tail. */

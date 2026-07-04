@@ -21,6 +21,7 @@
 // ============================================================================
 import { createRequire } from 'module'
 import type { SynthFile } from './synthEngine'
+import { recordGate } from '../debug/gateTelemetry'
 
 export interface LintVerdict {
   ok: boolean
@@ -74,18 +75,23 @@ function getLinter(): LintFn | null {
 /** Lint every candidate file; first violation fails the gate with a retry-actionable detail. */
 export function lintCandidates(files: SynthFile[]): LintVerdict {
   const lint = getLinter()
-  if (!lint) return { ok: true, detail: '', ran: false }
+  if (!lint) {
+    recordGate({ gate: 'gateA2_lint', ran: false, reason: 'eslint or @typescript-eslint/parser failed to load' })
+    return { ok: true, detail: '', ran: false }
+  }
   for (const f of files) {
     if (!/\.tsx?$/.test(f.path)) continue
     let messages: ReturnType<LintFn>
     try { messages = lint(f.content, f.path) } catch { continue } // parse handled by Gate A
     if (messages.length) {
       const m = messages[0]
+      recordGate({ gate: 'gateA2_lint', ran: true, reason: `rejected: ${m.ruleId ?? 'unknown-rule'}` })
       return {
         ok: false, ran: true,
         detail: `lint (${m.ruleId ?? 'unknown-rule'}) at ${f.path}:${m.line} — ${m.message}`,
       }
     }
   }
+  recordGate({ gate: 'gateA2_lint', ran: true, reason: 'clean' })
   return { ok: true, detail: '', ran: true }
 }
