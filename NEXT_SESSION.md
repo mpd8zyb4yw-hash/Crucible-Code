@@ -90,9 +90,9 @@ confirmed, repeatable 5/5 GREEN sweeps this session — both were previously con
    genuinely capability-limited on one structural gap. This is a judgment call for the next
    session/user: open the gate on a 2/3 clean base, or hold for sortModule's structural gap to
    be addressed or explicitly accepted as an honest boundary.
-8. **`:3001` — restarted onto commit `13bce9f`, single-listener verified, clean boot log.**
-   Reflects all of tonight's work: Tier 0-2 park, the launchd fix, and all 8 oracle/repair fixes
-   across summaryModule/sortModule/filterModule.
+8. **`:3001` — restarted onto commit `9d639df` (end of session), single-listener verified,
+   clean boot log.** Reflects all of tonight's work: Tier 0-2 park, the launchd fix, and all 8
+   oracle/repair fixes across summaryModule/sortModule/filterModule.
 9. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
    for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
    needs its own scoping conversation, bigger than a quick fix.
