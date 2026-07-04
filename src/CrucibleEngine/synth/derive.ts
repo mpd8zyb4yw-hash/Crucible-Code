@@ -390,7 +390,16 @@ export function derivePropertyTests(spec: string, modulePath: string): PropertyT
   // EXCLUDES framework-entangled classes (PrismaClient, Express, React, etc.)
   // because those types aren't available in the oracle scratch dir.
   const FRAMEWORK_TYPES = /\b(PrismaClient|Express|Request|Response|NextFunction|Router|ReactNode|JSX|Angular|Vue|Knex|Mongoose|Sequelize|TypeORM|Socket\.io|Fastify|Hapi|Koa)\b/
-  const classExports = feats.exports.filter(n => /^[A-Z]/.test(n))
+  // Same closed-world bug class as the 'sort' family's SortOpts fix above (found live
+  // 2026-07-04 in the fm-rounds ledger): extractFeatures lists INTERFACE/TYPE exports too,
+  // and this family then emitted `new AccountSummary(...)` for an interface — the generated
+  // property test itself fails tsc, burning every FM round AND shadowing the (correct)
+  // context-invariant family that runs at lower precedence. A name only counts as a class
+  // here if the spec doesn't declare it as interface/type.
+  const classExports = feats.exports.filter(n =>
+    /^[A-Z]/.test(n) &&
+    !new RegExp(`\\b(?:interface|type)\\s+${escapeRe(n)}\\b`).test(spec),
+  )
   const hasConstructorInSpec = /\bconstructor\s*\(/.test(spec)
   const hasPrimitiveConstructorOnly = (() => {
     // Extract constructor signature, check that all param types are primitive or generic
