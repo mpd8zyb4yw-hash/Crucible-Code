@@ -17,26 +17,31 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-04 evening, after the Frontier-SWE-gap gate was
-OPENED and the first Workstream 1 critic + first Workstream 3 tripwire landed and verified —
-see ROADMAP CHANGE LOG "2026-07-04 (cont. 6)")
+## CURRENT STATE (last updated 2026-07-04 late, after tripwire RECALIBRATION 2→3 on real
+ledger evidence + live verification sweep of the phase-open work — see SESSION LOG below)
 
-**HEADLINE: the Frontier-SWE-gap phase is now ACTIVE. Gate opened on the 2/3 clean base
-(summaryModule + filterModule repeatable 5/5 GREEN); sortModule documented as an accepted
-capability boundary. Two phase deliverables already live and verified: Gate A2 (curated
-correctness-only ESLint critic inside the oracle, `synth/lintGate.ts`) and the out-of-depth
-tripwire (identical-rejection-fingerprint early abstain in `synth/universal.ts`).
-`prove:all` 250/250 green with both live.**
+**HEADLINE: Frontier-SWE-gap phase ACTIVE; its first two deliverables now VERIFIED against
+real data. Tripwire threshold recalibrated 2→3 consecutive identical fingerprints: replaying
+fm-rounds.jsonl (18 attempts) showed the 2-round threshold would have killed 2 of the 8
+eventual wins (both recovered on round 3 after two identical failures) to save ≤1 round each
+in the 7 genuine non-converging runs. Post-recalibration live smoke:code: 6/7 green (gen 2/3),
+no lint false positives, tripwire fired live twice on sortModule (compile-only, round 3/3)
+with the honest abstain. `prove:all` 250/250 green. Also found+fixed: `@typescript-eslint/parser`
+was an UNDECLARED transitive dep — Gate A2 would silently fail open on any install that
+dropped it; now pinned ^8.61.0 in devDependencies.**
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
-1. **Restart `:3001`** onto a commit containing tonight's work (Gate A2 + tripwire are in the
-   oracle/universal path the live server imports) — it is still running pre-gate code.
-   Changes are uncommitted as of this update; commit first.
-2. **Fire a real smoke:code sweep with Gate A2 + tripwire live** — confirm (a) no lint false
-   positives on real FM candidates, (b) the tripwire fires on sortModule and produces the
-   honest structural-diagnosis abstain instead of grinding 3 rounds. sortModule is now the
-   tripwire's canonical test case, not an open bug.
+1. ~~Restart `:3001`~~ DONE 2026-07-04 late — restarted onto the recalibration commit.
+2. ~~Real smoke:code sweep with Gate A2 + tripwire live~~ DONE — see headline. NOTE:
+   sortModule got FURTHER than its documented boundary this sweep (module produced,
+   12/13 hidden checks pass; only single-element-list + a frozen-types tsc mismatch failed)
+   vs the "never produces a module" characterization — the accepted-boundary write-up is
+   already partially stale. Re-check it every sweep; do not let it calcify.
+2b. **Gate A2 packaged-app check still OPEN:** eslint + parser are devDeps; in a packaged
+   Electron/asar build the gate fails open BY DESIGN but silently. Decide: promote to prod
+   deps, or log once at startup when `ran:false` so absence is visible.
+   (`~/Desktop/Crucible.app/Contents/Resources` has no asar — packaging story unclear, verify.)
 3. **Second Workstream 1 critic** — candidates per ROADMAP: contract/interface checking
    between decomposed pieces, or property-based/fuzz testing via a vetted local tool
    (fast-check is the obvious Lego-piece candidate; would also be the 2nd external-tool
@@ -44,7 +49,8 @@ tripwire (identical-rejection-fingerprint early abstain in `synth/universal.ts`)
    `tsc` is ALREADY Gate A — do not re-plan it as a critic.
 4. **Workstream 2 (upfront elicitation)** — untouched; planning-workflow change, needs a real
    bounded feature task as its test. Design before building.
-5. **Tripwire scope note** — current signal is exact-fingerprint repetition (2 consecutive).
+5. **Tripwire scope note** — current signal is exact-fingerprint repetition (3 consecutive,
+   recalibrated 2026-07-04 late on ledger evidence — see headline).
    sortModule's later rounds sometimes show *fresh, non-repeating* type errors — those still
    burn all rounds by design. A "no two rounds share any failure overlap → also not
    converging" second signal is possible but unproven; only add it with ledger evidence.

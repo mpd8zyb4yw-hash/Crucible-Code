@@ -182,6 +182,12 @@ export async function synthesizeUniversal(
   const sigBlock = fmSpecPrefix ? fmSpecPrefix + spec : spec
   let priorError = ''
   let priorFingerprint = ''
+  // Consecutive-identical-fingerprint streak. Fires at 3, not 2: replaying the
+  // 2026-07-04 fm-rounds.jsonl ledger (18 attempts), a 2-round threshold would have
+  // killed 2 of the 8 eventual wins (both recovered on round 3 after two identical
+  // failures) to save at most one round each in the 7 genuine non-converging runs.
+  let fpStreak = 1
+  const TRIPWIRE_STREAK = 3
   let fmCalls = 0
 
   const oracleOpts = contextFiles.length ? { contextFiles } : {}
@@ -258,13 +264,14 @@ export async function synthesizeUniversal(
           }
         }
       }
-      // ── Out-of-depth tripwire: same rejection shape two rounds running ⇒ not converging.
+      // ── Out-of-depth tripwire: same rejection shape TRIPWIRE_STREAK rounds running ⇒ not converging.
       const fp = failureFingerprint(v.detail)
-      if (fp && fp === priorFingerprint) {
+      fpStreak = fp && fp === priorFingerprint ? fpStreak + 1 : 1
+      if (fpStreak >= TRIPWIRE_STREAK) {
         logFmRound({ modulePath, gate: kindLabel, round: r + 1, of: rounds, tripwire: true, fingerprint: fp.slice(0, 300) })
         return {
           files: [], source: null, verified: false, testsDerived: effectiveDerived.count, fmCalls,
-          detail: `out-of-depth tripwire: oracle rejected consecutive candidates with an identical failure shape (${v.detail.slice(0, 160)}) — FM is not converging on this structure; abstaining early instead of grinding ${rounds - r - 1} more round(s)`,
+          detail: `out-of-depth tripwire: oracle rejected ${fpStreak} consecutive candidates with an identical failure shape (${v.detail.slice(0, 160)}) — FM is not converging on this structure; abstaining early instead of grinding ${rounds - r - 1} more round(s)`,
         }
       }
       priorFingerprint = fp
@@ -318,13 +325,14 @@ export async function synthesizeUniversal(
       return { files, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → tsc-clean (no behavioral test derivable; downstream verify required)` }
     }
     // ── Out-of-depth tripwire (same signal as the behavioral loop): identical tsc failure
-    // shape two rounds running ⇒ not converging; abstain early.
+    // shape TRIPWIRE_STREAK consecutive rounds ⇒ not converging; abstain early.
     const fp = failureFingerprint(v.detail)
-    if (fp && fp === priorFingerprint) {
+    fpStreak = fp && fp === priorFingerprint ? fpStreak + 1 : 1
+    if (fpStreak >= TRIPWIRE_STREAK) {
       logFmRound({ modulePath, gate: 'compile-only', round: r + 1, of: rounds, tripwire: true, fingerprint: fp.slice(0, 300) })
       return {
         files: [], source: null, verified: false, testsDerived: 0, fmCalls,
-        detail: `out-of-depth tripwire: identical tsc failure shape across consecutive rounds (${v.detail.slice(0, 160)}) — abstaining early instead of grinding ${rounds - r - 1} more round(s)`,
+        detail: `out-of-depth tripwire: identical tsc failure shape across ${fpStreak} consecutive rounds (${v.detail.slice(0, 160)}) — abstaining early instead of grinding ${rounds - r - 1} more round(s)`,
       }
     }
     priorFingerprint = fp

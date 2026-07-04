@@ -1740,6 +1740,26 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-04 (cont. 7) — Tripwire recalibrated 2→3 on real ledger evidence; phase-open work verified live
+
+- **Calibration audit (Workstream 3):** replayed `failureFingerprint` over the full
+  `.crucible/fm-rounds.jsonl` ledger (18 attempts). At the shipped 2-consecutive threshold:
+  7 correct fires (all genuine non-converging losses, saving ≤1 round each) but **2 false
+  abstains** — both attempts had identical failure shapes on rounds 1–2 and then won outright
+  on round 3 (one compile-only, one property-gated ALL PASS). 2/8 eventual wins killed is a
+  bad trade for ≤1 saved round; threshold moved to **3 consecutive identical fingerprints**
+  (`fpStreak`/`TRIPWIRE_STREAK` in `synth/universal.ts`, both loops).
+- **Live verification sweep (smoke:code, post-recalibration):** 6/7 green (catalog 4/4,
+  genuine generation 2/3). Zero lint false positives from Gate A2. Tripwire fired live twice
+  on sortModule's compile-only loop at round 3/3 with the honest structural abstain — first
+  real-workload firings. sortModule itself got further than its accepted-boundary write-up
+  (module produced, 12/13 hidden checks) — boundary doc flagged for re-check, see NEXT_SESSION.
+- **Gate A2 hardening:** `@typescript-eslint/parser` was an undeclared transitive dependency —
+  any install/dedupe that dropped it would have silently disabled Gate A2 (fail-open masks
+  absence). Pinned `^8.61.0` in devDependencies. Packaged-app (asar) fail-open visibility
+  remains an open item.
+- `prove:all` 250/250 green post-change; tsc clean; `:3001` restarted onto this commit.
+
 ### 2026-07-04 (cont. 6) — Frontier-SWE-gap gate OPENED; Gate A2 lint critic + out-of-depth tripwire land
 
 - **Gate decision:** opened the Frontier-SWE-gap phase on the 2/3 clean base (summaryModule +
