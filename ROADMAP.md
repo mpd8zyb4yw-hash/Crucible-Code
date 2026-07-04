@@ -1716,6 +1716,58 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-04 (cont. 5) — filterModule ledger audit finds a general testTail truncation bug + 2 more repairs; first-ever 5/5 GREEN sweep
+
+Applied the same ledger-driven audit discipline that fixed summaryModule to filterModule
+(previously ~2/5 GREEN, never root-caused). Fired it live against an isolated instance with a
+fresh `.crucible/fm-rounds.jsonl`, then read the actual candidate and verdict rather than
+guessing.
+
+**Found: `oracle.ts`'s `testTail()` silently drops early failures on any multi-assertion test —
+a general engine bug, not filterModule-specific.** `testTail` summarizes a test run's console
+output for both the audit trail and, critically, the `priorError` fed into the FM's retry
+prompt, using a fixed `.slice(-4)` over PASS/FAIL lines. The `filter-opts` property family has 8
+assertions. A live candidate had 4 simultaneous real bugs; the fixed last-4 window only ever
+surfaced the LAST 2 of those 4 to the FM across all 3 retry rounds — the other two genuine,
+oracle-detected bugs were invisible to the model the entire time, no matter how many rounds it
+got. Reproduced standalone (hand-written candidate, direct oracle call) before fixing. Fix:
+include EVERY failing line plus the final tally, bounded by character length instead of line
+count (commit `9a4005b`). This improves retry feedback for every derived/property/invariant test
+family in the engine, not just this one task — likely to matter for any future task whose
+property family has more than ~4 assertions.
+
+**That fix alone surfaced 2 more real, mechanically-fixable bugs in the newly-visible failures**
+(commit `13bce9f`):
+1. One-sided case-insensitive comparison: the candidate lowercases the FIELD being searched
+   (`user.name.toLowerCase()`) but never lowercases the SEARCH TERM (`opts.query`), so
+   `.includes(opts.query)` only matches when the query happens to already be lowercase (and even
+   an exact-case query fails once only one side is normalized). `repairOneSidedCaseInsensitive`
+   wraps the `.includes(...)` argument in `.toLowerCase()`.
+2. The classic `if (opts.active && !user.active) continue` guard bug: `opts.active && ...` is
+   FALSE (guard skipped, no filtering) whenever `opts.active` is explicitly `false` — the exact
+   case the caller wants filtered. `repairActiveFalseGuard` rewrites to the undefined-aware
+   inequality form: `opts.active !== undefined && user.active !== opts.active`.
+
+Both repairs, plus matching entries in `errorHints.ts`'s closed-world hint table, verified
+against the exact real failing candidate from the live ledger (composed repair: oracle-ACCEPTED,
+was rejected on 4 counts originally).
+
+**Result: filterModule's first-ever clean 5/5 GREEN sweep** (isolated `:3017`, torn down after,
+`:3001` untouched during testing), hidden suite 15/15 ALL PASS every time — up from a previously
+unroot-caused ~2/5.
+
+**Session totals across summaryModule/sortModule/filterModule:** 8 distinct real bugs found and
+fixed (2 oracle-gap bugs, 1 general engine bug, 5 FM-generation bugs with deterministic repairs),
+2 of 3 generation-stress tasks now have clean repeatable 5/5 GREEN sweeps, 1 (sortModule) remains
+genuinely capability-limited on a structural bug the repair layer correctly declined to force-fix.
+Regression check held throughout every commit this session: `synth:prove` 4/4, `prove:all`
+250/250, `synth:enum` 16/16, `synth:taxonomy` 89% moat coverage — unchanged.
+
+**Open call for next session:** whether to open the Frontier-SWE-gap phase gate is now a much
+stronger judgment call — 2 of 3 tasks cleared the gate's prior blocker ("no task has ever landed
+a genuine repeatable pass"). sortModule's structural conditional-grouping gap is the one
+remaining item before a broader base exists.
+
 ### 2026-07-04 (cont. 4) — deterministic repair proposers land summaryModule's first-ever GREEN; sortModule gets 2 more real fixes but stays capability-limited
 
 **New instrumentation: `.crucible/fm-rounds.jsonl`.** Every FM round and repair attempt (both

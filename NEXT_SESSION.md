@@ -17,11 +17,16 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-04, after adding deterministic repair proposers + hint
-distillation + a per-round FM debug ledger, and getting summaryModule to its first-ever GREEN —
-commits through `cff548b`; correction note: `coding-benchmarks.ts`'s sortModule/summaryModule
-tasks were already committed at `311e57a`, NOT uncommitted as a much earlier update of this file
-said)
+## CURRENT STATE (last updated 2026-07-04, after the filterModule ledger audit found a general
+`testTail` truncation bug + 2 more repair proposers, landing filterModule's first-ever clean
+5/5 GREEN sweep — commits through `13bce9f`; correction note: `coding-benchmarks.ts`'s
+sortModule/summaryModule tasks were already committed at `311e57a`, NOT uncommitted as a much
+earlier update of this file said)
+
+**HEADLINE: two of the three generation-stress tasks (`summaryModule`, `filterModule`) now have
+confirmed, repeatable 5/5 GREEN sweeps this session — both were previously confirmed-broken
+(0/3 and ~2/5 respectively). `sortModule` remains genuinely red after 3 real bug fixes, on a
+4th, structural bug that looks like an actual FM reasoning-capacity gap, not an oracle artifact.**
 
 **NEXT SESSION — HIGH TIER ITEMS (concise):**
 
@@ -30,83 +35,64 @@ said)
    isolation) rather than merge into the live `agent/planner.ts`+`agent/loop.ts`+`synthDriver.ts`
    path — explicit "EXPERIMENTAL — PARKED, NOT LIVE" banners added (`44f9bb9`). Re-open only with
    a concrete reason to migrate.
-2. **summaryModule: first-ever GREEN, confirmed 5/5 in a fresh multi-run sweep.** Chain of
-   fixes, all this session:
-   - `c88a0b0`: `deriveInvariantTests` (new family in `deriveInvariant.ts`) — a real runtime test
-     against the project's staged getter for `Record<string,X>` + "fieldC = fieldA - fieldB"
-     specs. Closed the "balance never assigned" oracle gap (was previously invisible to a
-     compile-only gate).
-   - `3539cf4`: found via the new fm-rounds ledger that `derive.ts`'s `class-stateful` family
-     ALSO misfired on interface names (same bug class as the 'sort' family fix), sometimes
-     hijacking a retry round into an unwinnable `new AccountSummary(...)` test instead of letting
-     the correct context-invariant family run. Fixed the same way (exclude interface/type names).
-   - `6325722`: added `repairProposers.ts` — deterministic, oracle-re-gated repair of a REJECTED
-     candidate (not a new proposer; a pure-code patch to what the FM already wrote), keyed off
-     the closed-world failure shapes our own derivers emit. First repair: inject the derived-field
-     assignment loop before every `return <ident>` when the invariant detail pins the exact
-     relationship.
-   - `a3001c7`: the ledger then showed a SECOND summaryModule failure shape the first repair
-     couldn't reach — some fires omit the field from the object literal ENTIRELY (TS2741 compile
-     error, rejected before the runtime test even runs) instead of assigning it wrong. Added
-     `repairMissingField` (stubs the missing field with a type-appropriate default) and made the
-     derived-field repair SPEC-driven so both compose in one pass ("stub the missing field, then
-     compute it correctly").
-   - **Result: fresh 5-fire sweep (isolated `:3016`, torn down after, `:3001` untouched during
-     testing) — 5/5 GREEN**, hidden suite 14/14 or equivalent ALL PASS every time. This is
-     summaryModule's first GREEN ever, moving from a confirmed, reproducible 0/3.
-3. **sortModule: two MORE real bug classes found and repaired (`cff548b`), but still 0/N —
-   genuinely capability-limited now, not oracle-masked.**
-   - `repairDynamicKeyIndex`: `const key = opts.by === 'price' ? a.price : a.name` correctly
-     extracts the value for `a`, but the comparator then indexes `b[key]` — using that VALUE as
-     a property name on `b` (`b[19.99]` is `undefined`) instead of mirroring the ternary. Fixed
-     by mirroring the same ternary onto the bracket-indexed variable.
-   - `repairDefaultDirectionCheck`: comparator gates ascending on `opts.direction === 'asc'`,
-     false when direction is omitted, so the 'desc'-written else branch runs by DEFAULT —
-     inverted from the spec's stated default. Fixed by checking `!== 'desc'` instead.
-   - Both individually verified against isolated buggy/correct pairs, and against the exact
-     candidate from the live ledger where BOTH co-occurred (required refactoring
-     `proposeRepairs` to compose multiple detail-driven repairs in sequence, not just try each
-     alone — see `DETAIL_DRIVEN_REPAIRS` in `repairProposers.ts`).
-   - **Fresh live re-fires still show 0/N GREEN, with the SAME structural bug recurring as the
-     binding constraint across multiple fires**: the FM's generated code splits products into
-     in-stock/out-of-stock groups and concatenates them UNCONDITIONALLY, even when
-     `inStockFirst` is false/omitted — contradicting the spec's explicit "no grouping when
-     false/omitted." This is a control-flow/structural miss, not a mechanical slip with a safe
-     closed-world rewrite — deliberately did NOT force a narrow repair for it, since doing so
-     risks exactly the task-specific-overfitting failure mode this repair layer exists to avoid.
-     Later rounds also show fresh, DIFFERENT type errors (`localeCompare` on a value the FM
-     thinks might not be a string, arithmetic on a non-numeric type) — the FM is changing
-     approach each round rather than converging on one, consistent with the earlier "doesn't use
-     precise feedback well" finding. **sortModule's remaining gap looks like genuine FM
-     reasoning capacity on this specific multi-key/conditional-grouping task shape**, not an
-     oracle or repair-layer gap — three real bug classes found and fixed here, and the task is
-     still red on a fourth, more structural one.
-4. **Infrastructure added this session for future diagnosis, not yet exploited:**
-   - `.crucible/fm-rounds.jsonl` — per-round debug ledger (prompt error context, candidate head,
-     verdict) for every FM round AND every repair attempt, both the behavioral and compile-gate
-     loops. This is what surfaced both the class-stateful bug and sortModule's second/third bug
-     classes this session — cheap to keep using for the next capability audit (e.g. filterModule,
-     item 6 below).
-   - `errorHints.ts` — distills known oracle-failure shapes into imperative retry instructions
-     appended to `priorError` as "ACTION REQUIRED." Wired in, but its actual effect on FM
-     self-correction across rounds hasn't been isolated from the repair-proposer effect — the
-     GREEN results above could be from the hints, the repairs, or both. Not yet decomposed.
-5. **FM daemon launchd plist — FIXED and verified** (stale pre-move paths corrected;
+2. **summaryModule: first-ever GREEN, confirmed 5/5 GREEN in a fresh multi-run sweep.** Chain:
+   `deriveInvariantTests` (new context-invariant test family, closes the "balance never assigned"
+   oracle gap `c88a0b0`) → found `class-stateful` family also misfired on interface names
+   (`3539cf4`) → `repairProposers.ts` added (`6325722`) — deterministic, oracle-re-gated repair
+   of a REJECTED candidate — → found a second summaryModule failure shape (missing field
+   entirely, TS2741) and composed a stub-then-compute repair chain (`a3001c7`). **Result: 5/5
+   GREEN**, hidden suite ALL PASS every time (isolated `:3016`, torn down after).
+3. **filterModule: first-ever clean 5/5 GREEN sweep, up from ~2/5 — found via reading the
+   fm-rounds ledger, same discipline as summaryModule.** The key finding was NOT filterModule-
+   specific: `oracle.ts`'s `testTail()` (the function that summarizes a test run for BOTH the
+   audit trail and the FM's retry prompt) used a fixed `.slice(-4)` over PASS/FAIL lines. Any
+   property family with more than ~4 assertions (filter-opts has 8) could have MULTIPLE
+   simultaneous real failures with the EARLIER ones silently dropped from the retry prompt —
+   confirmed live: a candidate with 4 real bugs only ever showed the FM the last 2 (`9a4005b`).
+   Fixed to include every failing line + the tally, capped by length not line count — this
+   improves retry feedback for every family in the engine, not just filterModule. That fix alone
+   surfaced 2 more real, mechanically-fixable bugs (`13bce9f`): a one-sided case-insensitive
+   comparison (field lowercased, search term not) and the classic `opts.active && !user.active`
+   guard bug (silently no-ops when explicitly filtering for `active:false`). **Result: 5/5
+   GREEN**, hidden suite 15/15 ALL PASS every time (isolated `:3017`, torn down after).
+4. **sortModule: three real bug classes found and repaired this session, but still 0/N —
+   genuinely capability-limited now, not oracle-masked.** `repairDynamicKeyIndex` (a ternary
+   extracts a comparison value into `key`, then the comparator wrongly indexes `b[key]` — using
+   the VALUE as a property name — instead of mirroring the ternary onto `b`) and
+   `repairDefaultDirectionCheck` (`opts.direction === 'asc'` is false when omitted, so the
+   'desc'-written else branch runs by default, inverted from spec) — both verified individually
+   and composed together against a real candidate with both bugs at once (required refactoring
+   `proposeRepairs` around a `DETAIL_DRIVEN_REPAIRS` list, since multiple bugs can co-occur —
+   `cff548b`). **Fresh re-fires still show 0/N, with the SAME structural bug recurring**: the
+   FM's code unconditionally groups by in-stock status and concatenates, even when
+   `inStockFirst` is false/omitted — contradicting the spec's explicit "no grouping" rule.
+   Deliberately did NOT force a narrow repair for this — it's a control-flow miss, not a
+   mechanical slip with a safe closed-world rewrite, and forcing one risks the exact
+   task-specific-overfitting failure mode this repair layer exists to avoid. Later rounds also
+   show fresh, non-repeating type errors rather than convergence. **Read: sortModule's remaining
+   gap looks like genuine FM reasoning capacity on this specific multi-key/conditional-grouping
+   shape** — three real bug classes found and fixed, still red on a fourth, more structural one.
+5. **Infrastructure added this session, now proven valuable twice:** `.crucible/fm-rounds.jsonl`
+   (per-round debug ledger — prompt error context, candidate head, verdict, for every FM round
+   AND repair attempt) directly surfaced the class-stateful bug, sortModule's 2nd/3rd bugs, AND
+   led to inspecting `testTail` which turned out to be a general engine-wide bug. **Reading this
+   ledger before guessing has now found 6 of the 8 real bugs fixed this session** — worth making
+   this the default first step for any future flaky-task investigation, not just a fallback.
+   `errorHints.ts` (imperative retry-instruction distillation) is wired in but its independent
+   effect vs. the repair proposers hasn't been isolated — not yet decomposed, low priority now
+   given the repairs alone demonstrably work.
+6. **FM daemon launchd plist — FIXED and verified** (stale pre-move paths corrected;
    `launchctl unload`+`load`; confirmed `KeepAlive` auto-respawns after a direct kill).
-6. **`filterModule` — still unaudited for oracle bugs, unlike sortModule/summaryModule.** Last
-   known rate ~2/5 GREEN. Given three of the last four oracle-gap fixes this session came from
-   actually reading the fm-rounds ledger rather than guessing, filterModule is now the obvious
-   next candidate for the same audit before concluding its flakiness is a pure capability
-   ceiling.
-7. **Frontier-SWE-gap phase gate — still NOT opened, but the case for opening it is stronger.**
-   summaryModule is now a real, repeatable GREEN (5/5) — the gate's prior blocker ("no task has
-   ever landed a genuine pass") no longer holds for at least one task. sortModule remains
-   genuinely red. This is a judgment call for the next session/user: open the gate on the
-   strength of one task's clean pass-rate, or wait for a broader base (filterModule audit +
-   sortModule's structural gap addressed or accepted).
-8. **`:3001` — restarted onto commit `542887b` (end of session), single-listener verified,
-   clean boot log.** Reflects all of tonight's work: Tier 0-2 park, all five oracle/repair
-   fixes, and the launchd fix.
+7. **Frontier-SWE-gap phase gate — still NOT opened, but the case for opening it is now
+   materially stronger.** Two of three generation-stress tasks (`summaryModule`, `filterModule`)
+   now have clean, repeatable 5/5 GREEN sweeps — the gate's prior blocker ("no task has ever
+   landed a genuine repeatable pass") no longer holds for 2/3 tasks. `sortModule` remains
+   genuinely capability-limited on one structural gap. This is a judgment call for the next
+   session/user: open the gate on a 2/3 clean base, or hold for sortModule's structural gap to
+   be addressed or explicitly accepted as an honest boundary.
+8. **`:3001` — restarted onto commit `13bce9f`, single-listener verified, clean boot log.**
+   Reflects all of tonight's work: Tier 0-2 park, the launchd fix, and all 8 oracle/repair fixes
+   across summaryModule/sortModule/filterModule.
 9. **e002 (explain category)** — retrieval/web-search ranking prefers an over-specific source
    for "how does a refrigerator keep food cold?". Root-caused 2026-07-03, not cache poisoning;
    needs its own scoping conversation, bigger than a quick fix.
