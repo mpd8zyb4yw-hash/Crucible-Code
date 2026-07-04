@@ -24,7 +24,7 @@
 // ============================================================================
 import { extractFeatures, type SynthFile } from './index'
 import { deriveTests, derivePropertyTests } from './derive'
-import { deriveInvariantTests } from './deriveInvariant'
+import { deriveInvariantTests, deriveOptsTransformSmokeTest } from './deriveInvariant'
 import { verifyCandidateAsync } from './oracle'
 import { synthesizePureCode, distillToSkill } from './pureCode'
 import { buildRepoContext, withRetrieval, type OracleContextFile } from './repoContext'
@@ -159,7 +159,14 @@ export async function synthesizeUniversal(
   const invariantDerived = (derived || propertyDerived || !contextFiles.length)
     ? null
     : deriveInvariantTests(spec, modulePath, contextFiles)
-  const effectiveDerived = derived ?? propertyDerived ?? invariantDerived
+  // ── Opts-transform smoke test: repo-getter-fed "does it even run" check for fn(items, opts)
+  // shapes the arity-gated 'sort' family had to stop covering (see derive.ts). Weaker than a
+  // behavioral test (no correctness assertion) but still catches compile-clean-but-throws bugs
+  // that a gate-A-only path can't.
+  const smokeDerived = (derived || propertyDerived || invariantDerived || !contextFiles.length)
+    ? null
+    : deriveOptsTransformSmokeTest(spec, modulePath, contextFiles)
+  const effectiveDerived = derived ?? propertyDerived ?? invariantDerived ?? smokeDerived
 
   // ── L3: reason a candidate with the on-device FM, GATED by the oracle. ─────────────────
   if (effectiveDerived) {
@@ -184,7 +191,9 @@ export async function synthesizeUniversal(
           ? 'behavioral'
           : invariantDerived
             ? `context-invariant (${invariantDerived.family})`
-            : `property (${(effectiveDerived as any).family ?? 'unknown'})`
+            : smokeDerived
+              ? `context-invariant (${smokeDerived.family})`
+              : `property (${(effectiveDerived as any).family ?? 'unknown'})`
         return { files, source: 'fm-distilled', verified: true, testsDerived: effectiveDerived.count, fmCalls, detail: `FM proposed → oracle-verified (${effectiveDerived.count} ${kind} tests)` }
       }
       priorError = v.detail

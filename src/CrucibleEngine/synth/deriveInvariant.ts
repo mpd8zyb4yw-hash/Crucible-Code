@@ -23,6 +23,18 @@ import type { OracleContextFile } from './repoContext'
 
 export interface InvariantTests { testFile: SynthFile; count: number; family: string }
 
+/** Find a sibling context file that exports a zero-arg getter returning an array — the
+ *  project's own existing (protected) data source, e.g. `getAllTransactions(): Transaction[]`. */
+function findContextGetter(contextFiles: OracleContextFile[]): { name: string; rel: string; content: string } | null {
+  for (const cf of contextFiles) {
+    let content: string
+    try { content = fs.readFileSync(cf.src, 'utf8') } catch { continue }
+    const m = content.match(/export function (\w+)\s*\(\s*\)\s*:\s*\w+\[\]/)
+    if (m) return { name: m[1], rel: cf.rel, content }
+  }
+  return null
+}
+
 export function deriveInvariantTests(
   spec: string,
   modulePath: string,
@@ -38,26 +50,13 @@ export function deriveInvariantTests(
   const fn = feats.exports.find(n => /^[a-z]/.test(n))
   if (!fn) return null
 
-  // Find a sibling context file that exports a zero-arg getter returning an array — the
-  // project's own existing (protected) data source, e.g. `getAllTransactions(): Transaction[]`.
-  let getterName: string | null = null
-  let getterRel: string | null = null
-  let recordHint = 3
-  for (const cf of contextFiles) {
-    let content: string
-    try { content = fs.readFileSync(cf.src, 'utf8') } catch { continue }
-    const m = content.match(/export function (\w+)\s*\(\s*\)\s*:\s*\w+\[\]/)
-    if (m) {
-      getterName = m[1]
-      getterRel = cf.rel
-      recordHint = Math.max(1, (content.match(/\{\s*id\s*:/g) ?? []).length)
-      break
-    }
-  }
-  if (!getterName || !getterRel) return null
+  const getter = findContextGetter(contextFiles)
+  if (!getter) return null
+  const recordHint = Math.max(1, (getter.content.match(/\{\s*id\s*:/g) ?? []).length)
 
   const importCandidate = '../' + modulePath.replace(/\.tsx?$/, '')
-  const importGetter = '../' + getterRel.replace(/\.tsx?$/, '')
+  const importGetter = '../' + getter.rel.replace(/\.tsx?$/, '')
+  const getterName = getter.name
 
   const content = `// Context-invariant test (repo-getter-fed runtime oracle — Crucible synth/deriveInvariant).
 import { ${fn} } from '${importCandidate}'
@@ -85,5 +84,98 @@ process.exit(failures === 0 ? 0 : 1)
     testFile: { path: '__invariant__/spec.test.ts', content },
     count: recordHint,
     family: 'grouped-ledger-aggregate',
+  }
+}
+
+/**
+ * Context-getter-fed smoke test for `fn(items: T[], opts: XxxOpts): T[]`-shaped transforms
+ * (sort/reorder with a config object) — the shape derive.ts's 'sort' family had to stop
+ * covering once arity-gated to single-arg signatures (see the `derive.ts` 'sort' family
+ * comment). Without ANY oracle, this shape ships via gate-A-only (compile-check only), which
+ * cannot catch a candidate that compiles clean but throws or misbehaves at runtime.
+ *
+ * Confirmed live 2026-07-04: sortModule's FM output reproducibly (2/2 fires, byte-for-byte
+ * identical logic) wrote `if (!Array.isArray(opts)) throw new TypeError(...)` — a copy-paste
+ * mistake mirroring the correct array-check on `items` but wrongly applied to the singular
+ * opts object — which threw on every legitimate call. A compile-only gate cannot see this;
+ * only actually calling the function does.
+ *
+ * Deliberately narrow and behavior-agnostic (does NOT assert the transform's actual
+ * correctness — no derived sort-order check here, since a general "sorted" property lost its
+ * safety when the signature stopped being single-arg). Only asserts: doesn't throw on a
+ * well-formed call, returns an array, preserves length, doesn't mutate the input. Excludes
+ * `filter*`-named exports — those are already covered by derive.ts's more precise
+ * `filter-opts` family and should not be double-tested here.
+ */
+export function deriveOptsTransformSmokeTest(
+  spec: string,
+  modulePath: string,
+  contextFiles: OracleContextFile[],
+): InvariantTests | null {
+  const feats = extractFeatures(spec)
+  const fn = feats.exports.find(n => /^[a-z]/.test(n) && !/^filter/i.test(n))
+  if (!fn) return null
+
+  const sig = spec.match(new RegExp(`\\bfunction\\s+${fn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(([^)]*)\\)\\s*:\\s*(\\w+)\\[\\]`))
+  if (!sig) return null
+  const params = sig[1].split(',').map(p => p.trim())
+  if (params.length !== 2) return null
+  if (!/\[\]\s*$/.test(params[0])) return null   // first param must be an array
+  const optsParam = params[1].match(/^\w+\s*:\s*(\w+)$/)
+  if (!optsParam) return null
+  const optsType = optsParam[1]
+  if (!/opts?$/i.test(optsType)) return null      // second param's type name must look like an Opts bag
+
+  // Find the opts interface's first REQUIRED field with a string-literal-union type, to build
+  // a minimal well-formed call (e.g. `{ by: 'price' }` for `by: 'price' | 'name'`).
+  const ifaceMatch = spec.match(new RegExp(`interface\\s+${optsType}\\s*\\{([\\s\\S]*?)\\}`))
+  if (!ifaceMatch) return null
+  const fieldLines = ifaceMatch[1].split('\n').map(l => l.trim()).filter(Boolean)
+  let requiredField: string | null = null
+  let requiredLiteral: string | null = null
+  for (const line of fieldLines) {
+    const fm = line.match(/^(\w+)\s*(\?)?:\s*(.+?)(?:\/\/.*)?$/)
+    if (!fm) continue
+    const [, fieldName, optional, type] = fm
+    if (optional) continue
+    const lit = type.match(/'([^']+)'/)
+    if (lit) { requiredField = fieldName; requiredLiteral = lit[1]; break }
+  }
+  if (!requiredField || !requiredLiteral) return null
+
+  const getter = findContextGetter(contextFiles)
+  if (!getter) return null
+  const recordHint = Math.max(1, (getter.content.match(/\{\s*id\s*:/g) ?? []).length)
+
+  const importCandidate = '../' + modulePath.replace(/\.tsx?$/, '')
+  const importGetter = '../' + getter.rel.replace(/\.tsx?$/, '')
+
+  const content = `// Context-invariant smoke test (opts-transform shape — Crucible synth/deriveInvariant).
+import { ${fn} } from '${importCandidate}'
+import { ${getter.name} } from '${importGetter}'
+let failures = 0
+function check(desc: string, ok: boolean) {
+  console.log((ok ? 'PASS' : 'FAIL') + ' — ' + desc)
+  if (!ok) failures++
+}
+const data: any[] = ${getter.name}() as any
+const snapshot = JSON.parse(JSON.stringify(data))
+let result: any = null
+let threw: unknown = null
+try { result = ${fn}(data, { ${requiredField}: '${requiredLiteral}' } as any) } catch (e) { threw = e }
+check('does not throw on a well-formed call', threw === null)
+if (threw !== null) console.log('  threw: ' + String(threw))
+if (threw === null) {
+  check('returns an array', Array.isArray(result))
+  check('preserves length', Array.isArray(result) && result.length === data.length)
+}
+check('does not mutate input', JSON.stringify(data) === JSON.stringify(snapshot))
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
+process.exit(failures === 0 ? 0 : 1)
+`
+  return {
+    testFile: { path: '__invariant__/spec.test.ts', content },
+    count: recordHint,
+    family: 'opts-transform-smoke',
   }
 }
