@@ -80,6 +80,13 @@ export function msUntilDriverRecovery(): number {
  * re-confirmed). Including probing — not just active — is what lets the driver self-heal
  * after a full pool trip; a successful turn resets the model to active (see nativeDriveTurn).
  */
+// TPM floors for driver selection. A model whose per-minute token cap sits below the floor
+// 413s on a real prompt of that turn class and falls back to the slow tier anyway. 'hard'
+// (repo-context implementation) prompts embed file content and run larger than 'glue' (judge/
+// plan/read) prompts, so its floor is higher. Only two models currently carry a cap (both
+// 6000 TPM: qwen3-32b, llama-3.1-8b); every other model is uncapped and clears both floors.
+const GLUE_TPM_FLOOR = 8000
+const HARD_TPM_FLOOR = 12000
 export function selectDriverCandidates(turnClass: 'glue' | 'hard' = 'hard'): ModelEntry[] {
   // Mistral is EXCLUDED entirely: it 400s on the message shapes we build ("Tool call id
   // has to be defined", 3051) so it can never drive. Leaving it as a last-resort fallback
@@ -93,7 +100,7 @@ export function selectDriverCandidates(turnClass: 'glue' | 'hard' = 'hard'): Mod
     // llama-3.1-8b-instant: q6, 6000 TPM) 413 on a real transcript and fall back to the
     // slow tier anyway — net slower AND lower quality. Lead with FAST + adequate models
     // (quality>=7, no sub-8000 TPM cap), then the rest, so a degraded pool never empties.
-    const adequate = (m: ModelEntry) => m.quality >= 7 && (m.tpmLimit == null || m.tpmLimit >= 8000)
+    const adequate = (m: ModelEntry) => m.quality >= 7 && (m.tpmLimit == null || m.tpmLimit >= GLUE_TPM_FLOOR)
     const rank = (m: ModelEntry) => (adequate(m) ? 2 : 0) + (m.speed === 'fast' ? 1 : 0)
     return usable.sort((a, b) =>
       (probing(a) - probing(b)) ||
@@ -101,8 +108,17 @@ export function selectDriverCandidates(turnClass: 'glue' | 'hard' = 'hard'): Mod
       (b.quality - a.quality) ||
       (b.params - a.params))
   }
+  // 'hard' turns embed real file content (repo-context implementation/generation), so their
+  // prompts are LARGER than glue prompts — a sub-floor-TPM model 413s here even more readily.
+  // Measured filterModule/sortModule repo-context prompts land ~7–15k tokens, so the two
+  // 6000-TPM Groq models (qwen3-32b q8, llama-3.1-8b q6) instant-fail with a 413 (see the
+  // TPM Limit 6000 error). qwen3-32b in particular is q8/fast and would otherwise rank near
+  // the TOP here. De-prioritize (not hard-exclude) sub-floor-TPM models so they trail every
+  // uncapped model but remain last-resort candidates — a degraded pool must never empty.
+  const tpmOk = (m: ModelEntry) => m.tpmLimit == null || m.tpmLimit >= HARD_TPM_FLOOR ? 1 : 0
   return usable.sort((a, b) =>
     (probing(a) - probing(b)) ||
+    (tpmOk(b) - tpmOk(a)) ||
     (b.quality - a.quality) ||
     ((b.speed === 'fast' ? 1 : 0) - (a.speed === 'fast' ? 1 : 0)) ||
     (b.params - a.params))

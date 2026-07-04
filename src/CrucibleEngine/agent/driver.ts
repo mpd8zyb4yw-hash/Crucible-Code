@@ -22,6 +22,21 @@ const mistral = () => (_mistral ??= new Mistral({ apiKey: process.env.VITE_MISTR
 
 const stripThink = (t: string) => t.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
 
+// Reasoning-model rescue: gpt-oss / nemotron / R1-lineage models spend their output budget
+// in a separate `reasoning` channel and, when that budget is exhausted (finish_reason
+// 'length' on a big transcript), return `content: null`. An empty content silently
+// neuters the fail-open critics (grounding/harden saw literally nothing to parse). If the
+// visible content is empty but the model DID reason, fall back to the reasoning trace — the
+// verdict/answer is almost always in it — so a critic gets real text instead of nothing.
+function messageText(msg: any): string {
+  const primary = stripThink(typeof msg?.content === 'string' ? msg.content : '')
+  if (primary) return primary
+  const reasoning = msg?.reasoning ?? msg?.reasoning_content ?? msg?.reasoning_details
+  const r = typeof reasoning === 'string' ? reasoning : Array.isArray(reasoning)
+    ? reasoning.map((x: any) => x?.text ?? x?.content ?? '').join('\n') : ''
+  return stripThink(r)
+}
+
 export function currentDriverLabel(): string {
   return selectDriverCandidates()[0]?.label ?? '(none)'
 }
@@ -48,6 +63,7 @@ async function turnOnModel(
   m: ModelEntry,
   messages: Array<Record<string, unknown>>,
   tools: ToolDef[],
+  turnClass: 'glue' | 'hard' | 'critic' = 'hard',
 ): Promise<DriveTurnResult> {
   recordProviderCall(m.provider)
   const modelId = m.id.replace(/^[a-z]+\//, '')
@@ -59,7 +75,7 @@ async function turnOnModel(
       temperature: 0.2,
     } as any)
     const msg = res.choices[0]?.message
-    return { text: stripThink(msg?.content ?? ''), toolCalls: fromOpenAIToolCalls(msg) }
+    return { text: messageText(msg), toolCalls: fromOpenAIToolCalls(msg) }
   }
 
   if (m.provider === 'mistral') {
@@ -76,8 +92,7 @@ async function turnOnModel(
         ? (JSON.parse(c.function.arguments || '{}'))
         : (c.function?.arguments ?? {}),
     })).filter((c: ToolCall) => c.name)
-    const text = typeof msg?.content === 'string' ? msg.content : ''
-    return { text: stripThink(text), toolCalls }
+    return { text: messageText(msg), toolCalls }
   }
 
   if (m.provider === 'openrouter') {
@@ -93,12 +108,18 @@ async function turnOnModel(
         model: modelId, messages: sanitizeMessages(messages),
         ...(tools.length ? { tools: toOpenAITools(tools), tool_choice: 'auto' } : {}),
         temperature: 0.2,
+        // Glue turns (planning/summarizing/critic gates) don't need deep reasoning, and on
+        // reasoning models (gpt-oss/nemotron/R1) an unbounded reasoning channel eats the
+        // whole output budget on a big transcript → content comes back null and the
+        // fail-open critics get nothing to parse. effort:'low' keeps content emitted;
+        // OpenRouter ignores it for non-reasoning models. Hard coding turns keep full effort.
+        ...(turnClass === 'glue' ? { reasoning: { effort: 'low' } } : {}),
       }),
     })
     if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`)
     const data = await res.json()
     const msg = data.choices?.[0]?.message
-    return { text: stripThink(msg?.content ?? ''), toolCalls: fromOpenAIToolCalls(msg) }
+    return { text: messageText(msg), toolCalls: fromOpenAIToolCalls(msg) }
   }
 
   throw new Error(`Provider ${m.provider} not supported as driver`)
@@ -162,7 +183,28 @@ const MAX_POOL_WAIT_MS = Number(process.env.CRUCIBLE_MAX_POOL_WAIT_MS ?? 75_000)
 export const nativeDriveTurn: DriveTurn = async (messages, tools, signal, turnClass) => {
   // selectDriverCandidates already excludes Mistral (it 400s on our message shape) and
   // includes recovering 'probing' models, so a fresh call reflects the live pool state.
-  const pickCandidates = () => selectDriverCandidates(turnClass ?? 'hard')
+  // 'critic' rides the strong 'hard' tier (top judges) with full reasoning — only 'glue'
+  // gets the speed-first pool + reasoning:effort low.
+  // Pre-dispatch token guard (registry field SelectedModel.tpmLimit, "4.2"). A Groq model
+  // with a per-minute token cap 413s ("Request too large ... TPM Limit 6000") when a SINGLE
+  // request exceeds that cap — repo-context 'hard' prompts embed file content and routinely
+  // run 7–15k tokens, well past the 6000-TPM models (qwen3-32b, llama-3.1-8b). Reacting to
+  // the 413 after the fact (tripCircuitBreaker below) still LOSES the task when a low-TPM
+  // model is the last candidate standing after the bigger ones quota-tripped across
+  // iterations. So estimate the request size and DROP any candidate whose cap can't hold it
+  // — the wait loop then rides out pool recovery for a real model instead of guaranteeing a
+  // 413. ~4 chars/token (standard heuristic) + a reserve for the model's own output tokens,
+  // which also count against the per-minute budget. CRITICAL: turnOnModel dispatches
+  // `messages` AND the `tools` JSON schemas — the tool payload counts against Groq's TPM too
+  // and runs 1.5–3k tokens for the coding toolset. Omitting it undercounts: after emergency
+  // compression shrinks `messages`, a 6000-TPM model passes on messages alone, then 413s once
+  // the tools are appended (the exact failure that survived the first fix). Count both.
+  const estRequestTokens = Math.ceil((JSON.stringify(messages).length + JSON.stringify(tools).length) / 4)
+  const TPM_OUTPUT_RESERVE = 1000
+  const fitsTpm = (m: { tpmLimit?: number }) =>
+    m.tpmLimit == null || m.tpmLimit >= estRequestTokens + TPM_OUTPUT_RESERVE
+  const pickCandidates = () =>
+    selectDriverCandidates(turnClass === 'glue' ? 'glue' : 'hard').filter(fitsTpm)
 
   // Wait out a transient FULL trip rather than instant-failing the task. The whole free
   // pool routinely trips together under rate-limit pressure; cooldowns floor at 60s, so a
@@ -184,7 +226,7 @@ export const nativeDriveTurn: DriveTurn = async (messages, tools, signal, turnCl
   let lastErr: unknown
   for (const m of pickCandidates()) {
     try {
-      const result = await withDriverTimeout(turnOnModel(m, messages, tools))
+      const result = await withDriverTimeout(turnOnModel(m, messages, tools, turnClass ?? 'hard'))
       // Success on a probing model (or any model) confirms it healthy → restore to active
       // so the self-healing path doesn't leave it stuck in probing forever.
       resetCircuitBreaker(m.id)

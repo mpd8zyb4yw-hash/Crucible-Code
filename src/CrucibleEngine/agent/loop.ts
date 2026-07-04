@@ -22,9 +22,14 @@ export type DriveTurn = (
   messages: Array<Record<string, unknown>>,
   tools: ToolDef[],
   signal?: AbortSignal,
-  /** 'hard' = quality-first (top coder); 'glue' = speed-first (fast judge/plan/read turns).
+  /** 'hard' = quality-first (top coder); 'glue' = speed-first (fast judge/plan/read turns);
+   *  'critic' = final correctness audit (grounding/harden) — routes to the strong online free
+   *  pool with FULL reasoning, bypassing the on-device FM. Measured: the tiny FM is at chance
+   *  on distinguishing subtle-but-real bugs from correct code (2/4 on the critic bench, both
+   *  prompt extremes), while gpt-oss-120b scores 4/4. Correctness-judging is exactly the
+   *  rare, high-value, once-per-task call where escalating to a stronger $0 model is worth it.
    *  Optional + defaulted by the driver, so existing callers are unaffected. */
-  turnClass?: 'glue' | 'hard',
+  turnClass?: 'glue' | 'hard' | 'critic',
 ) => Promise<DriveTurnResult>
 
 export interface VerifyResult {
@@ -597,9 +602,14 @@ ${finalText.slice(0, 1500)}
 TOOL EVIDENCE (calls and their results, most recent last):
 ${digest}
 
-Be conservative: mark grounded=false ONLY when the evidence clearly contradicts or fails to support a success claim. If evidence is merely incomplete but nothing contradicts the claim, mark grounded=true. Reply with ONLY a JSON object, no prose:
+Be conservative: mark grounded=false ONLY when the evidence clearly contradicts or fails to support a success claim. If evidence is merely incomplete but nothing contradicts the claim, mark grounded=true. An EMPTY command result with no error text means the command SUCCEEDED (a clean build/compile/test run often prints nothing) — treat empty output as supporting a success claim, never as contradicting it. Reply with ONLY a JSON object, no prose:
 {"grounded": true|false, "issue": "<one sentence; empty if grounded>", "fix_directive": "<one imperative sentence telling the agent what to verify or fix; empty if grounded>"}`
   try {
+    // Grounding stays on the LOCAL FM ('glue'): measured 5/6 on the on-device model — good
+    // enough, and it can fire repeatedly (retry loop) on action tasks, so keeping it local
+    // avoids adding online-pool pressure (which, degraded, starves demanding tasks like
+    // sortModule of the writes they need). Only HARDEN — where the FM is at chance (2/4) —
+    // escalates to the strong online pool via 'critic'. Escalate only what needs it.
     const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'glue')
     const raw = r.text.replace(/```json|```/g, '').trim()
     const s = raw.indexOf('{'), e = raw.lastIndexOf('}')
@@ -662,7 +672,7 @@ export async function runHardenReview(
   driveTurn: DriveTurn,
   signal?: AbortSignal,
 ): Promise<HardenReview | null> {
-  const prompt = `You are a meticulous senior software engineer doing a FINAL correctness review before merge.
+  const prompt = `You are a senior software engineer doing a FINAL correctness review before merge. Your DEFAULT is PASS — correct code is common and you must not invent problems to look thorough. A false alarm on correct code is as bad as missing a real bug.
 
 TASK:
 ${goal.slice(0, 900)}
@@ -670,12 +680,22 @@ ${goal.slice(0, 900)}
 IMPLEMENTATION:
 ${sources}
 
-Find ONLY real correctness problems: logic bugs, unhandled edge cases (empty input, boundaries, off-by-one, overflow, TTL/expiry, eviction order, concurrency, persistence/replay), wrong return values, or requirements from the task that are not actually met. Ignore style, naming, and formatting entirely. For each problem, state the symptom and a concrete failing input or scenario.
+Flag a problem ONLY if you can name a SPECIFIC input for which the code returns a demonstrably WRONG result or crashes, given what the TASK actually asked for. Examples of real bugs: an off-by-one that returns the wrong element, a division that yields NaN on empty input when the task implied non-empty is not guaranteed, a persistence/replay path that loses data, a boundary the task named but the code mishandles.
 
-If the code is genuinely correct and complete for the stated task, reply with EXACTLY the single word: PASS
-Otherwise list at most 3 problems, most severe first.`
+DO NOT flag any of these — they are NOT bugs for this review:
+- missing input validation, type checks, null/undefined guards, or handling of inputs the task never mentioned
+- integer overflow, non-numeric/wrong-type inputs, or other defensive hardening the task did not ask for
+- "could be more robust", "does not handle X" where X is out of scope, style, naming, or formatting
+
+ALWAYS flag a bug that makes the NORMAL, intended use return the wrong value — a happy-path bug is the most important kind to catch.
+
+Example A — TASK "write add(a,b) returning a+b", CODE "function add(a,b){return a+b}": correct review is exactly PASS (do not flag missing type checks or overflow).
+Example B — TASK "write last(arr) returning the last element", CODE "function last(arr){return arr[arr.length]}": this is a REAL bug — last([1,2,3]) returns undefined instead of 3 (should be arr[arr.length-1]). Flag it.
+
+If the code is correct and complete for what the task asked, reply with EXACTLY the single word: PASS
+Otherwise list at most 3 REAL bugs, most severe first, each with its specific failing input.`
   try {
-    const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'glue')
+    const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'critic')
     const text = (r.text || '').trim()
     if (!text) {
       recordGate({ gate: 'harden', ran: false, reason: 'empty reviewer reply' })

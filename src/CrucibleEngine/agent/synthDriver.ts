@@ -39,7 +39,7 @@ import { debugBus } from '../debug/bus'
 import type { DriveTurn, DriveTurnResult } from './loop'
 import { retrieveForTask } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
-import { fmReact, fmDirectAnswer, checkFmAvailable } from './fmReact'
+import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete } from './fmReact'
 
 // ── Local FM helper (research turns only) ───────────────────────────────────
 // Mirrors callLocalModel in server.ts but lives here so synthDriver stays
@@ -451,8 +451,26 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
     messages,
     _tools,
     signal,
+    turnClass,
   ): Promise<DriveTurnResult> {
     if (signal?.aborted) throw new Error('Aborted')
+
+    // ── Glue turns are one-shot completions (planner / summary / critic gates), NOT
+    // agentic coding-loop steps. Feeding one through the code state machine below
+    // misparses the prompt — a harden/grounding prompt embeds source code and tool
+    // evidence, so parseCurrentState finds a "file path" and the machine returns empty
+    // text plus a spurious write_file/read_file call. That empty text is exactly what
+    // silently neutered the fail-open critics (grounding "no JSON", harden "empty reply")
+    // on the live path. Route glue straight to a direct FM completion of the actual
+    // prompt; escalate to the online glue tier only if the FM is down or returns nothing.
+    if (turnClass === 'glue') {
+      const fmUp = await checkFmAvailable()
+      if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — glue escalating')
+      const text = await fmComplete(messages as Array<{ role: string; content: string }>)
+      if (!text.trim()) throw new OfflineEscalateError('FM returned empty glue completion — escalating')
+      debugBus.emit('agent', 'offline_glue_hit', { len: text.length }, { severity: 'info' })
+      return { text, toolCalls: [] }
+    }
 
     const state = parseCurrentState(messages)
     const { goal, goalPaths, writtenPaths, selfTestCmd } = state
@@ -610,6 +628,11 @@ export function withOfflineFallback(
   onlineTurn: DriveTurn,
 ): DriveTurn {
   return async (messages, tools, signal, turnClass) => {
+    // Critic turns (final grounding/harden correctness audit) go straight to the strong
+    // online free pool — the on-device FM is at chance on distinguishing subtle-but-real
+    // bugs from correct code (measured 2/4 vs gpt-oss-120b's 4/4). This is the one
+    // rare, high-value judgment where escalating to a stronger $0 model is worth it.
+    if (turnClass === 'critic') return onlineTurn(messages, tools, signal, turnClass)
     try {
       const result = await offlineTurn(messages, tools, signal, turnClass)
       debugBus.emit('agent', 'offline_turn_hit', {}, { severity: 'info' })
