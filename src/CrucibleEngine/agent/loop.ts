@@ -5,6 +5,7 @@
 import fs from 'fs'
 import path from 'path'
 import { registry } from '../tools/registry'
+import { isIntegrationEnabled } from '../integrations/registry'
 import { debugBus } from '../debug/bus'
 import { recordGate } from '../debug/gateTelemetry'
 import { buildWorldContext, buildReflectionPrompt, appendWorldFact, appendReflection, touchNode, loadGraph, saveGraph } from '../state/world'
@@ -12,6 +13,11 @@ import type { ToolCall, ToolCtx, ToolDef } from '../tools/protocol'
 import { maybeCompressMessages } from '../contextManager'
 import { createAnchor, validateCompression, deleteAnchor } from '../contextAnchor'
 import { renderPlaybook } from './macCapabilities'
+import { runLocalHardenCheck } from './localHardenCheck'
+import { runLocalHardenFuzz } from './localHardenFuzz'
+import { resolveAmbiguity } from '../ambiguity'
+import { assessStakes } from './stakesRouter'
+import { ensureSemanticIndex } from '../state/semanticIndex'
 
 export interface DriveTurnResult {
   text: string
@@ -97,6 +103,14 @@ export interface AgentLoopResult {
    *  'none' or undefined means no runnable check existed. Lets the planner trust real
    *  execution evidence and skip a redundant (and over-strict) LLM done-check. */
   verifiedSignal?: VerifyResult['signal']
+  /** Set only when stopped === 'clarification' AND the ambiguity had a genuinely
+   *  enumerable answer set (ambiguity.ts's unresolved-reference-with-candidates case).
+   *  Absent for open-ended clarifications (ask_user, or vague-scope/no-target/
+   *  underspecified-behavior) — consumers must fall back to free-text on absence. */
+  clarificationOptions?: string[]
+  /** Which clarificationOptions entry to show as the recommended default. Always
+   *  present when clarificationOptions is. */
+  recommendedOption?: string
 }
 
 const APPROX_CHARS_PER_TOKEN = 4
@@ -134,7 +148,7 @@ IMPORTANT — delegation: for the single hardest algorithmic core of a task (a t
 CODING DISCIPLINE — you are a senior engineer; ship complete, correct code:
 1. IMPLEMENT THE REAL LOGIC FIRST. Write the actual working implementation before tests or extra config. Do NOT spend your iteration budget on scaffolding/tooling — minimal setup, then the substance. A file left as a placeholder, stub, \`export {}\`, "// TODO", or "implementation goes here" is a FAILED task, not a step.
 2. NO GAMING THE CHECK. Tests must genuinely exercise the behavior — real inputs, expected outputs, edge cases (empty/zero, boundaries, overflow, expiry, errors), and failure paths. A trivial test that asserts \`true === true\` or only the happy path to make the check go green is a serious failure; the real correctness bar is hidden from you and WILL catch it.
-3. MATCH THE SPEC EXACTLY. If the task names specific file paths, exported names, or function signatures, create them verbatim — they may be imported by an external audit.
+3. MATCH THE SPEC EXACTLY. If the task names specific file paths, exported names, or function signatures, create them verbatim — they may be imported by an external audit. Your self-test file MUST import the actual function from the module you just wrote and call THAT import — never declare a second, same-named function inline in the test file "for convenience." A self-test that exercises its own local re-declaration instead of the real export can pass while the actual deliverable is broken or has the wrong signature, and an external audit imports the real file, not your test's copy.
 4. PROVE IT RUNS. Before your final answer, actually execute the code (run the entry/tests) and confirm real output. If a requirement isn't met, fix it and re-run — never report done on unverified or partial work.
 
 TOOL SELECTION DISCIPLINE: Before calling any tool, ask: "Does this tool plausibly help answer the user's actual question?" Personal data tools (drive_search, drive_read, fitness_activity, contacts_search, gmail_search, gmail_read, calendar_events, youtube_search_api, analytics_report) exist for queries explicitly about the user's own data. NEVER call them for general research, factual questions, coding tasks, or world knowledge — even if you think there might be a tangential connection. If a query is about fusion energy, geopolitics, code, science, or anything external — do not touch personal data tools. Use web_search, consult_specialist, and ensemble_solve instead. If mid-task you genuinely discover personal data is needed (e.g. "compare this news to my own calendar"), call only the specific tool you need, once. STRATEGY SWITCH ON REPEATED FAILURE: if any tool fails twice in a row with the same error, STOP calling it — move on and complete the task with what you have.
@@ -198,7 +212,25 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     consultSpecialist: opts.consultSpecialist,
   }
 
-  const tools = registry.list()
+  // Stakes-router confirmation retry (see stakesRouter.ts) — a short affirmative reply on
+  // a resumed turn is treated as "go ahead" for whatever destructive action this run
+  // attempts. Found in passing: the `run` tool's own destructive-command guard
+  // (registry.ts's ctx.allowDestructive) had NO caller anywhere that ever set it true —
+  // a destructive command was permanently unrunnable even with genuine explicit user
+  // confirmation, since nothing closed the loop back from "user said yes" to the flag.
+  // This is intentionally coarse (goal-text only, not conversation-state introspection):
+  // proper multi-turn state (which specific action was confirmed) would need the
+  // clarification exchange itself persisted into session messages, which the ask_user
+  // path this reuses doesn't currently do either — a real, pre-existing gap, not
+  // something to silently paper over here.
+  if (opts.initialMessages && /^\s*(yes|yeah|yep|yup|sure|go ahead|do it|confirm(ed)?|proceed|ok|okay)\b/i.test(goal) && goal.trim().length < 40) {
+    ctx.allowDestructive = true
+  }
+
+  // Integration tools (Integrations drawer) are only VISIBLE while their
+  // integration is enabled — a disabled drawer entry must not tempt the model.
+  // (run() re-checks enablement too, covering a mid-task toggle-off.)
+  const tools = registry.list().filter(t => !t.integrationId || isIntegrationEnabled(t.integrationId))
   // Resume from checkpoint if initialMessages provided; otherwise start fresh.
   const messages: Array<Record<string, unknown>> = opts.initialMessages
     ? [...opts.initialMessages]
@@ -217,6 +249,28 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   createAnchor(anchorId, goal)
 
   const spend = (chars: number) => { spentTokens += Math.ceil(chars / APPROX_CHARS_PER_TOKEN) }
+
+  // Tier 2.4 — ambiguity resolution, before the first turn is spent. Only a fresh
+  // (non-resumed) goal is checked; a resumed checkpoint has already cleared this gate
+  // once and the resumed messages are the user's actual answer, not a fresh goal.
+  if (!opts.initialMessages) {
+    let semIdx
+    try { semIdx = ensureSemanticIndex(projectPath) } catch { /* index build failed — resolve without it */ }
+    const resolution = resolveAmbiguity(goal, { index: semIdx })
+    if (resolution.ambiguous && resolution.clarification) {
+      emit({
+        type: 'clarification_request',
+        question: resolution.clarification,
+        options: resolution.clarificationOptions,
+        recommended: resolution.recommendedOption,
+      })
+      debugBus.emit('agent', 'ambiguity_gate', {
+        confidence: resolution.confidence,
+        signals: resolution.signals.map(s => s.type),
+      }, { severity: 'info' })
+      return done('clarification', resolution.clarification, 0, resolution.clarificationOptions, resolution.recommendedOption)
+    }
+  }
 
   // Error-pattern tracker — detects the agent spinning on the same failure.
   let lastErrorFingerprint = ''
@@ -245,7 +299,14 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   // verifies, to catch edge-case bugs the agent's own happy-path tests missed.
   const hardenFinal = opts.hardenFinal ?? false
   let hardenRounds = 0
-  const MAX_HARDEN_ROUNDS = 2
+  // Live case (2026-07-05, leaderboardModule): a deterministic fuzz-confirmed mutation
+  // bug (see localHardenFuzz.ts's sort-no-mutate) survived 2 rounds — the free-tier model's
+  // fix attempt kept re-emitting `scores.sort(...)` even after a plain-English "don't
+  // mutate the input" instruction, and other gates (grounding) were consuming iteration
+  // turns in between. One extra round costs little (fuzz checks are static, no model call
+  // to CHECK, only to fix) and the fuzz layer's zero-false-positive design (see its own
+  // header doc) means a 3rd round can't be spent re-flagging correct code.
+  const MAX_HARDEN_ROUNDS = 3
 
   /** Inject a corrective hint when the model is looping on the same failure. */
   function maybePushErrorHint(toolResults: Array<{ ok: boolean; output: string; tool: string }>) {
@@ -354,6 +415,31 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         // blocked. (Never silently discard the other calls.)
         emit({ type: 'thought', text: '[Deferring ask_user — finishing the other actions in this turn first]', iter })
         turn.toolCalls = turn.toolCalls.filter(c => c.name !== 'ask_user')
+      }
+
+      // HITL_PLANNING_TRACK.md §3 — stakes-aware router, first real slice (2026-07-05).
+      // Deterministic, no model call: scores EVERY tool call about to run this turn on
+      // reversibility + blast radius (2026-07-06: widened from the sole-call case — a
+      // destructive call co-emitted alongside benign ones was a documented scope gap, not
+      // silently assumed safe; a batch of calls is exactly where a model is most likely to
+      // slip an unreviewed delete in alongside routine work). Gates on the FIRST high-stakes
+      // call found; the rest of the turn (including any other destructive calls) is held
+      // until the user answers — never partially executed around the gate. Reuses the exact
+      // clarification wiring ask_user already has (down to the frontend's MC card) rather
+      // than building a parallel confirmation mechanism.
+      if (!ctx.allowDestructive) {
+        const flagged = turn.toolCalls
+          .map(c => ({ call: c, stakes: assessStakes(c.name, (c.args ?? {}) as Record<string, unknown>, goal) }))
+          .find(x => x.stakes.stakes === 'high')
+        if (flagged) {
+          const { call, stakes } = flagged
+          const question = `${stakes.reason} Should I go ahead?`
+          const options = ['Yes, go ahead', "No, don't do that", 'Something else / not sure']
+          const recommended = "No, don't do that"
+          emit({ type: 'clarification_request', question, options, recommended })
+          debugBus.emit('agent', 'stakes_gate', { tool: call.name, blastRadius: stakes.blastRadius, batchSize: turn.toolCalls.length }, { severity: 'info' })
+          return done('clarification', question, iter, options, recommended)
+        }
       }
 
       // Stall detection — compare this turn's tool-call signature to the previous one.
@@ -510,7 +596,10 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   }
   return done('max_iters', '', maxIters)
 
-  function done(stopped: AgentLoopResult['stopped'], finalText: string, iters: number): AgentLoopResult {
+  function done(
+    stopped: AgentLoopResult['stopped'], finalText: string, iters: number,
+    clarificationOptions?: string[], recommendedOption?: string,
+  ): AgentLoopResult {
     const ok = stopped === 'final'
     deleteAnchor(anchorId)
     emit({ type: 'agent_done', ok, stopped, iters, toolCallCount, spentTokens, ms: Date.now() - start })
@@ -546,7 +635,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         }
       })
     }
-    return { ok, finalText, iters, toolCallCount, stopped, verifiedSignal }
+    return { ok, finalText, iters, toolCallCount, stopped, verifiedSignal, clarificationOptions, recommendedOption }
   }
 }
 
@@ -698,18 +787,58 @@ Otherwise list at most 3 REAL bugs, most severe first, each with its specific fa
     const r = await driveTurn([{ role: 'user', content: prompt }], [], signal, 'critic')
     const text = (r.text || '').trim()
     if (!text) {
-      recordGate({ gate: 'harden', ran: false, reason: 'empty reviewer reply' })
-      return null
+      return localHardenFallback('empty reviewer reply')
     }
     if (/^pass\b/i.test(text) || /\bno (significant|real|correctness|actual) (issues|problems|bugs)\b/i.test(text)) {
-      recordGate({ gate: 'harden', ran: true, reason: 'pass' })
-      return { solid: true, findings: '' }
+      // Online PASS is necessary but not sufficient — natural-language review can miss
+      // structural correctness properties a deterministic check catches for free. Live
+      // case (2026-07-05, leaderboardModule): `sortScoresAscending` returned
+      // `scores.sort(...)`, mutating the caller's array despite the task spec saying
+      // "does not mutate the input". The online critic PASSed it, and the model's own
+      // self-test read `scores === scores` — a tautology comparing a reference to
+      // itself, always true — so nothing caught the bug until the held-out suite did.
+      // The fuzz layer's `sort-no-mutate` property (localHardenFuzz.ts) already exists
+      // and detects exactly this shape; it just wasn't consulted on the PASS path
+      // (only wired into the offline-reviewer-unreachable fallback below). Run it here
+      // too — pure static/property check, no model call, so it's nearly free.
+      const fuzzFindings = await runLocalHardenFuzz(sources).catch(() => [])
+      if (fuzzFindings.length === 0) {
+        recordGate({ gate: 'harden', ran: true, reason: 'pass' })
+        return { solid: true, findings: '' }
+      }
+      recordGate({ gate: 'harden', ran: true, reason: 'pass-online-fuzz-caught' })
+      return { solid: false, findings: fuzzFindings.map(f => f.message).slice(0, 3).join('\n') }
     }
     recordGate({ gate: 'harden', ran: true, reason: 'findings' })
     return { solid: false, findings: text.slice(0, 1400) }
   } catch (e: any) {
-    recordGate({ gate: 'harden', ran: false, reason: `reviewer error: ${String(e?.message ?? e).slice(0, 120)}` })
-    return null
+    return localHardenFallback(`reviewer error: ${String(e?.message ?? e).slice(0, 120)}`)
+  }
+
+  // The online critic pool (turnClass 'critic') is unreachable — priority-ladder item 1
+  // (ROADMAP.md, 2026-07-04): rather than fail-open ACCEPT (silently disabling the
+  // agent's strongest correctness gate, exactly when the offline/strict mission needs it
+  // most), run the local deterministic substitute so strict mode always gets a real,
+  // if narrower, verdict. Still recorded distinctly in telemetry so the ledger can tell
+  // "online judged it" apart from "local heuristics judged it" apart from true dark gates.
+  // Combines two complementary local layers: the AST scanner (always-wrong SHAPES, e.g.
+  // arr[arr.length]) and the fuzz layer (behavioral properties on named families, e.g. a
+  // sort that returns the wrong permutation) — neither subsumes the other.
+  async function localHardenFallback(onlineFailureReason: string): Promise<HardenReview> {
+    const local = runLocalHardenCheck(sources)
+    const fuzzFindings = await runLocalHardenFuzz(sources).catch(() => [])
+    const combinedFindings = [
+      ...(local.solid ? [] : local.findings.split('\n')),
+      ...fuzzFindings.map(f => f.message),
+    ].slice(0, 3)
+    const solid = combinedFindings.length === 0
+    recordGate({
+      gate: 'harden',
+      ran: true,
+      reason: `local-fallback (${onlineFailureReason}): ${solid ? 'clean' : 'findings'}` +
+        (fuzzFindings.length ? ` [+${fuzzFindings.length} fuzz]` : ''),
+    })
+    return { solid, findings: combinedFindings.join('\n') }
   }
 }
 

@@ -455,6 +455,22 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
   ): Promise<DriveTurnResult> {
     if (signal?.aborted) throw new Error('Aborted')
 
+    // ── Critic turns (final grounding/harden correctness audit) have no offline
+    // equivalent — __critic_bench.ts measured the on-device FM at chance (2/4) on this
+    // judgment, which is why withOfflineFallback routes 'critic' straight to the online
+    // pool before it ever reaches this function. But in CRUCIBLE_OFFLINE=strict mode
+    // (server.ts), this function IS the driveTurn directly, with no wrapper in front of
+    // it — so a critic prompt used to fall through to the S0-S6 code state machine below,
+    // which misparses the embedded source-file headers as goalPaths and happens to bottom
+    // out at an empty `text: ''` return. runHardenReview (loop.ts) treats empty text as
+    // "reviewer failed" and calls localHardenFallback — so the right thing occurred, but
+    // only as a side effect of a parse that was never meant to see this prompt shape.
+    // Escalate explicitly instead: same landing spot (localHardenFallback), reached on
+    // purpose rather than by accident.
+    if (turnClass === 'critic') {
+      throw new OfflineEscalateError('critic turn class has no offline equivalent — routing to local harden fallback')
+    }
+
     // ── Glue turns are one-shot completions (planner / summary / critic gates), NOT
     // agentic coding-loop steps. Feeding one through the code state machine below
     // misparses the prompt — a harden/grounding prompt embeds source code and tool

@@ -56,6 +56,8 @@ import { saveTokens, googleServicesStatus, GOOGLE_SCOPES } from './src/CrucibleE
 import { latestResumable, saveSession, newSessionId, readMemoryDigest, appendMemory, readGlobalMemoryDigest, globalMemoryFile } from './src/CrucibleEngine/state/session'
 import { buildCodebaseContext, indexStats, ensureIndex, reindexFiles, searchIndex } from './src/CrucibleEngine/state/codebaseIndex'
 import { loadDynamicToolsInto, dynamicToolStats } from './src/CrucibleEngine/tools/dynamicTools'
+import { listIntegrations, setIntegrationEnabled, addCustomIntegration, removeIntegration, recommendIntegrations } from './src/CrucibleEngine/integrations/registry'
+import { registerIntegrationTools, cliToolForEntry } from './src/CrucibleEngine/integrations/tools'
 import { identifyGoals, loadGoalReport, saveGoalReport } from './src/CrucibleEngine/goalEngine'
 import { metaLearningStatus } from './src/CrucibleEngine/triumvirate'
 import { writeCheckpoint, clearCheckpoint, readCheckpoint, findAllCheckpoints, sweepStaleCheckpoints } from './src/CrucibleEngine/state/checkpoint'
@@ -1856,6 +1858,54 @@ app.get('/api/config', (_req, res) => {
 // ── /api/waitlist — waitlist + probation status ───────────────────────────────
 app.get('/api/waitlist', (_req, res) => {
   res.json(waitlistStatus(process.cwd()))
+})
+
+// ── /api/integrations — external agentic tool drawer (GitHub CLI first) ───────
+// All integrations are locally-executed open-source CLIs (external-tool
+// invariant); enabling one is always an explicit human action from the drawer.
+app.get('/api/integrations', async (_req, res) => {
+  try { res.json({ integrations: await listIntegrations() }) }
+  catch (e: any) { res.status(500).json({ error: e?.message ?? 'list failed' }) }
+})
+
+app.post('/api/integrations', async (req, res) => {
+  try {
+    const r = await addCustomIntegration({
+      name: String(req.body?.name ?? ''),
+      command: String(req.body?.command ?? ''),
+      description: typeof req.body?.description === 'string' ? req.body.description : undefined,
+      keywords: Array.isArray(req.body?.keywords) ? req.body.keywords.map(String) : undefined,
+    })
+    if (!r.ok) return res.status(400).json({ error: r.error })
+    // Register its agent tool immediately — no restart needed. (Still hidden from
+    // the model until the user flips the enable toggle.)
+    if (!registry.get(r.entry.id.replace(/-/g, '_'))) registry.register(cliToolForEntry(r.entry))
+    res.json({ integration: r.entry })
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'add failed' }) }
+})
+
+app.post('/api/integrations/:id/toggle', (req, res) => {
+  const enabled = req.body?.enabled === true
+  const entry = setIntegrationEnabled(String(req.params.id), enabled)
+  if (!entry) return res.status(404).json({ error: 'unknown integration' })
+  debugBus.emit('system', 'integration_toggle', { id: entry.id, enabled })
+  res.json({ integration: entry })
+})
+
+app.delete('/api/integrations/:id', (req, res) => {
+  if (!removeIntegration(String(req.params.id))) {
+    return res.status(400).json({ error: 'unknown integration, or builtin (builtins can be disabled, not removed)' })
+  }
+  res.json({ ok: true })
+})
+
+// Recommendations for the current request draft: deterministic keyword match,
+// sharpened by the LOCAL Apple FM when it is up — zero external model calls.
+app.post('/api/integrations/recommend', async (req, res) => {
+  try {
+    const goal = String(req.body?.goal ?? '')
+    res.json({ recommendations: await recommendIntegrations(goal, fmComplete) })
+  } catch (e: any) { res.status(500).json({ error: e?.message ?? 'recommend failed' }) }
 })
 
 // ── /api/task-graph — persistent multi-session task graphs ────────────────────
@@ -6404,6 +6454,12 @@ function startListening(port: number, attempt = 0) {
     refreshScoringConfig()
     // Load persisted dynamic tools the agent has created for this project
     loadDynamicToolsInto(process.cwd(), (def) => registry.register(def))
+    // Integrations drawer: register a tool per known integration (gh, ripgrep, …).
+    // Disabled ones stay registered but invisible to the agent (loop.ts filters
+    // on enablement) — so a drawer toggle takes effect with no restart.
+    registerIntegrationTools((def) => registry.register(def), (name) => !!registry.get(name))
+      .then(n => console.log(`[Integrations] ${n} integration tool(s) registered`))
+      .catch(e => console.warn('[Integrations] registration failed:', e?.message ?? e))
     // J2: expire stale world model facts at startup
     try { const r = expireStaleEntities(); if (r.expired) console.log(`[J2] Expired ${r.expired} stale entity facts`) } catch {}
     debugBus.emit('system', 'server_start', { port, cwd: process.cwd() })

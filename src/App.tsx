@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_BASE, apiFetch, loginUrl } from './api'
 import CrucibleMark from './CrucibleMark'
+import { IntegrationsBinder } from './IntegrationsBinder'
 import './modelData'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -328,12 +329,18 @@ interface AgentState {
   final?: string
   done?: { ok: boolean; stopped: string; iters?: number; toolCallCount?: number; ms?: number }
   error?: string
+  /** HITL_PLANNING_TRACK.md §3 — MC-first clarification, always paired with a recommended
+   *  default. `options` is undefined for the free-text-only ask_user path (registry.ts /
+   *  loop.ts:386); present (2-4 entries incl. "Something else / not sure") only for the
+   *  ambiguity-gate path (loop.ts:245) that has real enumerable candidates. Cleared once the
+   *  user replies so the card doesn't linger after the conversation moves on. */
+  clarification?: { question: string; options?: string[]; recommended?: string; answered?: boolean }
 }
 
 const AGENT_EVENT_TYPES = new Set([
   'agent_start', 'plan', 'step_status', 'tool_call', 'tool_result', 'tool_created',
   'diff', 'verify', 'thought', 'agent_done', 'plan_done', 'agent_error', 'final',
-  'task_redirected',
+  'task_redirected', 'clarification_request',
 ])
 
 function emptyAgentState(): AgentState {
@@ -380,6 +387,8 @@ function agentReducer(state: AgentState | null | undefined, ev: any): AgentState
     case 'task_redirected':
       // Mid-session redirect — surface it as a thought so the caption bar shows the pivot
       return { ...s, thoughts: [...s.thoughts, `Redirecting: ${ev.to ?? ''}`.slice(0, 80)] }
+    case 'clarification_request':
+      return { ...s, clarification: { question: ev.question, options: ev.options, recommended: ev.recommended } }
     default:
       return s
   }
@@ -1559,7 +1568,89 @@ function CollapsibleCode({ language, code }: { language: string; code: string })
   )
 }
 
-function AgentPanel({ agent }: { agent: AgentState }) {
+// HITL_PLANNING_TRACK.md §3 — MC-first clarification card. Renders whichever shape the
+// backend sent: 2-4 option buttons (with the recommended one visually marked) when the
+// ambiguity gate supplied real candidates, or a free-text box for the plain ask_user path.
+// Either way the reply is just the next chat message — the server threads it back into the
+// same agent loop via accumulated session messages, so `onReply` is literally `send(text)`.
+function ClarificationCard({ clarification, onReply }: {
+  clarification: NonNullable<AgentState['clarification']>
+  onReply: (text: string) => void
+}) {
+  const [answered, setAnswered] = useState(false)
+  const [freeText, setFreeText] = useState('')
+  const [showFreeText, setShowFreeText] = useState(!clarification.options?.length)
+
+  const reply = (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed || answered) return
+    setAnswered(true)
+    onReply(trimmed)
+  }
+
+  return (
+    <div style={{
+      border: '1px solid rgba(251,191,36,0.3)', borderRadius: 10, padding: 12,
+      background: 'rgba(251,191,36,0.06)', display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 9.5, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: '#fbbf24', fontWeight: 700 }}>
+        <span>needs your input</span>
+      </div>
+      <div style={{ fontSize: 13, lineHeight: 1.5, color: '#eee' }}>{clarification.question}</div>
+
+      {!answered && clarification.options && clarification.options.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {clarification.options.map(opt => {
+            const isRecommended = opt === clarification.recommended
+            const isEscapeHatch = /something else|not sure/i.test(opt)
+            return (
+              <button
+                key={opt}
+                onClick={() => isEscapeHatch ? setShowFreeText(true) : reply(opt)}
+                style={{
+                  textAlign: 'left', padding: '9px 12px', borderRadius: 8, fontSize: 12.5,
+                  cursor: 'pointer', fontFamily: 'inherit', color: '#eee',
+                  background: isRecommended ? 'rgba(251,191,36,0.14)' : 'rgba(255,255,255,0.05)',
+                  border: `1px solid ${isRecommended ? 'rgba(251,191,36,0.5)' : 'rgba(255,255,255,0.1)'}`,
+                }}>
+                {opt}{isRecommended && <span style={{ marginLeft: 8, fontSize: 10, color: '#fbbf24' }}>recommended default</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {!answered && showFreeText && (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            value={freeText}
+            onChange={e => setFreeText(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') reply(freeText) }}
+            placeholder="Type your answer…"
+            style={{
+              flex: 1, padding: '8px 10px', borderRadius: 8, fontSize: 12.5,
+              background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.12)',
+              color: '#eee', fontFamily: 'inherit',
+            }}
+          />
+          <button
+            onClick={() => reply(freeText)}
+            style={{
+              padding: '8px 14px', borderRadius: 8, fontSize: 12.5, fontWeight: 600,
+              cursor: 'pointer', fontFamily: 'inherit', color: '#0a0a0e',
+              background: '#fbbf24', border: 'none',
+            }}>
+            Reply
+          </button>
+        </div>
+      )}
+
+      {answered && <div style={{ fontSize: 11.5, color: '#888' }}>Sent — continuing…</div>}
+    </div>
+  )
+}
+
+function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (text: string) => void }) {
   const verifyByLatest = agent.verifies[agent.verifies.length - 1]
   return (
     <div style={{
@@ -1644,6 +1735,13 @@ function AgentPanel({ agent }: { agent: AgentState }) {
       )}
 
       {agent.error && <div style={{ fontSize: 11, color: '#fca5a5' }}>{agent.error}</div>}
+
+      {/* Clarification — only once the loop has actually stopped for it; a mid-stream
+          clarification event for a still-active loop means more is coming (shouldn't happen
+          today since every emission site is terminal, but avoids a stale card if that changes). */}
+      {agent.clarification && !agent.active && (
+        <ClarificationCard clarification={agent.clarification} onReply={onReply} />
+      )}
     </div>
   )
 }
@@ -2568,9 +2666,15 @@ export default function App() {
           if (AGENT_EVENT_TYPES.has(parsed.type)) {
             setRounds(prev => prev.map(r => r.id !== roundId ? r : { ...r, agent: agentReducer(r.agent, parsed) }))
             if (parsed.type === 'final') {
-              // Agent's final summary doubles as the round's synthesis text.
-              setRounds(prev => prev.map(r => r.id !== roundId ? r : { ...r, synthesis: parsed.text ?? r.synthesis, synthesisDone: true }))
-              // Session L: in Remote Brain mode the Mac speaks the answer back.
+              // Agent's final summary doubles as the round's synthesis text — EXCEPT when
+              // this turn stopped for a clarification: the server sends the clarification
+              // question itself as `finalText` (loop.ts's done() has one text slot for both),
+              // and the ClarificationCard above already renders that question. Without this
+              // guard the same sentence shows up twice: once as the MC card, once as a fake
+              // "0 models · 0% confident" synthesis bubble underneath it.
+              setRounds(prev => prev.map(r => r.id !== roundId ? r : r.agent?.clarification ? r : { ...r, synthesis: parsed.text ?? r.synthesis, synthesisDone: true }))
+              // Session L: in Remote Brain mode the Mac speaks the answer back. (A clarification
+              // still gets read aloud — the question is real content, just not a synthesis bubble.)
               if (remoteBrain && parsed.text) {
                 apiFetch(`${API_BASE}/api/tts`, {
                   method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3594,6 +3698,8 @@ export default function App() {
             }} />
           {/* Open goals — cross-session task graphs; clicking one resumes it as a new query */}
           <TasksBinder onResume={goal => { void send(goal) }} />
+          {/* External tool integrations (GitHub CLI etc.) — drawer with per-request recommendations */}
+          <IntegrationsBinder draft={input} />
           {/* New chat — clears the view and starts a fresh conversation thread */}
           <button
             className="crucible-newchat-btn"
@@ -3965,7 +4071,7 @@ export default function App() {
               </div>
 
               {/* Agent loop panel (Section 7) */}
-              {round.agent && <AgentPanel agent={round.agent} />}
+              {round.agent && <AgentPanel agent={round.agent} onReply={text => send(text)} />}
 
               {/* Pipeline Theater — all model cards, shown when user message is clicked */}
               {round.expandedModel && <PipelineTheater round={round} />}

@@ -121,6 +121,11 @@ export interface PlannedTaskResult {
   ok: boolean
   steps: Step[]
   summary: string
+  /** Set only when the stop reason is a clarification with an enumerable answer set
+   *  (see AgentLoopResult.clarificationOptions) — a plain-language MC list the caller
+   *  can render instead of a free-text prompt. Absent for open-ended clarifications. */
+  clarificationOptions?: string[]
+  recommendedOption?: string
 }
 
 /** Execute a multi-step task: plan once, run the loop per step, replan on failure. */
@@ -198,7 +203,7 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
       step.status = 'pending'
       emit({ type: 'step_status', id: step.id, status: 'awaiting_input', intent: step.intent })
       onPersist?.(steps, completedSummaries, 'running')
-      return { ok: false, steps, summary: result.finalText }
+      return { ok: false, steps, summary: result.finalText, clarificationOptions: result.clarificationOptions, recommendedOption: result.recommendedOption }
     }
 
     // Transient driver/transport/budget error — NOT a logic failure. Retry the SAME step

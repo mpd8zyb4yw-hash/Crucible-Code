@@ -44,6 +44,10 @@ export interface ToolDef {
   params: Record<string, unknown>
   /** Marks tools that mutate state — gated by ctx.allowMutation. */
   mutates?: boolean
+  /** Set when this tool is provided by an external integration (Integrations drawer).
+   *  The agent loop hides the tool while its integration is disabled, and run()
+   *  refuses if toggled off mid-task — enablement is always a human decision. */
+  integrationId?: string
   run: (args: Record<string, unknown>, ctx: ToolCtx) => Promise<ToolResult>
 }
 

@@ -42,19 +42,54 @@ export interface ResolutionResult {
   rewrittenGoal?: string
   /** A single question to surface when the request cannot be made actionable. */
   clarification?: string
+  /** Plain-language MC options, when the clarification has a genuinely enumerable answer
+   *  set (currently only unresolved-reference-with-candidates) — HITL_PLANNING_TRACK.md §3's
+   *  "MC-first, one question at a time" interface, applied to data this module already
+   *  computes. Absent (not empty) when the clarification is open-ended free text instead. */
+  clarificationOptions?: string[]
+  /** Which clarificationOptions entry to present as the visible recommended default, per
+   *  §3 ("a recommended default always visible"). Always present when clarificationOptions is. */
+  recommendedOption?: string
 }
 
 const VAGUE_TERMS = /\b(improve|optimi[sz]e|clean\s*up|refactor stuff|make (?:it )?better|handle (?:the )?edge cases|various|etc\.?|and so on|some stuff|things|somehow|nicer|tidy)\b/i
 // "the/that/this <noun>" definite references that imply a specific existing thing.
 const DEF_REF = /\b(?:the|that|this)\s+([a-zA-Z][a-zA-Z0-9_]{2,})\b/g
 // Words that are definite-article nouns but never code symbols — skip them.
+// 2026-07-06: found firing live on leaderboardModule's real spec text (5 false
+// "unresolved-reference" signals, confidence 0.031, agent stopped after 0 iterations
+// asking to clarify "the COMPLETE" — a pure prose-parsing false positive, not a genuine
+// ambiguous request). Added 'exact'/'complete'/'ordering' (the specific words that fired)
+// plus the bare articles/conjunctions themselves ('the'/'this'/'that'/'a'/'an'), which can
+// get captured when one directly follows another in prose (e.g. "...confirms that the
+// input..." — DEF_REF matches "that the", capturing "the" as if it were a noun).
 const STOP_REFS = new Set([
   'code', 'file', 'files', 'function', 'method', 'class', 'project', 'repo', 'codebase',
   'system', 'app', 'application', 'user', 'users', 'data', 'issue', 'issues', 'bug', 'bugs',
   'problem', 'feature', 'test', 'tests', 'output', 'input', 'result', 'value', 'way', 'thing',
   'following', 'above', 'below', 'same', 'new', 'old', 'current', 'existing', 'right', 'whole',
+  'exact', 'complete', 'ordering', 'the', 'this', 'that', 'a', 'an',
 ])
 const FILE_TOKEN = /[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,5}/
+// Common verbs/conjugations that show up right after "the/that/this" in ordinary prose
+// (e.g. "...that returns true...", "...this is a pattern...") — never code symbols, so
+// they'd otherwise be misread as unresolved-reference nouns.
+const VERB_STOPLIST = new Set([
+  'returns', 'return', 'returned', 'returning',
+  'is', 'was', 'were', 'are', 'be', 'been', 'being',
+  'has', 'have', 'had', 'having',
+  'does', 'do', 'did', 'doing',
+  'matches', 'match', 'matched', 'matching',
+  'contains', 'contain', 'contained', 'containing',
+  'equals', 'equal', 'equaled',
+  'holds', 'hold', 'held', 'holding',
+  'means', 'mean', 'meant',
+  'implies', 'imply', 'implied',
+  // 2026-07-06: found live on leaderboardModule's spec ("...that sorts a mixed list...") —
+  // same recurring class as 'returns' above, just a different common verb this pattern
+  // didn't happen to cover yet.
+  'sorts', 'sort', 'sorted', 'sorting',
+])
 
 /** Does the goal pin down a concrete success criterion (a measurable/observable verb)? */
 function hasCheckableCriterion(goal: string): boolean {
@@ -66,14 +101,36 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   const resolvedReferences: ResolvedReference[] = []
   let rewritten = goal
   let clarification: string | undefined
+  let clarificationOptions: string[] | undefined
+  let recommendedOption: string | undefined
 
   // ── 1. Definite references → resolve against the semantic index ─────────────────
+  // Gated on whether the goal ALREADY names a concrete target file (2026-07-06, found via
+  // a live task failure — see below). DEF_REF's whole purpose is catching the "fix THE
+  // parser" shape: a request that refers to something via a definite article WITHOUT
+  // giving any concrete target. Ordinary prose is saturated with other "the X" phrases
+  // (rules, behavior descriptions, self-test instructions) that are never code references
+  // — a hand-maintained stoplist can never keep up (this file already had 3 rounds of
+  // stoplist patches for individual words — 'returns', then 'sorts'/'ordering'/'exact'/
+  // 'complete' — and a live audit against ALL 9 of this repo's own benchmark specs still
+  // found 6/9 falsely flagged ambiguous afterward: "the least", "the WAL", "the injected",
+  // "the rolling", "the preceding", "the primary", "the calls", "the account", "the
+  // credits", etc. — an unbounded surface, not a fixable finite list). The dominant
+  // real-world case where more "the X" phrases exist in prose is EXACTLY the case where a
+  // file/path has already been named — the "what to change" question is already answered,
+  // so hunting for other supposedly-unresolved definite references in the surrounding
+  // rules text is not adding real signal, only false positives. `namesAFile` is computed
+  // early (was section 2) so this gate can use it; auto-resolution (single index match)
+  // still runs unconditionally since it's purely additive/harmless goal enrichment, never
+  // a source of a false "ambiguous" verdict.
+  const namesAFile = FILE_TOKEN.test(goal)
   const refs: string[] = []
   let m: RegExpExecArray | null
   DEF_REF.lastIndex = 0
   while ((m = DEF_REF.exec(goal)) !== null) {
     const noun = m[1]
-    if (!STOP_REFS.has(noun.toLowerCase())) refs.push(noun)
+    const low = noun.toLowerCase()
+    if (!STOP_REFS.has(low) && !VERB_STOPLIST.has(low)) refs.push(noun)
   }
 
   for (const ref of [...new Set(refs)]) {
@@ -92,6 +149,8 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
       resolvedReferences.push({ phrase: ref, symbol, rel })
       // Name it inline so downstream stages get a concrete target.
       rewritten = rewritten.replace(new RegExp(`\\b(the|that|this)\\s+${ref}\\b`, 'i'), `$1 ${ref} (\`${symbol}\` in ${rel})`)
+    } else if (namesAFile) {
+      continue // a concrete target is already named — don't flag ambiguity on prose nouns
     } else if (entries.length === 0) {
       signals.push({ type: 'unresolved-reference', phrase: ref, severity: 0.5,
         detail: `"the ${ref}" does not match any symbol in the codebase` })
@@ -103,7 +162,6 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   }
 
   // ── 2. No target at all ─────────────────────────────────────────────────────────
-  const namesAFile = FILE_TOKEN.test(goal)
   if (!namesAFile && resolvedReferences.length === 0 && refs.length === 0) {
     signals.push({ type: 'no-target', severity: 0.4,
       detail: 'no target file or resolvable symbol named in the request' })
@@ -132,6 +190,14 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   if (ambiguous) {
     const worst = [...signals].sort((a, b) => b.severity - a.severity)[0]
     clarification = phraseClarification(worst)
+    if (worst.type === 'unresolved-reference' && worst.candidates?.length) {
+      // The only signal with a genuinely enumerable answer set today — every other type
+      // (no-target, vague-scope, underspecified-behavior) needs open-ended free text, so
+      // deliberately don't force a fake MC list there (a wrong-shaped options list is worse
+      // than none — same "don't guess" discipline as the rest of this module).
+      clarificationOptions = [...worst.candidates, 'Something else / not sure']
+      recommendedOption = worst.candidates[0]
+    }
   }
 
   return {
@@ -141,6 +207,8 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
     resolvedReferences,
     rewrittenGoal: resolvedReferences.length && rewritten !== goal ? rewritten : undefined,
     clarification,
+    clarificationOptions,
+    recommendedOption,
   }
 }
 

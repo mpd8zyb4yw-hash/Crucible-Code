@@ -122,6 +122,29 @@ export function destructiveReason(command: string): string | null {
   return null
 }
 
+// A dynamically create_tool'd tool body is arbitrary JS, not a shell command string, so
+// DESTRUCTIVE_PATTERNS (which matches shell syntax like `rm -rf`) never sees it — a real,
+// documented gap in stakesRouter.ts's scope (create_tool bypasses IRREVERSIBLE_TOOLS/'run'
+// entirely). Found + closed 2026-07-06: scan the body source for native destructive-fs and
+// shell-out APIs. Deliberately coarse (flags "calls an fs delete/overwrite API" or "shells
+// out to an opaque command" rather than trying to fully interpret the JS) — a tool body
+// that shells out CAN construct any command from args at runtime, so no static string scan
+// can fully vet it; flagging the capability itself, once, at creation time (a one-way door:
+// this tool persists to disk and reloads on every future server start) is the honest
+// deterministic signal available, not a false promise of full analysis.
+const DESTRUCTIVE_TOOL_BODY_PATTERNS: Array<{ re: RegExp; why: string }> = [
+  { re: /\bfs(?:\.promises)?\.(?:rmSync|rmdirSync|unlinkSync|rm|rmdir|unlink)\b/, why: 'deletes files/folders via the fs API' },
+  { re: /\b(?:child_process\b[^\n]*\.)?(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(/, why: 'shells out to an arbitrary command constructed at runtime' },
+  { re: /\bfs(?:\.promises)?\.(?:writeFileSync|writeFile)\b/, why: 'overwrites files via the fs API' },
+];
+
+/** Returns the reason a dynamic tool BODY (arbitrary JS, from create_tool) is destructive,
+ *  or null if none of the coarse native-API patterns match. */
+export function destructiveToolBodyReason(body: string): string | null {
+  for (const { re, why } of DESTRUCTIVE_TOOL_BODY_PATTERNS) if (re.test(body)) return why
+  return null
+}
+
 // ── Protected-file guard ───────────────────────────────────────────────────────
 // write_file blindly replaces a file's full content with no read-back check (unlike
 // edit_file/apply_patch, which must match existing content first) — that makes it the one
