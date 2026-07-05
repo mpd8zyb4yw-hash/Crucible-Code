@@ -17,7 +17,50 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 25 — CRITICAL FIX: ambiguity.ts's live-wired
+## CURRENT STATE (last updated 2026-07-06, cont. 26 — clean generation-stress baseline
+confirmed post-ambiguity-fix (4/5 gen tasks GREEN, sortModule the only accepted boundary);
+first three commits of the session landed; a new deterministic repair added for
+leaderboardModule's mutation bug, with an important caveat about which path it actually covers)
+
+**Cont. 26 (this session) — committed the full accumulated session (3 commits: agent/HITL
+layer, deterministic critic layer, docs — see `git log`), then re-ran the generation-stress
+suite live now that the ambiguity gate fix (cont.25) is in place, to get the clean baseline
+that fix was blocking.**
+
+**Clean baseline, live-verified:** filterModule GREEN (15/15 hidden), summaryModule GREEN
+(14/14 hidden), sortModule RED (the pre-existing, documented ACCEPTED capability boundary —
+unchanged, not a new regression), clampModule GREEN (from cont.24's session), leaderboardModule
+RED (reaches the hidden suite now, per cont.25 — fails on a mutation bug, a completely
+different failure mode from "never attempted"). **4 of 5 generation tasks are GREEN** — the
+healthiest read this suite has ever had, and for the first time one we can trust wasn't
+undercounted by the ambiguity-gate bug.
+
+**New deterministic repair added, with a real scope caveat found while adding it:**
+`repairProposers.ts` gained `repairMutatingSort` — rewrites a bare `paramName.sort(...)` (which
+mutates its argument) to `[...paramName].sort(...)`, gated on the fuzz layer's own
+mutation-failure message text. The regex structurally cannot false-fire on already-correct
+`[...x].sort(...)` or `x.slice().sort(...)` forms (a `]`/`)` sits between the identifier and
+the dot in both). Verified directly against leaderboardModule's exact failing candidate — the
+proposed repair is byte-identical to hand-writing the fix. **Caveat found while wiring this
+in: `repairProposers.ts`/`proposeRepairs` is only called from `universal.ts` — the synth/oracle
+round-based generation path — never from `agent/loop.ts`, the interactive tool-calling path
+`smoke:code`'s live agent-mode benchmark actually uses.** So this repair does NOT fix
+leaderboardModule's specific failure in the benchmark as currently run (mode:agent); it's
+real, verified, and immediately useful for any task that goes through the synth/oracle path
+(e.g. `synthesizePureCode`), but bringing deterministic repair to the agent-loop path is a
+distinct, not-yet-done architectural step — flagged here rather than overclaimed as fixed.
+Also: `repairProposers.ts` (7 pre-existing repair functions plus this new one) had ZERO test
+coverage anywhere in the repo — added `__repairProposers_bench.ts` (11/11: one true-positive
+per repair, two false-positive no-op guards for the new repair, one no-signal-no-repair
+baseline), wired into `npm run prove:all` (`repair:bench`). `tsc` clean, `prove:all` 250/250.
+
+**Not done this session:** bringing deterministic repair (or ANY repairProposers-style
+mechanism) to `agent/loop.ts`'s interactive path — this is the concrete next step for actually
+closing leaderboardModule's live benchmark failure, not just adding a repair that's reachable
+from a different code path. Re-running clampModule/leaderboardModule together in one sweep to
+double check nothing conflicts (each was tested separately this session).
+
+## PRIOR: 2026-07-06, cont. 25 — CRITICAL FIX: ambiguity.ts's live-wired
 gate (shipped cont.20) was silently killing real coding tasks at 0 iterations — a structural
 false positive found by live-firing an actual benchmark task, not by code audit. Live-verified
 fixed: leaderboardModule went from 0 iterations (never attempted) to 10 iterations reaching the

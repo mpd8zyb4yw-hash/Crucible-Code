@@ -187,6 +187,25 @@ function repairActiveFalseGuard(candidate: string, detail: string): string | nul
 }
 
 /**
+ * `paramName.sort(...)` mutates its argument in place instead of returning a new array —
+ * confirmed live 2026-07-05/06 on a leaderboardModule fire (`sortScoresAscending(scores) {
+ * return scores.sort(...) }`), caught by localHardenFuzz's `sort-no-mutate` property (see
+ * localHardenFuzzWorker.cjs). The regex only matches a bare `identifier.sort(` — it
+ * structurally cannot match an already-safe `[...identifier].sort(` (a `]` sits between the
+ * identifier and the dot) or `identifier.slice().sort(` (a `)` sits between them), so this
+ * repair is a no-op on already-correct code and only fires on the exact mutating shape.
+ * Gated on the fuzz layer's own mutation-failure message so it only proposes this rewrite
+ * when there's a concrete, derived reason to suspect an in-place sort.
+ */
+function repairMutatingSort(candidate: string, detail: string): string | null {
+  if (!/mutates its input argument in place/.test(detail)) return null
+  const rx = /\b([A-Za-z_$][\w$]*)\.sort\(/g
+  if (!rx.test(candidate)) return null
+  const repaired = candidate.replace(rx, '[...$1].sort(')
+  return repaired !== candidate ? repaired : null
+}
+
+/**
  * Spurious Array.isArray guard on a non-array opts parameter — the FM copy-pastes the
  * (correct) items-array validation onto the singular opts object, making the function throw
  * on every legitimate call. Strip exactly that guard.
@@ -212,6 +231,7 @@ const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string
   repairDefaultDirectionCheck,
   repairOneSidedCaseInsensitive,
   repairActiveFalseGuard,
+  repairMutatingSort,
 ]
 
 /** Propose zero or more deterministically-repaired variants of a rejected candidate. */
