@@ -17,7 +17,50 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 26 — clean generation-stress baseline
+## CURRENT STATE (last updated 2026-07-06, cont. 27 — deterministic auto-repair wired into
+agent/loop.ts itself, closing cont.26's scope gap; leaderboardModule now GREEN (5/5 gen tasks)
+
+**Cont. 27 (this session) — closed cont.26's flagged gap: repairProposers.ts is now reachable
+from agent/loop.ts, not just universal.ts's synth/oracle path.**
+
+`runAgentLoop`'s harden-review branch (~line 576-605) now applies `repairMutatingSort` (via
+`proposeRepairs`) directly to disk BEFORE pushing the natural-language retry message, whenever
+`review.findings` matches the fuzz layer's "mutates its input argument in place" text. Uses
+`splitSources` (localHardenCheck.ts) to parse the concatenated project sources back into
+per-file {path, content}, applies the repair to whichever file matches, writes the fixed
+content back with `fs.writeFileSync`, and emits a `thought`/`auto_repair` event. If no file
+matches (or the repair is a no-op), falls through to the existing retry-message behavior
+unchanged — strictly additive, no new failure mode: worst case is identical to pre-cont.27
+behavior.
+
+**Verification:** live re-fire of `leaderboardModule` came back GREEN (hidden suite 8/8 ALL
+PASS, including "input not mutated") — but the FM happened to write correct
+(`[...scores].sort(...)`) code on its own this run, so the auto-repair path itself was never
+exercised (confirmed: no `auto_repair` event in the server log, and the shipped file was
+already correct). Since live FM output is stochastic and can't be forced to reproduce the bug
+on demand, verified the exact mechanism standalone instead: seeded a throwaway project dir with
+the literal buggy `scores.sort(...)` candidate, ran the identical
+`splitSources`→`runLocalHardenFuzz`→`proposeRepairs`→`fs.writeFileSync` sequence loop.ts now
+runs, and confirmed the file on disk was correctly rewritten to `[...scores].sort(...)`. This
+is the same code, just not triggered by this particular stochastic FM output — genuinely
+verified, not just "should work." `tsc` clean, `prove:all` 250/250.
+
+**Current full generation-stress state: 5/5 tasks with a definitive verdict, 4/5 GREEN,
+1 accepted boundary** — filterModule/summaryModule/clampModule/leaderboardModule all GREEN,
+sortModule the pre-existing documented capability boundary. This is the best state this suite
+has ever been in.
+
+**Not done this session:** the auto-repair only covers ONE mechanical bug shape
+(mutating sort). Extending this same "apply repairProposers fixes proactively in
+agent/loop.ts" pattern to the other 6 repair shapes (missing derived field, dynamic-key-index,
+default-direction-check, one-sided case-insensitivity, active-false guard, array-guard) is the
+natural next step if any of those recur in agent-mode runs — not done because none of them
+have been observed failing via the agent-mode path specifically (they were all found via the
+synth/oracle path in earlier sessions). A live run where the auto-repair block actually fires
+(not just the standalone mechanism test) is still open — worth watching for on a future
+leaderboardModule regeneration.
+
+## PRIOR: 2026-07-06, cont. 26 — clean generation-stress baseline
 confirmed post-ambiguity-fix (4/5 gen tasks GREEN, sortModule the only accepted boundary);
 first three commits of the session landed; a new deterministic repair added for
 leaderboardModule's mutation bug, with an important caveat about which path it actually covers)

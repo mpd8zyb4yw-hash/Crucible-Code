@@ -13,7 +13,7 @@ import type { ToolCall, ToolCtx, ToolDef } from '../tools/protocol'
 import { maybeCompressMessages } from '../contextManager'
 import { createAnchor, validateCompression, deleteAnchor } from '../contextAnchor'
 import { renderPlaybook } from './macCapabilities'
-import { runLocalHardenCheck } from './localHardenCheck'
+import { runLocalHardenCheck, splitSources } from './localHardenCheck'
 import { runLocalHardenFuzz } from './localHardenFuzz'
 import { resolveAmbiguity } from '../ambiguity'
 import { assessStakes } from './stakesRouter'
@@ -579,6 +579,31 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         const review = await runHardenReview(goal, sources, driveTurn, signal)
         if (review && !review.solid && review.findings.trim()) {
           hardenRounds++
+          // Deterministic auto-repair (2026-07-06) for the one finding shape that's
+          // mechanically fixable with zero ambiguity: a bare `x.sort(...)` mutating its
+          // argument (localHardenFuzz's sort-no-mutate property). Confirmed live
+          // (leaderboardModule) that the natural-language retry below is not reliably
+          // enough — the FM can re-ship the identical bug after being told about it in
+          // prose. Patch the file directly on disk before the retry message goes out, so
+          // the model's next turn either confirms an already-fixed file (cheap, high
+          // success rate) or overwrites it again (no worse than today). Reuses
+          // repairProposers.ts's repairMutatingSort via the same detail-string gate it
+          // already uses — not a new pattern, just applied a layer earlier than its
+          // current only caller (universal.ts's synth/oracle path).
+          if (/mutates its input argument in place/.test(review.findings)) {
+            try {
+              const { proposeRepairs } = await import('../synth/repairProposers')
+              for (const f of splitSources(sources)) {
+                const repairs = proposeRepairs(f.content, review.findings, goal)
+                if (repairs.length) {
+                  fs.writeFileSync(path.join(projectPath, f.path), repairs[0], 'utf8')
+                  debugBus.emit('agent', 'auto_repair', { iter, path: f.path, kind: 'mutating-sort' }, { severity: 'info' })
+                  emit({ type: 'thought', text: `[Auto-repaired ${f.path}: rewrote a mutating array method to a non-mutating form]`, iter })
+                  break // one mechanical fix per round — same discipline as the FM-facing message below
+                }
+              }
+            } catch { /* best-effort — falls through to the normal retry message either way */ }
+          }
           debugBus.emit('agent', 'harden_findings', { iter, findings: review.findings.slice(0, 200) }, { severity: 'info' })
           emit({ type: 'thought', text: '[Hardening review — found likely correctness gaps; fixing before finalizing]', iter })
           messages.push({ role: 'assistant', content: turn.text })
