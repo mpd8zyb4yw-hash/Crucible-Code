@@ -73,6 +73,33 @@ function getArity(content: string, name: string): number | null {
   return parts.filter(p => p.trim()).length
 }
 
+/** Raw (unsplit) parameter-list text for the same declaration `getArity` matches — used
+ *  to sniff declared param TYPES, not just count them. */
+function getParamsRaw(content: string, name: string): string | null {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const fnDecl = content.match(new RegExp(`\\bexport\\s+(?:async\\s+)?function\\s+${esc}\\s*\\(([^)]*)\\)`))
+  const arrowDecl = content.match(new RegExp(`\\bexport\\s+const\\s+${esc}\\s*=\\s*(?:async\\s*)?\\(([^)]*)\\)\\s*=>`))
+  const sig = fnDecl ?? arrowDecl
+  return sig ? sig[1] : null
+}
+
+/** True when the param list explicitly types a parameter as string/Date/boolean — a
+ *  strong signal that a family whose fuzz inputs are numeric (integers/integer-arrays)
+ *  doesn't actually match this candidate's contract, even though its NAME matched the
+ *  family convention. Found 2026-07-06 auditing every name-regex family the way the
+ *  `number-aggregate-sum`/`summarizeByAccount` collision (cont.29) was found: e.g.
+ *  `compareVersions(a: string, b: string): number` matches the comparator family's
+ *  name+arity gate but expects version strings, not numbers — feeding it random integers
+ *  throws inside the candidate (`a.split is not a function`), and fast-check reports that
+ *  throw as a genuine counterexample. Same for `differenceInDays(a: Date, b: Date)`
+ *  matching `set-op-diff`'s `/^(difference|subtract|complement)/` name gate, or
+ *  `uniqueId(prefix: string)` matching `array-dedupe`'s `/^(dedupe|dedup|unique|distinct)/`
+ *  gate. Untyped/`any`/`number`-typed params are unaffected — only an explicit non-numeric
+ *  annotation opts a candidate out, same "skip, don't misfire" discipline as the arity gate. */
+function paramsLookNonNumeric(paramsRaw: string): boolean {
+  return /:\s*(string|Date|boolean)(\[\])?\b/.test(paramsRaw)
+}
+
 /** Classify each exported name into a fuzz-testable family by name convention, gated to
  *  the expected arity. Deliberately narrow — a name match with the wrong arity is not
  *  this family (skip, don't misfire), same convention as derive.ts's sorter arity gate. */
@@ -85,6 +112,13 @@ function detectChecks(content: string): CheckSpec[] {
   for (const name of exportedNames) {
     const arity = getArity(content, name)
     if (arity === null) continue
+    // Numeric-input families (everything except validator/string-transform, which pass
+    // real strings): skip when the declared params say this isn't a numeric contract.
+    const paramsRaw = getParamsRaw(content, name)
+    const nonNumericTyped = paramsRaw !== null && paramsLookNonNumeric(paramsRaw)
+    if (nonNumericTyped && /[Ss]ort|^(compare|comparator|ascending|descending|byKey|sortKey|cmp)|^union|^(difference|subtract|complement)|^(intersect|intersection)|^clamp|^(dedupe|dedup|unique|distinct)|^sum(?:[A-Z]|$)/i.test(name)) {
+      continue
+    }
     if (/[Ss]ort/.test(name) && !/topo|topolog/i.test(name) && arity === 1) {
       checks.push({ name, kind: 'sort' })
       // Companion property: the correctness check above always calls fn on a defensive
@@ -112,7 +146,13 @@ function detectChecks(content: string): CheckSpec[] {
     } else if (/^(dedupe|dedup|unique|distinct)/i.test(name) && arity === 1) {
       checks.push({ name, kind: 'array-dedupe' })
       checks.push({ name, kind: 'array-dedupe-no-mutate' })
-    } else if (/^sum/i.test(name) && arity === 1) {
+    } else if (/^sum(?:[A-Z]|$)/.test(name) && arity === 1) {
+      // `[A-Z]|$` requires a camelCase boundary right after "sum" (sumValues, sumOf, bare
+      // `sum`) — confirmed live 2026-07-05 that the un-anchored /^sum/i also matched
+      // `summarizeByAccount` (arity 1, returns a Record, not a number), byte-identical false
+      // "Counterexample: [[]]" finding recurring across 3 separate runs at iters 7-9 (self-
+      // corrected each time only because harden findings are soft, not because the code was
+      // ever actually wrong). Same false-positive-by-name-collision class as items 11/24/25.
       checks.push({ name, kind: 'number-aggregate-sum' })
     } else if (/case|capitaliz|slug|wrap|trim|pad|strip|escape|unescape|reverse|truncat/i.test(name) && arity === 1) {
       checks.push({ name, kind: 'string-transform' })

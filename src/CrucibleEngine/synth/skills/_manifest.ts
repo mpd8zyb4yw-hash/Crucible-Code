@@ -245,6 +245,7 @@ export const PROVEN_SKILLS: string[] = [
   "titleCaseSmart",
   "slugifyUnicode",
   "padColumns",
+  "user_slugify",
   "luhnCheck",
   "isISBN",
   "isEAN13",

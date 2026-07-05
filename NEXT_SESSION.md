@@ -17,48 +17,378 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 27 — deterministic auto-repair wired into
-agent/loop.ts itself, closing cont.26's scope gap; leaderboardModule now GREEN (5/5 gen tasks)
+## CURRENT STATE (last updated 2026-07-06, cont. 34 — both cont.33 "next increment" items
+BUILT AND LIVE-VERIFIED: (a) the verified NL-skill pipeline — a plain-language request in
+the Library drawer now becomes a PROVEN catalog entry in `catalogs/user-skills.json`, first
+real entry `user/slugify` landed via on-device FM + a NEW deterministic repair, prove:all
+251/251; (b) the RSI auto-approve consumer — the 6h scheduler now routes every tick through
+the stakes router (`rsi_cycle`, its FIRST non-filesystem consumer, priority-ladder item 3),
+proposing-and-waiting by default and auto-approving only under the explicit AFK opt-in.)
 
-**Cont. 27 (this session) — closed cont.26's flagged gap: repairProposers.ts is now reachable
-from agent/loop.ts, not just universal.ts's synth/oracle path.**
+**Cont. 34 (this session) — FABLE5_HANDOFF execution, second slice. All items below are
+live-verified against a restarted `:3001` (current code IS running there now), not just
+bench-verified.**
 
-`runAgentLoop`'s harden-review branch (~line 576-605) now applies `repairMutatingSort` (via
-`proposeRepairs`) directly to disk BEFORE pushing the natural-language retry message, whenever
-`review.findings` matches the fuzz layer's "mutates its input argument in place" text. Uses
-`splitSources` (localHardenCheck.ts) to parse the concatenated project sources back into
-per-file {path, content}, applies the repair to whichever file matches, writes the fixed
-content back with `fs.writeFileSync`, and emits a `thought`/`auto_repair` event. If no file
-matches (or the repair is a no-op), falls through to the existing retry-message behavior
-unchanged — strictly additive, no new failure mode: worst case is identical to pre-cont.27
-behavior.
+**1. Verified NL-skill pipeline (Feature 1 increment) — DONE.**
+`src/CrucibleEngine/synth/userSkillPipeline.ts` (`buildUserSkill`): admission gate (the
+request must declare an exact exported API and pin ≥2 worked examples `f(x) -> y`, else
+honest rejection with guidance — no examples ⇒ nothing to prove ⇒ nothing enters the
+library) → duplicate check (export-name collision against merged catalog + on-disk user
+batch; an L0 primitive hit is also reported as "already covered") → `synthesizeUniversal`
+(maxFmRounds 6, distill:false, oracle-gated on the request's own examples) → CatalogEntry
+(patterns = exact export names at weight 0.9 per the skill-factory self-match convention;
+tests[] = the SAME examples the oracle ran, via the new `extractSpecExamples` export from
+derive.ts) → whole-user-batch `validate-batch` in scratch → append to
+`catalogs/user-skills.json` → `generate:skills` + full `prove:all`, with rollback +
+re-generate + re-prove on failure so the manifest never drifts from green. Server:
+`POST /api/library/skills/build` (async job, 409 single-flight — FM + manifest contention)
++ `GET .../build/:id` polling; successful entries are pushed into the in-process
+SKILL_CATALOG so the drawer/shortcuts see them without a restart. LibraryBinder's skill
+BuildBox now calls this pipeline and renders a live status card (stage/message/detail,
+amber on failure, dismissable) — browser-verified. **First proven user skill landed:
+`user/slugify`** — FM round-1 candidate had the classic dash-run bug, the oracle rejected
+it, the new repair fixed it deterministically, ALL PASS, batch oracle PASS, prove:all
+251/251. Rejection paths (no examples / no API / hexToRgb duplicate) all verified too.
 
-**Verification:** live re-fire of `leaderboardModule` came back GREEN (hidden suite 8/8 ALL
-PASS, including "input not mutated") — but the FM happened to write correct
-(`[...scores].sort(...)`) code on its own this run, so the auto-repair path itself was never
-exercised (confirmed: no `auto_repair` event in the server log, and the shipped file was
-already correct). Since live FM output is stochastic and can't be forced to reproduce the bug
-on demand, verified the exact mechanism standalone instead: seeded a throwaway project dir with
-the literal buggy `scores.sort(...)` candidate, ran the identical
-`splitSources`→`runLocalHardenFuzz`→`proposeRepairs`→`fs.writeFileSync` sequence loop.ts now
-runs, and confirmed the file on disk was correctly rewritten to `[...scores].sort(...)`. This
-is the same code, just not triggered by this particular stochastic FM output — genuinely
-verified, not just "should work." `tsc` clean, `prove:all` 250/250.
+**2. 9th deterministic repair — `repairSeparatorRunNormalize` (repairProposers.ts).**
+Added on a REAL recurrence: the FM failed slugify 9/9 rounds across 2 independent fires
+with the same fingerprint (maps chars to '-' correctly but never collapses runs nor trims
+edges; read from `.crucible/fm-rounds.jsonl` per the item-17 discipline before acting).
+Closed-world: parses derive.ts's own `FAIL — name(...) === "want"  (got "got")` lines and
+proposes ONLY when a single separator ('-'|'_') explains EVERY failing pair; transform
+renames the export to a `__raw_` impl + re-exports a normalizing wrapper; oracle re-gates.
+`__repairProposers_bench.ts` 11→14/14. This is what turned the pipeline's happy path GREEN.
 
-**Current full generation-stress state: 5/5 tasks with a definitive verdict, 4/5 GREEN,
-1 accepted boundary** — filterModule/summaryModule/clampModule/leaderboardModule all GREEN,
-sortModule the pre-existing documented capability boundary. This is the best state this suite
-has ever been in.
+**3. /skill + /tool slash shortcuts — DONE.** In server.ts `/api/chat`, ahead of ALL NL
+intent classification: `/skill <id|filename|export>` writes the proven entry's impl to its
+defaultPath in the project (reindexed, SSE tool_call/tool_result/final); `/tool <name>
+[json|text]` executes the registry tool directly (JSON args or raw text mapped onto the
+first required param), with fuzzy closest-match suggestions on unknown names. All paths
+live-verified through authed `/api/chat` (emit → read back via `/tool read_file`).
 
-**Not done this session:** the auto-repair only covers ONE mechanical bug shape
-(mutating sort). Extending this same "apply repairProposers fixes proactively in
-agent/loop.ts" pattern to the other 6 repair shapes (missing derived field, dynamic-key-index,
-default-direction-check, one-sided case-insensitivity, active-false guard, array-guard) is the
-natural next step if any of those recur in agent-mode runs — not done because none of them
-have been observed failing via the agent-mode path specifically (they were all found via the
-synth/oracle path in earlier sessions). A live run where the auto-repair block actually fires
-(not just the standalone mechanism test) is still open — worth watching for on a future
-leaderboardModule regeneration.
+**4. RSI auto-approve consumer (Feature 7 increment) — DONE, and it IS the stakes
+router's first non-filesystem test case.** `assessStakes` gained an `rsi_cycle` branch:
+the cycle is reversible by construction (snapshot→measure→keep-if-not-worse→restore), so
+stakes reduce to pure AUTHORIZATION — the durable fully-automatic toggle is the standing
+equivalent of EXPLICIT_VERBS. `runScheduledRsiTick()` (server.ts, next to the RSI
+endpoints) replaces the old silent 6h `runRsiCycle` call: high stakes → `buildCycleProposal`
+and WAIT (card appears in SelfRepairBinder); low stakes → approve pending-or-new proposal →
+same gated cycle as the manual Apply → `recordProposalOutcome`. `POST /api/rsi/tick` fires
+one tick on demand (ops/testing). `stakesRouter-bench.ts` 15→17/17. **Live-verified both
+paths:** toggle OFF → `proposed` (plain-language reason) then `already-pending` on re-tick;
+toggle ON → `auto-approved`, a real 222s cycle ran and honestly recorded
+`failed/reverted — trend_down` onto the proposal. Auto-approve was restored to OFF
+after testing (its pre-session state), so the scheduler is in propose-and-wait mode.
+
+**5. OPEN OBSERVATION (flagged, deliberately not changed): possible RSI trend-gate
+self-deadlock.** The last two cycles IMPROVED the benchmark (0.53→0.6, 0.47→0.6) yet both
+reverted solely because `qualityPredictor.stats().trend === 'down'` (controller.ts step 5,
+documented belt-and-suspenders). If the live trend stays down for a stretch, RSI
+structurally cannot promote the very improvements that might fix the trend. Decide next
+session: keep (conservative), or let a benchmark-IMPROVING (not merely holding) candidate
+through despite a down trend.
+
+**Verification summary:** `tsc --noEmit` clean on both configs; `prove:all` 251/251 (ran
+as the pipeline's own gate post-landing); `__fuzz_bench` 31/31; `ambiguity:bench` 9/9;
+`__repairProposers_bench` 14/14; `stakesRouter-bench` 17/17; drawer + status card verified
+in the real browser preview (localStorage still had a stale `crucible_api_base=:3012`
+override from cont.33's verification — cleared; watch for it when browser-testing).
+Nothing committed (standing rule: no commit without an explicit ask).
+
+**NEXT (in order): (a) Feature 4** — surface `retrievalLayer.ts` recommendations as cards
+with apply-gated integration (drawer pattern exists; `retrieveForTask`/`rankByRelevance`
+already compute everything; route accepts through applyLayer, never blind-paste);
+**(b) decide the RSI trend-gate question above; (c) Feature 2** (conversation mode, scope
+WITH Workstream 2 — read HITL_PLANNING_TRACK.md first); **(d) Feature 3** (Pocock research
+pass); **(e) Feature 5** (parallel agentic calling — re-read crucible-agentic-architecture
+memory first); **(f) Feature 6** (design note only). Also worth a quick pass: the NL-skill
+pipeline requires literal worked examples by design — a fair v2 increment is having the
+drawer SUGGEST example lines derived from the request before rejecting outright.
+
+## PRIOR: 2026-07-06, cont. 33 — FABLE5_HANDOFF Features 1 and 7
+BUILT AND LIVE-VERIFIED: skill/tool Library drawer + self-repair propose/explain/approve
+drawer, both endpoint-tested with a minted JWT and browser-verified through the real UI.
+Also: cont.32's pending 12-task regression sweep COMPLETED CLEAN — 10/12 HARD-green,
+"No regressions vs the previous scorecard", caseCompareModule GREEN at full-suite level.)
+
+**Cont. 33 (this session) — first execution slice of FABLE5_HANDOFF.md (read that file for
+the full 7-feature plan; ROADMAP.md's sharpened 5-point MISSION block is the success bar).**
+
+**1. Regression sweep from cont.32 — CLOSED.** Full 12-task `smoke:code` against the fixed
+server: 4/4 catalog GREEN + 6/8 generation GREEN (filterModule, summaryModule, clampModule,
+leaderboardModule, usernameModule, caseCompareModule). sortModule RED (unchanged accepted
+boundary), tagSetModule RED (same genuine intersect-dedupe generation variance as cont.31,
+rubric 40 — still below the repair-recurrence bar). Both cont.32 derive.ts fixes are
+confirmed at full-suite level. No open verification debt from cont.32.
+
+**2. Feature 1 (skill/tool Library drawer) — BUILT, VERIFIED.** New `GET /api/library/tools`
+(built-ins from `registry.list()` + per-project dynamic tools) and `GET /api/library/skills`
+(the merged 229-entry catalogIndex, `?q=` filtered) in server.ts (next to
+`/api/debug/dynamic-tools`). New `src/LibraryBinder.tsx` — topbar trigger + frosted drawer
+(same pattern as HistoryBinder/IntegrationsBinder) with two nested collapsible sections
+(Skill Library · 229 / Tool Library · 49 built-ins + dynamic), live search, and a
+plain-language "describe it, have it built" BuildBox per section that routes the request
+into the agent loop (tools land on the existing `create_tool` persistence path;
+`.crucible/dynamic-tools/`). Verified: endpoints curl-tested with minted JWT (229 skills,
+`?q=semver`→3, 49 tools), drawer opened/searched/screenshotted in the real browser preview,
+tsc clean. **REMAINING from Feature 1:** the NL skill request currently routes through the
+agent as a normal build task — the dedicated generate→validate→`catalogs/user-skills.json`
+pipeline (so NL-built skills become PROVEN catalog entries automatically) is not built;
+that's the next Feature-1 increment. Slash shortcuts (`/tool <name>`, `/skill <name>`)
+also not built.
+
+**3. Feature 7 (self-repair propose/explain/approve) — BUILT, VERIFIED.** New
+`src/CrucibleEngine/rsi/proposals.ts`: `RsiProposal` records persisted to
+`.crucible/rsi-proposals.json`, `buildCycleProposal()` composes a plain-language
+what/why/how/risk card from REAL live signals (quality-history size, qualityPredictor
+trend, learned-weights balance, RSI cycle track record) with zero model inference;
+`resolveProposal`/`recordProposalOutcome` carry the cycle's honest verdict back onto the
+record; one-pending-at-a-time guard; `isAutoApproveEnabled`/`setAutoApprove` opt-in flag
+(`.crucible/rsi-auto-approve.json`). Five new endpoints in server.ts next to the existing
+RSI block: `GET /api/rsi/proposals`, `POST /api/rsi/propose` (409 on duplicate pending),
+`POST /api/rsi/proposals/:id/approve` (runs the normal gated `runRsiCycle` with the same
+`buildRsiDeps()` as `/api/rsi/cycle`; outcome recorded on completion),
+`POST .../:id/reject`, `POST /api/rsi/auto-approve`. New `src/SelfRepairBinder.tsx` drawer:
+track-record header (real data: 34 runs / 2 kept / 14 auto-undone), pending-proposal
+decision card (Apply / Not now), running state with 5s polling, history with honest
+outcome labels, fully-automatic toggle. Verified end-to-end: propose→409-duplicate→reject
+via curl; propose→plain-language card→"Not now" through the real browser UI; approve
+verified live END-TO-END: a real gated cycle ran on the :3012 instance, learned state
+dipped on re-measure, the cycle honestly REVERTED, and `recordProposalOutcome` wrote
+`status:failed / verdict:reverted / "Quality dipped on re-measure — changes were
+automatically undone."` onto the proposal record — the complete propose→approve→run→
+honest-outcome loop is proven, including the safety path. tsc
+clean throughout. NOTE: the auto-approve flag is stored+toggleable but nothing CONSUMES it
+yet (no scheduler auto-runs cycles when it's on) — wiring it into the idle scheduler is the
+next Feature-7 increment, and per FABLE5_HANDOFF this approval gate should become the first
+concrete test case of the HITL/AFK stakes router (priority-ladder item 3).
+
+**Verification environment note:** all live checks ran against a SECOND server instance
+(`PORT=3012 CRUCIBLE_OFFLINE=strict`) + the vite preview with `crucible_api_base` localStorage
+override, so the primary `:3001` (mid-sweep) was never disturbed. `:3001` still runs
+pre-cont.33 code — restart it onto the current commit before any sweep that touches the new
+endpoints. The 12-task suite does NOT touch them, so the clean sweep above is valid.
+
+**NEXT (in order): remaining FABLE5_HANDOFF features** — (a) Feature 1 increment: verified
+NL-skill pipeline + slash shortcuts; (b) Feature 7 increment: auto-approve consumer in the
+idle scheduler; (c) Feature 4 (retrieval recommendations surface — `retrievalLayer.ts`
+already ranks, just needs the drawer card + apply-gated integration); (d) Feature 2
+(conversation/plan mode — scope WITH Workstream 2, read HITL_PLANNING_TRACK.md first);
+(e) Feature 3 (Pocock research pass); (f) Feature 5 (parallel agentic calling — biggest bet,
+re-read crucible-agentic-architecture memory first); (g) Feature 6 (design note only).
+
+**Cont. 32 (this session) — audit-only continuation of cont.31's explicit "not yet
+live-confirmed" item: `derive.ts`'s `comparator` family "unconditionally tests both
+numeric AND string calls on every comparator regardless of declared type."** Confirmed
+by reading the code (`src/CrucibleEngine/synth/derive.ts:216-232` pre-fix): every
+comparator match unconditionally emitted BOTH a numeric-pair assertion
+(`${name}(1, 2)`) AND a string-pair assertion (`${name}('a','a')`), regardless of the
+spec's declared parameter types. A comparator explicitly typed `(a: string, b: string)`
+(a very ordinary shape — e.g. `compareVersions(a: string, b: string): number`) would hit
+the identical unwinnable-oracle-gate bug as `tagSetModule`: the generated property-test
+file itself fails `tsc` (`Argument of type 'number' is not assignable to parameter of
+type 'string'`) before any candidate is even judged. This had NOT yet fired live (no
+comparator-family generation-stress task exists yet), so this was caught by inspection,
+same discipline as cont.30's proactive fuzz-family audit — not a live-repro this time.
+
+**Fix (same pattern as cont.31's set-op fix):** reused the existing `getSpecParamsRaw()`
+helper to sniff the spec's declared signature; when explicitly `string`-only, emit just
+the string assertions; when explicitly `number`-only, emit just the numeric assertions;
+untyped/generic signatures (the common case, no declared types) are unchanged — still
+get both, exactly as before. Scratch-verified directly against `derivePropertyTests()`
+with three synthetic specs (string-typed `compareVersions`, number-typed `compareNums`,
+untyped `compare`) — confirmed each produces only the assertions that will actually
+typecheck, and the untyped case is byte-identical to the old unconditional behavior.
+`npx tsc --noEmit` clean, `npm run prove:all` 250/250 unchanged (no catalog skill uses
+this family's code path with a string-typed comparator, so no regression risk there).
+
+**Not done:** did not add a new generation-stress task to exercise this live (e.g. a
+`versionCompareModule` task with a `string`-typed comparator) — this fix closes the
+identified risk but, like cont.30's fuzz-family audit fixes, has zero live-fire
+confirmation yet. That is the natural next verification step, same shape as how
+cont.31 closed the loop on cont.30's two new tasks. Did not touch any other `derive.ts`
+family — no other family was flagged as having this risk.
+
+## PRIOR: 2026-07-06, cont. 31 — live-fired the 2 new tasks from
+cont.30; tagSetModule's first fire was RED at 0% (module never produced) and root-caused
+to a REAL oracle bug in `synth/derive.ts`'s `set-op` family — same audit discipline as the
+sum/summarize fix, this time caught on first live contact rather than by proactive
+inspection. Fixed, re-verified, and a full 11-task sweep confirms no regressions.
+
+**Cont. 31 — continuation of cont.30's "not yet live-fired" open item.**
+Restarted `:3001` clean (`CRUCIBLE_OFFLINE=strict` in the server's own env) and fired
+`usernameModule`/`tagSetModule` live. `usernameModule` GREEN first try (11/11 hidden,
+genuine generation signal). `tagSetModule` RED: `module exists FAIL` — the FM never
+produced a passing candidate at all, oracle honestly escalated after 3 rounds with an
+identical compile-error fingerprint.
+
+**Read `.crucible/fm-rounds.jsonl` before guessing (the item-17 discipline) — found a real
+oracle bug, not an FM capability gap.** The repeating error was
+`__property__/spec.test.ts(10,64): error TS2322: Type 'number' is not assignable to type
+'string'` — `synth/derive.ts`'s `set-op` family (union/intersect/difference) hardcodes
+NUMERIC literal test data (`[1,2,3]`, etc.) unconditionally, regardless of the task's real
+declared parameter types. `tagSetModule`'s spec correctly declares `string[]` params
+(`unionTags(a: string[], b: string[])`), so the auto-generated property-test file itself
+failed to compile — an unwinnable oracle gate no candidate could ever pass, same failure
+class as the `localHardenFuzz.ts` type-collision risks found earlier this session, but in
+the DIFFERENT derive.ts/oracle-side property-test system (built from the spec's own prompt
+text before any candidate exists, not from candidate code).
+
+**Fixed:** `getSpecParamsRaw()` + a type-aware `arr()` literal-builder in `derive.ts`'s
+set-op block — sniffs the spec's own declared signature and switches to string literals
+(`'a'`,`'b'`,...) preserving the exact same overlap/dedup relationships when the params
+are explicitly typed `string[]`; numeric/untyped specs are unaffected. Scratch-verified
+directly against `derivePropertyTests()` with the real `tagSetModule` prompt text before
+touching the live server (confirmed string literals + no assertion-semantics change).
+`npx tsc --noEmit` clean, `npm run prove:all` 250/250 unchanged (set-op catalog skills use
+numeric specs, untouched by this branch).
+
+**Re-verified live, 3 fires total post-fix:** `tagSetModule` now reliably reaches
+`module exists PASS` + `compiles clean PASS` + hidden suite (previously 0/1 ever got that
+far) — the oracle bug is confirmed fixed. Hidden-suite result is now genuine
+generation-quality signal: fire 1 caught a severely broken `intersectTags` (inverted
+membership check, `result.includes(tag) && b.includes(tag)` — can never be true from an
+empty result, so intersect returns near-empty); fire 2 and fire 3 caught a narrower,
+DIFFERENT bug (`intersectTags` correct but doesn't dedupe when `a` itself has repeated
+tags). **Deliberately did NOT add a `repairProposers.ts` entry** — the two bugs are not an
+identical recurring fingerprint (this project's established 2-3-identical-recurrence bar
+for adding a repair, see items 30/31 in [[crucible-coding-harness]]), they're genuine
+FM-generation variance on this task shape. `tagSetModule` is RED 3/3 so far but for a real,
+hand-verifiable reason each time, not an oracle artifact — legitimate new generative-
+capability signal, the exact goal of broadening the suite.
+
+**Full 11-task sweep run after the fix + server restart, to check for regressions:**
+4/4 catalog GREEN (kvstore/ratelimiter/scheduler/regex, unaffected as expected — derive.ts's
+set-op branch isn't in their path). Generation tasks: filterModule, summaryModule,
+leaderboardModule, usernameModule all GREEN; sortModule RED (unchanged accepted boundary,
+untouched per instruction); clampModule RED this run (oracle rejected 3 candidates with an
+identical clamp-bounds failure shape, honestly escalated) — this is FM-generation
+variance unrelated to this session's derive.ts change (clampModule uses the
+`number-transform-clamp` family, a different code branch never touched this session);
+consistent with this suite's long-documented run-to-run flakiness, not a regression.
+tagSetModule RED as above (genuine signal, not oracle). **Net: 8/11 HARD-green
+(4 catalog + 4 generation), 4/7 generation tasks GREEN** — no regressions vs. the pre-
+session scorecard on any task this session didn't touch.
+
+**Not done:** did not chase clampModule's flake (single-run, no established recurrence,
+matches known variance); did not add a repair for tagSetModule's intersect-dedupe gap
+(correctly below the recurrence bar); did not extend the type-aware literal fix to
+`derive.ts`'s `comparator` family, which has a DIFFERENT, not-yet-live-confirmed risk
+(it unconditionally tests both numeric AND string calls on every comparator regardless of
+declared type — `comparator: correct string comparator, non-numeric params` audit-worthy
+next, same discipline, no live evidence yet).
+
+## PRIOR: 2026-07-06, cont. 30 — generation-stress suite broadened
+5→7 tasks (usernameModule, tagSetModule) hand-verified against reference+buggy impls; a
+proactive audit of every fuzz-family name-regex (same discipline that found the
+summarize/sum collision) found and fixed 3 real type-collision false-positive risks in
+`localHardenFuzz.ts` before any live sweep surfaced them)
+
+**Cont. 30 (this session) — explicit ask: broaden the generation-stress suite beyond 5
+tasks, leave sortModule's accepted capability boundary alone, and apply the
+"is-the-checker-even-testing-the-right-contract" audit discipline (item 31's
+summarize/sum lesson) to other fuzz families PROACTIVELY, not just when a live sweep
+happens to surface a collision.**
+
+**1. Two new generation-stress tasks added to `coding-benchmarks.ts` (5→7):**
+`usernameModule` (standalone, `validator` family — `isValidUsername(name): boolean`,
+3-20 chars/leading-letter/alnum-or-underscore rules) and `tagSetModule` (repo-context,
+exercises BOTH `set-op-union` and `set-op-intersect` in one task —
+`unionTags`/`intersectTags(a: string[], b: string[]): string[]`, no-mutation +
+no-duplicates rules). Both confirmed not already covered by the skill catalog (checked
+`validatorsB.json` for username-shaped validators, all catalogs for union/intersect —
+only an unrelated `segmentsIntersect` geometry primitive exists). New hidden suites
+(`coding-bench/usernameModule.hidden.ts`, `tagSetModule.hidden.ts`) hand-verified in
+scratch BEFORE committing, same discipline items 9/21 used: a correct reference impl for
+each passes 11/11 and 10/10 clean, and a deliberately buggy variant for each (missing
+leading-letter rule; in-place-mutating union + wrong-answer intersect) is caught with
+precise got/expected output. **Not yet live-fired against the actual agent** — these are
+hand-verified test-design correctness, not a live GREEN/RED read; that's the natural next
+step before trusting them as a live signal.
+
+**2. sortModule:** untouched this session, per explicit instruction — its structural
+conditional-grouping miss (item 16 in [[crucible-coding-harness]]) stays the one
+documented, accepted capability boundary. No code touched, no new investigation opened.
+
+**3. Proactive fuzz-family contract audit (the actual point of this session) — read
+every `detectChecks()` name-regex in `localHardenFuzz.ts` the way item 31 diagnosed
+`/^sum/i` matching `summarizeByAccount` post-hoc, but BEFORE a live sweep forced the
+issue.** Found 3 real risks, all sharing one root cause: a family's name+arity gate can
+match a real, common function whose declared TS parameter TYPES don't match the family's
+numeric fuzz-input assumption, and the resulting throw/type-mismatch inside `fc.assert`
+would be misreported as a genuine counterexample on perfectly correct code:
+   - `comparator` family (`/^(compare|...)/`, arity 2) would misfire on something like
+     `compareVersions(a: string, b: string): number` — fuzzes with random integers,
+     `a.split('.')` throws on a number.
+   - `set-op-diff` family (`/^(difference|subtract|complement)/`, arity 2) would misfire
+     on `differenceInDays(a: Date, b: Date): number` — a very ordinary date-math helper
+     name, not a set operation at all.
+   - `array-dedupe` family (`/^(dedupe|unique|distinct)/`, arity 1) would misfire on
+     `uniqueId(prefix: string): string` — an ID generator, not an array dedupe.
+   None of these three had actually fired live yet (unlike item 31's summarize case,
+   which needed 3 live recurrences before the root cause was found) — this audit found
+   them by inspection first. **Fix:** added `paramsLookNonNumeric()` in
+   `localHardenFuzz.ts` — sniffs the raw declared parameter-type text for an explicit
+   `string`/`Date`/`boolean` annotation and skips the numeric-input families (sort,
+   comparator, set-op-*, clamp, array-dedupe, number-aggregate-sum) when found, leaving
+   `validator`/`string-transform` (which correctly expect real strings) untouched. Added
+   3 regression cases to `__fuzz_bench.ts` (28→31/31, all passing) — one per collision
+   shape, each asserting the correct-but-non-numeric-typed candidate produces NO finding.
+   `npx tsc --noEmit` clean, `npm run prove:all` 250/250 unchanged throughout.
+
+**Not done this session:** no live `smoke:code` sweep (neither the 2 new tasks nor the
+fuzz-audit fix were fired against a running server) — the two new tasks are hand-verified
+design-correct but have zero live pass/fail history yet; that's the natural next step.
+Did not extend the same param-type audit to `localHardenCheck.ts`'s AST scanner (a
+different gate, item 25 already gave it its own mirror-image audit pass) or to
+`derive.ts`'s oracle-side family conventions (a related but separate system from the
+harden-fuzz layer audited here) — worth doing the same discipline there next if this
+proactive-audit pattern keeps paying off.
+
+## PRIOR: 2026-07-05, cont. 29 — cont.28's flagged summaryModule
+empty-array shape recurred 2 more times (3 confirmed total) but turned out to be an ORACLE
+false positive, not an FM bug — fixed the fuzz classifier, not repairProposers.ts
+
+**Cont. 29 (this session) — picked up cont.28's explicit next step: re-run the authed
+debug-stream-tail technique against summaryModule + the 4 non-sortModule generation tasks a
+few more times to see if the byte-identical `Counterexample: [[]]` empty-array shape recurs;
+2-3 confirmed recurrences was the stated bar for writing a 9th repairProposers.ts entry.**
+
+Minted an authed JWT ([[crucible-local-auth-testing]]), tailed `GET /api/debug/stream` to a
+scratch log, and fired `summaryModule` 3 times and `clampModule` once via `npm run smoke:code`
+while the tail ran. **The shape recurred all 3 times** — byte-identical
+`summarizeByAccount fails the number-aggregate-sum property ... Counterexample: [[]]` at iters
+7/8/9 every single fire, clearing the 2-3-recurrence bar cont.28 set.
+
+**But investigating WHY before writing a repair proposer changed the diagnosis entirely: this
+is not an FM generation bug, it's an oracle false positive — the exact same name-collision
+class as items 11/24/25.** `localHardenFuzz.ts`'s `detectChecks()` classified
+`summarizeByAccount` into the `number-aggregate-sum` fuzz family because its old regex was
+`/^sum/i && arity===1` — it matches any name starting with "sum" with one argument, including
+"summarize", regardless of what the function actually returns. `summarizeByAccount` returns a
+`Record<string, {...}>`, not a number, so the fuzz property's `typeof r !== 'number'` check
+fails on EVERY call unconditionally — no possible generated code could ever satisfy this
+check, which is why the finding was byte-identical every time and why it always harmlessly
+self-corrected by iter 10 (the harden critic is soft, not a hard gate). Writing a 9th repair
+proposer would have been the wrong lever entirely — there is no code fix for a check that's
+testing the wrong contract.
+
+**Fix (not repairProposers.ts): narrowed the classifier regex** to
+`/^sum(?:[A-Z]|$)/` — requires a camelCase boundary right after "sum" (matches `sumValues`,
+bare `sum`; rejects `summarize*`/`summary*`), same convention `^is[A-Z]` already uses one line
+above it in the same function. Added a regression case to `__fuzz_bench.ts` (27→28/28, the
+exact `summarizeByAccount` shape asserted clean). `npm run prove:all` → 250/250 unchanged.
+**Re-verified live, not just via the bench:** re-fired `summaryModule` (still GREEN, 14/14
+hidden, zero `number-aggregate-sum` finding in the fresh debug-stream capture — confirms the
+fix, not just the unit test) and `clampModule` (GREEN, unaffected — confirms no regression on
+an unrelated fuzz family).
+
+**Net this session: 0 lines changed in repairProposers.ts or loop.ts** — the honest answer to
+cont.28's open question was "the recurrence was real, but it wasn't an FM bug," not "add a 9th
+proposer." Lesson for future sessions applying this same investigate-before-fixing discipline:
+a harden/fuzz finding that survives 3 confirmed live recurrences is strong signal SOMETHING is
+wrong, but check whether the checker itself is testing the right contract before assuming the
+generated code is at fault — the fix belongs wherever the false signal actually originates.
 
 ## PRIOR: 2026-07-06, cont. 26 — clean generation-stress baseline
 confirmed post-ambiguity-fix (4/5 gen tasks GREEN, sortModule the only accepted boundary);

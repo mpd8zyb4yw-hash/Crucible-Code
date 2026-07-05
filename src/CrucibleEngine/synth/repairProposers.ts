@@ -206,6 +206,63 @@ function repairMutatingSort(candidate: string, detail: string): string | null {
 }
 
 /**
+ * String-building function that fails only by SEPARATOR RUNS / edge separators — confirmed
+ * live 2026-07-06 across 9 consecutive FM rounds on a slugify request through the user-skill
+ * pipeline: every candidate mapped disallowed chars to '-' correctly but never collapsed the
+ * resulting '--' runs nor trimmed leading/trailing dashes (`got "a--b-"` vs `want "a-b"`,
+ * byte-similar shape every round; the FM demonstrably cannot self-correct this within its
+ * round budget). Detection is closed-world: parse every `FAIL — name(...) === "want"
+ * (got "got")` pair our own derive.ts behavioral test emits, and propose a repair ONLY when
+ * a single separator char ('-' or '_') explains EVERY failure — i.e. collapsing runs of it
+ * and trimming it from both ends turns each `got` into exactly its `want`. The transform
+ * renames the offending exported function to a private raw implementation and re-exports a
+ * wrapper that applies that exact normalization to string results. The oracle re-gates the
+ * repaired candidate in full, so a case this normalization would break is rejected as usual.
+ */
+function repairSeparatorRunNormalize(candidate: string, detail: string): string | null {
+  const pairs = Array.from(
+    detail.matchAll(/FAIL — ([A-Za-z_$][\w$]*)\([^\n]*?\) === ("(?:[^"\\]|\\.)*")\s+\(got ("(?:[^"\\]|\\.)*")\)/g),
+    m => ({ name: m[1], want: m[2], got: m[3] }),
+  )
+  if (!pairs.length) return null
+  const names = new Set(pairs.map(p => p.name))
+  if (names.size !== 1) return null
+  const fnName = pairs[0].name
+
+  let sep: string | null = null
+  for (const s of ['-', '_']) {
+    const esc = s === '-' ? '\\-' : s
+    const fixesAll = pairs.every(p => {
+      try {
+        const got = JSON.parse(p.got) as string
+        const want = JSON.parse(p.want) as string
+        const norm = got
+          .replace(new RegExp(`${esc}{2,}`, 'g'), s)
+          .replace(new RegExp(`^${esc}+|${esc}+$`, 'g'), '')
+        return norm === want && got !== want
+      } catch { return false }
+    })
+    if (fixesAll) { sep = s; break }
+  }
+  if (!sep) return null
+
+  // Only the plain `export function <name>(...)` declaration shape (what the FM emits).
+  if (!new RegExp(`\\bexport\\s+function\\s+${fnName}\\s*\\(`).test(candidate)) return null
+  const raw = `__raw_${fnName}`
+  if (candidate.includes(raw)) return null
+  const esc = sep === '-' ? '\\-' : sep
+  const renamed = candidate
+    .replace(new RegExp(`\\b${fnName}\\b`, 'g'), raw)
+    .replace(new RegExp(`\\bexport\\s+function\\s+${raw}\\b`), `function ${raw}`)
+  return `${renamed}
+export function ${fnName}(...__args: Parameters<typeof ${raw}>): ReturnType<typeof ${raw}> {
+  const __r = ${raw}(...__args)
+  return (typeof __r === 'string' ? __r.replace(/${esc}{2,}/g, ${JSON.stringify(sep)}).replace(/^${esc}+|${esc}+$/g, '') : __r) as ReturnType<typeof ${raw}>
+}
+`
+}
+
+/**
  * Spurious Array.isArray guard on a non-array opts parameter — the FM copy-pastes the
  * (correct) items-array validation onto the singular opts object, making the function throw
  * on every legitimate call. Strip exactly that guard.
@@ -232,6 +289,7 @@ const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string
   repairOneSidedCaseInsensitive,
   repairActiveFalseGuard,
   repairMutatingSort,
+  repairSeparatorRunNormalize,
 ]
 
 /** Propose zero or more deterministically-repaired variants of a rejected candidate. */

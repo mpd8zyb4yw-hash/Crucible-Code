@@ -79,6 +79,15 @@ const CASES: Case[] = [
     src: `export function compareAscending(a: number, b: number): number { return 0 }`,
     expectFinding: true,
   },
+  {
+    // 2026-07-06: type-collision guard. `compareVersions` matches the comparator family's
+    // name+arity gate but takes STRING version params, not numbers — the fuzz property
+    // feeds it random integers, and `a.split('.')` throws on a number, which fast-check
+    // would otherwise report as a false "counterexample" for perfectly correct code.
+    name: 'comparator: correct string comparator, non-numeric params (no finding — type guard)',
+    src: `export function compareVersions(a: string, b: string): number { const pa = a.split('.').map(Number), pb = b.split('.').map(Number); for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const d = (pa[i] ?? 0) - (pb[i] ?? 0); if (d !== 0) return d } return 0 }`,
+    expectFinding: false,
+  },
   // ── set-op-union ──────────────────────────────────────────────────────
   {
     name: 'set-op: correct union',
@@ -112,6 +121,16 @@ const CASES: Case[] = [
     name: 'set-op: difference always returns empty (bug — completeness gap)',
     src: `export function differenceArrays(a: number[], b: number[]): number[] { return [] }`,
     expectFinding: true,
+  },
+  {
+    // 2026-07-06: type-collision guard. `differenceInDays` matches set-op-diff's
+    // `/^(difference|subtract|complement)/` name gate at arity 2 but takes Date params,
+    // not number arrays — the fuzz property would call `.filter`/`new Set` machinery on
+    // whatever it feeds in, but the candidate itself does raw Date arithmetic and would
+    // throw or silently misbehave on integers, a false positive on correct code.
+    name: 'set-op: correct day-difference on Dates, non-array params (no finding — type guard)',
+    src: `export function differenceInDays(a: Date, b: Date): number { return Math.round((a.getTime() - b.getTime()) / 86400000) }`,
+    expectFinding: false,
   },
   // ── set-op-intersect ──────────────────────────────────────────────────
   {
@@ -157,6 +176,17 @@ const CASES: Case[] = [
     src: `export function dedupeNumbers(arr: number[]): number[] { let i = 0; while (i < arr.length) { if (arr.indexOf(arr[i]) !== i) arr.splice(i, 1); else i++ } return arr }`,
     expectFinding: true,
   },
+  {
+    // 2026-07-06: type-collision guard. `uniqueId` matches array-dedupe's
+    // `/^(dedupe|dedup|unique|distinct)/` name gate at arity 1 but takes a string PREFIX,
+    // not an array, and returns a string, not an array — the fuzz property would call it
+    // with a random integer array and immediately fail the `Array.isArray(r)` check on
+    // perfectly correct code, a false positive found the same way the comparator/set-op
+    // ones above were.
+    name: 'uniqueId: correct string-ID generator, non-array contract (no finding — type guard)',
+    src: `export function uniqueId(prefix: string): string { return prefix + '_' + Math.random().toString(36).slice(2) }`,
+    expectFinding: false,
+  },
   // ── number-aggregate-sum ──────────────────────────────────────────────
   {
     name: 'sum: correct total',
@@ -167,6 +197,11 @@ const CASES: Case[] = [
     name: 'sum: off-by-one skip of first element (bug)',
     src: `export function sumValues(arr: number[]): number { return arr.slice(1).reduce((a, b) => a + b, 0) }`,
     expectFinding: true,
+  },
+  {
+    name: 'sum: name-collision guard — summarizeByAccount is not a sum function (no finding)',
+    src: `export function summarizeByAccount(txns: {account:string,amount:number}[]): Record<string, {balance:number}> { const out: Record<string, {balance:number}> = {}; for (const t of txns) { out[t.account] ??= {balance:0}; out[t.account].balance += t.amount } return out }`,
+    expectFinding: false,
   },
 ]
 

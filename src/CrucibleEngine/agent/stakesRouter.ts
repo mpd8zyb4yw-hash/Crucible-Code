@@ -67,6 +67,27 @@ export function assessStakes(toolName: string, args: Record<string, unknown>, go
   let irreversibleLabel: string | null = null
   let blastRadius: 'narrow' | 'wide' = 'narrow'
 
+  // ── First non-filesystem consumer (FABLE5_HANDOFF Feature 7 / priority-ladder
+  // item 3): the scheduled RSI self-improvement cycle. Mechanically never-regress
+  // (snapshot → measure → keep-only-if-not-worse → hard-restore), so the
+  // reversibility axis is intact by construction; the live stakes question is pure
+  // AUTHORIZATION — an autonomous change to Crucible's own learned behavior is a
+  // "who decided this?" door, not a data-loss door. The durable fully-automatic
+  // toggle (.crucible/rsi-auto-approve.json, set through the Self-repair drawer)
+  // is this action's standing equivalent of EXPLICIT_VERBS: the user's own explicit
+  // opt-in, so re-confirming every scheduled tick would be exactly the un-asked-for
+  // HITL friction §3 avoids. Toggle off ⇒ high stakes ⇒ the scheduler surfaces a
+  // proposal card and waits for the human instead of running.
+  if (toolName === 'rsi_cycle') {
+    if (args?.autoApproveEnabled === true) {
+      return { stakes: 'low', reversible: true, blastRadius: 'narrow', reason: '' }
+    }
+    return {
+      stakes: 'high', reversible: true, blastRadius: 'narrow',
+      reason: 'About to change how Crucible scores and picks answers, on its own schedule, without a human approving this specific change — the fully-automatic toggle is off, so this decision belongs to you (any change that measures worse is undone automatically either way).',
+    }
+  }
+
   if (IRREVERSIBLE_TOOLS.has(toolName)) {
     const target = String(args?.path ?? '').trim()
     blastRadius = WIDE_BLAST_TOOLS.has(toolName) ? 'wide' : 'narrow'

@@ -85,6 +85,24 @@ const CASES: Case[] = [
     expect: null,
   },
   {
+    name: 'repairSeparatorRunNormalize: dash runs + edge dashes explain every failure — wrapper added',
+    candidate: `export function slugify(title: string): string {\n  return title.toLowerCase().replace(/[^a-z0-9]/g, '-');\n}`,
+    detail: `FAIL — slugify("A  B!") === "a-b"  (got "a--b-") | FAIL — slugify("  X ") === "x"  (got "--x-") | 2 FAILURE(S)`,
+    expect: `function __raw_slugify(title: string): string {\n  return title.toLowerCase().replace(/[^a-z0-9]/g, '-');\n}\nexport function slugify(...__args: Parameters<typeof __raw_slugify>): ReturnType<typeof __raw_slugify> {\n  const __r = __raw_slugify(...__args)\n  return (typeof __r === 'string' ? __r.replace(/\\-{2,}/g, "-").replace(/^\\-+|\\-+$/g, '') : __r) as ReturnType<typeof __raw_slugify>\n}\n`,
+  },
+  {
+    name: 'repairSeparatorRunNormalize: no-op when normalization does NOT explain a failure (real logic bug)',
+    candidate: `export function slugify(title: string): string {\n  return title.replace(/[^a-z0-9]/g, '-');\n}`,
+    detail: `FAIL — slugify("Hello") === "hello"  (got "-----")`,
+    expect: null,
+  },
+  {
+    name: 'repairSeparatorRunNormalize: no-op on non-string want/got (numeric failures are not separator bugs)',
+    candidate: `export function count(xs: string): number {\n  return xs.length;\n}`,
+    detail: `FAIL — count("ab") === 2  (got 3)`,
+    expect: null,
+  },
+  {
     name: 'no repair fires when detail matches nothing (clean candidate, no gate triggered)',
     candidate: `export function add(a: number, b: number): number { return a + b }`,
     detail: 'unrelated failure text',

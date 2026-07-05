@@ -18,6 +18,16 @@ const SEP = /\s*(?:===|==>|=>|->|→|\breturns?\b|\bgives?\b)\s*/
 /** Escape a string for embedding in a RegExp constructor. */
 function escapeRe(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
 
+/** Raw declared parameter-list text for `name` from the spec's own "Exact public API"
+ *  signature (e.g. `export function unionTags(a: string[], b: string[]): string[]`) —
+ *  read from the PROMPT text, not candidate code, since property tests here are built
+ *  before any candidate exists. Returns null when no such declaration is found. */
+function getSpecParamsRaw(spec: string, name: string): string | null {
+  const esc = escapeRe(name)
+  const m = spec.match(new RegExp(`\\bfunction\\s+${esc}\\s*\\(([^)]*)\\)`))
+  return m ? m[1] : null
+}
+
 /** Count top-level (bracket-depth-0) comma-separated params in a signature's param string. */
 function countTopLevelParams(params: string): number {
   const trimmed = params.trim()
@@ -31,14 +41,19 @@ function countTopLevelParams(params: string): number {
   return count
 }
 
-export function deriveTests(spec: string, modulePath: string): DerivedTests | null {
+export interface SpecExample { lhs: string; rhs: string }
+
+/** Extract the worked `call → expected` example pairs from a spec's own text.
+ *  This is deriveTests' exact extraction, exported so the user-skill pipeline can
+ *  record the SAME examples the oracle verified into a catalog entry's tests[]. */
+export function extractSpecExamples(spec: string): SpecExample[] {
   const feats = extractFeatures(spec)
   const names = feats.exports
-  if (!names.length) return null
+  if (!names.length) return []
   const nameAlt = names.map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
   const callsAName = new RegExp(`\\b(?:${nameAlt})\\s*\\(`)
 
-  const examples: Array<{ lhs: string; rhs: string }> = []
+  const examples: SpecExample[] = []
   for (const line of spec.split('\n')) {
     const t = line.trim().replace(/^[-*\d.)\s]+/, '')   // strip list bullets / numbering
     if (!callsAName.test(t)) continue
@@ -50,6 +65,15 @@ export function deriveTests(spec: string, modulePath: string): DerivedTests | nu
     if (!callsAName.test(lhs)) continue            // LHS must be the call
     examples.push({ lhs, rhs })
   }
+  return examples
+}
+
+export function deriveTests(spec: string, modulePath: string): DerivedTests | null {
+  const feats = extractFeatures(spec)
+  const names = feats.exports
+  if (!names.length) return null
+
+  const examples = extractSpecExamples(spec)
   if (!examples.length) return null
 
   const importSpec = '../' + modulePath.replace(/\.tsx?$/, '')   // test sits in __derived__/
@@ -169,10 +193,21 @@ export function derivePropertyTests(spec: string, modulePath: string): PropertyT
   }
 
   // ── String transform: single export, takes string → returns string ─────────
-  const transforms = feats.exports.filter(n =>
-    !n.startsWith('is') && !sorters.includes(n) &&
-    /case|capitaliz|slug|wrap|trim|pad|strip|format|encode|decode|escape|unescape|reverse|truncat/i.test(n)
-  )
+  // 2026-07-06: name-substring match alone isn't enough to gate this family — found live
+  // via `caseCompareModule`'s `compareCaseInsensitive(a: string, b: string)`, whose name
+  // contains "Case" and so matched `/case/i` even though it's a 2-arg comparator, not a
+  // 1-arg string transform. The family then called it with a single string argument
+  // (`${name}('')`), which fails tsc on the generated test file itself
+  // (`Expected 2 arguments, but got 1`) — an unwinnable gate for a real, correctly-typed
+  // comparator, same false-positive-by-name-collision class as items 11/24/25/30/31.
+  // Arity-gate it (mirrors the 'sort' family's own arity check just above) so a 2-arg
+  // export falls through to the 'comparator' family instead of being misclassified here.
+  const transforms = feats.exports.filter(n => {
+    if (n.startsWith('is') || sorters.includes(n)) return false
+    if (!/case|capitaliz|slug|wrap|trim|pad|strip|format|encode|decode|escape|unescape|reverse|truncat/i.test(n)) return false
+    const sig = getSpecParamsRaw(feats.raw, n)
+    return sig === null || countTopLevelParams(sig) <= 1
+  })
   if (!family && transforms.length === 1) {
     family = 'string-transform'
     const name = transforms[0]
@@ -212,13 +247,31 @@ export function derivePropertyTests(spec: string, modulePath: string): PropertyT
   if (!family && comparators.length >= 1) {
     family = 'comparator'
     const name = comparators[0]
-    assertions.push(
-      `prop('${name} returns number', typeof ${name}(1, 2) === 'number')`,
-      `prop('${name} reflexive', ${name}(1, 1) === 0)`,
-      `prop('${name} reflexive string', ${name}('a', 'a') === 0)`,
-      `prop('${name} antisymmetric numbers', (() => { const ab=${name}(1,2), ba=${name}(2,1); return (ab < 0 && ba > 0) || (ab > 0 && ba < 0) })())`,
-      `prop('${name} antisymmetric strings', (() => { const ab=${name}('a','b'), ba=${name}('b','a'); return (ab < 0 && ba > 0) || (ab > 0 && ba < 0) })())`,
-    )
+    // 2026-07-06: same closed-world bug as the set-op fix above — this family used to
+    // unconditionally call the candidate with BOTH a numeric pair and a string pair
+    // regardless of the spec's declared param types. A comparator explicitly typed
+    // `(a: string, b: string)` (e.g. `compareVersions(a: string, b: string): number`)
+    // fails tsc on the generated test file itself (`${name}(1, 2)` — number not
+    // assignable to string), an unwinnable oracle gate identical in shape to the
+    // tagSetModule root cause. Sniff the declared signature and only emit the
+    // assertion shape(s) that actually typecheck; untyped/generic signatures keep
+    // both (unchanged behavior).
+    const paramsRaw = getSpecParamsRaw(feats.raw, name)
+    const stringOnly = paramsRaw !== null && /:\s*string\b/.test(paramsRaw) && !/:\s*number\b/.test(paramsRaw)
+    const numberOnly = paramsRaw !== null && /:\s*number\b/.test(paramsRaw) && !/:\s*string\b/.test(paramsRaw)
+    if (!stringOnly) {
+      assertions.push(
+        `prop('${name} returns number', typeof ${name}(1, 2) === 'number')`,
+        `prop('${name} reflexive', ${name}(1, 1) === 0)`,
+        `prop('${name} antisymmetric numbers', (() => { const ab=${name}(1,2), ba=${name}(2,1); return (ab < 0 && ba > 0) || (ab > 0 && ba < 0) })())`,
+      )
+    }
+    if (!numberOnly) {
+      assertions.push(
+        `prop('${name} reflexive string', ${name}('a', 'a') === 0)`,
+        `prop('${name} antisymmetric strings', (() => { const ab=${name}('a','b'), ba=${name}('b','a'); return (ab < 0 && ba > 0) || (ab > 0 && ba < 0) })())`,
+      )
+    }
   }
 
   // ── Set operations: union/intersect/difference → length/subset invariants ──
@@ -231,27 +284,43 @@ export function derivePropertyTests(spec: string, modulePath: string): PropertyT
     const name = setOps[0]
     const isUnion = /union/i.test(name)
     const isInter = /intersect/i.test(name)
+    // 2026-07-06: literal test data must match the REAL declared param type, not always
+    // assume numbers. A set-op function whose spec declares `string[]` params (e.g.
+    // `unionTags(a: string[], b: string[])`) had every numeric literal below fail tsc on
+    // the generated test file ITSELF (`Type 'number' is not assignable to type 'string'`)
+    // — an unwinnable oracle gate the candidate could never pass regardless of correctness.
+    // Confirmed live: this is the exact root cause of the tagSetModule generation-stress
+    // task going RED (identical-fingerprint tripwire on this one compile error, 3
+    // consecutive rounds). Same audit discipline as agent/localHardenFuzz.ts's
+    // paramsLookNonNumeric — sniff the spec's own signature and switch to string literals
+    // when it's explicitly typed as strings; numeric/untyped stays numeric (unchanged).
+    const paramsRaw = getSpecParamsRaw(feats.raw, name)
+    const stringTyped = paramsRaw !== null && /:\s*string(\[\])?\b/.test(paramsRaw)
+    // 1->'a', 2->'b', ... — preserves each literal's overlap relationships across the
+    // numeric/string variants so the assertions' semantics (dedup, subset, etc.) are identical.
+    const q = (n: number) => stringTyped ? `'${String.fromCharCode(96 + n)}'` : String(n)
+    const arr = (...ns: number[]) => `[${ns.map(q).join(',')}]`
     assertions.push(
-      `prop('${name} returns array', Array.isArray(${name}([1,2,3],[2,3,4])))`,
+      `prop('${name} returns array', Array.isArray(${name}(${arr(1, 2, 3)},${arr(2, 3, 4)})))`,
       `prop('${name} empty+empty', ${name}([],[]).length === 0)`,
     )
     if (isUnion) {
       assertions.push(
-        `prop('union A+empty = A', ${name}([1,2,3],[]).length === 3)`,
-        `prop('union A+A has no dupes', ${name}([1,2],[1,2]).length <= 2)`,
-        `prop('union A+B >= max(A,B)', ${name}([1,2,3],[4,5]).length >= 3)`,
+        `prop('union A+empty = A', ${name}(${arr(1, 2, 3)},[]).length === 3)`,
+        `prop('union A+A has no dupes', ${name}(${arr(1, 2)},${arr(1, 2)}).length <= 2)`,
+        `prop('union A+B >= max(A,B)', ${name}(${arr(1, 2, 3)},${arr(4, 5)}).length >= 3)`,
       )
     } else if (isInter) {
       assertions.push(
-        `prop('intersect A+empty = empty', ${name}([1,2,3],[]).length === 0)`,
-        `prop('intersect A+A = A', ${name}([1,2],[1,2]).length <= 2)`,
-        `prop('intersect subset of A', ${name}([1,2,3],[2,3,4]).length <= 3)`,
+        `prop('intersect A+empty = empty', ${name}(${arr(1, 2, 3)},[]).length === 0)`,
+        `prop('intersect A+A = A', ${name}(${arr(1, 2)},${arr(1, 2)}).length <= 2)`,
+        `prop('intersect subset of A', ${name}(${arr(1, 2, 3)},${arr(2, 3, 4)}).length <= 3)`,
       )
     } else {
       // difference / subtract
       assertions.push(
-        `prop('diff A-empty = A', ${name}([1,2,3],[]).length === 3)`,
-        `prop('diff A-A = empty', ${name}([1,2],[1,2]).length === 0)`,
+        `prop('diff A-empty = A', ${name}(${arr(1, 2, 3)},[]).length === 3)`,
+        `prop('diff A-A = empty', ${name}(${arr(1, 2)},${arr(1, 2)}).length === 0)`,
       )
     }
   }

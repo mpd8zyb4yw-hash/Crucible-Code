@@ -424,6 +424,87 @@ Rules:
 Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that sorts a mixed list of
 scores and confirms both the ordering and that the input array is unchanged afterward.`,
   },
+  {
+    id: 'usernameModule',
+    title: 'Add isValidUsername to a new module (standalone, validator family)',
+    modulePath: 'src/username.ts',
+    prompt:
+`Add src/username.ts to this project. ${CONTRACT_NOTE}
+
+Exact public API (src/username.ts):
+  export function isValidUsername(name: string): boolean
+
+Rules:
+- Length must be between 3 and 20 characters inclusive.
+- The first character must be a letter (a-z or A-Z).
+- Every subsequent character must be a letter, digit, or underscore.
+- Any other character (spaces, hyphens, punctuation, etc.) makes it invalid.
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) covering a valid username,
+a leading-digit rejection, a too-short rejection, a too-long rejection, and an invalid-character
+rejection — and confirm it passes.`,
+  },
+  {
+    id: 'tagSetModule',
+    title: 'Add unionTags/intersectTags to an existing article module (repo-context, set-op family)',
+    modulePath: 'src/tags.ts',
+    scaffold: [
+      {
+        path: 'src/types.ts',
+        content:
+`// Existing type definitions — do not modify.
+export interface Article {
+  id: string
+  tags: string[]
+}
+`,
+      },
+    ],
+    prompt:
+`The project already has src/types.ts (defines Article). Do NOT modify src/types.ts — it is
+existing, correct code; only add new files. Add src/tags.ts to this project. ${CONTRACT_NOTE}
+
+Exact public API (src/tags.ts):
+  export function unionTags(a: string[], b: string[]): string[]
+    // returns a NEW array of every tag appearing in either a or b, with no duplicates.
+  export function intersectTags(a: string[], b: string[]): string[]
+    // returns a NEW array of tags appearing in BOTH a and b, with no duplicates.
+
+Rules:
+- Comparison is exact/case-sensitive string equality.
+- The order of tags in the returned array is not significant.
+- Neither function may mutate its input arrays.
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) exercising both functions
+on overlapping tag lists and confirming neither input array is mutated afterward.`,
+  },
+  {
+    // 2026-07-06: added specifically to live-fire-confirm the derive.ts `comparator`-family
+    // fix from cont.32 (see NEXT_SESSION.md / crucible-coding-harness memory item 34) — that
+    // fix stopped the family from unconditionally testing string-typed comparators with a
+    // numeric pair (which fails tsc on the generated test file itself). This task's real
+    // exported signature is explicitly `(a: string, b: string)`, landing squarely inside the
+    // family this fix targets, with a domain (case-insensitive lexicographic order) chosen so
+    // the oracle's own generic 'a'/'b' literal assertions are meaningful (unlike an
+    // enum-restricted domain, where 'a'/'b' wouldn't be valid inputs).
+    id: 'caseCompareModule',
+    title: 'Add compareCaseInsensitive to a new module (standalone, string-typed comparator family)',
+    modulePath: 'src/caseCompare.ts',
+    prompt:
+`Add src/caseCompare.ts to this project. ${CONTRACT_NOTE}
+
+Exact public API (src/caseCompare.ts):
+  export function compareCaseInsensitive(a: string, b: string): number
+
+Rules:
+- Case-insensitive lexicographic comparison: compare a.toLowerCase() to b.toLowerCase().
+- Returns a negative number if a sorts before b, positive if a sorts after b, 0 if they are equal
+  ignoring case.
+- Two strings that differ only in case (e.g. "Hello" and "HELLO") must compare as equal (0).
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) covering an equal-ignoring-
+case pair, an a-before-b pair, and a b-before-a pair — and confirm it passes.`,
+  },
 ]
 
 // ── SSE fire: send the task to the live agent, collect the outcome ─────────────────

@@ -48,6 +48,8 @@ import { runSelfPlayCycle } from './src/CrucibleEngine/selfPlay'
 import { speak } from './src/CrucibleEngine/tts'
 import { runMetaRouter, consult } from './src/CrucibleEngine/agent/metaRouter'
 import { runRsiCycle, rsiStatus, setRsiEnabled, type RsiDeps } from './src/CrucibleEngine/rsi/controller'
+import { selfRepairStatus, buildCycleProposal, resolveProposal, recordProposalOutcome, setAutoApprove, isAutoApproveEnabled, listProposals } from './src/CrucibleEngine/rsi/proposals'
+import { assessStakes } from './src/CrucibleEngine/agent/stakesRouter'
 import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/CrucibleEngine/agent/archetypes'
 import { detectConversational, buildConversationalFallback, applyVoiceLayer } from './src/CrucibleEngine/conversationalMode'
 import { readScratch } from './src/CrucibleEngine/agent/taskScratchpad'
@@ -56,6 +58,8 @@ import { saveTokens, googleServicesStatus, GOOGLE_SCOPES } from './src/CrucibleE
 import { latestResumable, saveSession, newSessionId, readMemoryDigest, appendMemory, readGlobalMemoryDigest, globalMemoryFile } from './src/CrucibleEngine/state/session'
 import { buildCodebaseContext, indexStats, ensureIndex, reindexFiles, searchIndex } from './src/CrucibleEngine/state/codebaseIndex'
 import { loadDynamicToolsInto, dynamicToolStats } from './src/CrucibleEngine/tools/dynamicTools'
+import SKILL_CATALOG from './src/CrucibleEngine/synth/catalogIndex'
+import { buildUserSkill, type UserSkillStage } from './src/CrucibleEngine/synth/userSkillPipeline'
 import { listIntegrations, setIntegrationEnabled, addCustomIntegration, removeIntegration, recommendIntegrations } from './src/CrucibleEngine/integrations/registry'
 import { registerIntegrationTools, cliToolForEntry } from './src/CrucibleEngine/integrations/tools'
 import { identifyGoals, loadGoalReport, saveGoalReport } from './src/CrucibleEngine/goalEngine'
@@ -2378,6 +2382,91 @@ app.post('/api/chat', async (req, res) => {
     }
   }
   console.log('[/api/chat] Received:', message?.slice(0, 80), '| mode:', mode, '| device:', device)
+
+  // ── /skill and /tool slash shortcuts (FABLE5_HANDOFF Feature 1 increment) ──
+  // "I know exactly what I want to run": exact-name lookup, zero NL intent
+  // classification, zero model calls. `/skill <id>` emits a proven catalog
+  // entry's oracle-verified impl into the project; `/tool <name> [json|text]`
+  // invokes a registry tool directly.
+  const slash = /^\/(skill|tool)\s+(\S+)\s*([\s\S]*)$/.exec((message ?? '').trim())
+  if (slash) {
+    const [, slashKind, slashName, slashRest] = slash
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    const send = (payload: object) => {
+      const line = `data: ${JSON.stringify(payload)}\n\n`
+      res.write(line)
+      if (chatSessionId) broadcastEvent(chatSessionId, line, res)
+    }
+    const finish = (text: string, meta?: Record<string, unknown>) => {
+      send({ type: 'final', text, ...(meta ? { meta } : {}) })
+      patchActiveSessionRound(chatUser, chatRoundId, { synthesis: text, synthesisDone: true, synthStreaming: false })
+      historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: `slash-${slashKind}`, models: ['crucible-direct'], synthesis: text })
+      res.write('data: [DONE]\n\n')
+      res.end()
+    }
+    const projectPath = req.body.projectPath ? path.resolve(req.body.projectPath) : newDesktopProjectPath()
+    fs.mkdirSync(projectPath, { recursive: true })
+
+    if (slashKind === 'skill') {
+      const lower = slashName.toLowerCase()
+      const entry = SKILL_CATALOG.find(e =>
+        e.id.toLowerCase() === lower || e.filename.toLowerCase() === lower ||
+        e.id.toLowerCase() === `user/${lower}` ||
+        e.exports.some(x => x.toLowerCase() === lower))
+      if (!entry) {
+        const near = SKILL_CATALOG
+          .filter(e => e.id.toLowerCase().includes(lower) || e.summary.toLowerCase().includes(lower))
+          .slice(0, 5)
+        finish(near.length
+          ? `No skill named '${slashName}'. Closest matches:\n${near.map(e => `  · ${e.id} — ${e.summary}`).join('\n')}`
+          : `No skill named '${slashName}' in the ${SKILL_CATALOG.length}-entry library. Browse the Library drawer, or describe it there to have it built and proven.`)
+        return
+      }
+      const rel = entry.defaultPath
+      const abs = path.join(projectPath, rel)
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      fs.writeFileSync(abs, `// Synthesized by Crucible — ${entry.summary}\n${entry.impl}\n`)
+      try { reindexFiles(projectPath, [abs]) } catch {}
+      send({ type: 'tool_call', tool: 'write_file', args: { path: rel } })
+      send({ type: 'tool_result', tool: 'write_file', ok: true, output: `Emitted proven skill '${entry.id}' (oracle-verified, zero model calls)` })
+      finish(`Emitted proven skill '${entry.id}' → ${rel} (exports: ${entry.exports.join(', ')}). Oracle-verified library code — zero model calls.`,
+        { synthesized: true, skill: entry.id, source: 'primitive', confidence: 1 })
+      return
+    }
+
+    // /tool — exact-name direct invocation
+    const def = registry.get(slashName)
+    if (!def) {
+      const names = registry.list().map(t => t.name).filter(n => n.includes(slashName.toLowerCase())).slice(0, 8)
+      finish(names.length
+        ? `No tool named '${slashName}'. Did you mean: ${names.join(', ')}?`
+        : `No tool named '${slashName}'. Open the Library drawer for the full tool list.`)
+      return
+    }
+    let toolArgs: Record<string, unknown> = {}
+    const restTrim = slashRest.trim()
+    if (restTrim) {
+      try { toolArgs = JSON.parse(restTrim) } catch {
+        // Not JSON — map the raw text onto the tool's first required param.
+        const schema = def.params as { properties?: Record<string, unknown>; required?: string[] }
+        const firstParam = schema.required?.[0] ?? Object.keys(schema.properties ?? {})[0]
+        if (firstParam) toolArgs = { [firstParam]: restTrim }
+      }
+    }
+    const toolResult = await registry.exec(
+      { id: `slash_${Date.now()}`, name: def.name, args: toolArgs },
+      {
+        projectPath, userId: chatUser?.id, emit: send, allowMutation: true,
+        onFileMutated: (absPaths: string[]) => { try { reindexFiles(projectPath, absPaths) } catch {} },
+      },
+    )
+    finish(toolResult.ok
+      ? (toolResult.output || `Tool '${def.name}' ran (empty output).`)
+      : `Tool '${def.name}' failed: ${toolResult.output}`)
+    return
+  }
 
   // Agentic-intent flag — hoisted above the agent branch so the Layer-2 FM planner
   // gate (which reads it) doesn't hit a temporal dead zone. Also reused downstream by
@@ -5735,6 +5824,91 @@ app.get('/api/debug/dynamic-tools', (req, res) => {
   res.json(dynamicToolStats(projectPath))
 })
 
+// ── Library drawers (FABLE5_HANDOFF Feature 1) ────────────────────────────────
+// GET /api/library/tools — built-in agent tools + per-project dynamic tools,
+// shaped for the Tool Library drawer. Read-only; no auth-sensitive data.
+app.get('/api/library/tools', (req, res) => {
+  const projectPath = (req.query.project as string) || process.cwd()
+  const dynamic = dynamicToolStats(projectPath).tools
+  const dynamicNames = new Set(dynamic.map(t => t.name))
+  const builtin = registry.list()
+    .filter(t => !dynamicNames.has(t.name))
+    .map(t => ({ name: t.name, description: t.description, mutates: t.mutates ?? false }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  res.json({ builtin, dynamic })
+})
+
+// GET /api/library/skills — the merged oracle-verified skill catalog (id,
+// summary, path only — impl/tests omitted; entry count makes full payloads heavy).
+app.get('/api/library/skills', (req, res) => {
+  const q = ((req.query.q as string) || '').toLowerCase()
+  let entries = SKILL_CATALOG.map(e => ({ id: e.id, summary: e.summary, defaultPath: e.defaultPath }))
+  if (q) entries = entries.filter(e => e.id.toLowerCase().includes(q) || e.summary.toLowerCase().includes(q))
+  res.json({ count: entries.length, total: SKILL_CATALOG.length, skills: entries })
+})
+
+// ── Verified NL-skill pipeline (FABLE5_HANDOFF Feature 1 increment) ──────────
+// POST /api/library/skills/build starts a background build job: plain-language
+// request → oracle-gated synthesis → catalogs/user-skills.json → generate:skills
+// + prove:all. Long-running (FM rounds + ~100s prove), so POST returns a jobId
+// and the drawer polls GET /api/library/skills/build/:id. One at a time — the
+// pipeline contends for the FM daemon and rewrites the skill manifest.
+interface SkillBuildJob {
+  id: string
+  status: 'running' | 'done' | 'failed'
+  stage: UserSkillStage
+  message: string
+  request: string
+  log: Array<{ ts: number; stage: UserSkillStage; message: string }>
+  startedAt: number
+  finishedAt?: number
+  detail?: string
+  entry?: { id: string; summary: string; defaultPath: string; exports: string[] }
+}
+const skillBuildJobs = new Map<string, SkillBuildJob>()
+
+app.post('/api/library/skills/build', (req, res) => {
+  const request = String(req.body?.request ?? '').trim()
+  if (!request) { res.status(400).json({ error: 'request (plain-language skill description) required' }); return }
+  const active = [...skillBuildJobs.values()].find(j => j.status === 'running')
+  if (active) { res.status(409).json({ error: 'a skill build is already running', jobId: active.id }); return }
+  const id = `sb_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+  const job: SkillBuildJob = {
+    id, status: 'running', stage: 'admission',
+    message: 'Starting the verified skill pipeline', request,
+    log: [], startedAt: Date.now(),
+  }
+  skillBuildJobs.set(id, job)
+  if (skillBuildJobs.size > 50) skillBuildJobs.delete(skillBuildJobs.keys().next().value as string)
+  buildUserSkill(request, p => {
+    job.stage = p.stage; job.message = p.message
+    job.log.push({ ts: Date.now(), ...p })
+  })
+    .then(r => {
+      job.status = r.ok ? 'done' : 'failed'
+      job.stage = r.stage; job.message = r.message; job.detail = r.detail
+      if (r.ok && r.entry) {
+        job.entry = { id: r.entry.id, summary: r.entry.summary, defaultPath: r.entry.defaultPath, exports: r.entry.exports }
+        // Make it live in THIS process immediately: the drawer listing, /skill
+        // shortcut, and synthesis matching all read the merged catalog array.
+        if (!SKILL_CATALOG.some(e => e.id === r.entry!.id)) SKILL_CATALOG.push(r.entry)
+      }
+      debugBus.emit('agent', 'user_skill_build', { ok: r.ok, stage: r.stage, id: r.entry?.id ?? null }, { severity: r.ok ? 'info' : 'warn' })
+    })
+    .catch(e => {
+      job.status = 'failed'
+      job.message = `Pipeline crashed: ${String(e?.message ?? e).slice(0, 200)}`
+    })
+    .finally(() => { job.finishedAt = Date.now() })
+  res.json({ jobId: id })
+})
+
+app.get('/api/library/skills/build/:id', (req, res) => {
+  const job = skillBuildJobs.get(req.params.id)
+  if (!job) { res.status(404).json({ error: 'unknown job' }); return }
+  res.json(job)
+})
+
 // POST /api/agent/graduate — approve global graduation for a dynamic tool (I6)
 app.post('/api/agent/graduate', (req, res) => {
   const { name, projectPath } = req.body
@@ -5968,6 +6142,98 @@ app.post('/api/rsi/kill', (req, res) => {
   const enable = req.body?.enable === true
   setRsiEnabled(enable)
   res.json({ ok: true, enabled: enable })
+})
+
+// ── Self-repair approval layer (FABLE5_HANDOFF Feature 7) ─────────────────────
+// The RSI cycle stays mechanically never-regress; these endpoints add the human
+// propose → explain-in-plain-language → approve/reject step in front of it.
+
+// GET /api/rsi/proposals — status blob: RSI state, auto-approve flag, recent proposals
+app.get('/api/rsi/proposals', (_req, res) => {
+  res.json(selfRepairStatus(process.cwd()))
+})
+
+// POST /api/rsi/propose — build a new pending proposal from live signals
+app.post('/api/rsi/propose', (req, res) => {
+  const user = getAuthUser(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  const proposal = buildCycleProposal(process.cwd())
+  if (!proposal) return res.status(409).json({ error: 'a proposal is already pending — answer it first' })
+  res.json({ ok: true, proposal })
+})
+
+// POST /api/rsi/proposals/:id/approve — run the gated cycle; outcome lands on the proposal
+app.post('/api/rsi/proposals/:id/approve', (req, res) => {
+  const user = getAuthUser(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  if (activePipelineRequests > 0) return res.status(409).json({ error: 'busy — self-repair runs only when idle', activePipelineRequests })
+  const dir = process.cwd()
+  const p = resolveProposal(dir, req.params.id, true)
+  if (!p) return res.status(404).json({ error: 'no such pending proposal' })
+  runRsiCycle(dir, buildRsiDeps(), { force: true })
+    .then(v => recordProposalOutcome(dir, p.id, v))
+    .catch(e => recordProposalOutcome(dir, p.id, 'error', String(e?.message ?? e).slice(0, 200)))
+  res.json({ ok: true, started: true, proposal: p })
+})
+
+// POST /api/rsi/proposals/:id/reject
+app.post('/api/rsi/proposals/:id/reject', (req, res) => {
+  const user = getAuthUser(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  const p = resolveProposal(process.cwd(), req.params.id, false)
+  if (!p) return res.status(404).json({ error: 'no such pending proposal' })
+  res.json({ ok: true, proposal: p })
+})
+
+// POST /api/rsi/auto-approve — opt into fully-automatic cycles (true AFK mode)
+app.post('/api/rsi/auto-approve', (req, res) => {
+  const user = getAuthUser(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  const enabled = req.body?.enabled === true
+  setAutoApprove(process.cwd(), enabled)
+  res.json({ ok: true, enabled })
+})
+
+// ── Scheduled RSI tick — the auto-approve CONSUMER (FABLE5_HANDOFF Feature 7
+// increment). The 6h scheduler no longer runs cycles silently; every tick is
+// routed through the HITL/AFK stakes router (assessStakes 'rsi_cycle' — its
+// first non-filesystem consumer, priority-ladder item 3):
+//   · toggle OFF → high stakes → surface a pending proposal card in the
+//     Self-repair drawer and WAIT for the human (nothing runs).
+//   · toggle ON  → low stakes (standing authorization) → approve the proposal
+//     and run the same gated cycle the manual Apply button runs, with the
+//     honest outcome recorded onto the proposal either way.
+async function runScheduledRsiTick(): Promise<{ action: string; detail?: string; proposalId?: string }> {
+  const dir = process.cwd()
+  if (activePipelineRequests > 0) return { action: 'skipped', detail: 'busy — RSI runs only when idle' }
+  const auto = isAutoApproveEnabled(dir)
+  const stakes = assessStakes('rsi_cycle', { autoApproveEnabled: auto }, '')
+
+  if (stakes.stakes === 'high') {
+    const proposal = buildCycleProposal(dir)
+    if (!proposal) return { action: 'already-pending', detail: 'a proposal is already awaiting an answer' }
+    debugBus.emit('system', 'rsi_tick_proposed', { proposalId: proposal.id, reason: stakes.reason }, { severity: 'info' })
+    return { action: 'proposed', detail: stakes.reason, proposalId: proposal.id }
+  }
+
+  // AFK path — approve the pending proposal if one exists (the standing opt-in
+  // covers it), else create-and-approve a fresh one so the ledger stays complete.
+  const pending = listProposals(dir).find(p => p.status === 'pending') ?? buildCycleProposal(dir)
+  if (!pending) return { action: 'skipped', detail: 'a prior approved cycle is still running' }
+  resolveProposal(dir, pending.id, true)
+  debugBus.emit('system', 'rsi_tick_auto_approved', { proposalId: pending.id }, { severity: 'info' })
+  runRsiCycle(dir, buildRsiDeps())
+    .then(v => { recordProposalOutcome(dir, pending.id, v); console.log(`[RSI] auto-approved scheduled cycle: ${v}`) })
+    .catch(e => recordProposalOutcome(dir, pending.id, 'error', String(e?.message ?? e).slice(0, 200)))
+  return { action: 'auto-approved', proposalId: pending.id }
+}
+
+// POST /api/rsi/tick — fire one scheduler tick on demand (ops/testing; identical
+// decision path to the 6h interval, including the stakes-router gate).
+app.post('/api/rsi/tick', async (req, res) => {
+  const user = getAuthUser(req)
+  if (!user) return res.status(401).json({ error: 'Unauthorized' })
+  res.json({ ok: true, ...(await runScheduledRsiTick()) })
 })
 
 // ── Feedback (F2 — RLHF signal) ───────────────────────────────────────────────
@@ -6652,11 +6918,13 @@ function startListening(port: number, attempt = 0) {
     // snapshot → acquire (internet→corpus) + improve (learned weights) → re-benchmark
     // the full pipeline → keep only if it holds/improves, else git-restore. Off the
     // request path; kill-switch via POST /api/rsi/kill or env RSI_ENABLED=0.
+    // Every tick now routes through the stakes-router + proposal layer (see
+    // runScheduledRsiTick next to the /api/rsi endpoints): proposes-and-waits by
+    // default, auto-approves only under the explicit fully-automatic opt-in.
     const rsiTick = () => {
-      if (activePipelineRequests > 0) { console.log('[RSI] skipped tick — system busy'); return }
-      runRsiCycle(process.cwd(), buildRsiDeps())
-        .then(v => console.log(`[RSI] scheduled cycle: ${v}`))
-        .catch(e => console.warn('[RSI] cycle error:', e?.message ?? e))
+      runScheduledRsiTick()
+        .then(r => console.log(`[RSI] scheduled tick: ${r.action}${r.detail ? ` — ${r.detail}` : ''}`))
+        .catch(e => console.warn('[RSI] tick error:', e?.message ?? e))
     }
     setInterval(rsiTick, 6 * 60 * 60 * 1000)   // every 6h, idle-gated (no run at boot)
 

@@ -22,3 +22,16 @@ file has already been fed as live context to a later session once (2026-07-03) a
 session to start from an outdated open-items list — this is the durable fix, not a one-off.
 Session logs further down in that file are historical archive; only the CURRENT STATE block at
 the top is guaranteed fresh, and only if every session actually rewrites it.
+
+**HARD RULE, every response that does real work (any Edit/Write/state-changing Bash), no
+exceptions, zero-context-required:** end the chat-visible reply with a separate trailing
+section headed `## Next steps` containing (1) a 3-5 item numbered list of the next most
+crucial blockers (pull from NEXT_SESSION.md's CURRENT STATE / ROADMAP.md's priority ladder),
+each item self-contained (names the actual file/mechanism/gap — no "this session"/"both
+changes" pronouns that only resolve against prior chat), and (2) a percentage estimate of
+distance to fully agentic, 0-external-API-call, on-device coding that rivals Claude/Codex
+output quality, with a one-line reason it moved or didn't since the last stated estimate. This
+has already lapsed 4 times in prior sessions (docs got updated but this trailing block got
+skipped because the turn "felt" already wrapped up) — write it LAST, as a fixed mandatory
+checklist step, structurally separate from whatever prose precedes it, regardless of how
+the rest of the response reads.

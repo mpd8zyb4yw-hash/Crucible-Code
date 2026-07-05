@@ -1,0 +1,35 @@
+[
+  {
+    "id": "user/slugify",
+    "filename": "user_slugify",
+    "summary": "User-built skill: Create src/lib/slugify.ts",
+    "defaultPath": "src/lib/slugify.ts",
+    "exports": [
+      "slugify"
+    ],
+    "patterns": [
+      {
+        "re": "\\bslugify\\b",
+        "weight": 0.9
+      }
+    ],
+    "impl": "function __raw_slugify(title: string): string {\n  const trimmedTitle = title.trim();\n  const lowercasedTitle = trimmedTitle.toLowerCase();\n  const slugifiedTitle = lowercasedTitle.replace(/[^a-z0-9]/g, '-');\n  return slugifiedTitle.trim();\n}\nexport function slugify(...__args: Parameters<typeof __raw_slugify>): ReturnType<typeof __raw_slugify> {\n  const __r = __raw_slugify(...__args)\n  return (typeof __r === 'string' ? __r.replace(/\\-{2,}/g, \"-\").replace(/^\\-+|\\-+$/g, '') : __r) as ReturnType<typeof __raw_slugify>\n}\n",
+    "tests": [
+      {
+        "desc": "slugify(\"Hello World\") === \"hello-world\"",
+        "call": "slugify(\"Hello World\")",
+        "want": "\"hello-world\""
+      },
+      {
+        "desc": "slugify(\"A  B!\") === \"a-b\"",
+        "call": "slugify(\"A  B!\")",
+        "want": "\"a-b\""
+      },
+      {
+        "desc": "slugify(\"  Already-Slugged \") === \"already-slugged\"",
+        "call": "slugify(\"  Already-Slugged \")",
+        "want": "\"already-slugged\""
+      }
+    ]
+  }
+]

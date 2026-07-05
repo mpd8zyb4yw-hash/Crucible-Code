@@ -124,6 +124,24 @@ const CASES: Case[] = [
     goal: 'I need a tool that adds two numbers',
     check: (r) => (r.stakes !== 'low' ? `expected low stakes, got ${r.stakes}` : null),
   },
+  {
+    name: 'rsi_cycle: fully-automatic toggle OFF — high stakes (propose, wait for human)',
+    tool: 'rsi_cycle',
+    args: { autoApproveEnabled: false },
+    goal: '',
+    check: (r) => {
+      if (r.stakes !== 'high') return `expected high stakes, got ${r.stakes}`
+      if (!r.reason) return 'expected a plain-language reason'
+      return null
+    },
+  },
+  {
+    name: 'rsi_cycle: fully-automatic toggle ON — low stakes (standing authorization)',
+    tool: 'rsi_cycle',
+    args: { autoApproveEnabled: true },
+    goal: '',
+    check: (r) => (r.stakes !== 'low' ? `expected low stakes, got ${r.stakes}` : null),
+  },
 ]
 
 function main() {

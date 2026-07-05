@@ -1,13 +1,26 @@
 # Crucible — Master Roadmap & Handoff
 
-> ## ⭐ MISSION (2026-06-29) — supersedes all older framing below
+> ## ⭐ MISSION (2026-06-29, success bar sharpened 2026-07-06) — supersedes all older framing below
 >
-> **Goal: model-cost-independent agentic coding at Claude-level output quality.**
+> **Goal: model-cost-independent agentic coding at Claude/Codex-parity output quality.**
 > "Model-cost-independent" means: no paid external model APIs; no token-/rate-limited
-> model dependencies; the local FM handles all reasoning and codegen. **Internet access
-> is fully permitted** — search, fetch, docs, GitHub, SO, package registries — but
-> accessed *directly by Crucible's own tooling*, never routed through an external model.
-> The intelligence lives in the system: algorithms, retrieval, verification loops, routing.
+> model dependencies; the local FM (+ Crucible's own tooling) handles all reasoning and
+> codegen. **Internet access is fully permitted** — search, fetch, docs, GitHub, SO,
+> package registries — but accessed *directly by Crucible's own tooling*, never routed
+> through an external paid model. The intelligence lives in the system: algorithms,
+> retrieval, verification loops, routing.
+>
+> **THIS is the literal measure of success — hold every feature to it, not a vibe check:**
+> Crucible should be able to (1) do frontier-level SWE work — non-trivial multi-file
+> changes, real debugging, real refactors, not just isolated function synthesis; (2)
+> construct complex websites/apps with deep backends (auth, data layers, APIs, not toy
+> CRUD); (3) find advanced, non-obvious bugs and errors through real reasoning/testing,
+> not just pattern-matched lint; (4) produce genuinely good fixes for them, not
+> plausible-looking patches; (5) do all of this with **zero external paid/rate-limited
+> model API calls**, using local models (including Crucible's own trained/tuned models
+> where they exist) plus deterministic tooling. Any roadmap item, however clever, that
+> doesn't move the system toward items 1-5 is supporting structure, not the goal itself —
+> say so plainly in every handoff rather than implying otherwise.
 >
 > This replaces "fully offline" / "offline-first" everywhere. It is **not cosmetic** — it
 > changes architectural intent: retrieval is a first-class grounding layer, not a fallback.
@@ -201,10 +214,21 @@
 >    reasoning parity with the online critic.
 > 2. **Generative coding accuracy on novel tasks is thin and under-measured** (blocks criterion
 >    2) — wins are mostly catalog hits (zero-inference against 250 proven primitives); genuine
->    FM generation took 8 hand-found bugs in one day to get 2/3 tasks to repeatable 5/5, and the
->    generation-stress suite is only 3 tasks. Broaden it well past 3; keep the ledger-read-first
->    (`fm-rounds.jsonl`) discipline as default; grow deterministic oracle families; expand
->    `repairProposers.ts` only for mechanical slips, never structural reasoning gaps.
+>    FM generation took 8 hand-found bugs in one day to get 2/3 tasks to repeatable 5/5. The
+>    generation-stress suite has been broadened 3→5→7 tasks (cont.17/2026-07-05, cont.30/
+>    2026-07-06) and cont.31 found+fixed a real oracle bug (derive.ts set-op family assumed
+>    numeric params unconditionally) that was blocking one of the 2 new tasks from ever
+>    reaching genuine signal — but 7 hand-built tasks still isn't "broad" — keep growing it, keep the
+>    ledger-read-first (`fm-rounds.jsonl`) discipline as default; grow deterministic oracle
+>    families; expand `repairProposers.ts` only for mechanical slips, never structural
+>    reasoning gaps. sortModule's conditional-grouping miss is the one deliberately-accepted,
+>    documented capability boundary in this suite — leave it, don't force a narrow fix.
+>    **cont.32 (2026-07-06):** proactively fixed the same closed-world numeric-literal bug
+>    in `derive.ts`'s `comparator` family (found by inspection, not live-fire) before it
+>    could block a future task the way the set-op bug blocked tagSetModule — see
+>    NEXT_SESSION.md cont.32. Not yet live-fire-confirmed with an actual task (no
+>    comparator-family generation-stress task exists yet); adding one is the natural next
+>    step for this item.
 > 3. **HITL/AFK decision layer is essentially unbuilt** (blocks criteria 3 AND 4) — Workstream 2
 >    (upfront elicitation) untouched; Workstream 3 tripwire only catches exact-fingerprint
 >    repetition, not "inherently unsafe to run unattended"; the full stakes-aware router design
@@ -1890,6 +1914,220 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-07-06 (cont. 34) — verified NL-skill pipeline live (user-skills.json, first proven user skill landed via FM+deterministic-repair); /skill + /tool slash shortcuts; RSI scheduler now routes every tick through the stakes router (its first non-filesystem consumer) — both HITL and AFK paths live-verified end to end
+- **Feature 1 increment (the "REMAINING" item from cont.33) — DONE.** New
+  `synth/userSkillPipeline.ts`: plain-language request → admission gate (exact exported
+  API + ≥2 worked examples, else honest rejection with guidance) → duplicate check
+  against the merged catalog → `synthesizeUniversal` (L0→L1→on-device FM, 6 rounds,
+  oracle-gated on the request's own examples) → CatalogEntry into
+  `catalogs/user-skills.json` → whole-user-batch `validate-batch` → `generate:skills` +
+  full `prove:all`, with rollback + re-prove on any library-wide failure. Async job
+  endpoints `POST/GET /api/library/skills/build[/:id]` (409 single-flight; new entries
+  pushed into the live SKILL_CATALOG immediately); LibraryBinder's skill BuildBox now
+  drives this pipeline with a polled status card instead of a chat message. First real
+  user skill PROVEN and landed: `user/slugify` (FM round-1 candidate rejected by the
+  oracle, fixed by the new deterministic repair, ALL PASS; prove:all 251/251).
+- **9th deterministic repair: `repairSeparatorRunNormalize`** — the FM failed slugify
+  9/9 rounds across 2 fires with the same shape (never collapses '--' runs / trims edge
+  dashes). Closed-world detection (parses derive.ts's own FAIL lines; proposes only when
+  one separator char explains EVERY failure), oracle re-gated as always.
+  `__repairProposers_bench.ts` 11→14/14 (TP + 2 no-op guards).
+- **derive.ts refactor:** example extraction exported as `extractSpecExamples` (byte-same
+  logic, now shared with the user-skill pipeline so catalog tests[] are exactly what the
+  oracle verified). Scratch-verified equivalent; prove:all clean.
+- **/skill + /tool chat shortcuts** (server.ts, ahead of all NL intent classification):
+  `/skill <id|export>` emits a proven catalog entry's verified impl into the project
+  (indexed, SSE tool_call/final events); `/tool <name> [json|text]` invokes a registry
+  tool directly (JSON args, or raw text mapped to the first required param). Fuzzy
+  suggestions on miss. All three paths live-verified through authed `/api/chat`.
+- **Feature 7 increment (auto-approve consumer) — DONE, and it's the stakes router's
+  first non-filesystem test case (priority-ladder item 3).** `assessStakes('rsi_cycle',
+  {autoApproveEnabled})`: reversibility is intact by construction (snapshot→restore), so
+  the decision is pure authorization — toggle ON = standing explicit opt-in ⇒ low stakes;
+  OFF ⇒ high stakes with a plain-language reason. The 6h scheduler no longer runs cycles
+  silently: `runScheduledRsiTick()` proposes-and-waits (HITL) or approve-runs-records
+  (AFK), same gated cycle as the manual Apply button; `POST /api/rsi/tick` fires one tick
+  on demand. `stakesRouter-bench.ts` 15→17/17. Live-verified both paths on :3001:
+  OFF → `proposed` then `already-pending`; ON → `auto-approved`, real 222s cycle ran,
+  honest `reverted/trend_down` outcome recorded onto the proposal.
+- **Observation flagged, not changed:** the last TWO RSI cycles improved the benchmark
+  (0.53→0.6, 0.47→0.6) but were reverted solely by the `liveTrend==='down'` gate — if the
+  live trend stays down, RSI structurally cannot promote the improvements that might fix
+  it. Deliberate design (documented in controller.ts), but a possible self-deadlock worth
+  a decision next session.
+- Verification: tsc clean both configs; prove:all 251/251; fuzz 31/31; ambiguity 9/9;
+  repairs 14/14; stakes 17/17; drawer + status card browser-verified via vite preview.
+
+### 2026-07-06 (cont. 33) — FABLE5_HANDOFF Features 1+7 shipped and live-verified; cont.32's regression sweep closed clean (10/12, no regressions)
+- **Sweep closed:** cont.32's pending 12-task regression sweep completed — 4/4 catalog +
+  6/8 generation GREEN, caseCompareModule GREEN at full-suite level (both derive.ts fixes
+  confirmed), sortModule/tagSetModule RED for known documented reasons, "No regressions vs
+  the previous scorecard."
+- **Feature 1 (Library drawer):** `GET /api/library/tools` + `GET /api/library/skills`
+  (server.ts, next to `/api/debug/dynamic-tools`); new `src/LibraryBinder.tsx` drawer with
+  nested Skill (229 catalog entries, live search) and Tool (49 built-ins + dynamic) sections
+  and per-section plain-language BuildBoxes routing into the agent loop. Endpoint-tested
+  (minted JWT) + browser-verified. Remaining: verified NL-skill pipeline
+  (generate→validate→`catalogs/user-skills.json`), slash shortcuts.
+- **Feature 7 (self-repair approval):** new `src/CrucibleEngine/rsi/proposals.ts`
+  (plain-language what/why/how/risk proposals from real live signals, zero inference;
+  persisted `.crucible/rsi-proposals.json`; honest outcome recording; auto-approve flag) +
+  5 endpoints (`/api/rsi/proposals`, `/propose`, `/:id/approve`, `/:id/reject`,
+  `/auto-approve`) + `src/SelfRepairBinder.tsx` decision-card drawer. Verified: full
+  propose→reject cycle via curl AND browser; approve verified live END-TO-END including
+  the safety path (real gated cycle ran, re-measure dipped, auto-reverted, honest outcome
+  recorded on the proposal). Remaining: auto-approve flag has no consumer yet (idle-scheduler wiring);
+  this gate is the designated first test case for the HITL/AFK stakes router (item 3).
+- All work verified on a second server instance (:3012) so the primary :3001 sweep was
+  undisturbed; :3001 needs a restart onto this commit before it serves the new endpoints.
+  `npx tsc --noEmit` clean throughout; suite untouched by these changes (UI+new endpoints
+  only), sweep above is the valid regression read.
+- **% toward the 5-point mission bar:** ~35-37%, up slightly from cont.32's ~34-36% — the
+  self-repair approval surface is the first shipped piece of acceptance criterion "HITL
+  when necessary" beyond ClarificationCard, and the regression sweep hardened confidence in
+  the measurement layer; but the bar's core (frontier SWE capability, items 1-4 of the
+  MISSION block) is unchanged this session — these are supporting-structure and
+  HITL-surface gains, stated plainly per the reporting rule.
+
+### 2026-07-06 (cont. 32) — comparator-family + string-transform-family oracle fixes, both live-confirmed GREEN; MISSION block sharpened; large new feature-request scope received → FABLE5_HANDOFF.md
+- **Mission clarity fix:** sharpened the MISSION block (top of this file) to state the
+  literal 5-point success bar explicitly (frontier SWE work / complex backends with real
+  auth+data layers / advanced non-obvious bug-finding / genuinely good fixes / zero external
+  paid-or-rate-limited API calls) after a user question surfaced that a prior verbal % estimate
+  (60-70%) had no matching record anywhere in this doc or memory — likely conflated with an
+  unrelated metric (`synth:taxonomy`'s "89% moat coverage" or the "60-70% latency reduction"
+  perf target, both narrower numbers that live nearby in this doc). Going forward, the % to
+  goal reported every session must be measured against ONLY this 5-point bar.
+- **Closed cont.31's flagged `comparator`-family risk** (proactive fix, found by inspection):
+  the family unconditionally tested every comparator with both a numeric pair and a string
+  pair regardless of the spec's declared param types — a `(a: string, b: string)`-typed
+  comparator would fail tsc on the generated test file itself, same bug class as cont.31's
+  set-op fix. Fixed via `getSpecParamsRaw()`, only emitting the assertion shape(s) that
+  actually typecheck. Scratch-verified against 3 synthetic specs (string/number/untyped).
+- **Live-fire confirmation found a SECOND, different collision**: added `caseCompareModule`
+  (`compareCaseInsensitive(a: string, b: string): number`) to the generation-stress suite
+  specifically to exercise the fix above. First fire was RED — but root cause was the
+  `string-transform` family's name regex matching "Case" in `compareCaseInsensitive` ahead of
+  `comparator` in precedence order, then calling the (correct) 2-arg candidate with 1 argument.
+  Arity-gated `string-transform` (mirrors the existing `sort`-family arity check). Re-verified
+  live: `caseCompareModule` GREEN, hidden suite 6/6, rubric 90/100 — confirms BOTH fixes work
+  end-to-end. `tsc` clean, `prove:all` 250/250 throughout. Full 12-task regression sweep
+  launched to confirm no wider regressions — **was still running when this session ended**,
+  check NEXT_SESSION.md CURRENT STATE for status before trusting either fix as fully closed
+  against the whole suite.
+- **Large new feature-request scope received from the user this session** — see the new
+  **FABLE5_HANDOFF.md** (repo root) for the full grounded build plan, written for the next
+  session to execute quickly. Covers: skill/tool library browsing drawers + natural-language
+  build (partially exists already — `create_tool`/`list_dynamic_tools` in `tools/registry.ts`),
+  a plain-language conversation/planning mode distinct from full agent execution, Matt Pocock
+  ecosystem tooling research, retrieval-layer-based auto-recommendation of external
+  resources, parallel agentic calling (ties into priority-ladder item 4's unresolved
+  two-stacks question), cloud-hosted heavy tools (explicitly design-only, not to be built yet),
+  and a plain-language propose/explain/approve UI for the self-repair (RSI) loop that already
+  runs headless today. This is now the TOP PRIORITY for the next session.
+- **% toward the 5-point mission bar:** unchanged from cont.31's implicit read on the
+  technical fixes (measurement-quality work, not new capability) — the new feature scope
+  above is unbuilt, so it doesn't move this number yet either; it's the plan, not the work.
+
+### 2026-07-06 (cont. 31) — tagSetModule live-fired, found + fixed a REAL derive.ts oracle bug (numeric-only set-op literals vs. a string-typed spec), re-verified 3x live, full 11-task regression sweep clean
+- Live-fired cont.30's 2 new tasks. `usernameModule` GREEN first try (11/11 hidden).
+  `tagSetModule` RED at `module exists FAIL` — the FM never produced a passing candidate;
+  oracle escalated after 3 rounds with an identical compile-error fingerprint.
+- Read `.crucible/fm-rounds.jsonl` before guessing (item-17 discipline): repeating error was
+  `spec.test.ts(10,64): Type 'number' is not assignable to type 'string'`. Root cause:
+  `synth/derive.ts`'s `set-op` family (union/intersect/difference) hardcodes NUMERIC literal
+  test data unconditionally — `tagSetModule`'s spec correctly declares `string[]` params, so
+  the auto-generated property test itself failed to compile, an unwinnable gate no candidate
+  could pass. Same false-positive-by-contract-mismatch class as this session's earlier
+  `localHardenFuzz.ts` audit, but in derive.ts's DIFFERENT oracle-side system (built from spec
+  prompt text before any candidate exists).
+- **Fix:** `getSpecParamsRaw()` + a type-aware literal builder in derive.ts's set-op block —
+  sniffs the spec's declared signature, switches to string literals (preserving identical
+  overlap/dedup relationships) when params are typed `string[]`; numeric/untyped unaffected.
+  Scratch-verified against `derivePropertyTests()` with the real prompt text before touching
+  the live server. `tsc` clean, `prove:all` 250/250 unchanged.
+- **Re-verified live, 3 fires:** `tagSetModule` now reliably reaches compile+hidden-suite
+  (previously never did). Hidden-suite RED is now genuine signal: fire 1 caught a severely
+  broken `intersectTags` (inverted membership check); fires 2-3 caught a narrower, DIFFERENT
+  bug (correct but doesn't dedupe when `a` has repeated tags). **Deliberately did not add a
+  `repairProposers.ts` entry** — bugs aren't an identical recurring fingerprint (below this
+  project's established 2-3-recurrence bar), genuine FM-generation variance instead.
+- **Full 11-task sweep post-fix:** 8/11 HARD-green (4 catalog unaffected + filterModule/
+  summaryModule/leaderboardModule/usernameModule generation GREEN); sortModule RED
+  (unchanged accepted boundary); clampModule RED this run (unrelated FM flake, different
+  code branch, matches known variance, not a regression); tagSetModule RED (genuine signal
+  above). No regressions on anything this session didn't touch.
+- **Not done:** clampModule's flake not chased (single occurrence); tagSetModule's
+  intersect-dedupe gap not repaired (below recurrence bar); `derive.ts`'s `comparator`
+  family has a similar NOT-yet-live-confirmed risk (tests both numeric and string calls on
+  every comparator unconditionally) — worth the same audit next, no evidence yet though.
+- **% toward mission:** item 2 (generation accuracy) measurement quality improved again —
+  the suite now has 2 more oracle-bug-free tasks giving trustworthy signal (was 5, this
+  session's fix makes 7/7 tasks trustworthy vs. some fraction previously oracle-tainted).
+  Still not "broad" (item 7, externally-anchored benchmark, remains the deeper fix). No
+  change to items 1/3/4-9 this session.
+
+### 2026-07-06 (cont. 30) — generation-stress suite broadened 5→7 tasks; proactive fuzz-family contract audit found + fixed 3 type-collision false-positive risks before any live sweep surfaced them
+- **Suite broadening (item 2):** added `usernameModule` (standalone, `validator` family —
+  `isValidUsername`, 3-20 chars/leading-letter/alnum-or-underscore) and `tagSetModule`
+  (repo-context, exercises both `set-op-union` and `set-op-intersect` in one task —
+  `unionTags`/`intersectTags`) to `coding-benchmarks.ts`. Confirmed neither shape is an
+  existing catalog primitive first (checked `validatorsB.json` and every catalog file for
+  union/intersect — only an unrelated geometry `segmentsIntersect` exists), same discipline
+  item 9 used before adding sortModule/summaryModule. New hidden suites
+  (`coding-bench/usernameModule.hidden.ts`, `tagSetModule.hidden.ts`) hand-verified in
+  scratch against both a correct reference implementation (11/11, 10/10 clean) and a
+  deliberately buggy one (missing leading-letter rule; in-place-mutating union + wrong
+  intersect) before committing — both caught with precise got/expected diagnostics. Not yet
+  live-fired against the agent; that's the natural next step before trusting these as a live
+  pass/fail signal, not just a design-correctness one.
+- **sortModule:** deliberately untouched — its structural conditional-grouping miss (item 16,
+  [[crucible-coding-harness]]) stays the one documented, accepted capability boundary.
+- **Proactive fuzz-family contract audit (item 1's discipline, applied without a live trigger):**
+  read every `detectChecks()` name-regex in `localHardenFuzz.ts` looking for the same class of
+  bug cont.29 found reactively (a name+arity match whose real contract doesn't fit the family's
+  numeric fuzz inputs). Found 3 real risks before any of them ever fired live: `comparator`
+  (`/^(compare|...)/`, arity 2) would misfire on `compareVersions(a: string, b: string)`;
+  `set-op-diff` (`/^(difference|subtract|complement)/`, arity 2) would misfire on
+  `differenceInDays(a: Date, b: Date)`; `array-dedupe` (`/^(dedupe|unique|distinct)/`, arity 1)
+  would misfire on `uniqueId(prefix: string)`. Each throws/type-mismatches inside `fc.assert`
+  on perfectly correct code, exactly the false-positive shape cont.29 diagnosed after the fact.
+  **Fix:** `paramsLookNonNumeric()` in `localHardenFuzz.ts` sniffs the raw declared parameter
+  type text for an explicit `string`/`Date`/`boolean` annotation and skips the numeric-input
+  families (sort, comparator, set-op-*, clamp, array-dedupe, number-aggregate-sum) when found —
+  `validator`/`string-transform` (which correctly expect real strings) are unaffected. Added 3
+  regression cases to `__fuzz_bench.ts` (28→31/31). `npx tsc --noEmit` clean, `npm run prove:all`
+  250/250 unchanged throughout. **Lesson generalizes cont.29's:** don't wait for a live
+  recurrence to audit whether a fuzz/harden classifier is testing the right contract — the
+  same name-regex-vs-real-signature mismatch class is checkable by inspection alone.
+- **Not done:** no live `smoke:code` sweep this session (neither the 2 new tasks nor the audit
+  fix were fired against a running server); did not extend the same audit to
+  `localHardenCheck.ts` (separate gate, already had its own mirror-image audit — item 25) or to
+  `synth/derive.ts`'s oracle-side family conventions (related but distinct system).
+- **% toward mission (4 acceptance criteria):** unchanged from cont.29's implicit ~unestimated
+  read — this session was pure measurement-quality work on item 2 (suite breadth) and
+  hardening item 1's fuzz layer against a class of false positive, not new capability. Item 2
+  is measurably less "thin" (5→7 tasks, one exercising 2 fuzz families at once) but still not
+  "broad" — a externally-anchored benchmark (item 7) remains the real fix for "under-measured."
+
+### 2026-07-05 (cont. 29) — `number-aggregate-sum` fuzz false-positive found + fixed after 3 confirmed live recurrences; no repairProposers.ts change needed
+- Re-ran the authed debug-stream-tail technique against `summaryModule` (3x) and `clampModule`
+  per cont.28's explicit next step, to check whether the byte-identical
+  `summarizeByAccount fails ... Counterexample: [[]]` empty-array harden finding recurs enough
+  to justify a 9th `repairProposers.ts` entry. It recurred all 3/3 fires — but root-causing WHY
+  before writing a repair showed it's an ORACLE false positive, not an FM bug: `localHardenFuzz.ts`'s
+  `detectChecks()` classified `summarizeByAccount` into the `number-aggregate-sum` family via an
+  un-anchored `/^sum/i && arity===1` regex, which also matches "summarize" — but the function
+  returns a `Record`, not a number, so the fuzz property's `typeof r !== 'number'` check fails
+  unconditionally, on every candidate, forever. Same false-positive-by-name-collision class as
+  items 11/24/25 in [[crucible-coding-harness]] (see memory for full detail). Fixed the regex to
+  `/^sum(?:[A-Z]|$)/` (camelCase-boundary gate, matches `sumValues`/bare `sum`, rejects
+  `summarize*`/`summary*`). Added a regression case to `__fuzz_bench.ts` (27→28/28). `prove:all`
+  250/250 unchanged. Re-verified live (not just the bench): `summaryModule` GREEN with zero false
+  finding in a fresh debug-stream capture, `clampModule` GREEN unaffected. **Lesson: a harden/fuzz
+  finding surviving 2-3 confirmed recurrences is strong signal, but confirm the checker is testing
+  the right contract before assuming the generated code is at fault.**
 
 ### 2026-07-04 (cont. 15) — critic turnClass given explicit offline-driver interception; fast-check fuzz layer shipped for harden
 - **What (1):** `makeOfflineDriveTurn` (agent/synthDriver.ts) now throws `OfflineEscalateError`

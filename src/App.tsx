@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_BASE, apiFetch, loginUrl } from './api'
 import CrucibleMark from './CrucibleMark'
 import { IntegrationsBinder } from './IntegrationsBinder'
+import { LibraryBinder } from './LibraryBinder'
+import { SelfRepairBinder } from './SelfRepairBinder'
 import './modelData'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -3700,6 +3702,11 @@ export default function App() {
           <TasksBinder onResume={goal => { void send(goal) }} />
           {/* External tool integrations (GitHub CLI etc.) — drawer with per-request recommendations */}
           <IntegrationsBinder draft={input} />
+          {/* Skill & tool library — browse the verified skill catalog and the agent's toolkit,
+              or describe a new skill/tool in plain language and have the agent build it */}
+          <LibraryBinder onBuild={text => { void send(text) }} />
+          {/* Self-repair — plain-language improvement proposals with approve/reject */}
+          <SelfRepairBinder />
           {/* New chat — clears the view and starts a fresh conversation thread */}
           <button
             className="crucible-newchat-btn"
