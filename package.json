@@ -15,7 +15,11 @@
     "synth:taxonomy": "tsx src/CrucibleEngine/synth/synth-taxonomy.ts",
     "census": "tsx src/CrucibleEngine/synth/coverage-census.ts",
     "validate:batch": "tsx src/CrucibleEngine/synth/validate-batch.ts",
-    "prove:all": "tsx src/CrucibleEngine/synth/prove-all.ts",
+    "prove:all": "npm run harden:bench && npm run fuzz:bench && npm run stakes:bench && npm run contract:bench && npm run lintgate:bench && tsx src/CrucibleEngine/synth/prove-all.ts",
+    "fuzz:bench": "tsx src/CrucibleEngine/agent/__fuzz_bench.ts",
+    "harden:bench": "tsx src/CrucibleEngine/agent/__localHardenCheck_bench.ts",
+    "contract:bench": "tsx src/CrucibleEngine/synth/__contractGate_bench.ts",
+    "lintgate:bench": "tsx src/CrucibleEngine/synth/__lintGate_bench.ts",
     "generate:skills": "tsx src/CrucibleEngine/synth/generate.ts",
     "diag": "curl -s http://localhost:3001/api/diag | python3 -m json.tool",
     "build": "tsc -b && vite build",
@@ -31,7 +35,9 @@
     "synth:universal": "tsx src/CrucibleEngine/synth/universal-prove.ts",
     "synth:enum": "tsx src/CrucibleEngine/synth/enumerative-prove.ts",
     "synth:fm-bench": "tsx src/CrucibleEngine/synth/fm-bench.ts",
-    "research:bench": "tsx src/CrucibleEngine/research/researchBenchmark.ts"
+    "research:bench": "tsx src/CrucibleEngine/research/researchBenchmark.ts",
+    "ambiguity:bench": "tsx src/CrucibleEngine/ambiguity-bench.ts",
+    "stakes:bench": "tsx src/CrucibleEngine/agent/stakesRouter-bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",
@@ -105,15 +111,16 @@
     "compression": "^1.8.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "electron-updater": "^6.3.9",
     "express": "^5.2.1",
+    "fast-check": "^4.8.0",
     "groq-sdk": "^1.2.1",
     "pg": "^8.21.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
-    "web-push": "^3.6.7",
-    "electron-updater": "^6.3.9"
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@electron/rebuild": "^3.7.1",

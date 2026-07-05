@@ -190,7 +190,7 @@ export async function synthesizeUniversal(
   const TRIPWIRE_STREAK = 3
   let fmCalls = 0
 
-  const oracleOpts = contextFiles.length ? { contextFiles } : {}
+  const oracleOpts = contextFiles.length ? { contextFiles, spec } : { spec }
 
   // ── Property tests: weaker but still oracle-gated fallback when no behavioral examples. ──
   // derivePropertyTests recognises structural families (codec, filter-opts, sort, validator…)

@@ -354,6 +354,76 @@ Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that ca
 getAllTransactions() from './transactions', passes the result to summarizeByAccount, and confirms
 correctness.`,
   },
+  // ── Fuzz-family-matched generation tasks (2026-07-05) — filterModule/sortModule/
+  // summaryModule's real exported APIs never match localHardenFuzz.ts's name+arity
+  // conventions (e.g. sortProducts(products, opts) is arity 2, not the arity-1 sort
+  // family), so the fuzz layer has never been exercised by a live smoke sweep. These two
+  // tasks are deliberately shaped so a correct — or subtly buggy — candidate lands
+  // exactly inside a fuzz family's detection window.
+  {
+    id: 'clampModule',
+    title: 'Add clampVolume to an existing audio-settings module (repo-context, number-transform-clamp family)',
+    modulePath: 'src/clamp.ts',
+    scaffold: [
+      {
+        path: 'src/types.ts',
+        content:
+`// Existing type definitions — do not modify.
+export interface AudioSettings {
+  volume: number
+  minVolume: number
+  maxVolume: number
+}
+`,
+      },
+    ],
+    prompt:
+`The project already has src/types.ts (defines AudioSettings). Do NOT modify src/types.ts — it is
+existing, correct code; only add new files. Add src/clamp.ts to this project. ${CONTRACT_NOTE}
+
+Exact public API (src/clamp.ts):
+  export function clampVolume(value: number, min: number, max: number): number
+
+Rules:
+- Returns value unchanged if min <= value <= max.
+- Returns min if value < min.
+- Returns max if value > max.
+- Behavior when min > max is unspecified (never tested with inverted bounds).
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) covering below-range,
+in-range, above-range, and exact-boundary values — and confirm it passes.`,
+  },
+  {
+    id: 'leaderboardModule',
+    title: 'Add sortScoresAscending to an existing leaderboard module (repo-context, sort family)',
+    modulePath: 'src/leaderboard.ts',
+    scaffold: [
+      {
+        path: 'src/types.ts',
+        content:
+`// Existing type definitions — do not modify.
+export interface ScoreEntry {
+  player: string
+  score: number
+}
+`,
+      },
+    ],
+    prompt:
+`The project already has src/types.ts (defines ScoreEntry). Do NOT modify src/types.ts — it is
+existing, correct code; only add new files. Add src/leaderboard.ts to this project. ${CONTRACT_NOTE}
+
+Exact public API (src/leaderboard.ts):
+  export function sortScoresAscending(scores: number[]): number[]
+    // returns a NEW array containing the same scores sorted ascending; does not mutate the input.
+
+Rules:
+- The output must contain exactly the same multiset of numbers as the input, in ascending order.
+- The input array must not be mutated.
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that sorts a mixed list of
+scores and confirms both the ordering and that the input array is unchanged afterward.`,
+  },
 ]
 
 // ── SSE fire: send the task to the live agent, collect the outcome ─────────────────

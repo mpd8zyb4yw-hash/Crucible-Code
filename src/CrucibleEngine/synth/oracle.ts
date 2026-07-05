@@ -11,6 +11,10 @@
 // Gate A2 (lint):      curated correctness-only ESLint pass (lintGate.ts) — kills known-
 //                      always-wrong shapes tsc can't see (dupe keys, self-compare, NaN ===…).
 //                      In-process, local tool, fails open if ESLint is unavailable.
+// Gate A3 (contract):  declared-vs-actual export signature check (contractGate.ts) — kills
+//                      contract violations (wrong name/arity/return type) that the
+//                      deliberately lenient Gate A tsconfig lets through. Fails open when
+//                      the spec carries no "Exact public API" block to check against.
 // Gate B (behavioral): write the candidate + a spec-derived test into a throwaway scratch
 //                      dir and run it via `tsx`; accepted iff the test exits 0.
 // model-cost-independent, sandboxed to a tmp dir, time-bounded so a runaway candidate is reaped.
@@ -22,6 +26,7 @@ import { spawnSync, spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import type { SynthFile } from './synthEngine'
 import { lintCandidates } from './lintGate'
+import { checkContract } from './contractGate'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CODE_DIR = path.resolve(HERE, '../../..')   // repo root (has tsx/tsc + @types/node)
@@ -130,7 +135,7 @@ function testTail(out: string): string {
 export function verifyCandidate(
   files: SynthFile[],
   testFile?: SynthFile,
-  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string } = {},
+  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string } = {},
 ): Verdict {
   if (!files.length) return { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false }
   const { scratch, cfgDir, cfgPath, testAbs } = stage(files, testFile, opts.contextFiles, opts.projectPath)
@@ -139,6 +144,8 @@ export function verifyCandidate(
     if (!tc.ok) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${firstTsError(tc.out)}`, ranAssertions: false }
     const lv = lintCandidates(files)
     if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
+    const cv = checkContract(opts.spec ?? '', files)
+    if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
     const tb = run('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
     return {
@@ -161,7 +168,7 @@ export function verifyCandidate(
 export async function verifyCandidateAsync(
   files: SynthFile[],
   testFile?: SynthFile,
-  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string } = {},
+  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string } = {},
 ): Promise<Verdict> {
   if (!files.length) return { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false }
   const { scratch, cfgDir, cfgPath, testAbs } = stage(files, testFile, opts.contextFiles, opts.projectPath)
@@ -170,6 +177,8 @@ export async function verifyCandidateAsync(
     if (!tc.ok) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${firstTsError(tc.out)}`, ranAssertions: false }
     const lv = lintCandidates(files)
     if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
+    const cv = checkContract(opts.spec ?? '', files)
+    if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
     const tb = await runAsync('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
     return {
