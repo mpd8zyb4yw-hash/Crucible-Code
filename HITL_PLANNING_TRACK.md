@@ -158,8 +158,66 @@ with a short model-facing "symptom that suggests reaching for this."
 
 ## 8. Status
 
-Nothing here is built. Weigh against engine-track priorities in ROADMAP.md / NEXT_SESSION.md.
-The engine track's dark-gate item was the most urgent issue and is now fixed; the follow-up
-(FM critic *judgment* quality) is the current engine priority. This track's most natural first
-build is **Workstream 2 (upfront elicitation) reframed as `grill-me` per §3**, since it
-already has a roadmap slot.
+**2026-07-05 (cont. 21): first real §3 router slice built and live-wired — logged here for the
+first time (documentation debt, not new work discovered this session).**
+`src/CrucibleEngine/agent/stakesRouter.ts` — `assessStakes(toolName, args, goal)`, pure/
+deterministic, no model call. Scores a single about-to-execute tool call on reversibility +
+blast radius (`'narrow'|'wide'`): covers `delete_file`/`delete_folder`/`empty_trash` plus
+destructive shell patterns via `tools/registry.ts`'s `destructiveReason()`, with an "already
+explicitly authorized in the user's own goal text" bypass so a user who already said "delete X"
+isn't asked again. Wired into `agent/loop.ts` (~line 420-438): after a single-tool-call turn
+comes back scored `high`, the loop short-circuits to the exact same `'clarification'` stop-
+reason/MC-options machinery `ask_user` already uses — genuinely pausing the loop pending a
+user answer, resuming via `ctx.allowDestructive=true` on confirmed retry. Bench:
+`stakesRouter-bench.ts`, 11/11. This is real, live-reachable work, not scaffolding — but it only
+covers §3's mechanical scoring; the module header is explicit that only single-tool-call turns
+are gated (a destructive call co-emitted with other calls in the same turn bypasses it, a known
+gap not a silent assumption), only 3 fs tools + `run` shell patterns are covered (not
+`control_mac`, external integrations, or anything `create_tool` registers at runtime), and no
+non-filesystem blast-radius categories (shared-config edits, dependency/schema changes,
+migrations) are scored yet. §4 (self-directed tool suggestion) and §5 (grill-me/skill library)
+remain entirely unbuilt. `ambiguity.ts` (goal-level, pre-turn) and `stakesRouter.ts` (tool-call-
+level, pre-execution) are deliberately two separate systems per each module's own header
+comments, not yet unified — worth reconsidering if a single gate is ever wanted.
+
+**2026-07-05: first narrow slice of Workstream 2 built** — `src/CrucibleEngine/ambiguity.ts`
+(Tier 2.4, the code-agent path's existing pre-synthesis ambiguity check) now emits
+`clarificationOptions`/`recommendedOption` on `ResolutionResult`, populated ONLY for the
+`unresolved-reference`-with-multiple-candidates signal (the one case where a real enumerable
+answer set already existed as data — the candidate symbol list). This is §3's "MC-first, one
+question at a time, recommended default always visible" interface applied to data this module
+already computed, NOT a new router: no reversibility/ambiguity/blast-radius scoring, no
+self-directed tool suggestion (§4), no skill library (§5), no UI wiring. Deliberately did NOT
+force fake MC options onto the other three signal types (no-target, vague-scope,
+underspecified-behavior) — those are genuinely open-ended; a wrong-shaped options list would
+violate this module's own "don't guess" discipline. Verified: multi-candidate case produces
+correct options + recommended default; vague-scope case correctly has no options (not
+force-fit); `npx tsc --noEmit` clean. The current only caller (`nodeExecutor.ts`) is the
+PARKED capabilityRouter/decompositionDag stack, not the live agent path — so this is additive
+data-shape work with zero live-path risk, but also **not yet consumed anywhere live**; wiring
+it into the actual live path (`agent/planner.ts`+`loop.ts`'s own `ask_user`/clarification flow,
+`loop.ts:356`) is the next concrete step, not done this session.
+
+**Found in passing, NOT fixed (pre-existing, unrelated to this change):** `ambiguity.ts`'s
+`DEF_REF` regex (`/\b(?:the|that|this)\s+(\w+)\b/`) matches "that returns" in ordinary
+sentences like "...to src/validate.ts **that returns** true iff...", misreading "returns" as
+a definite-article code-symbol reference — when an `index` is supplied and no symbol matches,
+this spuriously fires an `unresolved-reference` signal and flips a well-specified request to
+`ambiguous:true`. Reproduced live (see session transcript). Only affects goals that both pass
+an `index` AND contain "that/this/the" immediately before a common verb — narrow but real.
+Flagged for a future session, out of scope for this pass.
+
+Everything else in §2-7 remains unbuilt. Weigh against engine-track priorities in ROADMAP.md /
+NEXT_SESSION.md. This track's next natural build is still **Workstream 2 reframed as
+`grill-me` per §3**, now with one real data-shape building block in place instead of zero.
+
+**2026-07-04 (later same day): regression bench committed for `ambiguity.ts`** —
+`src/CrucibleEngine/ambiguity-bench.ts` (`npm run ambiguity:bench`), 9/9 cases, first test
+coverage this module has ever had. Locks in the `VERB_STOPLIST` fix from the previous entry
+(the `validateEmail`/"that returns" false positive) plus the "fix the parser" single/zero/
+multi-match resolution paths (with and without an `index` supplied), `no-target`/`vague-scope`/
+`underspecified-behavior` signal firing, and a well-specified-request not-ambiguous baseline.
+Standalone hand-rolled assertions (`tsx` script, no framework), matching this repo's existing
+bench convention (`__critic_bench.ts` et al.) since there is no test runner configured. Does
+NOT touch the still-open wiring gap above — `clarificationOptions`/`recommendedOption` remain
+unconsumed by any live path.

@@ -17,146 +17,387 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-04 late-night — sortModule/filterModule 413 TPM
-starvation ROOT-CAUSED + FIXED: it was a missing TPM guard on the driver tier, NOT pool
-pressure. Prior session's grounding/harden split-routing fix is unrelated and stands.)
+## CURRENT STATE (last updated 2026-07-06, cont. 25 — CRITICAL FIX: ambiguity.ts's live-wired
+gate (shipped cont.20) was silently killing real coding tasks at 0 iterations — a structural
+false positive found by live-firing an actual benchmark task, not by code audit. Live-verified
+fixed: leaderboardModule went from 0 iterations (never attempted) to 10 iterations reaching the
+hidden suite.)
 
-**HEADLINE (this session): the `413 TPM-limit (llama-3.1-8b-instant, Limit 6000)` that
-regressed sortModule/filterModule was NOT pool pressure (that theory is FALSIFIED — it
-reproduced on a verified-clean pool, 32/32 active, on the first inference call). Root cause:
-`selectDriverCandidates('hard')` in modelRegistry.ts had ZERO TPM-awareness (only the 'glue'
-branch did), so the two 6000-TPM Groq models (qwen3-32b q8 — ranks HIGH; llama-3.1-8b q6)
-were eligible for repo-context 'hard' prompts (7–15k tokens) and 413'd. AND there was no real
-pre-dispatch token guard in the agent driver (the `SelectedModel.tpmLimit` "4.2" comment
-described one that was never implemented) — the driver dispatched then reacted to the 413,
-LOSING the task when a low-TPM model was the last candidate after bigger ones quota-tripped.
-FIX (3 layers, modelRegistry.ts + agent/driver.ts): (1) 'hard' candidate ranking now
-de-prioritizes sub-`HARD_TPM_FLOOR` (12000) models behind every uncapped model — soft, so a
-degraded pool never empties; (2) genuine pre-dispatch token guard in `nativeDriveTurn`: drops
-any candidate whose `tpmLimit` can't hold `estRequestTokens + 1000` output reserve, so the
-wait-loop rides out pool recovery instead of guaranteeing a 413; (3) CRITICAL — that estimate
-counts `messages` AND the `tools` JSON schemas (1.5–3k tokens): the first two layers alone
-still 413'd because emergency compression shrinks `messages` below the cap, then `turnOnModel`
-appends tools and busts it. VERIFIED on a clean pool: `npm run smoke:code` → ZERO 413s across
-the whole sweep (was 1–2 per run); filterModule GREEN (was RED), summaryModule GREEN (413'd
-last run, now clean). sortModule STILL RED but on a DIFFERENT, EXTERNAL failure: OpenRouter's
-daily free-tier cap (`free-models-per-day`, 50/day, 429) — exhausted by ~4 smoke runs today,
-NOT a code defect and not fixable by code. The assigned TPM bug is closed.**
+**Cont. 25 (this session) — while re-verifying cont.22's fuzz fix with a real live sweep
+(routine confirmation, not expected to find anything new), `leaderboardModule` fired 0
+iterations and produced nothing. This turned out to be the single highest-impact finding of
+the session: ambiguity.ts's DEF_REF heuristic, live-wired into loop.ts since cont.20, has an
+effectively unbounded false-positive rate on ordinary prose, and was actively preventing the
+agent from attempting well-specified tasks.**
 
-**PRIOR HEADLINE (still valid, unrelated fix): Item 0 (dark grounding/harden critics)
-DIAGNOSED and FIXED. Root cause was NOT
-model tier or prompt length — it was a routing bug. Critic glue calls
-(`driveTurn([{user, prompt}], [], signal, 'glue')`) were flowing into
-`makeOfflineDriveTurn` (synthDriver.ts), which is a CODING-LOOP state machine. It ran
-`parseCurrentState` on the one-shot critic prompt, found a "file path" inside the embedded
-source/tool-evidence, and returned `{text:'', toolCalls:[write_file|read_file]}` — empty
-text every time. That empty string is exactly what tripped grounding "no JSON object" and
-harden "empty reviewer reply". The gates were structurally DARK, not weak. FIX (2 layers):
-(1) synthDriver.ts `makeOfflineDriveTurn` now intercepts `turnClass==='glue'` at the top and
-routes the raw prompt to `fmComplete` (direct Apple-FM completion), escalating to online only
-if the FM is down / returns empty — glue is a one-shot completion, never a code-loop step.
-(2) driver.ts (the online-escalation glue path) now: threads `turnClass` into `turnOnModel`;
-sends `reasoning:{effort:'low'}` for OpenRouter glue turns so a reasoning model (gpt-oss /
-nemotron / R1) can't burn its whole output budget in the reasoning channel and return
-`content:null` (reproduced: max_tokens 120 → reasoning_tokens 117, content null,
-finish_reason 'length'); and a new `messageText()` helper falls back to the `reasoning`
-field when visible `content` is empty. VERIFIED: telemetry now records `grounding ran:true`
-and `harden ran:true` (was 100% ran:false); end-to-end probe through the real
-`checkGrounding`/`runHardenReview` returns parseable verdicts; tsc clean; `:3001` restarted
-onto the fix; confirming smoke:code sweep in flight.
+Root cause, confirmed via `/api/debug/history`: an `ambiguity_gate` event with 5
+`unresolved-reference` signals (confidence 0.031) fired on leaderboardModule's spec BEFORE the
+agent made a single tool call — `resolveAmbiguity` misread ordinary prose ("the COMPLETE...",
+"the exact API...", "...that sorts a mixed list...", "confirms... that the input...") as 5
+distinct unresolved code-symbol references and short-circuited straight to a clarification
+stop, exactly the documented-but-never-fixed DEF_REF false-positive class (cont.17 already
+fixed ONE instance of this, "that returns" → VERB_STOPLIST). Patched the 4 specific words
+first (STOP_REFS: exact/complete/ordering/the/this/that/a/an; VERB_STOPLIST: sort/sorts/
+sorted/sorting) — then, before declaring it closed, wrote a standalone script testing
+`resolveAmbiguity` against the literal prompt text of **all 9 of this repo's own benchmark
+tasks** (kvstore/ratelimiter/scheduler/regex/filterModule/sortModule/summaryModule/
+clampModule/leaderboardModule). Result: **6 of 9 were STILL falsely flagged ambiguous** even
+after the word-list patch (new false hits: "the least", "the WAL", "the injected", "the
+rolling", "the preceding", "the primary", "the calls", "the account", "the credits" — a
+different set of common words every time), proving conclusively that a hand-maintained
+stoplist can never keep pace with ordinary English prose.
 
-SECONDARY (ALSO FIXED THIS SESSION): with the gates LIVE, the on-device FM's JUDGMENT quality
-was the next concern — and a new labeled characterization harness `agent/__critic_bench.ts`
-(6 grounding + 4 harden hand-labeled cases; run `npx tsx src/CrucibleEngine/agent/__critic_bench.ts`)
-MEASURED it: the tiny FM scored 2/4 on harden AT BOTH prompt extremes (flags every correct
-function, OR passes every buggy one — at chance on subtle-but-real bugs), 5/6 grounding. The
-FREE online pool (gpt-oss-120b) scored 4/4 harden and caught the grounding case the FM missed.
-Conclusion: correctness-judging is a genuine FM capability boundary, NOT a prompt bug. FIX:
-new `'critic'` turnClass routes a critic straight to the strong online free pool (FULL
-reasoning, bypassing the FM) — `withOfflineFallback` short-circuits `turnClass==='critic'` to
-the online turn; `driver.ts` maps 'critic' to the 'hard' candidate tier and keeps full
-reasoning (only 'glue' gets effort:low). SPLIT ROUTING (final, deliberate): only HARDEN uses
-'critic' (FM at chance there) — GROUNDING stays on the LOCAL FM ('glue'): it scores 5/6 on the
-FM (misses only the subtle en-US-vs-Spanish semantic contradiction) and can fire repeatedly
-per action task, so keeping it local avoids adding online-pool pressure. Escalate only what
-needs it. Also tightened both critic prompts (harden: default-PASS + two-shot correct→PASS /
-bug→FLAG + explicit "don't flag defensive/out-of-scope"; grounding: "empty command output =
-success"). Bench: harden 4/4, grounding 5/6 on FM = 9/10 (was 6/6 when grounding also rode
-online — the 1-point drop is the deliberate pool-pressure tradeoff).
-POOL-PRESSURE FINDING that drove the split — ***FALSIFIED THIS SESSION***: the prior session
-blamed the sortModule `413 TPM-limit` (llama-3.1-8b-instant) regression on online-critic pool
-pressure and "fixed" it by moving grounding back local. WRONG LEVER. The 413 reproduced on a
-verified-clean pool (32/32 active, 0 tripped) on the FIRST inference call of the run — it is a
-missing-TPM-guard bug in candidate selection, now fixed (see this session's HEADLINE at top).
-The grounding→local split is still fine as a pool-pressure hygiene choice, but it was NOT what
-fixed sortModule and should not be credited with it.
+**Structural fix, not another word added to a list:** `resolveAmbiguity` now only generates
+`unresolved-reference` signals when the goal does NOT already name a concrete target file
+(`FILE_TOKEN` — the same check the `no-target` signal already used, just computed earlier and
+reused). Rationale: DEF_REF's entire purpose is catching "fix THE parser" — a request that
+refers to something via a definite article WITHOUT naming any concrete target. Once a file
+path IS named (as every one of this repo's own benchmark specs does), the "what to change"
+question is already answered, so hunting for other "the X" phrases in the surrounding
+rules/behavior prose adds no real signal, only false positives. Auto-resolution (the single-
+index-match rewrite) still runs unconditionally — it's purely additive goal enrichment, never
+a source of a false "ambiguous" verdict, so no reason to gate it. Re-ran the all-9-prompts
+check: **9/9 clean.** `ambiguity-bench.ts` still 9/9 (the "fix the parser" cases all have no
+named file, so the gate correctly still applies there — verified this isn't a blanket
+disable). `tsc` clean, `prove:all` 250/250.
 
-NOTE: prove:all and the catalog path generate NO telemetry — they bypass the oracle's
-verifyCandidate entirely (own spawnSync harness); only gen-path smoke traffic exercises it.**
+**Live-verified end to end, not just via the standalone script:** restarted `:3001` clean
+(`CRUCIBLE_OFFLINE=strict`, single LISTEN pid) and re-fired `leaderboardModule` through
+`npm run smoke:code:offline`. Before the fix: `iters=0`, module never written. After the fix:
+`iters=10`, module written, **compiles clean, reaches the hidden suite for the first time**
+(still RED — the FM's candidate mutates the input array in place, the pre-existing
+`sortScoresAscending` capability gap items 21-22 already characterized — but that's a
+completely different, already-documented failure mode from "the task was never attempted at
+all"). This is not a hypothetical fix — it demonstrably unblocks real task attempts.
 
-**NEXT SESSION — HIGH TIER ITEMS (concise):**
+**Why this matters more than every other fix this session combined:** items cont.22-24 all
+hardened critics against bugs the FM might write. This fix removes a gate that was silently
+preventing the FM from being given a chance to write anything at all, on the majority of
+realistic, well-specified coding requests, the moment a semantic index is available (i.e. on
+essentially every real repo-context task) — since cont.20 wired this gate into the actual live
+`agent/loop.ts` path. **Any generation-accuracy measurement taken between cont.20 (2026-07-04)
+and this fix should be treated as unreliable** — a nonzero fraction of "the FM failed" reads
+during that window were likely actually "the request never reached the FM." No way to
+retroactively quantify how much of item 2's measured gap this explains without re-running the
+full generation-stress suite, which is the natural next step.
 
-0. ~~dark grounding/harden critics~~ LARGELY CLOSED this session — BOTH the structural darkness
-   (glue misrouted through the coding-loop state machine → empty text) AND the judgment quality
-   (harden: tiny FM at chance → routed to strong online free pool via new `'critic'` turnClass;
-   grounding: kept LOCAL on FM at 5/6 to limit pool pressure). Bench `agent/__critic_bench.ts`:
-   harden 4/4, grounding 5/6. See headline. RE-VERIFIED this session on a clean pool.
-   Watch items: (a) harden still depends on online-pool health — under quota pressure it fails
-   OPEN (telemetry `ran:false, "checker error"`), the documented pool-dependency tradeoff;
-   (b) re-run the bench after any critic-prompt change.
+## PRIOR: 2026-07-06, cont. 24 — Gate A3 (contractGate.ts) audited next;
+found and fixed a real FALSE POSITIVE that was actively hurting generation accuracy, not just
+a missed-detection gap; both Gate A2 and Gate A3 gained their first-ever bench, wired into
+`prove:all`)
 
-0b. ~~sortModule/filterModule 413 TPM starvation~~ ROOT-CAUSED + FIXED this session (see
-   HEADLINE). Missing TPM-awareness on the 'hard' driver tier + no tool-inclusive pre-dispatch
-   token guard. filterModule + summaryModule now GREEN, zero 413s on a clean-pool sweep.
-   REMAINING: sortModule is still RED but now on OpenRouter's daily free-tier cap
-   (`free-models-per-day`, 50/day, 429), exhausted by repeated same-day smoke runs — external
-   account quota, not code. To confirm sortModule compiles clean, re-run smoke:code on a day
-   with fresh OpenRouter quota (or add credits). It is NOT a regression and NOT the TPM bug.
+**Cont. 24 (this session, continuing the systematic critic audit) — extended the mirror-image
+audit from localHardenFuzz/localHardenCheck to the two Workstream-1 gates that hadn't been
+touched yet (Gate A2 lintGate.ts, Gate A3 contractGate.ts).**
 
-1. ~~Restart `:3001`~~ DONE 2026-07-04 late — restarted onto the recalibration commit.
-2. ~~Real smoke:code sweep with Gate A2 + tripwire live~~ DONE — see headline. NOTE:
-   sortModule got FURTHER than its documented boundary this sweep (module produced,
-   12/13 hidden checks pass; only single-element-list + a frozen-types tsc mismatch failed)
-   vs the "never produces a module" characterization — the accepted-boundary write-up is
-   already partially stale. Re-check it every sweep; do not let it calcify.
-2a. ~~Stale `CRUCIBLE_SESSION_HANDOFF.md` landmine~~ DEFUSED 2026-07-04 late — marked
-   SUPERSEDED with a banner pointing here + ROADMAP.md (kept as history, safe to delete;
-   file remains untracked).
-2b. ~~Gate A2 packaged-app check~~ RESOLVED 2026-07-04 late: `Crucible.app` is NOT a
-   packaged build — it's a launcher script (`Contents/MacOS/launch`) that execs Electron
-   straight from the source repo with full node_modules, so devDeps ARE present at runtime
-   and the devDep pin is sufficient. No prod-dep promotion needed UNLESS a real
-   asar/electron-builder packaging step is ever added — if that happens, revisit. The
-   "log once at startup when gate `ran:false`" idea folds into item 3 (fail-open telemetry).
-2c. ~~Fail-open gate telemetry~~ DONE 2026-07-04 night (`c79da7c`) — see headline. It
-   immediately caught item 0.
-3. **Second Workstream 1 critic** — candidates per ROADMAP: contract/interface checking
-   between decomposed pieces, or property-based/fuzz testing via a vetted local tool
-   (fast-check is the obvious Lego-piece candidate; would also be the 2nd external-tool
-   adoption that unlocks considering a registry per the new external-tool invariant).
-   `tsc` is ALREADY Gate A — do not re-plan it as a critic.
-4. **Workstream 2 (upfront elicitation)** — untouched; planning-workflow change, needs a real
-   bounded feature task as its test. Design before building. **NEW (2026-07-04): a full
-   novice-first design exists — `HITL_PLANNING_TRACK.md`** (stakes-aware HITL/automation
-   router, `grill-me`/`explain-this`/`to-plan`/… skill library, self-directed tool selection,
-   plain-language narration/glossary/undo). SPECULATIVE, nothing built — a PARALLEL planning/UX
-   track, NOT competing with engine priorities. Read it before building Workstream 2.
-5. **Tripwire scope note** — current signal is exact-fingerprint repetition (3 consecutive,
-   recalibrated 2026-07-04 late on ledger evidence — see headline).
-   sortModule's later rounds sometimes show *fresh, non-repeating* type errors — those still
-   burn all rounds by design. A "no two rounds share any failure overlap → also not
-   converging" second signal is possible but unproven; only add it with ledger evidence.
-6. **Pre-existing, not mine, worth a look:** `synth/catalogs/_author_parsers2.ts` fails
-   `tsc -p tsconfig.server.json` with TS1109 at HEAD `d8b6c5f` (untouched by this session).
-7. **e002 / e005 (explain category)** — unchanged from 2026-07-03: retrieval-ranking and
-   content-relevance gaps, need their own scoping conversation. e003 remains NOT a bug
-   (accepted tradeoff; do not loosen `PREMISE_RX`).
+**Gate A3 (`contractGate.ts`) had a real, previously-unknown FALSE POSITIVE — worse than a
+missed detection, since it actively rejects correct code.** `actualSignatures()` only
+recognized `export function name(...)` (TS `FunctionDeclaration`). A candidate written as
+`export const name = (a, b): R => ...` (arrow function) or
+`export const name = function(a, b): R {...}` (function expression) — an equally common,
+equally correct style — was completely invisible to it: `checkContract` reported "missing
+export" and rejected a CORRECT candidate, burning an FM retry round on nothing. Confirmed live
+before the fix (`checkContract` on a correct arrow-const candidate → rejected) and after
+(→ accepted, while arity mismatches and non-exported bindings are still correctly caught).
+Fixed: `actualSignatures` now also walks exported `const name = <arrow|function-expression>`
+declarations. **This directly serves item 2 (generation accuracy) in a way none of the prior
+fixes did** — every prior fix this session hardened a gate against bugs the FM might write;
+this one removes a gate rejecting correct FM output for a superficial style reason, which
+means Gate A3 was silently degrading the FM's effective pass rate on any spec whose actual
+implementation preferred arrow-function style. Checked `.crucible/fm-rounds.jsonl` (599 lines)
+for a historical `"verdict":"contract:..."` rejection — zero hits, so this specific bug hasn't
+been observed to have actually fired on the current generation-stress suite's tasks (the FM
+happened to always write `export function` style for these); it's a real, confirmed defect via
+direct test, not a proven explanation for any of the measured item-2 gap. Still worth watching
+for on future/different tasks now that it's fixed rather than latent.
 
-**Composite benchmark baseline (conversational suite) as of last confirmed sweep (2026-07-03,
-N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-run by tonight's
-coding-engine work.
+**Gate A2 (`lintGate.ts`) had zero known defects** — it wraps trusted ESLint rules, so the
+risk profile is wiring regressions (e.g. the already-once-hit flat-config `files` matcher
+pitfall), not incomplete pattern coverage. No fix needed, but it had no bench either.
+
+**Both gates had NO test coverage anywhere in the repo before this session** — same
+test-debt-cleanup discipline as cont.20's `localHardenCheck` bench. Added
+`__contractGate_bench.ts` (10/10: the arrow/function-expression false-positive case, arity
+mismatches in both declaration styles, missing-export, non-exported-binding, return-type
+widening-to-any allowed, return-type array-ness mismatch caught) and `__lintGate_bench.ts`
+(12/12: one true-positive per configured ESLint rule + one clean-code true-negative). Both
+wired into `npm run prove:all` (`contract:bench`, `lintgate:bench` scripts added). `tsc`
+clean, `prove:all` 250/250 unchanged (bench suites run before the 250-skill catalog check,
+same pattern as the other 3 bench suites already wired in).
+
+## PRIOR: 2026-07-06, cont. 23 — localHardenCheck.ts's 5-shape AST scanner audited the same
+way the fuzz layer was in cont.22; found 5 MORE real false-negative gaps, all fixed
+
+**Cont. 23 (this session, continuing cont.22's methodology) — the item flagged as "not done
+this session" in cont.22 ("localHardenCheck.ts wasn't audited for analogous gaps") is now
+done.** Read all 5 AST checks looking for the same class of defect found in the fuzz layer:
+an operand/statement-shape the check silently doesn't recognize even though it's the identical
+bug. Found and fixed 5, each confirmed live before AND after the fix:
+1. `checkOffByOneLoopBound` only matched `i <= arr.length` (loop var on the left) — the
+   logically-identical reversed form `arr.length >= i` passed clean. Now handles both.
+2. `checkOffByOneTerminalAccess`'s `X.length + k` addition only checked length-on-the-left —
+   `arr[1 + arr.length]` (operands swapped) passed clean. Now checks both operand orders.
+3. `checkAssignmentInCondition` only visited `if`/`while`/`do-while` — `for (...; i = 1; ...)`
+   (same always-truthy-assignment typo, different statement) passed clean. Now also visits a
+   for-loop's own condition slot; verified no false positive on the legitimate
+   `while ((x = next()) != null)` resumed-value idiom.
+4. `checkNaNComparison` only matched the bare `NaN` identifier — `x === Number.NaN` (same
+   global value, spelled via the `Number` namespace) passed clean. Now matches both forms.
+5. `checkDivideByZeroLiteral` only matched the binary `/`/`%` operators — the compound
+   assignment forms `x /= 0`/`x %= 0` (same bug) passed clean. Now matches both.
+`__localHardenCheck_bench.ts` grew 10→16/16 (one regression case per fix). `tsc` clean,
+`prove:all` 250/250 unchanged. All 5 are genuine reversed-operand/unvisited-statement blind
+spots in a pattern-matching AST scanner — exactly the kind of gap that's invisible until you
+go looking for the mirror-image of each existing pattern, which is what this pass did
+systematically rather than waiting for a live sweep to surface one by accident.
+
+**Cont. 22 recap (prior entry, kept for continuity):** found and fixed 5 real defects across
+the fuzz-property gate (set-op-diff/intersect completeness, comparator degenerate-zero, clamp
+flakiness) and the stakes-router (multi-tool-call gating, create_tool body scanning).
+
+**Cont. 21 recap (prior entry, kept for continuity):** items 1 (frontend clarification
+consumer) and 3 (HITL stakes-router) turned out to already be built, uncommitted, just
+undocumented. Item 2's `leaderboardModule` Set-dedup bug was fixed (sort-family fuzz range
+narrowed). See git history of this file / [[crucible-priority-ladder-2026-07-04]] for detail.
+
+**Cont. 22 (this session) — driven by an explicit "keep going, no API calls, frontier-rivaling,
+don't stop for input" directive. Audited every fuzz family and the stakes-router's own
+documented scope gaps rather than picking a new task; found 4 more real, previously-invisible
+defects in the verification layer itself.**
+
+1. **`set-op-diff`/`set-op-intersect` fuzz properties had NO completeness check — `() => []`
+   passed both silently, always, regardless of input.** Only "nothing foreign appears in the
+   result" was ever checked, never "every qualifying element is actually present." Confirmed
+   live: a candidate that always returns `[]` for `differenceArrays`/`intersectArrays` passed
+   the gate with zero findings. Fixed both properties to also assert every expected distinct
+   value is present (mirrors `set-op-union`'s existing two-directional check), and narrowed all
+   three set-op families' integer range to `{min:0,max:8}` so `a`/`b` actually overlap often
+   enough to exercise the new check (`localHardenFuzzWorker.cjs`). Added 2 regression cases.
+
+2. **`comparator` property couldn't detect a degenerate "always return 0" comparator** — a
+   comparator that treats every pair as equal trivially satisfies the old antisymmetry-only
+   check (`a===b` branch aside, `ab===0 && ba===0` both hold). Confirmed live: `() => 0` passed
+   clean. Fixed: for a distinct pair, `ab===0` is now itself a failure (documented as a
+   heuristic tied to this family's naming convention — see the code comment on the honest
+   tradeoff). Added 1 regression case.
+
+3. **`number-transform-clamp`'s property was genuinely flaky — observed ~15-30% false-negative
+   rate across repeated bench runs**, unrelated to anything touched this session or last.
+   Root cause: `fc.double()`'s default arbitrary heavily biases samples toward "interesting"
+   edge values (0, -0, tiny fractions) rather than spreading uniformly, even after an earlier
+   narrowing to `[-1000,1000]` — so a real "never enforces the upper bound" bug only triggered
+   on ~3 of every 4 bench runs instead of reliably every run. Switched `v`/`lo`/`hi` from
+   `fc.double` to bounded `fc.integer({min:-1000,max:1000})`, which samples far more uniformly.
+   Verified 20/20 clean bench runs after the fix (was ~15/20 before). This was a real
+   reliability gap in a gate the whole zero-API vision depends on — a flaky critic is worse
+   than a slow one, since it ships a false sense of "clean" some fraction of the time.
+
+4. **Stakes-router scope gap #1 closed: multi-tool-call turns are now gated, not just
+   lone-call turns.** `agent/loop.ts` (~420-438) previously only ran `assessStakes` when
+   `turn.toolCalls.length === 1` — a destructive call co-emitted alongside benign ones bypassed
+   the gate entirely (documented, not silent, but a real hole). Now scores every call in the
+   turn and gates on the first high-stakes one found, holding the WHOLE turn (not just the
+   flagged call) pending the user's answer. `stakesRouter-bench.ts` unaffected (pure-function
+   logic didn't change, only the caller), still 11/11 → now 15/15 with item 5's additions.
+
+5. **Stakes-router scope gap #2 closed: `create_tool` dynamic-tool bodies are now scanned for
+   destructive native APIs at creation time.** A model-authored `create_tool` body is arbitrary
+   JS, not shell-command text, so `destructiveReason()`'s shell-syntax patterns (`rm -rf` etc.)
+   never saw it — a persisted tool calling `fs.rmSync`/`execSync`/etc. would register and
+   auto-run in every future session with zero stakes gating, a real hole matching the module's
+   own documented scope limitation. Added `destructiveToolBodyReason()`
+   (`tools/registry.ts`) — coarse, deliberately-scoped native-API pattern scan (fs delete/
+   overwrite, child_process exec/spawn) — wired into `assessStakes` for `toolName==='create_tool'`,
+   gating at CREATION (a one-way door: the tool persists to disk and reloads on every future
+   server start) rather than trying to recognize the tool's own name at later invocation time
+   (which the router has no way to do generically). 4 new bench cases (destructive body → high;
+   explicitly authorized → low; benign body → low).
+
+**All changes this session:** `npx tsc --noEmit -p .` clean, `npm run prove:all` 250/250
+unchanged throughout, `__fuzz_bench.ts` 20→27/27, `stakesRouter-bench.ts` 11→15/15. Every fix
+directly re-verified against the exact buggy shape it targets (not just "tests pass").
+
+**Not done this session:** stakes-router still doesn't cover `control_mac`/external
+integrations or non-filesystem blast-radius classes (shared config/schema/migration edits) —
+narrowed scope gaps, not closed ones. `localHardenCheck.ts`'s 5-shape AST scanner wasn't
+audited for analogous gaps (only the fuzz/property layer was this session) — worth the same
+audit treatment next. No live `smoke:code:offline` re-sweep of any task this session (all
+verification was direct `runLocalHardenFuzz`/bench-level, not a full live FM regeneration).
+Nothing was committed — `git status` still shows the same ~19 modified/untracked files plus
+this session's edits sitting in the working tree (per standing git-safety rules: never commit
+without an explicit ask, which this session didn't get).
 
 ---
+
+## SESSION LOG — 2026-07-04, cont. 19 (fuzz mutation-blindness for
+sort/set-op/dedupe families CLOSED, and a real self-inflicted bug in that fix caught and fixed
+before it shipped)
+
+**Cont. 19 (this session): NEXT SESSION item 1 from cont.18 ("fuzz mutation-blindness") is now
+CLOSED.** `src/CrucibleEngine/agent/localHardenFuzz.ts`'s `detectChecks` now emits a companion
+`<kind>-no-mutate` check alongside `sort`, `set-op-union`, `set-op-diff`, `set-op-intersect`,
+and `array-dedupe` (5 of the 8 families — the mutating-prone ones; `validator`/`string-
+transform`/`comparator`/`number-transform-clamp`/`number-aggregate-sum` don't apply, they
+return new values by construction). Each new `buildProperty` case in
+`localHardenFuzzWorker.cjs` calls `fn` on the caller's own array(s) and asserts they're
+unchanged afterward — independent of whether the return value is correct.
+
+**Caught a real bug in the fix itself before committing it:** an earlier draft passed fast-
+check's OWN generated array directly to `fn`. A candidate that mutates its input then corrupted
+fast-check's internal shrink bookkeeping and hung — reproduced standalone with a debug counter
+showing an infinite shrink loop stuck replaying the identical counterexample forever (not a
+candidate infinite loop — the CANDIDATE terminated fine each call; fast-check's own shrink
+driver never converged). Fixed by always `.slice()`-ing a private copy before handing anything
+to `fn`, never passing fast-check's array by reference. This is worth remembering as a general
+rule for any future "call fn on the real object and check for mutation" property: never let that
+real object be the one the property-testing library owns.
+
+`__fuzz_bench.ts` extended 20→23 cases (3 new mutate-but-otherwise-correct cases covering
+sort/union/dedupe), all pass, no hang, no timeout. Manually reproduced the EXACT
+`leaderboardModule` shape from cont.17 (`sortScoresAscending(scores) { return
+scores.sort(...) }`) directly against `runLocalHardenFuzz` — now flags it via `sort-no-mutate`
+(`Counterexample: [[1,0]]`), closing the loop cont.17 opened when the hidden suite caught it but
+fuzz didn't. `npx tsc --noEmit` clean, `npm run prove:all` → 250/250 unchanged.
+
+**Not done this session:** `__fuzz_bench.ts` and `localHardenCheck.ts`'s own bench are still
+standalone scripts, not wired into `npm run prove:all` (item 4 below, unchanged from cont.18).
+Priority-ladder items 2 (generation accuracy) and 3 (HITL router) untouched. No live
+`smoke:code:offline` re-sweep this session (the fix was verified via the bench + a direct
+`runLocalHardenFuzz` repro of the known-buggy shape, not a fresh end-to-end FM generation run —
+worth a live re-confirm next session if a `sort`-family task gets regenerated).
+
+---
+
+**Cont. 18 (prior session) — ambiguity.ts got its first regression bench, 9/9, locking in
+cont.17's VERB_STOPLIST fix; fuzz layer got its first LIVE positive catch; families broadened
+6→8; generation-stress suite broadened 3→5; HITL Workstream 2 got one narrow, verified
+data-shape slice)
+
+**Cont. 18 addendum (same day, small follow-up):** `src/CrucibleEngine/ambiguity-bench.ts`
+added (`npm run ambiguity:bench`, 9/9) — this module had zero test coverage before. Covers the
+`VERB_STOPLIST` regression (`validateEmail`/"that returns" no longer flips to ambiguous), "fix
+the parser" resolving against a fake `SemanticIndex` for single/zero/multi-match cases and with
+no index at all, plus baseline `no-target`/`vague-scope`/`underspecified-behavior` signal
+firing. Standalone `tsx` script, no framework (matches `__critic_bench.ts` convention — repo
+has no test runner configured). Does not change any behavior in `ambiguity.ts` itself and does
+not touch item 2 below (still unwired into the live path).
+
+**Mandate this session: (1) get the fuzz layer a live positive catch, (2) broaden fast-check
+families past 6 and/or commit a real bench, (3) broaden generation-stress suite past 3 tasks,
+(4) build HITL/AFK Workstream 2. All four addressed; (4) deliberately scoped narrow, not the
+full router.**
+
+**1. Fuzz layer bench committed — `src/CrucibleEngine/agent/__fuzz_bench.ts`, 20/20.**
+Replaces cont.15's 4-case ad hoc scratch verification with a real, committed test covering
+every family, true-positive AND true-negative each (same discipline as `localHardenCheck`'s
+bench convention). Run: `npx tsx src/CrucibleEngine/agent/__fuzz_bench.ts`. NOT yet wired into
+`npm run prove:all` (kept standalone, consistent with cont.12-16's precedent of not yet
+formalizing these gate benches into that harness — a real next step, not done this session).
+
+**2. Families broadened 6 → 8** — added `array-dedupe` (`dedupe*`/`unique*`/`distinct*`,
+arity 1: no duplicate values in output, every distinct input value present, no foreign values)
+and `number-aggregate-sum` (`sum*`, arity 1: output equals the exact numeric sum) to both
+`localHardenFuzz.ts`'s `detectChecks` and `localHardenFuzzWorker.cjs`'s `buildProperty`. One
+tuning fix caught by the bench itself: `array-dedupe`'s property initially used
+`fc.array(fc.integer())` (full int32 range), which almost never generates actual duplicates,
+so the "leaves duplicates in" bug case went undetected — narrowed to
+`fc.integer({min:0,max:5})` so generated arrays collide often enough to exercise the property.
+`npx tsc --noEmit` clean; `npm run prove:all` → 250/250 unchanged.
+
+**3. Generation-stress suite broadened 3 → 5, AND a root cause found for why the fuzz layer
+had never fired live before this session:** `filterModule`/`sortModule`/`summaryModule`'s
+real exported APIs never match ANY fuzz family by name+arity convention (e.g.
+`sortProducts(products, opts)` is arity 2, not the arity-1 `sort` family) — so the fuzz layer
+had zero surface area on the existing suite regardless of how many live sweeps ran. Added two
+new repo-context tasks to `coding-benchmarks.ts`'s `TASKS` array, deliberately shaped to land
+inside a family's detection window: `clampModule` (`clampVolume(value,min,max)`, arity 3,
+`number-transform-clamp` family) and `leaderboardModule` (`sortScoresAscending(scores)`,
+arity 1, `sort` family). Each has a hidden adversarial suite
+(`src/CrucibleEngine/coding-bench/{clampModule,leaderboardModule}.hidden.ts`, same convention
+as the existing three) — these were MISSING on first run and crashed `auditTask`'s
+`copyFileSync` (ENOENT); fixed by adding both hidden files before the confirming re-run.
+
+**4. LIVE fuzz catch — CLOSES the "only scratch-verified" gap.** Restarted `:3001` with
+`CRUCIBLE_OFFLINE=strict` in the server's own env (one clean LISTEN pid verified), ran
+`npm run smoke:code:offline -- clampModule leaderboardModule` end to end (real agent fires,
+real FM generation, no mocking). `.crucible/gate-telemetry.jsonl` recorded, live, during the
+`leaderboardModule` run:
+```
+{"gate":"harden","ran":true,"reason":"local-fallback (reviewer error: [offline-escalate] critic turn class has no offline equivalent — routing to local harden fallback): findings [+1 fuzz]"}
+```
+appearing twice — the fuzz layer contributed a real finding during the FM's 9-round
+generation loop for `leaderboardModule` (a `sort`-family match), on a genuinely live sweep,
+not a scratch script. Priority-ladder item 1's "has it ever caught anything live" flag,
+open since cont.15, is now CLOSED. Scorecard: `clampModule` GREEN (hidden suite 9/9,
+generated path); `leaderboardModule` RED — the FM's final candidate sorted correctly but
+mutated its input array in place (`scores.sort(...)`, no copy), a real bug the HIDDEN suite
+caught. Honest gap: fuzz's `sort` property always calls `fn(arr.slice())` (a defensive copy),
+so it structurally cannot see mutation-of-input bugs — only the hidden suite's own explicit
+mutation check caught this one. Not fixed this session (would need a second property variant
+that passes the caller's own array and checks it's unchanged) — flagged as a concrete next
+family-hardening step, not assumed away.
+
+**5. HITL/AFK Workstream 2 — one narrow, verified slice, NOT the full router.** Read
+`HITL_PLANNING_TRACK.md` §3 (MC-first clarification + visible recommended default) against
+the ALREADY-LIVE `ambiguity.ts` (Tier 2.4, code-agent pre-synthesis check) rather than
+building a new parallel mechanism per §7's own open question. Added
+`clarificationOptions?: string[]` + `recommendedOption?: string` to `ResolutionResult`,
+populated ONLY for the `unresolved-reference`-with-multiple-candidates signal — the one
+existing signal type with a genuinely enumerable answer set (the candidate symbol list).
+Deliberately did NOT force fake MC options onto `no-target`/`vague-scope`/
+`underspecified-behavior` (open-ended by nature; a wrong-shaped list would violate this
+module's own zero-guessing discipline). Verified: multi-candidate case produces correct
+options (`["parseTokens (src/parseTokens.ts)", "parseExprTree (src/parseExpr.ts)", "Something
+else / not sure"]`) + recommended default; vague-scope case correctly has none; `npx tsc
+--noEmit` clean. **Not done:** wiring this into the actual live path — the only current
+caller, `nodeExecutor.ts`, is the PARKED capabilityRouter/decompositionDag stack per
+[[crucible-agentic-architecture]], not `agent/planner.ts`+`loop.ts`. Wiring the MC options
+into `loop.ts`'s real `ask_user`/`'clarification'` stop reason (loop.ts:356) is the natural
+next step and wasn't attempted this session. Everything else in the design doc (§2 stakes
+router by reversibility/blast-radius, §4 self-directed tool suggestion, §5 skill library, §6
+UX refinements) remains unbuilt — see HITL_PLANNING_TRACK.md §8 for the full status writeup.
+
+**Found in passing, FIXED same session (spawned as background task `task_8da28286`, completed
+before this doc was finalized):** `ambiguity.ts`'s `DEF_REF` regex spuriously matched ordinary
+prose like "...that returns true..." as a definite-article code-symbol reference, flipping an
+otherwise well-specified request to `ambiguous:true` whenever an `index` was supplied and no
+symbol matched. Fixed with a `VERB_STOPLIST` (returns/is/has/does/matches/... and conjugations)
+checked alongside the existing `STOP_REFS` set. Re-verified live after the fix: the
+multi-candidate `clarificationOptions` case (this session's own addition) still works
+unchanged, and the previously-false-positive case now correctly reports `ambiguous:false`.
+`npx tsc --noEmit` clean.
+
+**Verification summary, all real (not assumed):** `__fuzz_bench.ts` 20/20 (8 families × TP/TN);
+`npx tsc --noEmit -p tsconfig.server.json` clean throughout (pre-existing `_author_parsers2.ts`
+TS1109 aside, not mine); `npm run prove:all` → 250/250 unchanged; one live
+`smoke:code:offline` sweep against a freshly-restarted `:3001`, confirmed via the real
+`.crucible/gate-telemetry.jsonl` ledger, not console text or assumption.
+
+**NEXT SESSION — HIGH TIER ITEMS (concise), superseding the 2026-07-04 list below:**
+
+1. ~~Fuzz mutation-blindness~~ DONE cont.19 (`sort-no-mutate` + 4 set-op/dedupe companions,
+   see CURRENT STATE above). Live re-confirm via a fresh `smoke:code:offline` sweep on a
+   `sort`-family task is still worth doing (this session verified via bench + direct repro of
+   the known-buggy shape, not a brand-new end-to-end FM generation run).
+2. **Wire ambiguity.ts's new `clarificationOptions` into the live path** —
+   `agent/planner.ts`+`loop.ts`'s real `'clarification'` stop reason (loop.ts:356), not the
+   parked `nodeExecutor.ts`. Currently computed but unconsumed anywhere live.
+3. ~~Fix the DEF_REF false-positive~~ DONE (`VERB_STOPLIST`, see cont.18 above).
+4. **Commit `__fuzz_bench.ts` (now 23/23) into `npm run prove:all`** rather than leaving it
+   standalone — same formalization gap cont.12-16 left open for `localHardenCheck`'s bench too.
+5. **Generative coding accuracy remains the deeper open item** — `leaderboardModule`'s
+   mutation bug is itself fresh evidence for priority-ladder item 2 (thin/under-measured
+   accuracy on novel tasks): even a 9-round FM loop converged on subtly-wrong code that only a
+   hand-written hidden suite (and now fuzz, post cont.19) caught.
+6. Items 3 ("Second Workstream 1 critic") and 6-7 (pre-existing `_author_parsers2.ts` TS1109;
+   e002/e005 explain-category retrieval gaps) from the 2026-07-04 list are UNCHANGED, not
+   touched this session — see that list below for full detail, still accurate.
+
+**Composite benchmark baseline (conversational suite) as of last confirmed sweep (2026-07-03,
+N=3 post premise-gate fix):** pass 0.920 ± 0.000 — unrelated to and not re-run this session.
+
+---
+
 
 ## SESSION LOG — 2026-07-04 night (fail-open gate telemetry — IMPLEMENTED, VERIFIED, CLOSED; found grounding+harden dark)
 

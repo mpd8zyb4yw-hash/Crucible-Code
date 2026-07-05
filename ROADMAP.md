@@ -31,7 +31,7 @@
 > 3. **Internet Retrieval Layer** `[x]` — `src/CrucibleEngine/retrieval/retrievalLayer.ts`. Direct https (no model intermediary, no paid API): DDG search, page fetch, npm/DefinitelyTyped d.ts pulling, session cache, graceful degradation. Pre-processing pipeline (strip boilerplate→extract code/type-sigs→rank→budget-fit). Injected via repoContext.withRetrieval → universal.ts fmSpecPrefix (opt-in `retrievalBlock`); FM never sees a raw dump.
 > 4. **Agentic Execution Loop** `[x, not live-wired]` — `src/CrucibleEngine/nodeExecutor.ts`. emit→commit(apply gate)→observe→parse semantically (verify.ts fingerprint/extractHints)→mutate spec→retry. Hard budget (maxAttempts), anti-thrash (repeated fingerprint⇒abstain), abstain exit reachable everywhere, audit trail (.crucible/exec-ledger.jsonl). executeDag runs nodes topologically, dependency-gated; honest buckets applied/abstained/blocked. Synthesis injected (model-agnostic). Not reachable from a live `/api/chat` request (see correction above) — the live coding-agent path is `agent/planner.ts` + `agent/loop.ts`.
 >
-> **Tier 2:** 5. Apply layer + RSI gate `[x, live only via scripts/selfHeal.ts]` (`apply/applyLayer.ts` — snapshot→baseline→apply→verify→keep-if-not-worse else hard-restore; path-escape refused, kill switch, dry-run, ledger). Not reachable from the live coding-agent path (see correction above). · 6. Mock/stub injection `[x, not live-wired]` (`synth/mockInjection.ts` — ambient declare-module + relative stub files + type stubs; prefers real index/retrieved shapes; proven via tsc Program). · 7. Relevance-ranked context assembly `[x]` (`contextAssembly.ts` — fuses tf + graph proximity, budget-fit). · 8. Ambiguity resolution `[x, not live-wired]` (`ambiguity.ts` — resolve definite refs via index; abstain+clarify when unresolvable; wired into nodeExecutor pre-synth gate, not into agent/loop.ts).
+> **Tier 2:** 5. Apply layer + RSI gate `[x, live only via scripts/selfHeal.ts]` (`apply/applyLayer.ts` — snapshot→baseline→apply→verify→keep-if-not-worse else hard-restore; path-escape refused, kill switch, dry-run, ledger). Not reachable from the live coding-agent path (see correction above). · 6. Mock/stub injection `[x, not live-wired]` (`synth/mockInjection.ts` — ambient declare-module + relative stub files + type stubs; prefers real index/retrieved shapes; proven via tsc Program). · 7. Relevance-ranked context assembly `[x]` (`contextAssembly.ts` — fuses tf + graph proximity, budget-fit). · 8. Ambiguity resolution `[x, not live-wired]` (`ambiguity.ts` — resolve definite refs via index; abstain+clarify when unresolvable; wired into nodeExecutor pre-synth gate, not into agent/loop.ts; regression bench `ambiguity-bench.ts` added 2026-07-04, `npm run ambiguity:bench`, 9/9).
 > **Tier 3:** 9. Benchmark overhaul — externally-anchored (SWE-bench-style), per-bucket honest (verified / FM-pattern / retrieval-grounded / escalated / abstained). Moat number = verified + FM-pattern only.
 >
 > ### ACTIVE phase — Closing the Frontier-SWE Gap (gate OPENED 2026-07-04)
@@ -109,6 +109,152 @@
 > **Open decision before this phase starts:** choose the first Workstream 1 critic:
 > static-analysis gating, contract/interface checking, fuzzing/property tests,
 > security scanning, or known-bad-pattern scanning. No starting tool is chosen yet.
+>
+> ### PRIORITY LADDER (2026-07-04, cross-cutting synthesis — analysis only, no code changed)
+>
+> A full-context read of this doc + NEXT_SESSION.md + all memories, decomposing the mission into
+> four acceptance criteria (0 external API calls / very high accuracy / HITL when necessary /
+> AFK when safe) and ranking every open gap by how much it blocks the goal. Most-pressing first:
+>
+> **MANDATORY REPORTING RULE (added 2026-07-04, keep enforcing every session):** every session
+> that touches this ladder must end its handoff (NEXT_SESSION.md CURRENT STATE + ROADMAP.md
+> CHANGE LOG entry) with (a) a "next to implement" feature list scoped to the top open
+> priority-ladder item(s), and (b) a percentage estimate of overall progress toward the 4
+> acceptance criteria above, weighted toward items 1-3 over supporting structure. This is a
+> process/handoff-discipline requirement on every session, not a runtime code gate — there is
+> no acceptance criterion here that a shipped feature can mechanically enforce (it is a
+> judgment call about mission progress). See [[feedback-report-percent-to-goal]] /
+> feedback-report-percent-to-goal.md in the assistant's memory for the full rule.
+>
+> 1. **Harden critic's online-pool dependency** (blocks criteria 1 AND 2 at once) `[partially
+>    fixed 2026-07-04 late-night, cont. 12; LIVE-VERIFIED cont. 13; coverage extended cont. 14;
+>    'critic' interception made explicit + fast-check fuzz layer shipped cont. 15]` — the correctness/harden critic was proven a
+>    genuine FM capability boundary (2/4, at chance) and routed to the online free pool via
+>    `turnClass==='critic'`. Under `strict` it used to fail OPEN (`ran:false`) on any online
+>    error/empty-reply, silently disabling the strongest quality gate. FIX: new
+>    `agent/localHardenCheck.ts` — deterministic, zero-inference AST checks for always-a-bug
+>    shapes (terminal off-by-one `arr[arr.length]`, off-by-one `<=` loop bounds indexing the
+>    same array, literal divide-by-zero) — wired as the fallback in BOTH `runHardenReview`
+>    failure branches (empty reply, driveTurn error) so a dead online pool now yields a real,
+>    narrower verdict instead of a silent accept. Telemetry reason `local-fallback (...)` keeps
+>    this distinct from a true dark gate. Targeted bench 7/7 (3 real-bug shapes + their
+>    corrected/false-positive-risk counterparts, including the harden prompt's own `add(a,b)`
+>    PASS example). `prove:all` 250/250, tsc clean. **Not full parity** — this only covers a
+>    closed set of syntactic always-wrong shapes, not the semantic task-vs-code reasoning the
+>    online critic does; item 1 stays open until fast-check property/fuzz testing (the other
+>    named Workstream 1 candidate) covers the semantic gap, or strict starts abstaining/HITLing
+>    on judgment calls this net can't catch instead of any residual fail-open path.
+>    **LIVE-VERIFIED (cont. 13):** restarted `:3001` with `CRUCIBLE_OFFLINE=strict` in the
+>    server's own env and ran a real `smoke:code:offline` sweep. `.crucible/gate-telemetry.jsonl`
+>    recorded `harden ran:true reason:"local-fallback (empty reviewer reply): clean"` on the
+>    live path (fired on `summaryModule`, the one generative task that reached harden this
+>    sweep) — the fallback is proven to actually fire end-to-end, not just in the isolated
+>    bench. Caveat found while forcing this: in `strict` mode `activeDriveTurn` is the bare
+>    `makeOfflineDriveTurn` with no `withOfflineFallback` wrapper, so the `'critic'` turnClass
+>    never hits its intended `withOfflineFallback` short-circuit at all — it falls through
+>    `makeOfflineDriveTurn`'s generic state machine (which only special-cases `'glue'`,
+>    not `'critic'`), misparses the harden prompt, returns empty text, and THAT is what trips
+>    the fallback. Outcome is correct (real local verdict, not silent accept) but the trigger
+>    is coincidental, not a deliberate `'critic'` interception the way `'glue'`→`fmComplete`
+>    is. Cleanup candidate: special-case `turnClass==='critic'` in `makeOfflineDriveTurn`
+>    explicitly, same shape as the existing `'glue'` branch.
+>    **DONE (cont. 15):** `makeOfflineDriveTurn` now throws `OfflineEscalateError` explicitly
+>    for `turnClass==='critic'` right after the `'glue'` branch — same landing spot
+>    (`localHardenFallback`), reached deliberately instead of via the misparse. Verified live
+>    via scratch script (real `makeOfflineDriveTurn` + `runHardenReview` against a canonical
+>    `arr[arr.length]` bug → correct `{solid:false,...}` through the new path).
+>    **Also cont. 15 — the actual semantic-coverage step:** shipped
+>    `agent/localHardenFuzz.ts` + `localHardenFuzzWorker.cjs`, a fast-check property/fuzz layer
+>    covering 6 name-conventioned, arity-gated families (sort, validator, string-transform,
+>    comparator, set-op, number-transform/clamp), reusing `derive.ts`'s family-boundary
+>    conventions. Executes the transpiled candidate in a `worker_threads` Worker with a hard
+>    4s timeout (the deliberate one exception to "no execution" in this gate family) so a real
+>    infinite loop in the candidate gets killed and reported, not hung on. Wired into
+>    `localHardenFallback`, which now runs AST + fuzz together and merges findings.
+>    Scratch-verified: broken sort (drops last element) caught, correct sort clean, a clamp
+>    that doesn't enforce its bound caught, an intentional infinite loop caught as a timeout
+>    finding. Not yet exercised against a live `smoke:code:offline` sweep (next verification
+>    step) and only 6 families — item 1 stays open, but the item's own named close condition
+>    now exists and is live-wired, not just planned.
+>    **LIVE-VERIFIED (cont. 16, 2026-07-05):** restarted `:3001` clean with `CRUCIBLE_OFFLINE=strict`
+>    (verified single LISTEN pid), ran `npm run smoke:code:offline` end to end: 6/7 GREEN, no
+>    regression. `.crucible/gate-telemetry.jsonl` confirms the deliberate cont.15 `'critic'`
+>    interception fired for real this time (not the coincidental empty-text path from cont. 13):
+>    `harden ran:true reason:"local-fallback (reviewer error: [offline-escalate] critic turn
+>    class has no offline equivalent — routing to local harden fallback): clean"` on both
+>    generation tasks (filterModule, summaryModule), alongside `gateA2_lint`/`gateA3_contract`
+>    firing every FM round. The fuzz layer executed live inside `localHardenFallback` with zero
+>    findings — both candidates were correct, so this run proves the layer FIRES end-to-end but
+>    not that it CATCHES (no live case had a real bug for it to flag; positive-detection evidence
+>    is still only the cont. 15 scratch cases). Item 1's "not yet live-verified" flag on the fuzz
+>    layer specifically is now closed. Still open: only 6 families (now 8 + mutation-blindness
+>    companions, per this session's memory index).
+>    **DONE (cont. 20):** the other named gap — "no committed bench file" — turned out to refer
+>    to `localHardenCheck.ts`'s own five AST CHECKS (terminal off-by-one, loop-bound off-by-one,
+>    divide-by-zero, assignment-in-condition, NaN-comparison), which had no dedicated
+>    true-positive/true-negative coverage of their own (`__fuzz_bench.ts` covers the execution-
+>    fuzz layer only, despite its header comment claiming to match "localHardenCheck's bench
+>    convention" — that file didn't exist). Added `agent/__localHardenCheck_bench.ts`, one TP/TN
+>    pair per check (10/10 passing), wired as `npm run harden:bench` and folded into `prove:all`
+>    ahead of `fuzz:bench`. Item 1 stays open on the real remaining gap: still only a closed set
+>    of syntactic always-wrong shapes + execution-fuzz families, not semantic task-vs-code
+>    reasoning parity with the online critic.
+> 2. **Generative coding accuracy on novel tasks is thin and under-measured** (blocks criterion
+>    2) — wins are mostly catalog hits (zero-inference against 250 proven primitives); genuine
+>    FM generation took 8 hand-found bugs in one day to get 2/3 tasks to repeatable 5/5, and the
+>    generation-stress suite is only 3 tasks. Broaden it well past 3; keep the ledger-read-first
+>    (`fm-rounds.jsonl`) discipline as default; grow deterministic oracle families; expand
+>    `repairProposers.ts` only for mechanical slips, never structural reasoning gaps.
+> 3. **HITL/AFK decision layer is essentially unbuilt** (blocks criteria 3 AND 4) — Workstream 2
+>    (upfront elicitation) untouched; Workstream 3 tripwire only catches exact-fingerprint
+>    repetition, not "inherently unsafe to run unattended"; the full stakes-aware router design
+>    lives in `HITL_PLANNING_TRACK.md` but nothing is built. Needs a concrete-signal (not
+>    self-confidence) stakes/confidence router, plus Workstream 2 tested on one real bounded task.
+> 4. **Two competing agent-execution stacks** (blocks 1 & 3 structurally) — the mission-designed
+>    `capabilityRouter→decompositionDag→nodeExecutor` stack is proven only in isolation, PARKED,
+>    not imported by `server.ts`. The live path (`planner.ts`+`loop.ts`) doesn't get the clean
+>    abstain/escalation guarantees the mission depends on. Decide: migrate live-path fixes into
+>    the clean stack and cut over, or graft the router/abstain policy into `loop.ts` — don't
+>    leave it as dead reference code indefinitely.
+> 5. **`strict` is the literal 0-API acceptance test and isn't the default** — blocked on the
+>    `explain` retrieval-ranking gap (~0.55, see #8) and a clean strict-mode multi-run
+>    `smoke:code` read (historically run against the hybrid server). Close #8, get a clean
+>    strict sweep on fresh daily quota, then make the flip a deliberate evidence-backed call.
+> 6. **AFK reliability infra** — FM daemon has a history of silent breakage (now fixed +
+>    auto-respawn verified, but recurring theme); the 8GB host kills node/tsx server processes
+>    on long sweeps (FM daemon survives, servers don't); per-request latency variance from
+>    cold ANE re-warm. Needs warm-session pooling, a supervised server watchdog (not just
+>    launchd `KeepAlive`), and a memory-pressure guard that serializes heavy work.
+> 7. **No externally-anchored benchmark** — current coding signal is 7 hand-built tasks (4
+>    catalog + 3 generation); Tier 3's honest per-bucket (verified/FM-pattern/retrieval-grounded/
+>    escalated/abstained) SWE-bench-style benchmark is unbuilt. Can't claim "very high accuracy"
+>    without it.
+> 8. **Retrieval-ranking quality** — root cause of the `explain` gap (e002 prefers an
+>    over-specific source over the general one; e005 pulls accurate-but-off-framing). Needs its
+>    own scoping conversation on `retrievalLayer.ts` (query-intent-aware selection, penalize
+>    over-specific matches). Feeds both #2 (grounded codegen) and #5 (strict flip).
+> 9. **Second Workstream 1 critic + catalog growth** `[x, contract critic shipped 2026-07-04
+>    late-night]` — Gate A3 (`synth/contractGate.ts`): declared-vs-actual export signature
+>    check (name/arity/return-shape) against a spec's "Exact public API" block, catching
+>    contract drift Gate A's lenient tsconfig lets through. In-process TS compiler API, no
+>    subprocess/network/new dependency — even lighter than Gate A2's ESLint invariant. Wired
+>    into both `oracle.ts` verify paths + `universal.ts`; fails open when no contract block
+>    is present. `prove:all` 250/250, tsc clean, targeted unit-level self-check passed.
+>    **Live-sweep-verified same session:** `:3001` restarted, `smoke:code` run end to end —
+>    6/7 HARD-green, no regressions, gate-telemetry confirms `gateA3_contract` fires
+>    (`ran:true`) on contract-bearing tasks and fails open cleanly on the rest. Catalog
+>    growth and fast-check property testing remain open, lower-urgency, compounding work.
+>
+> **Cross-cutting discipline (every session):** restart `:3001` onto the new commit before
+> trusting any `smoke:code` sweep (in-process changes are invisible otherwise; `prove:all`/
+> catalog path bypass the oracle and generate no gate telemetry); read `.crucible/fm-rounds.jsonl`
+> and `.crucible/gate-telemetry.jsonl` before guessing; treat any `[x]` above as "proven in
+> isolation," not "live," unless re-verified against a running server.
+>
+> **Bottom line:** items 1–3 are the real blockers — (1) the best correctness gate needs an
+> external API, (2) genuine generative accuracy on novel tasks is thin and under-measured, (3)
+> the HITL-vs-AFK decision layer the goal's second half depends on is essentially unbuilt.
+> Items 4–9 are supporting structure.
 >
 > ### Grounding (constraint on every layer)
 > No import lands without verifying the module exists or can be fetched. No API call lands without verifying the signature matches the installed version. The FM is never asked to recall type signatures from weights.
@@ -1744,6 +1890,131 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-07-04 (cont. 15) — critic turnClass given explicit offline-driver interception; fast-check fuzz layer shipped for harden
+- **What (1):** `makeOfflineDriveTurn` (agent/synthDriver.ts) now throws `OfflineEscalateError`
+  explicitly for `turnClass==='critic'`, right after the existing `'glue'` branch, instead of
+  relying on the S0–S6 code state machine's coincidental empty-text misparse (cont. 13's
+  documented "cleanup candidate"). Same downstream effect (`localHardenFallback` fires), now
+  reached on purpose. Verified via scratch script: real `makeOfflineDriveTurn` +
+  `runHardenReview` against a canonical `arr[arr.length]` bug returns the correct
+  `{solid:false, findings:"...arr.length - 1"}` through the new explicit path.
+- **What (2):** new `agent/localHardenFuzz.ts` + `agent/localHardenFuzzWorker.cjs` — a
+  fast-check property/fuzz layer for `runHardenReview`'s local fallback, the item-1 close
+  condition named in every prior cont.'s handoff. Covers 6 name-conventioned, arity-gated
+  families (sort, validator `is*`, string-transform, comparator, set-op union/diff/intersect,
+  number-transform `clamp`), reusing `synth/derive.ts`'s family-boundary conventions so the
+  same false-positive discipline applies. Transpiles the candidate file (`ts.transpileModule`)
+  and executes it inside a `worker_threads` Worker with a hard 4s `terminate()` — the one
+  deliberate exception to this gate family's "no execution" rule, contained specifically
+  because an infinite loop in the candidate is exactly the bug class this layer targets (the
+  timeout path is itself reported as a finding, not swallowed). Wired into `loop.ts`'s
+  `localHardenFallback`, which now runs the AST scanner and the fuzz layer together and merges
+  findings (capped at 3, `recordGate` reason appends `[+N fuzz]`).
+- **Verified:** `npx tsc --noEmit` clean project-wide. 4 scratch-script cases: sort that drops
+  the last element → caught with shrunk counterexample; correct sort → clean; clamp that never
+  enforces its upper bound → caught; `while (true) {}` sort → worker killed at 4s, reported as
+  a likely-non-terminating-loop finding. `fast-check` added as a real dependency.
+- **Not done:** no live `smoke:code:offline` sweep against a restarted `:3001` this session (the
+  natural next verification step, same as cont.13 did for the AST layer alone) — only 6
+  families covered; no committed bench file for either change (both proven by ad hoc `tsx`
+  scratch scripts, consistent with cont.12–14's precedent).
+- **Priority-ladder item 1 status:** meaningfully further along, still open. The item's own
+  named close condition (fast-check property/fuzz testing) now exists and is live-wired, not
+  just planned — but 6 families is not semantic parity with the online critic, and the fuzz
+  layer hasn't fired on a real live sweep yet.
+- **% toward the 4 acceptance criteria (0 external API calls / very high accuracy / HITL when
+  necessary / AFK when safe), per the mandatory reporting rule:** roughly unchanged from
+  cont.14's estimate — this session closed the smallest, most mechanical piece of item 1 (the
+  routing cleanup) and made real progress on the harder piece (semantic coverage exists now for
+  a narrow family set), but items 2 (generation-stress breadth) and 3 (HITL/AFK layer) are
+  untouched and still the larger blockers to criteria 2–4. Next session: broaden fuzz family
+  coverage or commit it as a real bench, OR pick up item 2/3 — see NEXT_SESSION.md CURRENT STATE.
+
+### 2026-07-04 (cont. 14) — localHardenCheck bug-shape coverage extended (2 new checks)
+- **What:** added `checkAssignmentInCondition` (`if/while/do-while (x = y)` — bare assignment
+  as the direct condition test, exempting the standard double-paren "I meant it" idiom and all
+  compound assignment operators) and `checkNaNComparison` (`x === NaN` / `== NaN`, either
+  operand order — always false/true regardless of `x`; does NOT flag the legitimate `x !== x`
+  self-inequality isNaN idiom) to `src/CrucibleEngine/agent/localHardenCheck.ts`. Same
+  discipline as the original three checks (cont. 12): local, deterministic, zero model call,
+  zero false positives by construction.
+- **Verified:** new 9-case bench (2 bug shapes × TP + 5 false-positive guards) — 9/9. Re-ran
+  the original cont.12 7-case bench — still 7/7, no regressions. `tsc --noEmit
+  -p tsconfig.server.json` clean (pre-existing unrelated `_author_parsers2.ts` TS1109 aside).
+  `npm run prove:all` → 250/250 unchanged. Combined 16/16.
+- **Scope, still honest:** now 5 covered shapes total, still a closed syntactic set, not
+  semantic reasoning. Priority-ladder item 1 stays open — fast-check property/fuzz testing
+  remains the path to real semantic coverage; this is incremental hardening of the same
+  pattern-matching approach, not a different tier of protection.
+- **Not live-verified this session:** unlike cont.13's fallback-firing verification, this
+  round's two new checks were bench-verified only — no smoke:code sweep this session happened
+  to synthesize code containing either bug shape, so neither check has fired on the live path
+  yet. Not concerning (the shapes are individually rare); flag for a future sweep to confirm.
+
+### 2026-07-04 (cont. 13) — localHardenCheck fallback LIVE-VERIFIED end-to-end (closes cont. 12's open flag)
+- **What:** forced the actual live trigger condition cont. 12 left unverified — restarted
+  `:3001` with `CRUCIBLE_OFFLINE=strict` set in the SERVER's own process env (not just the
+  client smoke script's env, which `coding-benchmarks.ts` explicitly warns is insufficient —
+  the server reads its own `CRUCIBLE_OFFLINE` at startup), then ran a real
+  `npm run smoke:code:offline` sweep (7 tasks) against it.
+- **Result:** `.crucible/gate-telemetry.jsonl` recorded a genuine new line —
+  `{"gate":"harden","ran":true,"reason":"local-fallback (empty reviewer reply): clean"}` —
+  fired live on `summaryModule` (the one generative task this sweep that reached the harden
+  step; `filterModule`/`sortModule` escalated out earlier on documented FM generation-capability
+  limits, unrelated). Gate A2/A3 telemetry also confirmed still firing clean on the same sweep.
+  Scorecard 5/7 HARD-green, no regressions attributable to this check.
+- **Mechanism found while forcing it (worth recording, not obvious from cont. 12's writeup):**
+  in `strict` mode, `server.ts` assigns `activeDriveTurn = makeOfflineDriveTurn(projectPath)`
+  directly — it does NOT wrap it in `withOfflineFallback`. That means the `turnClass==='critic'`
+  short-circuit inside `withOfflineFallback` (which is what's *supposed* to route harden's
+  critic call) never applies under strict at all. Instead the `'critic'` call falls through
+  `makeOfflineDriveTurn`'s generic coding-state-machine body — which only intercepts
+  `turnClass==='glue'` with a direct `fmComplete` route, not `'critic'` — misparses the
+  embedded-source harden prompt, and returns empty text. That empty text is what actually trips
+  `runHardenReview`'s `localHardenFallback` catch. The OUTCOME is correct (a real local verdict,
+  not a silent accept) and now proven live, but the PATH there is an accidental reuse of the
+  same misparse-to-empty-text behavior that was deliberately fixed for `'glue'` two sessions
+  ago — `'critic'` was never given its own explicit interception. Left as-is (behavior is
+  correct); flagged as a cleanup candidate, not a bug, in the priority-ladder section above.
+- **Priority-ladder item 1:** the "not yet live-verified" flag from cont. 12 is now closed.
+  Item 1 itself stays open — `localHardenCheck.ts` is still a narrow syntactic scanner, not
+  semantic parity with the online critic. Next step unchanged: fast-check property/fuzz
+  testing, or making the `'critic'` routing explicit instead of coincidental.
+
+### 2026-07-04 (cont. 12) — Local deterministic harden fallback ships (priority-ladder item 1, partial fix)
+- **What:** `src/CrucibleEngine/agent/localHardenCheck.ts` — a zero-inference, syntactic TS-AST
+  scanner for a closed set of always-a-bug shapes: terminal off-by-one element access
+  (`arr[arr.length]`, the exact bug `runHardenReview`'s own prompt uses as its canonical
+  example), off-by-one `for (...; i <= arr.length; ...)` loop bounds that index the same array,
+  and literal divide/mod-by-zero. Same design discipline as Gate A2/A3: local, deterministic,
+  no model call, fails open per-file on a parse error, zero false positives by construction
+  (every pattern checked is unconditionally wrong, never a legitimate style choice).
+- **Wired in:** `runHardenReview` (`agent/loop.ts`) — its two existing fail-open branches
+  (empty online reviewer reply; driveTurn throws, e.g. pool unreachable) now call
+  `runLocalHardenCheck(sources)` instead of returning `null`. `null` used to mean "silently
+  ACCEPT"; now the caller always gets a real `HardenReview` verdict when the code contains one
+  of the covered bug shapes, even with zero online access. Telemetry reason
+  `local-fallback (<why online failed>): clean|findings` distinguishes this from both a normal
+  online pass/findings verdict and a true dark gate (no tool evidence to audit).
+- **Verified:** targeted 7-case bench (3 real-bug shapes × their corrected counterpart, plus a
+  no-false-positive check against the harden prompt's own `add(a,b)` PASS example and a normal
+  `(a+b)/2` division) — 7/7. `npx tsc --noEmit -p tsconfig.server.json` clean (pre-existing
+  `_author_parsers2.ts` TS1109 aside, not touched). `npm run prove:all` → 250/250 unchanged (this
+  only fires inside `runHardenReview`'s existing fail-open branches, so no other call site
+  changes behavior).
+- **Scope, honestly stated:** this is NOT parity with the online critic — it catches a small,
+  closed set of syntactically-always-wrong shapes, not the semantic task-vs-code reasoning
+  `__critic_bench.ts` showed the on-device FM is at chance on. Priority-ladder item 1 stays open
+  (marked "partially fixed") until either fast-check property/fuzz testing (the other named
+  Workstream 1 candidate, covers a much wider bug surface by exercising the code rather than
+  pattern-matching its AST) lands, or strict mode abstains/HITLs on judgment calls this net
+  can't catch instead of leaving any residual fail-open path.
+- **Not yet done, flagged for next session:** no live `smoke:code` sweep run against this commit
+  (the existing online pool was healthy this session, so the new fallback path did not fire
+  end-to-end against a real task — only the isolated unit bench above). Next session should
+  either force an offline/strict run to trigger it live, or add a direct unit test file under
+  the repo's test runner (this session used an ad hoc throwaway script, not a committed test).
 
 ### 2026-07-04 (cont. 11) — sortModule/filterModule `413 TPM-limit` root-caused + fixed (missing TPM guard on the driver tier, NOT pool pressure)
 - **Falsified cont. 2's pool-pressure theory.** The `413 (llama-3.1-8b-instant, Limit 6000)`
