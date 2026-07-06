@@ -1781,24 +1781,29 @@ function AuthScreen({ onAuth }: { onAuth: (user: { id: string; email: string }) 
 }
 
 // Wraps a reply card and mounts the MoltenPour canvas over it while it's the live
-// (currently-streaming) round. `reserveTop` leaves headroom above the card for the
-// crucible vessel + stream while the pour is in flight.
-function PourWrap({ active, phase, progress, reserveTop, children }: {
+// (currently-streaming) round.
+//
+// Item-23 fix: this used to reserve headroom for the crucible vessel via a `marginTop`
+// that animated in/out (46px while pouring, 0 once done) — a real layout-flow push that
+// shifted the reply card (and everything below it) up/down as the pour started/finished,
+// exactly the "collides with/pushes around message content" bug flagged for this
+// animation. The canvas already draws the vessel/spout entirely via its own negative
+// offset (`top: -70` in MoltenPour.tsx) as a `position: absolute` overlay with
+// `pointerEvents: none` — it was already visually safe to overlap the message above
+// without a layout reservation. Dropping the margin entirely removes the content shift;
+// the vessel now simply draws over whatever is above the card (transparent canvas, no
+// visual conflict) instead of pushing it out of the way.
+function PourWrap({ active, phase, progress, children }: {
   active: boolean
   phase: MoltenPhase
   progress: number
-  reserveTop: boolean
   children: React.ReactNode
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
   return (
     <div
       ref={wrapRef}
-      style={{
-        position: 'relative', borderRadius: 14, width: '100%',
-        marginTop: reserveTop ? 46 : 0,
-        transition: 'margin-top 0.6s cubic-bezier(0.22,1,0.36,1)',
-      }}
+      style={{ position: 'relative', borderRadius: 14, width: '100%' }}
     >
       {active && <MoltenPour phase={phase} progress={progress} wrapRef={wrapRef} />}
       {children}
@@ -3918,7 +3923,6 @@ export default function App() {
                   active={round.id === liveRoundId}
                   phase={round.synthesisDone ? 'done' : round.synthesis.length > 0 ? 'pouring' : 'thinking'}
                   progress={Math.min(1, round.synthesis.length / (round.synthesis.length + 500))}
-                  reserveTop={round.id === liveRoundId && !round.synthesisDone}
                 >
                 <div style={{
                   position: 'relative', borderRadius: 14, padding: '16px 18px', width: '100%', boxSizing: 'border-box' as const, overflow: 'hidden',
