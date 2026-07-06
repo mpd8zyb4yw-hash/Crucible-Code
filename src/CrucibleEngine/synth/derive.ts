@@ -309,18 +309,28 @@ export function derivePropertyTests(spec: string, modulePath: string): PropertyT
         `prop('union A+empty = A', ${name}(${arr(1, 2, 3)},[]).length === 3)`,
         `prop('union A+A has no dupes', ${name}(${arr(1, 2)},${arr(1, 2)}).length <= 2)`,
         `prop('union A+B >= max(A,B)', ${name}(${arr(1, 2, 3)},${arr(4, 5)}).length >= 3)`,
+        // Intra-side duplicates must collapse — set semantics dedupe WITHIN an input, not just
+        // across the two. A candidate that only dedupes cross-side passes every check above but
+        // leaks repeats from a single input (the tagSetModule failure shape, items 22/23 class).
+        `prop('union collapses intra-side dupes', ${name}(${arr(1, 1, 2)},[]).length === 2)`,
       )
     } else if (isInter) {
       assertions.push(
         `prop('intersect A+empty = empty', ${name}(${arr(1, 2, 3)},[]).length === 0)`,
         `prop('intersect A+A = A', ${name}(${arr(1, 2)},${arr(1, 2)}).length <= 2)`,
         `prop('intersect subset of A', ${name}(${arr(1, 2, 3)},${arr(2, 3, 4)}).length <= 3)`,
+        // Intra-side duplicates must collapse: intersect([1,1,2],[1,2]) is {1,2} (len 2), not
+        // [1,1,2] (len 3). A per-occurrence push (`for a: if b.includes(a) push`) passes every
+        // check above yet fails this — the exact live tagSetModule intersect bug.
+        `prop('intersect collapses intra-side dupes', ${name}(${arr(1, 1, 2)},${arr(1, 2)}).length === 2)`,
       )
     } else {
       // difference / subtract
       assertions.push(
         `prop('diff A-empty = A', ${name}(${arr(1, 2, 3)},[]).length === 3)`,
         `prop('diff A-A = empty', ${name}(${arr(1, 2)},${arr(1, 2)}).length === 0)`,
+        // Intra-side duplicates collapse: diff([1,1,2],[]) is {1,2} (len 2), not [1,1,2].
+        `prop('diff collapses intra-side dupes', ${name}(${arr(1, 1, 2)},[]).length === 2)`,
       )
     }
   }
