@@ -31,6 +31,16 @@ Two-track parallel session (coordinated via PARALLEL_SYNC.md). BOTH tracks lande
   (agent hit an out-of-depth tripwire on a do-not-modify scaffold file). Real frontier-SWE gap the
   offline agent can't yet close.
 
+**cont. 39 — synth catalog tsc fix (committed).** `src/CrucibleEngine/synth/catalogs/_author_parsers2.ts:43`
+threw TS1109 (Expression expected) — broken since 0e5847d (2026-07-02), not on the live server runtime
+path. Cause: the `globMatch` catalog `impl` is a template-literal string whose regex char class
+`[.+^${}...]` had a bare `${}` that TS parsed as an empty template substitution. Fix: escape as `\${}`
+(`\$` → literal `$` in the backtick string, so the emitted regex is unchanged). Verified: target error
+gone at HEAD, runtime regex correct (`globMatch("*.ts","foo.ts")===true`, `"foo.js"===false`,
+`"?.ts"/"a.ts"===true`, `"a.b"/"axb"===false`), `npm run synth:prove` GREEN 4/4. NOTE: `tsc
+-p tsconfig.server.json` is still NOT clean, but every remaining error is from the uncommitted UI
+refactor below (App.tsx/ensemble.tsx/*TabView.tsx), not from any synth/server file.
+
 **Next priorities (post-overhaul):**
 - Now safe to compute a parity % (both benches green/honest) — do it against BOTH the SWE coding
   bench and the coherence bench, not the old untrustworthy numbers.
