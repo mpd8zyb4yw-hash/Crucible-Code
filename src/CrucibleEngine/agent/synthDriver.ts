@@ -39,7 +39,7 @@ import { debugBus } from '../debug/bus'
 import type { DriveTurn, DriveTurnResult } from './loop'
 import { retrieveForTask } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
-import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete } from './fmReact'
+import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
 
 // ── Local FM helper (research turns only) ───────────────────────────────────
 // Mirrors callLocalModel in server.ts but lives here so synthDriver stays
@@ -77,7 +77,7 @@ async function _callLocalFm(system: string, user: string, ms = _RESEARCH_FM_TIME
  * (research DAG → FM ReAct → FM direct answer, in order).
  * Throws only if the Apple FM daemon is completely unavailable.
  */
-export async function solveNonCodeTurn(goal: string, projectPath?: string): Promise<string> {
+export async function solveNonCodeTurn(goal: string, projectPath?: string, history?: ConvTurn[]): Promise<string> {
   // Check FM availability first
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — escalating')
@@ -86,7 +86,17 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string): Prom
   // Only attempt if the goal looks research-shaped (asking for facts, docs, etc.)
   const isResearchShaped = /\b(what is|how does|explain|describe|tell me|find|search|look up|latest|documentation|docs?|api|tutorial|example|compare|difference between|vs\.?|why is|why are|why was|why did|why does|when did|when was|when is|when will|who is|who was|where is|where was)\b/i.test(goal)
 
-  if (isResearchShaped) {
+  // Context-dependent follow-up detection: a research-shaped query that leans on
+  // prior turns ("what is ITS population?", "and THAT one?") must NOT go to the
+  // history-blind research DAG — it retrieves against the bare pronoun and either
+  // abstains or answers the wrong entity. When we have history and the query
+  // carries an unresolved back-reference, skip the DAG and let the FM tiers
+  // (which now receive history) resolve the referent.
+  const hasHistory = Array.isArray(history) && history.length > 0
+  const isBackReference = /\b(it|its|it's|that|this|those|these|they|them|their|there|he|she|his|her|him|the one|the former|the latter|same)\b/i.test(goal) || /^\s*(and|but|what about|how about|ok|okay|so)\b/i.test(goal)
+  const contextDependent = hasHistory && isBackReference
+
+  if (isResearchShaped && !contextDependent) {
     let dagAnswer = ''
     let dagConfidence = 0
     try {
@@ -140,6 +150,7 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string): Prom
         goal,
         projectPath,
         maxRounds: 6,
+        history,
       })
       if (result.answer) {
         debugBus.emit('agent', 'fm_react_hit', {
@@ -159,7 +170,7 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string): Prom
 
   // ── Tier 3: FM direct answer (single call, no tools) ──────────────────────
   // Handles explanation, reasoning, planning, analysis — anything the FM knows.
-  const directAnswer = await fmDirectAnswer(goal)
+  const directAnswer = await fmDirectAnswer(goal, undefined, history)
   if (directAnswer) {
     debugBus.emit('agent', 'fm_direct_hit', { goal: goal.slice(0, 80) }, { severity: 'info' })
     return directAnswer

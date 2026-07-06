@@ -76,6 +76,8 @@ export interface FmReactOpts {
   extraTools?: FmReactTool[]
   /** Disable web search (e.g. for pure coding tasks). */
   noSearch?: boolean
+  /** Prior conversation turns for multi-turn context. */
+  history?: ConvTurn[]
 }
 
 export interface FmReactResult {
@@ -297,6 +299,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     signal,
     extraTools = [],
     noSearch = false,
+    history,
   } = opts
 
   const tools = [...makeDefaultTools(projectPath, noSearch), ...extraTools]
@@ -304,6 +307,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
   const system = buildSystemPrompt(tools)
 
   const messages: FmMessage[] = [
+    ...historyToMessages(history),
     { role: 'user', content: goal },
   ]
 
@@ -386,12 +390,30 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
  * Quick FM direct answer — no tool use, just a single call.
  * Good for questions that can be answered from training knowledge.
  */
-export async function fmDirectAnswer(goal: string, context?: string): Promise<string> {
+/** Prior conversation turns, oldest-first, threaded into offline answers so the
+ *  FM has multi-turn context. Without this the model treats every turn in
+ *  isolation and hallucinates (e.g. refusing a plain follow-up question). */
+export type ConvTurn = { user: string; assistant: string }
+
+/** Convert {user,assistant} history into alternating FM chat messages. */
+export function historyToMessages(history?: ConvTurn[]): FmMessage[] {
+  if (!Array.isArray(history) || !history.length) return []
+  const msgs: FmMessage[] = []
+  for (const h of history) {
+    const u = (h?.user ?? '').trim()
+    const a = (h?.assistant ?? '').trim()
+    if (u) msgs.push({ role: 'user', content: u })
+    if (a) msgs.push({ role: 'assistant', content: a })
+  }
+  return msgs
+}
+
+export async function fmDirectAnswer(goal: string, context?: string, history?: ConvTurn[]): Promise<string> {
   const system = `You are Crucible, an expert AI assistant. Answer the user's question clearly and completely.
 ${context ? `\n## Context\n${context}` : ''}
-Be direct, thorough, and accurate. Format with markdown when helpful.`
+Be direct, thorough, and accurate. Format with markdown when helpful. Use the prior conversation turns for context — the user may refer back to things already said.`
 
-  return callFm(system, [{ role: 'user', content: goal }], FM_TIMEOUT_MS)
+  return callFm(system, [...historyToMessages(history), { role: 'user', content: goal }], FM_TIMEOUT_MS)
 }
 
 /**

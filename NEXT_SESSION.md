@@ -17,21 +17,265 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 35b — NORTHSTAR UI REDESIGN, major slice
-landed on branch `crucible-northstar-sessions`, 4 commits total. Crucible-local is the default
-path; the external ensemble is now fully opt-in + BYOK (bring-your-own-key), gated by a
-persistent toggle AND a per-query confirm; the final 3-phase molten pour chat animation is
-implemented and wired to real streaming state; an ambient v2 backdrop + v2 mode pills are in.
-All tsc-clean (app+server), app boots with zero console errors, engine benches green
-(stakes 17/17, repairs 14/14, fuzz 31/31). Remaining redesign work = the full left-rail
-tab-nav shell + per-screen restyle (task #4, structural). Deep UI is OAuth-gated so it was
-verified by boot+compile+bench, not by driving the logged-in chat view.)
+## CURRENT STATE (last updated 2026-07-06, cont. 37 — MULTI-TURN CONTEXT FIX. The user reported
+that real chat is "dumb as fuck / misaligned instantly even on simple coherent prompts." Root-caused
+LIVE (minted-JWT curl, not a boot screenshot): the offline conversational brain threw away
+conversation history entirely — `solveNonCodeTurn(message)` got only the current message, so every
+turn was answered in isolation and follow-ups hallucinated (e.g. a nonsensical refusal to recall the
+user's favorite language). The client already SENT `history`; the server just dropped it. prove:all
+is all single-shot so it stayed green while real multi-turn chat was broken — trust real chat over
+the suites.
+
+**cont. 37 — what shipped (tsc-clean server+app, all live-verified via /api/chat on :3001):**
+1. `src/CrucibleEngine/agent/fmReact.ts`: new `ConvTurn` + `historyToMessages()`; `fmDirectAnswer`
+   and `fmReact` now prepend prior turns as alternating chat messages.
+2. `src/CrucibleEngine/agent/synthDriver.ts`: `solveNonCodeTurn(goal, projectPath?, history?)` threads
+   history into the FM ReAct + direct tiers; a back-reference guard makes research-shaped follow-ups
+   ("what is ITS population?") skip the history-blind research DAG and use the FM tiers instead.
+3. `server.ts`: passes `history.slice(-6)` to `solveNonCodeTurn`; new `isContextDependent` (has
+   history AND back-reference regex) forces triageTier='full' (so short follow-ups don't collapse to
+   the history-blind simple-triage single call) AND bypasses both the exact + semantic response caches
+   (message-keyed → would serve a stale answer from a different conversation).
+   Verified: name recall, pronoun resolution (Rust vs Go), research follow-ups (Japan pop/capital),
+   and standalone prompts all coherent. See [[crucible-multiturn-context-fix]].
+
+**Still open after cont.37 (next priorities):**
+- Research DAG can self-contradict on some standalone factual Qs ("Paris is not the capital of France.
+  The capital is Paris.") — a synthesis bug INSIDE the DAG, unaddressed. Reproduce with
+  `solveNonCodeTurn("what is the capital of France?")` in isolation.
+- `fmDirectAnswer` occasionally runs away into degenerate repetition (endless "Example 10, 11, 12…")
+  at max_tokens=1536 — add a repetition stop / lower ceiling for conversational answers.
+- Conversational latency is 12-17s for simple answers — worth profiling.
+- Everything below this block is the PRIOR (cont.36c) state, kept for history only.
+
+---
+
+## PRIOR — CURRENT STATE (last updated 2026-07-06, cont. 36c — FULL v3 CHAT REBUILD after the user
+rejected cont.36's wrap-only slice as superficial ("didn't hit half the features"). This
+continuation REBUILT the chat surface for real and fixed the actual ensemble-default leak,
+which was SERVER-side. All verified live in the browser against a real running backend with
+a minted JWT — screenshots of the logged-in UI, real queries answered, this is NOT the
+boot-to-auth-screen verification ceiling of prior sessions.)
+
+**cont.36c — what actually shipped (all tsc-clean, live-verified):**
+1. **THE ensemble-default bug was server-side and is now structurally fixed.** server.ts's
+   `/api/chat` had `mode = 'quorum'` as the DESTRUCTURING DEFAULT, and `mode:'code'`
+   conversational turns were explicitly EXCLUDED from the offline-brain route (the old gate
+   said `mode !== 'code'`), so ordinary chat fell through to the external multi-model
+   pipeline regardless of the client's local default. Fix: (a) default is now `mode = 'code'`;
+   (b) new per-request `requestOffline` lever right after body destructuring — ANY
+   non-'quorum' request behaves as `CRUCIBLE_OFFLINE=strict` for its entire lifetime (all 5
+   in-handler env reads now read `requestOffline`), making the external pipeline structurally
+   unreachable without the explicit ensemble confirm + BYOK keys; (c) the offline-conv-brain
+   gate now INCLUDES mode 'code'. Live-verified: 4 real queries in mode:code all answered
+   on-device (one even with cited sources from the local research DAG), zero external
+   fan-out. Also gated the CLIENT predictive pre-warm (App.tsx handleInput) on
+   mode==='quorum' — typing was warming external Groq/OpenRouter models even in local mode.
+2. **Old topbar DELETED, everything is left-rail now.** The 340-line topbar block (binder
+   icon cluster + hamburger menu + Google-services menu) is gone. New slim in-chat header:
+   Crucible wordmark + ON-DEVICE/ENSEMBLE badge + live elapsed/stage while working + New
+   chat. The binders (History/Tasks/Integrations/Library/SelfRepair/SelfPatcher + governance
+   trigger) moved into Settings → System section (SettingsTabView `advanced` prop). The old
+   menu's dead items (API Keys/Pipeline Config/Model Roster "coming soon" alerts, About,
+   Google-services status) were dropped entirely — Google status has no UI home now, flag if
+   missed.
+3. **MoltenPour is REAL now** — `src/MoltenPour.tsx`, verbatim canvas port of the reference
+   (vessel + tilt-loop + molten stream + dual-edge border fill + top-down cool sweep),
+   driven by round state via a new `PourWrap` (App.tsx) + `liveRoundId` state (only the
+   round streamed live THIS session animates — restored history never replays the pour).
+   The live round's card now mounts IMMEDIATELY on send (empty shell, `reserveTop` headroom)
+   so the vessel visibly tilt-loops during 'thinking' — screenshot-verified live.
+   `PourRing.tsx` is now DEAD CODE (unused, still on disk) — delete or keep as reference.
+4. **Reply cards are clean per v3**: local replies = plain glass card + copy/feedback +
+   `CRUCIBLE · ON-DEVICE` footer; ALL ensemble chrome (model chips, "consensus" label,
+   attribution, the entire shows-its-work process trail with its "N models · X% confident"
+   chips) now renders ONLY when `round.models.length > 0` (i.e. an actual ensemble run).
+   Screenshot-verified: the old "0 models · 0% confident / SHOWS ITS WORK" junk is gone
+   from local replies.
+5. **Composer rebuilt to the reference**: crucible glyph + textarea + round send/stop
+   (molten orange while working) in row 1; Ensemble pill + honest status line ("0 external
+   calls" / "armed — will ask before any fan-out") in row 2. The ugly "+ KEY" pill is gone;
+   with no keys the pill routes to the Settings tab. The per-query ensemble confirm and the
+   no-keys prompt are now INLINE CARDS above the composer (reference style), not modals —
+   `EnsembleKeyModal`/`EnsembleConfirm`/`EnsemblePill` in ensemble.tsx are now unused by
+   App.tsx (dead exports, still on disk).
+6. **Mode-machine purge**: `MODE_META` deleted; conversation-restore no longer adopts a
+   stored 'quorum' mode (both restore sites); `classifyMode` was already gone. `mode` state
+   survives internally ('code' default) but the ONLY write paths are the Ensemble pill and
+   the confirm-card handlers.
+7. **How this was live-verified (reusable recipe):** backend restarted onto current code
+   (killed the pre-edit process on 3001 first — same stale-port class as the Electron fix
+   earlier this session), vite preview + minted JWT (per [[crucible-local-auth-testing]])
+   set as a browser cookie via preview_eval (cookies ignore ports, so a localhost cookie
+   reaches :3001) — then drove the REAL logged-in UI: sent 4 queries, watched answers
+   register, screenshotted the thinking-vessel animation and the clean cards. This bypasses
+   the OAuth wall that capped every prior session's verification.
+
+**Known rough edges left (small, listed so they aren't re-derived):**
+- The pouring/cooling border phases weren't visually captured (local FM answered in one
+  chunk after a long thinking phase; screenshots caught thinking-vessel only). The
+  finishing-floor (1350ms) + cool floor (1000ms) guarantee visibility; if the user reports
+  no border glow, debug MoltenPour's phase mapping in PourWrap first.
+- `/api/prewarm` is still ungated server-side (client no longer calls it in local mode).
+- Server-wide background external traffic still exists OUTSIDE /api/chat (free-model Hunter
+  probing, ModelRefresh) — visible in the server log on boot. Product decision needed:
+  those run on the bundled env key. Not chat-triggered.
+- Dead files: PourRing.tsx, plus ensemble.tsx's EnsemblePill/EnsembleKeyModal/
+  EnsembleConfirm exports.
+- The Electron app: user must fully relaunch Crucible.app to get this server code (the
+  electron.cjs stale-port fix from earlier today will clear any leftover 3001 process).
+
+## PRIOR (cont. 36 first slice — superseded in part by 36c above): BUILD-BREAK FIX, Electron
+stale-port fix, AND the v3 left-rail tab shell ported from a reference implementation. A new design
+handoff (`Crucible UI redesign/v3/HANDOFF - Claude Code implementation brief.md` +
+`Crucible v3.dc.html`, both untracked) superseded/clarified v2's ensemble UX. Discovered
+mid-session: `git log` showed an UNDOCUMENTED commit `c9db65f` ("Update engine, UI, and
+checkpoints...", 2026-07-06 07:02, after cont.35b's own commits) that left the working tree
+with `npx tsc --noEmit -p tsconfig.app.json` FAILING — `App.tsx` imported `EnsemblePill` from
+`./ensemble` but `ensemble.tsx` only exported the old `ModeBar`. Fixed first, before any new
+feature work. `c9db65f` also added `SelfPatcherBinder.tsx` + `CrucibleEngine/selfPatcher.ts`,
+unrelated to the UI redesign and not otherwise investigated — worth a look if unfamiliar.
+
+**Also this session: root-caused the user's report that the Electron app "wasn't picking up
+backend changes"** — a manually-started detached `tsx server.ts` from the PRIOR DAY was still
+squatting on port 3001, so the app's own freshly-spawned server crashed silently with
+EADDRINUSE and the window opened against the stale process instead. Killed it and hardened
+`electron.cjs` (`spawnBackend()` now kills any prior 3001 occupant before binding, every
+launch). Full detail in [[crucible-run-commands]].
+
+**Then: the user pointed at a REFERENCE implementation repo** —
+`https://github.com/mpd8zyb4yw-hash/Crucible-Code` (a from-scratch small reference app a design
+handoff produced, NOT this project's real backend) — cloned to
+`~/crucible-local/crucible-v3-reference` (sibling folder, untracked by this repo) and read in
+full: `src/state/store.ts`+`types.ts` (zustand shape), `src/styles/tokens.css` (design tokens),
+`src/components/NavRail.tsx`, `chat/{ChatView,Composer,MoltenPour}.tsx`,
+`agents/AgentsView.tsx`, `history/HistoryView.tsx`, `settings/SettingsView.tsx`,
+`shared/BackgroundBlobs.tsx`, and the mock `CrucibleEngine/{localModel,ensemble}.ts` (these
+last two are explicitly-labeled zero-network stand-ins for a real backend — did NOT port them,
+kept this app's real `/api/chat` streaming + tool/agent path).
+
+**Ported into the REAL app this session (new `tab` state + 4 new files):**
+- `src/NavRail.tsx` — the 56px left glass rail, near-verbatim from the reference (Chat/Agents/
+  History/Settings icon buttons + wordmark).
+- `src/AgentsTabView.tsx` — full-page Agents tab: the reference's 5 prebuilt-workflow cards
+  (Vibe Code/Search Web/Deep Research/Smoke Test/Decide For Me), each wired to `onBuild` →
+  real `send()` with a task-specific prompt (not the reference's mock `draftAgent`), plus the
+  REAL skill/tool catalog (`GET /api/library/skills` + `/tools`, same data LibraryBinder's
+  drawer already showed) rendered as a searchable grid below the cards.
+- `src/HistoryTabView.tsx` — full-page History tab, same `GET /api/conversations` data source
+  as the existing topbar `HistoryBinder` dropdown, day-bucketed list, click-to-restore (reuses
+  the exact restore logic that lived inline for `HistoryBinder`'s `onRestore`).
+- `src/SettingsTabView.tsx` — full-page Settings tab: the blank-slate BYOK key list promoted
+  out of the composer-pill `EnsembleKeyModal` into its own tab, same underlying `ensemble`
+  state/provider-auto-detection from `ensemble.tsx` (cont.36 build-fix work), just a full page
+  instead of a modal.
+- `src/App.tsx`: added `const [tab, setTab] = useState<'chat'|'agents'|'history'|'settings'>
+  ('chat')`; wrapped the root render in a new flex row
+  (`<NavRail/>` + a column div) and gated the ENTIRE pre-existing chat body (topbar, message
+  feed, composer, all the topbar drawers — Library/SelfRepair/Integrations/Tasks/SelfPatcher)
+  behind `{tab === 'chat' && <>...</>}` — a pure wrap at the two boundary points (right after
+  `<style>`, right before the root's final closing div), no interior content touched, so the
+  existing Chat-tab functionality is provably unchanged. `tsc --noEmit` clean; app boots with
+  zero console errors in the preview (still auth-gated past that point — see the recurring
+  verification-ceiling note below).
+
+**Deliberately NOT done / left for next session (scope calls, not oversights):**
+- The reference's `MoltenPour.tsx` canvas port was READ in full but NOT swapped in for the
+  existing `PourRing.tsx` — cross-checked the two against each other and `PourRing.tsx` already
+  implements the same phase model (idle→pouring→done, real-stream-driven, same
+  `POUR_MIN_MS`/`COOL_MIN_MS` floors, top-center spout, dual-half-path border reveal, top-down
+  cool sweep) via a different code path (dashed-stroke technique vs the reference's manual
+  polyline stroke-by-arc-length). Functionally equivalent as far as a code read can tell; a
+  literal byte-for-byte canvas port was judged not worth the regression risk this session. If a
+  future session wants the exact reference visual (mottled-noise `moltenColor` formula vs
+  `PourRing`'s hue-drift gradient), that's the remaining gap — not a missing feature.
+- `tokens.css` was READ but deliberately NOT imported — its `:root` block defines `--bg`/
+  `--text`/`--accent` etc. that COLLIDE by name with `src/index.css`'s pre-existing (differently
+  valued, light/dark-mode) CSS vars, which other legacy components may depend on. The v3
+  redesign already uses literal hex values inline (not CSS vars) throughout App.tsx/ensemble.tsx/
+  the new tab views, and those literals already match the tokens.css values (`#101016`,
+  `#e4e4ee`, `#7c7cf8`, `#4db89e`, etc.) — so the design system IS applied, just not via a
+  shared stylesheet. Importing tokens.css for real would need renaming its vars first.
+- Agents/History/Settings tabs are NEW, purpose-built full-page views — NOT the existing
+  drawer components (`LibraryBinder`/`HistoryBinder`/`SelfRepairBinder`) repurposed. Those
+  drawers are unconverted and still live, unchanged, inside the Chat tab's topbar button
+  cluster (per the original brief's "keep existing structure/tools intact"). This means there's
+  now SOME overlap (e.g. skill/tool browsing exists both in the Agents tab and the Library
+  drawer) — worth deciding next session whether to fold the drawers into the new tabs or keep
+  both.
+- `SelfRepairBinder`/`SelfPatcherBinder`/`IntegrationsBinder`/`TasksBinder` have no tab-level
+  home yet — they're still only reachable via the Chat tab's topbar icons.
+
+**Cont. 36 (this session):**
+1. **Fixed the build break** — added `EnsemblePill` to `src/ensemble.tsx` (a plain single
+   toggle button; the old `ModeBar`'s Code/Search pills are gone for good, matching App.tsx's
+   own comment "mode picker UI removed (v3)"). `tsc --noEmit` clean on `tsconfig.app.json`
+   again; confirmed via `preview_start` (vite) — app boots to the (OAuth-gated) auth screen
+   with zero console errors, same verification ceiling as cont.35b since the chat view itself
+   still requires a real Google/GitHub login.
+2. **Implemented the v3 handoff's BYOK key list** (`EnsembleKeyModal` in `src/ensemble.tsx`):
+   replaced the old fixed 6-provider form (`BYOK_PROVIDERS`, always showing Mistral/Gemini/etc.
+   input boxes) with a blank-slate, freely-named list — user types any name + pastes any key,
+   `+ Add key`/`Remove` per row, stored as `NamedKey[]` in localStorage
+   (`crucible_byok_named_keys`). Provider is auto-detected from the pasted token's own prefix
+   (`detectKeyProvider()`: `sk-or-`→openrouter, `gsk_`→groq, `AIza`→gemini, `sk-`→openai,
+   unrecognized → stored but flagged "not dispatchable yet" in the row). This was a judgment
+   call reconciling the v3 spec ("no pre-baked provider fields... name freely") with the
+   server's actual per-provider dispatch (`modelRegistry.resolveProviderKey`) — no code comment
+   needed re-litigation per the handoff's own "make the closest reasonable call" instruction.
+   **Caveat carried over from cont.35b, still true:** only `openrouter` is actually wired
+   server-side (`server.ts` reads `resolveProviderKey('openrouter')` in exactly 2 places); a
+   key that auto-detects as groq/gemini/openai is stored and shown correctly but the server
+   won't use it yet — extending the SDK-client providers to accept BYOK keys per-request is
+   still the next real step for those three, unchanged from before this session.
+
+**NOT done this session (still the actual bulk of the v3 handoff, unstarted):**
+- **Structural change #1** (delete the mode state machine entirely — `mode` state, remaining
+  `research`/`seeker` MODE_META wiring) — NOT done; `mode` state and `MODE_META` still exist in
+  App.tsx (`quorum`/`code`/`seeker`/`research`), just no longer auto-classified. The v3 brief's
+  literal ask ("delete the mode state machine... zero external calls except via the pill") is
+  ALREADY effectively true in behavior (no auto-escalation, confirmed cont.35), but the dead
+  `seeker`/`research` states/menu remnants haven't been removed — check `modeMenuOpen`,
+  `MODE_META`, and whatever still reads `mode==='seeker'`/`'research'` before assuming this is
+  fully closed.
+- **The MoltenPour canvas rewrite** — v3's handoff asks for a literal port of the prototype's
+  `drawPour()` canvas methods into a new `MoltenPour.tsx`. The EXISTING `PourRing.tsx` (from
+  cont.35b) already implements the same phase model (idle→pouring→done, live stream-driven,
+  border-fill-tracks-card-height) by a different code path (dashed-stroke SVG-ish approach, not
+  a raw `<canvas>` port) — functionally very close to spec per its own doc block above. Did NOT
+  rewrite it as a literal canvas port this session; worth comparing directly against
+  `Crucible v3.dc.html`'s `drawPour()` next time to decide if the existing implementation is
+  good enough or needs the literal port.
+- **The 56px left glass rail + Chat/Agents/History/Settings tab-nav** (task #4, still the single
+  biggest unstarted structural piece, unchanged from cont.35b's description of it).
+- **Settings → API keys as its own screen** (v3 puts key management under a Settings tab, not
+  just a modal off the composer pill) — today's `EnsembleKeyModal` is still a modal, not a
+  Settings-tab surface; low-risk to leave as-is until the tab-nav shell exists to house it.
+
+**Also this session — root-caused why the Electron app "wasn't picking up backend changes":**
+a manually-started detached `tsx server.ts` from the PRIOR DAY (`Sun Jul 5 22:05`) was still
+squatting on port 3001. `electron.cjs`'s own `spawnBackend()` tried to bind 3001 too, crashed
+silently with `EADDRINUSE` (only visible in `~/Library/Logs/Crucible-launch.log`), but
+`waitForPort(3001)` doesn't check WHICH process answers — so the app window opened against the
+stale day-old backend instead, with zero visible error. Killed the stale process and hardened
+`electron.cjs`: `spawnBackend()` now calls a new `killStalePortOwner(3001)` (lsof+SIGKILL)
+before every spawn, so this can't recur silently. Full detail in
+[[crucible-run-commands]]. **The Desktop `Crucible.app` launcher itself was fine** (correctly
+points at this repo) — the bug was purely the port race, not the launcher or the build step.
+User should just quit and relaunch Crucible.app now to get a clean backend bound to current
+code (the currently-open window, if any, is talking to the now-dead stale process).
+
+**Next session should start by:** (a) reading the v3 handoff file directly (`Crucible UI
+redesign/v3/HANDOFF - Claude Code implementation brief.md`) since it has exact current line
+numbers for App.tsx's mode state/classifyMode remnants and the canvas port spec verbatim; (b)
+deciding MoltenPour canvas-port vs keep-PourRing before touching animation code; (c) task #4
+(left rail) is still the load-bearing remaining piece for the whole redesign to feel "done".
 
 **Cont. 35b commits (all on `crucible-northstar-sessions`):**
 - `9ef4aaf` — checkpoint of all verified cont.33/34 work (before touching App.tsx).
 - `d112fed` — classifyMode no longer auto-escalates into ensemble; default mode `code` (local).
 - `d34e123` — the v2 redesign slice (below).
-- (docs commit follows this file.)
+- `c9db65f` — UNDOCUMENTED at the time; broke the build (see cont.36 above), fixed this session.
 
 **What `d34e123` shipped:**
 - **New component files:** `src/BackgroundBlobs.tsx` (ambient canvas backdrop, port of the v2

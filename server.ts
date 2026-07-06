@@ -2355,11 +2355,20 @@ function shouldUseMetaRouter(message: string): boolean {
 }
 
 app.post('/api/chat', async (req, res) => {
-  const { message, mode = 'quorum', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId, byokKeys } = req.body
+  // v3: the DEFAULT mode is 'code' (Crucible-local). 'quorum' is only ever sent by the
+  // client after the explicit per-query ensemble confirm — it is never a fallback.
+  const { message, mode = 'code', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId, byokKeys } = req.body
   // BYOK: scope any user-supplied provider keys to this request's async context so the
   // external pipeline runs on the USER's keys, never a bundled/shared one (product
   // constraint). Local/synth paths ignore this. No-op when no keys are sent.
   enterByokKeys(byokKeys)
+  // ── v3 product rule: the external multi-model pipeline runs ONLY for an explicit,
+  // client-confirmed ensemble request (mode==='quorum', sent together with the user's own
+  // byokKeys after the per-query confirm). EVERY other mode is local-only for this request —
+  // exactly the CRUCIBLE_OFFLINE=strict behavior — regardless of the server-wide env
+  // default. This is the server-side half of "Crucible-local is the default, zero external
+  // calls"; the client-side mode default alone cannot prevent server-side fan-out.
+  const requestOffline: string = mode === 'quorum' ? (process.env.CRUCIBLE_OFFLINE ?? '1') : 'strict'
   const chatSessionId = typeof reqSessionId === 'string' ? reqSessionId : ''
   const chatRoundId = typeof reqRoundId === 'string' ? reqRoundId : ''
   // Register roundId → conversationId so the completion patch can update the grouped
@@ -2774,7 +2783,7 @@ app.post('/api/chat', async (req, res) => {
         //   CRUCIBLE_OFFLINE=0      — external models only (opt-out of offline brain)
         //   default                 — offline-first with external fallback (production default)
         const _offlineDrive = makeOfflineDriveTurn(projectPath)
-        const _offlineMode = process.env.CRUCIBLE_OFFLINE ?? '1'
+        const _offlineMode = requestOffline
         const activeDriveTurn = _offlineMode === 'strict'
           ? _offlineDrive
           : _offlineMode === '0'
@@ -2847,7 +2856,7 @@ app.post('/api/chat', async (req, res) => {
     // Same model-cost-independent driver selection as the meta-router path above —
     // this block runs when shouldUseMetaRouter() is false, so it needs its own copy.
     const _offlineDriveSingle = makeOfflineDriveTurn(projectPath)
-    const _offlineModeSingle = process.env.CRUCIBLE_OFFLINE ?? '1'
+    const _offlineModeSingle = requestOffline
     const activeDriveTurn = _offlineModeSingle === 'strict'
       ? _offlineDriveSingle
       : _offlineModeSingle === '0'
@@ -2860,7 +2869,7 @@ app.post('/api/chat', async (req, res) => {
       const persist = (steps: any[], completedSummaries: string[], status: 'running' | 'done' | 'failed') =>
         saveSession({ id: sessionId, goal, projectPath, steps, completedSummaries, status, createdAt: resumable?.createdAt ?? t0, updatedAt: t0 })
       // Use FM for planning when offline-first mode is on; fall back to external driver.
-      const offlinePlanMode = process.env.CRUCIBLE_OFFLINE ?? '1'
+      const offlinePlanMode = requestOffline
       const planModelFn = offlinePlanMode === '0'
         ? driverComplete
         : async (msgs: Array<{ role: string; content: string }>, cls?: 'glue' | 'hard') => {
@@ -3120,7 +3129,15 @@ app.post('/api/chat', async (req, res) => {
     if (trimmed.length <= 160 && qMarks <= 1 && SIMPLE_RX.test(trimmed) && !NEEDS_ENSEMBLE_RX.test(trimmed)) return 'simple'
     return 'full'
   }
-  const triageTier = mode === 'agent' ? 'full' : triageQuery(message)
+  // Context-dependent follow-ups ("what is ITS population?", "and THAT one?") mean
+  // nothing without the prior turns. They must NOT collapse to the history-blind
+  // simple-triage single call, and must NOT be served from the message-keyed caches
+  // (the same text resolves to a different referent in a different conversation).
+  // Route them to the 'full' tier, where the offline brain threads history.
+  const _hasHistory = Array.isArray(history) && history.length > 0
+  const _isBackReference = /\b(it|its|it's|that|this|those|these|they|them|their|there|he|she|his|her|him|the one|the former|the latter|same)\b/i.test(message) || /^\s*(and|but|what about|how about|ok|okay|so)\b/i.test(message)
+  const isContextDependent = _hasHistory && _isBackReference
+  const triageTier = mode === 'agent' ? 'full' : (isContextDependent ? 'full' : triageQuery(message))
 
   // ── Exact response cache check ───────────────────────────────────────────
   const ck = cacheKey(message)
@@ -3128,7 +3145,7 @@ app.post('/api/chat', async (req, res) => {
   // Agentic-intent requests bypass cache — cached instructions must never substitute
   // for live execution (the agent needs to run, not replay a prior answer).
   // (isAgenticIntent is computed once near the top of the handler.)
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS && !isAgenticIntent) {
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS && !isAgenticIntent && !isContextDependent) {
     console.log('[Cache] HIT —', message?.slice(0, 60))
     diag.cacheHits++
     for (const event of cached.events) {
@@ -3140,7 +3157,7 @@ app.post('/api/chat', async (req, res) => {
   }
   // ── Semantic cache check (paraphrase of a prior query) ───────────────────
   const semantic = semanticLookup(message)
-  if (semantic && !isAgenticIntent) {
+  if (semantic && !isAgenticIntent && !isContextDependent) {
     diag.cacheHits++
     console.log(`[Cache] SEMANTIC HIT (${semantic.sim.toFixed(3)}) — "${message?.slice(0, 50)}" ≈ "${semantic.entry.message.slice(0, 50)}"`)
     debugBus.emit('pipeline', 'semantic_cache_hit', { query: message.slice(0, 80), matched: semantic.entry.message.slice(0, 80), similarity: parseFloat(semantic.sim.toFixed(3)) }, { severity: 'success' })
@@ -3161,7 +3178,7 @@ app.post('/api/chat', async (req, res) => {
     // under strict. Pin strict simple-triage to a single DIRECT local FM call instead:
     // one concise callLocalModel (same fast, single-call shape this branch intends),
     // gated on daemon liveness. If the daemon is down, abstain honestly — never external.
-    const _offlineTriageMode = process.env.CRUCIBLE_OFFLINE ?? '1'
+    const _offlineTriageMode = requestOffline
     if (_offlineTriageMode === 'strict') {
       const simplePT = classifyPrompt(message)
       learnClassification(message, regexClassify(message))
@@ -3244,8 +3261,10 @@ app.post('/api/chat', async (req, res) => {
   // a single gated FM call, so it is left untouched.
   //   'strict' — local only; on FM-daemon-down or empty, abstain honestly (never external)
   //   default  — local first; on OfflineEscalateError, fall through to the ensemble
-  const _offlineConvMode = process.env.CRUCIBLE_OFFLINE ?? '1'
-  if (_offlineConvMode !== '0' && mode !== 'agent' && mode !== 'seeker' && mode !== 'code' && triageTier === 'full' && !isAgenticIntent) {
+  const _offlineConvMode = requestOffline
+  // v3: 'code' is no longer excluded — it's the default local mode, and its conversational
+  // turns must route through the offline brain, not fall through to the external pipeline.
+  if (_offlineConvMode !== '0' && mode !== 'agent' && mode !== 'seeker' && triageTier === 'full' && !isAgenticIntent) {
     const abstain = (text: string) => {
       send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text, done: true, replace: false })
       send({ type: 'stage', stage: 5, status: 'done' })
@@ -3256,7 +3275,7 @@ app.post('/api/chat', async (req, res) => {
       send({ type: 'contract', promptType: convPT, requiredStructure: [], forbiddenAntipatterns: [] })
       send({ type: 'stage', stage: 1, status: 'start' })
       const t0o = Date.now()
-      let answer = await solveNonCodeTurn(message)
+      let answer = await solveNonCodeTurn(message, undefined, Array.isArray(history) ? history.slice(-6) : undefined)
       const latencyMs = Date.now() - t0o
       // Deterministic arithmetic guard (ZERO inference): the free-tier model does mental
       // math token-by-token and ships wrong products (47×53 → "2,591"). Before sending,
