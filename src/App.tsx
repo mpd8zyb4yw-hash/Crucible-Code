@@ -134,13 +134,16 @@ function CopyButton({ text, inline = false, title = 'Copy' }: { text: string; in
 
 function FeedbackButtons({ query, synthesis, promptType }: { query: string; synthesis: string; promptType: string }) {
   const [voted, setVoted] = useState<'up' | 'down' | null>(null)
+  // Item-7: rating used to be write-once (`if (voted) return`), so a misclick could never be
+  // corrected. Clicking the already-active vote un-rates; clicking the other vote switches it.
+  // Every state change still POSTs so the backend sees the latest (or retracted) vote.
   const vote = (v: 'up' | 'down') => {
-    if (voted) return
-    setVoted(v)
+    const next = voted === v ? null : v
+    setVoted(next)
     apiFetch('/api/feedback', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, synthesis, vote: v, promptType }),
+      body: JSON.stringify({ query, synthesis, vote: next, promptType }),
     }).catch(() => {})
   }
   return (
@@ -149,10 +152,10 @@ function FeedbackButtons({ query, synthesis, promptType }: { query: string; synt
         <button
           key={v}
           onClick={() => vote(v)}
-          title={v === 'up' ? 'Good answer' : 'Bad answer'}
+          title={v === 'up' ? (voted === 'up' ? 'Remove rating' : 'Good answer') : (voted === 'down' ? 'Remove rating' : 'Bad answer')}
           style={{
             background: voted === v ? (v === 'up' ? 'rgba(77,184,158,0.15)' : 'rgba(248,124,124,0.12)') : 'none',
-            border: 'none', cursor: voted ? 'default' : 'pointer',
+            border: 'none', cursor: 'pointer',
             padding: '3px 5px', borderRadius: 5,
             color: voted === v ? (v === 'up' ? '#4db89e' : '#f87c7c') : 'rgba(255,255,255,0.18)',
             transition: 'color 0.15s, background 0.15s',
@@ -3904,11 +3907,10 @@ export default function App() {
                   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
                   animation: 'fadeIn 0.3s ease',
                 }}>
-                  {round.synthesisDone && (
-                    <div style={{ position: 'absolute', top: 12, right: 14, zIndex: 2 }}>
-                      <CopyButton text={`${round.userMessage}\n\n${round.synthesis}`} inline title="Copy full exchange" />
-                    </div>
-                  )}
+                  {/* Item-6: this card used to render a second, redundant top-right "Copy full
+                      exchange" button in addition to the "Copy answer" button that sits next to
+                      the feedback controls below — two copy affordances for the same message.
+                      Removed; the bottom one (paired with rating) is the single copy action now. */}
                   {/* Ensemble chrome (model chips + attribution) renders ONLY on ensemble
                       runs — a local reply is a clean card (v3). */}
                   {models.length > 0 && (
