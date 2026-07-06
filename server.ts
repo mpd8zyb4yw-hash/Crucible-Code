@@ -283,7 +283,7 @@ import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngin
 import { domainVerify, correctArithmetic } from './src/CrucibleEngine/domainVerifiers'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
-import { runSelfPatcher, loadPatches } from './src/CrucibleEngine/selfPatcher'
+import { runSelfPatcher, loadPatches, rejectPatch } from './src/CrucibleEngine/selfPatcher'
 import { buildFailureTaxonomy, loadTaxonomy } from './src/CrucibleEngine/failureTaxonomy'
 import { recordRound as recordStageWeightRound, getStageWeightSummary, getStageMultipliers } from './src/CrucibleEngine/stageWeightLearner'
 import { getForcedModels, applyForcedSlots, recordPipelineRun, recordForcedCall } from './src/CrucibleEngine/specializationForcing'
@@ -6542,6 +6542,16 @@ app.post('/api/self-patcher/approve', async (req, res) => {
   try {
     const { approvePatch } = await import('./src/CrucibleEngine/selfPatcher')
     approvePatch(process.cwd(), req.body.id)
+    res.json({ ok: true })
+  } catch (e: any) { res.json({ ok: false, error: e.message }) }
+})
+
+// POST /api/self-patcher/reject — manual override / kill switch (see rejectPatch doc
+// comment): pulls a live prompt patch out of rotation, or overturns a triumvirate rejection.
+app.post('/api/self-patcher/reject', (req, res) => {
+  try {
+    if (!req.body?.id) { res.status(400).json({ ok: false, error: 'id required' }); return }
+    rejectPatch(process.cwd(), req.body.id)
     res.json({ ok: true })
   } catch (e: any) { res.json({ ok: false, error: e.message }) }
 })

@@ -40,6 +40,17 @@ export function approvePatch(dir: string, id: string): void {
   savePatches(dir, patches)
 }
 
+// Manual override — the triumvirate gate already resolves a proposal to 'active' or
+// 'rejected' before it's ever visible (see runSelfPatcher below), so this exists as a
+// user-facing kill switch: pull a live prompt patch back out of rotation at any time, or
+// flip a rejected one back on if the user disagrees with the triumvirate's call.
+export function rejectPatch(dir: string, id: string): void {
+  const patches = loadPatches(dir)
+  const p = patches.find(p => p.id === id)
+  if (p) { p.status = 'rejected' }
+  savePatches(dir, patches)
+}
+
 // Analyse debug history and quality data to identify the weakest pipeline stage.
 // Returns a proposed patch or null if no clear improvement target.
 export function analyseAndPropose(

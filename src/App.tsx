@@ -3,10 +3,11 @@ import { API_BASE, apiFetch, loginUrl } from './api'
 import CrucibleMark from './CrucibleMark'
 import BackgroundBlobs from './BackgroundBlobs'
 import PourRing, { type PourPhase } from './PourRing'
-import { useEnsemble, ModeBar, EnsembleKeyModal, EnsembleConfirm, ensembleAskPref, setEnsembleAskPref, type EnsembleState } from './ensemble'
+import { useEnsemble, EnsemblePill, EnsembleKeyModal, EnsembleConfirm, type EnsembleState } from './ensemble'
 import { IntegrationsBinder } from './IntegrationsBinder'
 import { LibraryBinder } from './LibraryBinder'
 import { SelfRepairBinder } from './SelfRepairBinder'
+import { SelfPatcherBinder } from './SelfPatcherBinder'
 import './modelData'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -2034,22 +2035,10 @@ export default function App() {
 
   // Ensemble (the external multi-model pipeline) is OPT-IN and is never auto-selected —
   // per the BYOK/ensemble product constraint, Crucible-local is the default path and the
-  // external fan-out must be a deliberate user choice. classifyMode therefore only routes
-  // BETWEEN local-capable modes (code / seeker) and NEVER escalates INTO 'quorum' on its
-  // own. The old complexity-override and research-verb branches that silently promoted long
-  // or multi-part prompts into the ensemble have been removed. The user still enters
-  // ensemble/research explicitly via the mode picker; once there, we don't yank them back out.
-  const classifyMode = (text: string, lastMode?: 'quorum'|'code'|'seeker'|'research'): 'quorum'|'code'|'seeker'|'research' => {
-    const m = text.toLowerCase()
-    // Respect an explicit opt-in — if the user chose ensemble/research, keep it on keystroke.
-    if (lastMode === 'quorum' || lastMode === 'research') return lastMode
-    const isShortFollowUp = text.trim().split(' ').length <= 3
-    if (isShortFollowUp && lastMode) return lastMode
-    if (/\b(search|find|look up|latest|news|current|today|who is|what is|when did|where is|research|weather|price|stock|forecast|temperature)\b/.test(m)) return 'seeker'
-    if (/\b(code|write|build|create|function|script|debug|fix|implement|refactor|file|class|component|api|error|bug|compile|run|execute)\b/.test(m)) return 'code'
-    // Never fall back to 'quorum' automatically — stay on the current local mode (or code).
-    return lastMode === 'seeker' ? 'seeker' : 'code'
-  }
+  // external fan-out must be a deliberate user choice. The composer no longer auto-classifies
+  // a mode from keystrokes (v3: mode routing UI removed) — 'code' is the sole local default;
+  // 'quorum' is entered only via the Ensemble pill + confirm flow, 'research'/'agent' only via
+  // their own explicit entry points.
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [showMinLengthTip, setShowMinLengthTip] = useState(false)
   const minLengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2512,8 +2501,8 @@ export default function App() {
     const effectiveMode = modeOverride ?? mode
     if (effectiveMode === 'quorum') {
       if (!ensemble.hasAnyKey) { setKeyModalOpen(true); return }   // need a key first
-      if (!ensembleConfirmed && ensembleAskPref() === 'always') {
-        setEnsembleConfirm({ message: userMessage })              // ask before fanning out
+      if (!ensembleConfirmed) {
+        setEnsembleConfirm({ message: userMessage })              // always ask before fanning out
         return
       }
     }
@@ -3261,7 +3250,6 @@ export default function App() {
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value
     setInput(val)
-    setMode(classifyMode(val, mode))
     const ta = e.target
     requestAnimationFrame(() => {
       ta.style.height = 'auto'
@@ -3331,8 +3319,7 @@ export default function App() {
             setMode('code')
             if (pending) void send(pending, 'code')
           }}
-          onConfirm={(remember) => {
-            if (remember) setEnsembleAskPref('session')
+          onConfirm={() => {
             const pending = ensembleConfirm.message
             setEnsembleConfirm(null)
             if (pending) void send(pending, 'quorum', true)
@@ -3676,6 +3663,8 @@ export default function App() {
           <LibraryBinder onBuild={text => { void send(text) }} />
           {/* Self-repair — plain-language improvement proposals with approve/reject */}
           <SelfRepairBinder />
+          {/* Self-patcher — pipeline-proposed prompt patches, triumvirate-gated, approve/reject */}
+          <SelfPatcherBinder />
           {/* New chat — clears the view and starts a fresh conversation thread */}
           <button
             className="crucible-newchat-btn"
@@ -4945,8 +4934,17 @@ export default function App() {
 
           {/* ── Row 2: toolbar pills + send button ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 11 }}>
-            {/* Mode pills — Crucible-local default; Ensemble is opt-in + BYOK (see ensemble.tsx) */}
-            <ModeBar mode={mode} setMode={setMode} ensemble={ensemble} onManageKeys={() => setKeyModalOpen(true)} />
+            {/* Ensemble pill — sole composer toggle; mode picker UI removed (v3). Crucible-local
+                is the permanent default, Ensemble is opt-in + BYOK (see ensemble.tsx). */}
+            <EnsemblePill
+              armed={mode === 'quorum'}
+              onToggle={() => {
+                if (!ensemble.hasAnyKey) { setKeyModalOpen(true); return }
+                if (mode === 'quorum') { setMode('code'); ensemble.setOn(false) }
+                else { setMode('quorum'); ensemble.setOn(true) }
+              }}
+              ensemble={ensemble}
+            />
 
             {/* Step 9: Remote Brain — phone only */}
             {isMobile && (
