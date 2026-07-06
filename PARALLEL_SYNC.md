@@ -146,3 +146,21 @@ the work split.
   read trustworthy — no task is now silently shipping broken code past a weak oracle.
   Two pre-existing tsc errors in coding-benchmarks.ts (import.meta @29, synthPath @630) under
   tsconfig.server.json — NOT from this change (bench runs via tsx); flagging for hygiene.
+
+- 2026-07-06 — [Track C / Opus-A] TWO corrections from user feedback:
+  (1) LANDED the uncommitted v3 UI refactor (commit be30dd2): App.tsx restructured around
+  NavRail + extracted tab views (Agents/History/Settings) + MoltenPour canvas + ensemble.tsx +
+  electron.cjs (1275 insertions). Verified tsc -p tsconfig.app.json clean + vite build ✓.
+  Left .crucible-checkpoints.json uncommitted (runtime churn, not impl).
+  (2) METHODOLOGY FIX — my earlier parity runs used the DEFAULT server (offlineMode=1 = offline-
+  first WITH EXTERNAL FALLBACK), which contradicts the model-cost-independent north star and
+  repeats the item-6 trap. Re-ran the full suite in TRUE CRUCIBLE_OFFLINE=strict (no external
+  model calls at all). RESULT: strict = 10/14, 4/4 catalog, **6/10 GENERATION — IDENTICAL to the
+  hybrid run's 6/10.** The external fallback was NOT inflating pass rate; the offline brain (Apple
+  FM + pure-code synth) does the work. So ~50-55% generation parity is GENUINELY offline-only.
+  Task sets differ only by the flaky pair (clampModule RED->GREEN, leaderboardModule GREEN->RED);
+  count identical. Flakiness persists in strict (local FM sampling variance) but the 413/429
+  external-pool noise is gone. bugfixCsv strict = RED rubric20 (honest, oracle fix holding).
+  → Server currently left in CRUCIBLE_OFFLINE=strict. NOTE for other chat: production default is
+  mode 1; restart without the env var to revert if the UI/other tests assume hybrid.
+  → All future coding-parity measurements MUST use smoke:code:offline (strict), not smoke:code.
