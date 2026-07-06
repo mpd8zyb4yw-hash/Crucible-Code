@@ -449,7 +449,12 @@ export function stripRunawayRepetition(text: string): string {
 export async function fmDirectAnswer(goal: string, context?: string, history?: ConvTurn[]): Promise<string> {
   const system = `You are Crucible, an expert AI assistant. Answer the user's question clearly and completely.
 ${context ? `\n## Context\n${context}` : ''}
-Be direct, thorough, and accurate. Format with markdown when helpful. Use the prior conversation turns for context — the user may refer back to things already said.`
+Be direct, thorough, and accurate. Format with markdown when helpful.
+
+Use the prior conversation turns ONLY to resolve what the user is referring to ("it", "that", "those", earlier numbers or entities). Then answer the LATEST user message and NOTHING else, in 1-3 short sentences.
+- Treat any value or fact you already established as GIVEN. Do NOT re-derive it, re-list it, or reprint earlier working (no re-listing the boxes, no re-showing an earlier subtotal). Start from the last result and produce ONLY the single new result.
+- Example: earlier you established 26 apples remain; user says "split those between 2 people" → answer exactly "13 apples each", not the whole chain from the beginning.
+- Do not invent extra sub-questions or keep computing past what was asked.`
 
   const raw = await callFm(system, [...historyToMessages(history), { role: 'user', content: goal }], FM_TIMEOUT_MS)
   return stripRunawayRepetition(raw)

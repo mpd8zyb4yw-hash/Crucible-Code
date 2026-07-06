@@ -42,10 +42,17 @@ function hasDigits(message: string): boolean {
   return /\d/.test(message)
 }
 
-export function detectConversationalClarify(message: string): ClarifyDecision {
+export function detectConversationalClarify(message: string, hasHistory = false): ClarifyDecision {
   const trimmed = message.trim()
 
-  if (ACTION_DANGLING_PRONOUN_RX.test(trimmed) && shortCommand(trimmed)) {
+  // Back-reference-resolvable branches (dangling pronoun, vague problem) must NOT
+  // fire when there is prior conversation: with history the referent of "it"/"that"/
+  // "the bug" is almost always something already named, so the offline brain (which
+  // now threads history) should resolve it — not bounce a clarify question. Without
+  // history these remain genuinely under-specified. NOTE: this also cured a misparse
+  // where "Name one other book by that same author" matched the action-verb list on
+  // the NOUN "book" and asked the user to clarify what to "book".
+  if (!hasHistory && ACTION_DANGLING_PRONOUN_RX.test(trimmed) && shortCommand(trimmed)) {
     const verb = trimmed.match(ACTION_DANGLING_PRONOUN_RX)?.[1]?.toLowerCase() ?? 'do that'
     return {
       needsClarification: true,
@@ -60,7 +67,7 @@ export function detectConversationalClarify(message: string): ClarifyDecision {
     }
   }
 
-  if (VAGUE_PROBLEM_RX.test(trimmed) && !HAS_SPECIFICS_RX.test(trimmed) && shortCommand(trimmed, 10)) {
+  if (!hasHistory && VAGUE_PROBLEM_RX.test(trimmed) && !HAS_SPECIFICS_RX.test(trimmed) && shortCommand(trimmed, 10)) {
     return {
       needsClarification: true,
       question: 'Which bug or file are you referring to? Could you share the error message, the file, or steps to reproduce it?',

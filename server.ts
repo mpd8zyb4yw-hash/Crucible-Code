@@ -3023,7 +3023,7 @@ app.post('/api/chat', async (req, res) => {
     // detectConversational() would misclassify it as small talk and instruct the
     // local model to "mirror exactly what was sent" — which just echoes the command
     // back. Ask what's missing instead of treating it as chit-chat.
-    const earlyClarify = detectConversationalClarify(message)
+    const earlyClarify = detectConversationalClarify(message, Array.isArray(history) && history.length > 0)
     if (earlyClarify.needsClarification) {
       send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: earlyClarify.question, done: true, replace: false })
       send({ type: 'stage', stage: 5, status: 'done' })
