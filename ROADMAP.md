@@ -1915,6 +1915,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-06 (cont. 35) — NORTHSTAR UI/routing redesign STARTED on branch `crucible-northstar-sessions`; committed the full cont.33/34 body as a checkpoint, then landed the first redesign increment (Crucible-local default, ensemble never auto-entered)
+- **New large task received mid-session:** merge the `Crucible v2.dc.html` visual redesign
+  and make Crucible (local) — not the external multi-model pipeline — the default experience.
+  Full scope + clarifying answers in NEXT_SESSION.md CURRENT STATE (cont.35 block) and the
+  new memory [[crucible-byok-ensemble-constraint]].
+- **`9ef4aaf`** — committed all verified cont.33/34 work (NL-skill pipeline, /skill+/tool,
+  RSI auto-approve) as a clean rollback point before restructuring App.tsx, at the user's
+  explicit "commit current work first" instruction.
+- **`d112fed`** — first redesign increment: `classifyMode` no longer escalates INTO `'quorum'`
+  on complexity/research-verb heuristics (both branches removed); it only routes between local
+  modes and respects explicit ensemble/research opt-in. Default `mode`/`preBrainModeRef` moved
+  `'quorum'`→`'code'`. This kills the mechanism that silently sent long/multipart prompts to the
+  external pipeline without consent. tsc clean; app boots (auth-gated).
+- **NEW durable product constraint:** external/ensemble calls must be opt-in AND
+  bring-your-own-key (user-supplied API keys) — avoids infringing provider ToS if Crucible is
+  monetized. Default = Crucible-local, zero external calls. Ensemble opt-in = BOTH a persistent
+  toggle AND a per-query confirm ask.
+- **NOT done (bulk of the redesign, task-tracked #4-#7):** the visual port itself, the
+  ensemble toggle + per-query ask + BYOK key gating (client + the missing per-request
+  local-vs-ensemble server signal), pipeline-theater gating, and the final 3-phase pour chat
+  animation. See NEXT_SESSION.md for the precise state and file pointers.
+
 ### 2026-07-06 (cont. 34) — verified NL-skill pipeline live (user-skills.json, first proven user skill landed via FM+deterministic-repair); /skill + /tool slash shortcuts; RSI scheduler now routes every tick through the stakes router (its first non-filesystem consumer) — both HITL and AFK paths live-verified end to end
 - **Feature 1 increment (the "REMAINING" item from cont.33) — DONE.** New
   `synth/userSkillPipeline.ts`: plain-language request → admission gate (exact exported

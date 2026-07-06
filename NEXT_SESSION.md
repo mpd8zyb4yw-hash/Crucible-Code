@@ -17,7 +17,70 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 34 — both cont.33 "next increment" items
+## CURRENT STATE (last updated 2026-07-06, cont. 35 — NORTHSTAR UI/ROUTING REDESIGN STARTED
+on branch `crucible-northstar-sessions`. Two clean commits landed: (1) `9ef4aaf` the entire
+verified cont.33/34 body of work (NL-skill pipeline, /skill+/tool, RSI auto-approve) —
+committed as a checkpoint before the redesign, at the user's explicit instruction; (2)
+`d112fed` first redesign increment — Crucible-LOCAL is now the default path and the external
+ensemble is never silently entered. The big visual redesign, BYOK ensemble gating, and the
+3-phase pour animation are SCOPED + TASK-TRACKED but NOT yet built. Read the "cont.35 REDESIGN"
+block immediately below before continuing.)
+
+**Cont. 35 (this session) — NEW LARGE TASK RECEIVED mid-session: merge the `Crucible v2.dc.html`
+UI redesign and make Crucible (local), not the external pipeline, the default experience.
+Full brief lives in the user's handoff message + `Crucible UI redesign/` (untracked design
+assets: `Crucible v2.dc.html` = target spec, `Crucible - Current UI.dc.html` = current, both
+are design-tool exports with `{{ }}` template syntax — a VISUAL SPEC to reimplement, NOT
+importable React).**
+
+**Clarifying answers the user gave (authoritative for this redesign):**
+1. **Commit current work first** → done (`9ef4aaf`).
+2. **Crucible = local FM path** — BUT external API calls must be **opt-in AND bring-your-own-key
+   (BYOK)**: end users supply their OWN keys, so Crucible doesn't infringe provider ToS if
+   monetized. NEW durable constraint saved as memory [[crucible-byok-ensemble-constraint]].
+3. **Ensemble opt-in = BOTH** a persistent per-session toggle AND a per-query "use ensemble?"
+   confirm ask.
+4. **Keep all coherent features**, restyle them into the new look (Library/SelfRepair/History/
+   Integrations drawers, agent tool-calling all stay — verify post-merge, don't assume parity).
+
+**DONE this session (commit `d112fed`, tsc clean, app boots — auth-gated so no deep UI check):**
+- `classifyMode` (App.tsx ~2102) no longer escalates INTO `'quorum'` on complexity/research-verb
+  heuristics — those two branches removed. It now only routes between local modes (code/seeker)
+  and respects an explicit ensemble/research opt-in once chosen. This was the mechanism silently
+  sending long/multipart prompts to the external pipeline with no consent.
+- Default `mode` state + `preBrainModeRef` (App.tsx ~1874/1888): `'quorum'` → `'code'` (local).
+
+**NOT DONE — the actual bulk of the redesign (task IDs #4-#7 in the tracker):**
+- **#4 Visual redesign:** port `Crucible v2.dc.html`'s design system into App.tsx — 56px glass
+  left rail (Chat/Agents/History/Settings nav + avatar), `#101016` dark-only bg, canvas bg
+  layer, "Crucible" wordmark + ENSEMBLE badge topbar, its spacing/type/color tokens. App.tsx is
+  a 5049-line monolith; `App()` = lines 1856-5049. Component map captured this session (ModeSwitcher
+  ~50, PipelineTheater ~575, CritiqueGrid ~594, HistoryBinder ~1208, ClarificationCard ~1578,
+  AuthScreen ~1753). Do it incrementally with tsc-clean/app-boots checkpoints, NOT one rewrite.
+- **#5 Ensemble opt-in + BYOK (partially done — see above):** still need the persistent toggle +
+  per-query confirm UI, and BYOK — `modelRegistry.ts` already has `providerHasKey()`/
+  `PROVIDER_KEY_ENV` (env-var gating, line ~152-170); extend it to accept USER-supplied keys
+  passed per-request, with NO bundled-key fallback and an "add your API key" affordance. Also:
+  the server only has a SERVER-WIDE `CRUCIBLE_OFFLINE` env (server.ts ~2765), not a per-request
+  local-vs-ensemble signal — that per-request plumbing is the missing server piece so the client
+  default actually prevents external calls (right now `mode:'code'` non-agent chat can still fan
+  out server-side; the client default is necessary but not yet sufficient).
+- **#6** Move pipeline theater (PipelineTheater ~575, `crucible-pipeline-theater/status/log`
+  classes ~579/4091/4713) behind the opt-in; restyle preserved features into the new look.
+- **#7** Final 3-phase Crucible pour chat animation (idle tilt-loop → pour w/ molten border fill
+  tracking live content height, ≥1.2-1.5s floor → upright fade + top-to-bottom cool, ≥0.8-1.2s).
+  Spec is FINAL per the user — do not re-ask. Masked/clipped SVG or pseudo-element overlay driven
+  by real stream lifecycle (send/first-token/stream-end). LAND LAST, once structure is stable.
+- **Do NOT** regress the prior-session critic split-routing fix in synthDriver.ts/driver.ts
+  (handoff says it's already verified — I did not touch it; note it wasn't in the working tree
+  this session, so confirm it's already committed on this branch before assuming it's safe).
+
+**Also still open from cont.34 (not lost, just deprioritized by the redesign):** Feature 4
+(retrievalLayer recommendation cards, apply-gated) and the RSI trend-gate self-deadlock decision.
+
+---
+
+## PRIOR: 2026-07-06, cont. 34 — both cont.33 "next increment" items
 BUILT AND LIVE-VERIFIED: (a) the verified NL-skill pipeline — a plain-language request in
 the Library drawer now becomes a PROVEN catalog entry in `catalogs/user-skills.json`, first
 real entry `user/slugify` landed via on-device FM + a NEW deterministic repair, prove:all
