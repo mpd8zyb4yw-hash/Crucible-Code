@@ -2072,7 +2072,6 @@ export default function App() {
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [showMinLengthTip, setShowMinLengthTip] = useState(false)
   const minLengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [feedHovered, setFeedHovered] = useState(false)
   // N1 — governance panel
   const [govPanelOpen, setGovPanelOpen] = useState(false)
   const [govRequests, setGovRequests] = useState<any[]>([])
@@ -4481,80 +4480,6 @@ export default function App() {
         <div ref={bottomRef} style={{ flexShrink: 0, height: 0 }} />
       </div>
 
-
-      {/* ── Pipeline Log Overlay ── */}
-      {(() => {
-        const feed = latestRound?.activityFeed ?? []
-        if (feed.length === 0 && !thinking) return null
-        const isOpen = feedHovered || thinking
-        return (
-          <div
-            className="crucible-pipeline-log"
-            onMouseEnter={() => setFeedHovered(true)}
-            onMouseLeave={() => setFeedHovered(false)}
-            style={{
-              position: 'fixed',
-              bottom: 18,
-              right: 12,
-              zIndex: 20,
-              width: isOpen ? 'clamp(64px, calc((100vw - 688px) / 2 - 16px), 280px)' : 64,
-              maxWidth: isOpen ? 280 : 64,
-              minWidth: 64,
-              borderRadius: 14,
-              background: isOpen ? 'rgba(10,10,18,0.82)' : 'rgba(10,10,18,0.28)',
-              backdropFilter: 'blur(20px)',
-              WebkitBackdropFilter: 'blur(20px)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              overflow: 'hidden',
-              transition: 'width 0.6s cubic-bezier(0,0,0.2,1), background 1.8s cubic-bezier(0,0,0.2,1), opacity 2s cubic-bezier(0,0,0.2,1)',
-              opacity: isOpen ? 1 : 0.55,
-              cursor: 'pointer',
-            }}
-          >
-            {/* Collapsed label — always visible */}
-            {!isOpen && (
-              <div style={{
-                padding: '8px 6px',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <span style={{ fontSize: 8, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.4)', fontWeight: 700 }}>LOG</span>
-              </div>
-            )}
-            {/* Expanded content */}
-            {isOpen && (
-              <div style={{ display: 'flex', flexDirection: 'column' as const }}>
-                <div style={{
-                  padding: '5px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                  borderBottom: '1px solid rgba(255,255,255,0.05)',
-                }}>
-                  <span style={{ fontSize: 8, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.35)', fontWeight: 700 }}>PIPELINE LOG</span>
-                  <span style={{ fontSize: 8, color: 'rgba(255,255,255,0.2)' }}>{feed.length}</span>
-                </div>
-                <div style={{
-                  maxHeight: 160, overflowY: 'auto' as const, overflowX: 'hidden' as const,
-                  padding: '5px 8px', display: 'flex', flexDirection: 'column' as const, gap: 3,
-                }}>
-                  {feed.map((entry, i) => {
-                    const colors: Record<string,string> = { contract:'#7c7cf8', linter:'#4db89e', rollback:'#f87c7c', stage:'rgba(255,255,255,0.3)' }
-                    const color = colors[entry.type] ?? 'rgba(255,255,255,0.3)'
-                    const modelShort = entry.modelId ? entry.modelId.split('/').pop()?.split('-').slice(0,2).join('-') : null
-                    const label = modelShort ? `${modelShort}: ${entry.message}` : entry.message
-                    return (
-                      <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 5, minWidth: 0 }}>
-                        <span style={{ flexShrink: 0, marginTop: 4, width: 3, height: 3, borderRadius: '50%', background: color }} />
-                        <span style={{
-                          fontSize: 9, color: 'rgba(255,255,255,0.42)', lineHeight: 1.5,
-                          overflowWrap: 'break-word' as const, wordBreak: 'break-word' as const, minWidth: 0,
-                        }}>{label}</span>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        )
-      })()}
 
       {/* ── Progressive blur veil — frosted glass that deepens toward the bottom ──
           Two stacked masked backdrop-blur layers. Each mask fades the blur IN from
