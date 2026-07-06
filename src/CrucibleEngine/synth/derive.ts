@@ -504,8 +504,14 @@ export function derivePropertyTests(spec: string, modulePath: string): PropertyT
         `prop('${cls} constructor does not throw', (() => { try { const i = ${ctorCall}; return i !== null && typeof i === 'object' } catch { return false } })())`,
         `prop('${cls} is object', typeof ${ctorCall} === 'object')`,
       )
-      // Check each mentioned method exists on the instance
-      const methodNames = Array.from(spec.matchAll(/\b([a-z][a-zA-Z0-9]*)\s*\(/g), m => m[1])
+      // Check each mentioned method exists on the instance. Scope the scan to the target
+      // class's own `{ … }` body sketch — a bare /word(/ scan over the WHOLE spec grabs
+      // filename references ("src/types.ts (defines…" → `ts`) and ordinary English words
+      // before an open paren ("the API named below (" → `below`), inventing phantom methods
+      // whose typed property access fails tsc (TS2339) and burns every FM round. If no class
+      // body is found, extract no methods (constructor asserts only) rather than guess.
+      const clsBody = spec.match(new RegExp(`\\bclass\\s+${escapeRe(cls)}\\b[^{]*\\{([\\s\\S]*?)\\n\\s*\\}`))?.[1] ?? ''
+      const methodNames = Array.from(clsBody.matchAll(/\b([a-z][a-zA-Z0-9]*)\s*\(/g), m => m[1])
         .filter(n => !['new','if','for','while','return','typeof','instanceof','prop','try','catch'].includes(n))
         .slice(0, 5)
       for (const method of methodNames) {

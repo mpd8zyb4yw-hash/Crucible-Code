@@ -401,6 +401,40 @@ function stripForeignApiBlocks(goal: string, targetPath: string): string {
   )
 }
 
+/**
+ * Multi-file goals often sketch each new file as a numbered section:
+ *   "1. src/ledger.ts:\n     export class Ledger {...}\n2. src/report.ts:\n     export function categoryTotals(...)"
+ * derive.ts's extractFeatures scans the WHOLE spec for `export …` names with no file-awareness,
+ * so synthesizing src/ledger.ts against the full goal makes the oracle expect ledger.ts to ALSO
+ * export categoryTotals (report.ts's API) — the generated spec.test.ts imports a member that
+ * doesn't exist and fails tsc on every candidate, tripwiring the file that never had a chance.
+ * Drop every numbered file-sketch section whose path ISN'T targetPath, keeping the preamble, the
+ * target's own section, and the trailing shared prose (Rules/self-test). No-op unless the goal has
+ * ≥2 such numbered file sections, so single-file greenfield specs are untouched. The dropped file
+ * is still available to the FM from disk (it is written first and indexed) — this only narrows the
+ * oracle's export contract, not the FM's context.
+ */
+function scopeNumberedFileSections(goal: string, targetPath: string): string {
+  const lines = goal.split('\n')
+  const headerRe = /^\s*\d+\.\s+.*?((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs))\b/
+  if (lines.filter(l => headerRe.test(l)).length < 2) return goal
+  const out: string[] = []
+  let i = 0
+  while (i < lines.length) {
+    const m = headerRe.exec(lines[i])
+    if (m && m[1] !== targetPath) {
+      // Skip this foreign section: its header plus following blank/indented body lines,
+      // stopping at (but keeping) the next column-0 non-blank line (next header or Rules:).
+      i++
+      while (i < lines.length && (lines[i].trim() === '' || /^\s/.test(lines[i]))) i++
+      continue
+    }
+    out.push(lines[i])
+    i++
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n')
+}
+
 async function solveCodeWrite(
   targetPath: string,
   state: CurrentState,
@@ -417,10 +451,15 @@ async function solveCodeWrite(
     ? `\n\nNote: the implementation file ${state.goalPaths[0]} has already been written. Write ${targetPath} to test/exercise it per the original goal.`
     : ''
 
-  const goalForSpec = isSecondary ? stripForeignApiBlocks(state.goal, targetPath) : state.goal
+  // Narrow the oracle's export contract to targetPath's own API. stripForeignApiBlocks handles
+  // the "Exact public API (<path>):" format; scopeNumberedFileSections handles the multi-file
+  // "1. src/a.ts: … 2. src/b.ts: …" format. Both are no-ops on a single-file greenfield goal, so
+  // apply to primary files too — a multi-file goal leaks a sibling's exports into the PRIMARY
+  // file's contract just as readily as into a secondary self-test's.
+  const goalForSpec = scopeNumberedFileSections(stripForeignApiBlocks(state.goal, targetPath), targetPath)
 
   const spec = state.existingFileContent && !isSecondary
-    ? buildEditSpec(state.goal, targetPath, state.existingFileContent, errors)
+    ? buildEditSpec(goalForSpec, targetPath, state.existingFileContent, errors)
     : [
         goalForSpec,
         errors ? `\nPrevious errors to fix:\n${errors}` : '',
