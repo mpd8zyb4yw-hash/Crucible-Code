@@ -93,3 +93,20 @@ the work split.
     src/CrucibleEngine/synth/catalogs/_author_parsers2.ts:43 (unescaped `${}` in a template
     literal); not on the live runtime path (server runs fine) but it breaks `tsc -p
     tsconfig.server.json`. Out of my agent/* boundary — flagging for whoever owns synth/.
+
+- 2026-07-06 — [Track C / Opus-A] multiFileLedger is now GREEN (commit 9f96b5d) — FIRST
+  multi-file / frontier-SWE-adjacent task to ever land green. After the cont.39 write-target
+  fix (2da4108) the agent reached src/ledger.ts but tripwired; ledger-read + live-fire found
+  THREE more compounding oracle bugs (all in the verification layer, not FM incapacity):
+  (1) derive.ts extractFeatures scans the whole multi-file spec, so ledger.ts's oracle expected
+  it to also export report.ts's categoryTotals → scopeNumberedFileSections (synthDriver.ts) drops
+  non-target numbered file-sketch sections; (2) the edit-retry branch used the unscoped goal →
+  now passes goalForSpec; (3) class-stateful property family extracted method names via a bare
+  /word(/ scan over the WHOLE spec, inventing phantom methods 'ts' (from "src/types.ts (defines…")
+  and 'below' (from "named below (") whose typed access fails TS2339 and burns every round →
+  scoped extraction to the class's own { … } body. Verified live: multiFileLedger GREEN (module +
+  tsc + hidden 5/5). Regression sweep: summaryModule 14/14 GREEN, clampModule 9/9 GREEN (both
+  share the touched derive.ts paths). prove:all 251/251. filterModule RED this run = its
+  long-documented FM/pool flake (function task, untouched by these edits), harness confirms no
+  regression. NOTE: I edited synth/derive.ts (different file than the other session's
+  _author_parsers2.ts fix) — boundary clean, no collision.
