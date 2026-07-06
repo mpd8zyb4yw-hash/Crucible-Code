@@ -32,11 +32,19 @@ function NavButton({ active, title, onClick, children }: {
 export default function NavRail({ tab, setTab }: { tab: CrucibleTab; setTab: (t: CrucibleTab) => void }) {
   const go = (t: CrucibleTab) => () => setTab(t)
 
+  // Item-8: in the Electron shell the window uses titleBarStyle 'hiddenInset', which draws
+  // native macOS traffic-light controls at roughly x:10-70, y:10-30 — right on top of this
+  // rail's logo mark at the default 14px top padding. Push the rail's contents down below
+  // the traffic lights when running inside Electron (detected via the electronIPC preload
+  // bridge); web-only usage is unaffected.
+  const isElectron = typeof window !== 'undefined' && !!(window as any).electronIPC
+  const topPad = isElectron ? 34 : 14
+
   return (
     <div style={{
       width: 56, flexShrink: 0, zIndex: 20,
       display: 'flex', flexDirection: 'column', alignItems: 'center',
-      padding: '14px 0 16px', gap: 6,
+      padding: `${topPad}px 0 16px`, gap: 6,
       background: 'rgba(255,255,255,0.025)',
       backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
       borderRight: '1px solid rgba(255,255,255,0.06)',
