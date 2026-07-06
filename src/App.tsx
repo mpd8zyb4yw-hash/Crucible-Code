@@ -3957,7 +3957,16 @@ export default function App() {
                        pre({ children }: any) { return <>{children}</> },
                        code({ node, className, children, ...props }: any) {
                          const match = /language-(\w+)/.exec(className || '')
-                         const isBlock = !props.inline
+                         // Item-11: react-markdown v10 dropped the `inline` prop entirely, so
+                         // `!props.inline` was always true — every inline code span (single
+                         // backticks) got rendered as a full CollapsibleCode block, which broke
+                         // simple one-liner code requests (giant collapsed block with its own
+                         // header/copy button instead of a plain inline span). A real fenced
+                         // code block always carries a `language-*` className (even with no
+                         // language hint, remark still marks it) OR its raw text spans multiple
+                         // lines; a `single backtick` span never does either.
+                         const rawText = String(children)
+                         const isBlock = !!match || rawText.includes('\n')
                          const code = String(children).replace(/\n$/, '')
                          if (isBlock && match) {
                            return <CollapsibleCode language={match[1]} code={code} />
