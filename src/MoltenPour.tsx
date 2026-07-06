@@ -216,8 +216,23 @@ export default function MoltenPour({ phase, progress, wrapRef }: {
           }
           const right = loop.slice(0, botIdx + 1)
           const leftHalf = [loop[0]].concat(loop.slice(botIdx + 1).reverse())
-          drawHalf(ctx, right, fill.current, now)
-          drawHalf(ctx, leftHalf, fill.current, now)
+          // Item-1 fix: the two halves run from the same top landing point down to the same
+          // bottom-center meeting point, but their perimeter lengths differ (the pour lands
+          // off-center relative to the card's actual left/right border lengths). Filling each
+          // half by the SAME fraction of its OWN length made them reach the bottom seam at
+          // different times — one side visibly ahead of (or short of) the other, showing as a
+          // gap/overlap right at the meeting point. Fill by fraction of a shared max length
+          // instead so both halves land on the seam in sync.
+          const pathLen = (pts: [number, number][]) => {
+            let t = 0
+            for (let i = 1; i < pts.length; i++) t += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+            return t
+          }
+          const maxLen = Math.max(pathLen(right), pathLen(leftHalf))
+          const rightFrac = fill.current * (maxLen / Math.max(1, pathLen(right)))
+          const leftFrac = fill.current * (maxLen / Math.max(1, pathLen(leftHalf)))
+          drawHalf(ctx, right, rightFrac, now)
+          drawHalf(ctx, leftHalf, leftFrac, now)
 
           if (cool.current > 0) {
             const eased = cool.current < 0.5 ? 2 * cool.current * cool.current : 1 - Math.pow(-2 * cool.current + 2, 2) / 2
