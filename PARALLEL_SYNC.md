@@ -130,3 +130,19 @@ the work split.
   pool noise); (2) bugfixCsv — the one genuine non-flaky gap, in the EDIT path (like multiFileLedger
   turned out to be an oracle bug, worth checking if bugfixCsv's edit path has a similar artifact
   vs a true FM gap); (3) sortModule stays the accepted boundary.
+
+- 2026-07-06 — [Track C / Opus-A] bugfixCsv was a BROKEN BENCHMARK, not just an FM gap — fixed
+  (commit 3eb0a63). Ledger-read (same discipline that cracked multiFileLedger) showed the
+  synth-time oracle was COMPILE-ONLY ("compiles, but no behavioral test") — the FM returned the
+  buggy scaffold verbatim + a lying "// RFC-4180 compliant" comment and the oracle ACCEPTED it;
+  only the hidden audit caught the bug. Cause: the worked example was phrased "`input` parses to
+  [[...]]" — LHS is raw input not a parseCsv(...) call, so extractSpecExamples skipped it (SEP has
+  no "parses to"). Reworded to 3 call-form `parseCsv(...) === [[...]]` examples covering the two
+  RFC cases the rules state. Now deriveTests=3 (was NULL), oracle rejects scaffold 3/3 + accepts a
+  correct parser 3/3. Live: bugfixCsv now escalates HONESTLY instead of shipping broken code — FM
+  echoes the scaffold byte-for-byte even with precise got/expected feedback (across-round-feedback
+  wall), a genuine edit-path gap now caught at the ORACLE not just the audit. Still RED, but honest.
+  This does NOT change the parity tally (bugfixCsv was already RED) but makes the 6/10 generation
+  read trustworthy — no task is now silently shipping broken code past a weak oracle.
+  Two pre-existing tsc errors in coding-benchmarks.ts (import.meta @29, synthPath @630) under
+  tsconfig.server.json — NOT from this change (bench runs via tsx); flagging for hygiene.
