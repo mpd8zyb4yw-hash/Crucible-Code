@@ -3,6 +3,8 @@
 // topbar-drawer-only navigation; the drawers themselves (Library/SelfRepair/etc.)
 // still live inside the Chat tab, untouched.
 
+import { memo } from 'react'
+
 export type CrucibleTab = 'chat' | 'agents' | 'history' | 'settings'
 
 function NavButton({ active, title, onClick, children }: {
@@ -29,7 +31,11 @@ function NavButton({ active, title, onClick, children }: {
   )
 }
 
-export default function NavRail({ tab, setTab }: { tab: CrucibleTab; setTab: (t: CrucibleTab) => void }) {
+// Item-5: NavRail has no dependency on chat-input state, but before this it re-rendered on
+// every keystroke anyway because it's a child of the same App component tree that owns
+// `input`. React.memo keeps it from re-rendering unless `tab`/`setTab` actually change —
+// a small, safe piece of the "typing latency" fix without touching the input wiring itself.
+function NavRail({ tab, setTab }: { tab: CrucibleTab; setTab: (t: CrucibleTab) => void }) {
   const go = (t: CrucibleTab) => () => setTab(t)
 
   // Item-8: in the Electron shell the window uses titleBarStyle 'hiddenInset', which draws
@@ -90,3 +96,5 @@ export default function NavRail({ tab, setTab }: { tab: CrucibleTab; setTab: (t:
     </div>
   )
 }
+
+export default memo(NavRail)
