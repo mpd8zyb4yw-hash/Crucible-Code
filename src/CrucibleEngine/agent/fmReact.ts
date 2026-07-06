@@ -408,12 +408,51 @@ export function historyToMessages(history?: ConvTurn[]): FmMessage[] {
   return msgs
 }
 
+/**
+ * Trim runaway repetition from a local-FM answer. Apple's on-device FM has no
+ * repetition-penalty knob (GenerationOptions only exposes temperature +
+ * maximumResponseTokens), so on open-ended prompts it sometimes loops, emitting
+ * a block ("### Example 10", "### Example 11", …) over and over until it hits the
+ * token ceiling. This deterministically detects a normalized block that recurs
+ * and cuts the answer at the first runaway repeat — no model call, no network.
+ *
+ * Conservative by design: only truncates when a normalized block signature
+ * appears 3+ times (so legitimately-repeated short structure survives), and never
+ * returns empty (falls back to the original if the trim would gut the answer).
+ */
+export function stripRunawayRepetition(text: string): string {
+  if (!text || text.length < 400) return text
+  // Split on markdown headings or blank-line paragraph breaks, keeping delimiters.
+  const blocks = text.split(/\n(?=#{1,6}\s)|\n\s*\n/).map(b => b.trim()).filter(Boolean)
+  if (blocks.length < 4) return text
+  // Normalize: drop digits (kills "Example 10" vs "Example 11"), collapse ws, lowercase.
+  const norm = (b: string) => b.replace(/\d+/g, '#').replace(/\s+/g, ' ').toLowerCase().trim()
+  const seen = new Map<string, number>()
+  let cutIdx = -1
+  for (let i = 0; i < blocks.length; i++) {
+    const sig = norm(blocks[i])
+    if (sig.length < 20) continue // ignore tiny blocks (headings alone, list bullets)
+    const count = (seen.get(sig) ?? 0) + 1
+    seen.set(sig, count)
+    if (count >= 3) { cutIdx = i; break } // 3rd occurrence → runaway; cut here
+  }
+  if (cutIdx < 0) return text
+  // Keep everything up to (not including) the 3rd repeat.
+  const keptBlocks = blocks.slice(0, cutIdx)
+  // Drop a trailing block that is only a heading (a dangling "### Example 3" left
+  // behind when the runaway body block was what tripped the cut).
+  while (keptBlocks.length && /^#{1,6}\s[^\n]*$/.test(keptBlocks[keptBlocks.length - 1])) keptBlocks.pop()
+  const kept = keptBlocks.join('\n\n').trim()
+  return kept.length >= 120 ? kept : text
+}
+
 export async function fmDirectAnswer(goal: string, context?: string, history?: ConvTurn[]): Promise<string> {
   const system = `You are Crucible, an expert AI assistant. Answer the user's question clearly and completely.
 ${context ? `\n## Context\n${context}` : ''}
 Be direct, thorough, and accurate. Format with markdown when helpful. Use the prior conversation turns for context — the user may refer back to things already said.`
 
-  return callFm(system, [...historyToMessages(history), { role: 'user', content: goal }], FM_TIMEOUT_MS)
+  const raw = await callFm(system, [...historyToMessages(history), { role: 'user', content: goal }], FM_TIMEOUT_MS)
+  return stripRunawayRepetition(raw)
 }
 
 /**
