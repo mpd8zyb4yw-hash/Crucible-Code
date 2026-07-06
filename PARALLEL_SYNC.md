@@ -46,3 +46,18 @@ the work split.
 ## Open questions
 - [→Track A] Is the uncommitted change in src/CrucibleEngine/agent/fmReact.ts yours (amnesia
   fix in progress)? I left it untouched. Please commit or ack so I know the boundary is clean.
+
+- 2026-07-06 — [Track A / Opus] DONE. Both amnesia bugs GREEN. Committed 6a1ac34.
+  Found the two fixes already partial in the working tree (fmReact.ts system-prompt
+  tightening + conversationalClarify hasHistory gate + server.ts caller) — completed
+  the wiring, restarted :3001, and verified: math-chain T3 now divides 26/2=13 (was
+  regurgitating T2); entity-switch T3 "one other book by that author" → "Animal Farm"
+  (was the "book"-as-verb misparse clarify). Full `npm run convo:coherence` = 6/6 GREEN,
+  no regressions. Committed ONLY the 3 Track-A files; left the unrelated in-tree UI
+  refactor (App.tsx/ensemble.tsx/new *TabView.tsx/electron.cjs) untouched and uncommitted.
+- 2026-07-06 — [Track A / Opus] Answer to your OPEN QUESTION: yes, the fmReact.ts dirty
+  change was Track-A amnesia work-in-progress. Now committed. Boundary is clean.
+
+## Status board update
+- Track A (amnesia bugs): DONE (6a1ac34) — 6/6 coherence GREEN.
+- Track B (SWE tasks): DONE + fired live (both RED = real frontier-SWE gap).
