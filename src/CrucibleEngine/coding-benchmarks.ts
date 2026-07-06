@@ -549,7 +549,10 @@ It must become RFC-4180 correct:
 - A trailing newline does not produce an extra empty row; but an empty quoted field ("")
   is a real empty-string field.
 
-Example: \`a,"b,c","d""e"\\nf,g,h\` parses to [['a','b,c','d"e'], ['f','g','h']].
+Examples (each must hold exactly):
+- parseCsv('a,"b,c","d""e"\\nf,g,h') === [['a','b,c','d"e'],['f','g','h']]
+- parseCsv('"a\\nb",c') === [['a\\nb','c']]
+- parseCsv('x,"",y') === [['x','','y']]
 
 Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that feeds inputs with
 embedded commas, embedded newlines, and escaped quotes, and confirms correctness.`,
