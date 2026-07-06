@@ -77,9 +77,14 @@ export default function NavRail({ tab, setTab }: { tab: CrucibleTab; setTab: (t:
       <div style={{ flex: 1 }} />
 
       <NavButton active={tab === 'settings'} title="Settings" onClick={go('settings')}>
-        <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
-          <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        {/* Item-15: was a sun/brightness-slider glyph (small circle + 8 straight rays);
+            replaced with a proper gear/cog so it reads as "Settings" at a glance. */}
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
+          <path
+            d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z
+               M19.4 13.5a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V19.5a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H4.5a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H10.5a1.65 1.65 0 0 0 1-1.51V4.5a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V10.5a1.65 1.65 0 0 0 1.51 1H19.5a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"
+            stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"
+          />
         </svg>
       </NavButton>
     </div>
