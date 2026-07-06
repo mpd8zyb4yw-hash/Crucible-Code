@@ -2170,6 +2170,28 @@ export default function App() {
     })
   }, [rounds, inputBarHeight])
 
+  // Items 3+4: the effect above only re-pins on `rounds`/`inputBarHeight` changes, but the
+  // streamed content's actual DOM height can keep changing AFTER that commit — most visibly
+  // when a markdown code block finishes parsing/highlighting and reflows taller or shorter
+  // than the plain-text placeholder that was there a frame earlier, or a nested code block's
+  // syntax highlighter mounts asynchronously. That extra layout shift has no matching state
+  // change to re-trigger the scroll effect above, so the view lags behind (or jumps ahead of)
+  // the actual token stream. A ResizeObserver on every direct message-card child watches real
+  // layout height directly, independent of React's commit timing, and re-pins to bottom on any
+  // shift while still respecting the user's scroll lock. Re-observes when the round count
+  // changes (new cards mounted); each card's own internal reflows are covered without needing
+  // per-token re-subscription since ResizeObserver keeps firing on the same observed node.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (scrollLockedRef.current) return
+      el.scrollTop = el.scrollHeight
+    })
+    Array.from(el.children).forEach(child => ro.observe(child))
+    return () => ro.disconnect()
+  }, [rounds.length])
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!e.metaKey) return
