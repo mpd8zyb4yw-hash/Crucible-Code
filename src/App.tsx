@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_BASE, apiFetch, loginUrl } from './api'
 import CrucibleMark from './CrucibleMark'
+import BackgroundBlobs from './BackgroundBlobs'
+import PourRing, { type PourPhase } from './PourRing'
+import { useEnsemble, ModeBar, EnsembleKeyModal, EnsembleConfirm, ensembleAskPref, setEnsembleAskPref, type EnsembleState } from './ensemble'
 import { IntegrationsBinder } from './IntegrationsBinder'
 import { LibraryBinder } from './LibraryBinder'
 import { SelfRepairBinder } from './SelfRepairBinder'
@@ -30,15 +33,9 @@ interface DynamicModel {
 
 
 // ── Mode definitions ──────────────────────────────────────────────────────────
-const MODES = [
-  { id: 'quorum', label: 'QUORUM', color: '#7c7cf8' },
-  { id: 'code',   label: 'CODE',   color: '#4db89e' },
-  { id: 'seeker', label: 'SEEKER', color: '#f87171' },
-] as const
 // 'research' is a real app mode (state + MODE_META + classifyMode) but intentionally
-// not a user-selectable entry in the MODES menu, so it's added to the type union here
-// rather than to MODES (which would add a menu item / change behavior).
-type Mode = typeof MODES[number]['id'] | 'research'
+// not a user-selectable entry in the MODES menu. The ChatMode union lives in ensemble.tsx
+// (imported where needed); the old `Mode` alias was only used by the removed ModeSwitcher.
 
 const MODE_META: Record<string, { label: string; hint: string; color: string }> = {
   quorum: { label: 'Ensemble', hint: 'Multi-model pipeline', color: '#7c7cf8' },
@@ -47,78 +44,6 @@ const MODE_META: Record<string, { label: string; hint: string; color: string }> 
   research: { label: 'Research', hint: 'Autonomous, cited',  color: '#22c55e' },
 }
 
-function ModeSwitcher({ mode, setMode, modeMenuOpen, setModeMenuOpen }: {
-  mode: Mode
-  setMode: (m: Mode) => void
-  modeMenuOpen: boolean
-  setModeMenuOpen: (o: boolean) => void
-}) {
-  const active = MODE_META[mode]
-  const accentRgb = mode === 'code' ? '77,184,158' : mode === 'seeker' ? '245,158,11' : '124,124,248'
-  const otherModes = MODES.filter(m => m.id !== mode)
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-      {/* Collapsed pill — always visible */}
-      <button
-        onPointerDown={e => { e.stopPropagation(); setModeMenuOpen(!modeMenuOpen) }}
-        className={`crucible-pill${modeMenuOpen ? ' crucible-pill--active' : ''}`}
-        title={active.hint}
-        style={{
-          display: 'flex', alignItems: 'center', gap: 5,
-          padding: '4px 9px', borderRadius: 8, border: 'none', cursor: 'pointer',
-          background: modeMenuOpen ? `rgba(${accentRgb},0.15)` : 'rgba(255,255,255,0.05)',
-          transition: 'background 0.2s',
-          userSelect: 'none' as const,
-        }}
-      >
-        <span style={{
-          width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-          background: active.color, boxShadow: `0 0 6px ${active.color}99`,
-        }} />
-        <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', color: active.color }}>
-          {active.label}
-        </span>
-        <span style={{
-          fontSize: 8, color: active.color, opacity: 0.5,
-          transform: modeMenuOpen ? 'rotate(180deg)' : 'none',
-          transition: 'transform 0.18s', display: 'inline-block', lineHeight: 1,
-        }}>▴</span>
-      </button>
-
-      {/* Inline expansion — other modes appear to the right, no popup */}
-      {modeMenuOpen && otherModes.map((m, i) => {
-        const meta = MODE_META[m.id]
-        const rgb = m.id === 'code' ? '77,184,158' : m.id === 'seeker' ? '245,158,11' : '124,124,248'
-        return (
-          <button
-            key={m.id}
-            onPointerDown={e => { e.stopPropagation(); setMode(m.id); setModeMenuOpen(false); haptic('light') }}
-            title={meta.hint}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 5,
-              padding: '4px 9px', borderRadius: 8, border: 'none', cursor: 'pointer',
-              background: 'rgba(255,255,255,0.05)',
-              opacity: 0, animation: `fanIn 0.12s ease forwards`,
-              animationDelay: `${i * 0.05}s`,
-              transition: 'background 0.15s',
-              userSelect: 'none' as const,
-              outline: `1px solid rgba(${rgb},0.2)`,
-            }}
-          >
-            <span style={{
-              width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-              background: meta.color, opacity: 0.7,
-            }} />
-            <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.05em', color: 'rgba(255,255,255,0.45)' }}>
-              {meta.label}
-            </span>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
 
 
 // ── Rotating verb placeholder ─────────────────────────────────────────────────
@@ -1874,6 +1799,12 @@ export default function App() {
   // Default to a local-capable mode ('code'), NOT the external ensemble ('quorum') — see the
   // BYOK/ensemble constraint. Fresh sessions run Crucible-local until the user opts into ensemble.
   const [mode, setMode] = useState<'quorum'|'code'|'seeker'|'research'>('code')
+  // ── Ensemble opt-in + BYOK (bring-your-own-key) ───────────────────────────
+  // The external multi-model pipeline is opt-in and runs only on the user's own API keys.
+  const ensemble: EnsembleState = useEnsemble()
+  const [keyModalOpen, setKeyModalOpen] = useState(false)
+  // Holds a message pending the per-query "use ensemble?" confirmation.
+  const [ensembleConfirm, setEnsembleConfirm] = useState<null | { message?: string }>(null)
 
   // ── Step 9: Remote Brain mode (phone only) ────────────────────────────────
   const [remoteBrain, setRemoteBrain] = useState(false)
@@ -2569,12 +2500,23 @@ export default function App() {
     }
   }
 
-  const send = async (overrideMessage?: string, modeOverride?: string) => {
+  const send = async (overrideMessage?: string, modeOverride?: string, ensembleConfirmed = false) => {
     // In Remote Brain mode every send goes straight to the Mac agent loop.
     if (remoteBrain && !modeOverride) modeOverride = 'agent'
     if (thinking) return
     const userMessage = (overrideMessage ?? input).trim()
     if (!userMessage || userMessage.length < 4) return
+    // ── Ensemble opt-in + BYOK gate ───────────────────────────────────────────
+    // The external pipeline ('quorum') is never entered without the user's own key AND an
+    // explicit go-ahead. Local modes (code/seeker/research/agent) are unaffected.
+    const effectiveMode = modeOverride ?? mode
+    if (effectiveMode === 'quorum') {
+      if (!ensemble.hasAnyKey) { setKeyModalOpen(true); return }   // need a key first
+      if (!ensembleConfirmed && ensembleAskPref() === 'always') {
+        setEnsembleConfirm({ message: userMessage })              // ask before fanning out
+        return
+      }
+    }
     const roundId = Date.now().toString()
     localStorage.setItem('crucible_has_sent', '1')
     setInput(''); setThinking(true); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
@@ -2628,6 +2570,9 @@ export default function App() {
           roundId,  // lets the server patch the finished answer into THIS round if we disconnect
           prewarmToken: prewarmTokenRef.current,
           device: /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "mobile" : "desktop",
+          // BYOK: user-supplied provider keys, sent only when actually running ensemble.
+          // The server uses these INSTEAD of any bundled/env key for the external fan-out.
+          byokKeys: (modeOverride ?? mode) === 'quorum' ? ensemble.keyPayload : undefined,
           history: rounds.slice(-6).filter(r => r.synthesis).map(r => ({
             user: r.userMessage,
             assistant: r.synthesis
@@ -3367,13 +3312,33 @@ export default function App() {
 
   return (
     <div className="crucible-root" style={{
-      height: '100dvh', background: '#16161e',
+      height: '100dvh', background: '#101016',
       marginLeft: 0,
       transition: 'margin-left 0.38s cubic-bezier(0.16,1,0.3,1)', width: '100vw',
       display: 'flex', flexDirection: 'column',
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      color: '#e2e2e2', position: 'relative', overflow: 'hidden', userSelect: 'none',
+      color: '#e4e4ee', position: 'relative', overflow: 'hidden', userSelect: 'none',
     }}>
+      {/* Ambient animated backdrop (Crucible v2 design) — sits behind all content */}
+      <BackgroundBlobs working={thinking} />
+      {keyModalOpen && <EnsembleKeyModal ensemble={ensemble} onClose={() => setKeyModalOpen(false)} />}
+      {ensembleConfirm && (
+        <EnsembleConfirm
+          onCancel={() => {
+            // "Run locally" — drop to the local code path and send the pending message.
+            const pending = ensembleConfirm.message
+            setEnsembleConfirm(null)
+            setMode('code')
+            if (pending) void send(pending, 'code')
+          }}
+          onConfirm={(remember) => {
+            if (remember) setEnsembleAskPref('session')
+            const pending = ensembleConfirm.message
+            setEnsembleConfirm(null)
+            if (pending) void send(pending, 'quorum', true)
+          }}
+        />
+      )}
       <style>{`
         @keyframes slideUp  { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
         @keyframes panelUp  { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
@@ -4140,6 +4105,11 @@ export default function App() {
 
               {/* Synthesis */}
               {round.synthesis.length > 0 && (
+                <PourRing
+                  phase={(round.synthesisDone ? 'done' : (round.synthStreaming ? 'pouring' : 'idle')) as PourPhase}
+                  streamProgress={Math.min(1, round.synthesis.length / (round.synthesis.length + 500))}
+                  radius={14}
+                >
                 <div style={{
                   position: 'relative', borderRadius: 14, padding: '16px 18px', width: '100%', boxSizing: 'border-box' as const, overflow: 'hidden',
                   background: 'linear-gradient(135deg, rgba(124,124,248,0.07) 0%, rgba(77,184,158,0.05) 50%, rgba(192,132,252,0.07) 100%)',
@@ -4694,6 +4664,7 @@ export default function App() {
                    )
                  })()}
                </div>
+                </PourRing>
              )}
             </div>
           )
@@ -4974,8 +4945,8 @@ export default function App() {
 
           {/* ── Row 2: toolbar pills + send button ── */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 11 }}>
-            {/* Mode selector — Studio toggle is nested inside its expansion fan */}
-            <ModeSwitcher mode={mode} setMode={setMode} modeMenuOpen={modeMenuOpen} setModeMenuOpen={setModeMenuOpen} />
+            {/* Mode pills — Crucible-local default; Ensemble is opt-in + BYOK (see ensemble.tsx) */}
+            <ModeBar mode={mode} setMode={setMode} ensemble={ensemble} onManageKeys={() => setKeyModalOpen(true)} />
 
             {/* Step 9: Remote Brain — phone only */}
             {isMobile && (

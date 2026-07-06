@@ -162,9 +162,51 @@ const PROVIDER_KEY_ENV: Record<string, string> = {
   fireworks:   'FIREWORKS_API_KEY',
   deepinfra:   'DEEPINFRA_TOKEN',
 }
+// ── BYOK (bring-your-own-key) request scoping ─────────────────────────────────
+// The external pipeline may run on the END USER's own API keys instead of any bundled/env
+// key (product constraint — see the crucible-byok-ensemble-constraint memory). A request
+// that carries user keys runs inside `runWithByokKeys`, which stashes them in AsyncLocalStorage
+// so key lookups anywhere in the call tree can prefer them without threading a param through
+// every function. `resolveProviderKey` is the single lookup: user key first, env fallback.
+import { AsyncLocalStorage } from 'node:async_hooks'
+const byokStore = new AsyncLocalStorage<Record<string, string>>()
+
+/** Run `fn` with the given per-request BYOK keys visible to resolveProviderKey/providerHasKey. */
+export function runWithByokKeys<T>(keys: Record<string, string> | undefined | null, fn: () => T): T {
+  const clean: Record<string, string> = {}
+  for (const [k, v] of Object.entries(keys ?? {})) if (v && String(v).trim()) clean[k] = String(v).trim()
+  if (!Object.keys(clean).length) return fn()
+  return byokStore.run(clean, fn)
+}
+
+/** The active request's BYOK keys, if any. */
+export function currentByokKeys(): Record<string, string> {
+  return byokStore.getStore() ?? {}
+}
+
+/** Scope BYOK keys to the REMAINDER of the current async execution (e.g. an Express request
+ *  handler) without wrapping it in a callback. No-op when no usable keys are supplied. */
+export function enterByokKeys(keys: Record<string, string> | undefined | null): void {
+  const clean: Record<string, string> = {}
+  for (const [k, v] of Object.entries(keys ?? {})) if (v && String(v).trim()) clean[k] = String(v).trim()
+  if (Object.keys(clean).length) byokStore.enterWith(clean)
+}
+
+/** Resolve a provider's API key: user-supplied (BYOK) first, then the configured env var. */
+export function resolveProviderKey(provider: string): string {
+  const user = byokStore.getStore()?.[provider]
+  if (user && user.trim()) return user.trim()
+  const env = PROVIDER_KEY_ENV[provider]
+  const v = env ? process.env[env] : undefined
+  return v && v !== 'missing' ? v : ''
+}
+
 export function providerHasKey(provider: string): boolean {
   const env = PROVIDER_KEY_ENV[provider]
   if (!env) return true  // unknown provider — don't gate
+  // A user-supplied BYOK key activates the provider for this request even with no env key.
+  const user = byokStore.getStore()?.[provider]
+  if (user && user.trim()) return true
   const v = process.env[env]
   return !!v && v !== 'missing'
 }

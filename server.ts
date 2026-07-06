@@ -13,7 +13,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
-import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad, providerHealthSnapshot, registerFineTunedModel, providerHasKey } from './modelRegistry'
+import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad, providerHealthSnapshot, registerFineTunedModel, providerHasKey, enterByokKeys, resolveProviderKey, currentByokKeys } from './modelRegistry'
 import type { SelectedModel } from './modelRegistry'
 import { createServer } from 'http'
 import { WebSocketServer as WsServer } from 'ws'
@@ -1438,7 +1438,10 @@ async function callModel(
 
   // Route every hosted provider through the Cloudflare Worker key-proxy when enabled.
   // Local FM stays direct (loopback, no key). The Worker normalises to OpenAI shape.
-  if (PROXY_URL && !PROXY_SKIP_PROVIDERS.has(provider)) {
+  // BYOK exception: if the user supplied their OWN key for this provider, bypass the shared
+  // proxy (which would use bundled keys) and call the provider directly with the user's key.
+  const _hasUserKey = !!currentByokKeys()[provider]
+  if (PROXY_URL && !PROXY_SKIP_PROVIDERS.has(provider) && !_hasUserKey) {
     return await proxyChat(model, messages, callAbort)
   }
 
@@ -1481,7 +1484,7 @@ async function callModel(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.VITE_OPENROUTER_API_KEY}`,
+        'Authorization': `Bearer ${resolveProviderKey('openrouter')}`,
         'HTTP-Referer': 'https://crucible.local',
         'X-Title': 'Crucible',
       },
@@ -1701,7 +1704,7 @@ async function callModelStreaming(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.VITE_OPENROUTER_API_KEY}`,
+        'Authorization': `Bearer ${resolveProviderKey('openrouter')}`,
         'HTTP-Referer': 'https://crucible.local',
         'X-Title': 'Crucible',
       },
@@ -2352,7 +2355,11 @@ function shouldUseMetaRouter(message: string): boolean {
 }
 
 app.post('/api/chat', async (req, res) => {
-  const { message, mode = 'quorum', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId } = req.body
+  const { message, mode = 'quorum', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId, byokKeys } = req.body
+  // BYOK: scope any user-supplied provider keys to this request's async context so the
+  // external pipeline runs on the USER's keys, never a bundled/shared one (product
+  // constraint). Local/synth paths ignore this. No-op when no keys are sent.
+  enterByokKeys(byokKeys)
   const chatSessionId = typeof reqSessionId === 'string' ? reqSessionId : ''
   const chatRoundId = typeof reqRoundId === 'string' ? reqRoundId : ''
   // Register roundId → conversationId so the completion patch can update the grouped
