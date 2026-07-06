@@ -3799,12 +3799,6 @@ export default function App() {
         WebkitMaskImage: `linear-gradient(to bottom, black 0%, black calc(100% - ${inputBarHeight - 8}px), rgba(0,0,0,0.92) calc(100% - ${inputBarHeight - 32}px), rgba(0,0,0,0.55) calc(100% - ${inputBarHeight - 68}px), rgba(0,0,0,0.18) calc(100% - ${Math.max(20, inputBarHeight - 103)}px), transparent 100%)`,
         maskImage: `linear-gradient(to bottom, black 0%, black calc(100% - ${inputBarHeight - 8}px), rgba(0,0,0,0.92) calc(100% - ${inputBarHeight - 32}px), rgba(0,0,0,0.55) calc(100% - ${inputBarHeight - 68}px), rgba(0,0,0,0.18) calc(100% - ${Math.max(20, inputBarHeight - 103)}px), transparent 100%)`,
       }}>
-        {rounds.length === 0 && (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.18)', letterSpacing: '0.06em', fontWeight: 500 }}>Dynamic models. One answer.</span>
-          </div>
-        )}
-
         {rounds.map(round => {
           const models = round.models
           return (
@@ -4857,11 +4851,6 @@ export default function App() {
                 Ensemble
               </span>
             </button>
-            <span style={{ fontSize: 10, color: '#4a4a5e', fontWeight: 500 }}>
-              {mode === 'quorum'
-                ? (ensemble.hasAnyKey ? 'armed — will ask before any fan-out' : 'armed — but no API keys added yet')
-                : '0 external calls'}
-            </span>
 
             <div style={{ flex: 1 }} />
             {/* Step 9: Remote Brain — phone only */}
