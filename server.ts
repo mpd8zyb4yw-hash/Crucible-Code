@@ -1140,10 +1140,19 @@ async function checkLocalInference(): Promise<boolean> {
   }
 }
 
+// Item-9 (2026-07-07): local-FM call ceiling. In CRUCIBLE_OFFLINE=strict there is NO external
+// pool to escalate to, so a slow local FM on a genuinely hard task must be allowed to grind to
+// completion rather than aborting empty-handed (the single most trust-damaging failure). Strict
+// → generous (still bounded so a wedged daemon can't hang forever); hybrid keeps the short
+// ceiling so a stall escalates quickly. Env-overridable via CRUCIBLE_FM_TIMEOUT_MS.
+const LOCAL_FM_TIMEOUT_MS = Number(
+  process.env.CRUCIBLE_FM_TIMEOUT_MS ?? ((process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict' ? 600_000 : 30_000),
+)
+
 // Fail-silent local call: returns '' on any error (used where the pipeline must
 // never throw, e.g. emergency fallback synthesis). For normal routing that should
 // surface failures, use callModel({ provider: 'local', ... }) instead.
-async function callLocalModel(systemPrompt: string, userMessage: string, timeoutMs = 30000): Promise<string> {
+async function callLocalModel(systemPrompt: string, userMessage: string, timeoutMs = LOCAL_FM_TIMEOUT_MS): Promise<string> {
   try {
     const res = await fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
       method: 'POST',
@@ -1189,7 +1198,7 @@ class OfflineStrictError extends Error {
 
 async function callLocalFromMessages(
   messages: { role: string; content: string }[],
-  timeoutMs = 30000,
+  timeoutMs = LOCAL_FM_TIMEOUT_MS,
 ): Promise<string> {
   try {
     const res = await fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
@@ -1433,7 +1442,7 @@ async function callModel(
   // Default per-call timeout for non-local providers — prevents a slow/hung API
   // from blocking the pipeline indefinitely. Stage 1 already wraps callModelStreaming
   // in withTimeout; this guards callModel uses elsewhere (probes, synthesis, etc.).
-  const callTimeoutMs = opts.timeoutMs ?? (provider === 'local' ? 30000 : 45000)
+  const callTimeoutMs = opts.timeoutMs ?? (provider === 'local' ? LOCAL_FM_TIMEOUT_MS : 45000)
   const callAbort = AbortSignal.timeout(callTimeoutMs)
 
   // Route every hosted provider through the Cloudflare Worker key-proxy when enabled.

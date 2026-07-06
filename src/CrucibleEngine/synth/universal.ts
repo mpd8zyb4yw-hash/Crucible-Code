@@ -88,6 +88,14 @@ function failureFingerprint(detail: string): string {
     .trim()
 }
 
+// Item-9 fix (2026-07-07): mirror fmReact's strict-mode ceiling. In CRUCIBLE_OFFLINE=strict the
+// code-gen FM proposer has no external fallback, so a slow round must be allowed to grind rather
+// than aborting the whole synth empty-handed; hybrid keeps the short ceiling for fast escalation.
+const LOCAL_SYNTH_STRICT = (process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict'
+const LOCAL_SYNTH_TIMEOUT_MS = Number(
+  process.env.CRUCIBLE_FM_TIMEOUT_MS ?? (LOCAL_SYNTH_STRICT ? 600_000 : 40_000),
+)
+
 /** Default proposer: the on-device Apple FM (offline). Injectable for tests / other backends. */
 async function defaultLocalSynth(system: string, user: string): Promise<string> {
   const res = await fetch(`${LOCAL_FM_URL}/v1/chat/completions`, {
@@ -97,7 +105,7 @@ async function defaultLocalSynth(system: string, user: string): Promise<string> 
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       max_tokens: 1200, temperature: 0.2,
     }),
-    signal: AbortSignal.timeout(40_000),
+    signal: AbortSignal.timeout(LOCAL_SYNTH_TIMEOUT_MS),
   })
   if (!res.ok) throw new Error(`local FM ${res.status}`)
   const data: any = await res.json()

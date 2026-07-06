@@ -32,7 +32,17 @@ const DEFAULT_MAX_ROUNDS = 8
 // Healthy generation measured at 21-28s, already against the old 30s ceiling —
 // under load this crossed it, fired AbortSignal.timeout, and got misreported as
 // "daemon unreachable" (see server.ts's offline_conversational_escalate catch).
-const FM_TIMEOUT_MS = 45_000
+//
+// Item-9 fix (2026-07-07): in CRUCIBLE_OFFLINE=strict there is NO external pool to escalate
+// to, so a slow FM on a genuinely hard task must be allowed to GRIND to completion rather than
+// aborting empty-handed — a hard 45s ceiling that kills the task and returns nothing is the
+// single most trust-damaging failure. Strict mode gets a generous ceiling (still bounded so a
+// truly wedged daemon can't hang forever); hybrid keeps the short ceiling so a stall escalates
+// quickly to the external pool. Both env-overridable for tuning.
+const FM_STRICT = (process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict'
+const FM_TIMEOUT_MS = Number(
+  process.env.CRUCIBLE_FM_TIMEOUT_MS ?? (FM_STRICT ? 600_000 : 45_000),
+)
 
 // ── FM call helper ────────────────────────────────────────────────────────────
 
