@@ -24,14 +24,16 @@ export default function BackgroundBlobs({ working = false }: { working?: boolean
     resize()
     window.addEventListener('resize', resize)
     const draw = () => {
-      t += 0.003
+      // Item-22: tone down the ambient orbs (kept per explicit product direction, not removed) —
+      // slower drift (was 0.003/frame, ~35s cycle; now ~55s), fewer blobs (3 → 2), and lower
+      // opacity so they read as a faint ambient wash instead of competing with foreground content.
+      t += 0.0019
       ctx.clearRect(0, 0, canvas.width, canvas.height)
       const blobs = [
-        { x: 0.2, y: 0.3, r: 0.32, h: 255 + Math.sin(t) * 20 },
-        { x: 0.85, y: 0.6, r: 0.26, h: 195 + Math.cos(t * 1.3) * 15 },
-        { x: 0.5, y: 0.85, r: 0.24, h: 300 + Math.sin(t * 0.8) * 25 },
+        { x: 0.2, y: 0.3, r: 0.3, h: 255 + Math.sin(t) * 20 },
+        { x: 0.8, y: 0.7, r: 0.26, h: 210 + Math.cos(t * 1.3) * 15 },
       ]
-      const alpha = workingRef.current ? 0.045 : 0.03
+      const alpha = workingRef.current ? 0.03 : 0.02
       for (const b of blobs) {
         const x = b.x * canvas.width
         const y = b.y * canvas.height
