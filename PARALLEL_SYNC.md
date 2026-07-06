@@ -164,3 +164,21 @@ the work split.
   → Server currently left in CRUCIBLE_OFFLINE=strict. NOTE for other chat: production default is
   mode 1; restart without the env var to revert if the UI/other tests assume hybrid.
   → All future coding-parity measurements MUST use smoke:code:offline (strict), not smoke:code.
+
+- 2026-07-06 — [Track C / Opus-A] Strict-offline ledger-read found + fixed a 4th oracle gap
+  (commit e89cfae): the property (set-op) family was BLIND to intra-side dedup — it accepted a
+  non-deduping intersect (per-occurrence push) as ALL PASS because every assertion used inputs
+  with no duplicates WITHIN one side (only cross-side). Same class as fuzz items 22/23, in
+  derive.ts this time. Added intra-side-dedup assertions to union/intersect/diff. Verified rejects
+  buggy / accepts correct; prove:all 251/251. Effect: tagSetModule's synth path no longer
+  green-lights subtly-wrong set-op code — now escalates honestly.
+  ALSO investigated (did NOT over-claim): 27 TS2550 "lib-version" rejections, ALL on tags.ts —
+  FM reaching for Set.prototype.intersection (ES2025) which the oracle's tsc `target:'es2020'`
+  (oracle.ts:96) rejects, even though the Node-26/tsx runtime supports it. Isolated to 1 task
+  (has a portable `[...new Set(a)].filter()` workaround), NOT a suite-wide drag. The other 84
+  "does-not-exist" rejections are TS2339 genuine FM type errors (e.g. .localeCompare on a
+  string|number union) — sortModule's capability wall is REAL, not a lib artifact.
+  → FLAG (target-level decision, not making unilaterally): consider bumping the oracle tsc lib to
+    match the actual Node-26 runtime so valid runtime-supported code isn't falsely rejected —
+    BUT weigh against distilled catalog-skill portability to older JS targets. Whoever owns the
+    synth deploy target should call this.
