@@ -39,13 +39,23 @@ the suites.
    Verified: name recall, pronoun resolution (Rust vs Go), research follow-ups (Japan pop/capital),
    and standalone prompts all coherent. See [[crucible-multiturn-context-fix]].
 
+**cont.37 second slice — runaway-repetition fix (committed 8d95e13):** Apple's FM has no
+repetition-penalty knob, so open-ended prompts sometimes loop ("### Example 10, 11, 12…") to the
+token ceiling. Added `stripRunawayRepetition()` in `fmReact.ts` (deterministic: cuts at the 3rd
+occurrence of a digit-normalized block signature, drops dangling trailing headings, falls back to
+original if the trim would gut the answer). Applied to `fmDirectAnswer`. Unit-verified 3286→603 ch
+on the real signature; normal answers untouched. NOT yet applied to `fmReact`'s FINAL_ANSWER output
+(lower risk there) — extend if runaway shows up in tool-loop answers.
+
 **Still open after cont.37 (next priorities):**
-- Research DAG can self-contradict on some standalone factual Qs ("Paris is not the capital of France.
-  The capital is Paris.") — a synthesis bug INSIDE the DAG, unaddressed. Reproduce with
-  `solveNonCodeTurn("what is the capital of France?")` in isolation.
-- `fmDirectAnswer` occasionally runs away into degenerate repetition (endless "Example 10, 11, 12…")
-  at max_tokens=1536 — add a repetition stop / lower ceiling for conversational answers.
-- Conversational latency is 12-17s for simple answers — worth profiling.
+- Research DAG occasionally self-contradicts on standalone factual Qs ("Paris is not the capital of
+  France. The capital is Paris."). Could NOT reproduce in isolation this session — the DAG returned
+  clean answers on repeated tries, so it's nondeterministic (source-snippet dependent). Left as a
+  watch item; repro with several runs of `solveNonCodeTurn("what is the capital of France?")`.
+- DAG answer FORMAT is verbose report chrome ("[CORROBORATED · 74% confidence…] *Sources: …*") even
+  for conversational questions that reach the full tier — feels robotic vs a plain sentence. Consider
+  a conversational post-format that drops the evidence scaffold unless the user asked for sources.
+- Conversational latency is 12-17s for simple answers — worth profiling (research DAG + FM tiers).
 - Everything below this block is the PRIOR (cont.36c) state, kept for history only.
 
 ---
