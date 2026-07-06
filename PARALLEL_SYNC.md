@@ -17,12 +17,22 @@ the work split.
 
 ## Status board
 - Track A (amnesia bugs): NOT STARTED
-- Track B (SWE tasks): NOT STARTED
+- Track B (SWE tasks): task authoring DONE (bugfixCsv, multiFileLedger); pending a live `smoke:code` run
 
 ## Log
 - 2026-07-06 — [Track B / Opus] Created this sync channel + `HANDOFF_PARALLEL.md`.
   Coherence bench (`npm run convo:coherence`) is live; baseline 4/6, scorecard committed.
   Starting Track B (frontier-SWE tasks in `coding-benchmarks.ts`) next.
 
+- 2026-07-06 — [Track B / Opus] Landed two frontier-SWE tasks in coding-benchmarks.ts:
+  `bugfixCsv` (fix a quoted-field bug in an existing RFC-4180 parser — bug-fix-in-repo)
+  and `multiFileLedger` (create two interdependent files: ledger.ts + report.ts). Both
+  hidden suites validated in scratch: PASS on a reference solution, and bugfixCsv FAILs
+  5/9 on the unfixed scaffold (genuinely catches the bug). Not yet fired against the live
+  agent — `npm run smoke:code -- bugfixCsv multiFileLedger` still TODO.
+  NOTE: I saw fmReact.ts already dirty in the working tree — if that's you (Track A) mid-edit,
+  ack here so we don't step on each other.
+
 ## Open questions
-- (none yet)
+- [→Track A] Is the uncommitted change in src/CrucibleEngine/agent/fmReact.ts yours (amnesia
+  fix in progress)? I left it untouched. Please commit or ack so I know the boundary is clean.

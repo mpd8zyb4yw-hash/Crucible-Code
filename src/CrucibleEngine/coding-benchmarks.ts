@@ -505,6 +505,99 @@ Rules:
 Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) covering an equal-ignoring-
 case pair, an a-before-b pair, and a b-before-a pair — and confirm it passes.`,
   },
+
+  // ── Frontier-SWE-adjacent tasks ─────────────────────────────────────────────
+  // Unlike the greenfield single-module tasks above, these mirror real SWE work:
+  // (1) FIX a bug in existing code without changing its signature, and (2) create
+  // TWO interdependent files in an existing repo. Both stress locate-and-integrate,
+  // not blank-page authoring.
+  {
+    id: 'bugfixCsv',
+    title: 'Fix a quoted-field bug in an existing RFC-4180 CSV parser (bug-fix-in-repo task)',
+    modulePath: 'src/csv.ts',
+    scaffold: [
+      {
+        // The buggy implementation the agent must REPAIR (not rewrite from a blank file).
+        path: 'src/csv.ts',
+        content:
+`// CSV parser. There is a bug: quoted fields are not handled — a comma or newline
+// INSIDE a double-quoted field is wrongly treated as a delimiter, and escaped
+// double-quotes ("") are not unescaped. Fix parseCsv so it is RFC-4180 correct.
+// Do NOT change the exported signature.
+export function parseCsv(input: string): string[][] {
+  // BUG: naive split ignores quoting entirely.
+  return input
+    .split(/\\r?\\n/)
+    .filter(line => line.length > 0)
+    .map(line => line.split(','))
+}
+`,
+      },
+    ],
+    prompt:
+`The project has an existing, BUGGY CSV parser at src/csv.ts. ${CONTRACT_NOTE}
+
+Fix the bug in place — keep the exact exported signature:
+  export function parseCsv(input: string): string[][]
+
+It must become RFC-4180 correct:
+- A field may be wrapped in double quotes. A comma or newline INSIDE a quoted field is
+  literal content, NOT a delimiter/row break.
+- Inside a quoted field, a doubled double-quote ("") is an escaped single double-quote (").
+- Unquoted fields are taken verbatim (trim nothing).
+- Each output row is an array of field strings; the result is an array of rows.
+- A trailing newline does not produce an extra empty row; but an empty quoted field ("")
+  is a real empty-string field.
+
+Example: \`a,"b,c","d""e"\\nf,g,h\` parses to [['a','b,c','d"e'], ['f','g','h']].
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that feeds inputs with
+embedded commas, embedded newlines, and escaped quotes, and confirms correctness.`,
+  },
+  {
+    id: 'multiFileLedger',
+    title: 'Create two interdependent modules (ledger + report) in an existing repo (multi-file task)',
+    modulePath: 'src/report.ts',
+    scaffold: [
+      {
+        path: 'src/types.ts',
+        content:
+`// Existing type definitions — do not modify.
+export interface Transaction {
+  id: string
+  amount: number      // positive = credit, negative = debit
+  category: string
+}
+`,
+      },
+    ],
+    prompt:
+`The project has src/types.ts (defines Transaction). Do NOT modify it. ${CONTRACT_NOTE}
+
+Create TWO new interdependent files:
+
+1. src/ledger.ts:
+     import type { Transaction } from './types'
+     export class Ledger {
+       add(tx: Transaction): void          // reject a duplicate id by throwing an Error
+       all(): Transaction[]                // insertion order; must not expose internal mutability
+       balance(): number                   // sum of all amounts
+     }
+
+2. src/report.ts (imports from BOTH ./ledger and ./types):
+     import { Ledger } from './ledger'
+     export function categoryTotals(ledger: Ledger): Record<string, number>
+       // total amount per category, summed across the ledger's transactions
+
+Rules:
+- report.ts MUST import Ledger from './ledger' (the two files are genuinely coupled;
+  do not inline a duplicate ledger).
+- all() must not let a caller mutate the Ledger's internal array (return a copy).
+- add() throws on a duplicate id.
+
+Write a self-test (src/index.ts, runnable with \`npx tsx src/index.ts\`) that builds a Ledger,
+adds several transactions across categories, and asserts balance() and categoryTotals().`,
+  },
 ]
 
 // ── SSE fire: send the task to the live agent, collect the outcome ─────────────────
