@@ -1871,7 +1871,9 @@ export default function App() {
     stepIndex: number; stepTotal: number; iter: number; maxIters: number
     savedAt: number
   } | null>(null)
-  const [mode, setMode] = useState<'quorum'|'code'|'seeker'|'research'>('quorum')
+  // Default to a local-capable mode ('code'), NOT the external ensemble ('quorum') — see the
+  // BYOK/ensemble constraint. Fresh sessions run Crucible-local until the user opts into ensemble.
+  const [mode, setMode] = useState<'quorum'|'code'|'seeker'|'research'>('code')
 
   // ── Step 9: Remote Brain mode (phone only) ────────────────────────────────
   const [remoteBrain, setRemoteBrain] = useState(false)
@@ -1883,7 +1885,7 @@ export default function App() {
   const [remoteLanOrigin, setRemoteLanOrigin] = useState<string | null>(null)
   const screenCanvasRef = useRef<HTMLCanvasElement>(null)
   const streamEsRef = useRef<EventSource | null>(null)
-  const preBrainModeRef = useRef<'quorum'|'code'|'seeker'|'research'>('quorum')
+  const preBrainModeRef = useRef<'quorum'|'code'|'seeker'|'research'>('code')
   const fpsCounterRef = useRef({ count: 0, last: 0 })
   const [pipPos, setPipPos] = useState<{x:number,y:number}>({ x: 12, y: 60 })
   const pipPosRef = useRef<{x:number,y:number}>({ x: 12, y: 60 })
@@ -2099,21 +2101,23 @@ export default function App() {
   const wasThinkingRef = useRef(false)
   const passiveEsRef = useRef<EventSource | null>(null)
 
+  // Ensemble (the external multi-model pipeline) is OPT-IN and is never auto-selected —
+  // per the BYOK/ensemble product constraint, Crucible-local is the default path and the
+  // external fan-out must be a deliberate user choice. classifyMode therefore only routes
+  // BETWEEN local-capable modes (code / seeker) and NEVER escalates INTO 'quorum' on its
+  // own. The old complexity-override and research-verb branches that silently promoted long
+  // or multi-part prompts into the ensemble have been removed. The user still enters
+  // ensemble/research explicitly via the mode picker; once there, we don't yank them back out.
   const classifyMode = (text: string, lastMode?: 'quorum'|'code'|'seeker'|'research'): 'quorum'|'code'|'seeker'|'research' => {
     const m = text.toLowerCase()
+    // Respect an explicit opt-in — if the user chose ensemble/research, keep it on keystroke.
+    if (lastMode === 'quorum' || lastMode === 'research') return lastMode
     const isShortFollowUp = text.trim().split(' ').length <= 3
-    if (isShortFollowUp && lastMode && lastMode !== 'quorum') return lastMode
-    // Complexity override: long multi-part prompts → ensemble regardless of opening keyword.
-    // "Research X: (1) ... (2) ..." is a synthesis task, not a search/retrieval task.
-    const approxTokens = text.trim().split(/\s+/).length * 0.75
-    const hasNumberedParts = /\(\d+\)|\d+[\.\)]\s+\w/.test(text)
-    if (approxTokens > 200 && hasNumberedParts) return lastMode === 'code' ? 'code' : 'quorum'
-    // "Research" as an imperative verb with downstream productive intent → synthesis, not retrieval.
-    // "Research and produce/write/analyze X" ≠ "research [topic]" as a search noun.
-    if (/\bresearch\b[\s\S]{0,80}\b(and|then|to)\b[\s\S]{0,60}\b(produce|write|create|analy[sz]e|compare|synthesi[sz]e|outline|draft|generate|build|develop|make|compile|prepare|compose|report|evaluate|assess|summari[sz]e|explore)\b/i.test(text)) return lastMode === 'code' ? 'code' : 'quorum'
+    if (isShortFollowUp && lastMode) return lastMode
     if (/\b(search|find|look up|latest|news|current|today|who is|what is|when did|where is|research|weather|price|stock|forecast|temperature)\b/.test(m)) return 'seeker'
     if (/\b(code|write|build|create|function|script|debug|fix|implement|refactor|file|class|component|api|error|bug|compile|run|execute)\b/.test(m)) return 'code'
-    return lastMode ?? 'quorum'
+    // Never fall back to 'quorum' automatically — stay on the current local mode (or code).
+    return lastMode === 'seeker' ? 'seeker' : 'code'
   }
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [showMinLengthTip, setShowMinLengthTip] = useState(false)
