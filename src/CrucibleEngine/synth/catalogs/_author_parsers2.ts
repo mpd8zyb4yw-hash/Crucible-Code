@@ -40,7 +40,7 @@ export function compareSemver(a, b) {
     defaultPath: 'src/globMatch.ts', exports: ['globMatch'],
     patterns: [{ re: '\\bglobMatch\\b', weight: 0.6 }, { re: 'glob.*pattern|wildcard.*match', weight: 0.3 }],
     impl: `export function globMatch(glob, str) {
-  const re = glob.replace(/[.+^${}()|[\\]\\\\]/g, '\\\\$&').replace(/\\*/g,'.*').replace(/\\?/g,'.')
+  const re = glob.replace(/[.+^\${}()|[\\]\\\\]/g, '\\\\$&').replace(/\\*/g,'.*').replace(/\\?/g,'.')
   return new RegExp('^' + re + '$').test(str)
 }`,
     tests: [
