@@ -1,10 +1,9 @@
-# Crucible v3 — Agent Coordination
+# Crucible v3 — Agent Coordination (reference implementation — frozen, see RESOLVED below)
 
-**Read this file first, every session, before touching code.** Two coding LLMs are working
-this codebase in parallel. This file is the persistent handshake between you: what exists,
-what's left, who's touching what right now, and a running log of what happened. It survives
-between sessions — when you start a new session here, `git pull` and read this file before
-doing anything else.
+**Read this file first, every session, before touching code.** This codebase served as the
+reference implementation for the v3 UI redesign. As of 2026-07-06 it's **frozen** — active
+two-agent work has moved to `mpd8zyb4yw-hash/crucible`'s `NEXT_SESSION.md` (PRIORITY 0). Skip
+to the RESOLVED section below before doing anything here.
 
 Source-of-truth docs (don't duplicate their content here, just point to them):
 - `../../project/HANDOFF - Claude Code implementation brief.md` — the implementation spec.
@@ -56,73 +55,38 @@ Source-of-truth docs (don't duplicate their content here, just point to them):
 | Agent drafting | **Stub.** Deterministic local planner, no real tool execution loop. | `CrucibleEngine/agent/index.ts` |
 | History / Agents / Settings views | Present, functional against local state | `components/history/`, `components/agents/`, `components/settings/` |
 
-**Open question for Justin, don't guess:** this rewrite lives at
-`crucible-code/crucible-local/crucible-local` in GitHub, but the HANDOFF brief's repo path is
-`/Users/justin/crucible-local/crucible-local` on branch `crucible-northstar-sessions` — a much
-larger, pre-existing 269KB `App.tsx` monolith (that repo structure matches
-`mpd8zyb4yw-hash/crucible` on GitHub, not this one). Confirm whether this small rewrite is
-meant to **replace** that monolith wholesale, or whether specific pieces (MoltenPour, the
-opt-in-ensemble state machine, the API-keys UI) need to be **ported into** it. Don't assume;
-ask before doing a large merge in either direction.
+## RESOLVED — this repo vs. `mpd8zyb4yw-hash/crucible` (2026-07-06)
+
+This rewrite lives at `crucible-code/crucible-local/crucible-local` in GitHub, but the HANDOFF
+brief's repo path (`/Users/justin/crucible-local/crucible-local`, branch
+`crucible-northstar-sessions`) is actually a much larger, pre-existing 269KB `App.tsx`
+monolith with a real backend — that repo structure matches `mpd8zyb4yw-hash/crucible` on
+GitHub (confirmed: same `ModeSwitcher`/`classifyMode`/`PIPELINE_CONFIG` architecture), not
+this one.
+
+**Decision: this app is a validated reference implementation, not a replacement.** Its
+`CrucibleEngine/` is entirely stubbed (fake local model, two toy tools, semi-fake ensemble) —
+that's fine for proving out the UI/UX and animation, but the real product's actual pipeline
+(`server.ts`), real tools/agent surface, self-patcher, and benchmark suite live only in
+`mpd8zyb4yw-hash/crucible` and must not be thrown away.
+
+**This repo is now frozen as a reference — active porting work happens in
+`mpd8zyb4yw-hash/crucible`.** See `NEXT_SESSION.md` PRIORITY 0 and the CHANGE LOG entry dated
+2026-07-06 in that repo's `ROADMAP.md` for the two-phase port plan and the live claims table.
+If you're a coding agent arriving here looking for active work: this codebase's job is done —
+go there instead. Only touch this repo again if the port plan explicitly calls for
+re-referencing something here.
 
 ---
 
-## The plan — two tracks, split to minimize file collisions
-
-### Track A — Engine & Data (owns `CrucibleEngine/`, `state/`, `lib/`)
-- [ ] Decide + implement the real local-model integration (or confirm stub-forever is
-      acceptable) — `CrucibleEngine/localModel.ts`
-- [ ] Expand `tools/index.ts` toward real tool implementations (file/shell/web-fetch), keeping
-      the existing `{ name, description, run(input) }` shape so nothing downstream changes
-- [ ] Harden `ensemble.ts`: retry/backoff, better error surfacing per-key in the UI, timeout
-      tuning (currently a flat 12s abort)
-- [ ] Richer `agent/index.ts` planning (currently keyword-matches tool names against free text)
-- [ ] Session/history data logic — search, filtering, pinning edge cases in `state/store.ts`
-- [ ] Resolve the "which repo is canonical" open question above with Justin
-
-### Track B — Visual & Animation (owns `components/chat/MoltenPour.tsx`,
-`components/shared/`, `components/NavRail.tsx`, `styles/tokens.css`)
-- [ ] Pixel-check `MoltenPour.tsx` against `Crucible v3.dc.html`'s `drawPour` — fill floor
-      (1350ms), cool floor (1000ms), easing curves, molten mottled color range
-      (`rgb(255, 70–180, 10–70)` around `#ff6a1a`)
-- [ ] Verify glass panel treatment (`backdrop-filter: blur(24–32px)`, inset top highlight) is
-      applied consistently across chat/history/settings/agents panels
-- [ ] `NavRail.tsx` and `BackgroundBlobs.tsx` visual polish against the prototype
-- [ ] Mobile-width pass on all four tabs (chat/agents/history/settings) — verify tap targets,
-      overflow, and that MoltenPour's canvas sizing (`left:-24px; top:-70px`) still tracks the
-      card correctly at narrow widths
-
-### Shared files — coordinate before editing
-`components/chat/ChatView.tsx` and `components/chat/Composer.tsx` carry both data wiring
-(Track A) and layout/visual concerns (Track B). Before editing either file for more than a
-small fix, add a row to **Active Claims** below so the other track knows to pull first / avoid
-concurrent edits.
-
----
-
-## Parallel-work protocol
-
-1. **Start of session:** `git pull`, read this file top to bottom, check Active Claims.
-2. **Before starting non-trivial work on a file** (especially the shared files above): add a
-   row to Active Claims with your track, the file(s), and what you're doing.
-3. **Work in small commits, push often** — the longer a claim sits unpushed, the more likely
-   the other agent collides with it.
-4. **When done with a claim:** remove its row from Active Claims and append a dated entry to
-   the Change Log below (one or two lines: what changed, why, any regressions to watch for).
-5. **If you hit the "canonical repo" open question or anything else genuinely ambiguous and
-   consequential** (large merges, deleting the stub engines, changing the animation spec):
-   stop and flag it in the Change Log / ask Justin — don't guess on anything expensive to undo.
-
-### Active Claims
-_(empty — add a row when you start non-trivial work; remove it when you push the result)_
-
-| Track | Files | Description | Started |
-|---|---|---|---|
-
-### Change Log
+## Change Log
 _(append newest entry at the bottom; keep entries short)_
 
 - **2026-07-06** — Created this coordination doc after auditing current repo state (mode
   machine removal, opt-in ensemble, MoltenPour wiring all confirmed present and correct against
-  the HANDOFF brief). No code changes made. Flagged the canonical-repo question above for
-  Justin.
+  the HANDOFF brief). No code changes made.
+- **2026-07-06** — Resolved the canonical-repo question without escalating to Justin: this app
+  is a reference implementation, not a replacement for the real product in
+  `mpd8zyb4yw-hash/crucible`. Moved the active two-agent work plan to that repo's
+  `NEXT_SESSION.md` (PRIORITY 0). This repo is now frozen — no more parallel-track work happens
+  here.
