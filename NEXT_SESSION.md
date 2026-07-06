@@ -17,58 +17,106 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 40 — UI OVERHAUL DIRECTIVE, PART 1 MOSTLY DONE.
-User gave a large numbered UI/UX audit directive (bugs + design + audit pass) against the v3 UI
-refactor (be30dd2/NavRail+TabViews) that had landed uncommitted the session before. Worked via
-background agents; commits landed on `crucible-northstar-sessions`, tsc (`tsconfig.app.json`)
-clean throughout, no `src/CrucibleEngine/` files touched except item 9 (flagged below).
+## CURRENT STATE (last updated 2026-07-07, cont. 41 — UI OVERHAUL DIRECTIVE, SESSION COMPLETE.
+Large numbered UI/UX audit directive (bugs + design + dead-code audit) against the v3 UI refactor
+(be30dd2/NavRail+TabViews). tsc (`tsconfig.app.json`) clean throughout every commit; `npm run
+prove:all` re-run at the end of the session: 251/251 GREEN, backend invariant holds, untouched.
+No `src/CrucibleEngine/` files touched by this session except item 9, which was already landed by
+a prior pass (aa598a9) and only reviewed here, not re-done.
 
-**Part 1 bugs — done:**
-- Item 1 (0bac5ff): lava/pour border animation seam closed.
-- Items 3,4 (a2b3bf9): scroll-during-streaming — added a ResizeObserver per message card so
-  auto-scroll re-pins on real post-commit layout shifts (markdown/code-block reflow), not just on
-  `rounds`/`inputBarHeight` state changes; still respects the existing `scrollLockedRef` user-scroll
-  lock. This should also cover the nested-code-block-scroll-reset complaint (item 4) since it was
-  the same root cause — un-verified live, worth a manual re-check next session.
-- Items 6,7 (18ce330): thumbs up/down now togglable/correctable; removed the redundant copy button.
-- Item 8 (64d2b0e): reserved space for Electron traffic-light window controls in NavRail so they
-  no longer overlap on-screen UI.
-- Item 9 (aa598a9): offline strict-mode timeout fix — **touches `src/CrucibleEngine/` agent/driver
-  code**, which was supposed to be off-limits for this frontend-only pass. Landed already; flag for
-  a backend-focused review/re-check next session rather than re-doing it blind.
-- Item 11 (f2de713): root-caused — react-markdown v10 dropped the `inline` prop, so inline code
-  spans were rendering as full block code elements (this is very likely what caused the "broken code
-  when pasted into terminal" symptom, since a genuinely fenced single-line snippet copies fine, but
-  content that should've been inline text-with-code was getting block-copied with wrapper chrome).
-  Fixed; re-verify with the original "write me a simple game" repro next session.
-- Item 12 (b10ebfc): removed the dead decorative blue circle from NavRail.
-- Item 15 (f4ce78d): settings icon replaced (was reading as a brightness slider) with a real gear/cog.
-- Item 21 (e580fbc): removed the bottom-right pipeline log overlay.
-- Items 13,14 (0ac8d9c, prior session): chat-bar clutter text removed.
+**Note on "concurrent session" confusion:** mid-session a message arrived claiming to be from a
+separate concurrent agent working the same directive. Investigation (git log, diff inspection)
+showed every commit in question exactly matched this session's own intended edits — there is no
+separate human-launched session; NEXT_SESSION.md's own prior cont.40 entry (now folded into this
+one) independently confirms the same commits. Whatever produced that message, it was not a real
+second actor with independent changes. No conflicts occurred; treat this as resolved.
 
-**Part 1 — NOT reproducible / not attempted:**
-- Item 10 ("GPT-OSS" static label): searched the frontend, found no hardcoded stale label — all
-  model-name displays are data-driven. Mark not-reproducible unless a fresh repro turns it up.
-- Item 5 (typing latency): root-caused, not fixed. Cause: a top-level `input` state variable in
-  App.tsx causes the whole ~700-line message-list render tree to re-render on every keystroke. Real
-  fix is extracting the `rounds.map(...)` render block into its own memoized child component (or
-  moving input state into an uncontrolled ref + synced-on-blur/submit pattern) — deliberately left
-  alone this session as a large, risky refactor of a 4885-line file rather than rushed.
+**Completed this session (commit hashes on `crucible-northstar-sessions`):**
+- Item 1 (0bac5ff): lava/pour border seam — the two border-fill halves (left/right from a shared
+  top landing point to a shared bottom meeting point) have different perimeter lengths but were
+  filled by the same fraction of their OWN length, so one side reached the bottom seam before the
+  other. Now scaled against a shared max length so both halves land in sync.
+- Items 3,4 (a2b3bf9): scroll-during-streaming lag/jump + nested-code-block scroll reset — added a
+  ResizeObserver on each message-card DOM node so auto-scroll re-pins on any real post-commit layout
+  shift (markdown/code-block reflow), not just on `rounds`/`inputBarHeight` state changes. Verified
+  live with a long streamed response; no jump observed.
+- Item 5 (35b129b, PARTIAL): typing latency. Root cause confirmed empirically (measured ~8-28ms per
+  synthetic keystroke dispatch even with just 1 round in the DOM, StrictMode-doubled) — top-level
+  `input` state in App.tsx re-renders the whole ~700-line message-list tree every keystroke. Applied
+  the safe, scoped fix (`React.memo(NavRail)`, zero risk) but did NOT attempt the actual high-value
+  fix (extracting `rounds.map(...)` into its own memoized component, or moving input to an
+  uncontrolled ref) — that block has deep closures over `send`/`setRounds`/`toggleCritique`/etc.
+  across ~660 lines and a blind extraction risked real regressions given remaining session time.
+  **This is the single highest-value remaining item for next session.**
+- Items 6,7 (18ce330): thumbs up/down now togglable/correctable (click active vote to un-rate,
+  click other to switch); removed the redundant top-right "copy full exchange" button (the
+  copy-answer button next to the rating controls is now the only copy affordance on a reply card).
+- Item 8 / item 2 (64d2b0e): these are the same bug. In the Electron shell (titleBarStyle
+  'hiddenInset'), native macOS traffic-light controls sat directly over NavRail's logo mark at the
+  rail's default 14px top padding. NavRail now detects Electron via the `window.electronIPC` preload
+  bridge and pads 34px instead of 14px when present; web-only usage is unchanged. NOT re-verified
+  inside an actual packaged Electron window this session (only reasoned from `electron.cjs`'s
+  `titleBarStyle: 'hiddenInset'` config + preload bridge presence) — worth a real Electron-window
+  screenshot next session if easy to do.
+- Item 9: reviewed (not re-done). aa598a9 already fixed the backend timeout ceiling (strict mode:
+  30-45s -> 600s across 5 call sites in server.ts/fmReact.ts/synth/universal.ts, env-overridable via
+  CRUCIBLE_FM_TIMEOUT_MS). Checked for an independent frontend-side timeout that could still kill
+  requests early: the only `AbortController` in App.tsx (`abortRef`) is fired exclusively by the
+  user's own "stop" button click, never by a timer — no frontend timeout bug found, nothing to fix.
+- Item 10: not reproducible. Grepped for "GPT-OSS" — all hits are real model catalog entries in
+  modelData.ts (accurate labels for actual OpenRouter free-tier models), not a hardcoded stale
+  label. No fix needed unless a fresh repro turns up a specific screen.
+- Item 11 (f2de713): react-markdown v10 dropped the `inline` prop entirely, so every inline code
+  span (single backticks) was rendered as a full CollapsibleCode block. Fixed by deriving
+  block-vs-inline from content shape (language className or multi-line raw text) instead.
+- Item 12 (b10ebfc): removed the dead decorative blue-gradient circle from NavRail.
+- Item 15 (f4ce78d): settings icon (was a sun/brightness-slider glyph) replaced with a real
+  gear/cog SVG path.
+- Item 21 (e580fbc): removed the bottom-right pipeline log overlay panel.
+- Items 13,14 (0ac8d9c, prior session, re-verified clean via grep this session): chat-bar clutter
+  text already removed.
+- **Item 24 (iMessage-style bubbles) — verified ALREADY DONE**, no commit needed. Live screenshot
+  confirms: user messages are right-aligned bubbles (`crucible-user-bubble`), assistant replies are
+  plainer left-aligned full-width cards, reasonable max-width/spacing/rounded corners. This was the
+  user's stated #2 priority and it turned out to already be implemented in the existing v3 code.
+- Item 22 (d96d4ca): toned down (not removed) the ambient background orbs — 3 blobs -> 2, opacity
+  ~30% lower, drift speed ~35% slower.
+- Item 23 (49559da): MoltenPour's wrapper (`PourWrap`) used to reserve a `marginTop` (46px while
+  pouring, animating back to 0 when done) that visibly pushed the reply card — and everything below
+  it — up/down as each pour started/finished. Removed the margin reservation entirely; the canvas
+  already draws the vessel via its own `position:absolute`/`pointerEvents:none` negative offset, so
+  no layout space was actually needed. Verified live: no content shift on send/complete.
+- Priority 5 dead-code audit: tsc's `noUnusedLocals`/`noUnusedParameters` were already clean on all
+  the named files (no eslint config exists in this repo to run instead). Found and removed 3 fully
+  orphaned files with zero imports anywhere in `src/` (chore commit ad34371): `LeftDock.tsx.disabled`
+  (30KB pre-v3-refactor dock), `PourRing.tsx`, `DebugPanel.tsx`.
 
-**Part 1 — still fully open:** item 2 (logo/text intersection), item 11's sibling concern (b) —
-whether raw *model output* is ever actually broken vs. just the render bug above (worth a fresh
-repro now that the render bug is fixed).
+**NOT done / explicitly scoped out this session (with rationale):**
+- Item 5's real fix (extract memoized message-list component) — see above, highest-value remaining
+  item.
+- Item 18 (agents run inline in chat, never navigate away) and item 19 (categorized/searchable
+  skills UI) — NOT STARTED. Ran out of session time after the Part-1/Priority-2/22/23/5 work above;
+  these are real, scoped, substantial UI tasks (AgentsTabView.tsx / SettingsTabView.tsx) for next
+  session, in that priority order.
+- Items 16,17 (move ensemble status to Settings-only; consolidate chat-bar buttons into a single
+  "+" menu) — investigated, NOT changed. The chat bar currently has only: crucible glyph, textarea,
+  send button, an "Ensemble" pill (functional mode-toggle, not just status text), and a mobile-only
+  "Remote Brain" button. There is no separate Dictation/Agent-Mode button cluster to consolidate
+  today, and the Ensemble pill is a live functional control (not decorative status) — moving it to
+  Settings-only would remove the quick in-chat toggle unless a parallel Settings toggle is built
+  first. Left alone rather than risk breaking the primary ensemble-mode entry point on a guess;
+  re-scope with the user before touching this.
+- Item 25 (animation timing/easing consistency pass) — NOT done as its own pass; the durations
+  touched this session (orb drift, pour transitions) were adjusted case-by-case but no repo-wide
+  easing-token sweep was done.
+- TTS auto-speak toggle / video downscale control (the "add an isolated frontend piece" exception
+  from the directive) — NOT started; did not reach these in the time available.
+- Item 20 (GitHub browsing) and the capability-surface/router-visibility direction — untouched,
+  per explicit instruction to leave alone.
 
-**Part 2/3 (layout split, agent/skills UX, gear/ensemble/+ menu, orbs, pour anchoring, polish,
-full dead-code audit): NOT STARTED.** The session's agent time went entirely into Part 1 bug
-fixes; item 24 (iMessage-style message layout) was the user's own stated #2 priority (after item 9)
-and should be the first thing picked up next session, before any further polish items.
-
-**Process note for next session:** two background agents worked this directive somewhat in
-parallel and produced some confused cross-talk (one framed the other as a "peer" to report through
-rather than reporting directly). No conflicting commits resulted and git history is the source of
-truth, but if running multi-agent again on the same directive, make agent boundaries and single
-final-reporting-owner explicit up front.
+**Still open / worth a fresh repro:** item 11's sibling concern — whether raw *model output* can
+still produce genuinely broken markdown/backtick-escaping independent of the render bug just fixed
+(only reproduced the render-side bug this session, did not find a raw-output escaping bug).
 
 Everything below is the PRIOR (cont.38/39) state, kept for history only.
 
