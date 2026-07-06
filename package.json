@@ -38,7 +38,8 @@
     "synth:fm-bench": "tsx src/CrucibleEngine/synth/fm-bench.ts",
     "research:bench": "tsx src/CrucibleEngine/research/researchBenchmark.ts",
     "ambiguity:bench": "tsx src/CrucibleEngine/ambiguity-bench.ts",
-    "stakes:bench": "tsx src/CrucibleEngine/agent/stakesRouter-bench.ts"
+    "stakes:bench": "tsx src/CrucibleEngine/agent/stakesRouter-bench.ts",
+    "convo:coherence": "tsx __convo_coherence_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",
