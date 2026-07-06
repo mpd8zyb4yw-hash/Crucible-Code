@@ -6,6 +6,7 @@
 
 import { useRef } from 'react'
 import { detectKeyProvider, type EnsembleState } from './ensemble'
+import LocalModelsPanel from './LocalModelsPanel'
 
 export default function SettingsTabView({ ensemble, advanced }: {
   ensemble: EnsembleState
@@ -110,6 +111,8 @@ export default function SettingsTabView({ ensemble, advanced }: {
             <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color: '#4db89e' }}>ALWAYS ON</span>
           </div>
         </div>
+
+        <LocalModelsPanel />
 
         {advanced && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

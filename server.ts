@@ -41,6 +41,8 @@ import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
 import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } from './src/CrucibleEngine/taskGraph'
 import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
+import { listModelStatuses, downloadModel, deleteModel } from './src/CrucibleEngine/agent/modelDownloadManager'
+import { routeLocalModelQuery } from './src/CrucibleEngine/agent/localModelRouter'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
 import { DOMAIN_SHARDS } from './src/CrucibleEngine/corpus/db'
@@ -6719,6 +6721,35 @@ app.post('/api/governance/:id/reject', (req, res) => {
   const result = rejectRequest(process.cwd(), req.params.id)
   if (!result) return res.status(404).json({ error: 'not found or already decided' })
   res.json(result)
+})
+
+// ── Optional local model pool — download/status/query for the on-device GGUF models ──
+app.get('/api/local-models', (_req, res) => {
+  res.json({ models: listModelStatuses() })
+})
+
+app.post('/api/local-models/:id/download', (req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+  downloadModel(req.params.id, state => res.write(`data: ${JSON.stringify(state)}\n\n`))
+    .then(() => res.end())
+    .catch(err => { res.write(`data: ${JSON.stringify({ status: 'error', error: err?.message ?? String(err) })}\n\n`); res.end() })
+})
+
+app.delete('/api/local-models/:id', (req, res) => {
+  deleteModel(req.params.id)
+  res.json({ ok: true })
+})
+
+app.post('/api/local-models/query', async (req, res) => {
+  const { system, user } = req.body ?? {}
+  if (!user) return res.status(400).json({ error: 'missing user prompt' })
+  try {
+    const result = await routeLocalModelQuery(system ?? '', user)
+    if (!result) return res.status(503).json({ error: 'no local models downloaded' })
+    res.json(result)
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? String(err) })
+  }
 })
 
 app.post('/api/governance', (req, res) => {
