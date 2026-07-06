@@ -17,42 +17,60 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 38 — PARALLEL BENCHMARK OVERHAUL COMPLETE.
-Two-track parallel session (coordinated via PARALLEL_SYNC.md). BOTH tracks landed:
-- **Track A — multi-turn amnesia bugs: DONE (commit 6a1ac34).** The coherence bench's two RED
-  convos are GREEN; full `npm run convo:coherence` = 6/6, no regressions. math-chain T3 now divides
-  26/2=13 (was regurgitating T2 verbatim) via a tightened fmDirectAnswer system prompt in
-  agent/fmReact.ts (history resolves back-refs only, then answer the latest from the last result).
-  entity-switch T3 "one other book by that author" → "Animal Farm" (was a "book"-as-verb misparse)
-  via detectConversationalClarify(message, hasHistory) gating the clarify branches off when history
-  exists; server.ts passes hasHistory. Live-verified against :3001.
-- **Track B — frontier-SWE coding tasks: DONE + fired live (both honestly RED).** bugfixCsv fails
-  hidden 5/9 (misses embedded-newline + empty-quoted-field); multiFileLedger never wrote report.ts
-  (agent hit an out-of-depth tripwire on a do-not-modify scaffold file). Real frontier-SWE gap the
-  offline agent can't yet close.
+## CURRENT STATE (last updated 2026-07-07, cont. 40 — UI OVERHAUL DIRECTIVE, PART 1 MOSTLY DONE.
+User gave a large numbered UI/UX audit directive (bugs + design + audit pass) against the v3 UI
+refactor (be30dd2/NavRail+TabViews) that had landed uncommitted the session before. Worked via
+background agents; commits landed on `crucible-northstar-sessions`, tsc (`tsconfig.app.json`)
+clean throughout, no `src/CrucibleEngine/` files touched except item 9 (flagged below).
 
-**cont. 39 — synth catalog tsc fix (committed).** `src/CrucibleEngine/synth/catalogs/_author_parsers2.ts:43`
-threw TS1109 (Expression expected) — broken since 0e5847d (2026-07-02), not on the live server runtime
-path. Cause: the `globMatch` catalog `impl` is a template-literal string whose regex char class
-`[.+^${}...]` had a bare `${}` that TS parsed as an empty template substitution. Fix: escape as `\${}`
-(`\$` → literal `$` in the backtick string, so the emitted regex is unchanged). Verified: target error
-gone at HEAD, runtime regex correct (`globMatch("*.ts","foo.ts")===true`, `"foo.js"===false`,
-`"?.ts"/"a.ts"===true`, `"a.b"/"axb"===false`), `npm run synth:prove` GREEN 4/4. NOTE: `tsc
--p tsconfig.server.json` is still NOT clean, but every remaining error is from the uncommitted UI
-refactor below (App.tsx/ensemble.tsx/*TabView.tsx), not from any synth/server file.
+**Part 1 bugs — done:**
+- Item 1 (0bac5ff): lava/pour border animation seam closed.
+- Items 3,4 (a2b3bf9): scroll-during-streaming — added a ResizeObserver per message card so
+  auto-scroll re-pins on real post-commit layout shifts (markdown/code-block reflow), not just on
+  `rounds`/`inputBarHeight` state changes; still respects the existing `scrollLockedRef` user-scroll
+  lock. This should also cover the nested-code-block-scroll-reset complaint (item 4) since it was
+  the same root cause — un-verified live, worth a manual re-check next session.
+- Items 6,7 (18ce330): thumbs up/down now togglable/correctable; removed the redundant copy button.
+- Item 8 (64d2b0e): reserved space for Electron traffic-light window controls in NavRail so they
+  no longer overlap on-screen UI.
+- Item 9 (aa598a9): offline strict-mode timeout fix — **touches `src/CrucibleEngine/` agent/driver
+  code**, which was supposed to be off-limits for this frontend-only pass. Landed already; flag for
+  a backend-focused review/re-check next session rather than re-doing it blind.
+- Item 11 (f2de713): root-caused — react-markdown v10 dropped the `inline` prop, so inline code
+  spans were rendering as full block code elements (this is very likely what caused the "broken code
+  when pasted into terminal" symptom, since a genuinely fenced single-line snippet copies fine, but
+  content that should've been inline text-with-code was getting block-copied with wrapper chrome).
+  Fixed; re-verify with the original "write me a simple game" repro next session.
+- Item 12 (b10ebfc): removed the dead decorative blue circle from NavRail.
+- Item 15 (f4ce78d): settings icon replaced (was reading as a brightness slider) with a real gear/cog.
+- Item 21 (e580fbc): removed the bottom-right pipeline log overlay.
+- Items 13,14 (0ac8d9c, prior session): chat-bar clutter text removed.
 
-**Next priorities (post-overhaul):**
-- Now safe to compute a parity % (both benches green/honest) — do it against BOTH the SWE coding
-  bench and the coherence bench, not the old untrustworthy numbers.
-- Track-B follow-ups for the agent: (a) don't try to (re)generate a scaffolded "do-not-modify"
-  file; (b) LLM rubric gave multiFileLedger 100/100 while HARD gate was RED — keep gating on the
-  hidden suite only, rubric is noise. Then close the two bugfixCsv edge cases.
-- HOUSEKEEPING: a large unrelated UI refactor (App.tsx/ensemble.tsx/new *TabView.tsx/NavRail/
-  MoltenPour/electron.cjs) sits UNCOMMITTED in the working tree — decide whether to land or discard.
-- Watch items carried from cont.37: research-DAG self-contradiction on standalone factual Qs;
-  verbose DAG report chrome on conversational Qs; 12-17s conversational latency.
+**Part 1 — NOT reproducible / not attempted:**
+- Item 10 ("GPT-OSS" static label): searched the frontend, found no hardcoded stale label — all
+  model-name displays are data-driven. Mark not-reproducible unless a fresh repro turns it up.
+- Item 5 (typing latency): root-caused, not fixed. Cause: a top-level `input` state variable in
+  App.tsx causes the whole ~700-line message-list render tree to re-render on every keystroke. Real
+  fix is extracting the `rounds.map(...)` render block into its own memoized child component (or
+  moving input state into an uncontrolled ref + synced-on-blur/submit pattern) — deliberately left
+  alone this session as a large, risky refactor of a 4885-line file rather than rushed.
 
-Everything below is the PRIOR (cont.37) state, kept for history only.
+**Part 1 — still fully open:** item 2 (logo/text intersection), item 11's sibling concern (b) —
+whether raw *model output* is ever actually broken vs. just the render bug above (worth a fresh
+repro now that the render bug is fixed).
+
+**Part 2/3 (layout split, agent/skills UX, gear/ensemble/+ menu, orbs, pour anchoring, polish,
+full dead-code audit): NOT STARTED.** The session's agent time went entirely into Part 1 bug
+fixes; item 24 (iMessage-style message layout) was the user's own stated #2 priority (after item 9)
+and should be the first thing picked up next session, before any further polish items.
+
+**Process note for next session:** two background agents worked this directive somewhat in
+parallel and produced some confused cross-talk (one framed the other as a "peer" to report through
+rather than reporting directly). No conflicting commits resulted and git history is the source of
+truth, but if running multi-agent again on the same directive, make agent boundaries and single
+final-reporting-owner explicit up front.
+
+Everything below is the PRIOR (cont.38/39) state, kept for history only.
 
 ---
 
