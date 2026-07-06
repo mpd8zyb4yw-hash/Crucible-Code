@@ -218,14 +218,33 @@ function isEditIntent(goal: string): boolean {
  */
 function extractProtectedGoalPaths(goal: string): Set<string> {
   const protectedPaths = new Set<string>()
+  const pathRe = /\b((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs))\b/g
   // Capture lazily up to an em-dash or a sentence-ending period (period + space + capital
   // letter, or end of string) rather than the next literal '.' — a bare [^.]* boundary would
   // truncate at the first '.' inside a file extension like "src/types.ts" itself.
   const clauseRe = /\b(?:do\s*not|don'?t)\s*(?:modify|edit)\s+([\s\S]*?)(?=—|\.\s+[A-Z]|\.\s*$|$)/gi
   let m: RegExpExecArray | null
   while ((m = clauseRe.exec(goal))) {
-    for (const p of m[1].matchAll(/\b((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs))\b/g)) {
-      protectedPaths.add(p[1])
+    let found = false
+    for (const p of m[1].matchAll(pathRe)) { protectedPaths.add(p[1]); found = true }
+    // Pronoun back-reference: "The project has src/types.ts (…). Do NOT modify it." names no
+    // path inside the clause itself — the object is a pronoun (it/them/these/…) referring to
+    // the file(s) introduced in the immediately preceding sentence. Without resolving this, the
+    // protected file leaks into goalPaths[0] and the state machine wastes its whole iteration
+    // budget writing a file the tool layer blocks (PROTECTED_MARKER_RE), never reaching the
+    // real new-file targets. Resolve by protecting every path in the preceding sentence.
+    if (!found && /^(?:it|them|this|these|those|that)\b/i.test(m[1].trim())) {
+      const before = goal.slice(0, m.index)
+      // Anchor to the sentence that CONTAINS the nearest preceding path (the pronoun's
+      // referent), not the boundary that ends it — take the last path match, then walk back to
+      // the sentence boundary before it so a "src/a.ts and src/b.ts. Do NOT modify them" phrasing
+      // protects both files.
+      const paths = [...before.matchAll(pathRe)]
+      if (paths.length) {
+        const lastIdx = paths[paths.length - 1].index ?? 0
+        const sentStart = Math.max(before.lastIndexOf('. ', lastIdx), before.lastIndexOf('\n', lastIdx)) + 1
+        for (const p of before.slice(sentStart).matchAll(pathRe)) protectedPaths.add(p[1])
+      }
     }
   }
   return protectedPaths
