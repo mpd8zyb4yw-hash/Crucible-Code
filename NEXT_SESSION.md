@@ -17,7 +17,36 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 37 — MULTI-TURN CONTEXT FIX. The user reported
+## CURRENT STATE (last updated 2026-07-06, cont. 38 — PARALLEL BENCHMARK OVERHAUL COMPLETE.
+Two-track parallel session (coordinated via PARALLEL_SYNC.md). BOTH tracks landed:
+- **Track A — multi-turn amnesia bugs: DONE (commit 6a1ac34).** The coherence bench's two RED
+  convos are GREEN; full `npm run convo:coherence` = 6/6, no regressions. math-chain T3 now divides
+  26/2=13 (was regurgitating T2 verbatim) via a tightened fmDirectAnswer system prompt in
+  agent/fmReact.ts (history resolves back-refs only, then answer the latest from the last result).
+  entity-switch T3 "one other book by that author" → "Animal Farm" (was a "book"-as-verb misparse)
+  via detectConversationalClarify(message, hasHistory) gating the clarify branches off when history
+  exists; server.ts passes hasHistory. Live-verified against :3001.
+- **Track B — frontier-SWE coding tasks: DONE + fired live (both honestly RED).** bugfixCsv fails
+  hidden 5/9 (misses embedded-newline + empty-quoted-field); multiFileLedger never wrote report.ts
+  (agent hit an out-of-depth tripwire on a do-not-modify scaffold file). Real frontier-SWE gap the
+  offline agent can't yet close.
+
+**Next priorities (post-overhaul):**
+- Now safe to compute a parity % (both benches green/honest) — do it against BOTH the SWE coding
+  bench and the coherence bench, not the old untrustworthy numbers.
+- Track-B follow-ups for the agent: (a) don't try to (re)generate a scaffolded "do-not-modify"
+  file; (b) LLM rubric gave multiFileLedger 100/100 while HARD gate was RED — keep gating on the
+  hidden suite only, rubric is noise. Then close the two bugfixCsv edge cases.
+- HOUSEKEEPING: a large unrelated UI refactor (App.tsx/ensemble.tsx/new *TabView.tsx/NavRail/
+  MoltenPour/electron.cjs) sits UNCOMMITTED in the working tree — decide whether to land or discard.
+- Watch items carried from cont.37: research-DAG self-contradiction on standalone factual Qs;
+  verbose DAG report chrome on conversational Qs; 12-17s conversational latency.
+
+Everything below is the PRIOR (cont.37) state, kept for history only.
+
+---
+
+## PRIOR STATE (cont. 37 — MULTI-TURN CONTEXT FIX. The user reported
 that real chat is "dumb as fuck / misaligned instantly even on simple coherent prompts." Root-caused
 LIVE (minted-JWT curl, not a boot screenshot): the offline conversational brain threw away
 conversation history entirely — `solveNonCodeTurn(message)` got only the current message, so every
