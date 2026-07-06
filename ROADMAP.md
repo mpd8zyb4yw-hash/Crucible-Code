@@ -1915,6 +1915,23 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-06 (cont. 35b) — NORTHSTAR UI redesign major slice: BYOK ensemble opt-in, final 3-phase pour animation, ambient v2 backdrop + mode pills (branch `crucible-northstar-sessions`)
+- **`d34e123`.** New components: `BackgroundBlobs.tsx` (ambient v2 canvas backdrop),
+  `PourRing.tsx` (final 3-phase molten pour chat animation — idle→pouring w/ live-height
+  border fill + min-duration floor→done w/ top→bottom cool sweep), `ensemble.tsx` (ModeBar
+  pills + `useEnsemble` toggle/BYOK store + key modal + per-query confirm).
+- App.tsx: `#101016`/`#e4e4ee`, BackgroundBlobs mounted, ModeSwitcher→ModeBar, reply card
+  wrapped in PourRing (driven by real streaming state), send() ensemble opt-in+BYOK gate,
+  `byokKeys` sent only for ensemble.
+- BYOK server plumbing: modelRegistry AsyncLocalStorage scoping
+  (`runWithByokKeys`/`enterByokKeys`/`resolveProviderKey`); `providerHasKey` honors user keys;
+  `/api/chat` enters BYOK scope; callModel bypasses the shared proxy on a user key; OpenRouter
+  uses the resolved key. Known limit: SDK-client providers (groq/mistral/gemini) still env-only.
+- Verified: tsc clean (app+server), app boots (no console errors), benches green
+  (stakes 17/17, repairs 14/14, fuzz 31/31). Deep UI is OAuth-gated → not driven logged-in.
+- REMAINING (task #4): the v2 left-rail tab shell (Chat/Agents/History/Settings) + Agents/History
+  full screens + binder restyle — structural, next session.
+
 ### 2026-07-06 (cont. 35) — NORTHSTAR UI/routing redesign STARTED on branch `crucible-northstar-sessions`; committed the full cont.33/34 body as a checkpoint, then landed the first redesign increment (Crucible-local default, ensemble never auto-entered)
 - **New large task received mid-session:** merge the `Crucible v2.dc.html` visual redesign
   and make Crucible (local) — not the external multi-model pipeline — the default experience.

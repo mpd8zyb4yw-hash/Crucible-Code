@@ -17,7 +17,65 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-06, cont. 35 — NORTHSTAR UI/ROUTING REDESIGN STARTED
+## CURRENT STATE (last updated 2026-07-06, cont. 35b — NORTHSTAR UI REDESIGN, major slice
+landed on branch `crucible-northstar-sessions`, 4 commits total. Crucible-local is the default
+path; the external ensemble is now fully opt-in + BYOK (bring-your-own-key), gated by a
+persistent toggle AND a per-query confirm; the final 3-phase molten pour chat animation is
+implemented and wired to real streaming state; an ambient v2 backdrop + v2 mode pills are in.
+All tsc-clean (app+server), app boots with zero console errors, engine benches green
+(stakes 17/17, repairs 14/14, fuzz 31/31). Remaining redesign work = the full left-rail
+tab-nav shell + per-screen restyle (task #4, structural). Deep UI is OAuth-gated so it was
+verified by boot+compile+bench, not by driving the logged-in chat view.)
+
+**Cont. 35b commits (all on `crucible-northstar-sessions`):**
+- `9ef4aaf` — checkpoint of all verified cont.33/34 work (before touching App.tsx).
+- `d112fed` — classifyMode no longer auto-escalates into ensemble; default mode `code` (local).
+- `d34e123` — the v2 redesign slice (below).
+- (docs commit follows this file.)
+
+**What `d34e123` shipped:**
+- **New component files:** `src/BackgroundBlobs.tsx` (ambient canvas backdrop, port of the v2
+  `startBg`), `src/PourRing.tsx` (the FINAL 3-phase pour animation), `src/ensemble.tsx`
+  (ModeBar pills + `useEnsemble()` toggle/BYOK store + `EnsembleKeyModal` + `EnsembleConfirm`).
+- **App.tsx:** root bg `#101016` / text `#e4e4ee`; `<BackgroundBlobs>` mounted; ModeSwitcher
+  (+ `MODES`/`Mode`) removed, replaced by `<ModeBar>`; reply card wrapped in `<PourRing>`
+  driven by `round.synthDone/synthStreaming`; `send()` gains the ensemble opt-in+BYOK gate and
+  sends `byokKeys` only for ensemble; key modal + per-query confirm modal mounted.
+- **BYOK server plumbing:** `modelRegistry.ts` — AsyncLocalStorage scoping
+  (`runWithByokKeys`/`enterByokKeys`/`resolveProviderKey`/`currentByokKeys`); `providerHasKey`
+  activates a provider when the user supplies a key; `server.ts` `/api/chat` calls
+  `enterByokKeys(byokKeys)`, `callModel` bypasses the shared key-proxy when a user key is
+  present, and the OpenRouter branches read `resolveProviderKey('openrouter')`.
+  **KNOWN LIMIT:** SDK-client providers (groq/mistral/gemini, instantiated once at module load
+  with env keys) are still env-only — only OpenRouter (the recommended single BYOK key) is
+  fully wired for user keys. Extending BYOK to the SDK providers = reinstantiate their clients
+  per-request from `resolveProviderKey`, next-session work.
+
+**PourRing animation — how it maps to the FINAL spec** (so the next session can tune, not
+re-derive): phase = `idle` (pre-first-token) → `pouring` (streaming) → `done`. Pouring draws a
+molten stream from the card's top-center spout, then fills BOTH border edges via two mirrored
+half-paths dashed by an eased fill fraction that tracks live card height (ResizeObserver) with a
+`POUR_MIN_MS=1350` floor; everything poured stays lit (3-pass bloom/glow/crisp). Done runs a
+top→bottom cool sweep over `COOL_MIN_MS=1000` then clears to the card's default border. Motion is
+routed through an eased current→target animator so choppy token streams still read fluid. Tune
+the molten palette in `mottled()` and the floors as needed — spec is final, don't re-ask Justin.
+
+**REMAINING redesign work (task #4, structural — the big piece left):** the v2 **56px left glass
+rail** with Chat / Agents / History / Settings tab-nav + avatar, and the **Agents** and
+**History** full-screen tabs (v2 has them as distinct screens; today the app is a single chat
+view with drawer binders). This needs a `tab` state + screen router in App.tsx and restyling the
+existing binders (Library/SelfRepair/History/Tasks/Integrations) into the new look. `Crucible
+v2.dc.html` has the exact markup for all three tabs (Chat/Agents/History) — reimplement from it.
+Also task #6 (gate the pipeline theater explicitly behind ensemble) is only implicitly handled
+(local mode simply doesn't populate `round.models`, so the theater stays empty) — make it
+explicit when building the tab shell.
+
+**Design assets** (untracked, in `Crucible UI redesign/`): `Crucible v2.dc.html` (target),
+`Crucible - Current UI.dc.html` (current), `support.js` (dc-runtime — these are divine.computer
+design-tool exports, a VISUAL SPEC, not importable React). The canvas code in v2's
+`<script>` (startBg/startMark/startRing) was the reference for BackgroundBlobs/PourRing.
+
+## PRIOR (cont. 35 kickoff): NORTHSTAR UI/ROUTING REDESIGN STARTED
 on branch `crucible-northstar-sessions`. Two clean commits landed: (1) `9ef4aaf` the entire
 verified cont.33/34 body of work (NL-skill pipeline, /skill+/tool, RSI auto-approve) —
 committed as a checkpoint before the redesign, at the user's explicit instruction; (2)
