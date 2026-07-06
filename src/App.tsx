@@ -2,12 +2,16 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { API_BASE, apiFetch, loginUrl } from './api'
 import CrucibleMark from './CrucibleMark'
 import BackgroundBlobs from './BackgroundBlobs'
-import PourRing, { type PourPhase } from './PourRing'
-import { useEnsemble, EnsemblePill, EnsembleKeyModal, EnsembleConfirm, type EnsembleState } from './ensemble'
+import MoltenPour, { type MoltenPhase } from './MoltenPour'
+import { useEnsemble, type EnsembleState } from './ensemble'
 import { IntegrationsBinder } from './IntegrationsBinder'
 import { LibraryBinder } from './LibraryBinder'
 import { SelfRepairBinder } from './SelfRepairBinder'
 import { SelfPatcherBinder } from './SelfPatcherBinder'
+import NavRail from './NavRail'
+import AgentsTabView from './AgentsTabView'
+import HistoryTabView from './HistoryTabView'
+import SettingsTabView from './SettingsTabView'
 import './modelData'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
@@ -38,12 +42,6 @@ interface DynamicModel {
 // not a user-selectable entry in the MODES menu. The ChatMode union lives in ensemble.tsx
 // (imported where needed); the old `Mode` alias was only used by the removed ModeSwitcher.
 
-const MODE_META: Record<string, { label: string; hint: string; color: string }> = {
-  quorum: { label: 'Ensemble', hint: 'Multi-model pipeline', color: '#7c7cf8' },
-  code:   { label: 'Code',     hint: 'Dev-optimised',       color: '#4db89e' },
-  seeker: { label: 'Search',   hint: 'Web-augmented',       color: '#f59e0b' },
-  research: { label: 'Research', hint: 'Autonomous, cited',  color: '#22c55e' },
-}
 
 
 
@@ -1779,10 +1777,35 @@ function AuthScreen({ onAuth }: { onAuth: (user: { id: string; email: string }) 
   )
 }
 
+// Wraps a reply card and mounts the MoltenPour canvas over it while it's the live
+// (currently-streaming) round. `reserveTop` leaves headroom above the card for the
+// crucible vessel + stream while the pour is in flight.
+function PourWrap({ active, phase, progress, reserveTop, children }: {
+  active: boolean
+  phase: MoltenPhase
+  progress: number
+  reserveTop: boolean
+  children: React.ReactNode
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null)
+  return (
+    <div
+      ref={wrapRef}
+      style={{
+        position: 'relative', borderRadius: 14, width: '100%',
+        marginTop: reserveTop ? 46 : 0,
+        transition: 'margin-top 0.6s cubic-bezier(0.22,1,0.36,1)',
+      }}
+    >
+      {active && <MoltenPour phase={phase} progress={progress} wrapRef={wrapRef} />}
+      {children}
+    </div>
+  )
+}
+
 export default function App() {
   const [rounds, setRounds]               = useState<Round[]>([])
   const [input, setInput]                 = useState('')
-  const [menuOpen, setMenuOpen]           = useState(false)
   const [thinking, setThinking]           = useState(false)
   // ── Agent live timer ──────────────────────────────────────────────────────
   const [agentStartTime, setAgentStartTime]   = useState<number | null>(null)
@@ -1803,9 +1826,16 @@ export default function App() {
   // ── Ensemble opt-in + BYOK (bring-your-own-key) ───────────────────────────
   // The external multi-model pipeline is opt-in and runs only on the user's own API keys.
   const ensemble: EnsembleState = useEnsemble()
-  const [keyModalOpen, setKeyModalOpen] = useState(false)
-  // Holds a message pending the per-query "use ensemble?" confirmation.
-  const [ensembleConfirm, setEnsembleConfirm] = useState<null | { message?: string }>(null)
+  // Holds a message pending the per-query "use ensemble?" confirmation (inline card above
+  // the composer). noKeys renders the "add keys in Settings" variant instead of the ask.
+  const [ensembleConfirm, setEnsembleConfirm] = useState<null | { message?: string; noKeys?: boolean }>(null)
+  // The round currently streaming live in THIS session — the only round that gets the
+  // molten pour overlay (a restored/historical round must never replay the animation).
+  const [liveRoundId, setLiveRoundId] = useState<string | null>(null)
+  // ── v3 left-rail tab shell — Chat is the existing full view; Agents/History/Settings
+  // are dedicated full-page views (see NavRail.tsx / AgentsTabView.tsx / HistoryTabView.tsx /
+  // SettingsTabView.tsx). The system drawers (Library/SelfRepair/etc.) live in Settings.
+  const [tab, setTab] = useState<'chat' | 'agents' | 'history' | 'settings'>('chat')
 
   // ── Step 9: Remote Brain mode (phone only) ────────────────────────────────
   const [remoteBrain, setRemoteBrain] = useState(false)
@@ -2047,7 +2077,6 @@ export default function App() {
   const [govPanelOpen, setGovPanelOpen] = useState(false)
   const [govRequests, setGovRequests] = useState<any[]>([])
   const [govPending, setGovPending] = useState(0)
-  const [googleStatus, setGoogleStatus] = useState<Record<string, boolean> | null>(null)
 
   const bottomRef  = useRef<HTMLDivElement>(null)
   const scrollRef  = useRef<HTMLDivElement>(null)
@@ -2070,12 +2099,6 @@ export default function App() {
     const t = setInterval(poll, 15000)
     return () => clearInterval(t)
   }, [])
-
-  // Fetch Google services status when menu opens
-  useEffect(() => {
-    if (!menuOpen) return
-    apiFetch(`${API_BASE}/api/google/status`).then(r => r.json()).then(setGoogleStatus).catch(() => {})
-  }, [menuOpen])
 
   // Track input bar height so spacer + fade stay in sync
   useEffect(() => {
@@ -2500,13 +2523,17 @@ export default function App() {
     // explicit go-ahead. Local modes (code/seeker/research/agent) are unaffected.
     const effectiveMode = modeOverride ?? mode
     if (effectiveMode === 'quorum') {
-      if (!ensemble.hasAnyKey) { setKeyModalOpen(true); return }   // need a key first
+      if (!ensemble.hasAnyKey) {
+        setEnsembleConfirm({ message: userMessage, noKeys: true }) // inline "add keys" card
+        return
+      }
       if (!ensembleConfirmed) {
         setEnsembleConfirm({ message: userMessage })              // always ask before fanning out
         return
       }
     }
     const roundId = Date.now().toString()
+    setLiveRoundId(roundId)
     localStorage.setItem('crucible_has_sent', '1')
     setInput(''); setThinking(true); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
     setAgentStartTime(Date.now()); setAgentElapsed(0); setAgentProgress(null)
@@ -3262,10 +3289,12 @@ export default function App() {
       setShowMinLengthTip(false)
     }
 
-    // ── Predictive pre-warm ───────────────────────────────────────────────
+    // ── Predictive pre-warm — ensemble runs ONLY. Warming spins up EXTERNAL models
+    // (Groq/OpenRouter), so in the default local mode typing must trigger zero
+    // external traffic (v3 "0 external calls" rule).
     if (prewarmDebounceRef.current) clearTimeout(prewarmDebounceRef.current)
     const wordCount = val.trim().split(/\s+/).filter(Boolean).length
-    if (wordCount >= 4 && !thinking) {
+    if (mode === 'quorum' && wordCount >= 4 && !thinking) {
       prewarmDebounceRef.current = setTimeout(() => {
         const token = Date.now().toString()
         prewarmTokenRef.current = token
@@ -3291,7 +3320,6 @@ export default function App() {
   }
 
   const latestRound = rounds[rounds.length - 1] ?? null
-  const globalDone  = latestRound ? latestRound.synthesisDone : false
   const activeModels = latestRound?.models ?? []
 
   // Show auth screen while loading or not authenticated
@@ -3309,23 +3337,11 @@ export default function App() {
     }}>
       {/* Ambient animated backdrop (Crucible v2 design) — sits behind all content */}
       <BackgroundBlobs working={thinking} />
-      {keyModalOpen && <EnsembleKeyModal ensemble={ensemble} onClose={() => setKeyModalOpen(false)} />}
-      {ensembleConfirm && (
-        <EnsembleConfirm
-          onCancel={() => {
-            // "Run locally" — drop to the local code path and send the pending message.
-            const pending = ensembleConfirm.message
-            setEnsembleConfirm(null)
-            setMode('code')
-            if (pending) void send(pending, 'code')
-          }}
-          onConfirm={() => {
-            const pending = ensembleConfirm.message
-            setEnsembleConfirm(null)
-            if (pending) void send(pending, 'quorum', true)
-          }}
-        />
-      )}
+      {/* Ensemble key management lives in the Settings tab; the per-query confirm is an
+          inline card above the composer (v3) — no modals. */}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', zIndex: 1 }}>
+        <NavRail tab={tab} setTab={setTab} />
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
       <style>{`
         @keyframes slideUp  { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
         @keyframes panelUp  { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
@@ -3346,6 +3362,72 @@ export default function App() {
         .crucible-shows-work[open] > summary .crucible-sw-caret { transform: rotate(90deg); }
       `}</style>
 
+      {tab === 'agents' && <AgentsTabView onBuild={text => { void send(text) }} />}
+      {tab === 'history' && <HistoryTabView onRestore={summary => {
+        apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
+          .then(r => r.json())
+          .then(({ conversation }) => {
+            if (!conversation?.rounds) return
+            setConversationId(conversation.id)
+            // Deliberately do NOT adopt the stored conversation.mode — restoring an old
+            // ensemble ('quorum') thread must never silently re-arm the external pipeline.
+            // Crucible-local is always the mode a restored thread continues in.
+            setRounds(conversation.rounds)
+            setTab('chat')
+          })
+          .catch(() => {})
+      }} />}
+      {tab === 'settings' && (
+        <SettingsTabView
+          ensemble={ensemble}
+          advanced={
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+              {/* System drawers relocated from the old chat topbar — each renders its own
+                  trigger icon + anchored panel. */}
+              <HistoryBinder onRestore={summary => {
+                apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
+                  .then(r => r.json())
+                  .then(({ conversation }) => {
+                    if (!conversation?.rounds) return
+                    setConversationId(conversation.id)
+                    setRounds(conversation.rounds)
+                    setTab('chat')
+                  })
+                  .catch(() => {})
+              }} />
+              <TasksBinder onResume={goal => { setTab('chat'); void send(goal) }} />
+              <IntegrationsBinder draft={input} />
+              <LibraryBinder onBuild={text => { setTab('chat'); void send(text) }} />
+              <SelfRepairBinder />
+              <SelfPatcherBinder />
+              <button
+                onClick={() => {
+                  apiFetch(`${API_BASE}/api/governance`).then(r => r.json()).then((d: any[]) => {
+                    setGovRequests(d)
+                    setGovPending(d.filter((x: any) => x.status === 'pending').length)
+                  }).catch(() => {})
+                  setGovPanelOpen(o => !o)
+                }}
+                title="Infrastructure requests"
+                style={{
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  color: govPending > 0 ? 'rgba(255,180,80,0.85)' : '#555', padding: '6px 8px', borderRadius: 8,
+                  display: 'flex', alignItems: 'center', gap: 5,
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 1.5l1.8 3.2 3.7.54-2.68 2.6.63 3.66L8 9.7l-3.45 1.8.63-3.66L2.5 5.24l3.7-.54z"/>
+                </svg>
+                {govPending > 0 && (
+                  <span style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,180,80,0.9)' }}>{govPending}</span>
+                )}
+              </button>
+            </div>
+          }
+        />
+      )}
+
+      {tab === 'chat' && <>
       <ShimmerBg thinking={thinking} mode={mode} />
 
       {/* ── Step 9: Remote Brain overlay — canvas only, stops above the normal input bar ── */}
@@ -3530,349 +3612,68 @@ export default function App() {
         </>
       )}
 
-      {/* ── Top bar ── */}
+      {/* ── Top bar — v3: slim, reference-style. Wordmark + on-device badge on the left,
+          live working status + New chat on the right. All feature navigation lives in the
+          left rail; the old binder/menu icon cluster is gone (binders now live in Settings). */}
       <div className="crucible-topbar" style={{
-        height: 40, display: 'flex', alignItems: 'center', padding: '0 16px 0 80px',
-        background: 'transparent', flexShrink: 0,
-        justifyContent: 'space-between', zIndex: 10, position: 'relative',
+        height: 48, flexShrink: 0, display: 'flex', alignItems: 'center',
+        padding: '0 18px', gap: 12, zIndex: 10, position: 'relative',
         WebkitAppRegion: 'drag',
       } as any}>
-<div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', position: 'relative', WebkitAppRegion: 'no-drag' } as any}>
+        <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee' }}>Crucible</span>
+        <span style={{
+          display: 'flex', alignItems: 'center', gap: 5,
+          fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: '#66667a',
+          background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)',
+          padding: '2px 8px', borderRadius: 999,
+        }}>
+          <span style={{ width: 5, height: 5, borderRadius: '50%', background: mode === 'quorum' ? '#7c7cf8' : '#4db89e' }} />
+          {mode === 'quorum' ? 'ENSEMBLE · YOUR KEYS' : 'ON-DEVICE'}
+        </span>
+        <div style={{ flex: 1 }} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, WebkitAppRegion: 'no-drag' } as any}>
           {thinking && latestRound && (() => {
-            const r = latestRound
-            const isAgentMode = !!(r.agent || agentProgress)
-
-            // ── Agent mode: rich step/iter/timer display ───────────────────
-            if (isAgentMode && agentProgress) {
-              const { stepIndex, stepTotal, stepIntent, iter, maxIters } = agentProgress
-              const secs = Math.floor(agentElapsed / 1000)
-              const mm = String(Math.floor(secs / 60)).padStart(2, '0')
-              const ss = String(secs % 60).padStart(2, '0')
-              const stepFrac = stepTotal > 1 ? ` · step ${stepIndex + 1}/${stepTotal}` : ''
-              return (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, animation: 'fadeIn 0.3s' }}>
-                  {/* Elapsed timer */}
-                  <span style={{
-                    fontVariantNumeric: 'tabular-nums', fontSize: 11, color: '#7c7cf8',
-                    fontWeight: 600, letterSpacing: '0.04em',
-                  }}>{mm}:{ss}</span>
-                  <span style={{ fontSize: 9, color: '#444', letterSpacing: '0.06em' }}>
-                    iter {iter}/{maxIters}{stepFrac}
-                  </span>
-                  {/* Step intent — truncated */}
-                  <span style={{
-                    fontSize: 9, color: '#333', maxWidth: 180,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
-                    letterSpacing: '0.04em',
-                  }} title={stepIntent}>{stepIntent}</span>
-                </div>
-              )
-            }
-
-            // ── Pipeline mode (quorum): stage dots + elapsed ───────────────
-            // Live count of models that have streamed back a first-pass answer.
-            const totalModels = r.models.length
-            const respondedCount = r.models.filter(m => (r.responses?.[m.id] ?? '').length > 0).length
-            const gatherLabel = totalModels > 0
-              ? `gathering perspectives · ${respondedCount}/${totalModels}`
-              : 'reading your message'
-            const stage =
-              !r.stage2Done && !r.stage3Started ? { label: gatherLabel,        n: 2 } :
-              r.stage2Done  && !r.stage3Done    ? { label: 'cross-examining',  n: 3 } :
-              r.stage3Done  && !r.stage4Done    ? { label: 'self-correcting',  n: 4 } :
-              r.stage4Done  && !r.synthesisDone ? { label: 'synthesizing',     n: 5 } :
-                                                  { label: gatherLabel,        n: 1 }
-            const nextLabels: Record<number, string> = { 1: 'grading', 2: 'cross-examining', 3: 'self-correcting', 4: 'synthesizing' }
-            const nextLabel = nextLabels[stage.n]
-            const showNext = stage.n >= 1 && stage.n < 5 && nextLabel
             const secs = Math.floor(agentElapsed / 1000)
             const mm = String(Math.floor(secs / 60)).padStart(2, '0')
             const ss = String(secs % 60).padStart(2, '0')
+            const r = latestRound
+            const stageLabel = agentProgress
+              ? `iter ${agentProgress.iter}/${agentProgress.maxIters}${agentProgress.stepTotal > 1 ? ` · step ${agentProgress.stepIndex + 1}/${agentProgress.stepTotal}` : ''}`
+              : !r.synthesis.length ? 'thinking…'
+              : r.synthesisDone ? 'settling…'
+              : 'pouring…'
             return (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, animation: 'fadeIn 0.3s' }}>
-                {secs >= 3 && (
-                  <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 10, color: '#444', fontWeight: 500 }}>
-                    {mm}:{ss}
-                  </span>
-                )}
-                <div style={{ display: 'flex', gap: 2 }}>
-                  {[1,2,3,4,5].map(i => (
-                    <div key={i} style={{
-                      width: 3, height: 3, borderRadius: '50%',
-                      background: i <= stage.n ? '#7c7cf8' : '#222',
-                      transition: 'background 0.3s',
-                      boxShadow: i === stage.n ? '0 0 4px #7c7cf8' : 'none',
-                    }} />
-                  ))}
-                </div>
-                <span style={{ fontSize: 10, color: '#555', letterSpacing: '0.07em' }}>{stage.label}…</span>
-                {showNext && (
-                  <span style={{ fontSize: 9, color: '#2a2a3a', letterSpacing: '0.07em' }}>
-                    then {nextLabel}
-                  </span>
-                )}
+                <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 10.5, color: '#55556a', fontWeight: 500 }}>{mm}:{ss}</span>
+                <span style={{ fontSize: 10.5, color: '#77778c', letterSpacing: '0.05em' }}>{stageLabel}</span>
               </div>
             )
           })()}
-          {/* Prompt type badge */}
-          {latestRound?.cached && (
-            <span
-              title={latestRound?.semanticSim ? `Reused from a similar earlier question: "${latestRound.semanticMatch}"` : undefined}
-              style={{
-              fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
-              color: '#2a7a4a', textTransform: 'uppercase' as const,
-              background: 'rgba(40,180,100,0.08)', padding: '3px 7px',
-              borderRadius: 5, border: '1px solid rgba(40,180,100,0.2)',
-              cursor: latestRound?.semanticSim ? 'help' : 'default',
-            }}>{latestRound?.semanticSim ? `similar · ${Math.round(latestRound.semanticSim * 100)}%` : 'cached'}</span>
-          )}
-          {latestRound?.promptType && (
-            <span style={{
-              fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
-              color: '#3a3a5a', textTransform: 'uppercase' as const,
-              background: 'rgba(124,124,248,0.06)', padding: '3px 7px',
-              borderRadius: 5, border: '1px solid rgba(124,124,248,0.1)',
-            }}>{latestRound.promptType}</span>
-          )}
-{reconnecting && (
+          {reconnecting && (
             <span style={{
               fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
               color: 'rgba(245,158,11,0.8)', textTransform: 'uppercase',
               animation: 'pulse 1.4s ease infinite',
             }}>reconnecting…</span>
           )}
-          <HistoryBinder onRestore={summary => {
-              // Reopen the full conversation thread and adopt its id so new messages
-              // continue it (ChatGPT-style). Fetches the stored rounds verbatim.
-              apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
-                .then(r => r.json())
-                .then(({ conversation }) => {
-                  if (!conversation?.rounds) return
-                  setConversationId(conversation.id)
-                  if (conversation.mode) setMode(conversation.mode)
-                  setRounds(conversation.rounds)
-                })
-                .catch(() => {})
-            }} />
-          {/* Open goals — cross-session task graphs; clicking one resumes it as a new query */}
-          <TasksBinder onResume={goal => { void send(goal) }} />
-          {/* External tool integrations (GitHub CLI etc.) — drawer with per-request recommendations */}
-          <IntegrationsBinder draft={input} />
-          {/* Skill & tool library — browse the verified skill catalog and the agent's toolkit,
-              or describe a new skill/tool in plain language and have the agent build it */}
-          <LibraryBinder onBuild={text => { void send(text) }} />
-          {/* Self-repair — plain-language improvement proposals with approve/reject */}
-          <SelfRepairBinder />
-          {/* Self-patcher — pipeline-proposed prompt patches, triumvirate-gated, approve/reject */}
-          <SelfPatcherBinder />
-          {/* New chat — clears the view and starts a fresh conversation thread */}
           <button
-            className="crucible-newchat-btn"
             onClick={() => {
               setRounds([])
               setConversationId('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))
             }}
             title="New chat"
             style={{
-              background: 'none', border: 'none', cursor: 'pointer',
-              color: '#555', padding: '6px 7px', borderRadius: 8,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              transition: 'color 0.18s, background 0.18s',
+              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+              borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)',
+              background: 'rgba(255,255,255,0.04)', color: '#b8b8cc',
+              fontSize: 11, fontWeight: 600, cursor: 'pointer',
             }}
           >
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-              <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
+            New chat
           </button>
-<button className="crucible-menu-btn" onClick={() => setMenuOpen(o => !o)} style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: '#555', padding: '6px 8px', borderRadius: 8,
-            display: 'flex', flexDirection: 'column', gap: 3.5, alignItems: 'center', justifyContent: 'center',
-          }}>
-            {[0,1,2].map(i => (
-              <span key={i} style={{
-                display: 'block',
-                width: 16,
-                height: 1.5,
-                borderRadius: 2,
-                background: menuOpen ? '#fff' : govPending > 0 ? 'rgba(255,180,80,0.7)' : '#555',
-                transition: 'background 0.2s',
-                animation: govPending > 0 && !menuOpen ? 'amberBreath 2.4s ease-in-out infinite' : 'none',
-              }} />
-            ))}
-          </button>
-          {menuOpen && (
-            <div style={{
-              position: 'absolute', top: '100%', right: 0, zIndex: 100,
-              background: '#111114', border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: 10, padding: '4px 0', minWidth: 200,
-              boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
-            }}>
-              {[
-                {
-                  label: 'API Keys',
-                  action: () => alert('API Keys — coming soon'),
-                  icon: (
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="6" cy="10" r="3.2"/>
-                      <path d="M8.8 7.2l4.8-4.8M11 3l2 2M9.5 4.5l2 2"/>
-                    </svg>
-                  ),
-                },
-                {
-                  label: 'Pipeline Config',
-                  action: () => alert('Pipeline Config — coming soon'),
-                  icon: (
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-                      <line x1="2" y1="4" x2="14" y2="4"/>
-                      <line x1="2" y1="8" x2="14" y2="8"/>
-                      <line x1="2" y1="12" x2="14" y2="12"/>
-                      <circle cx="5" cy="4" r="1.5" fill="#111114"/>
-                      <circle cx="10" cy="8" r="1.5" fill="#111114"/>
-                      <circle cx="6" cy="12" r="1.5" fill="#111114"/>
-                    </svg>
-                  ),
-                },
-                {
-                  label: 'Model Roster',
-                  action: () => alert('Model Roster — coming soon'),
-                  icon: (
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-                      <circle cx="4" cy="4" r="1.5"/>
-                      <circle cx="4" cy="8" r="1.5"/>
-                      <circle cx="4" cy="12" r="1.5"/>
-                      <line x1="7" y1="4" x2="14" y2="4"/>
-                      <line x1="7" y1="8" x2="14" y2="8"/>
-                      <line x1="7" y1="12" x2="14" y2="12"/>
-                    </svg>
-                  ),
-                },
-              ].map(item => (
-                <button
-                  key={item.label}
-                  onClick={() => { item.action(); setMenuOpen(false) }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    width: '100%', padding: '9px 14px',
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    color: 'rgba(255,255,255,0.4)', fontSize: 12.5, textAlign: 'left' as const,
-                    transition: 'background 0.15s, color 0.15s',
-                  }}
-                  onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = 'rgba(255,255,255,0.85)' }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'rgba(255,255,255,0.4)' }}
-                >
-                  <span style={{ flexShrink: 0, opacity: 0.6 }}>{item.icon}</span>
-                  <span style={{ flex: 1 }}>{item.label}</span>
-                </button>
-              ))}
-
-              <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '4px 0' }} />
-
-              {/* Connected Google Services */}
-              {(() => {
-                const svcLabels: Record<string, string> = {
-                  gmail: 'Gmail', calendar: 'Calendar', drive: 'Drive', contacts: 'Contacts',
-                  youtube: 'YouTube', fitness: 'Fitness', analytics: 'Analytics',
-                  maps: 'Maps', kgSearch: 'Knowledge Graph', customSearch: 'Custom Search',
-                }
-                const connected = googleStatus ? Object.entries(googleStatus).filter(([, v]) => v).map(([k]) => k) : []
-                const missing = googleStatus ? Object.entries(googleStatus).filter(([, v]) => !v).map(([k]) => k) : []
-                return (
-                  <div style={{ padding: '8px 14px 6px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                    <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 7 }}>
-                      Google Services
-                    </div>
-                    {!googleStatus && (
-                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', marginBottom: 4 }}>loading…</div>
-                    )}
-                    {googleStatus && connected.length === 0 && (
-                      <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', marginBottom: 4 }}>
-                        Not connected — <a href={`${API_BASE}/api/auth/google`} style={{ color: 'rgba(100,180,255,0.7)', textDecoration: 'none' }}>sign in with Google</a>
-                      </div>
-                    )}
-                    {googleStatus && connected.length > 0 && (
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
-                        {connected.map(k => (
-                          <span key={k} style={{
-                            fontSize: 10.5, padding: '2px 7px', borderRadius: 4,
-                            background: 'rgba(52,211,153,0.12)', color: 'rgba(52,211,153,0.85)',
-                            border: '1px solid rgba(52,211,153,0.2)',
-                          }}>{svcLabels[k] ?? k}</span>
-                        ))}
-                        {missing.map(k => (
-                          <span key={k} style={{
-                            fontSize: 10.5, padding: '2px 7px', borderRadius: 4,
-                            background: 'rgba(255,255,255,0.04)', color: 'rgba(255,255,255,0.2)',
-                            border: '1px solid rgba(255,255,255,0.07)',
-                          }}>{svcLabels[k] ?? k}</span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )
-              })()}
-
-              <button
-                onClick={() => {
-                  apiFetch(`${API_BASE}/api/governance`).then(r => r.json()).then((d: any[]) => {
-                    setGovRequests(d)
-                    setGovPending(d.filter((r: any) => r.status === 'pending').length)
-                  }).catch(() => {})
-                  setGovPanelOpen(o => !o)
-                  setMenuOpen(false)
-                }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  width: '100%', padding: '9px 14px',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: govPending > 0 ? 'rgba(255,180,80,0.85)' : 'rgba(255,255,255,0.4)',
-                  fontSize: 12.5, textAlign: 'left' as const,
-                  transition: 'background 0.15s, color 0.15s',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = govPending > 0 ? 'rgba(255,180,80,1)' : 'rgba(255,255,255,0.85)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = govPending > 0 ? 'rgba(255,180,80,0.85)' : 'rgba(255,255,255,0.4)' }}
-              >
-                <span style={{ flexShrink: 0, opacity: govPending > 0 ? 1 : 0.6, color: govPending > 0 ? 'rgba(255,180,80,0.9)' : 'currentColor' }}>
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M8 1.5l1.8 3.2 3.7.54-2.68 2.6.63 3.66L8 9.7l-3.45 1.8.63-3.66L2.5 5.24l3.7-.54z"/>
-                  </svg>
-                </span>
-                <span style={{ flex: 1 }}>Infrastructure</span>
-                {govPending > 0 && (
-                  <span style={{
-                    background: 'rgba(255,180,80,0.15)', color: 'rgba(255,180,80,0.9)',
-                    border: '1px solid rgba(255,180,80,0.3)',
-                    borderRadius: 10, padding: '1px 6px',
-                    fontSize: 9, fontWeight: 700, letterSpacing: '0.04em',
-                  }}>{govPending}</span>
-                )}
-              </button>
-
-              <div style={{ height: 1, background: 'rgba(255,255,255,0.05)', margin: '4px 0' }} />
-
-              <button
-                onClick={() => { alert('Crucible v0.1'); setMenuOpen(false) }}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 10,
-                  width: '100%', padding: '9px 14px',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: 'rgba(255,255,255,0.4)', fontSize: 12.5, textAlign: 'left' as const,
-                  transition: 'background 0.15s, color 0.15s',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; e.currentTarget.style.color = 'rgba(255,255,255,0.85)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'rgba(255,255,255,0.4)' }}
-              >
-                <span style={{ flexShrink: 0, opacity: 0.6 }}>
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round">
-                    <circle cx="8" cy="8" r="6.2"/>
-                    <line x1="8" y1="7" x2="8" y2="11"/>
-                    <circle cx="8" cy="4.5" r="0.7" fill="currentColor" stroke="none"/>
-                  </svg>
-                </span>
-                <span style={{ flex: 1 }}>About</span>
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
@@ -4092,21 +3893,22 @@ export default function App() {
 
               {/* Activity Feed — moved to fixed overlay */}
 
-              {/* Synthesis */}
-              {round.synthesis.length > 0 && (
-                <PourRing
-                  phase={(round.synthesisDone ? 'done' : (round.synthStreaming ? 'pouring' : 'idle')) as PourPhase}
-                  streamProgress={Math.min(1, round.synthesis.length / (round.synthesis.length + 500))}
-                  radius={14}
+              {/* Synthesis — the live round shows its card immediately on send (empty shell
+                  during 'thinking' so the crucible vessel has something to pour into). */}
+              {(round.synthesis.length > 0 || (round.id === liveRoundId && thinking)) && (
+                <PourWrap
+                  active={round.id === liveRoundId}
+                  phase={round.synthesisDone ? 'done' : round.synthesis.length > 0 ? 'pouring' : 'thinking'}
+                  progress={Math.min(1, round.synthesis.length / (round.synthesis.length + 500))}
+                  reserveTop={round.id === liveRoundId && !round.synthesisDone}
                 >
                 <div style={{
                   position: 'relative', borderRadius: 14, padding: '16px 18px', width: '100%', boxSizing: 'border-box' as const, overflow: 'hidden',
-                  background: 'linear-gradient(135deg, rgba(124,124,248,0.07) 0%, rgba(77,184,158,0.05) 50%, rgba(192,132,252,0.07) 100%)',
+                  minHeight: 54,
+                  background: 'rgba(255,255,255,0.035)',
                   backdropFilter: 'blur(28px)', WebkitBackdropFilter: 'blur(28px)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  boxShadow: round.synthesisDone
-                    ? '0 0 32px rgba(124,124,248,0.08), inset 0 1px 0 rgba(255,255,255,0.06)'
-                    : 'inset 0 1px 0 rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.09)',
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05)',
                   animation: 'fadeIn 0.3s ease',
                 }}>
                   {round.synthesisDone && (
@@ -4114,14 +3916,17 @@ export default function App() {
                       <CopyButton text={`${round.userMessage}\n\n${round.synthesis}`} inline title="Copy full exchange" />
                     </div>
                   )}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 0, flexWrap: 'wrap' as const, paddingRight: 28 }}>
+                  {/* Ensemble chrome (model chips + attribution) renders ONLY on ensemble
+                      runs — a local reply is a clean card (v3). */}
+                  {models.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, flexWrap: 'wrap' as const, paddingRight: 28 }}>
                     <div style={{ display: 'flex', gap: 3 }}>
                       {models.map(m => (
                         <span key={m.id} style={{ width: 5, height: 5, borderRadius: '50%', background: m.color, opacity: 0.8 }} />
                       ))}
                     </div>
-                    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase' as const }}>
-                      {round.synthesisDone ? 'consensus' : round.synthStreaming ? 'writing…' : 'synthesizing…'}
+                    <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(157,157,250,0.7)', textTransform: 'uppercase' as const }}>
+                      {round.synthesisDone ? 'ensemble' : round.synthStreaming ? 'writing…' : 'synthesizing…'}
                     </span>
                     {round.synthesisDone && models.length > 0 && (() => {
                       // Attribution: synthesizer led, 2nd scorer refined, rest contributed
@@ -4147,7 +3952,10 @@ export default function App() {
                       )
                     })()}
                   </div>
-                  <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '10px -18px 12px' }} />
+                  )}
+                  {models.length > 0 && (
+                    <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '10px -18px 12px' }} />
+                  )}
                   <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#d8d8e8', maxWidth: '100%', overflow: 'hidden', overflowWrap: 'anywhere' as const, wordBreak: 'break-word' as const, userSelect: 'text' as const }}>
                    <ReactMarkdown
                      components={{
@@ -4192,10 +4000,23 @@ export default function App() {
                      }} />
                    )}
                  </div>
-                  {round.synthesisDone && (() => {
-                   // Unified process trail — always present, always expandable.
-                   // One place to see how the answer was built: models, scores, critique,
-                   // confidence, fragility, frontier questions, dropped models.
+                  {/* Local replies: clean card + copy/feedback + on-device footer (v3). The
+                      full process trail below is ensemble-run chrome only. */}
+                  {round.synthesisDone && models.length === 0 && (
+                    <>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
+                        <CopyButton text={round.synthesis} inline title="Copy answer" />
+                        <FeedbackButtons query={round.userMessage} synthesis={round.synthesis} promptType={round.promptType} />
+                      </div>
+                      <div style={{ marginTop: 10, fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', color: '#4a4a5e' }}>
+                        CRUCIBLE · ON-DEVICE
+                      </div>
+                    </>
+                  )}
+                  {round.synthesisDone && models.length > 0 && (() => {
+                   // Unified process trail — ensemble runs only. One place to see how the
+                   // answer was built: models, scores, critique, confidence, fragility,
+                   // frontier questions, dropped models.
                    const conf = round.confidence
                    const overallTier = conf?.overallTier ?? 'UNVERIFIED'
                    const overallScore = conf?.overallScore ?? 0
@@ -4653,7 +4474,7 @@ export default function App() {
                    )
                  })()}
                </div>
-                </PourRing>
+                </PourWrap>
              )}
             </div>
           )
@@ -4882,70 +4703,167 @@ export default function App() {
             })}
           </div>
         )}
-        {(() => {
-          const accentRgb = mode === 'code' ? '77,184,158' : mode === 'seeker' ? '245,158,11' : '124,124,248'
-          return (
+        {/* ── Per-query ensemble confirm — inline card above the composer (v3), not a modal ── */}
+        {ensembleConfirm && !ensembleConfirm.noKeys && (
+          <div style={{
+            width: '100%', maxWidth: 680, marginBottom: 10, padding: '14px 16px', borderRadius: 16,
+            background: 'rgba(124,124,248,0.07)', border: '1px solid rgba(124,124,248,0.25)',
+            backdropFilter: 'blur(28px)', WebkitBackdropFilter: 'blur(28px)',
+            display: 'flex', flexDirection: 'column', gap: 10, animation: 'slideUp 0.25s ease',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#7c7cf8', boxShadow: '0 0 8px rgba(124,124,248,0.7)' }} />
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#c8c8f0' }}>Use ensemble for this?</span>
+            </div>
+            <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#8a8a9e' }}>
+              This fans out to {Object.keys(ensemble.keys).length || ensemble.namedKeys.length} external endpoint{(Object.keys(ensemble.keys).length || ensemble.namedKeys.length) === 1 ? '' : 's'} using your API keys, then cross-examines the drafts. Nothing leaves this device otherwise.
+            </span>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  const pending = ensembleConfirm.message
+                  setEnsembleConfirm(null)
+                  setMode('code')
+                  if (pending) void send(pending, 'code')
+                }}
+                style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: '#b8b8cc', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+              >Crucible only</button>
+              <button
+                onClick={() => {
+                  const pending = ensembleConfirm.message
+                  setEnsembleConfirm(null)
+                  if (pending) void send(pending, 'quorum', true)
+                }}
+                style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid rgba(124,124,248,0.4)', background: 'rgba(124,124,248,0.15)', color: '#b0b0ff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+              >Run ensemble</button>
+            </div>
+          </div>
+        )}
+        {ensembleConfirm?.noKeys && (
+          <div style={{
+            width: '100%', maxWidth: 680, marginBottom: 10, padding: '14px 16px', borderRadius: 16,
+            background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+            backdropFilter: 'blur(28px)', WebkitBackdropFilter: 'blur(28px)',
+            display: 'flex', alignItems: 'center', gap: 12, animation: 'slideUp 0.25s ease',
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, flex: 1 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#d8d8e8' }}>Ensemble needs your own API keys</span>
+              <span style={{ fontSize: 11.5, color: '#8a8a9e' }}>No endpoints configured. Add keys in Settings — Crucible ships with zero external calls.</span>
+            </div>
+            <button
+              onClick={() => {
+                const pending = ensembleConfirm.message
+                setEnsembleConfirm(null)
+                setMode('code')
+                if (pending) void send(pending, 'code')
+              }}
+              style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid rgba(255,255,255,0.1)', background: 'transparent', color: '#b8b8cc', fontSize: 11, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}
+            >Crucible only</button>
+            <button
+              onClick={() => { setEnsembleConfirm(null); setTab('settings') }}
+              style={{ padding: '6px 14px', borderRadius: 999, border: '1px solid rgba(124,124,248,0.4)', background: 'rgba(124,124,248,0.15)', color: '#b0b0ff', fontSize: 11, fontWeight: 600, cursor: 'pointer', flexShrink: 0 }}
+            >Add keys</button>
+          </div>
+        )}
+
         <div className="crucible-inputbox" style={{
           display: 'flex', flexDirection: 'column',
-          background: 'rgba(255,255,255,0.05)',
-          border: `1px solid rgba(${accentRgb},0.2)`,
-          boxShadow: thinking ? `0 0 0 1px rgba(${accentRgb},0.12), 0 8px 32px rgba(0,0,0,0.15)` : '0 2px 16px rgba(0,0,0,0.1)',
-          borderRadius: 16, padding: '10px 10px 8px 14px',
+          background: 'rgba(255,255,255,0.045)',
+          border: '1px solid rgba(255,255,255,0.09)',
+          borderRadius: 20, padding: '12px 12px 10px 14px',
           width: '100%', maxWidth: 680,
-          backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
+          backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
+          boxShadow: '0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)',
           position: 'relative',
-          transition: 'border-color 0.4s, box-shadow 0.4s',
         }}>
-          <div style={{
-            position: 'absolute', inset: 0, borderRadius: 16, pointerEvents: 'none',
-            background: `radial-gradient(ellipse at 50% 100%, rgba(${accentRgb},0.04) 0%, transparent 70%)`,
-            transition: 'background 0.5s',
-          }} />
           {showMinLengthTip && (
-           <div style={{
-             position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
-             marginBottom: 8, padding: '6px 12px', borderRadius: 8,
-             background: 'rgba(30,30,40,0.95)', border: '1px solid rgba(255,255,255,0.08)',
-             fontSize: 11, color: 'rgba(255,255,255,0.5)', whiteSpace: 'nowrap' as const,
-             pointerEvents: 'none' as const, animation: 'fadeIn 0.2s',
-           }}>
-             Type at least 4 characters to send
-           </div>
-         )}
-          {/* ── Row 1: textarea only ── */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <div style={{
+              position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+              marginBottom: 8, padding: '6px 12px', borderRadius: 8,
+              background: 'rgba(30,30,40,0.95)', border: '1px solid rgba(255,255,255,0.08)',
+              fontSize: 11, color: 'rgba(255,255,255,0.5)', whiteSpace: 'nowrap' as const,
+              pointerEvents: 'none' as const, animation: 'fadeIn 0.2s',
+            }}>
+              Type at least 4 characters to send
+            </div>
+          )}
+          {/* ── Row 1: crucible glyph + textarea + send ── */}
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <svg width="20" height="20" viewBox="0 0 48 48" fill="none" style={{ flexShrink: 0, opacity: 0.4 }}>
+              <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="#e4e4ee" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
             <textarea
               ref={textareaRef}
               value={input}
               onChange={handleInput}
               onKeyDown={handleKey}
-              placeholder={!localStorage.getItem('crucible_has_sent') ? 'Crucible can' : 'Message Crucible'}
+              placeholder="Message Crucible"
               rows={1}
               className="crucible-textarea"
               style={{
-                flex: 1, background: 'none', border: 'none', color: '#e2e2e2',
-                fontSize: 13, resize: 'none', outline: 'none',
-                fontFamily: 'inherit',
+                flex: 1, background: 'none', border: 'none', color: '#e4e4ee',
+                fontSize: 13.5, resize: 'none', outline: 'none', fontFamily: 'inherit',
                 lineHeight: 1.5, maxHeight: 160, overflowY: 'auto',
                 userSelect: 'text', paddingBottom: 2,
               }}
             />
+            <button
+              className="crucible-send-btn"
+              onClick={thinking ? stop : () => send()}
+              disabled={!thinking && input.trim().length < 4}
+              title={thinking ? 'Stop' : 'Send'}
+              style={{
+                width: 32, height: 32, borderRadius: '50%', border: 'none',
+                background: thinking ? 'rgba(255,110,26,0.12)' : 'transparent',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0, cursor: (thinking || input.trim().length >= 4) ? 'pointer' : 'default',
+                opacity: (thinking || input.trim().length >= 4) ? 1 : 0.35,
+                outline: `1px solid ${thinking ? 'rgba(255,110,26,0.4)' : 'rgba(255,255,255,0.09)'}`,
+                transition: 'background 0.3s, opacity 0.3s',
+              }}
+            >
+              {thinking ? (
+                <span style={{ width: 9, height: 9, borderRadius: 2, background: '#ff8a3d' }} />
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 11V3M3.5 6.5L7 3L10.5 6.5" stroke={input.trim().length >= 4 ? '#9d9dfa' : '#55556a'} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </button>
           </div>
 
-          {/* ── Row 2: toolbar pills + send button ── */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 11 }}>
-            {/* Ensemble pill — sole composer toggle; mode picker UI removed (v3). Crucible-local
-                is the permanent default, Ensemble is opt-in + BYOK (see ensemble.tsx). */}
-            <EnsemblePill
-              armed={mode === 'quorum'}
-              onToggle={() => {
-                if (!ensemble.hasAnyKey) { setKeyModalOpen(true); return }
-                if (mode === 'quorum') { setMode('code'); ensemble.setOn(false) }
-                else { setMode('quorum'); ensemble.setOn(true) }
+          {/* ── Row 2: ensemble pill + status ── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 0 32px' }}>
+            <button
+              onClick={() => {
+                if (mode === 'quorum') { setMode('code'); ensemble.setOn(false); return }
+                if (!ensemble.hasAnyKey) { setTab('settings'); return }
+                setMode('quorum'); ensemble.setOn(true)
               }}
-              ensemble={ensemble}
-            />
+              title={ensemble.hasAnyKey ? 'Ensemble — external multi-model pipeline on your own API keys' : 'Ensemble needs your own API keys — opens Settings'}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, cursor: 'pointer',
+                border: `1px solid ${mode === 'quorum' ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.07)'}`,
+                background: mode === 'quorum' ? 'rgba(124,124,248,0.12)' : 'transparent',
+                transition: 'background 0.2s, border-color 0.2s',
+              }}
+            >
+              <span style={{
+                width: 5, height: 5, borderRadius: '50%',
+                background: mode === 'quorum' ? '#7c7cf8' : '#3a3a4c',
+                boxShadow: mode === 'quorum' ? '0 0 6px rgba(124,124,248,0.6)' : 'none',
+              }} />
+              <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', color: mode === 'quorum' ? '#9d9dfa' : '#55556a' }}>
+                Ensemble
+              </span>
+            </button>
+            <span style={{ fontSize: 10, color: '#4a4a5e', fontWeight: 500 }}>
+              {mode === 'quorum'
+                ? (ensemble.hasAnyKey ? 'armed — will ask before any fan-out' : 'armed — but no API keys added yet')
+                : '0 external calls'}
+            </span>
 
+            <div style={{ flex: 1 }} />
             {/* Step 9: Remote Brain — phone only */}
             {isMobile && (
               <button
@@ -4967,55 +4885,11 @@ export default function App() {
                 Brain
               </button>
             )}
-
-            {/* Send/stop — circular, same height as pills, pushed to right */}
-            <div style={{ flex: 1 }} />
-            {(() => {
-              const accent = MODE_META[mode]?.color ?? '#7c7cf8'
-              const accentRgb = mode === 'code' ? '77,184,158' : mode === 'seeker' ? '245,158,11' : '124,124,248'
-              const ready = input.trim().length >= 4 || thinking || globalDone
-              return (
-                <button
-                  className="crucible-send-btn"
-                  onClick={thinking ? stop : () => send()}
-                  disabled={!thinking && input.trim().length < 4}
-                  style={{
-                    width: 26, height: 26, borderRadius: '50%', border: 'none',
-                    background: ready ? `rgba(${accentRgb},0.14)` : 'transparent',
-                    cursor: ready ? 'pointer' : 'default',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    flexShrink: 0, padding: 0, position: 'relative', overflow: 'visible',
-                    opacity: ready ? 1 : 0.25,
-                    transition: 'opacity 0.3s, background 0.3s',
-                    outline: `1px solid ${ready ? `rgba(${accentRgb},0.4)` : 'rgba(255,255,255,0.07)'}`,
-                    outlineOffset: 0,
-                  }}
-                >
-                  {thinking && (
-                    <>
-                      <svg width="26" height="26" viewBox="0 0 26 26"
-                        style={{ position: 'absolute', animation: 'spin 1.1s linear infinite' }}
-                      >
-                        <circle cx="13" cy="13" r="11" fill="none"
-                          stroke={accent} strokeWidth="1.5"
-                          strokeDasharray="22 48" strokeLinecap="round" opacity="0.7"
-                        />
-                      </svg>
-                      <div style={{ width: 7, height: 7, borderRadius: 2, background: accent, opacity: 0.9, flexShrink: 0 }} />
-                    </>
-                  )}
-                  {!thinking && (
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                      <path d="M7 11V3M3.5 6.5L7 3L10.5 6.5" stroke={ready ? accent : '#444'} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  )}
-                </button>
-              )
-            })()}
           </div>
         </div>
-          )
-        })()}
+      </div>
+      </>}
+        </div>
       </div>
     </div>
   )

@@ -55,7 +55,25 @@ function waitForPort(port, retries = 60, delay = 1000) {
   });
 }
 
+// A leftover backend from a previous manual `tsx server.ts`/debugging session can already be
+// LISTENing on 3001 when this app launches. spawnBackend()'s own server then crashes silently
+// with EADDRINUSE, but waitForPort(3001) still resolves (something answers) — so the window
+// opens against the STALE process's code instead of this launch's fresh server, and every
+// server-side edit since the stale process started appears to "not apply". Free the port of
+// any prior occupant before spawning our own, every launch, so this can't happen silently.
+const { execSync } = require('child_process');
+function killStalePortOwner(port) {
+  try {
+    const out = execSync(`lsof -tiTCP:${port} -sTCP:LISTEN`, { encoding: 'utf8' }).trim();
+    if (!out) return;
+    for (const pid of out.split('\n').filter(Boolean)) {
+      try { process.kill(Number(pid), 'SIGKILL'); console.log(`[electron] killed stale process ${pid} holding port ${port}`); } catch (e) { /* already gone */ }
+    }
+  } catch (e) { /* lsof exits non-zero when nothing is listening — nothing to clean up */ }
+}
+
 function spawnBackend() {
+  killStalePortOwner(3001);
   const env = {
     ...process.env,
     PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:' + (process.env.PATH || ''),
