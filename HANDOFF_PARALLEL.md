@@ -5,6 +5,10 @@ Repo root: `~/crucible-local/crucible-local`. Server on :3001. Mint an authed JW
 from `.env.local` (`JWT_SECRET`, `VITE_GROQ_API_KEY`) per the `crucible-local-auth-testing`
 convention. Commit each fix (feedback: always commit, never leave a bare diff).
 
+**Shared channel:** coordinate through `PARALLEL_SYNC.md` (append-only log, committed
+to GitHub `origin/crucible-northstar-sessions`). `git pull --rebase` before claiming
+work, append a claim/landed entry, `git push` so the other model sees it.
+
 Context: `npm run convo:coherence` was just added. It drives real multi-turn chats
 and LLM-judges context/consistency/coherence — the axes the old keyword bench
 (`__convo_bench.ts`) is blind to. Baseline scorecard: `.crucible/convo-coherence-scorecard.json`
