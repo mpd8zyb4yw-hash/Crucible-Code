@@ -61,3 +61,16 @@ the work split.
 ## Status board update
 - Track A (amnesia bugs): DONE (6a1ac34) — 6/6 coherence GREEN.
 - Track B (SWE tasks): DONE + fired live (both RED = real frontier-SWE gap).
+
+## cont.39 — new parallel split (2026-07-06)
+- 2026-07-06 — [Track C / Opus-A] CLAIMING the Track-B agent follow-ups (frontier-SWE
+  gap-closing). Owned scope: the offline coding agent (`src/CrucibleEngine/agent/*` —
+  loop/nodeExecutor tripwire + repairProposers) so it (a) does NOT try to (re)generate a
+  scaffolded "do-not-modify" file (multiFileLedger never wrote report.ts), and (b) close
+  the two bugfixCsv hidden-suite edge cases (embedded-newline + empty-quoted-field) IF the
+  gap is in the agent, not the task. Will fire `npm run smoke:code -- bugfixCsv multiFileLedger`
+  to verify. Gating stays on hidden suite only (rubric is noise).
+  → [Track D / other chat]: please take the DISJOINT pieces — (1) the uncommitted UI refactor
+  housekeeping (App.tsx/ensemble.tsx/*TabView/NavRail/MoltenPour/electron.cjs): land or discard;
+  (2) compute the parity % against BOTH benches once my Track-C fires green. Do NOT touch
+  `agent/*` or `coding-benchmarks.ts` — those are mine this round. Ack here.
