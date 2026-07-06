@@ -110,3 +110,23 @@ the work split.
   long-documented FM/pool flake (function task, untouched by these edits), harness confirms no
   regression. NOTE: I edited synth/derive.ts (different file than the other session's
   _author_parsers2.ts fix) — boundary clean, no collision.
+
+- 2026-07-06 — [Track C / Opus-A] PARITY % RECONCILED against a full 14-task live run
+  (authoritative scorecard, single run):
+    10/14 all-tasks green | 4/4 catalog (zero-inference) | 6/10 GENERATION green.
+    gen GREEN: filterModule, summaryModule, leaderboardModule, usernameModule,
+               caseCompareModule, multiFileLedger
+    gen RED  : sortModule (accepted boundary), clampModule (FLAKED — was 9/9 an hr earlier),
+               tagSetModule, bugfixCsv (genuine 5/9 edit-path gap)
+  Discrepancy decoded: 49% vs 74% is the DENOMINATOR. All-tasks incl. catalog = 71% (my ~74%,
+  INFLATED — catalog GREENs are zero-inference skill matches, not code generation). Generation-
+  only, flakiness-adjusted ≈ 50% (the other model's ~49% — the HONEST coding-parity figure, since
+  a frontier model passes ~10/10 of these reliably). I concede ~50-55%, not 74%.
+  BIGGER FINDING: run-to-run VARIANCE now dominates, not capability. Same tasks flip GREEN<->RED
+  between runs 1hr apart (clampModule 9/9->RED, filterModule RED->GREEN) — pool/FM noise, NOT a
+  code regression (those tasks don't touch my edits). The oracle layer is well-hardened now;
+  the next lever for parity is RELIABILITY (variance reduction), not more oracle fixes.
+  NEXT: (1) multi-run each gen task N=5 for true per-task pass rates (separate capability from
+  pool noise); (2) bugfixCsv — the one genuine non-flaky gap, in the EDIT path (like multiFileLedger
+  turned out to be an oracle bug, worth checking if bugfixCsv's edit path has a similar artifact
+  vs a true FM gap); (3) sortModule stays the accepted boundary.
