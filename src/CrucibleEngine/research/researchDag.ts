@@ -76,6 +76,14 @@ export interface ResearchOpts {
   projectDir?: string
   /** Disable read-reliability vote (faster, fewer FM calls) */
   skipReadReliability?: boolean
+  /**
+   * Emit the full research chrome — `[CORROBORATED · N% …]` confidence header,
+   * evidence quote block, and `*Sources: …*` line. Defaults to true for the
+   * explicit /api/research endpoint. The conversational path (synthDriver)
+   * sets this false so plain factual questions get a plain-sentence answer;
+   * it flips back on when the user actually asks for sources/citations.
+   */
+  verbose?: boolean
 }
 
 interface LeafResult {
@@ -376,6 +384,7 @@ export async function* runResearchDag(
   const fmCall = opts.fmCall ?? defaultFmCall
   const projectDir = opts.projectDir ?? process.cwd()
   const skipReadReliability = opts.skipReadReliability ?? false
+  const verbose = opts.verbose ?? true
   const taskId = `research_${Date.now()}`
   const t0 = Date.now()
 
@@ -559,13 +568,24 @@ export async function* runResearchDag(
     // Build quote attributions for high-tier claims
     const provenanceBlock = buildProvenanceBlock(verifiedClaims)
 
-    const finalAnswer = [
-      confHeader,
-      answer || 'The retrieved evidence supported the following verified facts:',
-      factsList.length > 0 && !answer ? '\n' + factsList.map(f => `• ${f}`).join('\n') : '',
-      provenanceBlock,
-      allSources.length ? `\n*Sources: ${allSources.join(', ')}*` : '',
-    ].filter(Boolean).join('\n\n').trim()
+    // Plain mode (conversational path, no explicit sources request): drop the
+    // confidence header, evidence block, and *Sources* line — a full-tier
+    // factual answer should read as a plain sentence, not a robotic report.
+    // The confidence/tier still ride out on the `research_done` event fields
+    // for callers that want them programmatically.
+    const finalAnswer = (verbose
+      ? [
+          confHeader,
+          answer || 'The retrieved evidence supported the following verified facts:',
+          factsList.length > 0 && !answer ? '\n' + factsList.map(f => `• ${f}`).join('\n') : '',
+          provenanceBlock,
+          allSources.length ? `\n*Sources: ${allSources.join(', ')}*` : '',
+        ]
+      : [
+          answer || 'The retrieved evidence supported the following verified facts:',
+          factsList.length > 0 && !answer ? '\n' + factsList.map(f => `• ${f}`).join('\n') : '',
+        ]
+    ).filter(Boolean).join('\n\n').trim()
 
     clearScratch(taskId)
 

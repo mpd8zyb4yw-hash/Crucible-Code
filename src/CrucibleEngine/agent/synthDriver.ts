@@ -99,6 +99,9 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   if (isResearchShaped && !contextDependent) {
     let dagAnswer = ''
     let dagConfidence = 0
+    // Conversational answers stay plain-sentence; only surface the
+    // confidence/sources scaffold when the user explicitly asks for it.
+    const wantsSources = /\b(sources?|cite|citations?|references?|provenance|evidence|confidence|how do you know|according to)\b/i.test(goal)
     try {
       for await (const ev of runResearchDag(goal, {
         projectDir: process.cwd(),
@@ -106,6 +109,7 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
         maxWebPages: 6,
         maxMs: 40_000,
         skipReadReliability: true,
+        verbose: wantsSources,
       })) {
         if (ev.type === 'research_done') {
           dagAnswer = ev.text ?? ''
