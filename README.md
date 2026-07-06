@@ -23,3 +23,11 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 - `README.md` — this file
 - `chats/` — conversation transcripts (read these!)
 - `project/` — the `Crucible UI Redesign Implementation` project files (HTML prototypes, assets, components)
+- `crucible-local/crucible-local/` — the in-progress implementation (React + Vite + zustand)
+
+## Working in parallel with another coding agent
+
+If you're one of two coding agents working this bundle at the same time, stop and read
+`crucible-local/crucible-local/AGENTS.md` before touching any code. It has the current build
+state, the remaining work split into two non-colliding tracks, and a live claims/change-log
+table both agents read and write to across sessions.
