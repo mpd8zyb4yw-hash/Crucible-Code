@@ -42,7 +42,7 @@ import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } fro
 import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
 import { listModelStatuses, downloadModel, deleteModel, setModelEnabled, setModelsLocation, getModelsConfig, setFireAllMode, setPinnedModelId } from './src/CrucibleEngine/agent/modelDownloadManager'
-import { routeLocalModelQuery } from './src/CrucibleEngine/agent/localModelRouter'
+import { routeLocalModelQuery, hasReadyLocalModels } from './src/CrucibleEngine/agent/localModelRouter'
 import { getStats } from './src/CrucibleEngine/localModels/telemetry'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
@@ -3287,7 +3287,22 @@ app.post('/api/chat', async (req, res) => {
       send({ type: 'contract', promptType: convPT, requiredStructure: [], forbiddenAntipatterns: [] })
       send({ type: 'stage', stage: 1, status: 'start' })
       const t0o = Date.now()
-      let answer = await solveNonCodeTurn(message, undefined, Array.isArray(history) ? history.slice(-6) : undefined)
+      // Local GGUF ensemble pool (Tracks A-D, 2026-07-07): when the user has downloaded models
+      // (or pinned/fire-all is set), prefer routing/strengthening across that pool over the
+      // single-call offline brain below. With zero GGUF models downloaded, routeLocalModelQuery's
+      // only fallback is a raw Track-S-FM call — weaker than solveNonCodeTurn's research-DAG /
+      // FM-ReAct chain — so it is skipped entirely in that case, not just deprioritized.
+      let routed: Awaited<ReturnType<typeof routeLocalModelQuery>> = null
+      if (hasReadyLocalModels()) {
+        try {
+          routed = await routeLocalModelQuery('', message)
+        } catch (e: any) {
+          debugBus.emit('pipeline', 'local_ensemble_error', { query: message.slice(0, 60), error: String(e?.message ?? e) }, { severity: 'warn', requestId })
+        }
+      }
+      let answer = routed && routed.text.trim()
+        ? routed.text
+        : await solveNonCodeTurn(message, undefined, Array.isArray(history) ? history.slice(-6) : undefined)
       const latencyMs = Date.now() - t0o
       // Deterministic arithmetic guard (ZERO inference): the free-tier model does mental
       // math token-by-token and ships wrong products (47×53 → "2,591"). Before sending,
@@ -3304,14 +3319,19 @@ app.post('/api/chat', async (req, res) => {
         } catch { /* non-blocking: ship the original answer */ }
       }
       if (answer && answer.trim()) {
-        send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: answer, done: true })
+        const provenanceModelId = routed ? `local/${routed.modelId}` : 'local/apple-fm'
+        const provenanceModel = routed ? routed.modelLabel : 'Crucible (offline)'
+        const provenanceExtra = routed
+          ? { contributors: routed.contributors, confidence: routed.confidence, method: routed.method, corroboratedBy: routed.corroboration.map(c => c.modelId) }
+          : {}
+        send({ type: 'layer1', modelId: provenanceModelId, model: provenanceModel, text: answer, done: true, ...provenanceExtra })
         send({ type: 'stage', stage: 1, status: 'done' })
-        send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: answer, done: true, replace: false })
+        send({ type: 'synthesis', modelId: provenanceModelId, model: 'Crucible', text: answer, done: true, replace: false, ...provenanceExtra })
         send({ type: 'stage', stage: 5, status: 'done' })
-        recordModelOutcome('local/apple-fm', true, latencyMs)
+        recordModelOutcome(provenanceModelId, true, latencyMs)
         triggerImprovementPass()
         summariseSession(message, answer, process.cwd(), 'success', callModel).catch(() => {})
-        debugBus.emit('pipeline', 'offline_conversational', { query: message.slice(0, 60), latencyMs, mode: _offlineConvMode }, { severity: 'info', requestId })
+        debugBus.emit('pipeline', routed ? 'local_ensemble_conversational' : 'offline_conversational', { query: message.slice(0, 60), latencyMs, mode: _offlineConvMode, ...(routed ? { modelId: routed.modelId, method: routed.method } : {}) }, { severity: 'info', requestId })
         if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
         return
       }

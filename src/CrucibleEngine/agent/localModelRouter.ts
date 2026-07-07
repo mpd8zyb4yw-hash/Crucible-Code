@@ -52,6 +52,16 @@ function readyModels(): LocalModelSpec[] {
   return LOCAL_MODEL_CATALOG.filter(spec => modelStatus(spec.id).status === 'ready' && isModelEnabled(spec.id))
 }
 
+/**
+ * True when at least one GGUF pool model is downloaded+enabled — the signal callers use to
+ * decide whether it's worth routing through routeLocalModelQuery() at all, vs. going straight
+ * to the single-model offline path (solveNonCodeTurn), which is more capable than this pool's
+ * lone Track-S-FM fallback when zero GGUF models are installed.
+ */
+export function hasReadyLocalModels(): boolean {
+  return readyModels().length > 0
+}
+
 /** Best-fit model for a domain: strength match first, then the cheapest tier. */
 function pickPrimary(domain: Domain, candidates: LocalModelSpec[]): LocalModelSpec | undefined {
   const withMatch = candidates.filter(m => m.strengths.includes(domain))
