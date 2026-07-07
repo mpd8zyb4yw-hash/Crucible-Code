@@ -2407,7 +2407,7 @@ export default function App() {
           solid background, so it never reads as a dark bar; the blobs stay visible. */}
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (remoteBrain && isMobile ? 0 : 56),
         right: 0,
         height: inputBarHeight - 4, pointerEvents: 'none', zIndex: 8, background: remoteBrain && isMobile ? 'rgba(13,13,21,0.55)' : 'transparent',
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -2416,7 +2416,7 @@ export default function App() {
       }} />
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (remoteBrain && isMobile ? 0 : 56),
         right: 0,
         height: inputBarHeight - 28, pointerEvents: 'none', zIndex: 9,
         backdropFilter: 'blur(44px)', WebkitBackdropFilter: 'blur(44px)',
@@ -2460,7 +2460,7 @@ export default function App() {
         // In landscape Remote Brain: anchor to the right 38% panel so it sits below chat.
         // In portrait Remote Brain: full width, above the canvas (zIndex 60).
         // Normal: full width, normal stacking.
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (remoteBrain && isMobile ? 0 : 56),
         right: 0,
         zIndex: remoteBrain && isMobile ? 60 : 10,
         // Remote Brain portrait: frosted glass so the stream bleeds through.

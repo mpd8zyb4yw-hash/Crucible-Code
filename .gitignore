@@ -3,7 +3,10 @@ dist/
 build/
 release/
 server-dist/
-app/
+# app/ is the built frontend the server serves at :3001. There is NO build step at
+# deploy time — the phone loads whatever app/ is committed — so the bundle MUST be
+# tracked. vite emits new content-hashed filenames each build, so the whole dir stays
+# tracked: after any src/*.tsx|*.css change, run `npx vite build` and commit app/.
 .env.local
 .env*.local
 .circuit-state.json
