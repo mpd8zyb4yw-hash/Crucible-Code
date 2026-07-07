@@ -1,123 +1,97 @@
+/* ── Crucible design tokens (v3 design system) ─────────────────────────────────
+   Single source of truth for the visual language. Components may still carry
+   inline literals from the pre-componentization era; new/edited code should
+   reference these variables. Dark-only by design. */
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
+  /* Surfaces */
+  --c-bg: #101016;
+  --c-glass: rgba(255, 255, 255, 0.035);
+  --c-glass-strong: rgba(13, 13, 20, 0.82);
+  --c-hairline: rgba(255, 255, 255, 0.07);
+  --c-hairline-strong: rgba(255, 255, 255, 0.09);
+  --c-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
+  /* Text */
+  --c-text: #e4e4ee;
+  --c-text-soft: #dcdcea;
+  --c-dim: #77778c;
+  --c-dim-deep: #55556a;
 
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
+  /* Accents */
+  --c-accent: #7c7cf8;          /* nav / ensemble violet */
+  --c-on-device: #4db89e;       /* local-inference green */
+  --c-warn: #f59e0b;
+  --c-error: #f87171;
+  --c-ok: #4ade80;
+
+  /* Shape */
+  --c-radius: 14px;
+  --c-radius-lg: 20px;
+  --c-radius-sm: 8px;
+
+  --c-blur: blur(28px);
+  --c-blur-strong: blur(40px) saturate(1.5);
+
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'Fira Code', Consolas, monospace;
+
+  color-scheme: dark;
+  font-family: var(--sans);
+  color: var(--c-text);
+  background: var(--c-bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
+* { box-sizing: border-box; }
 
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
+body { margin: 0; background: var(--c-bg); }
 
-#root {
-  width: 100%;
-  height: 100%;
-}
+#root { width: 100%; height: 100%; }
 
-body {
-  margin: 0;
-}
+::selection { background: rgba(124, 124, 248, 0.28); }
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+/* Thin, quiet scrollbars everywhere */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.10) transparent;
 }
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.10); border-radius: 3px; }
+*::-webkit-scrollbar-track { background: transparent; }
 
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
+/* Code blocks (syntax highlighter output) */
+pre { max-width: 100%; overflow-x: auto; white-space: pre; box-sizing: border-box; }
+pre code {
+  display: block; background: transparent; padding: 0;
+  font-size: 12px; line-height: 1.5; white-space: pre; overflow-x: auto;
 }
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
-p {
-  margin: 0;
-}
-
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
-
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
-}
+.react-syntax-highlighter-line-number { display: none; }
 
 /* Prevent iOS auto-zoom on input focus (triggered when font-size < 16px) */
 @media (max-width: 639px) {
   .crucible-textarea,
-  input[type="text"],
+  input[type='text'],
   input:not([type]) {
     font-size: 16px !important;
   }
 }
 
-@keyframes fanIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
+/* ── Shared keyframes ── */
+@keyframes slideUp  { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes panelUp  { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes dotpulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.5); } }
+@keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
+@keyframes spin     { to { transform: rotate(360deg); } }
+@keyframes prism        { 0% { filter: hue-rotate(0deg) brightness(1.3) saturate(1.8); } 100% { filter: hue-rotate(360deg) brightness(1.3) saturate(1.8); } }
+@keyframes arrowToRing  { 0% { transform: rotate(0deg) scale(1); opacity: 1; } 60% { transform: rotate(140deg) scale(0.5); opacity: 0.5; } 100% { transform: rotate(180deg) scale(1); opacity: 1; } }
+@keyframes studioIn { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes fanIn    { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
 
-@keyframes spinSlow {
-  from { filter: hue-rotate(0deg); }
-  to   { filter: hue-rotate(360deg); }
-}
+/* "Shows its work" disclosure */
+.crucible-shows-work > summary::-webkit-details-marker { display: none; }
+.crucible-shows-work > summary::marker { content: ''; }
+.crucible-shows-work > summary:hover { background: rgba(255, 255, 255, 0.045) !important; border-color: rgba(255, 255, 255, 0.1) !important; }
+.crucible-shows-work[open] > summary .crucible-sw-caret { transform: rotate(90deg); }

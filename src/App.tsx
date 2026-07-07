@@ -1613,25 +1613,7 @@ export default function App() {
       <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', zIndex: 1 }}>
         <NavRail tab={tab} setTab={setTab} agentsOpen={agentsOpen} onToggleAgents={() => setAgentsOpen(o => !o)} />
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
-      <style>{`
-        @keyframes slideUp  { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
-        @keyframes panelUp  { from { opacity:0; transform:translateY(12px) } to { opacity:1; transform:translateY(0) } }
-        @keyframes dotpulse { 0%,100% { opacity:1; transform:scale(1) } 50% { opacity:0.3; transform:scale(0.5) } }
-        @keyframes fadeIn   { from { opacity:0 } to { opacity:1 } }
-        @keyframes spin     { to { transform: rotate(360deg) } }
-        pre { max-width: 100% !important; overflow-x: auto !important; white-space: pre !important; box-sizing: border-box !important; }
-        pre code { display: block !important; background: transparent !important; padding: 0 !important; font-size: 12px !important; line-height: 1.5 !important; white-space: pre !important; overflow-x: auto !important; }
-        .react-syntax-highlighter-line-number { display: none; }
-        * { box-sizing: border-box; }
-        @keyframes prism { 0% { filter: hue-rotate(0deg) brightness(1.3) saturate(1.8); } 100% { filter: hue-rotate(360deg) brightness(1.3) saturate(1.8); } }
-        @keyframes arrowToRing { 0% { transform: rotate(0deg) scale(1); opacity: 1; } 60% { transform: rotate(140deg) scale(0.5); opacity: 0.5; } 100% { transform: rotate(180deg) scale(1); opacity: 1; } }
-        @keyframes studioIn { from { transform: translateX(-100%); } to { transform: translateX(0); } }
-        @keyframes fanIn { from { opacity:0; transform:translateX(-6px) } to { opacity:1; transform:translateX(0) } }
-        .crucible-shows-work > summary::-webkit-details-marker { display: none; }
-        .crucible-shows-work > summary::marker { content: ''; }
-        .crucible-shows-work > summary:hover { background: rgba(255,255,255,0.045) !important; border-color: rgba(255,255,255,0.1) !important; }
-        .crucible-shows-work[open] > summary .crucible-sw-caret { transform: rotate(90deg); }
-      `}</style>
+      {/* Global keyframes + shared rules live in index.css (design-token sheet). */}
 
       {/* Item 18: agents/history/settings render as an overlay ON TOP of chat, not a tab
           swap that unmounts it — the conversation underneath stays alive and scrolled to

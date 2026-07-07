@@ -2416,7 +2416,25 @@ app.post('/api/chat', async (req, res) => {
   // classification, zero model calls. `/skill <id>` emits a proven catalog
   // entry's oracle-verified impl into the project; `/tool <name> [json|text]`
   // invokes a registry tool directly.
-  const slash = /^\/(skill|tool)\s+(\S+)\s*([\s\S]*)$/.exec((message ?? '').trim())
+  let slash = /^\/(skill|tool)\s+(\S+)\s*([\s\S]*)$/.exec((message ?? '').trim())
+  // Bare form — "/<name> [args]" — is what the Agents drawer and the composer's "/"
+  // palette insert (e.g. "/read_file src/x.ts"). Resolve the name against the tool
+  // registry first, then the skill catalog; unresolved bare slashes fall through to
+  // normal chat so a stray leading "/" still gets answered instead of erroring.
+  if (!slash) {
+    const bare = /^\/([A-Za-z0-9_./-]+)\s*([\s\S]*)$/.exec((message ?? '').trim())
+    if (bare) {
+      const bareName = bare[1], bareLower = bare[1].toLowerCase()
+      if (registry.get(bareName)) {
+        slash = [bare[0], 'tool', bareName, bare[2]] as unknown as RegExpExecArray
+      } else if (SKILL_CATALOG.some(e =>
+        e.id.toLowerCase() === bareLower || e.filename.toLowerCase() === bareLower ||
+        e.id.toLowerCase() === `user/${bareLower}` ||
+        e.exports.some(x => x.toLowerCase() === bareLower))) {
+        slash = [bare[0], 'skill', bareName, bare[2]] as unknown as RegExpExecArray
+      }
+    }
+  }
   if (slash) {
     const [, slashKind, slashName, slashRest] = slash
     res.setHeader('Content-Type', 'text/event-stream')

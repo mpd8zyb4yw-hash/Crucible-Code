@@ -244,6 +244,21 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   let verifiedSignal: VerifyResult['signal'] | undefined
   const start = Date.now()
 
+  // ── Keep-working-until-done policy (2026-07-07) ─────────────────────────────
+  // maxIters / budgetTokens are SOFT caps: while the loop is demonstrably making
+  // progress (a successful tool call within the last few iterations), hitting a cap
+  // extends it in bounded chunks instead of aborting the task mid-flight — local
+  // inference is free, so the only real limits are user cancellation (signal), the
+  // stall/repeat guards (legitimate stops), and a wall-clock safety net. A run with
+  // NO recent progress still stops at the cap exactly as before.
+  const hardWallMs = 20 * 60_000
+  let itersCap = maxIters
+  let tokenCap = budgetTokens
+  const tokenCapMax = budgetTokens * 4
+  let lastProgressIter = 0
+  const canExtend = (iter: number) =>
+    !signal?.aborted && (Date.now() - start) < hardWallMs && (iter - lastProgressIter) <= 6
+
   // Context anchor — immutable record of the original goal for compression validation
   const anchorId = `loop_${start}`
   createAnchor(anchorId, goal)
@@ -344,16 +359,30 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     consecutiveErrorCount = 0 // reset so we don't spam hints
   }
 
-  for (let iter = 1; iter <= maxIters; iter++) {
+  for (let iter = 1; iter <= itersCap; iter++) {
     if (signal?.aborted) return done('cancelled', '', iter)
     if (iter === 1) debugBus.emit('agent', 'loop_start', { goal: goal.slice(0, 120), projectPath })
-    if (spentTokens >= budgetTokens) return done('budget', '', iter)
-    ctx.budget!.remainingTokens = budgetTokens - spentTokens
+    if (spentTokens >= tokenCap) {
+      if (tokenCap < tokenCapMax && canExtend(iter)) {
+        tokenCap = Math.min(tokenCapMax, tokenCap + Math.ceil(budgetTokens / 2))
+        emit({ type: 'thought', text: '[Token budget reached but still making progress — extending to finish the task]', iter })
+        debugBus.emit('agent', 'budget_extended', { iter, tokenCap }, { severity: 'info' })
+      } else {
+        return done('budget', '', iter)
+      }
+    }
+    ctx.budget!.remainingTokens = tokenCap - spentTokens
+    // Soft iteration cap — same extension rule.
+    if (iter === itersCap && canExtend(iter)) {
+      itersCap += Math.ceil(maxIters / 2)
+      emit({ type: 'thought', text: '[Iteration cap reached but still making progress — continuing until done]', iter })
+      debugBus.emit('agent', 'iters_extended', { iter, itersCap }, { severity: 'info' })
+    }
 
     // Emit live progress so the UI can show step/iter/elapsed
     emit({
       type: 'iter_progress',
-      iter, maxIters,
+      iter, maxIters: itersCap,
       stepIndex: opts.stepIndex ?? 0,
       stepTotal: opts.stepTotal ?? 1,
       stepIntent: opts.stepIntent ?? goal.slice(0, 80),
@@ -472,6 +501,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       // All-failures hard stop — if every tool call in this turn failed, count it.
       // A run of fully-failed turns means the agent is stuck on a dead-end approach
       // (even if it varies the args each time); stop rather than burn the budget.
+      if (results.some(r => r.ok)) lastProgressIter = iter
       if (results.length > 0 && results.every(r => !r.ok)) {
         consecutiveFailedTurns++
         if (consecutiveFailedTurns >= MAX_CONSECUTIVE_FAILED_TURNS) {
@@ -619,7 +649,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     }
     return done('final', turn.text, iter)
   }
-  return done('max_iters', '', maxIters)
+  return done('max_iters', '', itersCap)
 
   function done(
     stopped: AgentLoopResult['stopped'], finalText: string, iters: number,
