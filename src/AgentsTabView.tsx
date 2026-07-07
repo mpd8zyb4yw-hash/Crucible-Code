@@ -33,7 +33,9 @@ function tintOf(hex: string, alpha: number) {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
-const AGENTS = [
+// Exported so the composer's (+) expander can offer the same workflows as a quick
+// command list without opening this drawer (trust-audit item H).
+export const AGENT_WORKFLOWS = [
   { name: 'Vibe Code', glyph: '{ }', color: '#4db89e', category: 'Build',
     desc: 'Describe the app; Crucible writes, lints, and self-reviews the code on-device.',
     prompt: (d: string) => `Build this for me: ${d}\n\nWrite the actual working code (real files, no stubs), run it to verify it works, and fix anything that breaks before finishing. If it's a game or interactive app, also produce a self-contained single-file web version (HTML + inline JS/canvas) so it's playable right inside Crucible.` },
@@ -110,13 +112,13 @@ export default function AgentsTabView({ onBuild, onClose, onInsert }: { onBuild:
   }, [])
 
   const query = q.trim().toLowerCase()
-  const fAgents = query ? AGENTS.filter(a => a.name.toLowerCase().includes(query) || a.desc.toLowerCase().includes(query) || a.category.toLowerCase().includes(query)) : AGENTS
+  const fAgents = query ? AGENT_WORKFLOWS.filter(a => a.name.toLowerCase().includes(query) || a.desc.toLowerCase().includes(query) || a.category.toLowerCase().includes(query)) : AGENT_WORKFLOWS
   const fSkills = query ? skills.filter(s => s.id.toLowerCase().includes(query) || s.summary.toLowerCase().includes(query)) : skills.slice(0, 30)
   const fBuiltin = query ? builtin.filter(t => t.name.toLowerCase().includes(query) || t.description.toLowerCase().includes(query)) : builtin
   const fDynamic = query ? dynamic.filter(t => t.name.toLowerCase().includes(query)) : dynamic
 
   const agentsByCategory = useMemo(() => {
-    const map = new Map<string, typeof AGENTS>()
+    const map = new Map<string, typeof AGENT_WORKFLOWS>()
     for (const a of fAgents) {
       const arr = map.get(a.category) ?? []
       arr.push(a)

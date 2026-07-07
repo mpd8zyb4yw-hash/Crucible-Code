@@ -7,7 +7,7 @@ import { LibraryBinder } from './LibraryBinder'
 import { SelfRepairBinder } from './SelfRepairBinder'
 import { SelfPatcherBinder } from './SelfPatcherBinder'
 import NavRail from './NavRail'
-import AgentsTabView from './AgentsTabView'
+import AgentsTabView, { AGENT_WORKFLOWS } from './AgentsTabView'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView from './SettingsTabView'
 import './modelData'
@@ -66,6 +66,28 @@ export default function App() {
   // not a tab — toggling it never unmounts the conversation underneath (see AgentsTabView.tsx).
   const [agentsOpen, setAgentsOpen] = useState(false)
   const [composerExpandOpen, setComposerExpandOpen] = useState(false)
+  // (+) expander popups — 'models' pins one on-device model for routing (server-side
+  // localModelRouter honors it), 'agents' is the quick agent-command list (item H).
+  const [expanderPopup, setExpanderPopup] = useState<'models' | 'agents' | null>(null)
+  const [pickerModels, setPickerModels] = useState<Array<{ id: string; label: string; ready: boolean; enabled: boolean }>>([])
+  const [pinnedModelId, setPinnedModelId] = useState<string | null>(null)
+  useEffect(() => {
+    if (expanderPopup !== 'models') return
+    apiFetch(`${API_BASE}/api/local-models`, { credentials: 'include' }).then(r => r.json())
+      .then(d => setPickerModels((d.models ?? []).map((m: any) => ({
+        id: m.id, label: m.label, ready: m.status?.status === 'ready', enabled: !!m.enabled,
+      }))))
+      .catch(() => setPickerModels([]))
+    apiFetch(`${API_BASE}/api/local-models/config`, { credentials: 'include' }).then(r => r.json())
+      .then(c => setPinnedModelId(c.pinnedModelId ?? null)).catch(() => {})
+  }, [expanderPopup])
+  const pinModel = (modelId: string | null) => {
+    setPinnedModelId(modelId)
+    apiFetch(`${API_BASE}/api/local-models/pin`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelId }),
+    }).catch(() => {})
+  }
 
   // ── Slash-command tool palette — typing "/" in the composer filters this list,
   // same pattern as Claude/OpenAI's "/" completion. Tool names are fetched once;
@@ -2598,7 +2620,7 @@ export default function App() {
           {/* ── Single row: (+) expander + textarea + mode chip + send ── */}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
-              onClick={() => setComposerExpandOpen(o => !o)}
+              onClick={() => { setComposerExpandOpen(o => !o); setExpanderPopup(null) }}
               title={composerExpandOpen ? 'Close' : 'More: Ensemble, Models, Remote Brain'}
               aria-expanded={composerExpandOpen}
               style={{
@@ -2665,7 +2687,101 @@ export default function App() {
               and rotates into an "×" while open. */}
           {/* Expander content — only rendered while open, so the resting bar stays one thin row. */}
           {composerExpandOpen && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 2px 36px' }}>
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 2px 36px' }}>
+              {/* ── Model-switch popup — pins one on-device model (server honors it via
+                  localModelRouter's pinned-id override); Auto restores normal routing. */}
+              {expanderPopup === 'models' && (
+                <div style={{
+                  position: 'absolute', bottom: 'calc(100% + 8px)', left: 36, zIndex: 40,
+                  minWidth: 230, maxWidth: 300, padding: 6, borderRadius: 12,
+                  background: 'rgba(22,22,30,0.98)', border: '1px solid rgba(255,255,255,0.1)',
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
+                  animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)',
+                  display: 'flex', flexDirection: 'column', gap: 2,
+                }}>
+                  <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: '#55556a', padding: '6px 8px 4px' }}>Answer with</div>
+                  {[
+                    { id: null as string | null, label: 'Auto', note: 'Crucible routes each turn' },
+                    { id: 'track-s-fm', label: 'Apple FM', note: 'on-device foundation model' },
+                    ...pickerModels.filter(m => m.ready && m.enabled).map(m => ({ id: m.id as string | null, label: m.label, note: 'local GGUF' })),
+                  ].map(opt => {
+                    const active = pinnedModelId === opt.id || (!pinnedModelId && opt.id === null)
+                    return (
+                      <button
+                        key={opt.id ?? 'auto'}
+                        onClick={() => { pinModel(opt.id); setExpanderPopup(null) }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', borderRadius: 8,
+                          cursor: 'pointer', border: 'none', textAlign: 'left' as const, fontFamily: 'inherit',
+                          background: active ? 'rgba(124,124,248,0.12)' : 'transparent',
+                          transition: 'background 0.15s',
+                        }}
+                      >
+                        <span style={{
+                          width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                          background: active ? '#7c7cf8' : '#3a3a4c',
+                          boxShadow: active ? '0 0 6px rgba(124,124,248,0.6)' : 'none',
+                        }} />
+                        <span style={{ fontSize: 11.5, fontWeight: 600, color: active ? '#b0b0f8' : '#c8c8d4' }}>{opt.label}</span>
+                        <span style={{ fontSize: 9.5, color: '#55556a', marginLeft: 'auto' }}>{opt.note}</span>
+                      </button>
+                    )
+                  })}
+                  <button
+                    onClick={() => { setExpanderPopup(null); setComposerExpandOpen(false); setTab('settings') }}
+                    style={{
+                      padding: '6px 8px', borderRadius: 8, cursor: 'pointer', border: 'none', fontFamily: 'inherit',
+                      background: 'transparent', textAlign: 'left' as const, fontSize: 10, color: '#77778c',
+                      borderTop: '1px solid rgba(255,255,255,0.06)', marginTop: 2,
+                    }}
+                  >
+                    Manage models…
+                  </button>
+                </div>
+              )}
+
+              {/* ── Agent command list — the same prebuilt workflows as the Agents drawer,
+                  runnable on whatever is typed in the composer without leaving it. */}
+              {expanderPopup === 'agents' && (
+                <div style={{
+                  position: 'absolute', bottom: 'calc(100% + 8px)', left: 36, zIndex: 40,
+                  minWidth: 260, maxWidth: 320, padding: 6, borderRadius: 12,
+                  background: 'rgba(22,22,30,0.98)', border: '1px solid rgba(255,255,255,0.1)',
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
+                  animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)',
+                  display: 'flex', flexDirection: 'column', gap: 2,
+                }}>
+                  <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: '#55556a', padding: '6px 8px 4px' }}>
+                    {input.trim().length >= 4 ? 'Run on what you typed' : 'Type a request first, then pick a workflow'}
+                  </div>
+                  {AGENT_WORKFLOWS.map(a => {
+                    const usable = input.trim().length >= 4
+                    return (
+                      <button
+                        key={a.name}
+                        disabled={!usable}
+                        onClick={() => {
+                          const d = input.trim()
+                          setExpanderPopup(null); setComposerExpandOpen(false); setInput('')
+                          void send(a.prompt(d), undefined, false, `${a.name}: ${d}`)
+                        }}
+                        title={a.desc}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 8, padding: '7px 8px', borderRadius: 8,
+                          cursor: usable ? 'pointer' : 'default', border: 'none', textAlign: 'left' as const, fontFamily: 'inherit',
+                          background: 'transparent', opacity: usable ? 1 : 0.45, transition: 'background 0.15s',
+                        }}
+                        onMouseEnter={e => { if (usable) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(124,124,248,0.1)' }}
+                        onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent' }}
+                      >
+                        <span style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', color: a.color, width: 22, flexShrink: 0 }}>{a.glyph}</span>
+                        <span style={{ fontSize: 11.5, fontWeight: 600, color: '#c8c8d4' }}>{a.name}</span>
+                        <span style={{ fontSize: 9, color: '#55556a', marginLeft: 'auto' }}>{a.category}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
                 <button
                   onClick={() => {
@@ -2692,12 +2808,14 @@ export default function App() {
                 </button>
 
                 <button
-                  onClick={() => { setComposerExpandOpen(false); setTab('settings') }}
-                  title="Pick which downloaded local model handles this chat"
+                  onClick={() => setExpanderPopup(p => p === 'models' ? null : 'models')}
+                  title="Pick which on-device model handles this chat"
                   style={{
                     display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, cursor: 'pointer',
-                    border: '1px solid rgba(255,255,255,0.07)', background: 'transparent',
-                    fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', color: '#55556a',
+                    border: `1px solid ${expanderPopup === 'models' ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.07)'}`,
+                    background: expanderPopup === 'models' ? 'rgba(124,124,248,0.12)' : 'transparent',
+                    fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+                    color: expanderPopup === 'models' || pinnedModelId ? '#9d9dfa' : '#55556a',
                     transition: 'background 0.2s, border-color 0.2s',
                   }}
                 >
@@ -2705,7 +2823,25 @@ export default function App() {
                     <circle cx="5" cy="5" r="3.6" stroke="currentColor" strokeWidth="1.2" />
                     <circle cx="5" cy="5" r="1" fill="currentColor" />
                   </svg>
-                  Models
+                  {pinnedModelId ? (pinnedModelId === 'track-s-fm' ? 'Apple FM' : pickerModels.find(m => m.id === pinnedModelId)?.label ?? 'Pinned') : 'Models'}
+                </button>
+
+                <button
+                  onClick={() => setExpanderPopup(p => p === 'agents' ? null : 'agents')}
+                  title="Run one of Crucible's agent workflows on what you've typed"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, cursor: 'pointer',
+                    border: `1px solid ${expanderPopup === 'agents' ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.07)'}`,
+                    background: expanderPopup === 'agents' ? 'rgba(124,124,248,0.12)' : 'transparent',
+                    fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+                    color: expanderPopup === 'agents' ? '#9d9dfa' : '#55556a',
+                    transition: 'background 0.2s, border-color 0.2s',
+                  }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <path d="M2 2.5h6M2 5h6M2 7.5h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                  </svg>
+                  Agents
                 </button>
 
                 {/* Step 9: Remote Brain — phone only */}

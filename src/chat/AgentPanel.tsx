@@ -4,7 +4,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { CopyButton, type AgentState } from './core'
 import { STEP_GLYPH, STEP_COLOR, ToolRow, DiffBlock } from './panels'
-import { CodeRunBar } from './CodeRunner'
+import { CodeRunBar, ArtifactPreviewBar } from './CodeRunner'
 
 // Collapsible code block — collapsed by default on mobile, always expanded on desktop
 export function CollapsibleCode({ language, code }: { language: string; code: string }) {
@@ -131,6 +131,13 @@ export function ClarificationCard({ clarification, onReply }: {
 
 export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (text: string) => void }) {
   const verifyByLatest = agent.verifies[agent.verifies.length - 1]
+  // Single-run multi-step collapse (trust-audit item H): while the run is live the full
+  // process detail streams; once it finishes, the multi-step trail (plan, tools, terminal,
+  // thoughts) folds into one summary line so the transcript reads answer-first.
+  const [showWork, setShowWork] = useState(false)
+  const workCount = agent.steps.length + agent.tools.length + agent.thoughts.length + agent.terminal.length
+  const workOpen = agent.active || showWork || workCount === 0
+  const latestThought = agent.thoughts[agent.thoughts.length - 1]
   return (
     <div style={{
       animation: 'panelUp 0.3s cubic-bezier(0.22,1,0.36,1)',
@@ -154,9 +161,18 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
           : 'agent finished'
         return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9.5, letterSpacing: '0.12em', textTransform: 'uppercase' as const, color: headerColor, fontWeight: 700 }}>
-        <span style={{ animation: agent.active ? 'fadeIn 0.5s ease-in-out infinite alternate' : 'none' }}>
-          {label}
-        </span>
+        {/* Working animation — three staggered pulse dots while the loop is live. */}
+        {agent.active && (
+          <span style={{ display: 'inline-flex', gap: 3, alignItems: 'center' }}>
+            {[0, 1, 2].map(i => (
+              <span key={i} style={{
+                width: 4, height: 4, borderRadius: '50%', background: '#7c7cf8',
+                animation: `dotpulse 1.1s ease-in-out ${i * 0.18}s infinite`,
+              }} />
+            ))}
+          </span>
+        )}
+        <span>{label}</span>
         {agent.driver && <span style={{ color: '#555', textTransform: 'none' as const, letterSpacing: 0 }}>· {agent.driver}</span>}
         <div style={{ flex: 1 }} />
         {agent.done?.ms != null && <span style={{ color: '#555', textTransform: 'none' as const, letterSpacing: 0 }}>{(agent.done.ms / 1000).toFixed(1)}s</span>}
@@ -164,6 +180,41 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
         )
       })()}
 
+      {/* Live status line — the latest streamed 'thought' while working, so long
+          on-device turns read as motion instead of a frozen card. */}
+      {agent.active && latestThought && (
+        <div key={latestThought} style={{
+          fontSize: 11, color: '#9a9ab0', fontStyle: 'italic' as const,
+          animation: 'fadeIn 0.35s ease', overflowWrap: 'anywhere' as const,
+        }}>
+          {latestThought.replace(/^\[|\]$/g, '')}
+        </div>
+      )}
+
+      {/* Collapsed process-trail summary once the run is over. */}
+      {!agent.active && workCount > 0 && (
+        <button
+          onClick={() => setShowWork(o => !o)}
+          style={{
+            alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: 6,
+            padding: '3px 8px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
+            border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.03)',
+            fontSize: 9.5, letterSpacing: '0.06em', color: '#77778c',
+            transition: 'background 0.2s',
+          }}
+        >
+          <span style={{
+            display: 'inline-block', transition: 'transform 0.2s cubic-bezier(0.22,1,0.36,1)',
+            transform: showWork ? 'rotate(90deg)' : 'none', fontSize: 8,
+          }}>▶</span>
+          {showWork ? 'hide work' : 'show work'}
+          <span style={{ color: '#4a4a5c' }}>
+            · {agent.steps.length > 0 ? `${agent.steps.length} steps · ` : ''}{agent.tools.length} tool call{agent.tools.length === 1 ? '' : 's'}
+          </span>
+        </button>
+      )}
+
+      {workOpen && <>
       {/* Plan checklist */}
       {agent.steps.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
@@ -215,6 +266,40 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
             }}>{agent.terminal.slice(-3).join('\n')}</pre>
           </div>
         </div>
+      )}
+
+      {/* Thought trail — streamed progress lines, previously accumulated but never shown. */}
+      {!agent.active && agent.thoughts.length > 0 && (
+        <div>
+          <div style={{ fontSize: 9, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>process · {agent.thoughts.length}</div>
+          <div style={{
+            maxHeight: 140, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
+            background: 'rgba(0,0,0,0.3)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.05)', padding: 8,
+          }}>
+            {agent.thoughts.map((t, i) => (
+              <div key={i} style={{ fontSize: 10.5, color: '#8a8aa0', overflowWrap: 'anywhere' as const }}>{t.replace(/^\[|\]$/g, '')}</div>
+            ))}
+          </div>
+        </div>
+      )}
+      </>}
+
+      {/* Written-file artifacts — the offline synth path writes game.html via write_file and
+          replies with plain text (no code fence), so without this bar there is no Run/Preview
+          affordance anywhere on the card. Paths come from diff events and write_file calls;
+          content is re-fetched at click time since diff payloads are truncated. */}
+      {!agent.active && (
+        <ArtifactPreviewBar paths={[
+          ...agent.diffs.map(d => d.path),
+          // Tool args may be project-relative; diff events always carry the absolute path,
+          // but keep this fallback resolvable for drivers that don't emit diffs.
+          ...agent.tools
+            .filter(t => t.tool === 'write_file' && t.args?.path)
+            .map(t => {
+              const p = String(t.args.path)
+              return p.startsWith('/') || !agent.projectPath ? p : `${agent.projectPath.replace(/\/$/, '')}/${p}`
+            }),
+        ]} />
       )}
 
       {/* Verify badge */}
