@@ -714,6 +714,11 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   // rewrite from scratch — a small model regresses less when editing than when regenerating.
   let prevJs = ''
   let feedback = ''
+  // Distinct faults seen across attempts. Small models oscillate — they fix the newly
+  // reported bug while silently reintroducing one they already fixed. Carrying the full
+  // history and telling the model "these were ALL already rejected, don't bring any back"
+  // measurably reduces that thrash without changing the gate.
+  const seenProblems: string[] = []
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const raw = await fmComplete([
       { role: 'system', content: HTML_GAME_SYSTEM },
@@ -735,7 +740,12 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
     }
     debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, problem }, { severity: 'info' })
     prevJs = js
-    feedback = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}\n\n` +
+    if (!seenProblems.includes(problem)) seenProblems.push(problem)
+    const priorFaults = seenProblems.length > 1
+      ? `\n\nEVERY fault below has already caused a rejection in this session — do NOT reintroduce any of them while fixing the current one:\n` +
+        seenProblems.map(p => `  • ${p}`).join('\n')
+      : ''
+    feedback = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}${priorFaults}\n\n` +
       `Here is your previous code — FIX the specific problem above, keep what works, and output the FULL corrected JavaScript (nothing else):\n\n${prevJs.slice(0, 1800)}`
   }
   throw new OfflineEscalateError(`FM could not produce a working game after ${MAX_ATTEMPTS} run-verified attempts`)
