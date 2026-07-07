@@ -8,9 +8,63 @@ import crypto from 'crypto'
 import { app } from 'electron'
 import { LOCAL_MODEL_CATALOG, findModelSpec, type LocalModelSpec } from './localModelCatalog'
 
+function userDataDir(): string {
+  return app?.getPath ? app.getPath('userData') : path.join(process.cwd(), '.crucible')
+}
+
+interface ModelsConfig {
+  /** Custom storage folder for model files; defaults to userData/models when unset. */
+  location?: string
+  /** Per-model opt-out — a downloaded model is still used by the router unless disabled here. */
+  enabled: Record<string, boolean>
+}
+
+function configPath(): string {
+  return path.join(userDataDir(), 'local-models-config.json')
+}
+
+export function getModelsConfig(): ModelsConfig {
+  try {
+    return { enabled: {}, ...JSON.parse(fs.readFileSync(configPath(), 'utf8')) }
+  } catch {
+    return { enabled: {} }
+  }
+}
+
+function writeConfig(cfg: ModelsConfig): void {
+  fs.mkdirSync(userDataDir(), { recursive: true })
+  fs.writeFileSync(configPath(), JSON.stringify(cfg, null, 2))
+}
+
+export function setModelsLocation(newDir: string): void {
+  const cfg = getModelsConfig()
+  fs.mkdirSync(newDir, { recursive: true })
+  // Move any already-downloaded files to the new location so nothing has to re-download.
+  const oldDir = modelsDir()
+  if (oldDir !== newDir && fs.existsSync(oldDir)) {
+    for (const f of fs.readdirSync(oldDir)) {
+      const from = path.join(oldDir, f)
+      const to = path.join(newDir, f)
+      if (!fs.existsSync(to)) fs.renameSync(from, to)
+    }
+  }
+  cfg.location = newDir
+  writeConfig(cfg)
+}
+
+export function setModelEnabled(id: string, enabled: boolean): void {
+  const cfg = getModelsConfig()
+  cfg.enabled[id] = enabled
+  writeConfig(cfg)
+}
+
+export function isModelEnabled(id: string): boolean {
+  return getModelsConfig().enabled[id] !== false // default enabled once downloaded
+}
+
 function modelsDir(): string {
-  const base = app?.getPath ? app.getPath('userData') : path.join(process.cwd(), '.crucible')
-  const dir = path.join(base, 'models')
+  const configured = getModelsConfig().location
+  const dir = configured || path.join(userDataDir(), 'models')
   fs.mkdirSync(dir, { recursive: true })
   return dir
 }
@@ -39,8 +93,8 @@ export function modelStatus(id: string): DownloadState {
   return { status: 'absent', bytesDone: 0, bytesTotal: 0 }
 }
 
-export function listModelStatuses(): Array<LocalModelSpec & { status: DownloadState }> {
-  return LOCAL_MODEL_CATALOG.map(spec => ({ ...spec, status: modelStatus(spec.id) }))
+export function listModelStatuses(): Array<LocalModelSpec & { status: DownloadState; enabled: boolean }> {
+  return LOCAL_MODEL_CATALOG.map(spec => ({ ...spec, status: modelStatus(spec.id), enabled: isModelEnabled(spec.id) }))
 }
 
 /** Downloads a model's GGUF file with progress tracking; verifies sha256 if the catalog has one. */

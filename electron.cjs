@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
@@ -172,23 +172,57 @@ function makeDot(r, g, b) {
 const DOT_GREEN = () => makeDot(34, 197, 94);
 const DOT_RED = () => makeDot(239, 68, 68);
 
+// ── Local Models tray submenu — reflects the optional GGUF pool's live status ────
+// Rebuilt from the server's own /api/local-models each time the tray menu opens, so it
+// never drifts from the source of truth in modelDownloadManager.ts.
+async function fetchLocalModelsSubmenu() {
+  if (!serverReady) return [{ label: 'Local Models (server not running)', enabled: false }];
+  try {
+    const res = await fetch('http://127.0.0.1:3001/api/local-models');
+    const { models } = await res.json();
+    if (!models?.length) return [{ label: 'No local models configured', enabled: false }];
+    const items = models.map(m => {
+      const ready = m.status.status === 'ready';
+      const label = ready ? `${m.enabled ? '✓' : '○'} ${m.label}` : `${m.label} — ${m.status.status}`;
+      return {
+        label,
+        enabled: ready,
+        click: ready ? async () => {
+          await fetch(`http://127.0.0.1:3001/api/local-models/${m.id}/toggle`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !m.enabled }),
+          });
+          updateTray();
+        } : undefined,
+      };
+    });
+    return [{ label: 'Local Models', enabled: false }, ...items];
+  } catch (e) {
+    return [{ label: 'Local Models (status unavailable)', enabled: false }];
+  }
+}
+
 function updateTray() {
   if (!tray) return;
   tray.setImage(serverReady ? DOT_GREEN() : DOT_RED());
   tray.setToolTip(`Crucible — server ${serverReady ? 'running' : 'stopped'}`);
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: serverReady ? 'Server: running' : 'Server: stopped', enabled: false },
-    { type: 'separator' },
-    { label: 'Open Crucible', click: () => {
-        if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-        else if (serverReady) { createWindow(); }
-        else if (loadingWindow) { loadingWindow.show(); loadingWindow.focus(); }
-        else { createLoadingWindow().then(boot); }
-      } },
-    { label: 'Restart Server', click: restartBackend },
-    { type: 'separator' },
-    { label: 'Quit Crucible', click: () => { killBackend(); app.quit(); } },
-  ]));
+  fetchLocalModelsSubmenu().then(localModelsItems => {
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: serverReady ? 'Server: running' : 'Server: stopped', enabled: false },
+      { type: 'separator' },
+      { label: 'Open Crucible', click: () => {
+          if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
+          else if (serverReady) { createWindow(); }
+          else if (loadingWindow) { loadingWindow.show(); loadingWindow.focus(); }
+          else { createLoadingWindow().then(boot); }
+        } },
+      { label: 'Restart Server', click: restartBackend },
+      { type: 'separator' },
+      ...localModelsItems,
+      { type: 'separator' },
+      { label: 'Quit Crucible', click: () => { killBackend(); app.quit(); } },
+    ]));
+  });
 }
 
 function createTray() {
@@ -434,8 +468,18 @@ function openOAuthPopup(url) {
 }
 
 // IPC — renderer sends 'oauth-open' with the provider URL
-const { ipcMain } = require('electron');
 ipcMain.on('oauth-open', (_e, url) => openOAuthPopup(url));
+
+// IPC — renderer asks for a native folder picker to relocate local-model storage.
+ipcMain.handle('pick-local-models-folder', async () => {
+  const win = mainWindow || loadingWindow;
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Choose a folder for downloaded local models',
+  });
+  if (result.canceled || !result.filePaths.length) return null;
+  return result.filePaths[0];
+});
 
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
@@ -463,6 +507,7 @@ if (!gotTheLock) {
     }
 
     createTray();
+    setInterval(() => { if (serverReady) updateTray(); }, 60000);
     // Show the loading window immediately, then run the full boot sequence inside the
     // app: build-if-needed → self-heal → server → main window. Zero terminal interaction.
     await createLoadingWindow();

@@ -20,6 +20,27 @@ export interface LocalModelSpec {
   license: string
   /** Rough capability tier used by localModelRouter for escalation ordering. */
   tier: 'fast' | 'balanced' | 'quality'
+  /** Domains this model is known to be strong at — used to route a query to its best-fit model. */
+  strengths: Domain[]
+  /** One line surfaced in the UI so the user knows what a model is actually good for. */
+  strengthNote: string
+}
+
+/** Coarse query domains used for strength-based routing, not a general taxonomy. */
+export type Domain = 'code' | 'reasoning' | 'creative' | 'factual' | 'multilingual' | 'speed'
+
+const DOMAIN_SIGNALS: Array<{ domain: Domain; re: RegExp }> = [
+  { domain: 'code', re: /\b(function|bug|refactor|compile|stack trace|regex|api|typescript|python|code|error:|exception)\b/i },
+  { domain: 'reasoning', re: /\b(why|explain|prove|step by step|logic|because|reason|analyz|compare|trade[\s-]?off)\b/i },
+  { domain: 'creative', re: /\b(write|story|poem|brainstorm|idea|imagine|creative|draft)\b/i },
+  { domain: 'multilingual', re: /[À-ɏЀ-ӿ一-鿿぀-ヿ가-힣]/ },
+  { domain: 'factual', re: /\b(what is|who is|when did|where is|define|fact|history of)\b/i },
+]
+
+/** Cheap lexical guess at the query's dominant domain — no model call. */
+export function classifyDomain(goal: string): Domain {
+  for (const { domain, re } of DOMAIN_SIGNALS) if (re.test(goal)) return domain
+  return 'speed'
 }
 
 export const LOCAL_MODEL_CATALOG: LocalModelSpec[] = [
@@ -33,6 +54,8 @@ export const LOCAL_MODEL_CATALOG: LocalModelSpec[] = [
     filename: 'smollm2-1.7b-instruct-q4_k_m.gguf',
     license: 'Apache 2.0',
     tier: 'fast',
+    strengths: ['speed', 'factual'],
+    strengthNote: 'Smallest and fastest — best for quick factual lookups and short chit-chat.',
   },
   {
     id: 'qwen2.5-1.5b',
@@ -44,6 +67,8 @@ export const LOCAL_MODEL_CATALOG: LocalModelSpec[] = [
     filename: 'qwen2.5-1.5b-instruct-q4_k_m.gguf',
     license: 'Apache 2.0',
     tier: 'fast',
+    strengths: ['multilingual', 'speed'],
+    strengthNote: 'Strong multilingual coverage for its size — good default for non-English queries.',
   },
   {
     id: 'gemma2-2b',
@@ -55,6 +80,8 @@ export const LOCAL_MODEL_CATALOG: LocalModelSpec[] = [
     filename: 'gemma-2-2b-it-q4_k_m.gguf',
     license: 'Gemma Terms of Use (free, no fees, redistribution/usage terms apply)',
     tier: 'balanced',
+    strengths: ['creative', 'reasoning'],
+    strengthNote: 'Best general-purpose writer of the set — favor it for creative or open-ended answers.',
   },
   {
     id: 'phi-3.5-mini',
@@ -66,6 +93,8 @@ export const LOCAL_MODEL_CATALOG: LocalModelSpec[] = [
     filename: 'phi-3.5-mini-instruct-q4_k_m.gguf',
     license: 'MIT',
     tier: 'quality',
+    strengths: ['reasoning', 'code'],
+    strengthNote: 'Punches above its size on step-by-step reasoning and code — best default escalation target.',
   },
   {
     id: 'qwen2.5-3b',
@@ -77,6 +106,8 @@ export const LOCAL_MODEL_CATALOG: LocalModelSpec[] = [
     filename: 'qwen2.5-3b-instruct-q4_k_m.gguf',
     license: 'Qwen license (free, no fees, redistribution terms apply over 100M MAU — n/a here)',
     tier: 'quality',
+    strengths: ['code', 'multilingual'],
+    strengthNote: 'Best code understanding of the set, plus solid multilingual reasoning at 3B.',
   },
 ]
 

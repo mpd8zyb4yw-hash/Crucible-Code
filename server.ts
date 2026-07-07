@@ -41,7 +41,7 @@ import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
 import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } from './src/CrucibleEngine/taskGraph'
 import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
-import { listModelStatuses, downloadModel, deleteModel } from './src/CrucibleEngine/agent/modelDownloadManager'
+import { listModelStatuses, downloadModel, deleteModel, setModelEnabled, setModelsLocation, getModelsConfig } from './src/CrucibleEngine/agent/modelDownloadManager'
 import { routeLocalModelQuery } from './src/CrucibleEngine/agent/localModelRouter'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
@@ -6738,6 +6738,27 @@ app.post('/api/local-models/:id/download', (req, res) => {
 app.delete('/api/local-models/:id', (req, res) => {
   deleteModel(req.params.id)
   res.json({ ok: true })
+})
+
+app.post('/api/local-models/:id/toggle', (req, res) => {
+  const { enabled } = req.body ?? {}
+  setModelEnabled(req.params.id, !!enabled)
+  res.json({ ok: true })
+})
+
+app.get('/api/local-models/config', (_req, res) => {
+  res.json(getModelsConfig())
+})
+
+app.post('/api/local-models/location', (req, res) => {
+  const { path: newPath } = req.body ?? {}
+  if (!newPath || typeof newPath !== 'string') return res.status(400).json({ error: 'missing path' })
+  try {
+    setModelsLocation(newPath)
+    res.json({ ok: true, location: newPath })
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? String(err) })
+  }
 })
 
 app.post('/api/local-models/query', async (req, res) => {
