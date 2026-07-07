@@ -1731,7 +1731,9 @@ export default function App() {
       {/* Item 18: agents/history/settings render as an overlay ON TOP of chat, not a tab
           swap that unmounts it — the conversation underneath stays alive and scrolled to
           where the user left it, so opening an agent/tool never navigates them away. */}
-      {tab !== 'chat' && (
+      {/* Settings stays a full-page overlay; History is a slide-out-in-place drawer below
+          (F) — the chat never unmounts while browsing it. */}
+      {tab === 'settings' && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 30, background: '#101016',
           display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s cubic-bezier(0.22,1,0.36,1)',
@@ -1750,25 +1752,6 @@ export default function App() {
               <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
           </button>
-      {tab === 'history' && <HistoryTabView onRestore={summary => {
-        apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
-          .then(r => r.json())
-          .then(({ conversation }) => {
-            if (!conversation?.rounds) return
-            setConversationId(conversation.id)
-            // Deliberately do NOT adopt the stored conversation.mode — restoring an old
-            // ensemble ('quorum') thread must never silently re-arm the external pipeline.
-            // Crucible-local is always the mode a restored thread continues in.
-            // Merge into the global round pool (tagged with this conv) — other open
-            // chats and their live streams are untouched.
-            setAllRounds(prev => [
-              ...prev.filter(r => r.convId !== conversation.id),
-              ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
-            ])
-            setTab('chat')
-          })
-          .catch(() => {})
-      }} />}
       {tab === 'settings' && (
         <SettingsTabView
           ensemble={ensemble}
@@ -1824,6 +1807,59 @@ export default function App() {
         </div>
       )}
 
+      {/* History — slide-out-in-place (F): a left-strip drawer over the live chat, same
+          pattern as the Agents pane below. Restoring a conversation merges it into the
+          open pool without touching other chats; the chat behind never unmounts. */}
+      {tab === 'history' && (
+        <>
+          <div onClick={() => setTab('chat')} style={{
+            position: 'absolute', inset: 0, zIndex: 28,
+            background: 'rgba(0,0,0,0.4)', animation: 'fadeIn 0.2s ease',
+          }} />
+          <div style={{
+            position: 'absolute', top: 0, left: 0, bottom: inputBarHeight, zIndex: 29,
+            width: 'min(560px, 94vw)',
+            background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
+            borderRight: '1px solid rgba(255,255,255,0.08)',
+            boxShadow: '24px 0 80px rgba(0,0,0,0.5), inset -1px 0 0 rgba(255,255,255,0.05)',
+            animation: 'studioIn 0.24s cubic-bezier(0.22,1,0.36,1)',
+            display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }}>
+            <button
+              onClick={() => setTab('chat')}
+              title="Back to chat"
+              style={{
+                position: 'absolute', top: 14, right: 14, zIndex: 31, width: 28, height: 28, borderRadius: 9,
+                border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)',
+                color: '#9797ab', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </button>
+            <HistoryTabView onRestore={summary => {
+              apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
+                .then(r => r.json())
+                .then(({ conversation }) => {
+                  if (!conversation?.rounds) return
+                  setConversationId(conversation.id)
+                  // Deliberately do NOT adopt the stored conversation.mode — restoring an old
+                  // ensemble ('quorum') thread must never silently re-arm the external pipeline.
+                  // Merge into the global round pool (tagged with this conv) — other open
+                  // chats and their live streams are untouched.
+                  setAllRounds(prev => [
+                    ...prev.filter(r => r.convId !== conversation.id),
+                    ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
+                  ])
+                  setTab('chat')
+                })
+                .catch(() => {})
+            }} />
+          </div>
+        </>
+      )}
+
       {/* Items 18/19: Agents & capabilities is an inline drawer anchored to the chat panel,
           not a tab swap — the conversation underneath stays mounted the entire time this is
           open (unlike History/Settings above, which still fully cover the chat while open,
@@ -1835,13 +1871,16 @@ export default function App() {
             position: 'absolute', inset: 0, zIndex: 28,
             background: 'rgba(0,0,0,0.4)', animation: 'fadeIn 0.2s ease',
           }} />
+          {/* Left-strip pattern (F): the pane slides out FROM the NavRail edge its trigger
+              lives on, reading as an extension of the rail rather than a page-covering
+              modal from the far side. */}
           <div style={{
-            position: 'absolute', top: 0, right: 0, bottom: inputBarHeight, zIndex: 29,
+            position: 'absolute', top: 0, left: 0, bottom: inputBarHeight, zIndex: 29,
             width: 'min(560px, 94vw)',
             background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
-            borderLeft: '1px solid rgba(255,255,255,0.08)',
-            boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
-            animation: 'panelUp 0.22s cubic-bezier(0.22,1,0.36,1)',
+            borderRight: '1px solid rgba(255,255,255,0.08)',
+            boxShadow: '24px 0 80px rgba(0,0,0,0.5), inset -1px 0 0 rgba(255,255,255,0.05)',
+            animation: 'studioIn 0.24s cubic-bezier(0.22,1,0.36,1)',
             display: 'flex', flexDirection: 'column',
           }}>
             <AgentsTabView
