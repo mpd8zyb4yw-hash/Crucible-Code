@@ -125,52 +125,117 @@ export function CodeRunBar({ language, code }: { language: string; code: string 
         </div>
       )}
 
-      {preview && (
-        <div
-          onClick={() => setPreview(false)}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(5,5,10,0.82)',
-            backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            animation: 'fadeIn 0.2s ease', padding: 24,
-          }}
-        >
-          <div onClick={e => e.stopPropagation()} style={{
-            width: 'min(920px, 94vw)', height: 'min(680px, 88vh)',
-            display: 'flex', flexDirection: 'column', borderRadius: 'var(--c-radius-lg)',
-            overflow: 'hidden', border: '1px solid var(--c-hairline-strong)',
-            background: '#101016', boxShadow: '0 32px 120px rgba(0,0,0,0.6)',
-          }}>
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
-              borderBottom: '1px solid var(--c-hairline)', flexShrink: 0,
-            }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4db89e' }} />
-              <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--c-dim)' }}>
-                LIVE PREVIEW · SANDBOXED
-              </span>
-              <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.22)' }}>
-                click inside to give it keyboard control
-              </span>
-              <button
-                onClick={() => setPreview(false)}
-                title="Close preview"
-                style={{
-                  marginLeft: 'auto', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--c-hairline)',
-                  borderRadius: 7, color: '#9797ab', cursor: 'pointer', width: 26, height: 26,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}
-              >✕</button>
-            </div>
-            <iframe
-              title="crucible-code-preview"
-              sandbox="allow-scripts allow-pointer-lock"
-              srcDoc={buildPreviewDoc(language, code)}
-              style={{ flex: 1, border: 'none', background: '#101016', width: '100%' }}
-            />
-          </div>
-        </div>
-      )}
+      {preview && <PreviewOverlay doc={buildPreviewDoc(language, code)} onClose={() => setPreview(false)} />}
     </>
+  )
+}
+
+// Fullscreen sandboxed-iframe preview — shared by inline code blocks (CodeRunBar) and
+// agent-written file artifacts (ArtifactPreviewBar).
+export function PreviewOverlay({ doc, onClose }: { doc: string; onClose: () => void }) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(5,5,10,0.82)',
+        backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        animation: 'fadeIn 0.2s ease', padding: 24,
+      }}
+    >
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 'min(920px, 94vw)', height: 'min(680px, 88vh)',
+        display: 'flex', flexDirection: 'column', borderRadius: 'var(--c-radius-lg)',
+        overflow: 'hidden', border: '1px solid var(--c-hairline-strong)',
+        background: '#101016', boxShadow: '0 32px 120px rgba(0,0,0,0.6)',
+      }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px',
+          borderBottom: '1px solid var(--c-hairline)', flexShrink: 0,
+        }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#4db89e' }} />
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', color: 'var(--c-dim)' }}>
+            LIVE PREVIEW · SANDBOXED
+          </span>
+          <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.22)' }}>
+            click inside to give it keyboard control
+          </span>
+          <button
+            onClick={onClose}
+            title="Close preview"
+            style={{
+              marginLeft: 'auto', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--c-hairline)',
+              borderRadius: 7, color: '#9797ab', cursor: 'pointer', width: 26, height: 26,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >✕</button>
+        </div>
+        <iframe
+          title="crucible-code-preview"
+          sandbox="allow-scripts allow-pointer-lock"
+          srcDoc={doc}
+          style={{ flex: 1, border: 'none', background: '#101016', width: '100%' }}
+        />
+      </div>
+    </div>
+  )
+}
+
+const PREVIEWABLE_FILE = /\.html?$/i
+
+/** Deduped list of agent-written files that the in-chat sandbox can render. */
+export function previewableArtifacts(paths: string[]): string[] {
+  return [...new Set(paths)].filter(p => PREVIEWABLE_FILE.test(p))
+}
+
+// Run bar for files the agent wrote to disk (write_file), where the final reply has no
+// code fence to hang a CodeRunBar on. Diff events truncate content, so the full file is
+// re-fetched from the backend at click time.
+export function ArtifactPreviewBar({ paths }: { paths: string[] }) {
+  const files = previewableArtifacts(paths)
+  const [doc, setDoc] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState<string | null>(null)
+
+  if (files.length === 0) return null
+
+  const open = (filePath: string) => {
+    if (loading) return
+    setLoading(filePath); setError(null)
+    apiFetch(`${API_BASE}/api/file/read`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.success && typeof d.content === 'string') setDoc(buildPreviewDoc('html', d.content))
+        else setError(d.error || 'Could not read file')
+      })
+      .catch(err => setError(String(err?.message ?? err)))
+      .finally(() => setLoading(null))
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {files.map(p => (
+        <div key={p} style={{
+          display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+          background: 'rgba(0,0,0,0.35)', borderRadius: 8,
+          border: '1px solid rgba(77,184,158,0.25)',
+        }}>
+          <span style={{ fontSize: 11, color: '#ccc', fontFamily: 'var(--mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+            {p.split('/').pop()}
+          </span>
+          <button
+            onClick={() => open(p)}
+            title="Open a live, interactive preview of this file — it runs in a safe sandbox inside Crucible, so games and animations are playable right here."
+            style={{ ...btnStyle('#4db89e'), marginLeft: 'auto', opacity: loading === p ? 0.5 : 1 }}
+          >{loading === p ? '⋯ loading' : '▶ Preview'}</button>
+        </div>
+      ))}
+      {error && <div style={{ fontSize: 10.5, color: '#fca5a5' }}>{error}</div>}
+      {doc && <PreviewOverlay doc={doc} onClose={() => setDoc(null)} />}
+    </div>
   )
 }
