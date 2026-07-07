@@ -17,7 +17,37 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 50 — ALL five queued items closed: build-latency, templates+input gate, G/H, F remainder, traffic lights)
+## CURRENT STATE (last updated 2026-07-07, cont. 51 — capability-gap enhancer pass: deterministic arithmetic guard broadened + wired into the previously-unguarded simple-triage path; committed the dangling ArtifactPreviewBar work)
+
+**This session (branch crucible-northstar-sessions):**
+- **Live-probed the running backend across research/reasoning/quantitative asks** (minted-JWT
+  curl per [[crucible-local-auth-testing]]) and found a reproducible, damaging class: the
+  free-tier FM ships **wrong inline arithmetic** — `3 shirts * $23 per shirt = $72` (should be
+  69), `2007 - 2026 = -20` (should be -19) — and even self-contradicts on time math.
+- **Two concrete gaps in the existing `correctArithmetic` (domainVerifiers.ts) fixed:**
+  1. **Coverage:** the extractor's LHS charclass only allowed digits/operators, so any equation
+     carrying currency (`$`) or unit words (`per shirt`) never matched and shipped uncorrected.
+     Broadened the capture + added `normalizeExpr()` (strips currency/commas/space-bounded unit
+     words; REFUSES digit-glued letters `3x`/`23rd`/`5kg` and operator-less number pairs — never
+     guesses) + `rightArithClause()` (right-anchors the LHS so a broadened capture can't swallow
+     a whole sentence — caught a self-inflicted regression on `2007 - 2026 = -20`).
+  2. **Wiring:** quantitative asks route through `triage_simple_strict_local` (server.ts ~3346),
+     which never ran the corrector — only the conversational path did. Wired it in.
+  - Proof: new `__arith_correct_bench.ts` 13/13 (incl. algebra/ordinal/prose-embedded regression
+    guards); repair 14/14, fuzz 31/31; app-tsc clean. **Live-verified**: shirt prompt now ships
+    `= $69` with `offline_arithmetic_corrected` telemetry on the simple_strict path.
+- **Committed the dangling `ArtifactPreviewBar` diff** (in-chat Preview for agent-written .html
+  artifacts, wired into AgentPanel via `/api/file/read`) that was sitting uncommitted + tsc-clean.
+
+**Known residual (next):**
+- **Cascade + non-equation reasoning still uncaught.** The guard fixes each *stated* equation but
+  won't propagate (`3*$23=$69` corrected, yet a later `$100 - $72` keeps the stale 72), and it
+  can't touch reasoning with no explicit `= NUMBER` (e.g. time math "arrives 5:12pm, which is
+  after 6pm" — a self-contradiction). A `verifyConsistency`-style pass for before/after +
+  value-propagation is the next lever, but higher false-positive risk — scope carefully.
+- Everything below (cont. 50 game/UI work) is unchanged and still current for its items.
+
+## PRIOR STATE (cont. 50 — ALL five queued items closed: build-latency, templates+input gate, G/H, F remainder, traffic lights)
 
 **Trust audit scoreboard (handoff items A–H): ALL CLOSED.**
 - **Build latency (item 1) — Fixed (60715e4).** Root cause of the 137s game wall: the
