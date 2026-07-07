@@ -17,7 +17,62 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 42 — UI OVERHAUL DIRECTIVE continued.
+## CURRENT STATE (last updated 2026-07-07, cont. 43 — backend-blocker fix + mobile composer-overlap fix.
+Picked up the two items cont.42 flagged as blocking: the `tsx server.ts` electron-import crash,
+and (from a fresh user report, not previously diagnosed) the Agents drawer overlapping the
+composer on mobile. tsc (`tsconfig.app.json`) clean, `npm run prove:all` 251/251 GREEN after both
+commits. Also committed cont.42's own leftover uncommitted diff (real sha256 hashes for the GGUF
+catalog + per-family LocalModelsPanel badges) that had been sitting unstaged since that session.
+
+**Completed this session (commit hashes on `crucible-northstar-sessions`):**
+- **Dev backend now starts standalone (8c96186).** `modelDownloadManager.ts` imported `electron`
+  unconditionally (`import { app } from 'electron'`), which crashed `npx tsx server.ts` outside
+  the Electron shell. Switched to a `createRequire`-based lazy load, swallowing resolution
+  failures and falling back to a cwd-based data dir. **Live-verified**: `npx tsx server.ts` now
+  boots cleanly (`Crucible server running on port 3001`, corpus/model-refresh/integrations init
+  all log normally) — this unblocks full authed live verification for whoever picks up chat-path
+  work next, which cont.41/42 could not do.
+- **Agents drawer no longer overlaps the composer on mobile (2c11164).** New user report: the
+  right-edge Agents drawer (added cont.42, items 18/19) used `bottom: 0` with no clearance for
+  the fixed-position composer underneath, and at mobile widths its `min(560px, 94vw)` width spans
+  nearly the full screen — so it painted directly over the message input bar, making it
+  unreachable while open. Root-caused via two independent investigation passes that reached the
+  same diagnosis (`src/App.tsx:4240`); fixed by changing `bottom: 0` to `bottom: inputBarHeight`
+  (the same variable already used elsewhere — blur veils, scroll-to-bottom button — to reserve
+  composer clearance). tsc clean; could not click-through live since the preview server sits
+  behind Google/GitHub OAuth and this session did not want to re-introduce the auth-bypass hack
+  cont.42 used and reverted — **whoever next has an authed session should visually confirm at
+  375/390/428px widths with the drawer open.**
+- **"No free/open-source tool" ask — already satisfied, verified not rebuilt.** Checked
+  `src/CrucibleEngine/integrations/registry.ts` + `tools.ts`: GitHub CLI (`gh`, MIT), ripgrep,
+  jq, and Semgrep are already registered as agent-facing tools, all free/fully open-source, with
+  read-only ops (including `gh search`, `pr/issue/repo view/list`) AFK-safe and any GitHub write
+  gated behind explicit per-action human approval. This already covers the "github/open-source
+  tool" requirement at the tool layer. What's still missing is purely a **frontend UI surface**
+  for browsing/searching GitHub repos visually (item 20, below) — the backend capability exists
+  today via chat (`gh search repos ...` etc.), it's just not exposed as a dedicated panel.
+
+**NOT done / explicitly scoped out this session (with rationale):**
+- **Item 20 (GitHub/open-source repo-browsing UI panel)** — still not built. Per cont.42's note,
+  the OAuth login integration is separate from the `gh` CLI tool integration confirmed above; a
+  dedicated frontend panel for repo search/browse would need a small backend endpoint that shells
+  out to the already-registered `gh` tool (or calls `gh search repos` directly) and returns
+  structured JSON for a UI list — scoped but not started, lowest priority again this session.
+- Item 2 (logo/text overlap), item 11's "is raw model output ever actually broken" follow-up,
+  Part 3's deeper mobile/desktop spacing audit beyond the composer-overlap fix above, and the
+  backend-only addendum bugs (Remote Brain stream, YouTube relevance, TTS opt-in) — none of these
+  were touched this session; carried forward unchanged from cont.42's list.
+- Did not attempt full authed live click-through for either fix (dev backend now runs, but this
+  session didn't wire up an authed browser session to exercise it) — next session should do a
+  real `npm run dev` + login pass now that the backend blocker is cleared.
+
+**Next-priority guidance for whoever picks this up:** the backend can finally run standalone
+again — start there: do a real authed pass (login via Google/GitHub OAuth in the preview, not the
+old bypass hack) and re-verify chat end to end, then visually confirm the mobile drawer fix at
+narrow viewports. After that, item 20's UI panel is the next concrete, scoped piece of work; items
+2, 11, and the backend-only addendum bugs remain open and undiagnosed.
+
+## PRIOR STATE (cont. 42 — UI OVERHAUL DIRECTIVE continued.
 Picked up cont.41's top-priority open items: 18/19 (agents/skills surface) and item 5's real
 fix (typing latency), plus a quick re-verification of 16/17 and a scoped item-25 pass. tsc
 (`tsconfig.app.json`) clean after every commit; `npm run prove:all` re-run at the end: 251/251
