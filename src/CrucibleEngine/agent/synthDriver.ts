@@ -715,13 +715,17 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
 export function withOfflineFallback(
   offlineTurn: DriveTurn,
   onlineTurn: DriveTurn,
+  onEscalate?: (reason: string) => void,
 ): DriveTurn {
   return async (messages, tools, signal, turnClass) => {
     // Critic turns (final grounding/harden correctness audit) go straight to the strong
     // online free pool — the on-device FM is at chance on distinguishing subtle-but-real
     // bugs from correct code (measured 2/4 vs gpt-oss-120b's 4/4). This is the one
     // rare, high-value judgment where escalating to a stronger $0 model is worth it.
-    if (turnClass === 'critic') return onlineTurn(messages, tools, signal, turnClass)
+    if (turnClass === 'critic') {
+      onEscalate?.('critic turn — external pool judges correctness')
+      return onlineTurn(messages, tools, signal, turnClass)
+    }
     try {
       const result = await offlineTurn(messages, tools, signal, turnClass)
       debugBus.emit('agent', 'offline_turn_hit', {}, { severity: 'info' })
@@ -731,6 +735,9 @@ export function withOfflineFallback(
         debugBus.emit('agent', 'offline_turn_escalate', {
           reason: String((e as any)?.message ?? e).slice(0, 120),
         }, { severity: 'info' })
+        // Provenance-honest UI: the run just left the device — let the caller flip the
+        // badge/pill so "ON-DEVICE" is never shown for a pool-driven turn.
+        onEscalate?.(String((e as any)?.message ?? e).slice(0, 120))
         return onlineTurn(messages, tools, signal, turnClass)
       }
       throw e

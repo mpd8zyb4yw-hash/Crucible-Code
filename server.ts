@@ -2921,7 +2921,9 @@ app.post('/api/chat', async (req, res) => {
           ? _offlineDrive
           : _offlineMode === '0'
           ? nativeDriveTurn
-          : withOfflineFallback(_offlineDrive, nativeDriveTurn)
+          : withOfflineFallback(_offlineDrive, nativeDriveTurn, () =>
+              // Run escalated off-device — flip the badge/pill so ON-DEVICE never lies.
+              send({ type: 'agent_start', driver: currentDriverLabel(), projectPath, resumed: false }))
 
         // I4 — assigned just below (after buildDriveTurn exists); referenced here so
         // every subtask loop's ToolCtx carries the consult hook.
@@ -2994,7 +2996,9 @@ app.post('/api/chat', async (req, res) => {
       ? _offlineDriveSingle
       : _offlineModeSingle === '0'
       ? nativeDriveTurn
-      : withOfflineFallback(_offlineDriveSingle, nativeDriveTurn)
+      : withOfflineFallback(_offlineDriveSingle, nativeDriveTurn, () =>
+          // Run escalated off-device — flip the badge/pill so ON-DEVICE never lies.
+          send({ type: 'agent_start', driver: currentDriverLabel(), projectPath, resumed: false }))
 
     if (resumable || needsPlan(message)) {
       const goal = resumable?.goal ?? message
@@ -5643,7 +5647,9 @@ app.post('/api/sandbox/exec-snippet', async (req, res) => {
     // third-party import (pygame et al.) fails with a bare ModuleNotFoundError that
     // reads like a Crucible bug. Translate it into what the user can actually do.
     let friendlyError = result.error
-    const missingMod = /ModuleNotFoundError: No module named '([^']+)'/.exec(result.error ?? '')
+    // Python worker surfaces just the message ("No module named 'pygame'"), not the
+    // exception class — match both shapes.
+    const missingMod = /No module named ['"]([^'"]+)['"]/.exec(result.error ?? '')
     if (missingMod) {
       friendlyError = `This code needs the third-party package "${missingMod[1]}", which isn't available in Crucible's on-device sandbox (it runs standard-library code only, with no network or pip). Ask Crucible for a version that runs here — e.g. "rewrite this as a single-file HTML/canvas version" for games, which is playable via the Preview button.`
     }
