@@ -70,9 +70,14 @@ export default function App() {
       .catch(() => {})
   }, [])
   const slashMatch = /^\/(\S*)$/.exec(input)
-  const slashResults = slashMatch
+  const [slashSel, setSlashSel] = useState(0)
+  const [slashDismissed, setSlashDismissed] = useState(false)
+  const slashResults = slashMatch && !slashDismissed
     ? slashTools.filter(t => t.name.toLowerCase().startsWith(slashMatch[1].toLowerCase())).slice(0, 8)
     : []
+  // Reset selection + dismissal whenever the typed prefix changes.
+  const slashPrefix = slashMatch?.[1] ?? null
+  useEffect(() => { setSlashSel(0); setSlashDismissed(false) }, [slashPrefix])
 
   // ── Step 9: Remote Brain mode (phone only) ────────────────────────────────
   const [remoteBrain, setRemoteBrain] = useState(false)
@@ -1433,6 +1438,18 @@ export default function App() {
 
 
   const handleKey = (e: React.KeyboardEvent) => {
+    // "/" palette keyboard navigation — arrows cycle, Tab/Enter completes, Esc dismisses.
+    if (slashResults.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setSlashSel(s => (s + 1) % slashResults.length); return }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setSlashSel(s => (s - 1 + slashResults.length) % slashResults.length); return }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault()
+        const pick = slashResults[Math.min(slashSel, slashResults.length - 1)]
+        setInput(`/${pick.name} `)
+        return
+      }
+      if (e.key === 'Escape') { e.preventDefault(); setSlashDismissed(true); return }
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!thinking) send() }
   }
   const dismissResume = () => {
@@ -2111,6 +2128,52 @@ export default function App() {
         </div>
       )}
 
+      {/* ── Welcome empty state — quiet, capability-forward, one tap to try things.
+          Replaced by the conversation the moment the first round exists. ── */}
+      {rounds.length === 0 && !thinking && (
+        <div style={{
+          position: 'absolute', top: 56, left: 0, right: 0, bottom: 0, zIndex: 1, pointerEvents: 'none',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
+          paddingBottom: Math.min(inputBarHeight + 24, 120), animation: 'fadeIn 0.5s ease', overflow: 'hidden',
+        }}>
+          {/* margin:auto centers when there's room and top-aligns (never clips) when there isn't */}
+          <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
+          <div style={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--c-text)', marginBottom: 6, textAlign: 'center', padding: '0 24px' }}>
+            What are we making today?
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--c-dim)', marginBottom: 22 }}>
+            Private, on-device. Ask anything — or hand me a task.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', maxWidth: 560, pointerEvents: 'auto', padding: '0 24px' }}>
+            {[
+              { label: 'Build a playable game', hint: 'Writes the code, then a Preview button makes it playable right here', text: 'Build me a snake game I can play right here' },
+              { label: 'Do something on my Mac', hint: 'Opens apps, changes settings, organizes files — with your permission', text: 'Open my downloads folder' },
+              { label: 'Explain its own answer', hint: 'Every answer can show its work — models, confidence, what it does not know', text: 'What can you do, and what are your limits?' },
+              { label: 'Type / for tools', hint: 'A command palette of every tool and skill — plain words work too', text: '/' },
+            ].map(s => (
+              <button
+                key={s.label}
+                title={s.hint}
+                onClick={() => {
+                  if (s.text === '/') { setInput('/'); requestAnimationFrame(() => textareaRef.current?.focus()); return }
+                  setInput(s.text); requestAnimationFrame(() => textareaRef.current?.focus())
+                }}
+                style={{
+                  fontSize: 11.5, fontWeight: 600, color: 'var(--c-text-soft)', fontFamily: 'inherit',
+                  padding: '8px 14px', borderRadius: 999, cursor: 'pointer',
+                  background: 'var(--c-glass)', border: '1px solid var(--c-hairline-strong)',
+                  backdropFilter: 'var(--c-blur)', WebkitBackdropFilter: 'var(--c-blur)',
+                  transition: 'background 0.15s, border-color 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.07)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'var(--c-glass)' }}
+              >{s.label}</button>
+            ))}
+          </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Message history ── */}
       <MessageList
         rounds={rounds} setRounds={setRounds} send={sendStable} toggleCritique={toggleCritique}
@@ -2210,17 +2273,26 @@ export default function App() {
               <div
                 key={t.name}
                 onClick={() => { setInput(`/${t.name} `); requestAnimationFrame(() => textareaRef.current?.focus()) }}
+                onMouseEnter={() => setSlashSel(i)}
                 style={{
                   padding: '9px 14px', cursor: 'pointer',
                   borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.05)',
+                  background: i === slashSel ? 'rgba(124,124,248,0.10)' : 'transparent',
+                  transition: 'background 0.1s',
                 }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
               >
-                <div style={{ fontSize: 11.5, fontWeight: 600, color: '#d0d0e8', fontFamily: 'ui-monospace, monospace' }}>/{t.name}</div>
+                <div style={{ fontSize: 11.5, fontWeight: 600, color: i === slashSel ? '#e8e8ff' : '#d0d0e8', fontFamily: 'var(--mono)' }}>/{t.name}</div>
                 <div style={{ fontSize: 10.5, color: '#8a8a9e', marginTop: 1, lineHeight: 1.4 }}>{t.description}</div>
               </div>
             ))}
+            <div style={{
+              padding: '5px 14px', borderTop: '1px solid rgba(255,255,255,0.06)',
+              fontSize: 9, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.04em',
+              display: 'flex', gap: 12,
+            }}>
+              <span>↑↓ navigate</span><span>Tab/Enter complete</span><span>Esc dismiss</span>
+              <span style={{ marginLeft: 'auto' }}>plain words work too — the agent picks the tools</span>
+            </div>
           </div>
         )}
         {/* ── Active-model cards — above the chat bar, dynamic width ── */}

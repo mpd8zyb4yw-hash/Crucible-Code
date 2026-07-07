@@ -137,15 +137,32 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
       border: '1px solid rgba(124,124,248,0.18)', borderRadius: 12, padding: 12,
       background: 'rgba(124,124,248,0.04)', display: 'flex', flexDirection: 'column', gap: 10,
     }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9.5, letterSpacing: '0.12em', textTransform: 'uppercase' as const, color: '#7c7cf8', fontWeight: 700 }}>
+      {/* Header — color + wording track the real outcome: a stalled/failed run must
+          never present as a neutral "finished". */}
+      {(() => {
+        const failed = !agent.active && !agent.done?.ok && (agent.error || (agent.done && agent.done.stopped !== 'final' && agent.done.stopped !== 'clarification'))
+        const headerColor = agent.active ? '#7c7cf8' : failed ? '#f59e0b' : '#7c7cf8'
+        const label = agent.active ? 'agent working'
+          : agent.done?.ok ? 'agent complete'
+          : agent.error ? 'agent error'
+          : agent.done?.stopped === 'stalled' ? 'agent stopped — could not finish'
+          : agent.done?.stopped === 'max_iters' ? 'agent stopped — ran out of attempts'
+          : agent.done?.stopped === 'budget' ? 'agent stopped — context budget'
+          : agent.done?.stopped === 'cancelled' ? 'agent cancelled'
+          : agent.done?.stopped === 'verify_failed' ? 'agent stopped — checks failing'
+          : agent.clarification ? 'agent needs your input'
+          : 'agent finished'
+        return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9.5, letterSpacing: '0.12em', textTransform: 'uppercase' as const, color: headerColor, fontWeight: 700 }}>
         <span style={{ animation: agent.active ? 'fadeIn 0.5s ease-in-out infinite alternate' : 'none' }}>
-          {agent.active ? 'agent working' : agent.done?.ok ? 'agent complete' : agent.error ? 'agent error' : 'agent finished'}
+          {label}
         </span>
         {agent.driver && <span style={{ color: '#555', textTransform: 'none' as const, letterSpacing: 0 }}>· {agent.driver}</span>}
         <div style={{ flex: 1 }} />
         {agent.done?.ms != null && <span style={{ color: '#555', textTransform: 'none' as const, letterSpacing: 0 }}>{(agent.done.ms / 1000).toFixed(1)}s</span>}
       </div>
+        )
+      })()}
 
       {/* Plan checklist */}
       {agent.steps.length > 0 && (
