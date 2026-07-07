@@ -284,7 +284,7 @@ import { loadTriumvirateLog, loadPendingQueue } from './src/CrucibleEngine/trium
 import { createExperiment, getActiveExperiments, assignCohort, recordObservation, runAutoDecisions, getExperimentStats, loadExperiments } from './src/CrucibleEngine/abTesting'
 import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/CrucibleEngine/episodicMemory'
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
-import { domainVerify, correctArithmetic, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
+import { domainVerify, correctArithmeticCascade, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
 import { runSelfPatcher, loadPatches, rejectPatch } from './src/CrucibleEngine/selfPatcher'
@@ -3352,7 +3352,7 @@ app.post('/api/chat', async (req, res) => {
         // evaluable and whose stated NUMBER is wrong. No external call, no fanout.
         if (localReply) {
           try {
-            const { text: fixed, corrections } = correctArithmetic(localReply)
+            const { text: fixed, corrections } = correctArithmeticCascade(localReply)
             if (corrections.length) {
               localReply = fixed
               debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections, path: 'simple_strict' }, { severity: 'info', requestId })
@@ -3468,7 +3468,7 @@ app.post('/api/chat', async (req, res) => {
       // factorials, π/√) are left untouched — no guessing. No external call, no fanout.
       if (answer && answer.trim()) {
         try {
-          const { text: fixed, corrections } = correctArithmetic(answer)
+          const { text: fixed, corrections } = correctArithmeticCascade(answer)
           if (corrections.length) {
             answer = fixed
             debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections }, { severity: 'info', requestId })

@@ -148,6 +148,62 @@ export function correctArithmetic(text: string): { text: string; corrections: Ar
   return { text: out, corrections: fixes.map(f => f.corr) }
 }
 
+// ── Value-propagation cascade (ZERO inference) ────────────────────────────────
+// The single-pass corrector fixes each STATED equation in isolation, but the FM's
+// wrong intermediate value cascades: "3 * $23 = $72" gets fixed to $69, yet a later
+// "$100 - $72 = $28" is INTERNALLY consistent (100-72 really is 28) so the base pass
+// leaves the stale 72 — and the wrong 28 — untouched. This pass propagates a corrected
+// result forward: when a value V is corrected to W, any LATER occurrence of V sitting
+// directly against an arithmetic operator (an operand, not a bare "72 apples") is
+// rewritten to W, and the equation it feeds is re-evaluated. Operator-adjacency is the
+// safety scope — it confines substitution to computation chains and refuses free-floating
+// number reuse. Iterated to a fixpoint (capped) so multi-step chains fully settle.
+function escapeNum(n: string): string {
+  return n.replace(/[.]/g, '\\.')
+}
+function propagateStaleValues(text: string, staleMap: Map<string, string>): string {
+  let out = text
+  for (const [was, now] of staleMap) {
+    if (was === now) continue
+    const w = escapeNum(was)
+    // operator (optionally currency/space) then the stale operand — e.g. "- $72"
+    out = out.replace(new RegExp(`([-+*/×·]\\s*[\\$£€]?\\s*)${w}(?![\\d.,])`, 'g'), `$1${now}`)
+    // the stale operand then an operator — e.g. "72 -"
+    out = out.replace(new RegExp(`(?<![\\d.,])${w}(\\s*[-+*/×·])`, 'g'), `${now}$1`)
+  }
+  return out
+}
+export function correctArithmeticCascade(text: string): { text: string; corrections: ArithmeticCorrection[] } {
+  let out = text
+  const all: ArithmeticCorrection[] = []
+  for (let iter = 0; iter < 6; iter++) {
+    const { text: fixed, corrections } = correctArithmetic(out)
+    let next = fixed
+    let changed = fixed !== out
+    if (corrections.length) {
+      all.push(...corrections)
+      const staleMap = new Map<string, string>()
+      for (const c of corrections) {
+        const wasCanon = c.was.replace(/,/g, '')
+        if (wasCanon !== c.now) staleMap.set(wasCanon, c.now)
+      }
+      const propagated = propagateStaleValues(fixed, staleMap)
+      if (propagated !== fixed) { next = propagated; changed = true }
+    }
+    out = next
+    if (!changed) break
+  }
+  // De-dup identical corrections (same expr/was/now) accumulated across iterations.
+  const seen = new Set<string>()
+  const corrections = all.filter(c => {
+    const k = `${c.expr}|${c.was}|${c.now}`
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
+  return { text: out, corrections }
+}
+
 // ── Factual verifier — cross-reference key claims against search ──────────────
 // Extracts entity+claim pairs, searches DuckDuckGo, flags contradictions.
 // Lightweight — only fires on high-stakes factual questions.

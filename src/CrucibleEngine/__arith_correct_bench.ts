@@ -1,7 +1,7 @@
 // Focused proof for correctArithmetic's broadened extractor (currency + unit words),
 // pinned to the exact live-FM failures found 2026-07-07 (train-time & shirt-change probes)
 // plus regression guards that must NOT be touched (algebra, ordinals, correct chains).
-import { correctArithmetic } from './domainVerifiers'
+import { correctArithmetic, correctArithmeticCascade } from './domainVerifiers'
 
 interface Case { name: string; in: string; expectNow?: string; expectNoChange?: boolean }
 const cases: Case[] = [
@@ -34,5 +34,38 @@ for (const c of cases) {
     } else console.log(`ok   ${c.name} → ${corrections.map(x => `${x.was}→${x.now}`).join(', ')}`)
   }
 }
-console.log(fail === 0 ? `\nALL ${cases.length} PASS` : `\n${fail}/${cases.length} FAILED`)
+// ── Cascade / value-propagation cases (correctArithmeticCascade) ──────────────
+// A corrected intermediate must propagate into downstream operands that reuse it.
+interface CascadeCase { name: string; in: string; expectAll: string[]; expectAbsent?: string[] }
+const cascadeCases: CascadeCase[] = [
+  {
+    name: 'shirt change: 72→69 propagates into $100-$72',
+    in: '3 shirts * $23 per shirt = $72. Your change is $100 - $72 = $28.',
+    expectAll: ['= $69', '$100 - $69 = $31'],
+    expectAbsent: ['$72', '$28'],
+  },
+  {
+    name: 'two-hop chain propagation',
+    in: '10 * 3 = 40. Then 40 + 5 = 46. Finally 46 * 2 = 92.',
+    // 10*3=30 → 30+5=35 → 35*2=70
+    expectAll: ['10 * 3 = 30', '30 + 5 = 35', '35 * 2 = 70'],
+    expectAbsent: ['= 40', '= 46', '= 92'],
+  },
+  {
+    name: 'no false propagation of unrelated reuse',
+    // 4*4=17 corrected to 16; the standalone "16 chapters" must NOT be rewritten
+    in: 'He read 4 * 4 = 17 pages. The book has 16 chapters.',
+    expectAll: ['4 * 4 = 16', '16 chapters'],
+  },
+]
+for (const c of cascadeCases) {
+  const { text } = correctArithmeticCascade(c.in)
+  const missing = c.expectAll.filter(s => !text.includes(s))
+  const present = (c.expectAbsent ?? []).filter(s => text.includes(s))
+  if (missing.length || present.length) {
+    console.log(`FAIL cascade:${c.name}: got "${text}" (missing=${JSON.stringify(missing)} unexpected=${JSON.stringify(present)})`); fail++
+  } else console.log(`ok   cascade:${c.name}`)
+}
+const total = cases.length + cascadeCases.length
+console.log(fail === 0 ? `\nALL ${total} PASS` : `\n${fail}/${total} FAILED`)
 process.exit(fail === 0 ? 0 : 1)
