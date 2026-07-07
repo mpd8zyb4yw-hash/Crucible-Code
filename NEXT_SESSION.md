@@ -69,10 +69,10 @@ via curl on a fresh port-3111 instance, pill fix live-verified in browser.)
 - **The architectural tension the pill now makes visible:** non-quorum chat is
   server-enforced strict-local, but the AGENT path drives on the external free pool
   (driver.ts tier is Groq/Mistral only). Decide: either route agent turns local-first
-  under non-quorum (L2.5 FM ReAct driver exists as of aa4fe08 for desktop actions;
-  coding quality on FM is the blocker) or keep the split and let the honest FREE POOL
-  badge carry it. Related prior item: GPT OSS 120B refuses Mac-control goals — make the
-  FM driver primary for DESKTOP_ACTION-shaped goals.
+  under non-quorum (cont.45c already made the L2.5 FM ReAct driver primary for
+  DESKTOP_ACTION-shaped goals, aa4fe08 — the open question is CODING/general agent
+  turns, where FM quality is the blocker) or keep the split and let the honest
+  FREE POOL badge carry it.
 - Verify the seam fix visually in a focused window (sim-proven only); re-check the
   snake-game agent run END-TO-END (routing verified; the build itself + playable
   single-file HTML output not followed to completion this session).
