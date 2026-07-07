@@ -218,6 +218,28 @@ end tell`
 
   // ── SYSTEM ──────────────────────────────────────────────────────────────────
   {
+    intent: 'open_folder',
+    aliases: ['open folder', 'go to folder', 'show folder', 'open downloads', 'open documents', 'reveal in finder'],
+    category: 'system',
+    playbook: 'open_folder {folder:"downloads"|"documents"|"desktop"|"home"|"applications"|"pictures"|"movies"|"music"|<absolute path>} — open a folder in a Finder window',
+    args: 'folder (well-known name or absolute path)',
+    async run(a) {
+      const raw = String(a.folder ?? a.path ?? a.target ?? 'home').trim()
+      const home = process.env.HOME ?? '~'
+      const KNOWN: Record<string, string> = {
+        downloads: `${home}/Downloads`, documents: `${home}/Documents`, desktop: `${home}/Desktop`,
+        home, applications: '/Applications', pictures: `${home}/Pictures`,
+        movies: `${home}/Movies`, music: `${home}/Music`, trash: `${home}/.Trash`,
+      }
+      const target = KNOWN[raw.toLowerCase()] ?? (raw.startsWith('/') || raw.startsWith('~') ? raw.replace(/^~/, home) : '')
+      if (!target) {
+        return { ok: false, output: `Unknown folder "${raw}" — use one of ${Object.keys(KNOWN).join(', ')} or an absolute path.` }
+      }
+      const r = await sh(`open ${q(target)}`)
+      return { ok: r.ok, output: r.ok ? `Opened ${target} in Finder.` : `Open failed: ${r.out}` }
+    },
+  },
+  {
     intent: 'lock_screen',
     aliases: ['lock screen', 'lock the mac', 'lock'],
     category: 'system',

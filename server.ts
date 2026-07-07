@@ -35,6 +35,7 @@ import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/Cruci
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
+import { isDesktopActionGoal } from './src/CrucibleEngine/ambiguity'
 import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
 import { defaultSystemPreamble } from './src/CrucibleEngine/agent/loop'
 import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
@@ -2736,6 +2737,60 @@ app.post('/api/chat', async (req, res) => {
         }
       } catch (e: any) {
         console.warn('[Agent] Layer 2 FM plan error (falling through to LLM loop):', e?.message ?? e)
+      }
+    }
+
+    // ── Layer 2.5: FM ReAct desktop driver (Offline-First) ────────────────────
+    // Desktop-action goals ("open finder and go to downloads") are exactly where the
+    // online pool's driver models refuse ("I cannot perform external tasks") — while the
+    // on-device FM happily drives the Mac (verified live 2026-07-07). When the goal is
+    // desktop-action-shaped, the FM is up, and Layer 2's rigid 1–3-step plan didn't
+    // complete, run the FM ReAct loop with the desktop tool set BEFORE falling back to
+    // the online-pool LLM loop. Tool activity streams to the UI through the same
+    // tool_call/tool_result events the main loop emits.
+    if (!resumable && !iterCheckpoint && localInferenceAvailable && isAgenticIntent &&
+        isDesktopActionGoal(message ?? '')) {
+      try {
+        const DESKTOP_TOOL_NAMES = ['open_app', 'control_mac', 'get_ui_tree', 'click_element', 'run', 'list_dir', 'move_file', 'search_youtube']
+        const fmToolCtx: ToolCtx = {
+          projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
+          allowMutation: true, allowDestructive: false, onFileMutated,
+        }
+        let fmrIdx = 0
+        const desktopTools = DESKTOP_TOOL_NAMES.flatMap(n => {
+          const def = registry.get(n)
+          if (!def) return []
+          const props = (def.params as { properties?: Record<string, { description?: string; type?: string }> }).properties ?? {}
+          const paramDesc = Object.entries(props).map(([k, v]) => `${k}: ${v.description ?? v.type ?? ''}`).join('; ') || '(no parameters)'
+          return [{
+            name: def.name,
+            description: def.description,
+            params: paramDesc,
+            execute: async (args: Record<string, string>) => {
+              const id = `fmr_${fmrIdx++}`
+              send({ type: 'tool_call', id, tool: def.name, args })
+              const r = await registry.exec({ id, name: def.name, args }, fmToolCtx)
+              send({ type: 'tool_result', id, tool: def.name, ok: r.ok, output: r.output.slice(0, 800), truncated: r.output.length > 800 })
+              return `(${r.ok ? 'ok' : 'error'}) ${r.output}`
+            },
+          }]
+        })
+        send({ type: 'agent_start', driver: 'on-device FM (desktop)', projectPath, resumed: false })
+        const { fmReact } = await import('./src/CrucibleEngine/agent/fmReact')
+        const fmRes = await fmReact({ goal: message ?? '', projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: true, maxRounds: 8 })
+        // Accept only a real attempt: a non-empty answer grounded in at least one tool call.
+        if (!fmRes.abstained && fmRes.answer.trim() && fmRes.toolsUsed.length > 0) {
+          send({ type: 'final', text: fmRes.answer })
+          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: fmRes.answer, synthesisDone: true, synthStreaming: false })
+          debugBus.emit('agent', 'layer25_fm_react_done', { rounds: fmRes.rounds, tools: fmRes.toolsUsed }, { severity: 'info' })
+          console.log(`[Agent] Layer 2.5 FM ReAct done in ${((Date.now() - t0) / 1000).toFixed(2)}s (${fmRes.toolsUsed.join(', ')})`)
+          endAgent()
+          return
+        }
+        console.warn('[Agent] Layer 2.5 FM ReAct fell through (abstained or zero tool calls) — escalating to LLM loop')
+        debugBus.emit('agent', 'layer25_fm_react_fallthrough', { abstained: fmRes.abstained, tools: fmRes.toolsUsed }, { severity: 'warn' })
+      } catch (e: any) {
+        console.warn('[Agent] Layer 2.5 FM ReAct error (falling through to LLM loop):', e?.message ?? e)
       }
     }
 

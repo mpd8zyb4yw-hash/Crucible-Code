@@ -106,10 +106,17 @@ function hasCheckableCriterion(goal: string): boolean {
 const CODE_NOUN = /\b(code|file|files|function|class|method|module|test|tests|bug|error|variable|component|script|import|endpoint|api|parser|schema|query|type|interface|repo|branch|lint|compile|build)\b/i
 const DESKTOP_ACTION = /^(open|close|launch|quit|play|pause|stop|resume|set|turn|toggle|enable|disable|show|hide|search|send|email|text|message|call|schedule|book|download|go|navigate|empty|organi[sz]e)\b/i
 
+/** Desktop-action-shaped goal ("open finder and go to downloads") with no code nouns or
+ *  file tokens. Shared by the ambiguity gate (skip the which-file interrogation) and the
+ *  server's driver routing (prefer the on-device FM — online pool models refuse these). */
+export function isDesktopActionGoal(goal: string): boolean {
+  return DESKTOP_ACTION.test(goal.trim()) && !CODE_NOUN.test(goal) && !FILE_TOKEN.test(goal)
+}
+
 export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } = {}): ResolutionResult {
   const signals: AmbiguitySignal[] = []
   const resolvedReferences: ResolvedReference[] = []
-  if (DESKTOP_ACTION.test(goal.trim()) && !CODE_NOUN.test(goal) && !FILE_TOKEN.test(goal)) {
+  if (isDesktopActionGoal(goal)) {
     return { ambiguous: false, confidence: 1, signals, resolvedReferences }
   }
   let rewritten = goal
