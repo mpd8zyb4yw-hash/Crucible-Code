@@ -1840,10 +1840,13 @@ export default function App() {
   // The round currently streaming live in THIS session — the only round that gets the
   // molten pour overlay (a restored/historical round must never replay the animation).
   const [liveRoundId, setLiveRoundId] = useState<string | null>(null)
-  // ── v3 left-rail tab shell — Chat is the existing full view; Agents/History/Settings
-  // are dedicated full-page views (see NavRail.tsx / AgentsTabView.tsx / HistoryTabView.tsx /
-  // SettingsTabView.tsx). The system drawers (Library/SelfRepair/etc.) live in Settings.
-  const [tab, setTab] = useState<'chat' | 'agents' | 'history' | 'settings'>('chat')
+  // ── v3 left-rail tab shell — Chat is the existing full view; History/Settings are
+  // dedicated full-page views (see NavRail.tsx / HistoryTabView.tsx / SettingsTabView.tsx).
+  // The system drawers (Library/SelfRepair/etc.) live in Settings.
+  const [tab, setTab] = useState<'chat' | 'history' | 'settings'>('chat')
+  // Items 18/19: Agents & capabilities is an inline overlay anchored to the chat panel,
+  // not a tab — toggling it never unmounts the conversation underneath (see AgentsTabView.tsx).
+  const [agentsOpen, setAgentsOpen] = useState(false)
 
   // ── Step 9: Remote Brain mode (phone only) ────────────────────────────────
   const [remoteBrain, setRemoteBrain] = useState(false)
@@ -3369,7 +3372,7 @@ export default function App() {
       {/* Ensemble key management lives in the Settings tab; the per-query confirm is an
           inline card above the composer (v3) — no modals. */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', zIndex: 1 }}>
-        <NavRail tab={tab} setTab={setTab} />
+        <NavRail tab={tab} setTab={setTab} agentsOpen={agentsOpen} onToggleAgents={() => setAgentsOpen(o => !o)} />
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
       <style>{`
         @keyframes slideUp  { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
@@ -3391,7 +3394,28 @@ export default function App() {
         .crucible-shows-work[open] > summary .crucible-sw-caret { transform: rotate(90deg); }
       `}</style>
 
-      {tab === 'agents' && <AgentsTabView onBuild={text => { void send(text) }} />}
+      {/* Item 18: agents/history/settings render as an overlay ON TOP of chat, not a tab
+          swap that unmounts it — the conversation underneath stays alive and scrolled to
+          where the user left it, so opening an agent/tool never navigates them away. */}
+      {tab !== 'chat' && (
+        <div style={{
+          position: 'absolute', inset: 0, zIndex: 30, background: '#101016',
+          display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s cubic-bezier(0.16,1,0.3,1)',
+        }}>
+          <button
+            onClick={() => setTab('chat')}
+            title="Back to chat"
+            style={{
+              position: 'absolute', top: 14, right: 18, zIndex: 31, width: 30, height: 30, borderRadius: 9,
+              border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)',
+              color: '#9797ab', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'background 0.15s, color 0.15s',
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          </button>
       {tab === 'history' && <HistoryTabView onRestore={summary => {
         apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
           .then(r => r.json())
@@ -3455,8 +3479,35 @@ export default function App() {
           }
         />
       )}
+        </div>
+      )}
 
-      {tab === 'chat' && <>
+      {/* Items 18/19: Agents & capabilities is an inline drawer anchored to the chat panel,
+          not a tab swap — the conversation underneath stays mounted the entire time this is
+          open (unlike History/Settings above, which still fully cover the chat while open,
+          this is a right-edge drawer over a dimmed scrim so the chat is still visible behind
+          it, matching the LibraryBinder drawer pattern used elsewhere in this app). */}
+      {agentsOpen && (
+        <>
+          <div onClick={() => setAgentsOpen(false)} style={{
+            position: 'absolute', inset: 0, zIndex: 28,
+            background: 'rgba(0,0,0,0.4)', animation: 'fadeIn 0.2s ease',
+          }} />
+          <div style={{
+            position: 'absolute', top: 0, right: 0, bottom: 0, zIndex: 29,
+            width: 'min(560px, 94vw)',
+            background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
+            borderLeft: '1px solid rgba(255,255,255,0.08)',
+            boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
+            animation: 'panelUp 0.22s cubic-bezier(0.16,1,0.3,1)',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            <AgentsTabView onBuild={text => { setAgentsOpen(false); void send(text) }} onClose={() => setAgentsOpen(false)} />
+          </div>
+        </>
+      )}
+
+      <>
       <ShimmerBg thinking={thinking} mode={mode} />
 
       {/* ── Step 9: Remote Brain overlay — canvas only, stops above the normal input bar ── */}
@@ -4839,7 +4890,7 @@ export default function App() {
           </div>
         </div>
       </div>
-      </>}
+      </>
         </div>
       </div>
     </div>

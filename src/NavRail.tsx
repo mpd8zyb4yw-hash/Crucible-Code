@@ -5,7 +5,7 @@
 
 import { memo } from 'react'
 
-export type CrucibleTab = 'chat' | 'agents' | 'history' | 'settings'
+export type CrucibleTab = 'chat' | 'history' | 'settings'
 
 function NavButton({ active, title, onClick, children }: {
   active: boolean
@@ -35,7 +35,12 @@ function NavButton({ active, title, onClick, children }: {
 // every keystroke anyway because it's a child of the same App component tree that owns
 // `input`. React.memo keeps it from re-rendering unless `tab`/`setTab` actually change —
 // a small, safe piece of the "typing latency" fix without touching the input wiring itself.
-function NavRail({ tab, setTab }: { tab: CrucibleTab; setTab: (t: CrucibleTab) => void }) {
+function NavRail({ tab, setTab, agentsOpen, onToggleAgents }: {
+  tab: CrucibleTab
+  setTab: (t: CrucibleTab) => void
+  agentsOpen: boolean
+  onToggleAgents: () => void
+}) {
   const go = (t: CrucibleTab) => () => setTab(t)
 
   // Item-8: in the Electron shell the window uses titleBarStyle 'hiddenInset', which draws
@@ -66,7 +71,10 @@ function NavRail({ tab, setTab }: { tab: CrucibleTab; setTab: (t: CrucibleTab) =
           <path d="M14 8a6 6 0 0 1-8.7 5.4L2 14l0.7-3A6 6 0 1 1 14 8Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
         </svg>
       </NavButton>
-      <NavButton active={tab === 'agents'} title="Agents" onClick={go('agents')}>
+      {/* Items 18/19: Agents no longer navigates away from chat — it toggles an inline
+          overlay drawer anchored to the chat panel (see AgentsTabView.tsx / App.tsx),
+          so the conversation underneath stays mounted and in place. */}
+      <NavButton active={agentsOpen} title="Agents & capabilities" onClick={onToggleAgents}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
           <rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" strokeWidth="1.4" />
           <path d="M8 5V2.8M6 9h.01M10 9h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
