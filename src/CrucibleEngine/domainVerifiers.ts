@@ -25,7 +25,12 @@ function extractNumericClaims(text: string): NumericClaim[] {
   // Match patterns like "3x + 5 = 14 so x = 3" or "17 × 23 = 391" or "47 * 53 = 2,491".
   // Right side allows thousands-separator commas (stripped before parsing) — without this,
   // "2,491" parsed as claimed=2 and false-flagged every comma-formatted correct answer.
-  const eqPattern = /(\d[\d\s×·\*\+\-\/\.\^x]*?)\s*=\s*(-?\d[\d,]*(?:\.\d+)?)/g
+  // LHS may carry currency symbols, thousands commas, and space-bounded unit words
+  // ("3 shirts * $23 per shirt") — normalizeExpr() strips those and rejects anything
+  // ambiguous, so a broad capture here is safe (non-arithmetic spans fall to null).
+  // RHS allows an optional leading currency symbol ("= $72") that is NOT part of numRaw,
+  // so the splice replaces only the number and preserves the "$".
+  const eqPattern = /(\d[\d\s×·\*\+\-\/\.\^x$,a-zA-Z]*?)\s*=\s*[\$£€]?\s*(-?\d[\d,]*(?:\.\d+)?)/g
   let m: RegExpExecArray | null
   while ((m = eqPattern.exec(text)) !== null) {
     const numRaw = m[2]
@@ -43,9 +48,28 @@ function extractNumericClaims(text: string): NumericClaim[] {
 // most common multiplication rendering ("47 × 53") fails the whitelist and never checks.
 // Returns null for anything that isn't cleanly evaluable (e.g. contains a variable `x`,
 // a factorial `!`, π, √) so callers can "leave as-is, don't guess".
+// Reduce a captured LHS to a pure arithmetic string, or null if it isn't cleanly one.
+// Strips currency/commas and standalone unit words ("3 shirts * $23 per shirt" → "3 * 23"),
+// but REFUSES when a letter is glued to a digit (algebra "3x", ordinals "23rd", units "5kg")
+// or when two numbers end up adjacent with no operator between them — both are ambiguous,
+// so the caller leaves the prose untouched rather than guess.
+function normalizeExpr(expr: string): string | null {
+  const g = expr.replace(/×/g, '*').replace(/·/g, '*').replace(/\^/g, '**')
+  // A letter touching a digit means the token isn't a bare number — bail (protects algebra).
+  if (/\d[a-zA-Z]|[a-zA-Z]\d/.test(g)) return null
+  const stripped = g
+    .replace(/[a-zA-Z]+/g, ' ')  // space-bounded unit words → space
+    .replace(/[$£€,]/g, '')       // currency + thousands separators
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!stripped || !/[+\-*/]/.test(stripped)) return null // need a real operator
+  if (/\d\s+\d/.test(stripped)) return null               // two numbers, no operator → ambiguous
+  return stripped
+}
 function tryEval(expr: string): number | null {
   try {
-    const cleaned = expr.replace(/×/g, '*').replace(/·/g, '*').replace(/\^/g, '**')
+    const cleaned = normalizeExpr(expr)
+    if (cleaned === null) return null
     // Safe eval: only digits, operators, parens, spaces (note: * covers the ** from ^).
     if (!/^[\d\s\+\-\*\/\.\(\)]+$/.test(cleaned)) return null
     // eslint-disable-next-line no-new-func

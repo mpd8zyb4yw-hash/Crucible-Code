@@ -3345,6 +3345,20 @@ app.post('/api/chat', async (req, res) => {
         try {
           localReply = (await callLocalModel('Answer concisely and accurately in 1-3 sentences.', message, 30000)).trim()
         } catch { /* fall through to abstain */ }
+        // Deterministic arithmetic guard (ZERO inference), same as the conversational
+        // path below: simple quantitative asks ("3 shirts at $23, change from $100?")
+        // route HERE, and the free-tier FM ships wrong inline products/differences. Splice
+        // the oracle-computed value into any "EXPR = NUMBER" claim whose EXPR is cleanly
+        // evaluable and whose stated NUMBER is wrong. No external call, no fanout.
+        if (localReply) {
+          try {
+            const { text: fixed, corrections } = correctArithmetic(localReply)
+            if (corrections.length) {
+              localReply = fixed
+              debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections, path: 'simple_strict' }, { severity: 'info', requestId })
+            }
+          } catch { /* non-blocking: ship the original answer */ }
+        }
         if (localReply) {
           send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: localReply, done: true })
           send({ type: 'stage', stage: 1, status: 'done' })
