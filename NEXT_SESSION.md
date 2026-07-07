@@ -17,7 +17,114 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 41 — UI OVERHAUL DIRECTIVE, SESSION COMPLETE.
+## CURRENT STATE (last updated 2026-07-07, cont. 42 — UI OVERHAUL DIRECTIVE continued.
+Picked up cont.41's top-priority open items: 18/19 (agents/skills surface) and item 5's real
+fix (typing latency), plus a quick re-verification of 16/17 and a scoped item-25 pass. tsc
+(`tsconfig.app.json`) clean after every commit; `npm run prove:all` re-run at the end: 251/251
+GREEN, backend invariant holds, untouched. No `src/CrucibleEngine/` files touched. The unrelated
+uncommitted local-model-pool diff mentioned in cont.41 is now actually MERGED into the branch
+(commit e813afb, already present when this session started) rather than sitting as an
+uncommitted diff — this session did not touch it, but flags for whoever reads this next that it
+also broke `tsx server.ts` under plain Node (`import { app } from 'electron'` fails outside
+Electron), so the dev backend could not be started this session (see below).
+
+**Completed this session (commit hashes on `crucible-northstar-sessions`):**
+- **Items 18,19 (294acfa) — the big one, done properly.** `AgentsTabView.tsx` was a full-page
+  tab (`tab === 'agents'`) that completely unmounted the chat view — NavRail's Agents button did
+  `setTab('agents')`, swapping out the whole chat tree. Redesigned:
+  - NavRail's Agents button (`onToggleAgents` prop, new `agentsOpen` state in App.tsx) now toggles
+    an inline right-edge drawer overlay — same anchored-drawer pattern already used by
+    LibraryBinder/SelfRepairBinder/etc (dimmed scrim + `position:absolute` panel with
+    `panelUp` slide-in). The chat underneath stays mounted and scrolled exactly where the user
+    left it — live-verified: typed draft text in the composer, opened the drawer, ran a search,
+    closed it — draft text was untouched, no remount.
+  - AgentsTabView's presentation is rebuilt from "raw command list" into a categorized, searchable
+    surface: prebuilt agent workflow cards are grouped by category (Build/Research/Reasoning);
+    live skill/tool data (same `GET /api/library/skills` + `/api/library/tools` endpoints, data
+    shape untouched) renders as plain-language capability rows ("Crucible can also: ...",
+    "Built for this project") by default. One search box filters agents+skills+tools together
+    (live-verified: searching "web" correctly surfaced the Search-Web agent + custom_search/
+    web_search/image_search tools with their real plain-language descriptions). Raw tool
+    names/telemetry (use-count, tier, the full oracle-verified skill catalog list) are hidden
+    behind a new "Advanced" toggle, off by default — verified toggling it reveals "Skill library
+    (raw)" with the full catalog and per-tool tier/use-count detail.
+  - Did NOT touch any `src/CrucibleEngine/` backend logic — only the frontend presentation layer
+    and the NavRail/App.tsx wiring that decided tab-swap vs overlay.
+- **Item 5 (dd3343e) — the real fix landed, not just the prior partial mitigation.** Root cause
+  (confirmed by cont.41): a top-level `input` state in App.tsx re-rendered the whole ~700-line
+  `rounds.map(...)` message-list JSX on every keystroke, even though nothing in that block reads
+  `input`. Extracted it into its own `MessageList` component wrapped in `React.memo`. Made every
+  prop passed to it a stable reference across keystrokes:
+  - `setRounds` (already stable) and a newly-`useCallback`-wrapped `toggleCritique` (only closed
+    over `setRounds`, no deps needed).
+  - `handleScroll`/`handleWheel`/`handleTouchStart`/`handleTouchMove` — all only read refs, so
+    wrapped in `useCallback` with empty dep arrays.
+  - `send` closes over `input` and other per-render state and can't be memoized directly without
+    invalidating on every keystroke — added a `sendRef` (always holds the latest `send`) + a
+    permanently-stable `sendStable` wrapper (`useCallback` with no deps) that calls
+    `sendRef.current(...)`. This is the standard ref-forwarding pattern for this exact problem.
+  - Verified live: temporarily bypassed the auth screen (forced `authUser` init value + gated the
+    `/api/auth/me` effect behind an env flag) and added a `console.count('MessageList render')`
+    inside the component, purely for this session's manual QA. Dispatched 43 synthetic keystrokes
+    into the composer via `preview_eval`; the render counter did not increment at all across the
+    whole sequence (it only advanced from the initial mount/StrictMode-double). **Both the
+    `console.count` and the auth-bypass code were fully reverted before the commit** — checked the
+    committed diff has zero trace of either (`grep` for `console.count`/`VITE_DEBUG_SKIP_AUTH`/
+    `id: 'debug'` in `src/App.tsx` returns nothing on the committed tree).
+- Items 16,17 — re-verified with fresh eyes, confirmed cont.41's conclusion still holds. The chat
+  bar has exactly: crucible glyph, textarea, send button, a functional "Ensemble" mode-toggle pill
+  (`mode === 'quorum'` gate + BYOK check), and a mobile-only "Remote Brain" button. No dead
+  clutter to consolidate. No change made; re-scope with the user before touching this bar further.
+- Item 25 (43063e2) — scoped animation-consistency pass. Audited all `transition`/`animation`
+  easing across `src/*.tsx`: the app already consistently uses one shared ease-out
+  `cubic-bezier(0.22,1,0.36,1)` for nearly every panel/drawer entrance (all the Binder drawers,
+  PipelineTheater, CritiqueGrid, AgentPanel) — but 4 sites in App.tsx (a CritiqueGrid `panelUp`
+  variant, the History/Settings/Agents full-panel overlay, and its layout margin-shift transition)
+  used a near-identical but distinct `cubic-bezier(0.16,1,0.3,1)`. Unified all 4 onto the dominant
+  token. Verified all `linear` timing usages are continuous rotation loops (prismatic border
+  sweep, spinners) that correctly should not ease — left untouched. Left plain `ease` on simple
+  opacity/width fades (progress bars, scrims) alone — those are appropriately lighter-weight than
+  the panel-entrance curve; a repo-wide swap risked changing feel on unrelated micro-transitions
+  for no real consistency win.
+- Part 3 dead-code/spacing audit — quick pass: `tsc --noUnusedLocals --noUnusedParameters` clean
+  on the whole `tsconfig.app.json` project; no orphaned component files (checked every `src/*.tsx`
+  has at least one importer); no leftover `'agents'` tab-string references outside a comment in
+  AgentsTabView.tsx explaining the old design. Did not find further dead code worth flagging —
+  cont.41's pass already removed the big orphans (LeftDock.tsx.disabled, PourRing.tsx,
+  DebugPanel.tsx).
+
+**NOT done / explicitly scoped out this session (with rationale):**
+- **Item 20 (GitHub/open-source repo browsing)** — grepped `server.ts` and
+  `src/CrucibleEngine/integrations/` for any existing GitHub API hook: the only GitHub
+  integration found is OAuth *login* (`GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`,
+  `/api/auth/github`, `/api/auth/callback/github` — sign-in only, no repo/search API). Per the
+  directive's explicit instruction, did NOT fake a frontend-only stub wired to nothing. This
+  needs real backend work first (a repo-search/browse endpoint) before any frontend panel makes
+  sense — skipped entirely, lowest priority and items 1-4 used the full session.
+- **Dev backend could not be run this session.** `npx tsx server.ts` fails immediately with
+  `SyntaxError: The requested module 'electron' does not provide an export named 'app'`
+  (`src/CrucibleEngine/agent/modelDownloadManager.ts:8`, `import { app } from 'electron'`) — this
+  comes from the local-model-pool feature (commit e813afb, already on the branch when this
+  session started, NOT something this session added or should fix per the "leave alone" backend
+  constraint). All live-browser verification this session (items 18/19 overlay behavior, item 5's
+  render-count check) was done against the unauthenticated app shell / a temporarily-bypassed auth
+  state — see item 5's writeup above for exactly what was bypassed and reverted. **Whoever picks
+  up backend-touching work next should know the dev server does not start standalone right now**;
+  it likely only works inside the Electron shell (`electron.cjs`) where the real `electron` module
+  is available. Worth a `npm run dev` (concurrently, not solo `tsx server.ts`) sanity check, or
+  fixing modelDownloadManager.ts's import to be conditional/dynamic, next session (flagging only —
+  did not touch `src/CrucibleEngine/` per this session's constraints).
+- TTS auto-speak toggle / video downscale control — not attempted, no time.
+- Item 11's sibling concern (raw model-output markdown escaping, independent of the render bug) —
+  still just a watch item, not reproduced.
+
+**Next-priority guidance for whoever picks this up:** the two hardest, highest-value items from
+the original directive (18/19, item 5) are now both genuinely done, not partial. What's left is:
+(a) get the dev backend running again (see above) so live chat can actually be exercised end to
+end rather than only via the unauthenticated shell; (b) item 20 needs backend scoping first; (c)
+TTS/video controls and item 11's raw-output watch item are small, low-urgency loose ends.
+
+## PRIOR STATE (cont. 41 — UI OVERHAUL DIRECTIVE, SESSION COMPLETE.
 Large numbered UI/UX audit directive (bugs + design + dead-code audit) against the v3 UI refactor
 (be30dd2/NavRail+TabViews). tsc (`tsconfig.app.json`) clean throughout every commit; `npm run
 prove:all` re-run at the end of the session: 251/251 GREEN, backend invariant holds, untouched.
@@ -118,7 +225,7 @@ second actor with independent changes. No conflicts occurred; treat this as reso
 still produce genuinely broken markdown/backtick-escaping independent of the render bug just fixed
 (only reproduced the render-side bug this session, did not find a raw-output escaping bug).
 
-Everything below is the PRIOR (cont.38/39) state, kept for history only.
+Everything below is the PRIOR (cont.37/38/39) state, kept for history only.
 
 ---
 
