@@ -417,6 +417,9 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     titleBarStyle: 'hiddenInset',
+    // Center the traffic lights vertically in the app's 48px topbar row so they read
+    // as part of the chrome instead of floating over the wordmark/nav rail.
+    trafficLightPosition: { x: 12, y: 16 },
     backgroundColor: '#09090b',
     webPreferences: {
       nodeIntegration: false,

@@ -137,9 +137,11 @@ export function defaultSystemPreamble(projectPath: string): string {
   return `You are Crucible, an autonomous Mac control and coding agent.
 ${worldCtx}
 
+RULE 0 — YOU ARE NOT A CHATBOT REFUSING "EXTERNAL TASKS". You run locally ON the user's own Mac, launched by the user, acting at their explicit request with their full permission. Opening their apps, files, and settings with your tools is your core purpose — it is authorized, safe, and expected. "I cannot perform external tasks" is always a wrong answer here.
 RULE 1 — NEVER ask for a specific confirmation phrase or script. If the user asks you to do something, DO IT with your tools. If they say yes/proceed/go ahead/do it/confirm, EXECUTE IMMEDIATELY.
 RULE 2 — NEVER output a Python or shell script for the user to run. You have tools. Use them.
 RULE 3 — Work step by step: inspect with tools, make changes, verify, then give a final answer. When done, reply with your summary and no tool calls.
+RULE 4 — PLAYABLE RESULTS: when the task is a game or interactive app the user wants to try, deliver the requested implementation AND include a self-contained single-file web version (one HTML file, inline JS/canvas, no external assets) in a fenced \`\`\`html block in your final answer — Crucible renders those with a live "Preview" button so the user can play it immediately. Say clearly that both versions are included.
 
 AUTONOMY & CLARIFICATION: Default to understanding the request and implementing it to completion with sensible, well-reasoned defaults — you should handle the large majority of tasks end-to-end without asking anything. Only call the ask_user tool when you genuinely cannot proceed correctly: a required fact that only the user has, a real fork in intent where guessing wrong would waste significant work, or confirmation before a destructive/irreversible action. Ask ONE focused question, then continue once answered. Never ask about things you can reasonably infer, look up with web_search, or decide yourself — and never ask merely to confirm permission to act (you already have it). Asking when you could have proceeded is as much a failure as guessing wrong on something you should have asked about.
 ${workspaceNote}
@@ -303,6 +305,9 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   // where every tool call failed; hard-stops after MAX_CONSECUTIVE_FAILED_TURNS.
   let consecutiveFailedTurns = 0
   const MAX_CONSECUTIVE_FAILED_TURNS = 4
+
+  // Refusal-bounce state — a zero-tool-call refusal gets exactly one correction.
+  let refusalBounces = 0
 
   // Grounding gate state — bounds how many times a rejected final answer can be
   // bounced back for correction, so a stubborn checker can never loop forever.
@@ -545,6 +550,31 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       // Checkpoint after each tool-call round so a drop can resume here
       opts.onCheckpoint?.(messages, iter)
       continue
+    }
+
+    // Refusal bounce — a "final" that refuses the task without having called a single
+    // tool is a capability hallucination ("I cannot open Finder"), not an answer. Seen
+    // live 2026-07-07 from the online pool on a /control_mac task. One hard correction;
+    // if it refuses again we accept it (it may be genuinely impossible).
+    if (toolCallCount === 0 &&
+        /\b(I\s+(cannot|can't|am unable to|don't have the ability)|as an AI|external tasks?)\b/i.test(turn.text)) {
+      if (refusalBounces < 1) {
+        refusalBounces++
+        debugBus.emit('agent', 'refusal_bounced', { iter, text: turn.text.slice(0, 160) }, { severity: 'warn' })
+        emit({ type: 'thought', text: '[Model refused without trying — reminding it of its tools]', iter })
+        messages.push({ role: 'assistant', content: turn.text })
+        messages.push({
+          role: 'user',
+          content: 'SYSTEM CORRECTION: You DO have tools that perform real actions on this Mac (open_app, control_mac, run, write_file, web_search, …). Refusing without attempting a single tool call is wrong. Execute the task now using tool calls. Only report failure after actually trying.',
+        })
+        continue
+      }
+      // Second refusal with zero tool calls — never dress this up as a successful
+      // final answer. Stop honestly so the caller/UI sees a failed run, not an answer.
+      debugBus.emit('agent', 'refusal_terminal', { iter }, { severity: 'error' })
+      return done('stalled',
+        'The reasoning model declined this task without attempting it, even after a correction. ' +
+        'This is a model limitation, not a permissions issue — try rephrasing (e.g. name the app or file directly), or run the request again.', iter)
     }
 
     // No tool calls — model thinks it's done. Verify before accepting.

@@ -393,6 +393,23 @@ export default function App() {
     el.scrollTop = el.scrollHeight
   }
 
+  // Reading-anchored auto-follow: while the latest exchange (user bubble + answer)
+  // still fits in the viewport we pin to the bottom as tokens stream in — but the
+  // moment it outgrows the viewport we freeze with the TOP of that exchange in view,
+  // so a large answer is read from its beginning instead of snapping the user to the
+  // bottom of a wall of text. The scroll-to-bottom button still jumps all the way.
+  const pinToLatest = useCallback(() => {
+    const el = scrollRef.current
+    if (!el || scrollLockedRef.current) return
+    const kids = el.children
+    // Last child is the bottom spacer; the latest round wrapper sits before it.
+    const last = kids.length >= 2 ? kids[kids.length - 2] as HTMLElement : null
+    const maxScroll = el.scrollHeight - el.clientHeight
+    if (!last) { el.scrollTop = maxScroll; return }
+    const lastTop = last.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+    el.scrollTop = Math.min(maxScroll, Math.max(0, lastTop - 16))
+  }, [])
+
   useEffect(() => {
     // Guard reads from the ref — always current, never stale.
     if (scrollLockedRef.current) return
@@ -401,11 +418,8 @@ export default function App() {
     // Use rAF so the scroll happens after the browser has painted the new content,
     // preventing the layout-recalculation jitter caused by setting scrollTop
     // synchronously while React is still committing DOM mutations.
-    requestAnimationFrame(() => {
-      if (scrollLockedRef.current) return
-      el.scrollTop = el.scrollHeight
-    })
-  }, [rounds, inputBarHeight])
+    requestAnimationFrame(() => pinToLatest())
+  }, [rounds, inputBarHeight, pinToLatest])
 
   // Items 3+4: the effect above only re-pins on `rounds`/`inputBarHeight` changes, but the
   // streamed content's actual DOM height can keep changing AFTER that commit — most visibly
@@ -421,13 +435,10 @@ export default function App() {
   useEffect(() => {
     const el = scrollRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => {
-      if (scrollLockedRef.current) return
-      el.scrollTop = el.scrollHeight
-    })
+    const ro = new ResizeObserver(() => pinToLatest())
     Array.from(el.children).forEach(child => ro.observe(child))
     return () => ro.disconnect()
-  }, [rounds.length])
+  }, [rounds.length, pinToLatest])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -1926,7 +1937,9 @@ export default function App() {
           left rail; the old binder/menu icon cluster is gone (binders now live in Settings). */}
       <div className="crucible-topbar" style={{
         height: 48, flexShrink: 0, display: 'flex', alignItems: 'center',
-        padding: '0 18px', gap: 12, zIndex: 10, position: 'relative',
+        // Electron (hiddenInset titlebar): the macOS traffic lights spill ~16px past the
+        // 56px nav rail into this bar — inset the wordmark so they never overlap it.
+        padding: `0 18px 0 ${window.electronIPC ? 44 : 18}px`, gap: 12, zIndex: 10, position: 'relative',
         WebkitAppRegion: 'drag',
       } as any}>
         <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee' }}>Crucible</span>

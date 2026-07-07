@@ -4,6 +4,7 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { CopyButton, type AgentState } from './core'
 import { STEP_GLYPH, STEP_COLOR, ToolRow, DiffBlock } from './panels'
+import { CodeRunBar } from './CodeRunner'
 
 // Collapsible code block — collapsed by default on mobile, always expanded on desktop
 export function CollapsibleCode({ language, code }: { language: string; code: string }) {
@@ -28,6 +29,9 @@ export function CollapsibleCode({ language, code }: { language: string; code: st
           <CopyButton text={code} inline />
         </div>
       </div>
+      {/* Run / live-preview bar — visible even while the block is collapsed, so a
+          generated game is one click from playable without expanding the source. */}
+      <CodeRunBar language={language} code={code} />
       {/* Body — hidden on mobile until expanded */}
       <div className={expanded ? 'crucible-code-body crucible-code-body--open' : 'crucible-code-body'}>
         <SyntaxHighlighter

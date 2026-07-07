@@ -2369,7 +2369,10 @@ function shouldUseMetaRouter(message: string): boolean {
 app.post('/api/chat', async (req, res) => {
   // v3: the DEFAULT mode is 'code' (Crucible-local). 'quorum' is only ever sent by the
   // client after the explicit per-query ensemble confirm — it is never a fallback.
-  const { message, mode = 'code', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId, byokKeys } = req.body
+  // `message` is mutable: a bare "/<tool> natural language" slash whose args can't be
+  // mapped mechanically gets rewritten into an agent-loop goal (see the slash block).
+  let { message } = req.body
+  const { mode = 'code', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId, byokKeys } = req.body
   // BYOK: scope any user-supplied provider keys to this request's async context so the
   // external pipeline runs on the USER's keys, never a bundled/shared one (product
   // constraint). Local/synth paths ignore this. No-op when no keys are sent.
@@ -2421,12 +2424,36 @@ app.post('/api/chat', async (req, res) => {
   // palette insert (e.g. "/read_file src/x.ts"). Resolve the name against the tool
   // registry first, then the skill catalog; unresolved bare slashes fall through to
   // normal chat so a stray leading "/" still gets answered instead of erroring.
+  //
+  // "Just work" rule: direct mechanical execution ONLY when the args are unambiguous —
+  // valid JSON, no args at all, or a single-required-string-param tool (read_file,
+  // web_search…) taking the raw text. Anything else ("/control_mac open finder and go
+  // to downloads", "/create_tool …") is natural language: rewrite it into an agent-loop
+  // goal pinned to that tool instead of throwing a raw schema error at the user.
+  let slashAgentTool: string | null = null
   if (!slash) {
     const bare = /^\/([A-Za-z0-9_./-]+)\s*([\s\S]*)$/.exec((message ?? '').trim())
     if (bare) {
       const bareName = bare[1], bareLower = bare[1].toLowerCase()
-      if (registry.get(bareName)) {
-        slash = [bare[0], 'tool', bareName, bare[2]] as unknown as RegExpExecArray
+      const bareDef = registry.get(bareName)
+      if (bareDef) {
+        const rest = bare[2].trim()
+        let restIsJson = false
+        if (rest) { try { JSON.parse(rest); restIsJson = true } catch {} }
+        const schema = bareDef.params as { properties?: Record<string, any>; required?: string[] }
+        const reqd = schema.required ?? []
+        const firstProp = schema.properties?.[reqd[0] ?? Object.keys(schema.properties ?? {})[0] ?? '']
+        const directOk = !rest || restIsJson ||
+          (reqd.length <= 1 && firstProp?.type === 'string' && !firstProp?.enum)
+        if (directOk) {
+          slash = [bare[0], 'tool', bareName, bare[2]] as unknown as RegExpExecArray
+        } else {
+          slashAgentTool = bareDef.name
+          // The goal stays EXACTLY the user's words — any injected prose here trips the
+          // ambiguity gate's unresolved-reference check ("the task", "via /x", ...).
+          // The tool preference travels in the agent's system preamble instead.
+          message = rest
+        }
       } else if (SKILL_CATALOG.some(e =>
         e.id.toLowerCase() === bareLower || e.filename.toLowerCase() === bareLower ||
         e.id.toLowerCase() === `user/${bareLower}` ||
@@ -2510,7 +2537,7 @@ app.post('/api/chat', async (req, res) => {
     )
     finish(toolResult.ok
       ? (toolResult.output || `Tool '${def.name}' ran (empty output).`)
-      : `Tool '${def.name}' failed: ${toolResult.output}`)
+      : `Tool '${def.name}' failed: ${toolResult.output}\n\nTip: you can also just describe what you want in plain words (with or without the leading /${def.name}) and Crucible's agent will work out the right steps.`)
     return
   }
 
@@ -2520,14 +2547,14 @@ app.post('/api/chat', async (req, res) => {
   // Sticky agentic follow-up: a continuation/repair reply in a session that just ran
   // an agent task stays on the agent path (keeps tool access for "fix it / try again").
   const agenticFollowup = isContinuationPhrase(message ?? '') && hasRecentAgentTask(chatSessionId)
-  const isAgenticIntent = mode === 'agent' || detectAgentTask(message ?? '') || agenticFollowup
+  const isAgenticIntent = slashAgentTool !== null || mode === 'agent' || detectAgentTask(message ?? '') || agenticFollowup
   if (agenticFollowup && !detectAgentTask(message ?? '')) {
     console.log('[/api/chat] Sticky agentic routing — continuation of a recent agent task')
     debugBus.emit('agent', 'sticky_agentic_route', { message: (message ?? '').slice(0, 80) }, { severity: 'info' })
   }
 
   // ── Agent mode — sustained tool loop instead of the synthesis pipeline ─────
-  if (mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
+  if (slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -2964,7 +2991,7 @@ app.post('/api/chat', async (req, res) => {
                 { role: 'user', content: message }
               ] : undefined
         ),
-        systemPreamble: `${defaultSystemPreamble(projectPath)}\n\nDEVICE CONTEXT: This request came from a ${device === 'mobile' ? 'mobile phone' : 'desktop'}. When the user asks to open apps, files, or URLs — always execute the action on the Mac desktop, never on the user's phone. If the request is ambiguous, assume they want it on the Mac.\n\nUSER LOCATION: Timezone is Europe/Rome. Use this to infer the user region for location-dependent queries like weather. Never ask for location unless the query is too specific for timezone inference.${detectExternalExecIntent(message ?? '') ? '\n\nEXECUTION INTENT DETECTED: The user wants you to perform an action on an external system (open a URL, play media, launch an app). Do NOT return a link or describe how to do it. Do NOT construct YouTube URLs from memory — video IDs from training data are dead links. For YouTube: call search_youtube with a specific query, pick the best result URL from the live results, then call open_app with that URL. For other media/apps: use web_search to find the URL, then open_app. Execute — do not instruct.' : ''}\n\n${[openGoalsCtx, taskHistoryCtx, globalMemory, episodeContext, graphDigest, decisionCtx, memoryDigest, codebaseContext].filter(Boolean).join('\n\n')}`,
+        systemPreamble: `${defaultSystemPreamble(projectPath)}${slashAgentTool ? `\n\nTOOL SHORTCUT: the user invoked this request through the /${slashAgentTool} shortcut — prefer the ${slashAgentTool} tool where it fits, and use any other tools you need to finish.` : ''}\n\nDEVICE CONTEXT: This request came from a ${device === 'mobile' ? 'mobile phone' : 'desktop'}. When the user asks to open apps, files, or URLs — always execute the action on the Mac desktop, never on the user's phone. If the request is ambiguous, assume they want it on the Mac.\n\nUSER LOCATION: Timezone is Europe/Rome. Use this to infer the user region for location-dependent queries like weather. Never ask for location unless the query is too specific for timezone inference.${detectExternalExecIntent(message ?? '') ? '\n\nEXECUTION INTENT DETECTED: The user wants you to perform an action on an external system (open a URL, play media, launch an app). Do NOT return a link or describe how to do it. Do NOT construct YouTube URLs from memory — video IDs from training data are dead links. For YouTube: call search_youtube with a specific query, pick the best result URL from the live results, then call open_app with that URL. For other media/apps: use web_search to find the URL, then open_app. Execute — do not instruct.' : ''}\n\n${[openGoalsCtx, taskHistoryCtx, globalMemory, episodeContext, graphDigest, decisionCtx, memoryDigest, codebaseContext].filter(Boolean).join('\n\n')}`,
         onFileMutated,
         // Inject a fast text-only model call for model-assisted context compression
         compressCallModel: (msgs) => {
@@ -5523,6 +5550,30 @@ app.post('/api/sandbox/run', (req, res) => {
       ms: Date.now() - started,
     })
   })
+})
+
+// Run ONE code snippet from a chat code block — the "Run" button in CollapsibleCode.
+// Uses the same network-denied sandbox machinery as verification (executeCode):
+// js/ts/python/bash run for real; compiled languages get a real syntax/compile check.
+app.post('/api/sandbox/exec-snippet', async (req, res) => {
+  const code = String(req.body?.code ?? '')
+  const language = req.body?.language ? String(req.body.language) : undefined
+  if (!code.trim()) return res.status(400).json({ error: 'code required' })
+  try {
+    const { executeCode, detectLanguage } = await import('./src/CrucibleEngine/sandbox')
+    const lang = (language && language !== 'auto' ? language : detectLanguage(code)) as any
+    const result = await executeCode(code.slice(0, 200_000), lang, 15_000)
+    res.json({
+      success: result.success,
+      output: result.output || '',
+      error: result.error,
+      language: result.language,
+      staticOnly: result.staticOnly ?? false,
+      ms: result.executionMs,
+    })
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? 'execution failed' })
+  }
 })
 
 // Quick, prompt-specific build-step labels to narrate the Code Studio progress bar.

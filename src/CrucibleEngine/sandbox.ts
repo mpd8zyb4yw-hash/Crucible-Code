@@ -133,18 +133,25 @@ export function prewarmPython(): void {
     pythonWorker = spawn('python3', ['-u', '-c', `
 import sys
 import json
+import io
+import contextlib
 while True:
     line = sys.stdin.readline()
     if not line:
         break
+    # Capture the executed code's stdout: without redirection a print() lands on THIS
+    # protocol stream, and the node side JSON.parses the printed value instead of the
+    # result envelope (print(2+3) -> parsed 5 -> success/output both undefined).
+    buf = io.StringIO()
     try:
         code = json.loads(line.strip())
-        exec(compile(code, '<crucible>', 'exec'), {})
-        sys.stdout.write(json.dumps({'success': True, 'output': ''}) + '\\n')
+        with contextlib.redirect_stdout(buf):
+            exec(compile(code, '<crucible>', 'exec'), {})
+        sys.stdout.write(json.dumps({'success': True, 'output': buf.getvalue()}) + '\\n')
         sys.stdout.flush()
     except Exception as e:
         import traceback
-        sys.stdout.write(json.dumps({'success': False, 'error': str(e), 'traceback': traceback.format_exc()}) + '\\n')
+        sys.stdout.write(json.dumps({'success': False, 'output': buf.getvalue(), 'error': str(e), 'traceback': traceback.format_exc()}) + '\\n')
         sys.stdout.flush()
 `], {
       stdio: ['pipe', 'pipe', 'pipe'],

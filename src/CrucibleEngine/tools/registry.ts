@@ -608,10 +608,12 @@ registry.register({
   async run(args) {
     const target = String(args.target ?? '').trim()
     if (!target) return { ok: false, output: 'A non-empty "target" is required.' }
-    // URLs and absolute paths: open directly. App names: use -a flag.
+    // URLs and absolute paths: open directly. Bundle ids ("com.apple.finder" — a shape
+    // models often emit): open -b. App names: open -a.
     const isUrl = /^https?:\/\//.test(target)
     const isPath = target.startsWith('/') || target.startsWith('~')
-    const openArgs = (isUrl || isPath) ? [target] : ['-a', target]
+    const isBundleId = !isPath && /^[a-z0-9-]+(\.[a-z0-9-]+){2,}$/i.test(target)
+    const openArgs = (isUrl || isPath) ? [target] : isBundleId ? ['-b', target] : ['-a', target]
     return new Promise(resolve => {
       execFile('open', openArgs, (err, _stdout, stderr) => {
         if (err) {

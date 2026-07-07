@@ -36,7 +36,7 @@ function tintOf(hex: string, alpha: number) {
 const AGENTS = [
   { name: 'Vibe Code', glyph: '{ }', color: '#4db89e', category: 'Build',
     desc: 'Describe the app; Crucible writes, lints, and self-reviews the code on-device.',
-    prompt: (d: string) => `Create a new reusable agent tool: ${d}\n\nUse the create_tool mechanism so it persists for future sessions. Pick a clear snake_case name, write a focused description, and smoke-test it before confirming it works.` },
+    prompt: (d: string) => `Build this for me: ${d}\n\nWrite the actual working code (real files, no stubs), run it to verify it works, and fix anything that breaks before finishing. If it's a game or interactive app, also produce a self-contained single-file web version (HTML + inline JS/canvas) so it's playable right inside Crucible.` },
   { name: 'Search Web', glyph: '◎', color: '#f59e0b', category: 'Research',
     desc: 'Web-augmented answers with ranked, cited sources.',
     prompt: (d: string) => `Search the web and answer with cited sources: ${d}` },

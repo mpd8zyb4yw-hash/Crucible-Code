@@ -18,6 +18,7 @@
 // Pure + deterministic + no model. Resolution uses ONLY the Tier 1.2 semantic index.
 
 import { type SemanticIndex, findSymbol } from './state/semanticIndex'
+import { registry } from './tools/registry'
 
 export type AmbiguityType = 'unresolved-reference' | 'no-target' | 'vague-scope' | 'underspecified-behavior'
 
@@ -96,9 +97,21 @@ function hasCheckableCriterion(goal: string): boolean {
   return /\b(return|returns|equal|equals|throw|throws|match|matches|render|output|outputs|status|response|=|==|===|so that|such that|when .* then|add|create|remove|delete|rename|implement|parse|format|convert|sort|validate)\b/i.test(goal)
 }
 
+// Every signal this gate can raise is about WHICH CODE to change ("which file or
+// symbol…"). A goal that isn't code-shaped at all — a desktop action ("open finder and
+// go to downloads"), a search, a message to send, or a build-from-scratch request in an
+// empty workspace — can never be clarified by naming a file, so interrogating it here
+// only kills valid tasks at 0 iterations (the cont.25 failure mode, seen again 2026-07-07
+// via slash-shortcut goals). Gate on code-edit shape, not on every fresh goal.
+const CODE_NOUN = /\b(code|file|files|function|class|method|module|test|tests|bug|error|variable|component|script|import|endpoint|api|parser|schema|query|type|interface|repo|branch|lint|compile|build)\b/i
+const DESKTOP_ACTION = /^(open|close|launch|quit|play|pause|stop|resume|set|turn|toggle|enable|disable|show|hide|search|send|email|text|message|call|schedule|book|download|go|navigate|empty|organi[sz]e)\b/i
+
 export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } = {}): ResolutionResult {
   const signals: AmbiguitySignal[] = []
   const resolvedReferences: ResolvedReference[] = []
+  if (DESKTOP_ACTION.test(goal.trim()) && !CODE_NOUN.test(goal) && !FILE_TOKEN.test(goal)) {
+    return { ambiguous: false, confidence: 1, signals, resolvedReferences }
+  }
   let rewritten = goal
   let clarification: string | undefined
   let clarificationOptions: string[] | undefined
@@ -130,7 +143,9 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   while ((m = DEF_REF.exec(goal)) !== null) {
     const noun = m[1]
     const low = noun.toLowerCase()
-    if (!STOP_REFS.has(low) && !VERB_STOPLIST.has(low)) refs.push(noun)
+    // Registered tool names ("prefer the control_mac tool") are always-resolvable
+    // references — they name a live capability, not a codebase symbol to hunt for.
+    if (!STOP_REFS.has(low) && !VERB_STOPLIST.has(low) && !registry.get(noun)) refs.push(noun)
   }
 
   for (const ref of [...new Set(refs)]) {

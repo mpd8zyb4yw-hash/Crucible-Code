@@ -218,7 +218,11 @@ export default function MoltenPour({ phase, progress, wrapRef }: {
             if (d < best) { best = d; botIdx = i }
           }
           const right = loop.slice(0, botIdx + 1)
-          const leftHalf = [loop[0]].concat(loop.slice(botIdx + 1).reverse())
+          // Bottom-seam fix: the left half must also END at loop[botIdx] (the same
+          // bottom-center point the right half ends on). Slicing from botIdx+1 left the
+          // segment botIdx→botIdx+1 (~10px at N=480 on a typical card) in NEITHER half —
+          // a permanent gap at the bottom seam no fill fraction or epsilon could close.
+          const leftHalf = [loop[0]].concat(loop.slice(botIdx).reverse())
           // Item-1 fix: the two halves run from the same top landing point down to the same
           // bottom-center meeting point, but their perimeter lengths differ (the pour lands
           // off-center relative to the card's actual left/right border lengths). Filling each
