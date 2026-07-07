@@ -5,10 +5,23 @@
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
-import { app } from 'electron'
+import { createRequire } from 'module'
 import { LOCAL_MODEL_CATALOG, findModelSpec, type LocalModelSpec } from './localModelCatalog'
 
+const require = createRequire(import.meta.url)
+
+// electron is only present inside the Electron shell; under plain Node (server.ts via tsx)
+// this module must still load, so the import is deferred and failures swallowed.
+function getElectronApp(): { getPath?: (name: string) => string } | undefined {
+  try {
+    return require('electron').app
+  } catch {
+    return undefined
+  }
+}
+
 function userDataDir(): string {
+  const app = getElectronApp()
   return app?.getPath ? app.getPath('userData') : path.join(process.cwd(), '.crucible')
 }
 
