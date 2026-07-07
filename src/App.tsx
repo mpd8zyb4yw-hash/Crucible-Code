@@ -1803,7 +1803,16 @@ function PourWrap({ active, phase, progress, children }: {
   return (
     <div
       ref={wrapRef}
-      style={{ position: 'relative', borderRadius: 14, width: '100%' }}
+      style={{
+        position: 'relative', borderRadius: 14, width: '100%',
+        // The vessel canvas draws `TOP` (70px, MoltenPour.tsx) above this card via a
+        // negative offset. Item-23 dropped this reservation entirely to stop an animated
+        // margin from pushing content around — but with no reservation at all, the vessel
+        // paints straight over whatever message sits above the live card. Reserve the exact
+        // 70px with NO transition (snaps in/out instantly with `active`, no animated push)
+        // so it neither collides with the message above nor visibly shoves it.
+        marginTop: active ? 70 : 0,
+      }}
     >
       {active && <MoltenPour phase={phase} progress={progress} wrapRef={wrapRef} />}
       {children}
@@ -4467,16 +4476,19 @@ export default function App() {
         WebkitAppRegion: 'drag',
       } as any}>
         <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee' }}>Crucible</span>
+        {/* Top-bar overlap fix: on mobile widths this pill's full label plus the New Chat
+            button and agent-progress text had no wrap/shrink handling and could crowd/
+            overlap at the right edge — the dot alone still shows mode at a glance. */}
         <span style={{
           display: 'flex', alignItems: 'center', gap: 5,
           fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: '#66667a',
           background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)',
-          padding: '2px 8px', borderRadius: 999,
+          padding: '2px 8px', borderRadius: 999, flexShrink: 0,
         }}>
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: mode === 'quorum' ? '#7c7cf8' : '#4db89e' }} />
-          {mode === 'quorum' ? 'ENSEMBLE · YOUR KEYS' : 'ON-DEVICE'}
+          <span style={{ width: 5, height: 5, borderRadius: '50%', background: mode === 'quorum' ? '#7c7cf8' : '#4db89e', flexShrink: 0 }} />
+          {!isMobile && (mode === 'quorum' ? 'ENSEMBLE · YOUR KEYS' : 'ON-DEVICE')}
         </span>
-        <div style={{ flex: 1 }} />
+        <div style={{ flex: 1, minWidth: 8 }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, WebkitAppRegion: 'no-drag' } as any}>
           {thinking && latestRound && (() => {
             const secs = Math.floor(agentElapsed / 1000)
@@ -4489,9 +4501,9 @@ export default function App() {
               : r.synthesisDone ? 'settling…'
               : 'pouring…'
             return (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, animation: 'fadeIn 0.3s' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, animation: 'fadeIn 0.3s', flexShrink: 0 }}>
                 <span style={{ fontVariantNumeric: 'tabular-nums', fontSize: 10.5, color: '#55556a', fontWeight: 500 }}>{mm}:{ss}</span>
-                <span style={{ fontSize: 10.5, color: '#77778c', letterSpacing: '0.05em' }}>{stageLabel}</span>
+                {!isMobile && <span style={{ fontSize: 10.5, color: '#77778c', letterSpacing: '0.05em' }}>{stageLabel}</span>}
               </div>
             )
           })()}
@@ -4509,16 +4521,16 @@ export default function App() {
             }}
             title="New chat"
             style={{
-              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+              display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', flexShrink: 0,
               borderRadius: 10, border: '1px solid rgba(255,255,255,0.08)',
               background: 'rgba(255,255,255,0.04)', color: '#b8b8cc',
-              fontSize: 11, fontWeight: 600, cursor: 'pointer',
+              fontSize: 11, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
             }}
           >
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
               <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
-            New chat
+            {!isMobile && 'New chat'}
           </button>
         </div>
       </div>

@@ -78,7 +78,10 @@ export default function MoltenPour({ phase, progress, wrapRef }: {
         total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
         cum.push(total)
       }
-      const lim = total * Math.min(1, frac)
+      // +0.5px epsilon: floating-point summation of `cum` can land fractionally above
+      // `total` at frac===1, which silently excludes the last segment from `cum[i] <= lim`
+      // below — visible as a tiny gap right at the seam even once "fully filled".
+      const lim = total * Math.min(1, frac) + 0.5
 
       ctx.save()
       ctx.lineCap = 'round'

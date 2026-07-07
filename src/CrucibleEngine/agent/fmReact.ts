@@ -261,8 +261,40 @@ interface ParsedResponse {
 }
 
 function parseResponse(text: string): ParsedResponse {
-  // Check for FINAL_ANSWER (multi-line)
+  const toolMatch = text.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
   const finalMatch = text.match(/FINAL_ANSWER:\s*\n?([\s\S]+)/i)
+
+  // A weak/local model routinely ignores "use at most one tool per response" and
+  // instead narrates an entire fabricated transcript in one completion — e.g.
+  // "TOOL: create_tool\n...\nTOOL: search\n...\nTOOL: create_pdf\n...\nFINAL_ANSWER:
+  // The tool has been created and tested successfully." None of those later TOOL:
+  // blocks were ever executed; the model just typed out what it imagined would
+  // happen. The old code checked FINAL_ANSWER first, so it trusted that fabricated
+  // success claim verbatim and returned it as the real answer.
+  //
+  // Fix: if a TOOL: block appears BEFORE any FINAL_ANSWER: in the same response,
+  // the FINAL_ANSWER is necessarily premature (nothing has actually run yet) —
+  // execute the first real tool call instead and discard everything after it,
+  // including the tacked-on "success" narration. The genuine tool result gets fed
+  // back next round, forcing the model to base its actual final answer on what
+  // really happened instead of what it imagined.
+  if (toolMatch && (!finalMatch || (toolMatch.index ?? 0) < (finalMatch.index ?? 0))) {
+    const toolName = toolMatch[1].trim()
+    const rest = toolMatch[2].trim()
+    const args: Record<string, string> = {}
+    for (const line of rest.split('\n')) {
+      // Stop at the next hallucinated TOOL:/FINAL_ANSWER: block — without this, a
+      // multi-block fabrication bleeds unrelated key:value lines from LATER
+      // (never-executed) tool calls into THIS tool's real args, e.g. a fake
+      // "TOOL: search\nquery: ..." block's `query:` line getting attached to the
+      // real create_tool call as if it were one of create_tool's own params.
+      if (/^TOOL:/i.test(line) || /^FINAL_ANSWER:/i.test(line)) break
+      const m = line.match(/^(\w+):\s*(.+)$/)
+      if (m) args[m[1]] = m[2].trim()
+    }
+    return { type: 'tool', toolName, args }
+  }
+
   if (finalMatch) {
     return { type: 'final', answer: finalMatch[1].trim() }
   }
@@ -271,20 +303,6 @@ function parseResponse(text: string): ParsedResponse {
   const answerMatch = text.match(/^ANSWER:\s*(.+)/im)
   if (answerMatch) {
     return { type: 'final', answer: answerMatch[1].trim() }
-  }
-
-  // Check for TOOL: block
-  const toolMatch = text.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
-  if (toolMatch) {
-    const toolName = toolMatch[1].trim()
-    const rest = toolMatch[2].trim()
-    const args: Record<string, string> = {}
-    // Parse key: value lines
-    for (const line of rest.split('\n')) {
-      const m = line.match(/^(\w+):\s*(.+)$/)
-      if (m) args[m[1]] = m[2].trim()
-    }
-    return { type: 'tool', toolName, args }
   }
 
   // If nothing matched but text is non-empty, treat as a final answer
