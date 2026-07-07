@@ -30,6 +30,13 @@ interface ModelsConfig {
   location?: string
   /** Per-model opt-out — a downloaded model is still used by the router unless disabled here. */
   enabled: Record<string, boolean>
+  /** When true, localModelRouter fans every ready+enabled model out on every query instead of
+   *  routing to the best-fit model and only escalating when needed. Explicit user override. */
+  fireAllMode?: boolean
+  /** When set, localModelRouter calls ONLY this model and skips routing/fan-out entirely —
+   *  the user's explicit "single model" pin. Takes priority over fireAllMode. Cleared by
+   *  picking auto/all mode again in the UI. */
+  pinnedModelId?: string
 }
 
 function configPath(): string {
@@ -73,6 +80,29 @@ export function setModelEnabled(id: string, enabled: boolean): void {
 
 export function isModelEnabled(id: string): boolean {
   return getModelsConfig().enabled[id] !== false // default enabled once downloaded
+}
+
+export function isFireAllMode(): boolean {
+  return getModelsConfig().fireAllMode === true
+}
+
+export function setFireAllMode(fireAll: boolean): void {
+  const cfg = getModelsConfig()
+  cfg.fireAllMode = fireAll
+  if (fireAll) cfg.pinnedModelId = undefined
+  writeConfig(cfg)
+}
+
+export function getPinnedModelId(): string | undefined {
+  return getModelsConfig().pinnedModelId
+}
+
+/** Pin routing to exactly one model, or pass undefined/null to return to auto/all routing. */
+export function setPinnedModelId(id: string | undefined | null): void {
+  const cfg = getModelsConfig()
+  cfg.pinnedModelId = id || undefined
+  if (id) cfg.fireAllMode = false
+  writeConfig(cfg)
 }
 
 function modelsDir(): string {

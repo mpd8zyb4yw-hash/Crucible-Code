@@ -41,8 +41,9 @@ import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
 import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } from './src/CrucibleEngine/taskGraph'
 import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
-import { listModelStatuses, downloadModel, deleteModel, setModelEnabled, setModelsLocation, getModelsConfig } from './src/CrucibleEngine/agent/modelDownloadManager'
+import { listModelStatuses, downloadModel, deleteModel, setModelEnabled, setModelsLocation, getModelsConfig, setFireAllMode, setPinnedModelId } from './src/CrucibleEngine/agent/modelDownloadManager'
 import { routeLocalModelQuery } from './src/CrucibleEngine/agent/localModelRouter'
+import { getStats } from './src/CrucibleEngine/localModels/telemetry'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
 import { DOMAIN_SHARDS } from './src/CrucibleEngine/corpus/db'
@@ -6748,6 +6749,22 @@ app.post('/api/local-models/:id/toggle', (req, res) => {
 
 app.get('/api/local-models/config', (_req, res) => {
   res.json(getModelsConfig())
+})
+
+app.post('/api/local-models/fire-all', (req, res) => {
+  const { fireAll } = req.body ?? {}
+  setFireAllMode(!!fireAll)
+  res.json({ ok: true })
+})
+
+app.post('/api/local-models/pin', (req, res) => {
+  const { modelId } = req.body ?? {}
+  setPinnedModelId(typeof modelId === 'string' && modelId ? modelId : undefined)
+  res.json({ ok: true })
+})
+
+app.get('/api/local-models/telemetry', (_req, res) => {
+  res.json({ stats: getStats() })
 })
 
 app.post('/api/local-models/location', (req, res) => {

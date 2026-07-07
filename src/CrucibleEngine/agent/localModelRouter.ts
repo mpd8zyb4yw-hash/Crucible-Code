@@ -12,7 +12,7 @@
 
 import os from 'os'
 import { LOCAL_MODEL_CATALOG, classifyDomain, type LocalModelSpec, type Domain } from './localModelCatalog'
-import { modelStatus, isModelEnabled, isFireAllMode } from './modelDownloadManager'
+import { modelStatus, isModelEnabled, isFireAllMode, getPinnedModelId } from './modelDownloadManager'
 import { callLocalModel } from './localModelPool'
 import { fmDirectAnswer, checkFmAvailable } from './fmReact'
 import { recordOutcome, markWin } from '../localModels/telemetry'
@@ -127,6 +127,24 @@ export async function routeLocalModelQuery(system: string, user: string): Promis
   if (!candidates.length && !fmUp) return null
 
   const domain = classifyDomain(user)
+
+  const pinnedId = getPinnedModelId()
+  const pinnedSpec = pinnedId ? candidates.find(c => c.id === pinnedId) : undefined
+  if (pinnedId) {
+    // Single-model pin: the user explicitly chose one model — never fan out, never escalate,
+    // even if the pinned model's own answer looks shaky. Honor the override literally.
+    const pinned = pinnedSpec
+      ? await callAsCandidate({ modelId: pinnedSpec.id, modelLabel: pinnedSpec.label, call: () => callLocalModel(pinnedSpec.id, system, user) })
+      : pinnedId === 'track-s-fm' && fmUp
+        ? await callAsCandidate({ modelId: 'track-s-fm', modelLabel: 'Apple On-Device (Track S)', call: () => fmDirectAnswer(user) })
+        : null
+    if (pinned) {
+      markWin(pinned.modelId)
+      return { text: pinned.text, modelId: pinned.modelId, modelLabel: pinned.modelLabel, domain, confidence: pinned.confidence, corroboration: [], corroborated: false, firedAll: false, contributors: [pinned.modelId], method: 'single-model' }
+    }
+    // Pinned model isn't actually ready (deleted/disabled since pinning) — fall through to auto.
+  }
+
   const primarySpec = pickPrimary(domain, candidates)
 
   const primary = primarySpec

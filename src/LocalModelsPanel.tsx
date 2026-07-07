@@ -66,15 +66,58 @@ function ModelBadge({ id, tier }: { id: string; tier: ModelStatus['tier'] }) {
   }
 }
 
+interface ModelStat {
+  modelId: string
+  calls: number
+  wins: number
+  errors: number
+  avgLatencyMs: number
+  winRate: number
+}
+
+type FireMode = 'auto' | 'all' | 'single'
+
 export default function LocalModelsPanel() {
   const [models, setModels] = useState<ModelStatus[]>([])
   const [busy, setBusy] = useState<Record<string, number>>({})
   const [location, setLocation] = useState<string | undefined>()
+  const [fireAll, setFireAll] = useState(false)
+  const [pinnedModelId, setPinnedModelIdState] = useState<string | undefined>()
+  const [stats, setStats] = useState<ModelStat[]>([])
+  const [pickingSingle, setPickingSingle] = useState(false)
 
   const refresh = () => fetch('/api/local-models').then(r => r.json()).then(d => setModels(d.models ?? []))
-  const refreshConfig = () => fetch('/api/local-models/config').then(r => r.json()).then(c => setLocation(c.location))
+  const refreshConfig = () => fetch('/api/local-models/config').then(r => r.json()).then(c => {
+    setLocation(c.location); setFireAll(!!c.fireAllMode); setPinnedModelIdState(c.pinnedModelId || undefined)
+  })
+  const refreshStats = () => fetch('/api/local-models/telemetry').then(r => r.json()).then(d => setStats(d.stats ?? [])).catch(() => {})
 
-  useEffect(() => { refresh(); refreshConfig() }, [])
+  useEffect(() => {
+    refresh(); refreshConfig(); refreshStats()
+    const id = setInterval(refreshStats, 10_000)
+    return () => clearInterval(id)
+  }, [])
+
+const mode: FireMode = pinnedModelId ? 'single' : pickingSingle ? 'single' : fireAll ? 'all' : 'auto'
+
+  const setMode = (next: FireMode) => {
+    if (next === 'all') {
+      setPickingSingle(false); setFireAll(true); setPinnedModelIdState(undefined)
+      fetch('/api/local-models/fire-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fireAll: true }) })
+      fetch('/api/local-models/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelId: null }) })
+    } else if (next === 'auto') {
+      setPickingSingle(false); setFireAll(false); setPinnedModelIdState(undefined)
+      fetch('/api/local-models/fire-all', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fireAll: false }) })
+      fetch('/api/local-models/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelId: null }) })
+    } else {
+      setPickingSingle(true); setFireAll(false)
+    }
+  }
+
+  const pickSingle = (modelId: string) => {
+    setPickingSingle(false); setFireAll(false); setPinnedModelIdState(modelId)
+    fetch('/api/local-models/pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ modelId }) })
+  }
 
   const download = (id: string) => {
     fetch(`/api/local-models/${id}/download`, { method: 'POST' }).then(async res => {
@@ -128,6 +171,36 @@ export default function LocalModelsPanel() {
         </span>
       </div>
 
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}>
+        <span style={{ fontSize: 11.5, fontWeight: 600, color: '#d8d8e8' }}>Routing mode</span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {(['auto', 'all', 'single'] as FireMode[]).map(m => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              title={
+                m === 'auto' ? 'Best-fit model per query, fans out only when an answer looks shaky or the domain benefits from corroboration'
+                  : m === 'all' ? 'Every ready model runs on every query — slower and more battery/RAM-intensive, but every answer gets weighed in'
+                    : 'Pin one model — pick it from the list below'
+              }
+              style={{
+                flex: 1, fontSize: 11, fontWeight: 600, textTransform: 'capitalize', padding: '6px 8px', borderRadius: 8, cursor: 'pointer',
+                color: mode === m ? '#0f1410' : '#b8b8cc',
+                background: mode === m ? '#4db89e' : 'rgba(255,255,255,0.05)',
+                border: `1px solid ${mode === m ? '#4db89e' : 'rgba(255,255,255,0.1)'}`,
+              }}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+        <span style={{ fontSize: 10.5, color: '#77778c' }}>
+          {mode === 'auto' && 'Crucible picks the best-fit model per query and escalates automatically.'}
+          {mode === 'all' && 'Every downloaded, enabled model fires on every query.'}
+          {mode === 'single' && (pinnedModelId ? `Pinned to ${models.find(m => m.id === pinnedModelId)?.label ?? pinnedModelId}. Use this one only.` : 'Pick a ready model below to pin it.')}
+        </span>
+      </div>
+
       {window.electronIPC && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 12, background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}>
           <span style={{ fontSize: 11, color: '#8a8a9e', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -155,6 +228,11 @@ export default function LocalModelsPanel() {
                 {m.params} · ~{m.approxSizeGB.toFixed(1)} GB · {m.license}
               </span>
               <span style={{ fontSize: 10.5, color: '#5c5c72', fontStyle: 'italic' }}>{m.strengthNote}</span>
+              {stats.find(s => s.modelId === m.id) && (
+                <span style={{ fontSize: 10, color: '#5c5c72' }}>
+                  {(() => { const s = stats.find(s => s.modelId === m.id)!; return `${s.calls} call${s.calls === 1 ? '' : 's'} · ${Math.round(s.winRate * 100)}% win rate · ~${s.avgLatencyMs}ms` })()}
+                </span>
+              )}
               {m.id in busy && (
                 <div style={{ height: 3, borderRadius: 2, background: 'rgba(255,255,255,0.08)', marginTop: 4, overflow: 'hidden' }}>
                   <div style={{ height: '100%', width: `${busy[m.id]}%`, background: TIER_COLOR[m.tier], transition: 'width 0.2s ease' }} />
@@ -166,6 +244,20 @@ export default function LocalModelsPanel() {
             </div>
             {m.status.status === 'ready' ? (
               <>
+                {mode === 'single' && (
+                  <button
+                    onClick={() => pickSingle(m.id)}
+                    title="Route every query to this model only, skipping auto-routing and fan-out"
+                    style={{
+                      fontSize: 11, fontWeight: 600, borderRadius: 8, padding: '6px 10px', cursor: 'pointer',
+                      color: pinnedModelId === m.id ? '#0f1410' : '#d8d8e8',
+                      background: pinnedModelId === m.id ? '#4db89e' : 'rgba(255,255,255,0.06)',
+                      border: `1px solid ${pinnedModelId === m.id ? '#4db89e' : 'rgba(255,255,255,0.12)'}`,
+                    }}
+                  >
+                    {pinnedModelId === m.id ? 'Pinned' : 'Use this one'}
+                  </button>
+                )}
                 <button
                   onClick={() => toggle(m.id, !m.enabled)}
                   title={m.enabled ? 'Disable — excluded from routing' : 'Enable — included in routing'}
