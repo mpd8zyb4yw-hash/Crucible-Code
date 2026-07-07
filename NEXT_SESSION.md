@@ -17,7 +17,46 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 46 — user screenshot repro: two chat
+## CURRENT STATE (last updated 2026-07-07, cont. 47 — commits d20924c + 77394ac, tsc clean,
+badge + pygame fixes live-verified via curl on a fresh port-3123 instance)
+
+**Fixed this session (user report: false "AGENT WORKING · GPT OSS 120B" badge in strict
+mode + pygame Run failure + agent timeout):**
+1. **agent_start badge shipped false provenance.** server.ts emitted
+   `driver: currentDriverLabel()` (top free-pool model) before routing, even for
+   server-forced strict requests. Now: strict → "ON-DEVICE (Apple FM + synth)" (matches
+   the pill's /on-device|local/i discriminator), '0' → pool label, hybrid →
+   "on-device first · fallback <pool>". withOfflineFallback gained an onEscalate hook;
+   both server call sites re-emit agent_start with the pool label the moment a hybrid
+   run escalates off-device, so the pill can never show ON-DEVICE for a pool turn.
+   Live-verified: strict snake-game agent run emits ON-DEVICE label.
+2. **"The operation was aborted due to timeout" as chat answer.** Root cause: since
+   cont.36c the server forces requestOffline='strict' per-request for all non-quorum
+   chats, but the FM timeout ceilings (fmReact.ts, synth/universal.ts, server
+   callLocalModel) gated on env CRUCIBLE_OFFLINE === 'strict' (default '1' → short
+   40-45s ceiling, no fallback). All three now gate on !== '0'; callFm additionally
+   wraps TimeoutError into "Local model timed out after Ns (…)" so the raw DOMException
+   can never surface again.
+3. **Run button on pygame code → bare "no module named pygame".** exec-snippet now
+   translates missing-module errors (worker emits stripped "No module named 'x'"
+   shape) into guidance: sandbox is stdlib-only, ask for a single-file HTML/canvas
+   version (playable via Preview). Live-verified. Prevention: STATIC_PREAMBLE now
+   instructs all pipeline models to emit single-file HTML/canvas for games/interactive
+   demos in chat — never pygame.
+
+**Still open (carried from cont.46):**
+- Re-check the snake-game agent run END-TO-END in strict mode with the new 600s ceiling
+  (routing + badge verified; the build itself not followed to completion — FM code-gen
+  quality on a full game is the open question).
+- Verify the lava-seam fix visually in a focused window (sim-proven only).
+- The strict-agent quality tension: coding agent turns now genuinely grind on-device;
+  decide whether FM+synth quality is acceptable or hybrid should be the default for
+  CODE-shaped agent goals.
+- Carried: rebuild phase 2 (composer/SSE extraction), click_element Finder-sidebar
+  recipe, interactive/stdin sandbox runs, GitHub tool discovery, server tsconfig
+  cleanup, live keep-working long-task check.
+
+## PRIOR STATE (cont. 46 — user screenshot repro: two chat
 outputs that "do not capture the user's request in any meaningful way" + two marked
 regressions (ON-DEVICE pill, lava seam). All four root-caused and fixed. tsc app-config
 clean, ambiguity:bench 14/14 (5 new regression cases), server-side fixes live-verified
