@@ -4237,7 +4237,7 @@ export default function App() {
             background: 'rgba(0,0,0,0.4)', animation: 'fadeIn 0.2s ease',
           }} />
           <div style={{
-            position: 'absolute', top: 0, right: 0, bottom: 0, zIndex: 29,
+            position: 'absolute', top: 0, right: 0, bottom: inputBarHeight, zIndex: 29,
             width: 'min(560px, 94vw)',
             background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
             borderLeft: '1px solid rgba(255,255,255,0.08)',
