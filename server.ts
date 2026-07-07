@@ -2215,7 +2215,14 @@ function detectAgentTask(message: string): boolean {
     || /\bhow (do|to|can|would)\b/.test(m) || /\bwhat('?s| is| does)\b/.test(m)
   // Strong build/execute signals — an actual artifact or run is requested.
   const wantsBuild =
-    /\b(create|write|build|make|add|implement|generate|scaffold)\b[\s\S]{0,40}\b(file|script|app|application|website|page|module|package|component|server|api|directory|folder|repo|project)\b/.test(m)
+    // Buildable-artifact nouns: "game" & friends were missing until 2026-07-07 —
+    // "build me a fully playable snake game" matched NOTHING in this function, fell
+    // through to the offline chat brain, timed out, and strict-abstained with a refusal.
+    // A request to build a game/tool/demo is exactly as agentic as one to build an app.
+    /\b(create|write|build|make|add|implement|generate|scaffold)\b[\s\S]{0,40}\b(file|script|app|application|website|page|module|package|component|server|api|directory|folder|repo|project|game|clone|tool|calculator|dashboard|demo|prototype|simulator|simulation|visuali[sz]ation|animation|widget|editor|quiz|puzzle)\b/.test(m)
+    // Runnable-deliverable adjectives: "playable"/"working"/"interactive" promise an
+    // artifact that RUNS — display-in-chat can't satisfy that, only the agent can.
+    || /\b(build|create|make|write|code|program|implement|generate)\b[\s\S]{0,60}\b(playable|interactive|working|functional|runnable|from scratch)\b/.test(m)
     || /\b(run|execute|compile|install|deploy|and run|then run|make it work|get it working|build it)\b/.test(m)
     || /\.(py|js|ts|tsx|jsx|html|css|json|sh|go|rs|java|cpp|c|rb|php)\b/.test(m)
     || /\b(save|write|put)\b[\s\S]{0,20}\b(to|into|as|in)\b[\s\S]{0,20}\.[a-z]/.test(m)

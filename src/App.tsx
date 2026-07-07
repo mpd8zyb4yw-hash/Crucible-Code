@@ -1963,15 +1963,33 @@ export default function App() {
         {/* Top-bar overlap fix: on mobile widths this pill's full label plus the New Chat
             button and agent-progress text had no wrap/shrink handling and could crowd/
             overlap at the right edge — the dot alone still shows mode at a glance. */}
-        <span style={{
-          display: 'flex', alignItems: 'center', gap: 5,
-          fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: '#66667a',
-          background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)',
-          padding: '2px 8px', borderRadius: 999, flexShrink: 0,
-        }}>
-          <span style={{ width: 5, height: 5, borderRadius: '50%', background: mode === 'quorum' ? '#7c7cf8' : '#4db89e', flexShrink: 0 }} />
-          {!isMobile && (mode === 'quorum' ? 'ENSEMBLE · YOUR KEYS' : 'ON-DEVICE')}
-        </span>
+        {(() => {
+          // Provenance-honest badge (2026-07-07): the pill used to assert the session
+          // MODE ("ON-DEVICE") even while the round on screen was answered by an
+          // external free-pool driver (agent runs say "GPT OSS 120B" two lines below —
+          // a 120B model that cannot run on this machine). The badge now reports what
+          // actually produced the latest answer: local → ON-DEVICE (green), external
+          // free-tier pool → FREE POOL (amber). Local agent drivers are labeled
+          // "on-device …" at every agent_start emission site, so that substring is the
+          // discriminator; chat rounds carry synthesisModelId ('local/…' = on-device).
+          const agentDriver = latestRound?.agent?.driver
+          const poolDriven = agentDriver
+            ? !/on-device|local/i.test(agentDriver)
+            : !!latestRound?.synthesisModelId && !/^(local\/|anima$|system$)/.test(latestRound.synthesisModelId)
+          const label = mode === 'quorum' ? 'ENSEMBLE · YOUR KEYS' : poolDriven ? 'FREE POOL' : 'ON-DEVICE'
+          const dot = mode === 'quorum' ? '#7c7cf8' : poolDriven ? '#f0b429' : '#4db89e'
+          return (
+            <span title={poolDriven && agentDriver ? `Answered by ${agentDriver} (free pool)` : undefined} style={{
+              display: 'flex', alignItems: 'center', gap: 5,
+              fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', color: '#66667a',
+              background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.07)',
+              padding: '2px 8px', borderRadius: 999, flexShrink: 0,
+            }}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: dot, flexShrink: 0 }} />
+              {!isMobile && label}
+            </span>
+          )
+        })()}
         <div style={{ flex: 1, minWidth: 8 }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, WebkitAppRegion: 'no-drag' } as any}>
           {thinking && latestRound && (() => {

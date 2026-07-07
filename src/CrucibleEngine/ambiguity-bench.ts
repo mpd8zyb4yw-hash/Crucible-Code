@@ -124,6 +124,59 @@ const CASES: Case[] = [
       return null
     },
   },
+  // ── 2026-07-07 live-failure regressions (user screenshot repro) ──────────────────
+  {
+    name: 'LIVE REPRO — "Build this for me: a snake game …" never asks which file "for" refers to',
+    goal: "Build this for me: a snake game Write the actual working code (real files, no stubs), run it to verify it works, and fix anything that breaks before finishing. If it's a game or interactive app, also produce a self-contained single-file web version (HTML + inline JS/canvas) so it's playable right inside Crucible.",
+    index: index({ 'src/other.ts': ['Unrelated'] }),
+    check: (r) => {
+      if (r.ambiguous) return `expected not ambiguous, got ambiguous (confidence=${r.confidence}, clarification=${r.clarification})`
+      const badRef = r.signals.find((s) => s.type === 'unresolved-reference')
+      if (badRef) return `spurious unresolved-reference on a creation request: ${JSON.stringify(badRef)}`
+      return null
+    },
+  },
+  {
+    name: 'LIVE REPRO — "build me a fully playable snake game" has no no-target signal',
+    goal: 'build me a fully playable snake game',
+    index: index({ 'src/other.ts': ['Unrelated'] }),
+    check: (r) => {
+      if (r.ambiguous) return `expected not ambiguous, got ambiguous (confidence=${r.confidence}, clarification=${r.clarification})`
+      if (r.signals.some((s) => s.type === 'no-target')) return `no-target fired on a creation request`
+      return null
+    },
+  },
+  {
+    name: 'function words after this/that are never treated as symbol references ("fix this for me")',
+    goal: 'fix this for me: the WAL replay in src/wal.ts drops the last record, make replay(x) return every record',
+    index: index({ 'src/other.ts': ['Unrelated'] }),
+    check: (r) => {
+      const forRef = r.signals.find((s) => s.type === 'unresolved-reference' && s.phrase?.toLowerCase() === 'for')
+      if (forRef) return `"for" flagged as an unresolved reference: ${JSON.stringify(forRef)}`
+      return null
+    },
+  },
+  {
+    name: 'empty index (fresh workspace) — prose nouns do not flag as unresolved references',
+    goal: 'update the leaderboard so the ranking respects the tiebreaker',
+    index: index({}),
+    check: (r) => {
+      const s = r.signals.find((s) => s.type === 'unresolved-reference')
+      if (s) return `unresolved-reference fired against an EMPTY index: ${JSON.stringify(s)}`
+      return null
+    },
+  },
+  {
+    name: 'edit-shaped goal against a populated index still interrogates ("fix the tokenizer", zero matches)',
+    goal: 'fix the tokenizer',
+    index: index({ 'src/other.ts': ['Unrelated'] }),
+    check: (r) => {
+      if (!r.ambiguous) return `expected ambiguous — the creation/empty-index bypasses must not swallow real edit-shaped ambiguity`
+      const s = r.signals.find((s) => s.type === 'unresolved-reference')
+      if (!s) return `expected an unresolved-reference signal`
+      return null
+    },
+  },
 ]
 
 function main() {

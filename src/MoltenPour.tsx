@@ -149,10 +149,17 @@ export default function MoltenPour({ phase, progress, wrapRef }: {
 
         // Internal phase: external 'done' means finish the fill, then cool.
         const e = ext.current
+        // Cooling may not start until the fill is EXACTLY 1. The old `< 0.995` gate,
+        // combined with the exponential fill approach below (which plateaus ~0.999),
+        // flipped to cooling with ~0.5% of the half-perimeter permanently unfilled —
+        // a visible 4-5px lava gap right at the bottom-center seam, held through the
+        // entire cooling sweep. The two halves' geometry meets (cont.45b fix holds);
+        // the FILL was stopping short of the meeting point. The snap in the fill block
+        // below guarantees fill reaches exactly 1 in finite frames.
         const ph: 'thinking' | 'pouring' | 'finishing' | 'cooling' =
           e.phase === 'thinking' ? 'thinking'
           : e.phase === 'pouring' ? 'pouring'
-          : fill.current < 0.995 ? 'finishing'
+          : fill.current < 1 ? 'finishing'
           : 'cooling'
 
         if ((ph === 'pouring' || ph === 'finishing') && !pourStart.current) pourStart.current = now
@@ -186,6 +193,10 @@ export default function MoltenPour({ phase, progress, wrapRef }: {
           if (stepv > maxStep) stepv = maxStep
           if (delta > 0.001 && stepv < 0.0012 * dtf) stepv = 0.0012 * dtf
           fill.current = Math.min(1, fill.current + Math.max(0, stepv))
+          // Asymptote snap: once finishing has brought the fill within half a percent,
+          // land it exactly on 1 so the two border halves actually MEET at the seam
+          // (see the cooling-gate comment above — this is the last-4px-gap fix).
+          if (ph === 'finishing' && 1 - fill.current < 0.005) fill.current = 1
         }
 
         // ── cooling sweep + vessel fade, concurrent, min floor ──

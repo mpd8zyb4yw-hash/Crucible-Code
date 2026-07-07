@@ -296,7 +296,16 @@ export const MessageList = memo(function MessageList({
                         <FeedbackButtons query={round.userMessage} synthesis={round.synthesis} promptType={round.promptType} />
                       </div>
                       <div style={{ marginTop: 10, fontSize: 9.5, fontWeight: 600, letterSpacing: '0.08em', color: '#4a4a5e' }}>
-                        CRUCIBLE · ON-DEVICE
+                        {/* Provenance-honest footer (2026-07-07): this said ON-DEVICE
+                            unconditionally, including under agent rounds driven by an
+                            external free-pool model. Report the actual source. */}
+                        {(() => {
+                          const d = round.agent?.driver
+                          const pool = d
+                            ? !/on-device|local/i.test(d)
+                            : !!round.synthesisModelId && !/^(local\/|anima$|system$)/.test(round.synthesisModelId)
+                          return pool ? `CRUCIBLE · FREE POOL${d ? ` · ${d.toUpperCase()}` : ''}` : 'CRUCIBLE · ON-DEVICE'
+                        })()}
                       </div>
                     </>
                   )}

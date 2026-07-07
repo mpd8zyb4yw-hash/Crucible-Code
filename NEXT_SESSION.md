@@ -17,7 +17,70 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 45b — user bug-sweep round 2, all six
+## CURRENT STATE (last updated 2026-07-07, cont. 46 — user screenshot repro: two chat
+outputs that "do not capture the user's request in any meaningful way" + two marked
+regressions (ON-DEVICE pill, lava seam). All four root-caused and fixed. tsc app-config
+clean, ambiguity:bench 14/14 (5 new regression cases), server-side fixes live-verified
+via curl on a fresh port-3111 instance, pill fix live-verified in browser.)
+
+**The four failures (user screenshot, all reproduced before fixing):**
+1. **"Build this for me: a snake game …" → agent finished 0.0s asking which file "for"
+   refers to.** `ambiguity.ts` DEF_REF matched "this for" (pronoun+preposition) and
+   interrogated a build-from-scratch request for unresolved code references. Fixed
+   structurally, not with more noun stoplisting: (a) FUNCTION_WORDS closed-class stoplist
+   (prepositions/pronouns/conjunctions/modals — finite by definition, unlike the noun
+   list); (b) creation-shaped goals (CREATION_GOAL: build/create/write/… + me|a|an|new)
+   skip the unresolved-reference interrogation AND the no-target signal — the code-shape
+   gate's own header comment already said creation "can never be clarified by naming a
+   file" but nothing implemented it; (c) empty semantic index (fresh workspace) skips
+   reference interrogation — zero code means zero resolvable references. Edit-shaped
+   goals against a populated index still interrogate (bench case proves it).
+2. **"build me a fully playable snake game" → "I can't answer this offline right now…
+   strict mode blocks external escalation."** `detectAgentTask` (server.ts) had NO
+   artifact noun for game/tool/demo/etc. and no runnable-deliverable adjective signal —
+   the request matched nothing, fell to the offline chat brain (solveNonCodeTurn), FM
+   timed out, strict-abstained. Added game/clone/tool/calculator/dashboard/demo/…
+   nouns + build/create/… + playable/interactive/working/functional/runnable pattern.
+   Live-verified: the exact prompt now emits agent_start (GPT OSS 120B driver,
+   iter 1/32) instead of the refusal; prompt 1 emits zero clarification_request events.
+3. **Lava seam STILL not connecting at pour end (user's arrow).** cont.45b's geometry
+   fix (shared bottom-center endpoint) holds, but the phase gate `fill < 0.995 →
+   finishing` let cooling start at fill≈0.9962, and drawHalf's `cum[i] <= lim` stops at
+   the last whole SAMPLE point — the bottom edge samples at ~20.5px/segment on a wide
+   card, so the 0.4% fill shortfall quantized to a ~41px unlit notch at the seam, held
+   through the whole cooling sweep. Fixed in MoltenPour.tsx: finishing snaps fill to
+   exactly 1 once within 0.5%, cooling gate is now `fill < 1`. Verified by headless
+   simulation of the verbatim component math: OLD → 41.1px seam gap at first cooling
+   frame; FIXED → 0.0px, cooling starts the same frame. (Browser rAF verification is
+   impossible in a background-throttled preview tab — rAF never fires; re-verify
+   visually in a FOCUSED window.)
+4. **ON-DEVICE pill circled while "AGENT FINISHED · GPT OSS 120B" sat right under it.**
+   The header pill asserted the session MODE while an external free-pool driver produced
+   the round — and MessageList's reply footer hardcoded "CRUCIBLE · ON-DEVICE"
+   unconditionally. Both are provenance-honest now: pill shows FREE POOL (amber dot,
+   tooltip "Answered by GPT OSS 120B (free pool)") when the latest round's agent driver /
+   synthesisModelId is non-local, ON-DEVICE (green) otherwise; footer says
+   "CRUCIBLE · FREE POOL · <driver>" on pool-driven rounds. Live-verified in browser:
+   pill flips to FREE POOL during a GPT-OSS-driven agent run, back to ON-DEVICE on a
+   local reply. Local agent drivers are labeled "on-device …" at every agent_start site,
+   which is the discriminator.
+
+**Still open (next session):**
+- **The architectural tension the pill now makes visible:** non-quorum chat is
+  server-enforced strict-local, but the AGENT path drives on the external free pool
+  (driver.ts tier is Groq/Mistral only). Decide: either route agent turns local-first
+  under non-quorum (L2.5 FM ReAct driver exists as of aa4fe08 for desktop actions;
+  coding quality on FM is the blocker) or keep the split and let the honest FREE POOL
+  badge carry it. Related prior item: GPT OSS 120B refuses Mac-control goals — make the
+  FM driver primary for DESKTOP_ACTION-shaped goals.
+- Verify the seam fix visually in a focused window (sim-proven only); re-check the
+  snake-game agent run END-TO-END (routing verified; the build itself + playable
+  single-file HTML output not followed to completion this session).
+- Carried from cont.45b: rebuild phase 2 (composer + SSE send() reducer + topbar
+  extraction), click_element Finder-sidebar recipe, interactive/stdin sandbox runs,
+  GitHub tool discovery, server tsconfig cleanup, live keep-working long-task check.
+
+## PRIOR STATE (cont. 45b — user bug-sweep round 2, all six
 reported issues root-caused and fixed, plus the in-app code Run/Preview sandbox shipped.
 tsc app-config clean, ambiguity:bench 9/9, everything below live-verified via curl + browser.)
 

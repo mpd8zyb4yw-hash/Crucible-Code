@@ -72,6 +72,31 @@ const STOP_REFS = new Set([
   'exact', 'complete', 'ordering', 'the', 'this', 'that', 'a', 'an',
 ])
 const FILE_TOKEN = /[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,5}/
+// Closed-class function words (prepositions, pronouns, conjunctions, determiners,
+// modals). Unlike the noun stoplist above — which its own history proves is an
+// unbounded losing game — these are FINITE grammatical classes, so listing them is
+// sound. Added 2026-07-07: "Build this for me: a snake game …" → DEF_REF matched
+// "this for" and the agent stopped at 0 iterations asking the user which file "for"
+// refers to. A preposition can never be a code reference; drop them all, permanently.
+const FUNCTION_WORDS = new Set([
+  'for', 'with', 'from', 'into', 'onto', 'over', 'under', 'about', 'above', 'below',
+  'between', 'through', 'during', 'without', 'within', 'along', 'across', 'behind',
+  'beyond', 'toward', 'towards', 'upon', 'off', 'out', 'and', 'or', 'but', 'nor',
+  'because', 'since', 'unless', 'until', 'although', 'though', 'whether', 'while',
+  'when', 'where', 'why', 'how', 'what', 'who', 'whom', 'whose', 'which',
+  'me', 'you', 'him', 'her', 'them', 'us', 'it', 'its', 'my', 'your', 'our', 'their',
+  'his', 'hers', 'theirs', 'mine', 'yours', 'ours', 'one', 'ones', 'once', 'now',
+  'not', 'all', 'any', 'each', 'every', 'some', 'few', 'more', 'most', 'other',
+  'another', 'such', 'only', 'own', 'too', 'very', 'just', 'also', 'then', 'than',
+  'will', 'would', 'can', 'could', 'should', 'shall', 'may', 'might', 'must',
+])
+// Creation-shaped request: a build-from-scratch verb aimed at a NEW artifact
+// ("build me a snake game", "create a landing page", "write a fully playable …").
+// The header comment on the code-shape gate below already states the principle: a
+// build-from-scratch request "can never be clarified by naming a file" — but until
+// 2026-07-07 nothing actually implemented it, so creation asks were interrogated for
+// unresolved references / missing targets they definitionally cannot have.
+const CREATION_GOAL = /\b(build|create|make|write|code|program|generate|implement|scaffold|produce|design)\b[\s\S]{0,30}\b(me|us|a|an|new|from scratch)\b/i
 // Common verbs/conjugations that show up right after "the/that/this" in ordinary prose
 // (e.g. "...that returns true...", "...this is a pattern...") — never code symbols, so
 // they'd otherwise be misread as unresolved-reference nouns.
@@ -144,6 +169,20 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   // still runs unconditionally since it's purely additive/harmless goal enrichment, never
   // a source of a false "ambiguous" verdict.
   const namesAFile = FILE_TOKEN.test(goal)
+  // Two more structural bypasses for the which-file interrogation (2026-07-07, both from
+  // the live "Build this for me: a snake game" failure — agent finished in 0.0s asking
+  // which file "for" refers to):
+  //   • creationShaped — the goal asks to CREATE a new artifact; there is no existing
+  //     code for a definite reference to be ambiguous against, and "which file or
+  //     symbol?" is definitionally unanswerable.
+  //   • emptyIndex — the semantic index has no files (fresh/empty workspace); every
+  //     lookup would return 0 candidates and every prose noun would flag as an
+  //     unresolved reference. Zero code means zero resolvable references, not an
+  //     infinitely ambiguous request.
+  // Auto-resolution below still runs when the index has content (purely additive);
+  // only the false-"ambiguous" SIGNALS are skipped.
+  const creationShaped = CREATION_GOAL.test(goal)
+  const emptyIndex = !opts.index || opts.index.files.length === 0
   const refs: string[] = []
   let m: RegExpExecArray | null
   DEF_REF.lastIndex = 0
@@ -152,7 +191,7 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
     const low = noun.toLowerCase()
     // Registered tool names ("prefer the control_mac tool") are always-resolvable
     // references — they name a live capability, not a codebase symbol to hunt for.
-    if (!STOP_REFS.has(low) && !VERB_STOPLIST.has(low) && !registry.get(noun)) refs.push(noun)
+    if (!STOP_REFS.has(low) && !VERB_STOPLIST.has(low) && !FUNCTION_WORDS.has(low) && !registry.get(noun)) refs.push(noun)
   }
 
   for (const ref of [...new Set(refs)]) {
@@ -171,8 +210,9 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
       resolvedReferences.push({ phrase: ref, symbol, rel })
       // Name it inline so downstream stages get a concrete target.
       rewritten = rewritten.replace(new RegExp(`\\b(the|that|this)\\s+${ref}\\b`, 'i'), `$1 ${ref} (\`${symbol}\` in ${rel})`)
-    } else if (namesAFile) {
-      continue // a concrete target is already named — don't flag ambiguity on prose nouns
+    } else if (namesAFile || creationShaped || emptyIndex) {
+      continue // concrete target named / creating something new / nothing indexed to
+               // reference — don't flag ambiguity on prose nouns
     } else if (entries.length === 0) {
       signals.push({ type: 'unresolved-reference', phrase: ref, severity: 0.5,
         detail: `"the ${ref}" does not match any symbol in the codebase` })
@@ -184,7 +224,11 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   }
 
   // ── 2. No target at all ─────────────────────────────────────────────────────────
-  if (!namesAFile && resolvedReferences.length === 0 && refs.length === 0) {
+  // Creation-shaped goals are exempt: "build me a snake game" has no target file BY
+  // DESIGN — the deliverable is new. Flagging it here scored real build requests as
+  // ambiguous (0.4 × 0.3 underspecified compounded to confidence 0.42 < 0.6 → the agent
+  // stopped at 0 iterations asking "Which file or symbol should this change target?").
+  if (!namesAFile && !creationShaped && resolvedReferences.length === 0 && refs.length === 0) {
     signals.push({ type: 'no-target', severity: 0.4,
       detail: 'no target file or resolvable symbol named in the request' })
   }
