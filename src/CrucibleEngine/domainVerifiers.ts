@@ -36,9 +36,16 @@ function extractNumericClaims(text: string): NumericClaim[] {
     const numRaw = m[2]
     const claimed = parseFloat(numRaw.replace(/,/g, ''))
     if (isNaN(claimed)) continue
+    // The broadened capture can swallow prose ("...subtract 2026 from 2007.\n\n2007 - 2026")
+    // because letters/newlines are now allowed. Reduce to the arithmetic clause immediately
+    // left of the '=': the longest right-anchored token-substring that cleanly evaluates.
+    // Without this, a paragraph-length LHS fails normalizeExpr and the real equation next
+    // to '=' is never checked.
+    const expr = rightArithClause(m[1])
+    if (!expr) continue
     // Group 2 sits at the end of the full match → its start is match-end minus its length.
     const numStart = m.index + m[0].length - numRaw.length
-    results.push({ expr: m[1].trim(), claimed, numStart, numRaw })
+    results.push({ expr, claimed, numStart, numRaw })
   }
   return results.slice(0, 10)
 }
@@ -76,6 +83,19 @@ function tryEval(expr: string): number | null {
     const result = Function(`"use strict"; return (${cleaned})`)()
     return typeof result === 'number' && isFinite(result) ? result : null
   } catch { return null }
+}
+
+// Longest right-anchored substring of a (possibly prose-laden) LHS that tryEval accepts.
+// Tokenizes on whitespace and drops leading tokens until the remainder cleanly evaluates,
+// so we keep only the arithmetic clause adjacent to '=' and never merge unrelated numbers
+// from earlier in the sentence. Returns '' when no suffix is evaluable.
+function rightArithClause(lhs: string): string {
+  const toks = lhs.trim().split(/\s+/).filter(Boolean)
+  for (let i = 0; i < toks.length; i++) {
+    const cand = toks.slice(i).join(' ')
+    if (tryEval(cand) !== null) return cand
+  }
+  return ''
 }
 
 // Format a computed number for splicing back into prose: plain integer where exact,

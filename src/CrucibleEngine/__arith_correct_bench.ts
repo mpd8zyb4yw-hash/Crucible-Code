@@ -11,6 +11,8 @@ const cases: Case[] = [
   { name: 'bare wrong product', in: 'So 47 * 53 = 2591 in total.', expectNow: '2491' },
   { name: 'unicode times wrong', in: 'We compute 12 × 12 = 140.', expectNow: '144' },
   { name: 'currency product', in: 'Total: $12 * 4 = $50.', expectNow: '$48' },
+  { name: 'equation embedded in prose paragraph', in: 'To find out, you subtract 2026 from 2007.\n\n2007 - 2026 = -20 years.', expectNow: '-19' },
+  { name: 'prose before clean product', in: 'We have 5 apples, but 3 * 4 = 13 in the box.', expectNow: '12' },
   // ── Must NOT touch (ambiguous / non-arithmetic / algebra) ──
   { name: 'algebra variable', in: 'Solving 3x = 12 gives x = 4.', expectNoChange: true },
   { name: 'ordinal glued to digit', in: 'The 23rd item = 5 units.', expectNoChange: true },
