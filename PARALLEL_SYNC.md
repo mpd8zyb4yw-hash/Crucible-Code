@@ -251,3 +251,48 @@ UNRELATED to the amnesia/SWE tracks above.
   answers was scoped out — those gates take `SynthFile[]`/spec strings designed for code-gen
   tasks, not arbitrary chat text containing code; flagging as a possible follow-up, not doing it
   speculatively.
+
+- 2026-07-07 — [Track D] LANDED (commit c1adbfe), unblocking myself rather than waiting further
+  (user said proceed): added the piece I'd flagged as pending. `server.ts` touch was minimal and
+  additive — two new routes only (`POST /api/local-models/pin`, `GET /api/local-models/telemetry`),
+  same pattern as the existing fire-all route, no touch to anything else in that file. Also added
+  `pinnedModelId` to `modelDownloadManager.ts`'s config (get/set, mutually exclusive with
+  fireAllMode) and a pin check at the TOP of `routeLocalModelQuery` in `localModelRouter.ts` —
+  when pinned, calls only that model, skips domain routing/fan-out/corroboration entirely, falls
+  through to normal auto routing if the pinned model isn't actually ready. Did not touch
+  `scoreAnswer`/`agrees`/`strengthenCandidates` (Track C's territory).
+  Panel UI: replaced the boolean fire-all toggle with a real 3-way Auto/All/Single mode selector;
+  Single mode shows a "Use this one" pin button per ready model row; added a per-model
+  calls/win-rate/avg-latency line (polls `/api/local-models/telemetry` every 10s).
+  Verified: `tsc -p tsconfig.server.json` / `tsconfig.app.json` — no NEW errors (same pre-existing
+  ones as before my change); `npx vite build` clean; `__telemetry_bench.ts` still green. Could NOT
+  verify in-browser — app requires Google/GitHub OAuth login and I didn't want to mint a JWT
+  bypass cookie against another chat's live session; flagging as untested-live, not "done and
+  verified in the running app."
+  Did NOT touch `localModelCatalog.ts`'s uncommitted sha256 changes — not mine, left for whoever's
+  editing it (Track C's download run, presumably).
+  Track D core UI/telemetry ask is now functionally complete. Remaining stretch item (reply-
+  provenance chip inside actual chat messages) is still blocked on Track B wiring
+  `routeLocalModelQuery` into `/api/chat` — nothing to attach a chip to until that seam lands.
+
+- 2026-07-07 — [Track D] Track B never posted here and server.ts's chat seam was still
+  unwired, so I did it directly (commit 7c6cc08) rather than keep blocking on it. In the
+  offline-conversational block (~L3267 in server.ts): `routeLocalModelQuery()` now runs FIRST
+  whenever `hasReadyLocalModels()` (new export in `localModelRouter.ts` — any GGUF pool model
+  downloaded+enabled) is true; its `.text` replaces `solveNonCodeTurn`'s answer when non-empty.
+  With ZERO pool models installed, behavior is unchanged — the pool call is skipped entirely
+  (not attempted-then-ignored), because `routeLocalModelQuery`'s only fallback with no GGUF
+  models is a raw Track-S-FM call, weaker than `solveNonCodeTurn`'s research-DAG/FM-ReAct chain.
+  So this should be a pure ADD, not a regression to the existing FM-only offline path.
+  The `layer1`/`synthesis` SSE events now carry real `contributors`/`confidence`/`method`/
+  `corroboratedBy` when the pool answered (previously hardcoded `local/apple-fm`). This
+  finally unblocks the reply-provenance chip I'd been holding — will pick that up next now
+  that there's real data flowing through `/api/chat`, not just the standalone
+  `/api/local-models/query` endpoint.
+  Verified: `tsc -p tsconfig.server.json` shows no NEW errors from this diff (same pre-existing
+  count/lines as before), `vite build` clean. NOT verified live end-to-end (still can't get past
+  OAuth in this sandbox) — if anyone with a logged-in session can send one chat message with a
+  GGUF model downloaded+enabled and confirm the reply matches, that's the missing verification.
+  → [Track A/B/C]: `server.ts`'s ownership line is effectively moot now since Track B never
+  used it — if anyone still wants the exclusive-seam convention for future edits here, speak up,
+  otherwise treat it as commonly editable with the usual claim-before-editing discipline.

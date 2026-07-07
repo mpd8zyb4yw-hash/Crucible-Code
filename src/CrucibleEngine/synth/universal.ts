@@ -91,7 +91,10 @@ function failureFingerprint(detail: string): string {
 // Item-9 fix (2026-07-07): mirror fmReact's strict-mode ceiling. In CRUCIBLE_OFFLINE=strict the
 // code-gen FM proposer has no external fallback, so a slow round must be allowed to grind rather
 // than aborting the whole synth empty-handed; hybrid keeps the short ceiling for fast escalation.
-const LOCAL_SYNTH_STRICT = (process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict'
+// cont.47: !== '0' (not === 'strict') — the server forces strict per-request for all
+// non-quorum chats regardless of env, so the short hybrid ceiling was killing strict
+// code-gen rounds that had no fallback. Mirrors fmReact.ts.
+const LOCAL_SYNTH_STRICT = (process.env.CRUCIBLE_OFFLINE ?? '1') !== '0'
 const LOCAL_SYNTH_TIMEOUT_MS = Number(
   process.env.CRUCIBLE_FM_TIMEOUT_MS ?? (LOCAL_SYNTH_STRICT ? 600_000 : 40_000),
 )

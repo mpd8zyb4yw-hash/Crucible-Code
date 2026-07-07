@@ -1150,7 +1150,9 @@ async function checkLocalInference(): Promise<boolean> {
 // → generous (still bounded so a wedged daemon can't hang forever); hybrid keeps the short
 // ceiling so a stall escalates quickly. Env-overridable via CRUCIBLE_FM_TIMEOUT_MS.
 const LOCAL_FM_TIMEOUT_MS = Number(
-  process.env.CRUCIBLE_FM_TIMEOUT_MS ?? ((process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict' ? 600_000 : 30_000),
+  // cont.47: !== '0' — non-quorum requests are strict per-request regardless of env,
+  // so only an explicit CRUCIBLE_OFFLINE=0 keeps the short ceiling. Mirrors fmReact.ts.
+  process.env.CRUCIBLE_FM_TIMEOUT_MS ?? ((process.env.CRUCIBLE_OFFLINE ?? '1') !== '0' ? 600_000 : 30_000),
 )
 
 // Fail-silent local call: returns '' on any error (used where the pipeline must
@@ -1287,6 +1289,10 @@ const STATIC_PREAMBLE =
   'always in force: respond in plain text with no emojis or decorative pictographs; ' +
   'be rigorous, precise, and direct; never wrap prose in code blocks or variable ' +
   'assignments; lead with substance, not preamble; do not restate the question. ' +
+  'When asked to build a game, animation, or interactive demo in chat, emit a single ' +
+  'self-contained HTML file with inline JS/canvas (no external assets or third-party ' +
+  'packages) — Crucible can preview and run that in-app; python packages like pygame ' +
+  'cannot run in its sandbox. ' +
   'Task-specific instructions follow.'
 
 // Short preamble for token-constrained providers — omits the pipeline framing but
@@ -2646,8 +2652,16 @@ app.post('/api/chat', async (req, res) => {
     } catch (e) {
       console.warn('[Index] failed to build codebase context:', e)
     }
-    send({ type: 'agent_start', driver: currentDriverLabel(), projectPath, resumed: !!resumable || !!iterCheckpoint })
-    console.log(`[Agent] Starting — driver: ${currentDriverLabel()}, project: ${projectPath}, planned: ${needsPlan(message)}, resume: ${!!resumable}, checkpoint: ${!!iterCheckpoint}, memory: ${memoryDigest.length}c, index: ${codebaseContext.length}c`)
+    // Provenance-honest driver badge (same rule as the pill/footer): a strict request
+    // NEVER touches the external pool, so naming a free-pool model ("GPT OSS 120B")
+    // here ships false provenance to the UI. Label what will actually drive the loop.
+    const agentDriverLabel = requestOffline === 'strict'
+      ? 'ON-DEVICE (Apple FM + synth)'
+      : requestOffline === '0'
+      ? currentDriverLabel()
+      : `on-device first · fallback ${currentDriverLabel()}`
+    send({ type: 'agent_start', driver: agentDriverLabel, projectPath, resumed: !!resumable || !!iterCheckpoint })
+    console.log(`[Agent] Starting — driver: ${agentDriverLabel}, project: ${projectPath}, planned: ${needsPlan(message)}, resume: ${!!resumable}, checkpoint: ${!!iterCheckpoint}, memory: ${memoryDigest.length}c, index: ${codebaseContext.length}c`)
 
     // Keep codebase index fresh as the agent mutates files
     const onFileMutated = (absPaths: string[]) => {
@@ -5625,10 +5639,18 @@ app.post('/api/sandbox/exec-snippet', async (req, res) => {
     const { executeCode, detectLanguage } = await import('./src/CrucibleEngine/sandbox')
     const lang = (language && language !== 'auto' ? language : detectLanguage(code)) as any
     const result = await executeCode(code.slice(0, 200_000), lang, 15_000)
+    // The on-device sandbox is intentionally stdlib-only (network-denied, no pip). A
+    // third-party import (pygame et al.) fails with a bare ModuleNotFoundError that
+    // reads like a Crucible bug. Translate it into what the user can actually do.
+    let friendlyError = result.error
+    const missingMod = /ModuleNotFoundError: No module named '([^']+)'/.exec(result.error ?? '')
+    if (missingMod) {
+      friendlyError = `This code needs the third-party package "${missingMod[1]}", which isn't available in Crucible's on-device sandbox (it runs standard-library code only, with no network or pip). Ask Crucible for a version that runs here — e.g. "rewrite this as a single-file HTML/canvas version" for games, which is playable via the Preview button.`
+    }
     res.json({
       success: result.success,
       output: result.output || '',
-      error: result.error,
+      error: friendlyError,
       language: result.language,
       staticOnly: result.staticOnly ?? false,
       ms: result.executionMs,

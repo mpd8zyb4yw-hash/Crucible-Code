@@ -39,7 +39,13 @@ const DEFAULT_MAX_ROUNDS = 8
 // single most trust-damaging failure. Strict mode gets a generous ceiling (still bounded so a
 // truly wedged daemon can't hang forever); hybrid keeps the short ceiling so a stall escalates
 // quickly to the external pool. Both env-overridable for tuning.
-const FM_STRICT = (process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict'
+// cont.47: gate on !== '0', not === 'strict'. Since cont.36c the server forces
+// requestOffline='strict' PER-REQUEST for every non-quorum chat regardless of env, so with
+// the default env ('1') these strict requests ran with the short hybrid ceiling AND no
+// external fallback — a hard code-gen turn blew the 45s window and the raw AbortSignal
+// DOMException ("The operation was aborted due to timeout") became the user-facing answer.
+// Only an explicit CRUCIBLE_OFFLINE=0 (external-only) keeps the short ceiling.
+const FM_STRICT = (process.env.CRUCIBLE_OFFLINE ?? '1') !== '0'
 const FM_TIMEOUT_MS = Number(
   process.env.CRUCIBLE_FM_TIMEOUT_MS ?? (FM_STRICT ? 600_000 : 45_000),
 )
@@ -47,6 +53,20 @@ const FM_TIMEOUT_MS = Number(
 // ── FM call helper ────────────────────────────────────────────────────────────
 
 async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS): Promise<string> {
+  try {
+    return await callFmInner(system, messages, timeoutMs)
+  } catch (e: any) {
+    // Never let the raw AbortSignal DOMException ("The operation was aborted due to
+    // timeout") propagate — it has surfaced verbatim as a chat answer. Rethrow with a
+    // message a user (and the escalation path) can act on.
+    if (e?.name === 'TimeoutError' || /aborted due to timeout/i.test(String(e?.message ?? ''))) {
+      throw new Error(`Local model timed out after ${Math.round(timeoutMs / 1000)}s (Apple FM daemon on ${FM_URL})`)
+    }
+    throw e
+  }
+}
+
+async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number): Promise<string> {
   const res = await fetch(`${FM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
