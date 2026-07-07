@@ -159,6 +159,10 @@ export interface Critique { text: string; done: boolean }
 
 export interface Round {
   id: string
+  /** Owning conversation thread. Rounds from every open chat live in ONE global array
+   *  (streaming updaters are keyed by unique round id, so a background chat keeps
+   *  streaming while another is displayed); the UI renders the convId-filtered view. */
+  convId?: string
   userMessage: string
   models: DynamicModel[]
   synthesisModelId: string
@@ -309,9 +313,9 @@ export function agentReducer(state: AgentState | null | undefined, ev: any): Age
   }
 }
 
-export function emptyRound(id: string, userMessage: string): Round {
+export function emptyRound(id: string, userMessage: string, convId?: string): Round {
   return {
-    id, userMessage,
+    id, convId, userMessage,
     models: [], synthesisModelId: '', promptType: '', complexity: 'complex', cached: false,
     responses: {}, done: {}, scores: {},
     expandedModel: null,

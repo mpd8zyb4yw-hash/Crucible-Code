@@ -17,8 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 48 — trust-audit handoff; every item below
-re-verified LIVE from a cold state per the audit's definition of fixed)
+## CURRENT STATE (last updated 2026-07-07, cont. 49 — F parallel chats shipped + E2E-verified)
 
 **Trust audit scoreboard (handoff items A–H):**
 - **B+C agent reliability / playable game — Fixed (verified via: cold API repro + full real-UI
@@ -51,9 +50,23 @@ re-verified LIVE from a cold state per the audit's definition of fixed)
   replaced with the canonical symmetric Feather gear. Traffic lights: attempted, unverified —
   blocked by: needs an Electron-window visual check (browser preview can't show them);
   electron.cjs uses hiddenInset + trafficLightPosition {12,16}, NavRail already pads 34px.
-- **F panels — Partial: history/agents mutual exclusion Fixed (verified via UI: opening Agents
-  from History closes History). NOT started: parallel chats (needs per-conversation stream
-  state), history as slide-out-in-place, agent pane via left-strip pattern.
+- **F panels — Parallel chats DONE (cont. 49, E2E-verified in the real browser UI): rounds from
+  ALL open conversations live in ONE global array, each tagged convId (streaming setRounds
+  updaters stay keyed by unique roundId, so a background chat keeps streaming while another is
+  on screen); thinking/liveRound/agentStart/agentProgress/abort are per-conv maps with an
+  active-conv derived view (App.tsx just after conversationIdRef); topbar gains an open-chats
+  strip (chip per in-memory conv, orange pulse dot while running, × closes = memory only —
+  History keeps it, strip auto-hides at 1 chat); "New chat" now opens a PANEL (previous conv
+  stays open and keeps running); Stop cancels only the on-screen chat; crucible_active_task
+  stores convId so reload-resume lands in the owning thread; history restore MERGES into the
+  pool instead of replacing it. Verified live: two overlapping sends answered independently,
+  switching chats shows the right thread with the background answer landed, close works, tsc
+  app-config clean. Still open in F: history as slide-out-in-place, agent pane left-strip.
+  KNOWN LIMITS: (a) debugBus 'thought' bridge is global → concurrent AGENT runs cross-post
+  progress lines (cosmetic); (b) crucible_active_task holds only the LAST run, so a reload
+  resumes one of N parallel runs (server-side final-patch still recovers the rest); (c)
+  background-conv streaming isn't continuously saved to the conv store — the server-side
+  roundId→conversationId registry patches finals, same as before.
 - **G+H — Not started** (working animations, model-switch popup on (+), agent command list UX,
   single-run multi-step collapse).
 
@@ -68,8 +81,10 @@ re-verified LIVE from a cold state per the audit's definition of fixed)
   harmless, prune when stale.
 - Stale `tsx server.ts` processes accumulated again (5 found) — the known port hazard; killed.
 
-**Next (in order): 1) F panel architecture (parallel chats is the big one), 2) G+H features,
-3) traffic-light Electron visual verify, 4) shrink harden/critic latency on game runs.**
+**Next (in order): 1) shrink harden/critic latency on build runs, 2) more game templates
+(pong/breakout) + input-responsiveness in the runtime gate, 3) G+H features, 4) F remainder
+(history slide-out-in-place, agent pane left-strip), 5) traffic-light Electron visual verify
+(they sit TOP LEFT — an earlier note said top right, that was wrong).**
 
 
 ## PRIOR STATE (cont. 46 — user screenshot repro: two chat

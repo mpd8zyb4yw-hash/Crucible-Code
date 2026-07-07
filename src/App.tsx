@@ -23,16 +23,23 @@ import { AuthScreen } from './chat/AuthScreen'
 import { MessageList } from './chat/MessageList'
 
 export default function App() {
-  const [rounds, setRounds]               = useState<Round[]>([])
+  // F panels — parallel chats: rounds from EVERY open conversation live in this one
+  // array (each tagged with convId). Streaming updaters are keyed by unique round id,
+  // so a backgrounded chat keeps streaming while another is on screen; the rendered
+  // `rounds` below is the convId-filtered view of the active conversation.
+  const [allRounds, setAllRounds]         = useState<Round[]>([])
+  const setRounds = setAllRounds  // round-id-keyed updaters are conversation-agnostic
   const [input, setInput]                 = useState('')
-  const [thinking, setThinking]           = useState(false)
+  // Per-conversation live-run state — keyed by convId so N chats can run in parallel.
+  const [thinkingByConv, setThinkingByConv] = useState<Record<string, boolean>>({})
   // ── Agent live timer ──────────────────────────────────────────────────────
-  const [agentStartTime, setAgentStartTime]   = useState<number | null>(null)
+  const [agentStartByConv, setAgentStartByConv] = useState<Record<string, number | null>>({})
   const [agentElapsed, setAgentElapsed]       = useState(0)
-  const [agentProgress, setAgentProgress]     = useState<{
+  type AgentProgress = {
     stepIndex: number; stepTotal: number; stepIntent: string
     iter: number; maxIters: number
-  } | null>(null)
+  }
+  const [agentProgressByConv, setAgentProgressByConv] = useState<Record<string, AgentProgress | null>>({})
   // ── Resume banner ─────────────────────────────────────────────────────────
   const [resumeOffer, setResumeOffer] = useState<{
     goal: string; projectPath: string; stepIntent: string
@@ -50,7 +57,7 @@ export default function App() {
   const [ensembleConfirm, setEnsembleConfirm] = useState<null | { message?: string; noKeys?: boolean }>(null)
   // The round currently streaming live in THIS session — the only round that gets the
   // molten pour overlay (a restored/historical round must never replay the animation).
-  const [liveRoundId, setLiveRoundId] = useState<string | null>(null)
+  const [liveRoundByConv, setLiveRoundByConv] = useState<Record<string, string | null>>({})
   // ── v3 left-rail tab shell — Chat is the existing full view; History/Settings are
   // dedicated full-page views (see NavRail.tsx / HistoryTabView.tsx / SettingsTabView.tsx).
   // The system drawers (Library/SelfRepair/etc.) live in Settings.
@@ -299,6 +306,40 @@ export default function App() {
   const conversationIdRef = useRef(conversationId)
   useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
 
+  // ── Active-conversation view (F panels: parallel chats) ────────────────────
+  // Everything below App's render path reads these names exactly as before the
+  // refactor — they are now the active conversation's slice of the per-conv maps.
+  const rounds = allRounds.filter(r => (r.convId ?? conversationId) === conversationId)
+  const thinking = !!thinkingByConv[conversationId]
+  const anyThinking = Object.values(thinkingByConv).some(Boolean)
+  const liveRoundId = liveRoundByConv[conversationId] ?? null
+  const agentStartTime = agentStartByConv[conversationId] ?? null
+  const agentProgress = agentProgressByConv[conversationId] ?? null
+  const setConvThinking = (cid: string, v: boolean) =>
+    setThinkingByConv(prev => ({ ...prev, [cid]: v }))
+  const setConvLiveRound = (cid: string, roundId: string | null) =>
+    setLiveRoundByConv(prev => ({ ...prev, [cid]: roundId }))
+  const setConvAgentStart = (cid: string, t: number | null) =>
+    setAgentStartByConv(prev => ({ ...prev, [cid]: t }))
+  const setConvAgentProgress = (cid: string, p: AgentProgress | null) =>
+    setAgentProgressByConv(prev => ({ ...prev, [cid]: p }))
+  // Open-chats strip model: every conversation that has rounds in memory, plus the
+  // active (possibly still-empty) one. Closing a chat removes its rounds from memory
+  // only — the server-side conversation store keeps it reopenable from History.
+  const openChats = (() => {
+    const ids: string[] = []
+    for (const r of allRounds) {
+      const cid = r.convId ?? conversationId
+      if (!ids.includes(cid)) ids.push(cid)
+    }
+    if (!ids.includes(conversationId)) ids.push(conversationId)
+    return ids.map(id => ({
+      id,
+      title: allRounds.find(r => (r.convId ?? conversationId) === id)?.userMessage?.slice(0, 34) || 'New chat',
+      live: !!thinkingByConv[id],
+    }))
+  })()
+
   // ── Reconnect state (Task 5) ──────────────────────────────────────────────
   const [reconnecting, setReconnecting] = useState(false)
 
@@ -327,7 +368,8 @@ export default function App() {
   const scrollLockedRef = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const synthesisRef = useRef<Record<string, string>>({})
-  const abortRef = useRef<AbortController | null>(null)
+  // One in-flight controller per conversation — Stop only cancels the chat on screen.
+  const abortRef = useRef<Record<string, AbortController | null>>({})
   const prewarmTokenRef = useRef<string | null>(null)
   const prewarmDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const inputBarRef = useRef<HTMLDivElement>(null)
@@ -644,7 +686,7 @@ export default function App() {
 
   const reconnectActiveTask = async () => {
     if (!authUser || authUser === 'loading') return
-    let saved: { taskId: string; userMessage: string; ts: number } | null = null
+    let saved: { taskId: string; userMessage: string; ts: number; convId?: string } | null = null
     try { saved = JSON.parse(localStorage.getItem('crucible_active_task') || 'null') } catch {}
     // No (fresh) active task → just refresh the session to pick up anything finished while away.
     if (!saved?.taskId || Date.now() - (saved.ts ?? 0) > 3_600_000) {
@@ -662,17 +704,20 @@ export default function App() {
     }
     reconnectingTaskRef.current = saved.taskId
     setReconnecting(true)
+    // Resume into the conversation the task belonged to (falls back to the active one
+    // for tasks saved before convId existed).
+    const convId = saved.convId ?? conversationIdRef.current
     // Reset the round so the from=0 replay rebuilds it exactly (no double-applied tokens).
     setRounds(prev => {
-      const fresh = emptyRound(saved!.taskId, saved!.userMessage)
+      const fresh = emptyRound(saved!.taskId, saved!.userMessage, convId)
       return prev.some(r => r.id === saved!.taskId) ? prev.map(r => r.id === saved!.taskId ? fresh : r) : [...prev, fresh]
     })
-    setThinking(true); wasThinkingRef.current = true
+    setConvThinking(convId, true); wasThinkingRef.current = true
     try {
       const res = await apiFetch(`${API_BASE}/api/task/stream?taskId=${encodeURIComponent(saved.taskId)}&from=0`)
-      if (res.ok && res.body) await consumeStream(res.body.getReader(), saved.taskId, saved.userMessage)
+      if (res.ok && res.body) await consumeStream(res.body.getReader(), saved.taskId, saved.userMessage, convId)
     } catch {}
-    setThinking(false); wasThinkingRef.current = false
+    setConvThinking(convId, false); wasThinkingRef.current = false
     setReconnecting(false)
     reconnectingTaskRef.current = null
     try { localStorage.removeItem('crucible_active_task') } catch {}
@@ -712,8 +757,8 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [sessionId, authUser])
 
-  // Track thinking state for reconnect decisions
-  useEffect(() => { wasThinkingRef.current = thinking }, [thinking])
+  // Track thinking state for reconnect decisions — any conversation counts.
+  useEffect(() => { wasThinkingRef.current = anyThinking }, [anyThinking])
 
   // ── Poll for resumable checkpoints on mount ────────────────────────────────
   useEffect(() => {
@@ -744,14 +789,14 @@ export default function App() {
   }, [])
   // Session J — drive /api/research and render its research_step / research_done events
   // into the round's synthesis. Isolated from the main SSE consumer to keep risk low.
-  const runResearch = async (message: string, roundId: string) => {
+  const runResearch = async (message: string, roundId: string, convId = conversationIdRef.current) => {
     let res: Response
     try {
       res = await apiFetch(`${API_BASE}/api/research`, {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message }),
-        signal: abortRef.current?.signal,
+        signal: abortRef.current[convId]?.signal,
       })
     } catch (e: any) {
       if (e?.name !== 'AbortError') setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: 'Research failed to start.', synthesisDone: true } : r))
@@ -813,19 +858,22 @@ export default function App() {
       }
     }
     const roundId = Date.now().toString()
-    setLiveRoundId(roundId)
+    // Pin this run to the conversation it was sent from — the user can switch to
+    // another chat mid-run and this stream keeps landing in the right thread.
+    const convId = conversationIdRef.current
+    setConvLiveRound(convId, roundId)
     localStorage.setItem('crucible_has_sent', '1')
-    setInput(''); setThinking(true); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
-    setAgentStartTime(Date.now()); setAgentElapsed(0); setAgentProgress(null)
+    setInput(''); setConvThinking(convId, true); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
+    setConvAgentStart(convId, Date.now()); setAgentElapsed(0); setConvAgentProgress(convId, null)
     prewarmTokenRef.current = null
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
-    const nextRounds = [...rounds, emptyRound(roundId, displayText?.trim() || userMessage)]
-    setRounds(nextRounds)
+    const nextRounds = [...rounds, emptyRound(roundId, displayText?.trim() || userMessage, convId)]
+    setAllRounds(prev => [...prev, emptyRound(roundId, displayText?.trim() || userMessage, convId)])
     // Record this as the active server-owned task so that if the tab is backgrounded /
     // reloaded mid-run, we can reconnect to its buffered stream and replay on return.
     // Store the DISPLAY text — reconnect rebuilds the visible round from this, and the raw
     // agent-pane template must never resurface in the transcript on resume.
-    try { localStorage.setItem('crucible_active_task', JSON.stringify({ taskId: roundId, userMessage: displayText?.trim() || userMessage, ts: Date.now() })) } catch {}
+    try { localStorage.setItem('crucible_active_task', JSON.stringify({ taskId: roundId, userMessage: displayText?.trim() || userMessage, ts: Date.now(), convId })) } catch {}
     // First send is a user gesture — a good moment to enable "answer ready" push.
     void ensurePushSubscription()
     // Persist the new turn IMMEDIATELY (non-debounced) so closing the tab before the
@@ -841,16 +889,16 @@ export default function App() {
     apiFetch(`${API_BASE}/api/conversations/save`, {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: conversationIdRef.current, mode, rounds: nextRounds }),
+      body: JSON.stringify({ id: convId, mode, rounds: nextRounds }),
     }).catch(() => {})
 
-    abortRef.current = new AbortController()
+    abortRef.current[convId] = new AbortController()
 
     // Session J: autonomous research mode streams from a dedicated endpoint with its own
     // event shape — handled separately so the shared SSE consumer stays untouched.
     if ((modeOverride ?? mode) === 'research' && !remoteBrain) {
-      await runResearch(userMessage, roundId)
-      setThinking(false); setAgentStartTime(null); setAgentProgress(null)
+      await runResearch(userMessage, roundId, convId)
+      setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
       try { localStorage.removeItem('crucible_active_task') } catch {}
       return
     }
@@ -864,7 +912,7 @@ export default function App() {
           message: userMessage,
           mode: modeOverride ?? mode,
           sessionId,
-          conversationId,  // groups this round into the current conversation thread
+          conversationId: convId,  // groups this round into the conversation it was sent from
           roundId,  // lets the server patch the finished answer into THIS round if we disconnect
           prewarmToken: prewarmTokenRef.current,
           device: /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "mobile" : "desktop",
@@ -876,18 +924,18 @@ export default function App() {
             assistant: r.synthesis
           }))
         }),
-        signal: abortRef.current.signal,
+        signal: abortRef.current[convId]!.signal,
       })
     } catch (err: any) {
-      if (err.name === 'AbortError') { setThinking(false); return }
+      if (err.name === 'AbortError') { setConvThinking(convId, false); return }
       console.error('[send] fetch failed:', err)
       haptic('heavy')
-      setThinking(false); return
+      setConvThinking(convId, false); return
     }
     const reader = res.body!.getReader()
-    await consumeStream(reader, roundId, userMessage)
-    setThinking(false)
-    setAgentStartTime(null); setAgentProgress(null)
+    await consumeStream(reader, roundId, userMessage, convId)
+    setConvThinking(convId, false)
+    setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
     try { localStorage.removeItem('crucible_active_task') } catch {}
   }
 
@@ -901,7 +949,7 @@ export default function App() {
 
   // Shared SSE consumer — used by the live send loop AND by reconnect/replay (below), so a
   // backgrounded task's buffered events rebuild the exact same UI state when the user returns.
-  const consumeStream = async (reader: ReadableStreamDefaultReader<Uint8Array>, roundId: string, userMessage: string) => {
+  const consumeStream = async (reader: ReadableStreamDefaultReader<Uint8Array>, roundId: string, userMessage: string, convId = conversationIdRef.current) => {
     const decoder = new TextDecoder()
     let sseBuf = ''
 
@@ -1073,7 +1121,7 @@ export default function App() {
             }))
             if (parsed.stage === 5 && parsed.status === 'done') {
               setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesisDone: true } : r))
-              setThinking(false)
+              setConvThinking(convId, false)
               const synthText = synthesisRef.current[roundId] ?? ''
               if (synthText) {
                 setTimeout(() => runVerify(roundId, synthText, userMessage), 200)
@@ -1141,7 +1189,7 @@ export default function App() {
 
           // ── Live agent iteration progress ──────────────────────────────────
           if (parsed.type === 'iter_progress') {
-            setAgentProgress({
+            setConvAgentProgress(convId, {
               stepIndex: parsed.stepIndex ?? 0,
               stepTotal: parsed.stepTotal ?? 1,
               stepIntent: parsed.stepIntent ?? '',
@@ -1471,16 +1519,17 @@ export default function App() {
   const continueFromCheckpointData = async (offer: { goal: string; projectPath: string; stepIntent?: string; stepIndex?: number; stepTotal?: number; iter?: number; maxIters?: number; savedAt?: number }) => {
     setResumeOffer(null)
     const roundId = Date.now().toString()
-    setThinking(true)
-    setAgentStartTime(Date.now()); setAgentElapsed(0)
-    setRounds(prev => [...prev, emptyRound(roundId, offer.goal)])
-    abortRef.current = new AbortController()
+    const convId = conversationIdRef.current
+    setConvThinking(convId, true)
+    setConvAgentStart(convId, Date.now()); setAgentElapsed(0)
+    setRounds(prev => [...prev, emptyRound(roundId, offer.goal, convId)])
+    abortRef.current[convId] = new AbortController()
     let res: Response
     try {
       res = await apiFetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: abortRef.current.signal,
+        signal: abortRef.current[convId]!.signal,
         body: JSON.stringify({
           message: offer.goal,
           mode: 'agent',
@@ -1488,8 +1537,8 @@ export default function App() {
           resumeFromCheckpoint: true,
         }),
       })
-    } catch { setThinking(false); setAgentStartTime(null); return }
-    if (!res.body) { setThinking(false); setAgentStartTime(null); return }
+    } catch { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
+    if (!res.body) { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -1516,7 +1565,7 @@ export default function App() {
         } catch {}
       }
     }
-    setThinking(false); setAgentStartTime(null); setAgentProgress(null)
+    setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
   }
 
   const continueFromCheckpoint = async () => {
@@ -1524,16 +1573,17 @@ export default function App() {
     const offer = resumeOffer
     setResumeOffer(null)
     const roundId = Date.now().toString()
-    setThinking(true)
-    setAgentStartTime(Date.now()); setAgentElapsed(0)
-    setRounds(prev => [...prev, emptyRound(roundId, offer.goal)])
-    abortRef.current = new AbortController()
+    const convId = conversationIdRef.current
+    setConvThinking(convId, true)
+    setConvAgentStart(convId, Date.now()); setAgentElapsed(0)
+    setRounds(prev => [...prev, emptyRound(roundId, offer.goal, convId)])
+    abortRef.current[convId] = new AbortController()
     let res: Response
     try {
       res = await apiFetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        signal: abortRef.current.signal,
+        signal: abortRef.current[convId]!.signal,
         body: JSON.stringify({
           message: offer.goal,
           mode: 'agent',
@@ -1541,10 +1591,10 @@ export default function App() {
           resumeFromCheckpoint: true,
         }),
       })
-    } catch { setThinking(false); setAgentStartTime(null); return }
+    } catch { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
     // Reuse the same SSE parse loop that `send()` uses — delegate by calling send
     // with the pre-built res. Not worth duplicating; just set up the stream directly.
-    if (!res.body) { setThinking(false); setAgentStartTime(null); return }
+    if (!res.body) { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -1573,7 +1623,7 @@ export default function App() {
         } catch {}
       }
     }
-    setThinking(false); setAgentStartTime(null); setAgentProgress(null)
+    setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
   }
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1609,8 +1659,9 @@ export default function App() {
     }
   }
   const stop = () => {
-    if (abortRef.current) abortRef.current.abort()
-    setThinking(false)
+    // Stop only cancels the conversation on screen — other chats keep running.
+    abortRef.current[conversationId]?.abort()
+    setConvThinking(conversationId, false)
   }
 
   // Item 5: only depends on the stable setRounds setter, so this can be a truly stable
@@ -1686,7 +1737,12 @@ export default function App() {
             // Deliberately do NOT adopt the stored conversation.mode — restoring an old
             // ensemble ('quorum') thread must never silently re-arm the external pipeline.
             // Crucible-local is always the mode a restored thread continues in.
-            setRounds(conversation.rounds)
+            // Merge into the global round pool (tagged with this conv) — other open
+            // chats and their live streams are untouched.
+            setAllRounds(prev => [
+              ...prev.filter(r => r.convId !== conversation.id),
+              ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
+            ])
             setTab('chat')
           })
           .catch(() => {})
@@ -1704,7 +1760,10 @@ export default function App() {
                   .then(({ conversation }) => {
                     if (!conversation?.rounds) return
                     setConversationId(conversation.id)
-                    setRounds(conversation.rounds)
+                    setAllRounds(prev => [
+                      ...prev.filter(r => r.convId !== conversation.id),
+                      ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
+                    ])
                     setTab('chat')
                   })
                   .catch(() => {})
@@ -2002,6 +2061,65 @@ export default function App() {
             </span>
           )
         })()}
+        {/* F panels — open-chats strip: one chip per in-memory conversation. A running
+            chat shows a live dot and keeps streaming while another chat is on screen. */}
+        {openChats.length > 1 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1,
+            overflowX: 'auto', scrollbarWidth: 'none', WebkitAppRegion: 'no-drag',
+          } as any}>
+            {openChats.map(c => {
+              const active = c.id === conversationId
+              return (
+                <div
+                  key={c.id}
+                  onClick={() => setConversationId(c.id)}
+                  title={c.title}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
+                    padding: '4px 8px 4px 10px', borderRadius: 8, cursor: 'pointer',
+                    border: `1px solid ${active ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.07)'}`,
+                    background: active ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.025)',
+                    color: active ? '#d8d8e6' : '#77778c',
+                    fontSize: 10.5, fontWeight: 600, whiteSpace: 'nowrap',
+                    maxWidth: 160, transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+                  }}
+                >
+                  {c.live && (
+                    <span style={{
+                      width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+                      background: '#ff6e1a', animation: 'pulse 1.4s ease infinite',
+                    }} />
+                  )}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.title}</span>
+                  <span
+                    onClick={e => {
+                      e.stopPropagation()
+                      // Close = drop from memory only; History still has it. Abort any live run.
+                      abortRef.current[c.id]?.abort()
+                      setConvThinking(c.id, false)
+                      setAllRounds(prev => prev.filter(r => (r.convId ?? conversationId) !== c.id))
+                      if (c.id === conversationId) {
+                        const rest = openChats.filter(o => o.id !== c.id)
+                        setConversationId(rest[0]?.id ?? ('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)))
+                      }
+                    }}
+                    title="Close chat"
+                    style={{
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+                      color: 'rgba(255,255,255,0.3)',
+                    }}
+                  >
+                    <svg width="8" height="8" viewBox="0 0 16 16" fill="none">
+                      <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
         <div style={{ flex: 1, minWidth: 8 }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, WebkitAppRegion: 'no-drag' } as any}>
           {thinking && latestRound && (() => {
@@ -2030,7 +2148,8 @@ export default function App() {
           )}
           <button
             onClick={() => {
-              setRounds([])
+              // F panels: a new chat is a new PANEL — the previous conversation stays
+              // open (and keeps streaming if mid-run); switch back via the chats strip.
               setConversationId('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))
             }}
             title="New chat"
