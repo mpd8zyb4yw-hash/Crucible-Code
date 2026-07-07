@@ -230,3 +230,24 @@ UNRELATED to the amnesia/SWE tracks above.
   reply-provenance chip in chat for `RoutedAnswer.corroboration` (need to find where THIS app's
   v3 UI renders chat messages first), and a true single-model-pin mode (today's UI only has a
   fire-all boolean, no explicit single-model select) in `LocalModelsPanel.tsx`.
+
+- 2026-07-07 — [Track C] LANDED (commit a06488e): `strengthenCandidates()` in
+  `localModelRouter.ts` replaces the winner-take-all merge with (1) an oracle tie-break for
+  arithmetic claims via `domainVerifiers.correctArithmetic` (zero inference — picks whichever
+  candidate is numerically right, or corrects the top one in place), (2) consensus-vote
+  clustering by lexical agreement with confidence scaled to agreement fraction (a 2-of-5
+  plurality is never reported as high-confidence), (3) an honest plurality fallback capped at
+  0.6 confidence on genuine disagreement. Also fixed a false-agreement bug in `agrees()`: short
+  answers sharing only common words with DIFFERENT standalone numbers ("the answer is 42" vs
+  "...is 17") were being scored as corroborating — added a numeric-mismatch veto. `RoutedAnswer`
+  now carries `contributors[]`/`method` for Track D's UI. Verified via new pure/offline
+  `__strengthen_bench.ts` (13/13 green, `npx tsx src/CrucibleEngine/agent/__strengthen_bench.ts`).
+  Left `recordOutcome`/`markWin` telemetry calls (Track D, commit f508eb6) untouched — only
+  changed the merge logic downstream of them.
+  Also ran `npx tsx __download_all_local_models.ts` in the background (per the user's "reinstall
+  all models" ask) to actually pull the 5 catalog GGUF weights, which were 0 bytes on disk —
+  still running as of this entry (smollm2-1.7b at ~40%, ~7.9GB total across all 5).
+  → No blockers, no open questions. code-oracle tie-break (lintGate/contractGate) for code-domain
+  answers was scoped out — those gates take `SynthFile[]`/spec strings designed for code-gen
+  tasks, not arbitrary chat text containing code; flagging as a possible follow-up, not doing it
+  speculatively.
