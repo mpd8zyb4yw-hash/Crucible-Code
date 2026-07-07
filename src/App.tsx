@@ -2177,7 +2177,7 @@ const MessageList = memo(function MessageList({
                                marginTop: 8, padding: '13px 15px', borderRadius: 8,
                                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
                                display: 'flex', flexDirection: 'column' as const, gap: 14,
-                               animation: 'panelUp 0.28s cubic-bezier(0.16,1,0.3,1)',
+                               animation: 'panelUp 0.28s cubic-bezier(0.22,1,0.36,1)',
                              }}>
 
                                {/* Model agreement — genealogy contribution bars */}
@@ -4105,7 +4105,7 @@ export default function App() {
     <div className="crucible-root" style={{
       height: '100dvh', background: '#101016',
       marginLeft: 0,
-      transition: 'margin-left 0.38s cubic-bezier(0.16,1,0.3,1)', width: '100vw',
+      transition: 'margin-left 0.38s cubic-bezier(0.22,1,0.36,1)', width: '100vw',
       display: 'flex', flexDirection: 'column',
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       color: '#e4e4ee', position: 'relative', overflow: 'hidden', userSelect: 'none',
@@ -4143,7 +4143,7 @@ export default function App() {
       {tab !== 'chat' && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 30, background: '#101016',
-          display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s cubic-bezier(0.16,1,0.3,1)',
+          display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s cubic-bezier(0.22,1,0.36,1)',
         }}>
           <button
             onClick={() => setTab('chat')}
@@ -4242,7 +4242,7 @@ export default function App() {
             background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
             borderLeft: '1px solid rgba(255,255,255,0.08)',
             boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
-            animation: 'panelUp 0.22s cubic-bezier(0.16,1,0.3,1)',
+            animation: 'panelUp 0.22s cubic-bezier(0.22,1,0.36,1)',
             display: 'flex', flexDirection: 'column',
           }}>
             <AgentsTabView onBuild={text => { setAgentsOpen(false); void send(text) }} onClose={() => setAgentsOpen(false)} />
