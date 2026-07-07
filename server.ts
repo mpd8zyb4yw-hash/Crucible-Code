@@ -43,6 +43,7 @@ import { createGraph, getOpenGraphs, setGraphStatus, buildOpenGoalsContext } fro
 import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
 import { listModelStatuses, downloadModel, deleteModel, setModelEnabled, setModelsLocation, getModelsConfig, setFireAllMode, setPinnedModelId } from './src/CrucibleEngine/agent/modelDownloadManager'
+import { isGgufRuntimeAvailable } from './src/CrucibleEngine/agent/localModelPool'
 import { routeLocalModelQuery, hasReadyLocalModels } from './src/CrucibleEngine/agent/localModelRouter'
 import { getStats } from './src/CrucibleEngine/localModels/telemetry'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
@@ -6961,8 +6962,12 @@ app.post('/api/governance/:id/reject', (req, res) => {
 })
 
 // ── Optional local model pool — download/status/query for the on-device GGUF models ──
-app.get('/api/local-models', (_req, res) => {
-  res.json({ models: listModelStatuses() })
+app.get('/api/local-models', async (_req, res) => {
+  // ggufRuntimeAvailable: whether node-llama-cpp is importable. The model-switch UI
+  // hides GGUF entries when it is false — offering a model the router can only fail to
+  // load (pin silently no-ops) is worse than not offering it.
+  const ggufRuntimeAvailable = await isGgufRuntimeAvailable()
+  res.json({ models: listModelStatuses(), ggufRuntimeAvailable })
 })
 
 app.post('/api/local-models/:id/download', (req, res) => {

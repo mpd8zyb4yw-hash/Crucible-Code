@@ -71,12 +71,18 @@ export default function App() {
   const [expanderPopup, setExpanderPopup] = useState<'models' | 'agents' | null>(null)
   const [pickerModels, setPickerModels] = useState<Array<{ id: string; label: string; ready: boolean; enabled: boolean }>>([])
   const [pinnedModelId, setPinnedModelId] = useState<string | null>(null)
+  // GGUF entries are only real options when node-llama-cpp is installed; otherwise
+  // pinning one silently no-ops (router falls back). Hide them until the runtime exists.
+  const [ggufRuntimeAvailable, setGgufRuntimeAvailable] = useState(false)
   useEffect(() => {
     if (expanderPopup !== 'models') return
     apiFetch(`${API_BASE}/api/local-models`, { credentials: 'include' }).then(r => r.json())
-      .then(d => setPickerModels((d.models ?? []).map((m: any) => ({
-        id: m.id, label: m.label, ready: m.status?.status === 'ready', enabled: !!m.enabled,
-      }))))
+      .then(d => {
+        setGgufRuntimeAvailable(!!d.ggufRuntimeAvailable)
+        setPickerModels((d.models ?? []).map((m: any) => ({
+          id: m.id, label: m.label, ready: m.status?.status === 'ready', enabled: !!m.enabled,
+        })))
+      })
       .catch(() => setPickerModels([]))
     apiFetch(`${API_BASE}/api/local-models/config`, { credentials: 'include' }).then(r => r.json())
       .then(c => setPinnedModelId(c.pinnedModelId ?? null)).catch(() => {})
@@ -2742,7 +2748,9 @@ export default function App() {
                   {[
                     { id: null as string | null, label: 'Auto', note: 'Crucible routes each turn' },
                     { id: 'track-s-fm', label: 'Apple FM', note: 'on-device foundation model' },
-                    ...pickerModels.filter(m => m.ready && m.enabled).map(m => ({ id: m.id as string | null, label: m.label, note: 'local GGUF' })),
+                    ...(ggufRuntimeAvailable
+                      ? pickerModels.filter(m => m.ready && m.enabled).map(m => ({ id: m.id as string | null, label: m.label, note: 'local GGUF' }))
+                      : []),
                   ].map(opt => {
                     const active = pinnedModelId === opt.id || (!pinnedModelId && opt.id === null)
                     return (

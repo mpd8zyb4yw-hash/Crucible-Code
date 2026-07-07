@@ -32,6 +32,18 @@ export function isModelLoaded(id: string): boolean {
   return loaded.has(id)
 }
 
+// Whether the GGUF runtime (node-llama-cpp) is actually importable in this process.
+// Cached after first probe. The UI uses this to avoid offering a GGUF the router can
+// only fail to load — pinning one when this is false falls back per localModelRouter's
+// pinned-call failure path, which reads as a silent no-op to the user.
+let ggufRuntimeAvailable: boolean | null = null
+export async function isGgufRuntimeAvailable(): Promise<boolean> {
+  if (ggufRuntimeAvailable !== null) return ggufRuntimeAvailable
+  try { await getLlama(); ggufRuntimeAvailable = true }
+  catch { ggufRuntimeAvailable = false }
+  return ggufRuntimeAvailable
+}
+
 async function loadModel(id: string): Promise<LoadedModel> {
   const cached = loaded.get(id)
   if (cached) return cached
