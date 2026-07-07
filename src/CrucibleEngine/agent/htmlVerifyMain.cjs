@@ -18,6 +18,17 @@ app.whenReady().then(async () => {
   try {
     await win.loadFile(path.resolve(target))
     await new Promise(r => setTimeout(r, 700))
+    // The game must render BEFORE any input — a canvas that stays blank until the
+    // first keypress reads as broken to the user.
+    out.drawnAtLoad = await win.webContents.executeJavaScript(`(() => {
+      const c = document.querySelector('canvas')
+      if (!c) return false
+      const ctx = c.getContext('2d')
+      if (!ctx) return false
+      const d = ctx.getImageData(0, 0, c.width, c.height).data
+      let s = 0; for (let i = 0; i < d.length; i += 97) s += d[i]
+      return s > 0
+    })()`, true).catch(() => false)
     for (const key of ['Up', 'Right', 'Down', 'Left']) {
       win.webContents.sendInputEvent({ type: 'keyDown', keyCode: key })
       win.webContents.sendInputEvent({ type: 'keyUp', keyCode: key })

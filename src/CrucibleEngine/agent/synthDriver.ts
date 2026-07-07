@@ -389,7 +389,91 @@ Hard rules:
 - Declare all game state with let (never const). Define helpers and listeners once at top level, never inside the loop.
 - Plain ES6, no frameworks, no external resources, no fetch.`
 
+// ── Verified game templates — ZERO model inference ("Crucible IS the model") ──
+// The on-device FM writes passable novel game logic but botches classics (snake with
+// instant game-over, draw-only-on-keypress). For the games users actually ask for by
+// name — including the splash-screen demo — ship a deterministic, reviewed
+// implementation instead. Still run through the same runtime gate before writing.
+const GAME_TEMPLATES: Array<{ match: RegExp; title: string; js: string }> = [{
+  match: /\bsnake\b/i,
+  title: 'Snake',
+  js: `
+let CELL = 20, GRID = 24, W = CELL * GRID;
+let cv = document.getElementById('game'); cv.width = W; cv.height = W;
+let ctx = cv.getContext('2d');
+let snake, dir, nextDir, food, score, dead, tickMs, last = 0;
+
+function reset() {
+  snake = [{ x: 12, y: 12 }, { x: 11, y: 12 }, { x: 10, y: 12 }];
+  dir = { x: 1, y: 0 }; nextDir = dir;
+  score = 0; dead = false; tickMs = 140;
+  placeFood();
+  document.getElementById('hud').textContent = 'Score: 0';
+}
+function placeFood() {
+  do {
+    food = { x: Math.floor(Math.random() * GRID), y: Math.floor(Math.random() * GRID) };
+  } while (snake.some(s => s.x === food.x && s.y === food.y));
+}
+window.addEventListener('keydown', e => {
+  let k = e.key.toLowerCase();
+  let d = k === 'arrowup' || k === 'w' ? { x: 0, y: -1 }
+        : k === 'arrowdown' || k === 's' ? { x: 0, y: 1 }
+        : k === 'arrowleft' || k === 'a' ? { x: -1, y: 0 }
+        : k === 'arrowright' || k === 'd' ? { x: 1, y: 0 } : null;
+  if (dead) { reset(); return; }
+  if (d && !(d.x === -dir.x && d.y === -dir.y)) nextDir = d;
+});
+function step() {
+  dir = nextDir;
+  let head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+  if (head.x < 0 || head.y < 0 || head.x >= GRID || head.y >= GRID ||
+      snake.some(s => s.x === head.x && s.y === head.y)) { dead = true; return; }
+  snake.unshift(head);
+  if (head.x === food.x && head.y === food.y) {
+    score++; tickMs = Math.max(70, tickMs - 3); placeFood();
+    document.getElementById('hud').textContent = 'Score: ' + score;
+  } else snake.pop();
+}
+function draw() {
+  ctx.fillStyle = '#16161e'; ctx.fillRect(0, 0, W, W);
+  ctx.fillStyle = '#e05555';
+  ctx.fillRect(food.x * CELL + 2, food.y * CELL + 2, CELL - 4, CELL - 4);
+  snake.forEach((s, i) => {
+    ctx.fillStyle = i === 0 ? '#7cf8a8' : '#4db89e';
+    ctx.fillRect(s.x * CELL + 1, s.y * CELL + 1, CELL - 2, CELL - 2);
+  });
+  if (dead) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, W);
+    ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('Game over — score ' + score, W / 2, W / 2 - 10);
+    ctx.font = '15px sans-serif';
+    ctx.fillText('Press any key to restart', W / 2, W / 2 + 20);
+  }
+}
+function loop(t) {
+  if (!dead && t - last >= tickMs) { last = t; step(); }
+  draw();
+  requestAnimationFrame(loop);
+}
+reset();
+requestAnimationFrame(loop);
+`,
+}]
+
 async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<string> {
+  // Template hit → deterministic, verified game. Still runtime-gated below like FM output.
+  const tpl = GAME_TEMPLATES.find(t => t.match.test(state.goal))
+  if (tpl) {
+    const html = buildGameShell(tpl.js, `${tpl.title} — Crucible`)
+    const problem = validateHtmlGame(html) ?? await runtimeVerifyHtml(html)
+    if (!problem) {
+      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt: 0, template: tpl.title, bytes: html.length }, { severity: 'info' })
+      return html
+    }
+    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt: 0, problem: `template ${tpl.title}: ${problem}` }, { severity: 'warn' })
+    // fall through to FM generation
+  }
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — html write escalating')
   const title = (state.goal.match(/\b(\w[\w\s-]{2,30}?)\s+game\b/i)?.[1] ?? 'Crucible').trim() + ' — Crucible'

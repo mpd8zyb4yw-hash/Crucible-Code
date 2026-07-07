@@ -823,7 +823,9 @@ export default function App() {
     setRounds(nextRounds)
     // Record this as the active server-owned task so that if the tab is backgrounded /
     // reloaded mid-run, we can reconnect to its buffered stream and replay on return.
-    try { localStorage.setItem('crucible_active_task', JSON.stringify({ taskId: roundId, userMessage, ts: Date.now() })) } catch {}
+    // Store the DISPLAY text — reconnect rebuilds the visible round from this, and the raw
+    // agent-pane template must never resurface in the transcript on resume.
+    try { localStorage.setItem('crucible_active_task', JSON.stringify({ taskId: roundId, userMessage: displayText?.trim() || userMessage, ts: Date.now() })) } catch {}
     // First send is a user gesture — a good moment to enable "answer ready" push.
     void ensurePushSubscription()
     // Persist the new turn IMMEDIATELY (non-debounced) so closing the tab before the

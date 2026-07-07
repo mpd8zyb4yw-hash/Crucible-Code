@@ -17,44 +17,60 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 47 — commits d20924c + 77394ac, tsc clean,
-badge + pygame fixes live-verified via curl on a fresh port-3123 instance)
+## CURRENT STATE (last updated 2026-07-07, cont. 48 — trust-audit handoff; every item below
+re-verified LIVE from a cold state per the audit's definition of fixed)
 
-**Fixed this session (user report: false "AGENT WORKING · GPT OSS 120B" badge in strict
-mode + pygame Run failure + agent timeout):**
-1. **agent_start badge shipped false provenance.** server.ts emitted
-   `driver: currentDriverLabel()` (top free-pool model) before routing, even for
-   server-forced strict requests. Now: strict → "ON-DEVICE (Apple FM + synth)" (matches
-   the pill's /on-device|local/i discriminator), '0' → pool label, hybrid →
-   "on-device first · fallback <pool>". withOfflineFallback gained an onEscalate hook;
-   both server call sites re-emit agent_start with the pool label the moment a hybrid
-   run escalates off-device, so the pill can never show ON-DEVICE for a pool turn.
-   Live-verified: strict snake-game agent run emits ON-DEVICE label.
-2. **"The operation was aborted due to timeout" as chat answer.** Root cause: since
-   cont.36c the server forces requestOffline='strict' per-request for all non-quorum
-   chats, but the FM timeout ceilings (fmReact.ts, synth/universal.ts, server
-   callLocalModel) gated on env CRUCIBLE_OFFLINE === 'strict' (default '1' → short
-   40-45s ceiling, no fallback). All three now gate on !== '0'; callFm additionally
-   wraps TimeoutError into "Local model timed out after Ns (…)" so the raw DOMException
-   can never surface again.
-3. **Run button on pygame code → bare "no module named pygame".** exec-snippet now
-   translates missing-module errors (worker emits stripped "No module named 'x'"
-   shape) into guidance: sandbox is stdlib-only, ask for a single-file HTML/canvas
-   version (playable via Preview). Live-verified. Prevention: STATIC_PREAMBLE now
-   instructs all pipeline models to emit single-file HTML/canvas for games/interactive
-   demos in chat — never pygame.
+**Trust audit scoreboard (handoff items A–H):**
+- **B+C agent reliability / playable game — Fixed (verified via: cold API repro + full real-UI
+  flow: Agents pane → Vibe Code → "build me a snake game" → Run → game.html written, opened in
+  a browser, snake renders/moves/scores).** Root cause of the tutorial: goals naming no .ts/.js
+  file fell into solveNonCodeTurn (prose). Now: pathless game/interactive goals get a game.html
+  target through the code state machine. Three layers: (1) verified deterministic GAME_TEMPLATES
+  (snake; zero inference, splash-demo-proof), (2) FM writes ONLY game-logic JS into a
+  Crucible-owned HTML shell (kills FM output truncation) + const→let sanitizer, (3) EVERY
+  candidate is RUN in the bundled Electron offscreen (htmlRuntimeVerify.ts + htmlVerifyMain.cjs:
+  console errors, keypresses, canvas-drawn-at-load probe) before write. Measured: splash prompt
+  was 307s→prose; now snake E2E in the UI = 137s wall to verified playable artifact.
+- **Repro #3 broken chat code — Fixed (verified via: verifyCodeBlocks unit path; fenced py/js
+  in offline chat answers are ast.parse/vm-checked, FM-repaired once, else shipped with an
+  explicit "will not run" warning).** domainVerifiers.ts verifyCodeBlocks + server.ts gate.
+- **A badge provenance — Fixed (verified via: real UI during a live strict agent run — pill read
+  "AGENT WORKING · ON-DEVICE (Apple FM + synth)", then "AGENT COMPLETE · ON-DEVICE").**
+- **D prompt-template leak — Fixed (verified via: real UI run; transcript shows "Vibe Code:
+  build me a snake game", not the template; also fixed the resume path which re-leaked it via
+  localStorage crucible_active_task).** send() gained displayText param.
+- **B2 "reconnecting" — Explained + relabeled ("resuming task…"): it is the LOCAL server-owned
+  task stream replay (App.tsx reconnectActiveTask), not an external call; it is what makes runs
+  survive backgrounding. Latency profile: single FM call ~3.5s; game write 3.4s tool-time via
+  template; the 137s wall is dominated by harden/critic FM review turns — next optimization
+  target. Long synth turns now emit SSE 'thought' progress lines (debugBus bridge in server.ts)
+  so they no longer look like hangs.
+- **E visuals — Mostly fixed (verified via preview measurements): input bar now aligned with the
+  chat column (was 28px off — fixed left:0 ignored the 56px NavRail; all 3 fixed bottom layers),
+  composer is a thin 44px single-row strip ((+) inline, expander row only while open), gear icon
+  replaced with the canonical symmetric Feather gear. Traffic lights: attempted, unverified —
+  blocked by: needs an Electron-window visual check (browser preview can't show them);
+  electron.cjs uses hiddenInset + trafficLightPosition {12,16}, NavRail already pads 34px.
+- **F panels — Partial: history/agents mutual exclusion Fixed (verified via UI: opening Agents
+  from History closes History). NOT started: parallel chats (needs per-conversation stream
+  state), history as slide-out-in-place, agent pane via left-strip pattern.
+- **G+H — Not started** (working animations, model-switch popup on (+), agent command list UX,
+  single-run multi-step collapse).
 
-**Still open (carried from cont.46):**
-- Re-check the snake-game agent run END-TO-END in strict mode with the new 600s ceiling
-  (routing + badge verified; the build itself not followed to completion — FM code-gen
-  quality on a full game is the open question).
-- Verify the lava-seam fix visually in a focused window (sim-proven only).
-- The strict-agent quality tension: coding agent turns now genuinely grind on-device;
-  decide whether FM+synth quality is acceptable or hybrid should be the default for
-  CODE-shaped agent goals.
-- Carried: rebuild phase 2 (composer/SSE extraction), click_element Finder-sidebar
-  recipe, interactive/stdin sandbox runs, GitHub tool discovery, server tsconfig
-  cleanup, live keep-working long-task check.
+**Watch-outs for next session:**
+- FM-generated NOVEL games (no template) still fail the runtime gate often (const bugs,
+  truncation were the top classes — shell+sanitizer fixed those; logic quality is the residual).
+  4-attempt cap then honest escalation/abstain. Consider more templates (pong, breakout) and/or
+  requiring input-responsiveness in the gate.
+- debugBus progress bridge is global, not request-scoped — concurrent agent runs would cross-post
+  'thought' lines (single-user acceptable, note if multi-chat lands).
+- game-artifact-preview entry added to .claude/launch.json (points at a Desktop/Crucible run dir);
+  harmless, prune when stale.
+- Stale `tsx server.ts` processes accumulated again (5 found) — the known port hazard; killed.
+
+**Next (in order): 1) F panel architecture (parallel chats is the big one), 2) G+H features,
+3) traffic-light Electron visual verify, 4) shrink harden/critic latency on game runs.**
+
 
 ## PRIOR STATE (cont. 46 — user screenshot repro: two chat
 outputs that "do not capture the user's request in any meaningful way" + two marked

@@ -29,7 +29,7 @@ function electronBin(): string {
   return _require('electron') as unknown as string
 }
 
-interface Probe { errors: string[]; canvas: boolean; drawn: boolean; animating: boolean }
+interface Probe { errors: string[]; canvas: boolean; drawn: boolean; animating: boolean; drawnAtLoad?: boolean }
 
 export async function runtimeVerifyHtml(html: string): Promise<string | null> {
   const tmp = path.join(os.tmpdir(), `crucible-html-verify-${Date.now()}-${process.pid}.html`)
@@ -48,6 +48,7 @@ export async function runtimeVerifyHtml(html: string): Promise<string | null> {
     }
     if (!probe.canvas) return 'no <canvas> element present at runtime'
     if (!probe.drawn) return 'the canvas is completely blank — nothing is ever drawn; make sure the game loop starts on load and requestAnimationFrame re-schedules itself every frame'
+    if (probe.drawnAtLoad === false) return 'the canvas stays blank until the first keypress — the game must draw its initial frame immediately on load'
     return null
   } catch (e: any) {
     debugBus.emit('agent', 'html_runtime_verify_unavailable', {
