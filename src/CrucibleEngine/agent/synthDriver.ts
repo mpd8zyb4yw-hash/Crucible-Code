@@ -376,18 +376,80 @@ function sanitizeGameJs(js: string): string {
   return js.replace(/\bconst\b/g, 'let')
 }
 
+// A concrete worked example is worth more than rules to a small model — it anchors the
+// loop shape (reschedule every frame, clear every frame, velocity not teleport) that the
+// runtime gate enforces. Deliberately a DIFFERENT genre from the games users ask for so
+// it's a pattern to copy, not an answer to paste.
+const HTML_GAME_EXAMPLE = `Worked example — a "dodge the falling blocks" game, showing the required loop shape:
+
+let cv = document.getElementById('game'), ctx = cv.getContext('2d');
+let W = cv.width, H = cv.height;
+let player, blocks, score, dead, left, right;
+function reset() { player = { x: W/2 - 15, y: H - 40, w: 30, h: 20 }; blocks = []; score = 0; dead = false; left = right = false; }
+window.addEventListener('keydown', e => {
+  if (dead) { reset(); return; }              // any key restarts after game over
+  if (e.key === 'ArrowLeft' || e.key === 'a') left = true;
+  if (e.key === 'ArrowRight' || e.key === 'd') right = true;
+});
+window.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft' || e.key === 'a') left = false;
+  if (e.key === 'ArrowRight' || e.key === 'd') right = false;
+});
+function step() {
+  if (left) player.x -= 6;                     // continuous movement while held
+  if (right) player.x += 6;
+  player.x = Math.max(0, Math.min(W - player.w, player.x));
+  if (Math.random() < 0.04) blocks.push({ x: Math.random() * (W - 20), y: -20, w: 20, h: 20 });
+  for (let b of blocks) b.y += 4;              // gravity/motion advances state over time
+  blocks = blocks.filter(b => b.y < H);
+  for (let b of blocks) if (b.x < player.x + player.w && b.x + b.w > player.x && b.y < player.y + player.h && b.y + b.h > player.y) dead = true;
+  score++;
+}
+function draw() {
+  ctx.fillStyle = '#101016'; ctx.fillRect(0, 0, W, H);   // CLEAR the whole canvas EVERY frame
+  ctx.fillStyle = '#7cf8a8'; ctx.fillRect(player.x, player.y, player.w, player.h);
+  ctx.fillStyle = '#e05555'; for (let b of blocks) ctx.fillRect(b.x, b.y, b.w, b.h);
+  document.getElementById('hud').textContent = 'Score: ' + score;
+  if (dead) { ctx.fillStyle = '#fff'; ctx.font = '20px sans-serif'; ctx.textAlign = 'center'; ctx.fillText('Game over — any key', W/2, H/2); }
+}
+function loop() { if (!dead) step(); draw(); requestAnimationFrame(loop); }   // reschedule EVERY frame
+reset(); requestAnimationFrame(loop);`
+
 const HTML_GAME_SYSTEM = `You write the JavaScript game logic that runs inside a prepared HTML page.
 The page already provides:
 - <canvas id="game" width="480" height="480"> — draw everything here via its 2d context
 - a <div id="hud"> for score/status text
 - on-screen touch buttons that dispatch normal keydown events (ArrowUp/Down/Left/Right)
-Hard rules:
-- Output ONLY JavaScript. No HTML, no markdown fences, no commentary.
-- Use requestAnimationFrame (or setInterval) so the game starts IMMEDIATELY on load and keeps running.
-- Listen for keydown on window for ArrowUp/ArrowDown/ArrowLeft/ArrowRight (WASD too).
-- Show the score in #hud, draw a game-over state on the canvas, and restart when any key is pressed after game over.
-- Declare all game state with let (never const). Define helpers and listeners once at top level, never inside the loop.
-- Plain ES6, no frameworks, no external resources, no fetch.`
+
+THE GAME LOOP — get this exactly right, it is the most common failure:
+- Define ONE loop function. Its LAST line must be requestAnimationFrame(loop) so it runs
+  EVERY frame forever. Calling requestAnimationFrame ONCE (outside the loop) freezes the
+  game on frame 1 — this is an automatic failure.
+- The FIRST thing every frame's draw does is fill the WHOLE canvas with a background color.
+  Never-clearing smears the screen.
+- Advance the game state over time: things fall, move, spawn, or accelerate on their own
+  (gravity, scrolling obstacles, an auto-dropping piece). A game where nothing moves unless
+  a key is pressed is not a game.
+
+MOVEMENT & INPUT:
+- Model motion as velocity/position updated each frame — NOT an instant teleport in the
+  keydown handler. For "flap"/"jump" games: gravity pulls down every frame; a key sets an
+  upward velocity. For steering: keydown sets a flag, the loop moves while the flag is set.
+- Listen for keydown (and keyup for held movement) on window. Support arrow keys, WASD, and
+  Space. After game over, any key restarts.
+
+OUTPUT & CONSTRAINTS:
+- Output ONLY JavaScript — no HTML, no markdown fences, no commentary.
+- Declare all game state with let (never const). Define helpers and listeners once at top
+  level, never inside the loop. Plain ES6, no frameworks, no external resources, no fetch.
+- Show the score/status in #hud and draw a game-over state on the canvas.
+
+${HTML_GAME_EXAMPLE}
+
+Copy that LOOP SHAPE exactly (reschedule every frame, clear then draw, state advances over
+time) but implement the requested game's OWN mechanics — the example is a different game, so
+do not reuse its controls. Keep it simple and correct: a smaller game that runs beats an
+ambitious one that freezes or throws.`
 
 // ── Verified game templates — ZERO model inference ("Crucible IS the model") ──
 // The on-device FM writes passable novel game logic but botches classics (snake with
@@ -646,19 +708,24 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — html write escalating')
   const title = (state.goal.match(/\b(\w[\w\s-]{2,30}?)\s+game\b/i)?.[1] ?? 'Crucible').trim() + ' — Crucible'
+  const MAX_ATTEMPTS = 6
+  // Feedback is now DIAGNOSTIC (the runtime gate names the exact fault: frozen loop, blank
+  // canvas, dead input), so repairing the model's OWN previous code beats asking it to
+  // rewrite from scratch — a small model regresses less when editing than when regenerating.
+  let prevJs = ''
   let feedback = ''
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const raw = await fmComplete([
       { role: 'system', content: HTML_GAME_SYSTEM },
-      { role: 'user', content: `${state.goal}${feedback}\n\nOutput the JavaScript game logic now.` },
+      { role: 'user', content: `Build this game: ${state.goal}${feedback}\n\nOutput the JavaScript game logic now.` },
     ])
     const fence = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i)
     const js = sanitizeGameJs((fence ? fence[1] : raw).trim())
     const html = js ? buildGameShell(js, title) : ''
     // Two gates: static (syntax/self-containment), then RUNTIME — load in the bundled
-    // Electron offscreen, press keys, and require a canvas that is actually drawn to
-    // with zero page errors. The static gate alone shipped a parse-clean game that
-    // was dead on frame 1.
+    // Electron offscreen, drive keys, and require a canvas that draws at load, stays
+    // ALIVE (self-animates or responds to input), and throws no errors. The static gate
+    // alone shipped parse-clean games that were dead on frame 1.
     const problem = html
       ? (validateHtmlGame(html) ?? await runtimeVerifyHtml(html))
       : 'empty completion'
@@ -667,9 +734,11 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
       return html
     }
     debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, problem }, { severity: 'info' })
-    feedback = `\nYour previous JavaScript was rejected: ${problem}. Output the FULL corrected JavaScript, nothing else.`
+    prevJs = js
+    feedback = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}\n\n` +
+      `Here is your previous code — FIX the specific problem above, keep what works, and output the FULL corrected JavaScript (nothing else):\n\n${prevJs.slice(0, 1800)}`
   }
-  throw new OfflineEscalateError('FM could not produce working game logic after 4 attempts (each run-verified in a real browser)')
+  throw new OfflineEscalateError(`FM could not produce a working game after ${MAX_ATTEMPTS} run-verified attempts`)
 }
 
 function extractSelfTestCmd(goal: string): string | null {

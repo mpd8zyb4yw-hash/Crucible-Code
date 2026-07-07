@@ -30,7 +30,8 @@ function electronBin(): string {
 }
 
 interface Probe {
-  errors: string[]; canvas: boolean; drawn: boolean; animating: boolean; drawnAtLoad?: boolean
+  errors: string[]; canvas: boolean; drawn: boolean; drawnAtLoad?: boolean
+  selfAnimated?: boolean; inputCausedChange?: boolean
   keys?: { registered: number; fired: number } | null
 }
 
@@ -92,7 +93,18 @@ export async function runtimeVerifyHtml(html: string): Promise<string | null> {
         })
     })
     if (probe.errors.length) {
-      return `runtime JavaScript errors when the page runs: ${[...new Set(probe.errors)].slice(0, 3).join(' | ')}`
+      const uniq = [...new Set(probe.errors)].slice(0, 3)
+      let hint = ''
+      // The dominant runtime-error class from the on-device FM is using the event
+      // parameter (`e`) outside its handler, or referencing an undeclared name. A raw
+      // "ReferenceError: e is not defined" doesn't tell a small model where to look —
+      // name the likely cause so the repair is targeted, not another blind regenerate.
+      if (uniq.some(m => /ReferenceError:\s*e\b|\be is not defined/.test(m))) {
+        hint = ' — you referenced the event variable `e` outside a keydown/keyup handler. `e` only exists INSIDE those handlers; in the loop/step/draw functions read your own state variables instead.'
+      } else if (uniq.some(m => /is not defined/.test(m))) {
+        hint = ' — you used a variable before declaring it. Declare EVERY variable with `let` at the top before the loop starts.'
+      }
+      return `runtime JavaScript errors when the page runs: ${uniq.join(' | ')}${hint}`
     }
     if (!probe.canvas) return 'no <canvas> element present at runtime'
     if (!probe.drawn) return 'the canvas is completely blank — nothing is ever drawn; make sure the game loop starts on load and requestAnimationFrame re-schedules itself every frame'
@@ -104,6 +116,14 @@ export async function runtimeVerifyHtml(html: string): Promise<string | null> {
     }
     if (probe.keys && probe.keys.registered === 0) {
       return 'no keyboard input handling at runtime — register a keydown listener (ArrowUp/Down/Left/Right) so the game is controllable'
+    }
+    // Aliveness — the strongest check. A real action game either animates on its own
+    // (gravity, moving obstacles, a falling piece) or visibly changes when the player
+    // acts. A canvas that does NEITHER drew one frame and froze — the classic
+    // requestAnimationFrame-called-once / never-cleared-and-redrawn bug. Only enforced
+    // when the probe actually ran both measurements (older harness → fields undefined).
+    if (probe.selfAnimated === false && probe.inputCausedChange === false) {
+      return 'the game is frozen — the canvas draws one frame and never changes again, and pressing keys changes nothing. The game loop must call requestAnimationFrame(loop) EVERY frame (not once), clear and redraw the whole canvas each frame, and advance the game state (movement, gravity, obstacles) over time so play actually happens.'
     }
     return null
   } catch (e: any) {
