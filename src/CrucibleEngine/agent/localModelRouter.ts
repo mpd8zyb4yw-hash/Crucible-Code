@@ -12,9 +12,10 @@
 
 import os from 'os'
 import { LOCAL_MODEL_CATALOG, classifyDomain, type LocalModelSpec, type Domain } from './localModelCatalog'
-import { modelStatus, isModelEnabled } from './modelDownloadManager'
+import { modelStatus, isModelEnabled, isFireAllMode } from './modelDownloadManager'
 import { callLocalModel } from './localModelPool'
 import { fmDirectAnswer, checkFmAvailable } from './fmReact'
+import { recordOutcome, markWin } from '../localModels/telemetry'
 
 const TIER_RANK: Record<LocalModelSpec['tier'], number> = { fast: 0, balanced: 1, quality: 2 }
 const CORROBORATE_DOMAINS = new Set<Domain>(['code', 'reasoning'])
@@ -38,6 +39,8 @@ export interface RoutedAnswer {
   corroboration: CandidateAnswer[]
   /** True when at least one other model's answer materially agreed with the winner. */
   corroborated: boolean
+  /** True when this answer was produced with the user's "always fire all models" override on. */
+  firedAll: boolean
 }
 
 function readyModels(): LocalModelSpec[] {
@@ -87,11 +90,14 @@ function agrees(a: string, b: string): boolean {
 async function callAsCandidate(
   kind: { modelId: string; modelLabel: string; call: () => Promise<string> },
 ): Promise<CandidateAnswer | null> {
+  const startedAt = Date.now()
   try {
     const text = await kind.call()
     const { score, reason } = scoreAnswer(text)
+    recordOutcome({ modelId: kind.modelId, latencyMs: Date.now() - startedAt, confidence: score, won: false, errored: false })
     return { modelId: kind.modelId, modelLabel: kind.modelLabel, text, confidence: score, reason }
   } catch (err: any) {
+    recordOutcome({ modelId: kind.modelId, latencyMs: Date.now() - startedAt, confidence: 0, won: false, errored: true })
     return { modelId: kind.modelId, modelLabel: kind.modelLabel, text: '', confidence: 0, reason: err?.message ?? String(err) }
   }
 }
@@ -117,9 +123,11 @@ export async function routeLocalModelQuery(system: string, user: string): Promis
 
   if (!primary) return null
 
-  const needsCorroboration = primary.confidence < ESCALATE_BELOW || CORROBORATE_DOMAINS.has(domain)
+  const fireAll = isFireAllMode()
+  const needsCorroboration = fireAll || primary.confidence < ESCALATE_BELOW || CORROBORATE_DOMAINS.has(domain)
   if (!needsCorroboration) {
-    return { text: primary.text, modelId: primary.modelId, modelLabel: primary.modelLabel, domain, confidence: primary.confidence, corroboration: [], corroborated: false }
+    markWin(primary.modelId)
+    return { text: primary.text, modelId: primary.modelId, modelLabel: primary.modelLabel, domain, confidence: primary.confidence, corroboration: [], corroborated: false, firedAll: false }
   }
 
   const budget = deviceParallelBudget()
@@ -132,13 +140,17 @@ export async function routeLocalModelQuery(system: string, user: string): Promis
     others.push({ modelId: 'track-s-fm', modelLabel: 'Apple On-Device (Track S)', call: () => fmDirectAnswer(user) })
   }
 
-  const fanOut = others.slice(0, Math.max(0, budget - 1))
+  // Fire-all is an explicit, informed user override — it bypasses the device-parallel-budget
+  // throttle that otherwise degrades fan-out on low-RAM/core machines, since the user has
+  // deliberately asked for every downloaded model to run on every query regardless of cost.
+  const fanOut = fireAll ? others : others.slice(0, Math.max(0, budget - 1))
   const results = (await Promise.all(fanOut.map(callAsCandidate))).filter((c): c is CandidateAnswer => !!c)
 
   const all = [primary, ...results].sort((a, b) => b.confidence - a.confidence)
   const winner = all[0]
   const rest = all.slice(1)
   const corroborated = rest.some(c => c.confidence > 0.3 && agrees(winner.text, c.text))
+  markWin(winner.modelId)
 
   return {
     text: winner.text,
@@ -148,5 +160,6 @@ export async function routeLocalModelQuery(system: string, user: string): Promis
     confidence: corroborated ? Math.min(1, winner.confidence + 0.15) : winner.confidence,
     corroboration: rest,
     corroborated,
+    firedAll: fireAll,
   }
 }
