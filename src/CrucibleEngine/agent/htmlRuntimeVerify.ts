@@ -29,12 +29,60 @@ function electronBin(): string {
   return _require('electron') as unknown as string
 }
 
-interface Probe { errors: string[]; canvas: boolean; drawn: boolean; animating: boolean; drawnAtLoad?: boolean }
+interface Probe {
+  errors: string[]; canvas: boolean; drawn: boolean; animating: boolean; drawnAtLoad?: boolean
+  keys?: { registered: number; fired: number } | null
+}
+
+// Injected into the VERIFY COPY only (never the shipped artifact): wraps keydown/keyup
+// listener registration so the harness can tell whether its synthetic arrow-key presses
+// actually reached a game handler. Covers addEventListener AND onkeydown-property games.
+const KEY_INSTRUMENTATION = `<script>
+(function () {
+  window.__crucibleKeys = { registered: 0, fired: 0 };
+  var orig = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (type, fn, opts) {
+    if ((type === 'keydown' || type === 'keyup') && typeof fn === 'function') {
+      window.__crucibleKeys.registered++;
+      var wrapped = function () { window.__crucibleKeys.fired++; return fn.apply(this, arguments); };
+      return orig.call(this, type, wrapped, opts);
+    }
+    return orig.call(this, type, fn, opts);
+  };
+  ['onkeydown', 'onkeyup'].forEach(function (prop) {
+    [window, document].forEach(function (target) {
+      var current = null;
+      // Real delivery goes through one un-wrapped listener that delegates to the
+      // latest assigned handler — shadowing the property alone would swallow it.
+      orig.call(target, prop.slice(2), function (e) {
+        if (current) { window.__crucibleKeys.fired++; return current.call(this, e); }
+      });
+      try {
+        Object.defineProperty(target, prop, {
+          configurable: true,
+          get: function () { return current; },
+          set: function (v) {
+            if (typeof v === 'function') window.__crucibleKeys.registered++;
+            current = typeof v === 'function' ? v : null;
+          },
+        });
+      } catch (e) { /* non-configurable — addEventListener wrap still covers most games */ }
+    });
+  });
+})();
+</script>`
+
+function injectKeyInstrumentation(html: string): string {
+  // As early as possible so it wraps before any game script registers listeners.
+  const m = html.match(/<head[^>]*>/i)
+  if (m) return html.replace(m[0], `${m[0]}\n${KEY_INSTRUMENTATION}`)
+  return KEY_INSTRUMENTATION + html
+}
 
 export async function runtimeVerifyHtml(html: string): Promise<string | null> {
   const tmp = path.join(os.tmpdir(), `crucible-html-verify-${Date.now()}-${process.pid}.html`)
   try {
-    await writeFile(tmp, html, 'utf8')
+    await writeFile(tmp, injectKeyInstrumentation(html), 'utf8')
     const probe = await new Promise<Probe>((resolve, reject) => {
       execFile(electronBin(), [HARNESS, tmp], { timeout: 20000, env: { ...process.env, ELECTRON_ENABLE_LOGGING: '0' } },
         (err, stdout) => {
@@ -49,6 +97,14 @@ export async function runtimeVerifyHtml(html: string): Promise<string | null> {
     if (!probe.canvas) return 'no <canvas> element present at runtime'
     if (!probe.drawn) return 'the canvas is completely blank — nothing is ever drawn; make sure the game loop starts on load and requestAnimationFrame re-schedules itself every frame'
     if (probe.drawnAtLoad === false) return 'the canvas stays blank until the first keypress — the game must draw its initial frame immediately on load'
+    // Input responsiveness — the harness pressed all four arrow keys; a keyboard game
+    // where no keydown handler ever fired is unplayable even if it draws and animates.
+    if (probe.keys && probe.keys.registered > 0 && probe.keys.fired === 0) {
+      return 'keyboard handlers are registered but never fire — arrow-key presses do not reach the game; listen for keydown on window/document'
+    }
+    if (probe.keys && probe.keys.registered === 0) {
+      return 'no keyboard input handling at runtime — register a keydown listener (ArrowUp/Down/Left/Right) so the game is controllable'
+    }
     return null
   } catch (e: any) {
     debugBus.emit('agent', 'html_runtime_verify_unavailable', {

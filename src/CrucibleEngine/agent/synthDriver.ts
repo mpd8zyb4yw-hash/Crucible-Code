@@ -289,7 +289,7 @@ function extractGoalPaths(goal: string): string[] {
 // stdlib-only and the in-app Preview button is the only runtime we can guarantee.
 const DEFAULT_GAME_PATH = 'game.html'
 
-function isWebArtifactGoal(goal: string): boolean {
+export function isWebArtifactGoal(goal: string): boolean {
   const m = goal.toLowerCase()
   const creation = /\b(build|create|make|write|code|program|implement|generate)\b/.test(m)
   const artifact = /\b(game|arcade|snake|tetris|pong|breakout|asteroids|platformer|flappy|minesweeper|sudoku|maze|clicker|interactive (?:app|demo|toy|visuali[sz]ation)|animation|simulation|simulator)\b/.test(m)
@@ -453,6 +453,175 @@ function draw() {
 }
 function loop(t) {
   if (!dead && t - last >= tickMs) { last = t; step(); }
+  draw();
+  requestAnimationFrame(loop);
+}
+reset();
+requestAnimationFrame(loop);
+`,
+}, {
+  match: /\bpong\b/i,
+  title: 'Pong',
+  js: `
+let W = 480, H = 480, PW = 10, PH = 80, BS = 10;
+let cv = document.getElementById('game'); cv.width = W; cv.height = H;
+let ctx = cv.getContext('2d');
+let hud = document.getElementById('hud');
+let player, ai, ball, scoreP, scoreA, dead, up = false, down = false;
+
+function resetBall(towardPlayer) {
+  ball = { x: W / 2, y: H / 2, vx: (towardPlayer ? -1 : 1) * 4, vy: (Math.random() * 4 - 2) || 1.2 };
+}
+function reset() {
+  player = { y: H / 2 - PH / 2 }; ai = { y: H / 2 - PH / 2 };
+  scoreP = 0; scoreA = 0; dead = false;
+  resetBall(Math.random() < 0.5);
+  hud.textContent = 'You 0 — 0 CPU';
+}
+window.addEventListener('keydown', e => {
+  let k = e.key.toLowerCase();
+  if (dead) { reset(); return; }
+  if (k === 'arrowup' || k === 'w') up = true;
+  if (k === 'arrowdown' || k === 's') down = true;
+  // Left/right also steer, so the shell's four touch buttons all do something.
+  if (k === 'arrowleft' || k === 'a') { up = true; down = false; }
+  if (k === 'arrowright' || k === 'd') { down = true; up = false; }
+});
+window.addEventListener('keyup', e => {
+  let k = e.key.toLowerCase();
+  if (k === 'arrowup' || k === 'w' || k === 'arrowleft' || k === 'a') up = false;
+  if (k === 'arrowdown' || k === 's' || k === 'arrowright' || k === 'd') down = false;
+});
+function step() {
+  if (up) player.y -= 6;
+  if (down) player.y += 6;
+  player.y = Math.max(0, Math.min(H - PH, player.y));
+  let target = ball.y - PH / 2;
+  ai.y += Math.max(-4.2, Math.min(4.2, target - ai.y));
+  ai.y = Math.max(0, Math.min(H - PH, ai.y));
+  ball.x += ball.vx; ball.y += ball.vy;
+  if (ball.y <= 0 || ball.y >= H - BS) ball.vy = -ball.vy;
+  if (ball.vx < 0 && ball.x <= PW + 6 && ball.x >= 6 && ball.y + BS >= player.y && ball.y <= player.y + PH) {
+    ball.vx = -ball.vx * 1.04;
+    ball.vy += ((ball.y + BS / 2) - (player.y + PH / 2)) * 0.12;
+    ball.x = PW + 6;
+  }
+  if (ball.vx > 0 && ball.x + BS >= W - PW - 6 && ball.x + BS <= W - 6 && ball.y + BS >= ai.y && ball.y <= ai.y + PH) {
+    ball.vx = -ball.vx * 1.04;
+    ball.vy += ((ball.y + BS / 2) - (ai.y + PH / 2)) * 0.12;
+    ball.x = W - PW - 6 - BS;
+  }
+  ball.vy = Math.max(-8, Math.min(8, ball.vy));
+  if (ball.x < -BS) { scoreA++; resetBall(true); }
+  if (ball.x > W) { scoreP++; resetBall(false); }
+  hud.textContent = 'You ' + scoreP + ' — ' + scoreA + ' CPU';
+  if (scoreP >= 7 || scoreA >= 7) dead = true;
+}
+function draw() {
+  ctx.fillStyle = '#16161e'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.setLineDash([6, 8]);
+  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#7cf8a8'; ctx.fillRect(6, player.y, PW, PH);
+  ctx.fillStyle = '#e05555'; ctx.fillRect(W - PW - 6, ai.y, PW, PH);
+  ctx.fillStyle = '#e4e4ee'; ctx.fillRect(ball.x, ball.y, BS, BS);
+  if (dead) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(scoreP > scoreA ? 'You win ' + scoreP + '–' + scoreA : 'CPU wins ' + scoreA + '–' + scoreP, W / 2, H / 2 - 10);
+    ctx.font = '15px sans-serif';
+    ctx.fillText('Press any key to restart', W / 2, H / 2 + 20);
+  }
+}
+function loop() {
+  if (!dead) step();
+  draw();
+  requestAnimationFrame(loop);
+}
+reset();
+requestAnimationFrame(loop);
+`,
+}, {
+  match: /\b(breakout|brick[\s-]?breaker|arkanoid)\b/i,
+  title: 'Breakout',
+  js: `
+let W = 480, H = 480, PW = 84, PH = 12, BS = 9;
+let COLS = 10, ROWS = 6, BW = 44, BH = 16, TOP = 50;
+let cv = document.getElementById('game'); cv.width = W; cv.height = H;
+let ctx = cv.getContext('2d');
+let hud = document.getElementById('hud');
+let px, ball, bricks, score, lives, dead, won, left = false, right = false;
+let COLORS = ['#e05555', '#e0a955', '#e0d855', '#7cf8a8', '#55b9e0', '#9b7ce0'];
+
+function resetBall() {
+  ball = { x: W / 2 - BS / 2, y: H - 90, vx: 3 * (Math.random() < 0.5 ? 1 : -1), vy: -4.4 };
+}
+function reset() {
+  px = W / 2 - PW / 2; score = 0; lives = 3; dead = false; won = false;
+  bricks = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    bricks.push({ x: 6 + c * (BW + 3), y: TOP + r * (BH + 3), alive: true, color: COLORS[r % COLORS.length] });
+  }
+  resetBall();
+  updateHud();
+}
+function updateHud() { hud.textContent = 'Score: ' + score + '   Lives: ' + lives; }
+window.addEventListener('keydown', e => {
+  let k = e.key.toLowerCase();
+  if (dead || won) { reset(); return; }
+  if (k === 'arrowleft' || k === 'a' || k === 'arrowup' || k === 'w') left = true;
+  if (k === 'arrowright' || k === 'd' || k === 'arrowdown' || k === 's') right = true;
+});
+window.addEventListener('keyup', e => {
+  let k = e.key.toLowerCase();
+  if (k === 'arrowleft' || k === 'a' || k === 'arrowup' || k === 'w') left = false;
+  if (k === 'arrowright' || k === 'd' || k === 'arrowdown' || k === 's') right = false;
+});
+function step() {
+  if (left) px -= 7;
+  if (right) px += 7;
+  px = Math.max(0, Math.min(W - PW, px));
+  ball.x += ball.vx; ball.y += ball.vy;
+  if (ball.x <= 0 || ball.x >= W - BS) ball.vx = -ball.vx;
+  if (ball.y <= 0) ball.vy = -ball.vy;
+  if (ball.vy > 0 && ball.y + BS >= H - 24 && ball.y + BS <= H - 24 + PH && ball.x + BS >= px && ball.x <= px + PW) {
+    ball.vy = -Math.abs(ball.vy);
+    ball.vx += ((ball.x + BS / 2) - (px + PW / 2)) * 0.08;
+    ball.vx = Math.max(-6, Math.min(6, ball.vx));
+  }
+  for (let b of bricks) {
+    if (!b.alive) continue;
+    if (ball.x + BS >= b.x && ball.x <= b.x + BW && ball.y + BS >= b.y && ball.y <= b.y + BH) {
+      b.alive = false; score += 10; updateHud();
+      let fromSide = ball.x + BS - ball.vx <= b.x || ball.x - ball.vx >= b.x + BW;
+      if (fromSide) ball.vx = -ball.vx; else ball.vy = -ball.vy;
+      break;
+    }
+  }
+  if (bricks.every(b => !b.alive)) { won = true; return; }
+  if (ball.y > H) {
+    lives--; updateHud();
+    if (lives <= 0) { dead = true; return; }
+    resetBall();
+  }
+}
+function draw() {
+  ctx.fillStyle = '#16161e'; ctx.fillRect(0, 0, W, H);
+  for (let b of bricks) {
+    if (!b.alive) continue;
+    ctx.fillStyle = b.color; ctx.fillRect(b.x, b.y, BW, BH);
+  }
+  ctx.fillStyle = '#7cf8a8'; ctx.fillRect(px, H - 24, PW, PH);
+  ctx.fillStyle = '#e4e4ee'; ctx.fillRect(ball.x, ball.y, BS, BS);
+  if (dead || won) {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(won ? 'You cleared it — score ' + score : 'Game over — score ' + score, W / 2, H / 2 - 10);
+    ctx.font = '15px sans-serif';
+    ctx.fillText('Press any key to restart', W / 2, H / 2 + 20);
+  }
+}
+function loop() {
+  if (!dead && !won) step();
   draw();
   requestAnimationFrame(loop);
 }

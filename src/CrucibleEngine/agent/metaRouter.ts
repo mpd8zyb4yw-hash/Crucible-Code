@@ -3,6 +3,7 @@
 // I4 agent-to-agent consultation is also implemented here via consult().
 
 import { decompose } from '../goalDecomposer'
+import { isWebArtifactGoal } from './synthDriver'
 import { selectArchetype, getArchetype, type ArchetypeId } from './archetypes'
 import { writeScratch, readScratch, buildScratchContext, persistScratch, clearScratch } from './taskScratchpad'
 import { debugBus } from '../debug/bus'
@@ -63,8 +64,14 @@ export async function runMetaRouter(opts: MetaRouterOpts): Promise<MetaRouterRes
   // Decompose into the real dependency tree. decompose() returns { nodes } where each
   // SubtaskNode has { id, goal, dependsOn[] }. The root (depth 0) is the overall goal;
   // the actual subtasks are the depth>0 nodes.
-  const tree = decompose(goal)
-  const subNodes = tree.nodes.filter(n => n.depth > 0)
+  // Single-artifact web builds (game/interactive HTML) must NOT be decomposed: the
+  // coder path writes ONE runtime-verified file, and every extra subtask the splitter
+  // invents ("also produce a web version…") re-enters the same game state machine and
+  // rebuilds the identical artifact. Measured 2026-07-07: decompose+critic+synthesis
+  // rebuilt game.html three times — all of the wall time past the first 3.5s build was
+  // redundant. One coder subtask, no splitting.
+  const webArtifact = isWebArtifactGoal(goal)
+  const subNodes = webArtifact ? [] : decompose(goal).nodes.filter(n => n.depth > 0)
   const subIds = new Set(subNodes.map(n => n.id))
   const plans: SubtaskPlan[] = subNodes.map(n => ({
     id: n.id,
@@ -78,7 +85,7 @@ export async function runMetaRouter(opts: MetaRouterOpts): Promise<MetaRouterRes
 
   // No meaningful decomposition → single best-archetype pass over the whole goal.
   if (!plans.length) {
-    plans.push({ id: 'st_0', description: goal, archetype: selectArchetype(goal), dependsOn: [], result: undefined, done: false })
+    plans.push({ id: 'st_0', description: goal, archetype: webArtifact ? 'coder' : selectArchetype(goal), dependsOn: [], result: undefined, done: false })
   }
 
   emit({ type: 'agent_meta', event: 'plan', subtasks: plans.map(p => ({ id: p.id, archetype: p.archetype, description: p.description, dependsOn: p.dependsOn })) })
@@ -187,6 +194,19 @@ export async function runMetaRouter(opts: MetaRouterOpts): Promise<MetaRouterRes
   // Critic pass (I5) — adversarial audit of all completed subtask results
   const draftAnswer = plans.filter(p => p.result).map(p => `[${p.archetype}]: ${p.result}`).join('\n\n')
   let criticFindings: string | null = null
+
+  // Runtime-verified artifact fast path: the coder subtask's game/HTML write already
+  // passed a REAL execution gate (loaded in Electron offscreen, keys pressed, canvas
+  // drawn, zero page errors) — strictly stronger evidence than a prose critic re-read.
+  // Worse, the critic/synthesis prompts embed the goal, so both re-enter the game state
+  // machine and rebuild the identical file (measured: 2 redundant rebuilds per run).
+  // Return the specialist's answer directly.
+  if (webArtifact && incompletePlans.length === 0) {
+    emit({ type: 'agent_meta', event: 'confidence', confidence: 'high', completeness: 1 })
+    debugBus.emit('agent', 'meta_router_done', { taskId, subtaskCount: plans.length, completeness: 1, confidence: 'high', fastPath: 'runtime-verified-artifact' }, { severity: 'success' })
+    try { persistScratch(taskId, projectPath); clearScratch(taskId) } catch {}
+    return { finalAnswer: draftAnswer.replace(/^\[\w+\]:\s*/, ''), subtasks: plans, criticFindings: null, completeness: 1, confidence: 'high', incompleteSubtasks: [] }
+  }
   try {
     const criticContext = `Goal: ${goal}\n\nDraft outputs:\n${draftAnswer}`
     const criticResult = await runLoop({

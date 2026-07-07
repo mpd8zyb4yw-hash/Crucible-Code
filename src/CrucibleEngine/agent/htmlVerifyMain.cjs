@@ -34,6 +34,11 @@ app.whenReady().then(async () => {
       win.webContents.sendInputEvent({ type: 'keyUp', keyCode: key })
     }
     await new Promise(r => setTimeout(r, 400))
+    // Input-responsiveness: runtimeVerifyHtml injects a counter that wraps keydown
+    // listener registration/firing. undefined = instrumentation absent (skip check).
+    out.keys = await win.webContents.executeJavaScript(
+      `window.__crucibleKeys ? { registered: window.__crucibleKeys.registered, fired: window.__crucibleKeys.fired } : null`, true
+    ).catch(() => null)
     const probe = await win.webContents.executeJavaScript(`(() => {
       const c = document.querySelector('canvas')
       if (!c) return Promise.resolve({ canvas: false, drawn: false, animating: false })
