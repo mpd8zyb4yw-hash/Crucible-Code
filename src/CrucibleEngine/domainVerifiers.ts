@@ -195,3 +195,50 @@ export async function domainVerify(
     return { passed: true, issues: [], confidence: 0 }
   }
 }
+
+// ── Code-block syntax verifier ────────────────────────────────────────────────
+// Repro (2026-07-07 trust audit): the offline chat brain shipped Python with a bare
+// comma where `and` was needed — a SyntaxError on first run — presented as working
+// code. "Wrote code" is not "wrote working code": before any chat answer containing
+// fenced code ships, syntax-check every Python/JS block. Zero model inference here;
+// Python via `python3 -c ast.parse(stdin)`, JS via vm.Script compile. Semantic bugs
+// are out of scope — this gate is specifically "would it even parse".
+import { spawnSync } from 'child_process'
+import vmMod from 'vm'
+
+export interface CodeBlockProblem {
+  lang: string
+  error: string
+  /** offsets of the fenced block (``` to ```) in the original text */
+  start: number
+  end: number
+  code: string
+}
+
+export function verifyCodeBlocks(text: string): CodeBlockProblem[] {
+  const problems: CodeBlockProblem[] = []
+  const fenceRe = /```(\w*)\n([\s\S]*?)```/g
+  let m: RegExpExecArray | null
+  while ((m = fenceRe.exec(text)) !== null) {
+    const lang = (m[1] || '').toLowerCase()
+    const code = m[2]
+    if (!code.trim()) continue
+    let error: string | null = null
+    if (lang === 'python' || lang === 'py') {
+      try {
+        const r = spawnSync('python3', ['-c', 'import sys,ast; ast.parse(sys.stdin.read())'],
+          { input: code, timeout: 5000, encoding: 'utf8' })
+        if (r.status !== 0) {
+          const line = (r.stderr || '').split('\n').filter(Boolean).slice(-1)[0] ?? 'SyntaxError'
+          error = line.trim().slice(0, 200)
+        }
+      } catch { /* python missing / timeout — do not block the answer */ }
+    } else if (lang === 'javascript' || lang === 'js') {
+      try { new vmMod.Script(code) } catch (e: any) {
+        error = `SyntaxError: ${String(e?.message ?? e).slice(0, 200)}`
+      }
+    }
+    if (error) problems.push({ lang, error, start: m.index, end: m.index + m[0].length, code })
+  }
+  return problems
+}

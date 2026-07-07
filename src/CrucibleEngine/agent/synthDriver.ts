@@ -32,6 +32,7 @@
 // ============================================================================
 
 import path from 'path'
+import vm from 'vm'
 import { synthesizeUniversal } from '../synth/universal'
 import { buildEditSpec, parseSectionPatches, applyPatch, isSectionPatchOutput } from '../synth/editExtract'
 import { ensureIndex } from '../state/codebaseIndex'
@@ -40,6 +41,7 @@ import type { DriveTurn, DriveTurnResult } from './loop'
 import { retrieveForTask } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
 import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
+import { runtimeVerifyHtml } from './htmlRuntimeVerify'
 
 // ── Local FM helper (research turns only) ───────────────────────────────────
 // Mirrors callLocalModel in server.ts but lives here so synthDriver stays
@@ -261,7 +263,7 @@ function extractProtectedGoalPaths(goal: string): Set<string> {
 function extractGoalPaths(goal: string): string[] {
   const protectedPaths = extractProtectedGoalPaths(goal)
   const all = Array.from(
-    goal.matchAll(/\b((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs))\b/g),
+    goal.matchAll(/\b((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs|html))\b/g),
     m => m[1],
   )
   // Dedupe preserving order, skip obvious doc references like tsconfig.json, skip protected.
@@ -278,6 +280,145 @@ function extractGoalPaths(goal: string): string[] {
  * Extract a shell command the goal asks us to run to validate output.
  * E.g. "runnable with `npx tsx src/index.ts`" → "npx tsx src/index.ts"
  */
+// ── Game / interactive web-artifact goals ─────────────────────────────────────
+// "build a playable game" / "build me a snake game" name no file path, so the S0-S6
+// TS state machine never engaged and the goal fell through to solveNonCodeTurn, which
+// answers in PROSE — the user asked for a game and got a text tutorial. Detect the
+// shape and drive it through a dedicated single-file HTML/canvas write instead.
+// Games are ALWAYS emitted as self-contained HTML (never pygame): the sandbox is
+// stdlib-only and the in-app Preview button is the only runtime we can guarantee.
+const DEFAULT_GAME_PATH = 'game.html'
+
+function isWebArtifactGoal(goal: string): boolean {
+  const m = goal.toLowerCase()
+  const creation = /\b(build|create|make|write|code|program|implement|generate)\b/.test(m)
+  const artifact = /\b(game|arcade|snake|tetris|pong|breakout|asteroids|platformer|flappy|minesweeper|sudoku|maze|clicker|interactive (?:app|demo|toy|visuali[sz]ation)|animation|simulation|simulator)\b/.test(m)
+  const playable = /\b(playable|interactive)\b/.test(m)
+  return creation && (artifact || playable)
+}
+
+function extractHtmlDoc(raw: string): string {
+  const fence = raw.match(/```(?:html)?\s*([\s\S]*?)```/i)
+  let s = (fence ? fence[1] : raw).trim()
+  const start = s.search(/<!doctype html|<html[\s>]/i)
+  if (start > 0) s = s.slice(start)
+  return s
+}
+
+/** Returns null if the document passes, else a human-readable rejection reason.
+ *  The inline-script vm.Script compile is the run-to-verify gate that keeps
+ *  syntactically broken code from shipping as "done". */
+function validateHtmlGame(html: string): string | null {
+  if (!/<!doctype html|<html[\s>]/i.test(html)) return 'output is not a complete HTML document'
+  if (!/<\/html>/i.test(html)) return 'HTML document is truncated (missing </html>)'
+  if (!/<script[\s>]/i.test(html)) return 'no inline <script> found'
+  if (!/<canvas[\s>]/i.test(html) && !/addEventListener/i.test(html)) return 'no canvas element or event handling — not interactive'
+  if (/\b(?:src|href)=["']https?:/i.test(html)) return 'references external network resources — must be fully self-contained'
+  for (const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)) {
+    try { new vm.Script(m[1]) } catch (e: any) {
+      return `JavaScript syntax error in inline script: ${String(e?.message ?? e).slice(0, 140)}`
+    }
+  }
+  return null
+}
+
+// The FM only writes the GAME LOGIC — Crucible owns the HTML shell. Measured on-device
+// (2026-07-07): asking the A-series FM for a full HTML document fails constantly on
+// output truncation (missing </html>) and const-reassignment TypeErrors. A fixed shell
+// + JS-only completion + deterministic sanitizer turns those failure classes off.
+function buildGameShell(js: string, title: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101016; color: #e4e4ee;
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif; display: flex;
+    flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+  canvas { background: #16161e; border: 1px solid rgba(255,255,255,0.14); border-radius: 8px;
+    max-width: 92vw; max-height: 70vh; }
+  #hud { font-size: 15px; letter-spacing: 0.04em; min-height: 20px; }
+  #touch { display: flex; gap: 10px; }
+  #touch button { width: 52px; height: 52px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.06); color: #e4e4ee; font-size: 20px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<canvas id="game" width="480" height="480"></canvas>
+<div id="touch">
+  <button data-k="ArrowLeft">◀</button>
+  <button data-k="ArrowUp">▲</button>
+  <button data-k="ArrowDown">▼</button>
+  <button data-k="ArrowRight">▶</button>
+</div>
+<script>
+// Shell-provided plumbing: touch buttons synthesize the same keydown events the game listens for.
+document.querySelectorAll('#touch button').forEach(function (b) {
+  b.addEventListener('click', function () {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: b.dataset.k }));
+  });
+});
+</script>
+<script>
+${js}
+</script>
+</body>
+</html>`
+}
+
+// Deterministic sanitizer for the FM's most common runtime bug: game state declared
+// with const then reassigned every frame. Rewriting declaration-position const to let
+// is semantics-preserving for generated game code and removes the whole failure class.
+function sanitizeGameJs(js: string): string {
+  return js.replace(/\bconst\b/g, 'let')
+}
+
+const HTML_GAME_SYSTEM = `You write the JavaScript game logic that runs inside a prepared HTML page.
+The page already provides:
+- <canvas id="game" width="480" height="480"> — draw everything here via its 2d context
+- a <div id="hud"> for score/status text
+- on-screen touch buttons that dispatch normal keydown events (ArrowUp/Down/Left/Right)
+Hard rules:
+- Output ONLY JavaScript. No HTML, no markdown fences, no commentary.
+- Use requestAnimationFrame (or setInterval) so the game starts IMMEDIATELY on load and keeps running.
+- Listen for keydown on window for ArrowUp/ArrowDown/ArrowLeft/ArrowRight (WASD too).
+- Show the score in #hud, draw a game-over state on the canvas, and restart when any key is pressed after game over.
+- Declare all game state with let (never const). Define helpers and listeners once at top level, never inside the loop.
+- Plain ES6, no frameworks, no external resources, no fetch.`
+
+async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<string> {
+  const fmUp = await checkFmAvailable()
+  if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — html write escalating')
+  const title = (state.goal.match(/\b(\w[\w\s-]{2,30}?)\s+game\b/i)?.[1] ?? 'Crucible').trim() + ' — Crucible'
+  let feedback = ''
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const raw = await fmComplete([
+      { role: 'system', content: HTML_GAME_SYSTEM },
+      { role: 'user', content: `${state.goal}${feedback}\n\nOutput the JavaScript game logic now.` },
+    ])
+    const fence = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i)
+    const js = sanitizeGameJs((fence ? fence[1] : raw).trim())
+    const html = js ? buildGameShell(js, title) : ''
+    // Two gates: static (syntax/self-containment), then RUNTIME — load in the bundled
+    // Electron offscreen, press keys, and require a canvas that is actually drawn to
+    // with zero page errors. The static gate alone shipped a parse-clean game that
+    // was dead on frame 1.
+    const problem = html
+      ? (validateHtmlGame(html) ?? await runtimeVerifyHtml(html))
+      : 'empty completion'
+    if (!problem) {
+      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt, bytes: html.length }, { severity: 'info' })
+      return html
+    }
+    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, problem }, { severity: 'info' })
+    feedback = `\nYour previous JavaScript was rejected: ${problem}. Output the FULL corrected JavaScript, nothing else.`
+  }
+  throw new OfflineEscalateError('FM could not produce working game logic after 4 attempts (each run-verified in a real browser)')
+}
+
 function extractSelfTestCmd(goal: string): string | null {
   const m = goal.match(/`((?:npx\s+tsx|node|npm\s+(?:test|run\s+\S+)|ts-node)\s+\S[^`]*)`/)
   return m ? m[1].trim() : null
@@ -356,7 +497,7 @@ function parseCurrentState(messages: Array<Record<string, unknown>>): CurrentSta
           ? JSON.parse(tc.function.arguments || '{}')
           : (tc.function?.arguments ?? {})
         const p = String(args.path ?? args.file_path ?? '')
-        if (p && /\.(ts|tsx|js|mjs)$/.test(p)) {
+        if (p && /\.(ts|tsx|js|mjs|html)$/.test(p)) {
           if (name === 'read_file') lastReadPath = p
           if (name === 'write_file' || name === 'create_file') {
             if (!writtenPaths.includes(p)) writtenPaths.push(p)
@@ -562,7 +703,14 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
     }
 
     const state = parseCurrentState(messages)
-    const { goal, goalPaths, writtenPaths, selfTestCmd } = state
+    const { goal, writtenPaths, selfTestCmd } = state
+    // Pathless game/interactive builds get a default HTML target so they run through
+    // the code state machine (write → verify → done) instead of the prose Q&A path.
+    if (state.goalPaths.length === 0 && isWebArtifactGoal(goal)) {
+      state.goalPaths = [DEFAULT_GAME_PATH]
+      debugBus.emit('agent', 'offline_game_goal', { goal: goal.slice(0, 80) }, { severity: 'info' })
+    }
+    const goalPaths = state.goalPaths
 
     // Derive the primary path (first mentioned) and what's still unwritten.
     const primaryPath = goalPaths[0] ?? null
@@ -585,7 +733,11 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
       .map(tc => tc.function?.name)
 
     const hasReadFile = calledTools.includes('read_file')
-    if (isEditIntent(goal) && !hasReadFile && !writtenPaths.includes(primaryPath)) {
+    // Injected default targets (game.html for pathless game goals) are greenfield by
+    // definition — the vibe-code template's boilerplate "fix anything that breaks"
+    // otherwise trips isEditIntent and burns an iteration reading a file that can't exist.
+    const isInjectedTarget = !goal.includes(primaryPath)
+    if (isEditIntent(goal) && !isInjectedTarget && !hasReadFile && !writtenPaths.includes(primaryPath)) {
       return {
         text: '',
         toolCalls: [{
@@ -601,7 +753,9 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
       const nextPath = unwrittenPaths[0]
       let content: string
       try {
-        content = await solveCodeWrite(nextPath, state, projectPath)
+        content = nextPath.endsWith('.html')
+          ? await solveHtmlWrite(nextPath, state)
+          : await solveCodeWrite(nextPath, state, projectPath)
       } catch (e) {
         if (e instanceof OfflineEscalateError) throw e
         throw new OfflineEscalateError(`solveCodeWrite threw: ${String((e as any)?.message ?? e).slice(0, 120)}`)
@@ -618,7 +772,9 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
 
     // ── S2: Run tsc after all files written ──────────────────────────────────
     const tscRuns = calledTools.filter(t => t === 'run_command').length
-    const needsTsc = allWritten && tscRuns < 1 + Math.max(0, state.writeCycles - goalPaths.length)
+    const hasTsTargets = goalPaths.some(p => /\.(ts|tsx|js|mjs)$/.test(p))
+    // HTML-only goals are verified at write time (validateHtmlGame) — tsc has nothing to check.
+    const needsTsc = allWritten && hasTsTargets && tscRuns < 1 + Math.max(0, state.writeCycles - goalPaths.length)
     if (needsTsc) {
       return {
         text: '',
@@ -701,6 +857,13 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
     // ── S6: all clean → done ─────────────────────────────────────────────────
     const testNote = selfTestCmd ? ` + self-test passed` : ''
     debugBus.emit('agent', 'offline_turn_hit', { cycles: state.writeCycles, files: writtenPaths.length }, { severity: 'info' })
+    const htmlDone = writtenPaths.filter(p => p.endsWith('.html'))
+    if (htmlDone.length && !hasTsTargets) {
+      return {
+        text: `Wrote ${writtenPaths.join(', ')} — self-contained single-file HTML, inline scripts syntax-verified. Open it with the Preview button to play.`,
+        toolCalls: [],
+      }
+    }
     return {
       text: `Wrote ${writtenPaths.join(', ')} — tsc clean${testNote} (${state.writeCycles} offline cycle(s)).`,
       toolCalls: [],

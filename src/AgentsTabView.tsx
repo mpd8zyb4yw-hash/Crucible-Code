@@ -90,7 +90,7 @@ function CapabilityRow({ name, desc, mono, tint, onSelect }: { name: string; des
   )
 }
 
-export default function AgentsTabView({ onBuild, onClose, onInsert }: { onBuild: (text: string) => void; onClose?: () => void; onInsert?: (text: string) => void }) {
+export default function AgentsTabView({ onBuild, onClose, onInsert }: { onBuild: (text: string, display?: string) => void; onClose?: () => void; onInsert?: (text: string) => void }) {
   const [descs, setDescs] = useState<Record<string, string>>({})
   const [skills, setSkills] = useState<SkillEntry[]>([])
   const [builtin, setBuiltin] = useState<BuiltinTool[]>([])
@@ -217,7 +217,7 @@ export default function AgentsTabView({ onBuild, onClose, onInsert }: { onBuild:
                     <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
                       <div style={{ flex: 1 }} />
                       <button
-                        onClick={() => { onClose?.(); onBuild(a.prompt(descs[a.name]?.trim() || a.desc)) }}
+                        onClick={() => { const d = descs[a.name]?.trim() || a.desc; onClose?.(); onBuild(a.prompt(d), `${a.name}: ${d}`) }}
                         style={{ fontSize: 10.5, fontWeight: 700, color: a.color, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
                       >Run ▸</button>
                     </div>

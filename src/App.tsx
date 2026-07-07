@@ -789,7 +789,10 @@ export default function App() {
     }
   }
 
-  const send = async (overrideMessage?: string, modeOverride?: string, ensembleConfirmed = false) => {
+  // displayText: what the transcript shows as the user's message when the actual message
+  // sent to the server is an internal scaffold (agent-pane templates). Never show the user
+  // prompt-engineering they didn't type.
+  const send = async (overrideMessage?: string, modeOverride?: string, ensembleConfirmed = false, displayText?: string) => {
     // In Remote Brain mode every send goes straight to the Mac agent loop.
     if (remoteBrain && !modeOverride) modeOverride = 'agent'
     if (thinking) return
@@ -816,7 +819,7 @@ export default function App() {
     setAgentStartTime(Date.now()); setAgentElapsed(0); setAgentProgress(null)
     prewarmTokenRef.current = null
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
-    const nextRounds = [...rounds, emptyRound(roundId, userMessage)]
+    const nextRounds = [...rounds, emptyRound(roundId, displayText?.trim() || userMessage)]
     setRounds(nextRounds)
     // Record this as the active server-owned task so that if the tab is backgrounded /
     // reloaded mid-run, we can reconnect to its buffered stream and replay on return.
@@ -1639,7 +1642,14 @@ export default function App() {
       {/* Ensemble key management lives in the Settings tab; the per-query confirm is an
           inline card above the composer (v3) — no modals. */}
       <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', zIndex: 1 }}>
-        <NavRail tab={tab} setTab={setTab} agentsOpen={agentsOpen} onToggleAgents={() => setAgentsOpen(o => !o)} />
+        {/* History/Settings overlays and the Agents drawer are mutually exclusive —
+            opening either always closes the other (both visible at once was a live bug). */}
+        <NavRail
+          tab={tab}
+          setTab={t => { if (t !== 'chat') setAgentsOpen(false); setTab(t) }}
+          agentsOpen={agentsOpen}
+          onToggleAgents={() => setAgentsOpen(o => { if (!o) setTab('chat'); return !o })}
+        />
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
       {/* Global keyframes + shared rules live in index.css (design-token sheet). */}
 
@@ -1752,7 +1762,7 @@ export default function App() {
             display: 'flex', flexDirection: 'column',
           }}>
             <AgentsTabView
-              onBuild={text => { setAgentsOpen(false); void send(text) }}
+              onBuild={(text, display) => { setAgentsOpen(false); void send(text, undefined, false, display) }}
               onClose={() => setAgentsOpen(false)}
               onInsert={text => {
                 setAgentsOpen(false)
@@ -2014,7 +2024,7 @@ export default function App() {
               fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
               color: 'rgba(245,158,11,0.8)', textTransform: 'uppercase',
               animation: 'pulse 1.4s ease infinite',
-            }}>reconnecting…</span>
+            }}>resuming task…</span>
           )}
           <button
             onClick={() => {
@@ -2209,7 +2219,7 @@ export default function App() {
           solid background, so it never reads as a dark bar; the blobs stay visible. */}
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : 0,
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
         right: 0,
         height: inputBarHeight - 4, pointerEvents: 'none', zIndex: 8, background: remoteBrain && isMobile ? 'rgba(13,13,21,0.55)' : 'transparent',
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -2218,7 +2228,7 @@ export default function App() {
       }} />
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : 0,
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
         right: 0,
         height: inputBarHeight - 28, pointerEvents: 'none', zIndex: 9,
         backdropFilter: 'blur(44px)', WebkitBackdropFilter: 'blur(44px)',
@@ -2262,7 +2272,7 @@ export default function App() {
         // In landscape Remote Brain: anchor to the right 38% panel so it sits below chat.
         // In portrait Remote Brain: full width, above the canvas (zIndex 60).
         // Normal: full width, normal stacking.
-        left: remoteBrain && isMobile && isLandscape ? '62%' : 0,
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
         right: 0,
         zIndex: remoteBrain && isMobile ? 60 : 10,
         // Remote Brain portrait: frosted glass so the stream bleeds through.
@@ -2446,7 +2456,8 @@ export default function App() {
           display: 'flex', flexDirection: 'column',
           background: 'rgba(255,255,255,0.045)',
           border: '1px solid rgba(255,255,255,0.09)',
-          borderRadius: 20, padding: '12px 12px 10px 14px',
+          // Thin strip by default (single row); grows vertically as the textarea grows.
+          borderRadius: 22, padding: '7px 10px',
           width: '100%', maxWidth: 680,
           backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
           boxShadow: '0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)',
@@ -2463,11 +2474,25 @@ export default function App() {
               Type at least 4 characters to send
             </div>
           )}
-          {/* ── Row 1: crucible glyph + textarea + send ── */}
+          {/* ── Single row: (+) expander + textarea + mode chip + send ── */}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-            <svg width="20" height="20" viewBox="0 0 48 48" fill="none" style={{ flexShrink: 0, opacity: 0.4 }}>
-              <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="#e4e4ee" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
+            <button
+              onClick={() => setComposerExpandOpen(o => !o)}
+              title={composerExpandOpen ? 'Close' : 'More: Ensemble, Models, Remote Brain'}
+              aria-expanded={composerExpandOpen}
+              style={{
+                width: 26, height: 26, borderRadius: '50%', flexShrink: 0, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                border: `1px solid ${composerExpandOpen ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.09)'}`,
+                background: composerExpandOpen ? 'rgba(124,124,248,0.14)' : 'rgba(255,255,255,0.04)',
+                transition: 'background 0.2s, border-color 0.2s, transform 0.22s cubic-bezier(0.22,1,0.36,1)',
+                transform: composerExpandOpen ? 'rotate(45deg)' : 'none',
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                <path d="M5.5 1v9M1 5.5h9" stroke={composerExpandOpen ? '#b0b0f8' : '#77778c'} strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
             <textarea
               ref={textareaRef}
               value={input}
@@ -2483,6 +2508,9 @@ export default function App() {
                 userSelect: 'text', paddingBottom: 2,
               }}
             />
+            {mode === 'quorum' && (
+              <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.05em', color: '#7c7cf8', flexShrink: 0 }}>ENSEMBLE ON</span>
+            )}
             <button
               className="crucible-send-btn"
               onClick={thinking ? stop : () => send()}
@@ -2514,26 +2542,9 @@ export default function App() {
               small nested (+) toggle reveals the same actions (plus a Models entry
               that jumps to the local-model picker in Settings) as a slide-out row,
               and rotates into an "×" while open. */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 0 32px' }}>
-            <button
-              onClick={() => setComposerExpandOpen(o => !o)}
-              title={composerExpandOpen ? 'Close' : 'More: Ensemble, Models, Remote Brain'}
-              aria-expanded={composerExpandOpen}
-              style={{
-                width: 22, height: 22, borderRadius: '50%', flexShrink: 0, cursor: 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                border: `1px solid ${composerExpandOpen ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.09)'}`,
-                background: composerExpandOpen ? 'rgba(124,124,248,0.14)' : 'rgba(255,255,255,0.04)',
-                transition: 'background 0.2s, border-color 0.2s, transform 0.22s cubic-bezier(0.22,1,0.36,1)',
-                transform: composerExpandOpen ? 'rotate(45deg)' : 'none',
-              }}
-            >
-              <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                <path d="M5.5 1v9M1 5.5h9" stroke={composerExpandOpen ? '#b0b0f8' : '#77778c'} strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            </button>
-
-            {composerExpandOpen && (
+          {/* Expander content — only rendered while open, so the resting bar stays one thin row. */}
+          {composerExpandOpen && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 2px 36px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
                 <button
                   onClick={() => {
@@ -2598,13 +2609,8 @@ export default function App() {
                   </button>
                 )}
               </div>
-            )}
-
-            <div style={{ flex: 1 }} />
-            {mode === 'quorum' && (
-              <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.05em', color: '#7c7cf8' }}>ENSEMBLE ON</span>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
       </>

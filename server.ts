@@ -284,7 +284,7 @@ import { loadTriumvirateLog, loadPendingQueue } from './src/CrucibleEngine/trium
 import { createExperiment, getActiveExperiments, assignCohort, recordObservation, runAutoDecisions, getExperimentStats, loadExperiments } from './src/CrucibleEngine/abTesting'
 import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/CrucibleEngine/episodicMemory'
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
-import { domainVerify, correctArithmetic } from './src/CrucibleEngine/domainVerifiers'
+import { domainVerify, correctArithmetic, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
 import { runSelfPatcher, loadPatches, rejectPatch } from './src/CrucibleEngine/selfPatcher'
@@ -2826,6 +2826,23 @@ app.post('/api/chat', async (req, res) => {
 
     // Wrap agent execution so a throw in runPlannedTask/runAgentLoop can't leak the
     // keepalive interval or hang the SSE stream — endAgent() runs in finally.
+    //
+    // Progress bridge (trust audit 2026-07-07): on-device synth turns can grind for
+    // minutes inside one loop iteration, so the stream showed nothing but keepalives —
+    // indistinguishable from a hang. Forward the synth driver's own debugBus progress
+    // events into this task's SSE as human-readable 'thought' lines.
+    const PROGRESS_EVENTS: Record<string, (d: any) => string> = {
+      offline_game_goal: () => 'Recognized a game build — targeting a single-file HTML/canvas app',
+      offline_html_synth: d => `Generated ${d?.path ?? 'game.html'} (attempt ${d?.attempt ?? 1}) — verified in a real headless browser`,
+      offline_html_retry: d => `Attempt ${d?.attempt ?? '?'} rejected by the run-and-verify gate (${String(d?.problem ?? '').slice(0, 100)}) — regenerating`,
+      offline_synth: d => `Synthesized ${d?.path ?? 'file'} (oracle-verified)`,
+      offline_noncode_attempt: () => 'Answering via the offline research/reasoning stack',
+      offline_turn_escalate: d => `On-device attempt escalated: ${String(d?.reason ?? '').slice(0, 100)}`,
+    }
+    const unsubProgress = debugBus.subscribe((ev: any) => {
+      const fmt = PROGRESS_EVENTS[ev?.type]
+      if (fmt) { try { send({ type: 'thought', text: fmt(ev?.data) }) } catch { /* stream gone */ } }
+    })
     try {
     let handled = false
 
@@ -3111,6 +3128,7 @@ app.post('/api/chat', async (req, res) => {
       console.error('[Agent] Fatal error:', agentErr?.message ?? agentErr)
       try { send({ type: 'error', message: `Agent task failed: ${agentErr?.message ?? 'unknown error'}` }) } catch {}
     } finally {
+      unsubProgress()
       endAgent()
     }
     return
@@ -3442,6 +3460,31 @@ app.post('/api/chat', async (req, res) => {
             debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections }, { severity: 'info', requestId })
           }
         } catch { /* non-blocking: ship the original answer */ }
+      }
+      // Run-to-verify gate for code answers (trust audit 2026-07-07, repro #3): the offline
+      // brain shipped Python with a SyntaxError presented as working code. Syntax-check
+      // every fenced py/js block; on failure, one FM repair attempt of that block, re-checked.
+      // Still broken → ship with an explicit warning instead of silently claiming it works.
+      if (answer && answer.trim() && answer.includes('```')) {
+        try {
+          let problems = verifyCodeBlocks(answer)
+          for (const p of problems) {
+            const fixedRaw = await fmComplete([
+              { role: 'system', content: 'You fix syntax errors in code. Output ONLY the corrected code, no fences, no commentary. Keep the logic identical.' },
+              { role: 'user', content: `This ${p.lang} code fails to parse: ${p.error}\n\n${p.code}` },
+            ])
+            const fixed = fixedRaw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '')
+            if (fixed.trim() && verifyCodeBlocks('```' + p.lang + '\n' + fixed + '\n```').length === 0) {
+              answer = answer.slice(0, p.start) + '```' + p.lang + '\n' + fixed.replace(/\n?$/, '\n') + '```' + answer.slice(p.end)
+              debugBus.emit('pipeline', 'code_block_repaired', { lang: p.lang, error: p.error }, { severity: 'info', requestId })
+              problems = verifyCodeBlocks(answer) // offsets shifted — recompute before next fix
+            } else {
+              answer += `\n\n> ⚠ The ${p.lang} code above failed a syntax check (${p.error}) and could not be auto-repaired — it will not run as written.`
+              debugBus.emit('pipeline', 'code_block_broken_shipped', { lang: p.lang, error: p.error }, { severity: 'warn', requestId })
+              break
+            }
+          }
+        } catch { /* non-blocking */ }
       }
       if (answer && answer.trim()) {
         const provenanceModelId = routed ? `local/${routed.modelId}` : 'local/apple-fm'
