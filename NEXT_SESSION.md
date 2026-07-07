@@ -48,11 +48,20 @@ tsc app-config clean, ambiguity:bench 9/9, everything below live-verified via cu
   bug fixed); Preview → sandboxed iframe overlay for HTML/browser-JS, games playable in-app.
   Agent RULE 4 + Vibe Code prompt steer game/app tasks to also emit a single-file html block.
 
+**Cont.45c (same day, continuation): DONE from the list below —**
+- Layer 2.5 FM ReAct desktop driver LANDED (aa4fe08): isDesktopActionGoal goals run the
+  on-device FM ReAct loop (desktop tool set, streamed tool events) before the online pool.
+  Live-verified end-to-end: '/control_mac open finder and go to downloads' → Finder opened.
+- control_mac open_folder recipe (downloads/documents/... or abs path) — live-verified.
+- Polish (e61e0d3): '/' palette keyboard nav (arrows/Tab/Esc + hint footer), honest
+  AgentPanel failure headers, welcome empty state with capability chips.
+- OPS: the FM daemon WEDGED during testing (health ok, /v1/chat/completions hanging);
+  kill + launchd respawn fixed it (592ms after). If desktop tasks time out at ~45s,
+  check the daemon first: `kill $(lsof -ti :11435)` and let launchd respawn it.
+- NOTE: another session added FUNCTION_WORDS + CREATION_GOAL gates to ambiguity.ts
+  (uncommitted in my view) — coordinate before committing that file.
+
 **Still open (next session):**
-- GPT OSS 120B still REFUSES Mac-control goals even after RULE 0 + correction (now an honest
-  'stalled', but the right fix is routing desktop-action tasks to the willing on-device FM
-  ReAct driver instead of the online pool — the FM plan path already does these fine when
-  its plan validates; make it the primary driver for DESKTOP_ACTION-shaped goals).
 - Rebuild phase 2: extract composer + SSE send() reducer + topbar from App(); migrate inline
   styles to the index.css vars.
 - click_element failed on Finder sidebar "Downloads" (get_ui_tree saw no focused window right
