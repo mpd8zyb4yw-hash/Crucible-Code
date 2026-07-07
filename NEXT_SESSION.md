@@ -17,44 +17,49 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 45 — GROUND-UP REBUILD STARTED + agents/tools
-made real. tsc app-config clean; backend restarted on the new code and live-verified in-browser.)
+## CURRENT STATE (last updated 2026-07-07, cont. 45b — user bug-sweep round 2, all six
+reported issues root-caused and fixed, plus the in-app code Run/Preview sandbox shipped.
+tsc app-config clean, ambiguity:bench 9/9, everything below live-verified via curl + browser.)
 
-**Completed this session (branch `crucible-northstar-sessions`, commits 3db5020 + 24752b2):**
-- **Componentization (rebuild phase 1).** App.tsx went 5,058 → ~2,510 lines by extracting
-  `src/chat/` modules: `core.tsx` (types, palette, agent-event reducer, CopyButton/Feedback),
-  `panels.tsx` (PipelineTheater, CritiqueGrid, ToolRow/DiffBlock, narrateProcess),
-  `binders.tsx` (Tasks + History drawers), `AgentPanel.tsx` (+ ClarificationCard,
-  CollapsibleCode), `AuthScreen.tsx`, `MessageList.tsx` (PourWrap + rounds renderer).
-  Mechanical extraction, zero behavior change, tsc clean. App.tsx is now the shell only.
-- **Design-token sheet.** `src/index.css` rewritten from leftover Vite-template CSS to the v3
-  design system as CSS variables (--c-bg/--c-glass/--c-accent/--c-on-device/radii/blur), plus
-  global keyframes moved out of App.tsx's inline <style>. Inline literals in components still
-  match the same values; new/edited code should use the vars.
-- **Tools were dead from the UI — real bug, fixed in server.ts.** The Agents drawer rows and
-  the composer "/" palette insert `/<toolName> args`, but the server only executed
-  `/tool <name>` / `/skill <name>` — every bare form fell through to normal chat
-  classification and never ran the tool. server.ts now resolves bare `/<name>` against the
-  tool registry, then the skill catalog; unresolved bare slashes still fall through to chat.
-  Live-verified end-to-end in the browser: `/write_file {json}` from the composer executed,
-  AgentPanel rendered the tool call, file appeared on disk.
-- **Keep-working-until-done policy (agent/loop.ts).** maxIters (32) and budgetTokens (120k)
-  are now SOFT caps: while a recent iteration had a successful tool call, hitting a cap
-  extends it in bounded chunks (+16 iters / +60k tokens) under a 20-min wall clock and a 4x
-  token ceiling. Runs with no recent progress stop at the cap exactly as before; the
-  stall/repeat/cancel guards are untouched. This addresses the "agent times out and refuses
-  instead of finishing" report.
+**Completed (commits 3db5020, 24752b2, 53bad48 on `crucible-northstar-sessions`):**
+- Componentization phase 1 (App.tsx 5,058 → ~2,510 into src/chat/) + index.css design-token
+  sheet (see cont.45 log in git history for details).
+- **Slash tools "just work":** bare `/<tool> natural language` (what the drawer/palette
+  produce) routes into the agent loop (tool preference in the system preamble, goal = the
+  user's exact words); mechanical exec only for JSON args / single-required-string tools.
+  `/control_mac open finder and go to downloads` now opens Finder via the FM plan path.
+- **Three gate false-positive fixes** unlocked that flow: ambiguity gate skips
+  desktop-action goals + exempts registered tool names; open_app accepts bundle ids;
+  RULE 0 authorization preamble. NEW refusal-bounce in loop.ts: zero-tool-call
+  "I cannot perform external tasks" finals get one hard correction, second refusal stops
+  as 'stalled' (ok:false) — never reported as a successful answer.
+- **Keep-working-until-done:** maxIters/budgetTokens are progress-gated soft caps
+  (extend while tool calls succeed; 20-min wall clock, 4x token ceiling).
+- **MoltenPour bottom-seam gap ROOT CAUSE:** leftHalf was sliced from botIdx+1, leaving the
+  botIdx→botIdx+1 segment (~10px) in NEITHER half — a permanent gap no epsilon could fix.
+  Both halves now end on the same bottom-center point.
+- **Reading-anchored scroll:** follow the stream while the latest exchange fits the
+  viewport, freeze at its TOP once it outgrows it (large answers read from the start).
+- **Electron traffic lights** no longer overlap the wordmark (topbar inset + trafficLightPosition).
+- **Vibe Code card** sent a create-a-persistent-tool prompt — now builds the described app
+  and requests a playable single-file web build alongside.
+- **In-app code sandbox v1:** every chat code block gets a Run/Preview bar (chat/CodeRunner.tsx):
+  Run → POST /api/sandbox/exec-snippet (executeCode, network-denied; python worker stdout-capture
+  bug fixed); Preview → sandboxed iframe overlay for HTML/browser-JS, games playable in-app.
+  Agent RULE 4 + Vibe Code prompt steer game/app tasks to also emit a single-file html block.
 
 **Still open (next session):**
-- **Rebuild phase 2:** App() itself is still ~2,500 lines — extract the composer (rows 1+2,
-  slash palette, ensemble confirm), the SSE stream reducer (the giant send() switch), and the
-  topbar into `src/chat/`. Then start replacing inline style literals with the index.css vars.
-- **GitHub/open-source tool discovery for the agent** — pipeline feature, still not started.
-- The pre-existing `tsconfig.server.json` errors (modelRegistry import.meta, string|string[]
-  header types, etc.) predate this session and still fail `tsc -p tsconfig.server.json`;
-  app config is clean. Worth a dedicated cleanup pass.
-- Live-verify the keep-working extension on a real long agent task (only smoke-level
-  verification this session).
+- GPT OSS 120B still REFUSES Mac-control goals even after RULE 0 + correction (now an honest
+  'stalled', but the right fix is routing desktop-action tasks to the willing on-device FM
+  ReAct driver instead of the online pool — the FM plan path already does these fine when
+  its plan validates; make it the primary driver for DESKTOP_ACTION-shaped goals).
+- Rebuild phase 2: extract composer + SSE send() reducer + topbar from App(); migrate inline
+  styles to the index.css vars.
+- click_element failed on Finder sidebar "Downloads" (get_ui_tree saw no focused window right
+  after open) — control_mac could grow an open-folder recipe (`open ~/Downloads`).
+- Interactive/stdin sandbox runs + compiled-language full runs (c++/java currently
+  syntax-check only); GitHub/open-source tool discovery; server tsconfig cleanup.
+- Live-verify keep-working extension on a real long agent task.
 
 ## PRIOR STATE (cont. 44 — user-reported bug sweep: real root-cause
 fixes for the pour/message overlap, lava seam gap, mobile topbar crowding, tool-list
