@@ -17,74 +17,77 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 49 — F parallel chats shipped + E2E-verified)
+## CURRENT STATE (last updated 2026-07-07, cont. 50 — ALL five queued items closed: build-latency, templates+input gate, G/H, F remainder, traffic lights)
 
-**Trust audit scoreboard (handoff items A–H):**
-- **B+C agent reliability / playable game — Fixed (verified via: cold API repro + full real-UI
-  flow: Agents pane → Vibe Code → "build me a snake game" → Run → game.html written, opened in
-  a browser, snake renders/moves/scores).** Root cause of the tutorial: goals naming no .ts/.js
-  file fell into solveNonCodeTurn (prose). Now: pathless game/interactive goals get a game.html
-  target through the code state machine. Three layers: (1) verified deterministic GAME_TEMPLATES
-  (snake; zero inference, splash-demo-proof), (2) FM writes ONLY game-logic JS into a
-  Crucible-owned HTML shell (kills FM output truncation) + const→let sanitizer, (3) EVERY
-  candidate is RUN in the bundled Electron offscreen (htmlRuntimeVerify.ts + htmlVerifyMain.cjs:
-  console errors, keypresses, canvas-drawn-at-load probe) before write. Measured: splash prompt
-  was 307s→prose; now snake E2E in the UI = 137s wall to verified playable artifact.
-- **Repro #3 broken chat code — Fixed (verified via: verifyCodeBlocks unit path; fenced py/js
-  in offline chat answers are ast.parse/vm-checked, FM-repaired once, else shipped with an
-  explicit "will not run" warning).** domainVerifiers.ts verifyCodeBlocks + server.ts gate.
-- **A badge provenance — Fixed (verified via: real UI during a live strict agent run — pill read
-  "AGENT WORKING · ON-DEVICE (Apple FM + synth)", then "AGENT COMPLETE · ON-DEVICE").**
-- **D prompt-template leak — Fixed (verified via: real UI run; transcript shows "Vibe Code:
-  build me a snake game", not the template; also fixed the resume path which re-leaked it via
-  localStorage crucible_active_task).** send() gained displayText param.
-- **B2 "reconnecting" — Explained + relabeled ("resuming task…"): it is the LOCAL server-owned
-  task stream replay (App.tsx reconnectActiveTask), not an external call; it is what makes runs
-  survive backgrounding. Latency profile: single FM call ~3.5s; game write 3.4s tool-time via
-  template; the 137s wall is dominated by harden/critic FM review turns — next optimization
-  target. Long synth turns now emit SSE 'thought' progress lines (debugBus bridge in server.ts)
-  so they no longer look like hangs.
-- **E visuals — Mostly fixed (verified via preview measurements): input bar now aligned with the
-  chat column (was 28px off — fixed left:0 ignored the 56px NavRail; all 3 fixed bottom layers),
-  composer is a thin 44px single-row strip ((+) inline, expander row only while open), gear icon
-  replaced with the canonical symmetric Feather gear. Traffic lights: attempted, unverified —
-  blocked by: needs an Electron-window visual check (browser preview can't show them);
-  electron.cjs uses hiddenInset + trafficLightPosition {12,16}, NavRail already pads 34px.
-- **F panels — Parallel chats DONE (cont. 49, E2E-verified in the real browser UI): rounds from
-  ALL open conversations live in ONE global array, each tagged convId (streaming setRounds
-  updaters stay keyed by unique roundId, so a background chat keeps streaming while another is
-  on screen); thinking/liveRound/agentStart/agentProgress/abort are per-conv maps with an
-  active-conv derived view (App.tsx just after conversationIdRef); topbar gains an open-chats
-  strip (chip per in-memory conv, orange pulse dot while running, × closes = memory only —
-  History keeps it, strip auto-hides at 1 chat); "New chat" now opens a PANEL (previous conv
-  stays open and keeps running); Stop cancels only the on-screen chat; crucible_active_task
-  stores convId so reload-resume lands in the owning thread; history restore MERGES into the
-  pool instead of replacing it. Verified live: two overlapping sends answered independently,
-  switching chats shows the right thread with the background answer landed, close works, tsc
-  app-config clean. Still open in F: history as slide-out-in-place, agent pane left-strip.
-  KNOWN LIMITS: (a) debugBus 'thought' bridge is global → concurrent AGENT runs cross-post
-  progress lines (cosmetic); (b) crucible_active_task holds only the LAST run, so a reload
-  resumes one of N parallel runs (server-side final-patch still recovers the rest); (c)
-  background-conv streaming isn't continuously saved to the conv store — the server-side
-  roundId→conversationId registry patches finals, same as before.
-- **G+H — Not started** (working animations, model-switch popup on (+), agent command list UX,
-  single-run multi-step collapse).
+**Trust audit scoreboard (handoff items A–H): ALL CLOSED.**
+- **Build latency (item 1) — Fixed (60715e4).** Root cause of the 137s game wall: the
+  planner path DECOMPOSED web-artifact goals (splitting off a duplicate "web version"
+  researcher subtask, 20s of prose), then the metaRouter critic AND synthesis loops
+  re-entered the game state machine and REBUILT game.html two more times. Fix in
+  metaRouter.ts: `isWebArtifactGoal` goals get a single coder subtask (no decompose)
+  and, when it completes, skip critic+synthesis entirely — the artifact already passed
+  a real execution gate, strictly stronger than a prose re-read. Measured: exact
+  Vibe Code snake prompt 137s→**4s wall** (API, timestamped SSE), identical artifact.
+- **Novel-game GENERATION (item 2, reframed after user pushback "templates are a scam")
+  — real gate + repair loop shipped (6b641b4).** The old runtime gate passed any game that
+  drew ONE frame + had a keydown listener, so a frozen/broken FM game shipped "verified" —
+  templates hid that non-template games all failed. Now htmlVerifyMain.cjs measures ALIVENESS
+  (self-animation with no input + input-caused-change, two-stride frame signature) and the
+  gate REJECTS a game that is neither alive nor input-responsive, with a fix directive +
+  targeted hint for the top FM bug (event `e` outside its handler). FM path: worked
+  loop-shape example + MINIMAL prompt (long prompts bury the reschedule-every-frame rule and
+  hurt the small model — measured) + 6 attempts, each retry feeds back the model's own prev
+  code + the specific diagnostic. MEASURED on-device: flappy converges to an alive game with
+  gravity/jump/pipes/collision (model-built, no template); asteroids fails 6/6 and honestly
+  ABSTAINS (small-FM ceiling). Templates (snake/pong/breakout) remain ONLY a zero-latency
+  fast-path for exact-name asks — do NOT add more to hide gen gaps.
+  Runtime gate now also enforces INPUT-RESPONSIVENESS: runtimeVerifyHtml injects a
+  wrapper (addEventListener + onkeydown-property, delivery delegated so handlers still
+  run) into the verify copy; the harness's arrow-key presses must reach a game handler
+  or the gate fails with repair feedback. Unit-proven three ways (no-input fails,
+  listener passes, onkeydown passes).
+- **G/H (item 3) — Done (4565929), live-verified in browser.** AgentPanel: 3-dot pulse
+  working animation + latest streamed thought as an italic live status line; on finish
+  the multi-step trail (plan/tools/terminal/thoughts) collapses behind
+  "show work · N tool calls" (thoughts were accumulated but never rendered — now the
+  PROCESS section). Composer (+): "Models" opens an in-place model-switch popup
+  (Auto / Apple FM / ready GGUFs; pins via POST /api/local-models/pin, honored by
+  localModelRouter's pinned-id override; Manage…→Settings) and a new "Agents" popup
+  lists AGENT_WORKFLOWS (exported from AgentsTabView) and runs the picked workflow on
+  the typed text (disabled under 4 chars). Verified: Vibe Code from the popup → pong
+  in 5.5s with animation, collapse, expand-shows-work.
+- **F remainder (item 4) — Done (a4e8d37), live-verified.** History is now a
+  slide-out-in-place LEFT drawer (studioIn, scrim) over the live chat — chat never
+  unmounts; restore merges into the open-chats pool (verified: restored conv landed as
+  a second chip). Agents pane moved right-edge→left-strip (slides from the NavRail edge
+  its trigger sits on). Settings remains the one full-page overlay.
+- **Traffic lights (item 5) — VERIFIED VISUALLY** via real Electron window screenshot
+  (screencapture -R on the window bounds): top-left, red/yellow/green fully visible,
+  clear of NavRail icons and wordmark. hiddenInset + trafficLightPosition {12,16} +
+  NavRail 34px pad is correct as-is; no change needed. (Launching Desktop Crucible.app
+  kills a manually-started 3001 backend by design — restart the detached dev server
+  after any app-launch test.)
+- Prior state (A–E, F parallel chats) unchanged from cont.49 — see PRIOR STATE below
+  and git history (fb9025c).
 
-**Watch-outs for next session:**
-- FM-generated NOVEL games (no template) still fail the runtime gate often (const bugs,
-  truncation were the top classes — shell+sanitizer fixed those; logic quality is the residual).
-  4-attempt cap then honest escalation/abstain. Consider more templates (pong, breakout) and/or
-  requiring input-responsiveness in the gate.
-- debugBus progress bridge is global, not request-scoped — concurrent agent runs would cross-post
-  'thought' lines (single-user acceptable, note if multi-chat lands).
-- game-artifact-preview entry added to .claude/launch.json (points at a Desktop/Crucible run dir);
-  harmless, prune when stale.
-- Stale `tsx server.ts` processes accumulated again (5 found) — the known port hazard; killed.
+**Watch-outs / known limits:**
+- FM-generated NOVEL games (no template): logic quality still the residual failure
+  class; input-responsiveness gate now catches unplayable ones. 4-attempt cap then
+  honest escalation.
+- metaRouter web-artifact fast path returns the coder subtask's text as the final
+  answer — fine for single-artifact builds; if multi-artifact web goals appear, revisit.
+- Model-switch popup lists ready GGUFs, but node-llama-cpp is NOT installed — pinning a
+  GGUF falls back per localModelRouter's pinned-call failure path. Consider hiding
+  GGUF entries until the pool is actually runnable.
+- debugBus 'thought' bridge still global (cross-posts between concurrent AGENT runs);
+  crucible_active_task still single-run; background-conv streaming still final-patched.
+- Stale `tsx server.ts` hazard as ever; this session restarted the detached backend
+  last — verify `lsof -nP -iTCP:3001 -sTCP:LISTEN -t` is exactly one pid.
 
-**Next (in order): 1) shrink harden/critic latency on build runs, 2) more game templates
-(pong/breakout) + input-responsiveness in the runtime gate, 3) G+H features, 4) F remainder
-(history slide-out-in-place, agent pane left-strip), 5) traffic-light Electron visual verify
-(they sit TOP LEFT — an earlier note said top right, that was wrong).**
+**Next (suggested): 1) decide GGUF popup visibility vs installing node-llama-cpp,
+2) novel-game FM logic quality (template coverage is a stopgap), 3) FABLE5 Feature 4
+(auto-recommend resources) + RSI trend-gate decision, 4) request-scoped debugBus
+bridge if parallel agent runs become common.**
 
 
 ## PRIOR STATE (cont. 46 — user screenshot repro: two chat
