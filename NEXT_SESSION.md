@@ -56,6 +56,101 @@ made real. tsc app-config clean; backend restarted on the new code and live-veri
 - Live-verify the keep-working extension on a real long agent task (only smoke-level
   verification this session).
 
+## PRIOR STATE (cont. 44 — user-reported bug sweep: real root-cause
+fixes for the pour/message overlap, lava seam gap, mobile topbar crowding, tool-list
+unselectability, no "/" completion, and — the important one — the on-device agent loop
+fabricating a fake tool-call transcript and reporting false success. tsc (`tsconfig.app.json`)
+clean, `npm run prove:all` 251/251 GREEN. The user was rightly frustrated that cont.41-43's UI
+audits had been polishing around several bugs that were still live; this session went straight at
+concrete repro cases instead of another audit pass.
+
+**Completed this session (commit hashes on `crucible-northstar-sessions`, a0b7956 + 866f404):**
+- **Loading-animation/message overlap — real root cause found and fixed.** cont.41's item-23 note
+  (`PourWrap` in App.tsx) explicitly documented removing ALL layout reservation for the pour
+  vessel canvas to stop an animated margin from pushing content around — but with zero
+  reservation, the vessel (which draws 70px above the live card via a negative offset,
+  `MoltenPour.tsx`'s `TOP` constant) simply paints over whatever message sits above it. That
+  "fix" was the regression. Now reserves exactly 70px with `marginTop` applied with NO CSS
+  transition (snaps instantly with `active`, not animated) — no overlap, and no visible push
+  either, since the reservation appears/disappears in the same frame the canvas mounts/unmounts.
+- **Lava border still not fully filling — floating-point epsilon bug, found and fixed.**
+  `MoltenPour.tsx`'s `drawHalf()` computes `lim = total * frac` and draws every point with
+  `cum[i] <= lim`; at `frac===1`, floating-point summation of `cum` can land fractionally above
+  `total`, silently dropping the last segment — a persistent visible gap right at the seam even
+  once "fully filled". This is a DIFFERENT bug from cont.41's item-1 fix (which synced the two
+  halves' fill RATE) — that fix was correct and still holds, this is an independent rounding gap
+  at the very end. Added a +0.5px epsilon to `lim`.
+- **Tools/skills "not even selectable" — confirmed, was a real bug, not a UX nitpick.**
+  `AgentsTabView.tsx`'s `CapabilityRow` (used for all Built-for-project / Crucible-can-also /
+  Skill-library rows) was a plain `<div>` with zero `onClick` — every tool/skill row in the drawer
+  was inert, dead UI. Added `onSelect`, hover state, keyboard (`Enter`/`Space`) activation, and
+  wired it through a new `onInsert` prop (App.tsx) that drops `/toolName ` into the composer and
+  focuses it, instead of the agent-workflow cards' immediate-send `onBuild` (tool calls need args
+  the user types, unlike a canned agent prompt).
+- **No "/" completion like Claude/OpenAI — added.** New composer-level slash palette (App.tsx):
+  typing `/` fetches the same `GET /api/library/tools` list AgentsTabView already used, filters by
+  prefix, and renders a floating dropdown above the input bar; clicking an entry fills
+  `/toolName ` and focuses. This is genuinely new functionality, not a fix — previously there was
+  no `/` interaction in the composer at all.
+- **Ensemble pill replaced with (+) expander, as requested.** The always-visible "Ensemble" pill
+  in the composer's row 2 is now a small circular (+) toggle (rotates to ×) that slides out
+  Ensemble / Models (jumps to Settings' local-model picker) / Remote Brain (mobile) bubbles. A
+  small "ENSEMBLE ON" text badge shows at the far right when active and the expander is closed, so
+  the mode is still visible without opening it.
+- **Mobile top-bar crowding — root-caused and fixed.** The wordmark, mode-badge pill, live
+  agent-progress status text ("iter 3/8 · step 2/2"), and New Chat button had zero shrink/wrap
+  handling in a single-row flex bar; on mobile widths with all of them visible simultaneously they
+  had no room and visually crowded/overlapped. Hid the verbose text labels on mobile (kept the
+  status dot, the mm:ss timer, and icon-only New Chat) and added `flexShrink: 0` to the elements
+  that must never compress.
+- **The most important one: on-device agent loop was fabricating tool calls and lying about
+  success.** Root cause of the user's exact repro (`create_tool` "Vibe Code" prompt returning a
+  block of `TOOL: create_tool` / `TOOL: search` / `TOOL: create_pdf` text followed by
+  `FINAL_ANSWER: The tool has been created and tested successfully" with nothing actually built).
+  `fmReact.ts` implements a text-based ReAct loop for the Apple Foundation Model (which has no
+  native function-calling): the system prompt asks for "at most one tool per response," but small
+  local models routinely ignore that and narrate an entire multi-tool transcript — including a
+  fake FINAL_ANSWER — in one completion. The old `parseResponse()` checked `FINAL_ANSWER:` FIRST,
+  so it trusted that fabricated success claim verbatim without ever calling `toolMap.get()` on a
+  single real tool. Fixed: if a `TOOL:` block appears BEFORE any `FINAL_ANSWER:` in the same raw
+  response, the FINAL_ANSWER is necessarily premature (nothing has run yet yet) — execute the
+  FIRST real tool call instead (this really does invoke the real, already-correct `create_tool`
+  registry implementation — compile + smoke-test + persist — see `tools/registry.ts:819`) and
+  discard everything the model wrote after it; the genuine result gets fed back next round so the
+  eventual answer is grounded in what actually happened. Also fixed a second, compounding bug in
+  the same function: arg-parsing didn't stop at the next hallucinated `TOOL:`/`FINAL_ANSWER:`
+  block, so `key: value`-shaped lines from LATER (never-executed) fake tool calls were bleeding
+  into the CURRENT tool's real args (e.g. a fabricated `TOOL: search\nquery: ...` block's `query:`
+  line would have been attached to `create_tool`'s args as if it were one of create_tool's own
+  params).
+- Backend blocker fixes from cont.43 (electron-import, mobile drawer-overlap) carried forward,
+  unchanged, already committed.
+
+**NOT done / still open — being explicit since the user is (rightly) tracking real completion:**
+- The on-device tool-loop fix makes the FM actually execute real tools instead of fabricating a
+  transcript — it does NOT guarantee the small local model will follow through competently across
+  multiple real rounds (e.g. actually producing a coherent PDF via a `create_pdf`-equivalent real
+  tool, if one exists — did not audit whether a real PDF-generation tool is registered at all).
+  **Whoever picks this up next should re-run the exact "create a PDF of northern-Italy restaurants
+  via create_tool" repro live, now that the loop can't shortcut to a fake success, and confirm the
+  actual multi-round behavior is coherent** — this session fixed the false-success bug at the
+  parser level but did not live-verify a full multi-round session end-to-end (dev backend runs
+  standalone now per cont.43, but this session didn't wire up an authed browser pass).
+- Item 2 (logo/text overlap — not yet distinguished from the top-bar crowding fixed here; recheck
+  whether it's the same bug or separate), item 11's raw-output follow-up, item 20's GitHub
+  repo-browse UI panel, deeper spacing audit beyond what's fixed here, and the backend-only
+  addendum bugs (Remote Brain stream, YouTube relevance, TTS opt-in) — all still untouched.
+- Did not visually click-through ANY of this session's fixes in a live authed browser (OAuth wall,
+  same constraint noted in cont.42/43) — tsc-clean + prove:all-green is necessary but not
+  sufficient proof; next session with an authed pass should confirm all six fixes above visually,
+  not just re-read the diffs.
+
+**Next-priority guidance:** re-run the user's exact PDF-creation repro live and confirm the FM
+loop now behaves honestly (either genuinely completing the task or genuinely saying it can't,
+never fabricating success) — that was the most damaging bug this session addressed and it
+deserves a real end-to-end check, not just a code-level fix. After that: live-verify the six visual
+fixes at 375/390/428px, then move to item 20 and the remaining backend-only bugs.
+
 ## PRIOR STATE (cont. 43 — backend-blocker fix + mobile composer-overlap fix.
 Picked up the two items cont.42 flagged as blocking: the `tsx server.ts` electron-import crash,
 and (from a fresh user report, not previously diagnosed) the Agents drawer overlapping the
