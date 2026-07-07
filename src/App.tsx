@@ -2577,6 +2577,21 @@ export default function App() {
   // Items 18/19: Agents & capabilities is an inline overlay anchored to the chat panel,
   // not a tab — toggling it never unmounts the conversation underneath (see AgentsTabView.tsx).
   const [agentsOpen, setAgentsOpen] = useState(false)
+  const [composerExpandOpen, setComposerExpandOpen] = useState(false)
+
+  // ── Slash-command tool palette — typing "/" in the composer filters this list,
+  // same pattern as Claude/OpenAI's "/" completion. Tool names are fetched once;
+  // this is the SAME data AgentsTabView shows, just reachable without opening the drawer.
+  const [slashTools, setSlashTools] = useState<{ name: string; description: string }[]>([])
+  useEffect(() => {
+    apiFetch(`${API_BASE}/api/library/tools`, { credentials: 'include' }).then(r => r.json())
+      .then(t => setSlashTools([...(t.dynamic ?? []), ...(t.builtin ?? [])]))
+      .catch(() => {})
+  }, [])
+  const slashMatch = /^\/(\S*)$/.exec(input)
+  const slashResults = slashMatch
+    ? slashTools.filter(t => t.name.toLowerCase().startsWith(slashMatch[1].toLowerCase())).slice(0, 8)
+    : []
 
   // ── Step 9: Remote Brain mode (phone only) ────────────────────────────────
   const [remoteBrain, setRemoteBrain] = useState(false)
@@ -4245,7 +4260,15 @@ export default function App() {
             animation: 'panelUp 0.22s cubic-bezier(0.22,1,0.36,1)',
             display: 'flex', flexDirection: 'column',
           }}>
-            <AgentsTabView onBuild={text => { setAgentsOpen(false); void send(text) }} onClose={() => setAgentsOpen(false)} />
+            <AgentsTabView
+              onBuild={text => { setAgentsOpen(false); void send(text) }}
+              onClose={() => setAgentsOpen(false)}
+              onInsert={text => {
+                setAgentsOpen(false)
+                setInput(text)
+                requestAnimationFrame(() => textareaRef.current?.focus())
+              }}
+            />
           </div>
         </>
       )}
@@ -4694,6 +4717,33 @@ export default function App() {
         display: 'flex', flexDirection: 'column', alignItems: 'center',
         transition: 'left 0.3s ease, bottom 0.25s ease',
       }}>
+        {/* ── "/" slash-command palette — same tool list as the Agents drawer, but
+            reachable by typing "/" directly, matching Claude/OpenAI's completion UX. ── */}
+        {slashResults.length > 0 && (
+          <div style={{
+            position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)',
+            width: 'min(420px, calc(100% - 24px))', marginBottom: 6,
+            background: 'rgba(18,18,24,0.96)', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
+            border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
+            overflow: 'hidden', animation: 'panelUp 0.16s cubic-bezier(0.22,1,0.36,1)',
+          }}>
+            {slashResults.map((t, i) => (
+              <div
+                key={t.name}
+                onClick={() => { setInput(`/${t.name} `); requestAnimationFrame(() => textareaRef.current?.focus()) }}
+                style={{
+                  padding: '9px 14px', cursor: 'pointer',
+                  borderTop: i === 0 ? 'none' : '1px solid rgba(255,255,255,0.05)',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent' }}
+              >
+                <div style={{ fontSize: 11.5, fontWeight: 600, color: '#d0d0e8', fontFamily: 'ui-monospace, monospace' }}>/{t.name}</div>
+                <div style={{ fontSize: 10.5, color: '#8a8a9e', marginTop: 1, lineHeight: 1.4 }}>{t.description}</div>
+              </div>
+            ))}
+          </div>
+        )}
         {/* ── Active-model cards — above the chat bar, dynamic width ── */}
         {activeModels.length > 0 && (
           <div className="crucible-model-cards" style={{ display: 'flex', gap: 5, width: '100%', maxWidth: 680, marginBottom: 8, paddingLeft: 14, paddingRight: 10, boxSizing: 'border-box' }}>
@@ -4889,53 +4939,101 @@ export default function App() {
             </button>
           </div>
 
-          {/* ── Row 2: ensemble pill + status ── */}
+          {/* ── Row 2: (+) expander → Ensemble / Models / Remote Brain bubbles ──
+              Previously the Ensemble pill sat here permanently, taking up chat-bar
+              real estate at all times for a feature most turns don't touch. Now a
+              small nested (+) toggle reveals the same actions (plus a Models entry
+              that jumps to the local-model picker in Settings) as a slide-out row,
+              and rotates into an "×" while open. */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 0 32px' }}>
             <button
-              onClick={() => {
-                if (mode === 'quorum') { setMode('code'); ensemble.setOn(false); return }
-                if (!ensemble.hasAnyKey) { setTab('settings'); return }
-                setMode('quorum'); ensemble.setOn(true)
-              }}
-              title={ensemble.hasAnyKey ? 'Ensemble — external multi-model pipeline on your own API keys' : 'Ensemble needs your own API keys — opens Settings'}
+              onClick={() => setComposerExpandOpen(o => !o)}
+              title={composerExpandOpen ? 'Close' : 'More: Ensemble, Models, Remote Brain'}
+              aria-expanded={composerExpandOpen}
               style={{
-                display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, cursor: 'pointer',
-                border: `1px solid ${mode === 'quorum' ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.07)'}`,
-                background: mode === 'quorum' ? 'rgba(124,124,248,0.12)' : 'transparent',
-                transition: 'background 0.2s, border-color 0.2s',
+                width: 22, height: 22, borderRadius: '50%', flexShrink: 0, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                border: `1px solid ${composerExpandOpen ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.09)'}`,
+                background: composerExpandOpen ? 'rgba(124,124,248,0.14)' : 'rgba(255,255,255,0.04)',
+                transition: 'background 0.2s, border-color 0.2s, transform 0.22s cubic-bezier(0.22,1,0.36,1)',
+                transform: composerExpandOpen ? 'rotate(45deg)' : 'none',
               }}
             >
-              <span style={{
-                width: 5, height: 5, borderRadius: '50%',
-                background: mode === 'quorum' ? '#7c7cf8' : '#3a3a4c',
-                boxShadow: mode === 'quorum' ? '0 0 6px rgba(124,124,248,0.6)' : 'none',
-              }} />
-              <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', color: mode === 'quorum' ? '#9d9dfa' : '#55556a' }}>
-                Ensemble
-              </span>
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                <path d="M5.5 1v9M1 5.5h9" stroke={composerExpandOpen ? '#b0b0f8' : '#77778c'} strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
             </button>
 
+            {composerExpandOpen && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
+                <button
+                  onClick={() => {
+                    if (mode === 'quorum') { setMode('code'); ensemble.setOn(false); return }
+                    if (!ensemble.hasAnyKey) { setTab('settings'); return }
+                    setMode('quorum'); ensemble.setOn(true)
+                  }}
+                  title={ensemble.hasAnyKey ? 'Ensemble — external multi-model pipeline on your own API keys' : 'Ensemble needs your own API keys — opens Settings'}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, cursor: 'pointer',
+                    border: `1px solid ${mode === 'quorum' ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.07)'}`,
+                    background: mode === 'quorum' ? 'rgba(124,124,248,0.12)' : 'transparent',
+                    transition: 'background 0.2s, border-color 0.2s',
+                  }}
+                >
+                  <span style={{
+                    width: 5, height: 5, borderRadius: '50%',
+                    background: mode === 'quorum' ? '#7c7cf8' : '#3a3a4c',
+                    boxShadow: mode === 'quorum' ? '0 0 6px rgba(124,124,248,0.6)' : 'none',
+                  }} />
+                  <span style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', color: mode === 'quorum' ? '#9d9dfa' : '#55556a' }}>
+                    Ensemble
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => { setComposerExpandOpen(false); setTab('settings') }}
+                  title="Pick which downloaded local model handles this chat"
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 999, cursor: 'pointer',
+                    border: '1px solid rgba(255,255,255,0.07)', background: 'transparent',
+                    fontSize: 10, fontWeight: 600, letterSpacing: '0.04em', color: '#55556a',
+                    transition: 'background 0.2s, border-color 0.2s',
+                  }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                    <circle cx="5" cy="5" r="3.6" stroke="currentColor" strokeWidth="1.2" />
+                    <circle cx="5" cy="5" r="1" fill="currentColor" />
+                  </svg>
+                  Models
+                </button>
+
+                {/* Step 9: Remote Brain — phone only */}
+                {isMobile && (
+                  <button
+                    onClick={() => { setComposerExpandOpen(false); setRemoteBrain(r => !r) }}
+                    title="Remote Brain — control your Mac from this phone"
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 4,
+                      padding: '4px 9px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                      background: remoteBrain ? 'rgba(124,124,248,0.18)' : 'rgba(255,255,255,0.05)',
+                      color: remoteBrain ? '#a5a5ff' : 'rgba(255,255,255,0.45)',
+                      fontSize: 10, fontWeight: 600, letterSpacing: '0.05em',
+                      transition: 'background 0.2s, color 0.2s',
+                    }}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                      <rect x="1" y="1" width="9" height="6.5" rx="1.2" stroke="currentColor" strokeWidth="1.2"/>
+                      <path d="M3.5 10h4M5.5 7.5V10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                    </svg>
+                    Brain
+                  </button>
+                )}
+              </div>
+            )}
+
             <div style={{ flex: 1 }} />
-            {/* Step 9: Remote Brain — phone only */}
-            {isMobile && (
-              <button
-                onClick={() => setRemoteBrain(r => !r)}
-                title="Remote Brain — control your Mac from this phone"
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 4,
-                  padding: '4px 9px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                  background: remoteBrain ? 'rgba(124,124,248,0.18)' : 'rgba(255,255,255,0.05)',
-                  color: remoteBrain ? '#a5a5ff' : 'rgba(255,255,255,0.45)',
-                  fontSize: 10, fontWeight: 600, letterSpacing: '0.05em',
-                  transition: 'background 0.2s, color 0.2s',
-                }}
-              >
-                <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                  <rect x="1" y="1" width="9" height="6.5" rx="1.2" stroke="currentColor" strokeWidth="1.2"/>
-                  <path d="M3.5 10h4M5.5 7.5V10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
-                </svg>
-                Brain
-              </button>
+            {mode === 'quorum' && (
+              <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.05em', color: '#7c7cf8' }}>ENSEMBLE ON</span>
             )}
           </div>
         </div>

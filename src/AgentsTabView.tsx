@@ -66,21 +66,31 @@ function CategoryLabel({ children }: { children: React.ReactNode }) {
 }
 
 // A plain-language "the assistant can also…" row — used for skills/tools in the default
-// (non-advanced) view. One line: name + description, no telemetry chrome.
-function CapabilityRow({ name, desc, mono, tint }: { name: string; desc: string; mono?: boolean; tint?: string }) {
+// (non-advanced) view. Clickable: drops "/toolName " into the composer so the user can
+// type the arguments, same pattern as Claude/OpenAI's "/" command palette.
+function CapabilityRow({ name, desc, mono, tint, onSelect }: { name: string; desc: string; mono?: boolean; tint?: string; onSelect?: () => void }) {
   return (
-    <div style={{
-      padding: '9px 11px', borderRadius: 10,
-      background: tint ? tintOf(tint, 0.05) : 'rgba(255,255,255,0.03)',
-      border: `1px solid ${tint ? tintOf(tint, 0.16) : 'rgba(255,255,255,0.06)'}`,
-    }}>
-      <div style={{ fontSize: 11.5, fontWeight: 600, color: '#d8d8e8', fontFamily: mono ? 'ui-monospace, monospace' : 'inherit' }}>{name}</div>
-      <div style={{ fontSize: 10.5, color: '#8a8a9e', marginTop: 2, lineHeight: 1.5 }}>{desc}</div>
+    <div
+      onClick={onSelect}
+      role={onSelect ? 'button' : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onKeyDown={onSelect ? (e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } }) : undefined}
+      style={{
+        padding: '8px 11px', borderRadius: 9, cursor: onSelect ? 'pointer' : 'default',
+        background: tint ? tintOf(tint, 0.05) : 'rgba(255,255,255,0.03)',
+        border: `1px solid ${tint ? tintOf(tint, 0.16) : 'rgba(255,255,255,0.06)'}`,
+        transition: 'background 0.15s, border-color 0.15s',
+      }}
+      onMouseEnter={onSelect ? (e => { e.currentTarget.style.background = tint ? tintOf(tint, 0.1) : 'rgba(255,255,255,0.06)' }) : undefined}
+      onMouseLeave={onSelect ? (e => { e.currentTarget.style.background = tint ? tintOf(tint, 0.05) : 'rgba(255,255,255,0.03)' }) : undefined}
+    >
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#d8d8e8', fontFamily: mono ? 'ui-monospace, monospace' : 'inherit' }}>{name}</div>
+      <div style={{ fontSize: 10, color: '#8a8a9e', marginTop: 1, lineHeight: 1.4 }}>{desc}</div>
     </div>
   )
 }
 
-export default function AgentsTabView({ onBuild, onClose }: { onBuild: (text: string) => void; onClose?: () => void }) {
+export default function AgentsTabView({ onBuild, onClose, onInsert }: { onBuild: (text: string) => void; onClose?: () => void; onInsert?: (text: string) => void }) {
   const [descs, setDescs] = useState<Record<string, string>>({})
   const [skills, setSkills] = useState<SkillEntry[]>([])
   const [builtin, setBuiltin] = useState<BuiltinTool[]>([])
@@ -226,7 +236,8 @@ export default function AgentsTabView({ onBuild, onClose }: { onBuild: (text: st
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                     {fDynamic.map(t => (
                       <CapabilityRow key={t.name} name={t.name} tint="#4db89e" mono={advanced}
-                        desc={advanced ? `${t.description} · used ${t.useCount}x · ${t.tier}` : t.description} />
+                        desc={advanced ? `${t.description} · used ${t.useCount}x · ${t.tier}` : t.description}
+                        onSelect={onInsert ? () => onInsert(`/${t.name} `) : undefined} />
                     ))}
                   </div>
                 </div>
@@ -237,7 +248,8 @@ export default function AgentsTabView({ onBuild, onClose }: { onBuild: (text: st
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
                     {fBuiltin.map(t => (
                       <CapabilityRow key={t.name} name={t.name} mono={advanced}
-                        desc={advanced && t.mutates ? `${t.description} · writes` : t.description} />
+                        desc={advanced && t.mutates ? `${t.description} · writes` : t.description}
+                        onSelect={onInsert ? () => onInsert(`/${t.name} `) : undefined} />
                     ))}
                   </div>
                 </div>
@@ -249,7 +261,10 @@ export default function AgentsTabView({ onBuild, onClose }: { onBuild: (text: st
                     <span style={chipStyle}>{skills.length}</span>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
-                    {fSkills.map(s => <CapabilityRow key={s.id} name={s.id} desc={s.summary} mono />)}
+                    {fSkills.map(s => (
+                      <CapabilityRow key={s.id} name={s.id} desc={s.summary} mono
+                        onSelect={onInsert ? () => onInsert(`/${s.id} `) : undefined} />
+                    ))}
                   </div>
                 </div>
               )}
