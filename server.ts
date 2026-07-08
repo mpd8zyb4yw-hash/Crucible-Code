@@ -5856,59 +5856,133 @@ app.post('/api/corpus/ingest-document', async (req, res) => {
 //
 // Wired up to httpServer after it is created (see bottom of file).
 function attachScreenStreamWs(httpSrv: import('http').Server) {
-  const wss = new WsServer({ server: httpSrv, path: '/api/screen-stream-ws' })
+  // Two WS endpoints share one HTTP server, so they must use `noServer` + a single
+  // manual upgrade router. Attaching two `WsServer({ server })` instances makes both
+  // grab the 'upgrade' event and race (400s / corrupt frames) — a real bug caught in
+  // testing. Unmatched paths are left untouched so any other upgrade handler still works.
+  const wss = new WsServer({ noServer: true })
+  // Real-time producer channel: an in-process Electron capture window (desktopCapturer
+  // → live MediaStream → JPEG) connects here and pushes 30fps frames. This is the
+  // "real video viewer" path — no per-frame process spawn, no disk I/O. The legacy
+  // screencapture loop below is now a FALLBACK that only runs when this feed is absent
+  // (server started without Electron, or Screen-Recording permission denied), so the
+  // stream is never worse than before.
+  const ingestWss = new WsServer({ noServer: true })
 
-  // Singleton capture loop — one screencapture process shared across ALL connected
-  // clients. Per-connection loops were racing on the same two temp files, causing
-  // frame corruption and CPU thrash when more than one device was connected.
-  // The loop runs only while clients are active; stops itself when the set empties.
+  // Route WS upgrades by path. Leave unmatched requests alone (do NOT destroy the
+  // socket) so other WS handlers on this server keep working.
+  httpSrv.on('upgrade', (req, socket, head) => {
+    let pathname = ''
+    try { pathname = new URL(req.url ?? '', 'http://localhost').pathname } catch { /* ignore */ }
+    if (pathname === '/api/screen-stream-ws') {
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
+    } else if (pathname === '/api/screen-ingest-ws') {
+      ingestWss.handleUpgrade(req, socket, head, (ws) => ingestWss.emit('connection', ws, req))
+    }
+  })
+
+  // Phone viewers.
+  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number }>()
+  // Relay one JPEG frame to every viewer, dropping for any client whose buffer is
+  // backing up (a slow phone must never stall the whole broadcast).
+  function relay(frame: Buffer): void {
+    for (const [ws, stat] of clients) {
+      if (ws.readyState !== 1 /* OPEN */) continue
+      if ((ws as any).bufferedAmount > 0) continue
+      try { ws.send(frame); stat.framesSent++ } catch { /* cleaned up on 'close' */ }
+    }
+  }
+
+  // ── Real-time ingest (preferred) ────────────────────────────────────────────
+  let ingestProducer: import('ws').WebSocket | null = null
+  let lastIngestFrameAt = 0
+  let ingestFrames = 0
+  // "Flowing" = a producer is connected AND has delivered a frame very recently.
+  // Gating on actual frames (not just a connected socket) means a producer that
+  // connects but can't capture (permission denied) does NOT suppress the fallback.
+  const ingestFlowing = () => !!ingestProducer && ingestProducer.readyState === 1 && (Date.now() - lastIngestFrameAt < 1500)
+  // Tell the capture window to start/stop the (CPU-costing) MediaStream based on
+  // whether anyone is actually watching.
+  function signalProducer(): void {
+    if (ingestProducer && ingestProducer.readyState === 1) {
+      try { ingestProducer.send(JSON.stringify({ cmd: clients.size > 0 ? 'start' : 'stop' })) } catch { /* noop */ }
+    }
+  }
+  ingestWss.on('connection', (ws: import('ws').WebSocket, req) => {
+    // Localhost only — the producer is the Electron app on THIS Mac.
+    const ra = req.socket.remoteAddress || ''
+    if (!(ra.includes('127.0.0.1') || ra.endsWith('::1') || ra === '::ffff:127.0.0.1')) { ws.close(); return }
+    ingestProducer = ws
+    debugBus.emit('model', 'screen_ingest_start', {}, { severity: 'info' })
+    signalProducer()
+    ws.on('message', (data: Buffer) => {
+      const frame = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
+      if (!frame.length) return
+      lastIngestFrameAt = Date.now()
+      ingestFrames++
+      relay(frame)
+      if (ingestFrames % 150 === 0) {
+        debugBus.emit('model', 'screen_ingest_perf', { frames: ingestFrames, bytes: frame.length, clients: clients.size }, { severity: 'info' })
+      }
+    })
+    const done = () => { if (ingestProducer === ws) ingestProducer = null }
+    ws.on('close', done)
+    ws.on('error', done)
+  })
+
+  // ── Fallback: per-frame screencapture (only when no real-time feed) ──────────
   const FRAME_INTERVAL_MS = 80
   const rawFile = '/tmp/crucible_screen_raw.jpg'
   const outFile = '/tmp/crucible_screen_out.jpg'
   const captureCmd = `screencapture -x -t jpg ${rawFile} && sips -Z 1100 ${rawFile} --out ${outFile} -s format jpeg -s formatOptions 45 >/dev/null 2>&1 || cp ${rawFile} ${outFile}`
-
-  // Track per-client stats separately from the shared loop
-  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number }>()
   let loopRunning = false
   let totalBroadcasts = 0
 
   function broadcastLoop() {
-    if (clients.size === 0) { loopRunning = false; return }
+    // Stop if nobody is watching, or the real-time feed has taken over.
+    if (clients.size === 0 || ingestFlowing()) { loopRunning = false; return }
     const loopStart = Date.now()
     exec(captureCmd, { timeout: 5000 }, (err) => {
-      if (clients.size === 0) { loopRunning = false; return }
+      if (clients.size === 0 || ingestFlowing()) { loopRunning = false; return }
       if (err) { setTimeout(broadcastLoop, FRAME_INTERVAL_MS); return }
       fs.readFile(outFile, (readErr, frame) => {
-        if (clients.size === 0) { loopRunning = false; return }
+        if (clients.size === 0 || ingestFlowing()) { loopRunning = false; return }
         if (readErr || !frame?.length) { setTimeout(broadcastLoop, FRAME_INTERVAL_MS); return }
         const captureMs = Date.now() - loopStart
         totalBroadcasts++
-        for (const [ws, stat] of clients) {
-          if (ws.readyState !== 1 /* OPEN */) continue
-          // Drop frame for this client if its send buffer is backing up.
-          if ((ws as any).bufferedAmount > 0) continue
-          try { ws.send(frame); stat.framesSent++ } catch { /* will be cleaned up on 'close' */ }
-        }
-        // Log capture timing every 50 frames so we can measure lag in production
+        relay(frame)
         if (totalBroadcasts % 50 === 0) {
           debugBus.emit('model', 'screen_stream_perf', { captureMs, clients: clients.size, frame: frame.length }, { severity: 'info' })
         }
         const elapsed = Date.now() - loopStart
-        const delay = Math.max(0, FRAME_INTERVAL_MS - elapsed)
-        setTimeout(broadcastLoop, delay)
+        setTimeout(broadcastLoop, Math.max(0, FRAME_INTERVAL_MS - elapsed))
       })
     })
+  }
+
+  // Supervisor: while anyone is watching, make sure SOMETHING is producing frames —
+  // the fallback loop whenever the real-time feed isn't flowing. This also resumes
+  // the fallback within ~1s if the Electron feed drops mid-session.
+  let supervisor: ReturnType<typeof setInterval> | null = null
+  function ensureProducing() {
+    if (clients.size > 0 && !ingestFlowing() && !loopRunning) { loopRunning = true; broadcastLoop() }
   }
 
   wss.on('connection', (ws: import('ws').WebSocket) => {
     const stat = { framesSent: 0, captureT0: Date.now() }
     clients.set(ws, stat)
     debugBus.emit('model', 'screen_stream_start', { totalClients: clients.size }, { severity: 'info' })
-    if (!loopRunning) { loopRunning = true; broadcastLoop() }
+    signalProducer()          // wake the Electron capture window
+    ensureProducing()         // and start the fallback until real frames arrive
+    if (!supervisor) supervisor = setInterval(ensureProducing, 700)
 
     ws.on('close', () => {
       clients.delete(ws)
       debugBus.emit('model', 'screen_stream_stop', { framesSent: stat.framesSent, totalClients: clients.size }, { severity: 'info' })
+      if (clients.size === 0) {
+        signalProducer()       // tell the capture window to stop capturing
+        if (supervisor) { clearInterval(supervisor); supervisor = null }
+      }
     })
     ws.on('error', () => { clients.delete(ws) })
   })
@@ -7038,6 +7112,90 @@ app.post('/api/governance', (req, res) => {
   }
   const id = submitRequest(process.cwd(), { category, title, what, why, how, impact, payload })
   res.json({ id })
+})
+
+// Real-time capture page — loaded ONLY by the hidden Electron capture window (see
+// electron.cjs). It pulls a live screen MediaStream via getDisplayMedia (auto-granted
+// by the main-process display-media handler), encodes ~30fps JPEG frames off a canvas,
+// and streams them to /api/screen-ingest-ws, which relays to phone viewers. Runs on
+// http://localhost (a secure context, so getDisplayMedia is allowed) and only captures
+// while a viewer is connected (server sends start/stop). Must be registered BEFORE the
+// SPA fallback below or index.html would shadow it.
+app.get('/_capture', (_req: express.Request, res: express.Response) => {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-store')
+  res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Crucible capture</title></head>
+<body style="margin:0;background:#000">
+<script>
+(function () {
+  var MAX_W = 1100, FPS = 30, QUALITY = 0.55;
+  var ws = null, stream = null, video = null, canvas = null, ctx = null;
+  var capturing = false, wantCapture = false, timer = 0, reconnectT = 0;
+
+  function log(m){ try { console.log('[capture]', m) } catch(e){} }
+
+  function connect() {
+    clearTimeout(reconnectT);
+    var proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(proto + '://' + location.host + '/api/screen-ingest-ws');
+    ws.binaryType = 'arraybuffer';
+    ws.onmessage = function (e) {
+      var msg; try { msg = JSON.parse(e.data) } catch (x) { return }
+      if (msg.cmd === 'start') { wantCapture = true; startCapture() }
+      else if (msg.cmd === 'stop') { wantCapture = false; stopCapture() }
+    };
+    ws.onclose = function () { stopCapture(); reconnectT = setTimeout(connect, 1000) };
+    ws.onerror = function () { try { ws.close() } catch (x) {} };
+  }
+
+  function startCapture() {
+    if (capturing || !wantCapture) return;
+    capturing = true;
+    navigator.mediaDevices.getDisplayMedia({ video: { frameRate: FPS }, audio: false })
+      .then(function (s) {
+        if (!wantCapture) { s.getTracks().forEach(function (t) { t.stop() }); capturing = false; return }
+        stream = s;
+        video = document.createElement('video');
+        video.muted = true; video.srcObject = stream;
+        // If the user stops sharing from the OS, tear down cleanly.
+        stream.getVideoTracks()[0].addEventListener('ended', stopCapture);
+        video.play().then(loop).catch(loop);
+      })
+      .catch(function (err) { log('getDisplayMedia failed: ' + err); capturing = false; });
+  }
+
+  function stopCapture() {
+    capturing = false;
+    clearTimeout(timer);
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop() }); stream = null }
+    video = null;
+  }
+
+  function loop() {
+    if (!capturing) return;
+    var vw = video && video.videoWidth, vh = video && video.videoHeight;
+    if (vw && vh && ws && ws.readyState === 1) {
+      var w = Math.min(MAX_W, vw), h = Math.round(vh * (w / vw));
+      if (!canvas) { canvas = document.createElement('canvas'); ctx = canvas.getContext('2d', { alpha: false }) }
+      if (canvas.width !== w) { canvas.width = w; canvas.height = h }
+      try { ctx.drawImage(video, 0, 0, w, h) } catch (e) {}
+      // Only encode+send when the socket isn't already backed up — this self-throttles
+      // to the real network/CPU rate and naturally drops frames instead of piling up.
+      if (ws.bufferedAmount === 0) {
+        canvas.toBlob(function (b) {
+          if (b && ws && ws.readyState === 1 && ws.bufferedAmount === 0) {
+            b.arrayBuffer().then(function (ab) { try { ws.send(ab) } catch (e) {} });
+          }
+        }, 'image/jpeg', QUALITY);
+      }
+    }
+    timer = setTimeout(loop, Math.round(1000 / FPS));
+  }
+
+  connect();
+})();
+</script>
+</body></html>`)
 })
 
 // SPA fallback — serve index.html for any non-API GET so React handles routing

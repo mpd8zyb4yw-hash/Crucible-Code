@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, session, desktopCapturer } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
@@ -408,6 +408,40 @@ async function boot() {
   // Brief settle so the React app paints before we reveal it (avoids a white flash).
   await new Promise(r => setTimeout(r, app.isPackaged ? 400 : 1500));
   createWindow();
+  // Bring up the hidden real-time capture renderer now that the server is serving
+  // /_capture. It idles (open socket, no capture) until a phone actually connects.
+  createCaptureWindow();
+}
+
+// ── Real-time Remote Brain capture ───────────────────────────────────────────
+// A hidden, always-on renderer that pulls a live screen MediaStream (desktopCapturer
+// → getDisplayMedia, auto-granted by the display-media handler in whenReady) and
+// streams ~30fps JPEG frames to the server, which relays them to phone viewers. This
+// replaces the old per-frame `screencapture` spawn (≈2fps / ~430ms) with true video-
+// rate streaming. It only captures while a phone is watching (server sends start/stop),
+// so idle cost is just an open socket. If it can't run (permission denied), the server
+// falls back to the screencapture loop, so Remote Brain is never worse than before.
+let captureWindow = null;
+let captureRetryT = null;
+function createCaptureWindow() {
+  if (process.platform !== 'darwin') return;
+  if (captureWindow && !captureWindow.isDestroyed()) return;
+  clearTimeout(captureRetryT);
+  captureWindow = new BrowserWindow({
+    width: 320, height: 200, show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      backgroundThrottling: false,   // keep the 30fps capture loop alive while hidden
+    },
+  });
+  captureWindow.loadURL('http://localhost:3001/_capture').catch(() => {});
+  const retry = () => {
+    captureWindow = null;
+    if (!app.isQuitting) captureRetryT = setTimeout(createCaptureWindow, 2000);
+  };
+  captureWindow.on('closed', retry);
+  captureWindow.webContents.on('render-process-gone', retry);
 }
 
 function createWindow() {
@@ -493,6 +527,18 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(async () => {
+    // Auto-grant the primary screen to getDisplayMedia so the hidden capture window
+    // (Remote Brain real-time stream) never shows an OS source picker. macOS still
+    // gates the actual capture behind the Screen-Recording TCC permission for this app;
+    // if that's denied, getDisplayMedia rejects and the server falls back cleanly.
+    try {
+      session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+        desktopCapturer.getSources({ types: ['screen'] })
+          .then(sources => { sources && sources.length ? callback({ video: sources[0] }) : callback(); })
+          .catch(() => callback());
+      }, { useSystemPicker: false });
+    } catch (e) { console.error('[electron] display-media handler failed:', e.message); }
+
     // 1.4 — auto-start at login (packaged app only; never hijack a dev machine).
     if (app.isPackaged) {
       try { app.setLoginItemSettings({ openAtLogin: true }); } catch (e) { console.error('[electron] login item failed', e.message); }
@@ -526,7 +572,11 @@ if (!gotTheLock) {
     if (process.platform !== 'darwin') { killBackend(); app.quit(); }
   });
 
-  app.on('before-quit', killBackend);
+  app.on('before-quit', () => {
+    app.isQuitting = true;
+    if (captureWindow && !captureWindow.isDestroyed()) { try { captureWindow.destroy(); } catch (e) {} }
+    killBackend();
+  });
 
   app.on('activate', () => {
     if (!mainWindow) createWindow();
