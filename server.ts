@@ -5865,6 +5865,7 @@ const screenDiag = {
   liveFps: 0,
   frameKB: 0,
   viewers: 0,
+  viewerIps: [] as string[],  // source IPs of connected viewers (LAN phone vs Mac vs tunnel)
   captureError: null as string | null,
   fallbackActive: false,      // the slow screencapture loop is the current source
 }
@@ -5897,7 +5898,8 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   })
 
   // Phone viewers.
-  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number }>()
+  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number; ip: string }>()
+  const refreshViewerIps = () => { screenDiag.viewerIps = [...clients.values()].map(s => s.ip) }
   // Relay one JPEG frame to every viewer, dropping for any client whose buffer is
   // backing up (a slow phone must never stall the whole broadcast).
   function relay(frame: Buffer): void {
@@ -6000,10 +6002,15 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
     if (clients.size > 0 && !ingestFlowing() && !loopRunning) { loopRunning = true; broadcastLoop() }
   }
 
-  wss.on('connection', (ws: import('ws').WebSocket) => {
-    const stat = { framesSent: 0, captureT0: Date.now() }
+  wss.on('connection', (ws: import('ws').WebSocket, req?: import('http').IncomingMessage) => {
+    // Record the viewer's source IP so the diag can tell a LAN phone (192.168.x/10.x)
+    // from the Mac's own app window (127.0.0.1/::1) from a tunnel-forwarded connection.
+    const rawIp = (req?.socket?.remoteAddress || '').replace('::ffff:', '')
+    const ip = rawIp === '::1' ? '127.0.0.1' : (rawIp || 'unknown')
+    const stat = { framesSent: 0, captureT0: Date.now(), ip }
     clients.set(ws, stat)
     screenDiag.viewers = clients.size
+    refreshViewerIps()
     debugBus.emit('model', 'screen_stream_start', { totalClients: clients.size }, { severity: 'info' })
     signalProducer()          // wake the Electron capture window
     ensureProducing()         // and start the fallback until real frames arrive
@@ -6012,13 +6019,14 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
     ws.on('close', () => {
       clients.delete(ws)
       screenDiag.viewers = clients.size
+      refreshViewerIps()
       debugBus.emit('model', 'screen_stream_stop', { framesSent: stat.framesSent, totalClients: clients.size }, { severity: 'info' })
       if (clients.size === 0) {
         signalProducer()       // tell the capture window to stop capturing
         if (supervisor) { clearInterval(supervisor); supervisor = null }
       }
     })
-    ws.on('error', () => { clients.delete(ws) })
+    ws.on('error', () => { clients.delete(ws); refreshViewerIps() })
   })
 }
 
@@ -6063,6 +6071,7 @@ app.get('/api/screen-diag', (_req: express.Request, res: express.Response) => {
     liveFps,
     frameKB: screenDiag.frameKB,
     viewers: screenDiag.viewers,
+    viewerIps: screenDiag.viewerIps,
     producerConnected: screenDiag.producerConnected,
     captureError: screenDiag.captureError,
     hint: screenDiag.captureError
@@ -7189,13 +7198,21 @@ app.post('/api/governance', (req, res) => {
 // while a viewer is connected (server sends start/stop). Must be registered BEFORE the
 // SPA fallback below or index.html would shadow it.
 app.get('/_capture', (_req: express.Request, res: express.Response) => {
+  // Bitrate knobs — the dominant lever for glass-to-glass latency on a bandwidth-limited
+  // phone link. At 24fps × ~95KB (the old 1100px/q0.55/30fps) the stream needs ~18 Mbit/s
+  // sustained; when the link can't keep up, frames buffer below the server's visibility and
+  // latency grows to many seconds. Lower defaults (~15fps, 900px, q0.42 ≈ 5 Mbit/s) fit
+  // ordinary WiFi with headroom. Tunable live via env without a code change.
+  const capW = Number(process.env.CRUCIBLE_CAPTURE_MAXW) || 900
+  const capFps = Number(process.env.CRUCIBLE_CAPTURE_FPS) || 15
+  const capQ = Number(process.env.CRUCIBLE_CAPTURE_QUALITY) || 0.42
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
   res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Crucible capture</title></head>
 <body style="margin:0;background:#000">
 <script>
 (function () {
-  var MAX_W = 1100, FPS = 30, QUALITY = 0.55;
+  var MAX_W = ${capW}, FPS = ${capFps}, QUALITY = ${capQ};
   var ws = null, stream = null, video = null, canvas = null, ctx = null;
   var capturing = false, wantCapture = false, timer = 0, reconnectT = 0;
 
