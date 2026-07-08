@@ -17,7 +17,43 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-08, cont. 53 — 583ab6e: fixed a live, damaging routing bug where multi-part CODING prompts abstained via the research DAG instead of being answered)
+## CURRENT STATE (last updated 2026-07-08, cont. 54 — answer-engine overhaul: system-is-the-brain Q&A path, Stages 1+2 shipped & live-verified)
+
+**This session (branch crucible-northstar-sessions):**
+- **User report reproduced live** (JWT curl): "even simple questions get horrific answers."
+  Multi-step reasoning wrong (train catch-up → 10pm/5pm; correct 7pm), explanations shallow (one
+  sentence for "explain a hash map"). Root cause: the FM was the brain — its raw, depth-throttled
+  output shipped unchecked (`layer1`===`synthesis` verbatim; strict simple path was a bare
+  `callLocalModel('answer in 1-3 sentences')`). Violated the MISSION (intelligence in the system).
+- **Also this session:** disabled TTS auto-speak in agent/Remote-Brain mode (666d4d6, App.tsx),
+  per user. And REVERTED a wrong attempt to let agent mode escalate to the free pool — the
+  constraint is offline-only / no-escalation / no-token-limits; the free pool is off-limits here.
+- **Built `src/CrucibleEngine/answer/`** — the verification-gated answer engine (see
+  [[crucible-answer-engine]] memory). answerQuery: classify facets → grounding → **depth-scaled**
+  prompt (no more 1-3 sentence throttle) → deterministic critics (arithmetic oracle + sanity) →
+  one bounded repair → else abstain. **Stage 2 self-consistency**: K=5 sampled derivations,
+  oracle-corrected, majority-voted (`normalizeAnswer`) — what made reasoning reliable without a
+  bigger model. Wired into server.ts strict simple + conversational paths; under strict
+  answerQuery is PRIMARY and the unverified GGUF ensemble is bypassed.
+- **Live-verified:** hash-map explanation shallow→thorough; train word problem → **7:00 PM**
+  correct; apples problem → 26; capital/17×23/population clean. answer:bench 18/18, prove:all
+  251/251, my files tsc-clean.
+
+**Known residual (next — Stages 3 & 4):**
+- **Stage 3 — retrieval-grounding entailment critic.** The research DAG still garbles some
+  trivial facts (routing "capital of France" to it produced a self-contradiction), so
+  `EXTERNAL_FACT` was NARROWED to volatile cues (latest/price/news/weather) as a stopgap.
+  Proper fix: extract loop.ts `groundFinal` into a shared helper + number/string entailment vs
+  retrieved evidence.
+- **Stage 4 — kill the regex tangle.** Live-wire `capabilityRouter.classify` to replace
+  `classifyFacets`' heuristics + remove SIMPLE_RX/NEEDS_ENSEMBLE_RX/PREMISE_RX and synthDriver's
+  isResearchShaped/isComplex/isCodeShaped once the engine subsumes them.
+- **Temporal arithmetic** ("4:00 PM + 3 hours = 3:00 PM" intermediate slip) not oracle-checked —
+  final voted answer was right, but the shown work had a clock-math error. Add to verify.ts.
+- **Latency:** consensus is ~75s for K=5 sequential FM calls. Fine offline per no-token-limits,
+  but consider parallelizing if the daemon supports concurrent sessions.
+
+## SUPERSEDED STATE (cont. 53 — 583ab6e: fixed a live, damaging routing bug where multi-part CODING prompts abstained via the research DAG instead of being answered)
 
 **This session (branch crucible-northstar-sessions):**
 - **Live-probed the running backend with a plain multi-part coding prompt** (minted-JWT curl
