@@ -91,7 +91,10 @@ function spawnBackend() {
     });
   } else {
     // Dev/source path — absolute server.ts path because cwd is the data dir.
-    serverProc = spawn('/opt/homebrew/bin/npx', ['tsx', SERVER_TS], {
+    // `tsx watch` restarts the server automatically when server.ts (or anything it
+    // imports) changes on disk — so an auto-sync git pull goes live with no manual
+    // restart. (Only source runs; packaged builds use the bundle above.)
+    serverProc = spawn('/opt/homebrew/bin/npx', ['tsx', 'watch', SERVER_TS], {
       cwd: DATA_DIR,
       shell: false,
       env,
@@ -116,6 +119,81 @@ function killBackend() {
   if (viteProc) { viteProc.kill(); viteProc = null; }
   if (buildProc) { try { buildProc.kill(); } catch (e) {} buildProc = null; }
   if (healProc) { try { healProc.kill(); } catch (e) {} healProc = null; }
+}
+
+// ── Auto-sync pipeline ─────────────────────────────────────────────────────────
+// Keep this checkout in lock-step with the canonical branch so pushed commits go live
+// with no manual pull/restart — the gap that made earlier fixes appear to do nothing.
+// Source runs only (a packaged build has no repo). The server runs under `tsx watch`
+// (auto-restarts on server.ts changes); this poller pulls, rebuilds the frontend when
+// src/ changed (the phone loads a built frontend), and reloads the windows.
+const SYNC_BRANCH = process.env.CRUCIBLE_SYNC_BRANCH || 'crucible-northstar-sessions';
+const SYNC_INTERVAL_MS = 15000;
+const SYNC_ENABLED = !app.isPackaged && process.env.CRUCIBLE_AUTOSYNC !== '0';
+let syncing = false;
+
+const { execFile } = require('child_process');
+function git(args) {
+  return new Promise((resolve) => {
+    execFile('/usr/bin/git', args, {
+      cwd: __dirname,
+      env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin' },
+    }, (err, stdout) => resolve({ code: err ? (err.code || 1) : 0, out: (stdout || '').trim() }));
+  });
+}
+
+function rebuildFrontend() {
+  console.log('[autosync] frontend changed — rebuilding (npx vite build)…');
+  const p = spawn('/opt/homebrew/bin/npx', ['vite', 'build'], {
+    cwd: __dirname, shell: false,
+    env: { ...process.env, PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin', FORCE_COLOR: '0' },
+  });
+  p.stdout.on('data', d => console.log('[vite:build]', d.toString().trim()));
+  p.stderr.on('data', d => console.error('[vite:build]', d.toString().trim()));
+  p.on('exit', (code) => console.log(`[autosync] frontend rebuild ${code === 0 ? 'ok' : 'FAILED (' + code + ')'}`));
+}
+
+async function autoSyncTick() {
+  if (syncing) return;
+  syncing = true;
+  try {
+    const fetched = await git(['fetch', 'origin', SYNC_BRANCH, '--quiet']);
+    if (fetched.code !== 0) return;
+    const local = (await git(['rev-parse', 'HEAD'])).out;
+    const remote = (await git(['rev-parse', `origin/${SYNC_BRANCH}`])).out;
+    if (!local || !remote || local === remote) return;
+    const changed = (await git(['diff', '--name-only', local, remote])).out;
+    console.log(`[autosync] ${local.slice(0, 7)} → ${remote.slice(0, 7)} — syncing`);
+    const reset = await git(['reset', '--hard', `origin/${SYNC_BRANCH}`]);
+    if (reset.code !== 0) { console.error('[autosync] reset failed:', reset.out); return; }
+    // Frontend build only when a frontend source file actually changed (build is slow).
+    if (/^(src\/|index\.html|vite\.config|package\.json)/m.test(changed)) rebuildFrontend();
+    console.log('[autosync] synced; tsx watch restarts the server on the changed files');
+    // Refresh the windows so frontend/capture-page changes go live too.
+    setTimeout(() => {
+      if (mainWindow) mainWindow.webContents.reloadIgnoringCache();
+      if (captureWindow) captureWindow.webContents.reloadIgnoringCache();
+    }, 3000);
+  } finally {
+    syncing = false;
+  }
+}
+
+async function startAutoSync() {
+  if (!SYNC_ENABLED) { console.log('[autosync] disabled'); return; }
+  const origin = (await git(['remote', 'get-url', 'origin'])).out;
+  if (!/Crucible-Code/i.test(origin)) {
+    console.log(`[autosync] origin is "${origin}", not Crucible-Code — refusing to auto-sync`);
+    return;
+  }
+  const branch = (await git(['rev-parse', '--abbrev-ref', 'HEAD'])).out;
+  if (branch !== SYNC_BRANCH) {
+    console.log(`[autosync] on ${branch}, not ${SYNC_BRANCH} — not auto-syncing (avoids clobbering a WIP branch)`);
+    return;
+  }
+  console.log(`[autosync] watching origin/${SYNC_BRANCH} every ${SYNC_INTERVAL_MS / 1000}s`);
+  setInterval(autoSyncTick, SYNC_INTERVAL_MS);
+  autoSyncTick();
 }
 
 function restartBackend() {
@@ -561,7 +639,7 @@ if (!gotTheLock) {
     // app: build-if-needed → self-heal → server → main window. Zero terminal interaction.
     await createLoadingWindow();
     console.log(`[electron] boot${app.isPackaged ? '' : ' (source)'}… (${USE_BUNDLE ? 'bundle' : 'tsx'})`);
-    boot().catch(err => {
+    boot().then(() => startAutoSync()).catch(err => {
       console.error('[electron] boot failed:', err.message);
       loadingError('Startup failed.\n' + (err && err.message ? err.message : String(err)));
     });

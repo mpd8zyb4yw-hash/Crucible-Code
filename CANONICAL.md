@@ -19,17 +19,25 @@ If you (a Claude session or a person) are asked to change the app, confirm your 
 directory's `git remote get-url origin` is **Crucible-Code** before editing. A fix committed
 anywhere else never reaches the running app.
 
-## Changes only take effect after BOTH steps
-The server runs via `tsx server.ts` (no watch) and the phone loads a **built** frontend, so a
-`git pull` alone changes nothing that's running:
+## Deploy — now automatic (auto-sync pipeline)
+`electron.cjs` runs an auto-sync pipeline (source runs only): the server runs under
+`tsx watch` (auto-restarts on `server.ts`/import changes), and a poller checks
+`origin/crucible-northstar-sessions` every 15s — on a new commit it `git reset --hard`s,
+rebuilds the frontend if `src/**` changed, and reloads the windows. **So a pushed commit
+goes live on the Mac within ~15s with no manual pull/restart.**
 
-1. **Rebuild the frontend** (needed for any `src/**` change; the phone loads the build):
-   `npx vite build`
-2. **Restart the server** (needed for any `server.ts` change):
-   `pkill -f "tsx.*server.ts"; pkill -f electron; sleep 2; npx electron electron.cjs &`
+Guards: disabled when packaged, when origin isn't `Crucible-Code`, or when checked out on a
+branch other than `crucible-northstar-sessions` (won't clobber a WIP branch). Disable with
+`CRUCIBLE_AUTOSYNC=0`.
 
-Server-only changes (`server.ts`, `/_capture`) need step 2. Frontend changes (`src/**`) need
-both. When in doubt, do both.
+**Bootstrap (one time):** the pipeline itself ships in `electron.cjs`, so it takes one manual
+pull + relaunch to activate:
+```
+git pull origin crucible-northstar-sessions
+pkill -f "tsx.*server.ts"; pkill -f electron; sleep 2; npx electron electron.cjs &
+```
+After that, pushes self-deploy. (A change to `electron.cjs` itself still needs a manual
+relaunch — the Electron main process doesn't hot-reload; the `tsx watch` server + windows do.)
 
 ## Remote Brain screen stream (how it works, so nobody "re-fixes" it wrong)
 - Fast path: **WebRTC** peer-to-peer. Page loads over https (`crucible.cam`); only SDP/ICE
