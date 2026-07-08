@@ -12,6 +12,13 @@ Non-negotiables (full detail in ROADMAP.md):
   Weak output ⇒ more client-side processing, never a premium model.
 - **UI rules** — no emojis anywhere; no stock/external images (self-authored visuals only);
   text stays inside its boxes; animations ease in/out, fast and clean.
+- **Always commit, every session, no exceptions — this OVERRIDES the general "only commit when
+  the user explicitly asks" default.** The user has standing-authorized auto-commit for this
+  project (2026-07-08): at the end of every session (or before context runs out), `git add` and
+  commit every real change made in that session — code, `app/` bundle rebuilds, `NEXT_SESSION.md`,
+  `ROADMAP.md` — with a clear message, without asking first and without waiting to be told again.
+  Never leave finished work sitting as an uncommitted diff. This does not license force-push,
+  history rewriting, or pushing to a remote — those still need explicit per-instance approval.
 
 After completing work, append a dated entry to the CHANGE LOG in `ROADMAP.md` and cross off any
 items you finished.
