@@ -5898,8 +5898,27 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   })
 
   // Phone viewers.
-  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number; ip: string }>()
+  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number; ip: string; id: number }>()
   const refreshViewerIps = () => { screenDiag.viewerIps = [...clients.values()].map(s => s.ip) }
+
+  // ── WebRTC signaling relay ────────────────────────────────────────────────────
+  // The JPEG-over-WS path below can't be both loaded-from-crucible.cam AND direct-to-LAN
+  // (an https page may not open a ws:// LAN socket — mixed content), so on the tunnel it
+  // pays full tunnel latency. WebRTC fixes that: the page loads over https (auth intact),
+  // the tunnel carries only tiny SDP/ICE signaling, and the video flows peer-to-peer
+  // (Mac ↔ phone directly over the LAN/hotspot) via a hardware codec. This just RELAYS
+  // signaling between the single producer (capture window) and each viewer by id; media
+  // never touches the server. If WebRTC fails to connect, the viewer keeps using JPEG.
+  let viewerSeq = 0
+  const viewersById = new Map<number, import('ws').WebSocket>()
+  function sendToProducer(obj: unknown): void {
+    if (ingestProducer && ingestProducer.readyState === 1) {
+      try { ingestProducer.send(JSON.stringify(obj)) } catch { /* noop */ }
+    }
+  }
+  function sendJson(ws: import('ws').WebSocket, obj: unknown): void {
+    if (ws.readyState === 1) { try { ws.send(JSON.stringify(obj)) } catch { /* noop */ } }
+  }
   // Relay one JPEG frame to every viewer, dropping for any client whose buffer is
   // backing up (a slow phone must never stall the whole broadcast).
   function relay(frame: Buffer): void {
@@ -5942,6 +5961,11 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
           const msg = JSON.parse(data.toString())
           if (msg?.type === 'captureError') screenDiag.captureError = String(msg.error).slice(0, 300)
           else if (msg?.type === 'captureOk') screenDiag.captureError = null
+          // WebRTC signaling from the producer → a specific viewer (offer / ICE).
+          else if ((msg?.type === 'webrtc-offer' || msg?.type === 'webrtc-ice') && typeof msg.to === 'number') {
+            const viewer = viewersById.get(msg.to)
+            if (viewer) sendJson(viewer, msg)
+          }
         } catch { /* ignore */ }
         return
       }
@@ -6007,26 +6031,45 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
     // from the Mac's own app window (127.0.0.1/::1) from a tunnel-forwarded connection.
     const rawIp = (req?.socket?.remoteAddress || '').replace('::ffff:', '')
     const ip = rawIp === '::1' ? '127.0.0.1' : (rawIp || 'unknown')
-    const stat = { framesSent: 0, captureT0: Date.now(), ip }
+    const id = ++viewerSeq
+    const stat = { framesSent: 0, captureT0: Date.now(), ip, id }
     clients.set(ws, stat)
+    viewersById.set(id, ws)
     screenDiag.viewers = clients.size
     refreshViewerIps()
     debugBus.emit('model', 'screen_stream_start', { totalClients: clients.size }, { severity: 'info' })
     signalProducer()          // wake the Electron capture window
     ensureProducing()         // and start the fallback until real frames arrive
     if (!supervisor) supervisor = setInterval(ensureProducing, 700)
+    // Tell the producer a new viewer is here so it can open a WebRTC peer connection.
+    // The viewer's own id is sent to it first so it can tag its signaling replies.
+    sendJson(ws, { type: 'webrtc-id', id })
+    sendToProducer({ type: 'viewer-join', id })
+
+    // Signaling from this viewer → the producer (answer / ICE), tagged with its id.
+    ws.on('message', (data: Buffer, isBinary: boolean) => {
+      if (isBinary) return
+      try {
+        const msg = JSON.parse(data.toString())
+        if (msg?.type === 'webrtc-answer' || msg?.type === 'webrtc-ice') {
+          sendToProducer({ ...msg, from: id })
+        }
+      } catch { /* ignore */ }
+    })
 
     ws.on('close', () => {
       clients.delete(ws)
+      viewersById.delete(id)
       screenDiag.viewers = clients.size
       refreshViewerIps()
+      sendToProducer({ type: 'viewer-leave', id })
       debugBus.emit('model', 'screen_stream_stop', { framesSent: stat.framesSent, totalClients: clients.size }, { severity: 'info' })
       if (clients.size === 0) {
         signalProducer()       // tell the capture window to stop capturing
         if (supervisor) { clearInterval(supervisor); supervisor = null }
       }
     })
-    ws.on('error', () => { clients.delete(ws); refreshViewerIps() })
+    ws.on('error', () => { clients.delete(ws); viewersById.delete(id); refreshViewerIps() })
   })
 }
 
@@ -7216,7 +7259,39 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
   var ws = null, stream = null, video = null, canvas = null, ctx = null;
   var capturing = false, wantCapture = false, timer = 0, reconnectT = 0;
 
+  // WebRTC publisher state: one RTCPeerConnection per viewer id. The screen MediaStream
+  // track is published peer-to-peer (Mac ↔ phone), so media never crosses the tunnel.
+  // The JPEG loop below stays as an automatic fallback for viewers that can't establish
+  // a peer connection.
+  var peers = {};          // viewerId -> RTCPeerConnection
+  var streamCbs = [];      // callbacks waiting for getDisplayMedia to resolve
+  var ICE = [{ urls: 'stun:stun.l.google.com:19302' }];
+
   function log(m){ try { console.log('[capture]', m) } catch(e){} }
+  function sig(obj){ try { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)) } catch(e){} }
+
+  function whenStream(cb){ if (stream) cb(stream); else { streamCbs.push(cb); startCapture(); } }
+
+  function onViewerJoin(id){
+    whenStream(function (s){
+      if (peers[id]) return;
+      var pc = new RTCPeerConnection({ iceServers: ICE });
+      peers[id] = pc;
+      s.getVideoTracks().forEach(function (t){ try { pc.addTrack(t, s) } catch(e){} });
+      pc.onicecandidate = function (ev){ if (ev.candidate) sig({ type: 'webrtc-ice', to: id, candidate: ev.candidate }); };
+      pc.oniceconnectionstatechange = function (){
+        var st = pc.iceConnectionState;
+        if (st === 'failed' || st === 'closed' || st === 'disconnected') closePeer(id);
+      };
+      pc.createOffer().then(function (off){ return pc.setLocalDescription(off); })
+        .then(function (){ sig({ type: 'webrtc-offer', to: id, sdp: pc.localDescription }); })
+        .catch(function (e){ log('offer failed: ' + e); closePeer(id); });
+    });
+  }
+  function onAnswer(id, sdp){ var pc = peers[id]; if (pc && sdp) pc.setRemoteDescription(sdp).catch(function(e){ log('answer failed: ' + e) }); }
+  function onRemoteIce(id, cand){ var pc = peers[id]; if (pc && cand) pc.addIceCandidate(cand).catch(function(){}); }
+  function closePeer(id){ var pc = peers[id]; if (pc){ try { pc.close() } catch(e){} delete peers[id]; } }
+  function closeAllPeers(){ for (var k in peers) closePeer(k); }
 
   function connect() {
     clearTimeout(reconnectT);
@@ -7227,6 +7302,10 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
       var msg; try { msg = JSON.parse(e.data) } catch (x) { return }
       if (msg.cmd === 'start') { wantCapture = true; startCapture() }
       else if (msg.cmd === 'stop') { wantCapture = false; stopCapture() }
+      else if (msg.type === 'viewer-join') { wantCapture = true; onViewerJoin(msg.id) }
+      else if (msg.type === 'viewer-leave') { closePeer(msg.id) }
+      else if (msg.type === 'webrtc-answer') { onAnswer(msg.from, msg.sdp) }
+      else if (msg.type === 'webrtc-ice') { onRemoteIce(msg.from, msg.candidate) }
     };
     ws.onclose = function () { stopCapture(); reconnectT = setTimeout(connect, 1000) };
     ws.onerror = function () { try { ws.close() } catch (x) {} };
@@ -7245,6 +7324,9 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
         // If the user stops sharing from the OS, tear down cleanly.
         stream.getVideoTracks()[0].addEventListener('ended', stopCapture);
         video.play().then(loop).catch(loop);
+        // Flush any viewers that joined before the stream was ready — open their peers now.
+        var cbs = streamCbs; streamCbs = [];
+        cbs.forEach(function (cb){ try { cb(stream) } catch (e){} });
       })
       .catch(function (err) {
         log('getDisplayMedia failed: ' + err);
@@ -7259,6 +7341,7 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
   function stopCapture() {
     capturing = false;
     clearTimeout(timer);
+    closeAllPeers();
     if (stream) { stream.getTracks().forEach(function (t) { t.stop() }); stream = null }
     video = null;
   }

@@ -123,6 +123,10 @@ export default function App() {
   // tunnel — loading the app from this origin makes everything direct-to-Mac.
   const [remoteLanOrigin, setRemoteLanOrigin] = useState<string | null>(null)
   const screenCanvasRef = useRef<HTMLCanvasElement>(null)
+  const screenVideoRef = useRef<HTMLVideoElement>(null)
+  // True once a WebRTC peer video track is playing — the direct peer-to-peer path that
+  // bypasses the tunnel. When active we show the <video> and hide the JPEG <canvas>.
+  const [webrtcActive, setWebrtcActive] = useState(false)
   const streamEsRef = useRef<EventSource | null>(null)
   const preBrainModeRef = useRef<'quorum'|'code'|'seeker'|'research'>('code')
   const fpsCounterRef = useRef({ count: 0, last: 0 })
@@ -285,10 +289,50 @@ export default function App() {
     rafId = requestAnimationFrame(paintLoop)
 
     let frameSeq = 0
+    // WebRTC subscriber: the fast path. The server relays an SDP offer from the Mac's
+    // capture window over this same socket (as text); we answer, exchange ICE, and the
+    // screen video then flows peer-to-peer (direct over the LAN/hotspot), bypassing the
+    // tunnel entirely. Until/unless that connects, the JPEG frames below keep painting,
+    // so a WebRTC failure silently falls back to the existing path.
+    let pc: RTCPeerConnection | null = null
+    const sig = (sock: WebSocket, obj: unknown) => { try { if (sock.readyState === 1) sock.send(JSON.stringify(obj)) } catch { /* noop */ } }
+
+    async function handleSignaling(sock: WebSocket, msg: any) {
+      if (msg.type === 'webrtc-offer') {
+        if (pc) { try { pc.close() } catch { /* noop */ } }
+        pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] })
+        pc.ontrack = (ev) => {
+          const v = screenVideoRef.current
+          if (v && ev.streams[0]) { v.srcObject = ev.streams[0]; v.play().catch(() => {}) }
+          setWebrtcActive(true)
+          setStreamStatus('live')
+        }
+        pc.onicecandidate = (ev) => { if (ev.candidate) sig(sock, { type: 'webrtc-ice', candidate: ev.candidate }) }
+        pc.oniceconnectionstatechange = () => {
+          const st = pc?.iceConnectionState
+          if (st === 'failed' || st === 'disconnected' || st === 'closed') setWebrtcActive(false)
+        }
+        try {
+          await pc.setRemoteDescription(msg.sdp)
+          const ans = await pc.createAnswer()
+          await pc.setLocalDescription(ans)
+          sig(sock, { type: 'webrtc-answer', sdp: pc.localDescription })
+        } catch { setWebrtcActive(false) }
+      } else if (msg.type === 'webrtc-ice') {
+        if (pc && msg.candidate) { try { await pc.addIceCandidate(msg.candidate) } catch { /* noop */ } }
+      }
+    }
+
     function attachHandlers(sock: WebSocket) {
       sock.onopen  = () => setStreamStatus('live')
       sock.onclose = () => { if (streamEsRef.current === (sock as unknown as EventSource)) setStreamStatus('error') }
       sock.onmessage = (e) => {
+        // Text frame → WebRTC signaling. Binary Blob → a JPEG fallback frame.
+        if (typeof e.data === 'string') {
+          let msg: any; try { msg = JSON.parse(e.data) } catch { return }
+          if (msg?.type && String(msg.type).startsWith('webrtc-')) handleSignaling(sock, msg)
+          return
+        }
         setStreamStatus('live')
         const seq = ++frameSeq
         // e.data is already a Blob (binaryType='blob') — pass directly to GPU decoder.
@@ -304,6 +348,8 @@ export default function App() {
     return () => {
       clearTimeout(watchdog)
       ws.close()
+      if (pc) { try { pc.close() } catch { /* noop */ } pc = null }
+      setWebrtcActive(false)
       streamEsRef.current = null
       cancelAnimationFrame(rafId)
       pendingBitmap?.close()
@@ -1962,10 +2008,23 @@ export default function App() {
               setPipPos({ ...pipPosRef.current })
             }}
           >
+            {/* WebRTC video (fast peer-to-peer path). Shown once a track is live; the
+                canvas below stays as the JPEG fallback and is hidden while WebRTC is up. */}
+            <video
+              ref={screenVideoRef}
+              muted
+              playsInline
+              autoPlay
+              style={{
+                width: '100%', height: 'auto', display: webrtcActive ? 'block' : 'none',
+                opacity: webrtcActive && streamStatus === 'live' ? 1 : 0,
+                transition: 'opacity 0.4s ease',
+              }}
+            />
             <canvas
               ref={screenCanvasRef}
               style={{
-                width: '100%', height: 'auto', display: 'block',
+                width: '100%', height: 'auto', display: webrtcActive ? 'none' : 'block',
                 opacity: streamStatus === 'live' ? 1 : 0,
                 transition: 'opacity 0.4s ease',
               }}
