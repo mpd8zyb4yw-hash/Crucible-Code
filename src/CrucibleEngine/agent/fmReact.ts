@@ -52,18 +52,38 @@ const FM_TIMEOUT_MS = Number(
 
 // ── FM call helper ────────────────────────────────────────────────────────────
 
+// Apple FM's on-device session throws a transient `GenerationError error -1`
+// (surfaced as an HTTP-200 body `{"error":{"message":"generation_failed: …"}}`) when the
+// device is under concurrent load — e.g. the background autoImprove pass + keepalive pings
+// hitting the daemon at the same time as a live request. It recovers on a fresh session, so
+// a short bounded retry with backoff turns an otherwise-fatal empty answer into a good one.
+const FM_GEN_RETRIES = Number(process.env.CRUCIBLE_FM_GEN_RETRIES ?? 2)
+
+/** Marks a retryable transient generation failure (as opposed to a permanent error). */
+class FmTransientError extends Error {}
+
 async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS): Promise<string> {
-  try {
-    return await callFmInner(system, messages, timeoutMs)
-  } catch (e: any) {
-    // Never let the raw AbortSignal DOMException ("The operation was aborted due to
-    // timeout") propagate — it has surfaced verbatim as a chat answer. Rethrow with a
-    // message a user (and the escalation path) can act on.
-    if (e?.name === 'TimeoutError' || /aborted due to timeout/i.test(String(e?.message ?? ''))) {
-      throw new Error(`Local model timed out after ${Math.round(timeoutMs / 1000)}s (Apple FM daemon on ${FM_URL})`)
+  let lastErr: any
+  for (let attempt = 0; attempt <= FM_GEN_RETRIES; attempt++) {
+    try {
+      return await callFmInner(system, messages, timeoutMs)
+    } catch (e: any) {
+      lastErr = e
+      // Transient on-device generation failure — brief backoff then retry a fresh session.
+      if (e instanceof FmTransientError && attempt < FM_GEN_RETRIES) {
+        await new Promise(r => setTimeout(r, 400 * (attempt + 1)))
+        continue
+      }
+      // Never let the raw AbortSignal DOMException ("The operation was aborted due to
+      // timeout") propagate — it has surfaced verbatim as a chat answer. Rethrow with a
+      // message a user (and the escalation path) can act on.
+      if (e?.name === 'TimeoutError' || /aborted due to timeout/i.test(String(e?.message ?? ''))) {
+        throw new Error(`Local model timed out after ${Math.round(timeoutMs / 1000)}s (Apple FM daemon on ${FM_URL})`)
+      }
+      throw e
     }
-    throw e
   }
+  throw lastErr
 }
 
 async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number): Promise<string> {
@@ -80,6 +100,15 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
   })
   if (!res.ok) throw new Error(`FM HTTP ${res.status}`)
   const data = await res.json() as any
+  // The daemon returns HTTP 200 with an `{error:{message}}` body on an on-device
+  // generation failure — there are no `choices`, so the old `?? ''` silently shipped an
+  // EMPTY answer that downstream treated as "FM has nothing", skipping retry/fallback and
+  // hanging the turn. Surface it as a (retryable) error instead of swallowing it.
+  if (data?.error) {
+    const msg = String(data.error?.message ?? data.error)
+    if (/generation_failed|GenerationError|error -1|-1\)/i.test(msg)) throw new FmTransientError(msg)
+    throw new Error(`FM error: ${msg}`)
+  }
   return (data.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()
 }
 
