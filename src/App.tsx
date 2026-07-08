@@ -1725,12 +1725,16 @@ export default function App() {
       <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative', zIndex: 1 }}>
         {/* History/Settings overlays and the Agents drawer are mutually exclusive —
             opening either always closes the other (both visible at once was a live bug). */}
-        <NavRail
-          tab={tab}
-          setTab={t => { if (t !== 'chat') setAgentsOpen(false); setTab(t) }}
-          agentsOpen={agentsOpen}
-          onToggleAgents={() => setAgentsOpen(o => { if (!o) setTab('chat'); return !o })}
-        />
+        {/* Mobile gets edge-to-edge chat: the vertical rail is hidden and these same
+            nav actions render as a horizontal row in the top bar (below). */}
+        {!isMobile && (
+          <NavRail
+            tab={tab}
+            setTab={t => { if (t !== 'chat') setAgentsOpen(false); setTab(t) }}
+            agentsOpen={agentsOpen}
+            onToggleAgents={() => setAgentsOpen(o => { if (!o) setTab('chat'); return !o })}
+          />
+        )}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
       {/* Global keyframes + shared rules live in index.css (design-token sheet). */}
 
@@ -2097,7 +2101,18 @@ export default function App() {
         padding: `0 18px 0 ${window.electronIPC ? 44 : 18}px`, gap: 12, zIndex: 10, position: 'relative',
         WebkitAppRegion: 'drag',
       } as any}>
-        <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee' }}>Crucible</span>
+        <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee', flexShrink: 0 }}>Crucible</span>
+        {/* Mobile navigation — the desktop left rail is hidden on phones, so its tabs
+            live here as a compact icon row (same handlers, edge-to-edge chat below). */}
+        {isMobile && (
+          <NavRail
+            orientation="horizontal"
+            tab={tab}
+            setTab={t => { if (t !== 'chat') setAgentsOpen(false); setTab(t) }}
+            agentsOpen={agentsOpen}
+            onToggleAgents={() => setAgentsOpen(o => { if (!o) setTab('chat'); return !o })}
+          />
+        )}
         {/* Top-bar overlap fix: on mobile widths this pill's full label plus the New Chat
             button and agent-progress text had no wrap/shrink handling and could crowd/
             overlap at the right edge — the dot alone still shows mode at a glance. */}
@@ -2407,7 +2422,7 @@ export default function App() {
           solid background, so it never reads as a dark bar; the blobs stay visible. */}
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (remoteBrain && isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
         right: 0,
         height: inputBarHeight - 4, pointerEvents: 'none', zIndex: 8, background: remoteBrain && isMobile ? 'rgba(13,13,21,0.55)' : 'transparent',
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -2416,7 +2431,7 @@ export default function App() {
       }} />
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (remoteBrain && isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
         right: 0,
         height: inputBarHeight - 28, pointerEvents: 'none', zIndex: 9,
         backdropFilter: 'blur(44px)', WebkitBackdropFilter: 'blur(44px)',
@@ -2460,7 +2475,7 @@ export default function App() {
         // In landscape Remote Brain: anchor to the right 38% panel so it sits below chat.
         // In portrait Remote Brain: full width, above the canvas (zIndex 60).
         // Normal: full width, normal stacking.
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (remoteBrain && isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
         right: 0,
         zIndex: remoteBrain && isMobile ? 60 : 10,
         // Remote Brain portrait: frosted glass so the stream bleeds through.

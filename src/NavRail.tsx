@@ -7,10 +7,11 @@ import { memo } from 'react'
 
 export type CrucibleTab = 'chat' | 'history' | 'settings'
 
-function NavButton({ active, title, onClick, children }: {
+function NavButton({ active, title, onClick, size = 38, children }: {
   active: boolean
   title: string
   onClick: () => void
+  size?: number
   children: React.ReactNode
 }) {
   return (
@@ -18,13 +19,14 @@ function NavButton({ active, title, onClick, children }: {
       onClick={onClick}
       title={title}
       style={{
-        width: 38, height: 38, borderRadius: 11, border: 'none', cursor: 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: size, height: size, borderRadius: size >= 38 ? 11 : 9, border: 'none', cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
         background: active ? 'rgba(124,124,248,0.13)' : 'transparent',
         color: active ? '#9d9dfa' : '#55556a',
         outline: active ? '1px solid rgba(124,124,248,0.28)' : 'none',
         transition: 'background 0.2s, color 0.2s',
-      }}
+        WebkitAppRegion: 'no-drag',
+      } as any}
     >
       {children}
     </button>
@@ -35,13 +37,19 @@ function NavButton({ active, title, onClick, children }: {
 // every keystroke anyway because it's a child of the same App component tree that owns
 // `input`. React.memo keeps it from re-rendering unless `tab`/`setTab` actually change —
 // a small, safe piece of the "typing latency" fix without touching the input wiring itself.
-function NavRail({ tab, setTab, agentsOpen, onToggleAgents }: {
+function NavRail({ tab, setTab, agentsOpen, onToggleAgents, orientation = 'vertical' }: {
   tab: CrucibleTab
   setTab: (t: CrucibleTab) => void
   agentsOpen: boolean
   onToggleAgents: () => void
+  // 'vertical' = the desktop 56px left rail. 'horizontal' = a compact icon row
+  // embedded in the mobile top bar (no full-height chrome, no logo/spacer), so
+  // phones get edge-to-edge chat with navigation up top instead of a left bar.
+  orientation?: 'vertical' | 'horizontal'
 }) {
   const go = (t: CrucibleTab) => () => setTab(t)
+  const horizontal = orientation === 'horizontal'
+  const btn = horizontal ? 32 : 38
 
   // Item-8: in the Electron shell the window uses titleBarStyle 'hiddenInset', which draws
   // native macOS traffic-light controls at roughly x:10-70, y:10-30 — right on top of this
@@ -52,7 +60,10 @@ function NavRail({ tab, setTab, agentsOpen, onToggleAgents }: {
   const topPad = isElectron ? 34 : 14
 
   return (
-    <div style={{
+    <div style={horizontal ? {
+      // Mobile top-bar mode: a compact icon row, no full-height chrome/logo/spacer.
+      display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 2, flexShrink: 0,
+    } : {
       width: 56, flexShrink: 0, zIndex: 20,
       display: 'flex', flexDirection: 'column', alignItems: 'center',
       padding: `${topPad}px 0 16px`, gap: 6,
@@ -60,13 +71,15 @@ function NavRail({ tab, setTab, agentsOpen, onToggleAgents }: {
       backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
       borderRight: '1px solid rgba(255,255,255,0.06)',
     }}>
-      <div style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
-        <svg width="22" height="22" viewBox="0 0 48 48" fill="none">
-          <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="#e4e4ee" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
-        </svg>
-      </div>
+      {!horizontal && (
+        <div style={{ width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}>
+          <svg width="22" height="22" viewBox="0 0 48 48" fill="none">
+            <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="#e4e4ee" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
+          </svg>
+        </div>
+      )}
 
-      <NavButton active={tab === 'chat'} title="Chat" onClick={go('chat')}>
+      <NavButton size={btn} active={tab === 'chat'} title="Chat" onClick={go('chat')}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
           <path d="M14 8a6 6 0 0 1-8.7 5.4L2 14l0.7-3A6 6 0 1 1 14 8Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
         </svg>
@@ -74,23 +87,23 @@ function NavRail({ tab, setTab, agentsOpen, onToggleAgents }: {
       {/* Items 18/19: Agents no longer navigates away from chat — it toggles an inline
           overlay drawer anchored to the chat panel (see AgentsTabView.tsx / App.tsx),
           so the conversation underneath stays mounted and in place. */}
-      <NavButton active={agentsOpen} title="Agents & capabilities" onClick={onToggleAgents}>
+      <NavButton size={btn} active={agentsOpen} title="Agents & capabilities" onClick={onToggleAgents}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
           <rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" strokeWidth="1.4" />
           <path d="M8 5V2.8M6 9h.01M10 9h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
           <circle cx="8" cy="2.2" r="0.9" fill="currentColor" />
         </svg>
       </NavButton>
-      <NavButton active={tab === 'history'} title="History" onClick={go('history')}>
+      <NavButton size={btn} active={tab === 'history'} title="History" onClick={go('history')}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
           <circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.4" />
           <path d="M8 5v3.2l2.2 1.3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </NavButton>
 
-      <div style={{ flex: 1 }} />
+      {!horizontal && <div style={{ flex: 1 }} />}
 
-      <NavButton active={tab === 'settings'} title="Settings" onClick={go('settings')}>
+      <NavButton size={btn} active={tab === 'settings'} title="Settings" onClick={go('settings')}>
         {/* Item-15: was a sun/brightness-slider glyph (small circle + 8 straight rays);
             replaced with a proper gear/cog so it reads as "Settings" at a glance. */}
         {/* Canonical Feather "settings" gear — the previous hand-edited path had broken
