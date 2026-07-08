@@ -1052,14 +1052,8 @@ export default function App() {
               // guard the same sentence shows up twice: once as the MC card, once as a fake
               // "0 models · 0% confident" synthesis bubble underneath it.
               setRounds(prev => prev.map(r => r.id !== roundId ? r : r.agent?.clarification ? r : { ...r, synthesis: parsed.text ?? r.synthesis, synthesisDone: true }))
-              // Session L: in Remote Brain mode the Mac speaks the answer back. (A clarification
-              // still gets read aloud — the question is real content, just not a synthesis bubble.)
-              if (remoteBrain && parsed.text) {
-                apiFetch(`${API_BASE}/api/tts`, {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ text: parsed.text }),
-                }).catch(() => {})
-              }
+              // TTS intentionally disabled in agent / Remote Brain mode: on the phone the answer
+              // is already on screen, and the Mac reading every agent turn aloud was noise, not signal.
             }
             continue
           }
