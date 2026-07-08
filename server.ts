@@ -685,6 +685,7 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
 app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (req.path.startsWith('/auth/')) return next()
   if (req.path === '/screen-stream') return next()   // no cookie on phone; LAN-only stream
+  if (req.path === '/screen-diag') return next()     // LAN diagnostic — no cookie (curl'd on the Mac)
   if (req.path === '/diag') return next()            // diagnostic endpoint — no auth needed
   return requireAuth(req, res, next)
 })
@@ -5855,6 +5856,20 @@ app.post('/api/corpus/ingest-document', async (req, res) => {
 // No auth: endpoint is LAN-scoped by the router ACL (same as the old SSE endpoint).
 //
 // Wired up to httpServer after it is created (see bottom of file).
+// Live diagnostics for the screen stream — surfaced by GET /api/screen-diag so we can
+// see which capture path is actually running (fast desktopCapturer vs slow screencapture
+// fallback), the real fps, frame size, and any capture/permission error — without guessing.
+const screenDiag = {
+  producerConnected: false,   // Electron capture window's WS is connected
+  ingestFlowing: false,       // it's actually delivering frames right now
+  liveFps: 0,
+  frameKB: 0,
+  viewers: 0,
+  captureError: null as string | null,
+  fallbackActive: false,      // the slow screencapture loop is the current source
+}
+const _ingestFrameTimes: number[] = []
+
 function attachScreenStreamWs(httpSrv: import('http').Server) {
   // Two WS endpoints share one HTTP server, so they must use `noServer` + a single
   // manual upgrade router. Attaching two `WsServer({ server })` instances makes both
@@ -5913,19 +5928,35 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
     const ra = req.socket.remoteAddress || ''
     if (!(ra.includes('127.0.0.1') || ra.endsWith('::1') || ra === '::ffff:127.0.0.1')) { ws.close(); return }
     ingestProducer = ws
+    screenDiag.producerConnected = true
     debugBus.emit('model', 'screen_ingest_start', {}, { severity: 'info' })
     signalProducer()
-    ws.on('message', (data: Buffer) => {
+    ws.on('message', (data: Buffer, isBinary: boolean) => {
+      // Text (non-binary) messages are JSON control from the capture page: a captureError
+      // (getDisplayMedia failed → permission) or captureOk (feed is up). Everything else
+      // is a binary JPEG frame.
+      if (!isBinary) {
+        try {
+          const msg = JSON.parse(data.toString())
+          if (msg?.type === 'captureError') screenDiag.captureError = String(msg.error).slice(0, 300)
+          else if (msg?.type === 'captureOk') screenDiag.captureError = null
+        } catch { /* ignore */ }
+        return
+      }
       const frame = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)
       if (!frame.length) return
       lastIngestFrameAt = Date.now()
       ingestFrames++
+      screenDiag.captureError = null
+      screenDiag.frameKB = Math.round(frame.length / 1024)
+      _ingestFrameTimes.push(lastIngestFrameAt)
+      if (_ingestFrameTimes.length > 40) _ingestFrameTimes.shift()
       relay(frame)
       if (ingestFrames % 150 === 0) {
         debugBus.emit('model', 'screen_ingest_perf', { frames: ingestFrames, bytes: frame.length, clients: clients.size }, { severity: 'info' })
       }
     })
-    const done = () => { if (ingestProducer === ws) ingestProducer = null }
+    const done = () => { if (ingestProducer === ws) { ingestProducer = null; screenDiag.producerConnected = false } }
     ws.on('close', done)
     ws.on('error', done)
   })
@@ -5940,7 +5971,8 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
 
   function broadcastLoop() {
     // Stop if nobody is watching, or the real-time feed has taken over.
-    if (clients.size === 0 || ingestFlowing()) { loopRunning = false; return }
+    if (clients.size === 0 || ingestFlowing()) { loopRunning = false; screenDiag.fallbackActive = false; return }
+    screenDiag.fallbackActive = true
     const loopStart = Date.now()
     exec(captureCmd, { timeout: 5000 }, (err) => {
       if (clients.size === 0 || ingestFlowing()) { loopRunning = false; return }
@@ -5971,6 +6003,7 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   wss.on('connection', (ws: import('ws').WebSocket) => {
     const stat = { framesSent: 0, captureT0: Date.now() }
     clients.set(ws, stat)
+    screenDiag.viewers = clients.size
     debugBus.emit('model', 'screen_stream_start', { totalClients: clients.size }, { severity: 'info' })
     signalProducer()          // wake the Electron capture window
     ensureProducing()         // and start the fallback until real frames arrive
@@ -5978,6 +6011,7 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
 
     ws.on('close', () => {
       clients.delete(ws)
+      screenDiag.viewers = clients.size
       debugBus.emit('model', 'screen_stream_stop', { framesSent: stat.framesSent, totalClients: clients.size }, { severity: 'info' })
       if (clients.size === 0) {
         signalProducer()       // tell the capture window to stop capturing
@@ -6007,6 +6041,39 @@ function lanIpv4Addresses(): string[] {
   }
   return scored.sort((a, b) => a.rank - b.rank).map(s => s.ip)
 }
+
+// GET /api/screen-diag — one-glance answer to "why is the stream slow?". Open on the
+// Mac: curl -s http://localhost:3001/api/screen-diag. Tells us which capture path is live
+// (fast desktopCapturer vs slow screencapture fallback), the real fps, frame size, viewer
+// count, and any capture/permission error — so we measure instead of guess.
+app.get('/api/screen-diag', (_req: express.Request, res: express.Response) => {
+  const now = Date.now()
+  const recent = _ingestFrameTimes.filter(t => now - t < 1500)
+  const liveFps = recent.length >= 2
+    ? Math.round((recent.length - 1) * 1000 / (recent[recent.length - 1] - recent[0]))
+    : 0
+  const flowing = recent.length > 0 && (now - recent[recent.length - 1] < 1500)
+  const source = flowing
+    ? 'desktopCapturer (fast, real-time)'
+    : screenDiag.fallbackActive
+      ? 'screencapture fallback (slow ~2-3fps)'
+      : (screenDiag.viewers > 0 ? 'starting…' : 'idle — no viewer connected')
+  res.json({
+    source,
+    liveFps,
+    frameKB: screenDiag.frameKB,
+    viewers: screenDiag.viewers,
+    producerConnected: screenDiag.producerConnected,
+    captureError: screenDiag.captureError,
+    hint: screenDiag.captureError
+      ? 'The Electron capture window connected but getDisplayMedia failed — almost always macOS Screen-Recording permission. System Settings → Privacy & Security → Screen Recording → enable Crucible, then relaunch.'
+      : flowing
+        ? 'Fast path is live. If the phone still lags, it is connecting via the tunnel instead of the LAN — make sure the phone is on the same WiFi and using the ws://<lan-ip>:3001 URL.'
+        : !screenDiag.producerConnected
+          ? 'No capture producer connected. The Electron capture window is not running/reaching the server — is the app launched (not just the server)?'
+          : 'Producer connected but no frames yet — waiting for a viewer or for capture to start.',
+  })
+})
 
 // GET /api/remote-brain/status — check if Remote Brain tools are available
 app.get('/api/remote-brain/status', requireAuth, (req, res) => {
@@ -7155,13 +7222,21 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
       .then(function (s) {
         if (!wantCapture) { s.getTracks().forEach(function (t) { t.stop() }); capturing = false; return }
         stream = s;
+        try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'captureOk' })) } catch (e) {}
         video = document.createElement('video');
         video.muted = true; video.srcObject = stream;
         // If the user stops sharing from the OS, tear down cleanly.
         stream.getVideoTracks()[0].addEventListener('ended', stopCapture);
         video.play().then(loop).catch(loop);
       })
-      .catch(function (err) { log('getDisplayMedia failed: ' + err); capturing = false; });
+      .catch(function (err) {
+        log('getDisplayMedia failed: ' + err);
+        // Report the failure to the server so /api/screen-diag can show it — this is
+        // how "Screen-Recording permission denied" becomes visible instead of a silent
+        // drop to the slow screencapture fallback.
+        try { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'captureError', error: String(err && err.message || err) })) } catch (e) {}
+        capturing = false;
+      });
   }
 
   function stopCapture() {
