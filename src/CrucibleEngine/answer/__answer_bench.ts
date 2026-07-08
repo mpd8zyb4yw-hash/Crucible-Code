@@ -4,6 +4,7 @@
 //   npx tsx src/CrucibleEngine/answer/__answer_bench.ts
 import { classifyFacets } from './answerEngine'
 import { critiqueAnswer } from './verify'
+import { normalizeAnswer } from './selfConsistency'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -47,6 +48,18 @@ console.log('== critic pass: sanity signals ==')
   check('non-answer ack → nonanswer issue', critiqueAnswer('Sure, I can help with that!', 'How do I center a div?').issues.some(i => i.kind === 'nonanswer'))
   const good = critiqueAnswer('Paris is the capital of France.', 'What is the capital of France?')
   check('clean factual answer → no issues', good.issues.length === 0, JSON.stringify(good.issues))
+}
+
+console.log('== self-consistency: final-answer normalization (voting key) ==')
+{
+  // Times in any format must collapse to one comparable token so votes aggregate.
+  check('"7:00 PM" ≡ "7pm" ≡ "19:00"', normalizeAnswer('Answer: 7:00 PM') === normalizeAnswer('the answer is 7pm') && normalizeAnswer('7pm') === normalizeAnswer('at 19:00'),
+    `${normalizeAnswer('Answer: 7:00 PM')} / ${normalizeAnswer('7pm')} / ${normalizeAnswer('at 19:00')}`)
+  check('distinct times differ (7pm ≠ 5pm)', normalizeAnswer('Answer: 7:00 PM') !== normalizeAnswer('Answer: 5:00 PM'))
+  check('prefers explicit Answer: line over earlier numbers', normalizeAnswer('First the head start is 60 miles.\nAnswer: 26') === 'n:26',
+    String(normalizeAnswer('First the head start is 60 miles.\nAnswer: 26')))
+  check('currency/commas stripped ($1,200 → 1200)', normalizeAnswer('Answer: $1,200') === 'n:1200', String(normalizeAnswer('Answer: $1,200')))
+  check('empty / no answer → null', normalizeAnswer('   ') === null)
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)

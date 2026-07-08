@@ -3435,26 +3435,32 @@ app.post('/api/chat', async (req, res) => {
       // single-call offline brain below. With zero GGUF models downloaded, routeLocalModelQuery's
       // only fallback is a raw Track-S-FM call — weaker than solveNonCodeTurn's research-DAG /
       // FM-ReAct chain — so it is skipped entirely in that case, not just deprioritized.
-      let routed: Awaited<ReturnType<typeof routeLocalModelQuery>> = null
-      if (hasReadyLocalModels()) {
-        try {
-          routed = await routeLocalModelQuery('', message)
-        } catch (e: any) {
-          debugBus.emit('pipeline', 'local_ensemble_error', { query: message.slice(0, 60), error: String(e?.message ?? e) }, { severity: 'warn', requestId })
-        }
-      }
-      // Strict mode routes through the answer engine: it picks the reasoning depth (no more
-      // forced "1-3 sentences" that blurted wrong one-liners), delegates genuine external-fact
-      // asks to the retrieval/tool brain (solveNonCodeTurn), and CHECKS every draft with the
-      // deterministic critics + one repair round before it ships — or abstains. Default mode
-      // ('1') keeps the raw solveNonCodeTurn call so an OfflineEscalateError can still fall
-      // through to the external ensemble below.
       const histSlice = Array.isArray(history) ? history.slice(-6) : undefined
-      let answer = routed && routed.text.trim()
-        ? routed.text
-        : _offlineConvMode === 'strict'
-          ? (await answerQuery(message, { history: histSlice, emit: send })).text
+      // Strict mode (the production default for every non-quorum request) routes through the
+      // answer engine as the PRIMARY brain: it classifies the query, picks reasoning depth (no
+      // forced "1-3 sentences"), runs verified self-consistency on multi-step reasoning,
+      // delegates genuine external-fact asks to the retrieval/tool brain, and CHECKS every draft
+      // with deterministic critics before it ships — or abstains. The unverified local-GGUF
+      // ensemble is deliberately NOT consulted here: shipping its raw output is exactly the
+      // "trust the model" pattern the engine replaces (it produced the wrong train-catch-up
+      // answer). Default mode ('1') keeps the GGUF ensemble → solveNonCodeTurn chain so an
+      // OfflineEscalateError can still fall through to the external ensemble below.
+      let routed: Awaited<ReturnType<typeof routeLocalModelQuery>> = null
+      let answer: string
+      if (_offlineConvMode === 'strict') {
+        answer = (await answerQuery(message, { history: histSlice, emit: send })).text
+      } else {
+        if (hasReadyLocalModels()) {
+          try {
+            routed = await routeLocalModelQuery('', message)
+          } catch (e: any) {
+            debugBus.emit('pipeline', 'local_ensemble_error', { query: message.slice(0, 60), error: String(e?.message ?? e) }, { severity: 'warn', requestId })
+          }
+        }
+        answer = routed && routed.text.trim()
+          ? routed.text
           : await solveNonCodeTurn(message, undefined, histSlice)
+      }
       const latencyMs = Date.now() - t0o
       // Deterministic arithmetic guard (ZERO inference): the free-tier model does mental
       // math token-by-token and ships wrong products (47×53 → "2,591"). Before sending,

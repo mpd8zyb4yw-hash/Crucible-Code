@@ -16,6 +16,7 @@ import { checkFmAvailable, fmComplete, type ConvTurn } from '../agent/fmReact'
 import { solveNonCodeTurn } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
+import { solveByConsensus } from './selfConsistency'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -146,11 +147,24 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // fetch (a math word problem or a concept explanation is answered from reasoning, not search).
   const sys = systemPromptFor(facets, '')
   const usedRetrieval = facets.needsExternalFact
+  // Multi-step reasoning that the FM must derive (not retrieve) is where a single pass ships a
+  // confident wrong answer. Route it through verified self-consistency: the SYSTEM samples many
+  // derivations, oracle-corrects each, and takes the majority vote. Pure lookups/explanations/
+  // single-step asks stay a single depth-controlled call.
+  const useConsensus = !usedRetrieval && !facets.isCode && facets.needsMultiStep && facets.needsComputation
   let draft = ''
+  let consensusAgreement: number | null = null
   try {
     if (usedRetrieval) {
       emit?.({ type: 'thought', text: 'Researching with retrieval + tools…' })
       draft = (await solveNonCodeTurn(message, undefined, Array.isArray(history) ? history.slice(-6) : undefined)).trim()
+    } else if (useConsensus) {
+      const c = await solveByConsensus(message, sys, historyToMessages(history), emit)
+      draft = c.text.trim()
+      consensusAgreement = c.agreement
+      if (draft) {
+        emit?.({ type: 'verify', passed: c.agreement >= 0.5, report: `Self-consistency: ${Math.round(c.agreement * 100)}% of ${c.samples} independent derivations agreed on the answer.` })
+      }
     } else {
       const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
       draft = (await fmComplete(msgs)).trim()
@@ -205,6 +219,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
 
   debugBus.emit('pipeline', 'answered', {
     message: message.slice(0, 80), intent: facets.intent, usedRetrieval, corrections, repaired, len: text.length,
+    ...(consensusAgreement !== null ? { consensusAgreement: Number(consensusAgreement.toFixed(2)) } : {}),
   }, { severity: 'info' })
 
   return {

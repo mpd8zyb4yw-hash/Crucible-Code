@@ -62,11 +62,11 @@ const FM_GEN_RETRIES = Number(process.env.CRUCIBLE_FM_GEN_RETRIES ?? 2)
 /** Marks a retryable transient generation failure (as opposed to a permanent error). */
 class FmTransientError extends Error {}
 
-async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS): Promise<string> {
+async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS, temperature?: number): Promise<string> {
   let lastErr: any
   for (let attempt = 0; attempt <= FM_GEN_RETRIES; attempt++) {
     try {
-      return await callFmInner(system, messages, timeoutMs)
+      return await callFmInner(system, messages, timeoutMs, temperature)
     } catch (e: any) {
       lastErr = e
       // Transient on-device generation failure — brief backoff then retry a fresh session.
@@ -86,7 +86,7 @@ async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIME
   throw lastErr
 }
 
-async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number): Promise<string> {
+async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2): Promise<string> {
   const res = await fetch(`${FM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -94,7 +94,7 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
       model: 'apple-fm',
       messages: [{ role: 'system', content: system }, ...messages],
       max_tokens: 1536,
-      temperature: 0.2,
+      temperature,
     }),
     signal: AbortSignal.timeout(timeoutMs),
   })
@@ -558,13 +558,14 @@ export async function checkFmAvailable(): Promise<boolean> {
  */
 export async function fmComplete(
   messages: Array<{ role: string; content: string }>,
+  opts?: { temperature?: number },
 ): Promise<string> {
   try {
     const system = messages.find(m => m.role === 'system')?.content ??
       'You are Crucible, an expert AI assistant. Answer concisely and accurately.'
     const convo = messages.filter(m => m.role !== 'system') as FmMessage[]
     if (!convo.length) return ''
-    return await callFm(system, convo, FM_TIMEOUT_MS)
+    return await callFm(system, convo, FM_TIMEOUT_MS, opts?.temperature)
   } catch {
     return ''
   }
