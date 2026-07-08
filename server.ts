@@ -33,6 +33,7 @@ import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
+import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { isDesktopActionGoal } from './src/CrucibleEngine/ambiguity'
@@ -3341,44 +3342,27 @@ app.post('/api/chat', async (req, res) => {
       learnClassification(message, regexClassify(message))
       send({ type: 'contract', promptType: simplePT, requiredStructure: [], forbiddenAntipatterns: [] })
       send({ type: 'stage', stage: 1, status: 'start' })
-      let localReply = ''
-      if (localInferenceAvailable) {
-        const t0l = Date.now()
-        try {
-          localReply = (await callLocalModel('Answer concisely and accurately in 1-3 sentences.', message, 30000)).trim()
-        } catch { /* fall through to abstain */ }
-        // Deterministic arithmetic guard (ZERO inference), same as the conversational
-        // path below: simple quantitative asks ("3 shirts at $23, change from $100?")
-        // route HERE, and the free-tier FM ships wrong inline products/differences. Splice
-        // the oracle-computed value into any "EXPR = NUMBER" claim whose EXPR is cleanly
-        // evaluable and whose stated NUMBER is wrong. No external call, no fanout.
-        if (localReply) {
-          try {
-            const { text: fixed, corrections } = correctArithmeticCascade(localReply)
-            if (corrections.length) {
-              localReply = fixed
-              debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections, path: 'simple_strict' }, { severity: 'info', requestId })
-            }
-          } catch { /* non-blocking: ship the original answer */ }
-        }
-        if (localReply) {
-          send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: localReply, done: true })
-          send({ type: 'stage', stage: 1, status: 'done' })
-          send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: localReply, done: true, replace: false })
-          send({ type: 'stage', stage: 5, status: 'done' })
-          recordModelOutcome('local/apple-fm', true, Date.now() - t0l)
-          triggerImprovementPass()
-          summariseSession(message, localReply, process.cwd(), 'success', callModel).catch(() => {})
-          debugBus.emit('pipeline', 'triage_simple_strict_local', { query: message.slice(0, 60), latencyMs: Date.now() - t0l }, { severity: 'info', requestId })
-          if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
-          return
-        }
-      }
-      // Daemon down or empty reply — abstain honestly; strict never escalates externally.
-      const text = "I can't answer this reliably offline right now (the local model is unavailable), and strict mode disables external escalation."
-      send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text, done: true, replace: false })
+      // The SYSTEM is the brain, the FM is the messenger. Route through the answer engine:
+      // it classifies the query's facets, gathers grounding (retrieval / compute), drafts with
+      // a DEPTH-APPROPRIATE prompt (no blanket "1-3 sentences" throttle that forced wrong
+      // one-liners on reasoning asks), then CHECKS the draft with deterministic critics
+      // (arithmetic oracle + sanity) and does one bounded repair round — or ABSTAINS honestly.
+      // Strict-offline: local Apple FM only, retrieval via our own tooling, never an external
+      // model. Replaces the old bare callLocalModel('answer in 1-3 sentences') bypass.
+      const t0l = Date.now()
+      const result = await answerQuery(message, { history, emit: send })
+      send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: result.text, done: true })
+      send({ type: 'stage', stage: 1, status: 'done' })
+      send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: result.text, done: true, replace: false })
       send({ type: 'stage', stage: 5, status: 'done' })
-      debugBus.emit('pipeline', 'triage_simple_strict_abstain', { query: message.slice(0, 60) }, { severity: 'warn', requestId })
+      recordModelOutcome('local/apple-fm', !result.abstained, Date.now() - t0l)
+      if (!result.abstained) {
+        triggerImprovementPass()
+        summariseSession(message, result.text, process.cwd(), 'success', callModel).catch(() => {})
+      }
+      debugBus.emit('pipeline', result.abstained ? 'triage_simple_strict_abstain' : 'triage_simple_strict_local',
+        { query: message.slice(0, 60), latencyMs: Date.now() - t0l, intent: result.facets.intent, usedRetrieval: result.usedRetrieval, corrections: result.corrections, repaired: result.repaired },
+        { severity: result.abstained ? 'warn' : 'info', requestId })
       if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
       return
     }
@@ -3459,9 +3443,18 @@ app.post('/api/chat', async (req, res) => {
           debugBus.emit('pipeline', 'local_ensemble_error', { query: message.slice(0, 60), error: String(e?.message ?? e) }, { severity: 'warn', requestId })
         }
       }
+      // Strict mode routes through the answer engine: it picks the reasoning depth (no more
+      // forced "1-3 sentences" that blurted wrong one-liners), delegates genuine external-fact
+      // asks to the retrieval/tool brain (solveNonCodeTurn), and CHECKS every draft with the
+      // deterministic critics + one repair round before it ships — or abstains. Default mode
+      // ('1') keeps the raw solveNonCodeTurn call so an OfflineEscalateError can still fall
+      // through to the external ensemble below.
+      const histSlice = Array.isArray(history) ? history.slice(-6) : undefined
       let answer = routed && routed.text.trim()
         ? routed.text
-        : await solveNonCodeTurn(message, undefined, Array.isArray(history) ? history.slice(-6) : undefined)
+        : _offlineConvMode === 'strict'
+          ? (await answerQuery(message, { history: histSlice, emit: send })).text
+          : await solveNonCodeTurn(message, undefined, histSlice)
       const latencyMs = Date.now() - t0o
       // Deterministic arithmetic guard (ZERO inference): the free-tier model does mental
       // math token-by-token and ships wrong products (47×53 → "2,591"). Before sending,

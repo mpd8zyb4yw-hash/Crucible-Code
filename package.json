@@ -39,6 +39,7 @@
     "research:bench": "tsx src/CrucibleEngine/research/researchBenchmark.ts",
     "ambiguity:bench": "tsx src/CrucibleEngine/ambiguity-bench.ts",
     "stakes:bench": "tsx src/CrucibleEngine/agent/stakesRouter-bench.ts",
+    "answer:bench": "tsx src/CrucibleEngine/answer/__answer_bench.ts",
     "convo:coherence": "tsx __convo_coherence_bench.ts"
   },
   "build": {
