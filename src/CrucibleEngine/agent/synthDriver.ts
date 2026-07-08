@@ -98,7 +98,24 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   const isBackReference = /\b(it|its|it's|that|this|those|these|they|them|their|there|he|she|his|her|him|the one|the former|the latter|same)\b/i.test(goal) || /^\s*(and|but|what about|how about|ok|okay|so)\b/i.test(goal)
   const contextDependent = hasHistory && isBackReference
 
-  if (isResearchShaped && !contextDependent) {
+  // Code-generation / reasoning tasks must NOT enter the research DAG. A prompt like
+  // "…write a function to sort it by age, then tell me the time complexity, and give me a
+  // one-line version" trips isResearchShaped on the bare phrase "tell me", but there is no
+  // external fact to retrieve — the web DAG finds nothing verifiable, abstains at confidence
+  // 0, and (per the abstain-preservation branch below) returns that abstain as the FINAL
+  // answer, never reaching the FM tiers that answer it trivially. Detect generation/coding
+  // shape and skip the DAG entirely so these route straight to FM ReAct / FM direct.
+  // (Over-matching here only means "answer directly instead of web-retrieving" — the safe
+  // failure direction; the tight risk is a false-premise factoid that also mentions code,
+  // so the code signal requires a generation verb near a code noun, a code fence, or an
+  // explicit language + code-construct pairing rather than a bare keyword.)
+  const codeGenVerbNoun = /\b(write|create|build|implement|generate|refactor|debug|optimi[sz]e|fix|convert|rewrite|complete|port|translate)\b[^.?!]{0,60}\b(function|method|class|program|script|code|regex|query|algorithm|component|endpoint|api|module|snippet|loop|version|one-?liner)\b/i.test(goal)
+  const hasCodeFence = /```|\bdef\s+\w+\s*\(|\bclass\s+\w+|=>|\bfunction\s+\w+\s*\(|\bimport\s+\w+|\bconst\s+\w+\s*=/.test(goal)
+  const langMention = /\b(python|javascript|typescript|java|c\+\+|c#|rust|go(?:lang)?|ruby|php|swift|kotlin|bash|shell|sql|html|css|react|node)\b/i.test(goal)
+  const codeConstruct = /\b(function|method|class|code|script|program|lambda|closure|list|dict|array|tuple|regex|query|loop|sort|filter|parse|complexity|recursion|iterate)\b/i.test(goal)
+  const isCodeShaped = codeGenVerbNoun || hasCodeFence || (langMention && codeConstruct)
+
+  if (isResearchShaped && !contextDependent && !isCodeShaped) {
     let dagAnswer = ''
     let dagConfidence = 0
     // Conversational answers stay plain-sentence; only surface the
