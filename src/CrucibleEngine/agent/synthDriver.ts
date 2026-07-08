@@ -115,6 +115,16 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   const codeConstruct = /\b(function|method|class|code|script|program|lambda|closure|list|dict|array|tuple|regex|query|loop|sort|filter|parse|complexity|recursion|iterate)\b/i.test(goal)
   const isCodeShaped = codeGenVerbNoun || hasCodeFence || (langMention && codeConstruct)
 
+  // Premise-bearing questions presuppose a contestable state of affairs — "why is X
+  // <surprising property>", "why did X <happen>", "when did X <event>". For THESE, a DAG
+  // abstain (confidence 0) is a meaningful result: retrieval could not verify the embedded
+  // claim, and falling through to a bare FM call would parrot the (possibly false) premise.
+  // Non-premise research-shaped prompts ("compare X and Y", "explain the difference between
+  // A and B", "describe when to use each") assert no contestable premise — a DAG abstain
+  // there is just a retrieval gap, and the FM tiers below answer them fine. Only the
+  // premise-bearing subset should PRESERVE the abstain; everything else falls through.
+  const isPremiseBearing = /^\s*(why (is|are|was|were|do|does|did|can|could|would|will)|when (did|was|were|do|does|will|had|has)|how (did|does|do) [^?]*\b(only|never|always|impossible|fail|failed|cause[ds]?)\b)\b/i.test(goal)
+
   if (isResearchShaped && !contextDependent && !isCodeShaped) {
     let dagAnswer = ''
     let dagConfidence = 0
@@ -149,11 +159,21 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
       // with no awareness that retrieval already came back empty. A genuine DAG
       // error/failure instead emits `research_error` (or throws), leaving
       // dagAnswer === '', so it still falls through to the FM tiers below.
-      if (dagAnswer && dagConfidence === 0) {
+      if (dagAnswer && dagConfidence === 0 && isPremiseBearing) {
         debugBus.emit('agent', 'offline_research_abstain', {
           goal: goal.slice(0, 80), answerLen: dagAnswer.length,
         }, { severity: 'info' })
         return dagAnswer
+      }
+      // Non-premise research-shaped prompt whose DAG came back empty/abstained: this is a
+      // retrieval gap, not a verified refusal — fall through to the FM tiers rather than
+      // shipping "[Abstained] the research DAG could not verify..." for a question the FM
+      // can answer from parametric knowledge (e.g. "compare a linked list vs an array").
+      if (dagAnswer && dagConfidence === 0) {
+        debugBus.emit('agent', 'offline_research_abstain_fallthrough', {
+          goal: goal.slice(0, 80),
+        }, { severity: 'info' })
+        // fall through (do not return)
       }
     } catch (e: any) {
       debugBus.emit('agent', 'offline_research_dag_fail', {
