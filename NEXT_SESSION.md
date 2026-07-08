@@ -17,7 +17,47 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-07, cont. 51 — capability-gap enhancer pass: deterministic arithmetic guard broadened + wired into the previously-unguarded simple-triage path; committed the dangling ArtifactPreviewBar work)
+## CURRENT STATE (last updated 2026-07-08, cont. 53 — 583ab6e: fixed a live, damaging routing bug where multi-part CODING prompts abstained via the research DAG instead of being answered)
+
+**This session (branch crucible-northstar-sessions):**
+- **Live-probed the running backend with a plain multi-part coding prompt** (minted-JWT curl
+  per [[crucible-local-auth-testing]]): "I have a Python list of dicts... First write a function
+  to sort by age descending, then tell me the time complexity, and finally give me a one-line
+  lambda version." The backend returned `[Abstained] The research DAG could not verify a
+  confident answer...` — a clearly-codeable prompt refused outright. Exactly the real-world
+  failure the mission targets (contextual multi-part coding).
+- **Root cause:** `solveNonCodeTurn` (synthDriver.ts) treats ANY prompt containing "tell me" /
+  "explain" / "compare" as `isResearchShaped`, runs the web research DAG, which finds nothing
+  verifiable for a codegen ask, abstains at confidence 0 — and the abstain-preservation branch
+  (added to stop false-premise parroting) **returns that abstain as the FINAL answer**, never
+  reaching the FM ReAct / FM direct / local-GGUF tiers that answer it trivially.
+- **Fix (583ab6e):** added an `isCodeShaped` guard (generation verb adjacent to a code noun, a
+  code fence, or explicit language + code-construct pairing) and gated DAG entry on
+  `!isCodeShaped`. Over-matching only means "answer directly instead of web-retrieving" (safe
+  direction); factual false-premise questions with no code signal still reach the DAG.
+- **Live-verified after restart:** the same prompt now ships the correct 3-part answer (the
+  function + O(n log n)/Timsort explanation + the `sorted(..., key=lambda x: x['age'],
+  reverse=True)` one-liner), routed through the local open-source GGUF pool (phi-3.5-mini) —
+  i.e. the comprehensive free-model pipeline, no external paid model. Factual "Great Wall
+  visible from space" prompt confirmed still on the full research path (unaffected by the guard).
+
+**Known residual (next):**
+- **The research DAG's `isResearchShaped` gate is coarse in the other direction too.** It also
+  runs for reasoning/analysis prompts that have no retrievable external fact (e.g. "compare
+  these two of MY functions", "why is my algorithm slow") and can abstain there as well — the
+  code guard catches the coding subset but a general "no external fact to retrieve → don't
+  abstain, answer from FM" signal would close the class. Scope carefully (premise-verification
+  for genuine factual asks must stay intact).
+- **Uncommitted dangling diff left untouched:** `src/CrucibleEngine/masterpiece/corpus/embed.ts`
+  (modified) + `modelFetch.ts` (new, untracked) — someone's in-progress corpus/embedding work,
+  NOT part of this fix. Review/commit or discard next session; I deliberately did not sweep it
+  into 583ab6e.
+- **server.ts has ~10 pre-existing tsc errors** (import.meta module target, ChatCompletion
+  asyncIterator, apple-foundation-models provider-union mismatch at 3387/3684). Server runs via
+  tsx (no typecheck) so they're non-blocking, but they violate the "tsc clean on this branch"
+  norm — worth a cleanup pass. app tsc is clean.
+
+## SUPERSEDED STATE (cont. 51 — arithmetic guard broadened + wired into simple-triage path)
 
 **This session (branch crucible-northstar-sessions):**
 - **Live-probed the running backend across research/reasoning/quantitative asks** (minted-JWT
