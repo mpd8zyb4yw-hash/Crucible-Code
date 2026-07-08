@@ -11,31 +11,58 @@
 // score near zero. See the 2026-06-14 changelog.
 
 import type { Pipeline } from '@xenova/transformers'
+import { ensureModelFiles, modelCacheDir } from './modelFetch'
 
 let _pipeline: Pipeline | null = null
 let _pipelineLoading: Promise<Pipeline> | null = null
+
+// ONNX availability is NOT a permanent latch. A failed load (e.g. an interrupted
+// download) records a timestamp and is retried after a cooldown, so one dropped
+// connection can no longer degrade every embedding to the hash fallback until restart.
 let _onnxAvailable = true
+let _lastFailureAt = 0
+const RETRY_COOLDOWN_MS = 30_000
+
+function inCooldown(): boolean {
+  return _lastFailureAt > 0 && Date.now() - _lastFailureAt < RETRY_COOLDOWN_MS
+}
 
 async function loadPipeline(): Promise<Pipeline | null> {
-  if (!_onnxAvailable) return null
   if (_pipeline) return _pipeline
   if (_pipelineLoading) return _pipelineLoading
+  if (inCooldown()) return null
 
   _pipelineLoading = (async () => {
-    try {
-      const { pipeline } = await import('@xenova/transformers')
-      const p = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-        quantized: true,
-      }) as Pipeline
-      _pipeline = p
-      return p
-    } catch {
-      _onnxAvailable = false
-      return null as unknown as Pipeline
-    }
+    // Persist the transformers.js cache so a completed download survives restarts and is
+    // never re-fetched. Point it at our resumable cache dir, then pre-fetch the weights
+    // with byte-level Range resume — pipeline() then reads from cache with zero network.
+    const { pipeline, env } = await import('@xenova/transformers')
+    env.cacheDir = modelCacheDir()
+    env.allowRemoteModels = true
+    env.useFSCache = true
+
+    await ensureModelFiles()
+
+    const p = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+      quantized: true,
+    }) as Pipeline
+    _pipeline = p
+    _lastFailureAt = 0
+    _onnxAvailable = true
+    return p
   })()
 
-  return _pipelineLoading
+  try {
+    return await _pipelineLoading
+  } catch {
+    // Record the failure and back off, but self-heal: the completed portion of the
+    // download is preserved on disk and the next attempt (after cooldown) resumes it.
+    _lastFailureAt = Date.now()
+    _onnxAvailable = false
+    return null
+  } finally {
+    _pipelineLoading = null
+  }
 }
 
 // Returns a 384-dim Float32Array via ONNX, or a 20-dim hash Float32Array as fallback.
