@@ -26,6 +26,7 @@ import { debugBus } from '../debug/bus'
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { spawn } from 'child_process'
+import { enqueueFm } from './fmQueue'
 
 const FM_URL = process.env.LOCAL_INFERENCE_URL ?? 'http://127.0.0.1:11435'
 const DEFAULT_MAX_ROUNDS = 8
@@ -87,7 +88,10 @@ async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIME
 }
 
 async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2): Promise<string> {
-  const res = await fetch(`${FM_URL}/v1/chat/completions`, {
+  // Serialize the single-session daemon (fmQueue): interactive React/VGR/chat runs at HIGH
+  // priority so it jumps ahead of any waiting background (autoImprove) work. Prevents the
+  // concurrent-load GenerationError that starved live VGR searches.
+  const res = await enqueueFm(() => fetch(`${FM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -97,7 +101,7 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
       temperature,
     }),
     signal: AbortSignal.timeout(timeoutMs),
-  })
+  }), { priority: 'high', label: 'fmReact' })
   if (!res.ok) throw new Error(`FM HTTP ${res.status}`)
   const data = await res.json() as any
   // The daemon returns HTTP 200 with an `{error:{message}}` body on an on-device

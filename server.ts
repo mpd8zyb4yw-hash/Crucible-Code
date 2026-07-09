@@ -35,6 +35,7 @@ import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/Cruci
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
+import { enqueueFm, fmQueueStats } from './src/CrucibleEngine/agent/fmQueue'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { isDesktopActionGoal } from './src/CrucibleEngine/ambiguity'
@@ -1164,7 +1165,7 @@ const LOCAL_FM_TIMEOUT_MS = Number(
 // surface failures, use callModel({ provider: 'local', ... }) instead.
 async function callLocalModel(systemPrompt: string, userMessage: string, timeoutMs = LOCAL_FM_TIMEOUT_MS): Promise<string> {
   try {
-    const res = await fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
+    const res = await enqueueFm(() => fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1177,7 +1178,7 @@ async function callLocalModel(systemPrompt: string, userMessage: string, timeout
         temperature: 0.7,
       }),
       signal: AbortSignal.timeout(timeoutMs),
-    })
+    }), { priority: 'normal', label: 'callLocalModel' })
     if (!res.ok) return ''
     const data = await res.json()
     return data.choices?.[0]?.message?.content ?? ''
@@ -1211,12 +1212,12 @@ async function callLocalFromMessages(
   timeoutMs = LOCAL_FM_TIMEOUT_MS,
 ): Promise<string> {
   try {
-    const res = await fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
+    const res = await enqueueFm(() => fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'apple-fm', messages, max_tokens: 1024, temperature: 0.7 }),
       signal: AbortSignal.timeout(timeoutMs),
-    })
+    }), { priority: 'normal', label: 'callLocalFromMessages' })
     if (!res.ok) return ''
     const data = await res.json()
     return stripThink(data.choices?.[0]?.message?.content ?? '')
@@ -1567,12 +1568,12 @@ async function callModel(
   // the instrumented caller records the failure (callers that must not fail use
   // callLocalModel() instead, which returns '' silently).
   if (provider === 'local') {
-    const res = await fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
+    const res = await enqueueFm(() => fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: 'apple-fm', messages, max_tokens: 1024, temperature: 0.7 }),
       signal: callAbort,
-    })
+    }), { priority: 'normal', label: 'callModel-local' })
     if (!res.ok) throw new Error(`Local FM ${res.status}: ${await res.text()}`)
     const data = await res.json()
     return data.choices?.[0]?.message?.content || ''
@@ -6475,6 +6476,13 @@ app.get('/api/diag', (_req, res) => {
     lastRequest: diag.lastRequest,
   }))
 
+  // FM daemon serialization queue — depth>0 or a high maxDepth means the single-session
+  // model is contended (background work vs interactive); this is what starves live searches.
+  const fmQueue = block(() => ({
+    active: fmQueueStats.active, depth: fmQueueStats.depth, maxDepth: fmQueueStats.maxDepth,
+    enqueued: fmQueueStats.enqueued, completed: fmQueueStats.completed, failed: fmQueueStats.failed,
+  }))
+
   const models = block(() => {
     const registry = MODEL_REGISTRY.map(m => {
       const state = getCircuitState(m.id) ?? 'active'
@@ -6561,7 +6569,7 @@ app.get('/api/diag', (_req, res) => {
   res.json({
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
-    pipeline, models, substrate, masterpiece, anima, corpus, errors,
+    pipeline, fmQueue, models, substrate, masterpiece, anima, corpus, errors,
   })
 })
 

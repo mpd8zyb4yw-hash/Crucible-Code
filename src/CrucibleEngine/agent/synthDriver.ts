@@ -34,6 +34,7 @@
 import path from 'path'
 import vm from 'vm'
 import { synthesizeUniversal } from '../synth/universal'
+import { enqueueFm } from './fmQueue'
 import { buildEditSpec, parseSectionPatches, applyPatch, isSectionPatchOutput } from '../synth/editExtract'
 import { ensureIndex } from '../state/codebaseIndex'
 import { debugBus } from '../debug/bus'
@@ -51,7 +52,7 @@ const _RESEARCH_FM_TIMEOUT = Number(process.env.CRUCIBLE_RESEARCH_FM_TIMEOUT ?? 
 
 async function _callLocalFm(system: string, user: string, ms = _RESEARCH_FM_TIMEOUT): Promise<string> {
   try {
-    const res = await fetch(`${_LOCAL_FM_URL}/v1/chat/completions`, {
+    const res = await enqueueFm(() => fetch(`${_LOCAL_FM_URL}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -64,7 +65,7 @@ async function _callLocalFm(system: string, user: string, ms = _RESEARCH_FM_TIME
         temperature: 0.3,
       }),
       signal: AbortSignal.timeout(ms),
-    })
+    }), { priority: 'high', label: 'synthDriver' })
     if (!res.ok) return ''
     const data = await res.json() as any
     return (data.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()

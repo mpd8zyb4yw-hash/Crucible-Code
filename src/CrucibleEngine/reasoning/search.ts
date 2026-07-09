@@ -75,6 +75,15 @@ export async function search<T>(
     if (a.verdict.score > bestScore) { bestScore = a.verdict.score; stagnantRounds = 0 }
   }
 
+  // Transient infrastructure failures (the FM daemon returning empty/timeout under load) are
+  // NOT reasoning failures — they must not consume the model-call reasoning budget or trip the
+  // patience budget, or a few daemon hiccups abort a search that would otherwise converge.
+  // (This was the live-exhaustion cause: `initials` solves in 3 calls unloaded, but empty
+  // responses under contention burned the budget before a real proposal landed.) Tracked and
+  // retried separately, bounded so a genuinely-down daemon still terminates honestly.
+  let nullProposals = 0
+  const maxNulls = Math.max(6, o.maxModelCalls)
+
   // Round 0 has no beam to expand from — seed it from the bare spec.
   // Each subsequent round expands every beam member, threading its failure feedback.
   for (let round = 0; modelCalls < o.maxModelCalls; round++) {
@@ -100,8 +109,17 @@ export async function search<T>(
         } catch (e: any) {
           emit({ type: 'thought', text: `proposer error: ${String(e?.message ?? e)}` })
         }
+        if (!candidate) {
+          // Infra failure (empty/failed FM), NOT a reasoning failure: retry this slot without
+          // charging the reasoning budget or the patience budget. Bounded by maxNulls so a
+          // genuinely-down daemon still exits honestly instead of spinning forever.
+          nullProposals++
+          emit({ type: 'thought', text: `empty proposal (transient FM failure ${nullProposals}/${maxNulls}) — retrying, not counted against the reasoning budget` })
+          if (nullProposals >= maxNulls) return finish('exhausted', `on-device model unavailable — ${nullProposals} empty responses (daemon overloaded or down)`)
+          k--  // retry the same slot with a fresh call
+          continue
+        }
         modelCalls++
-        if (!candidate) continue
 
         // Anti-thrash: an identical proposal we've already verified is wasted budget.
         // Record the collision as signal (so the next diversify is stronger) and skip.
@@ -137,7 +155,10 @@ export async function search<T>(
       .sort((a, b) => b.verdict.score - a.verdict.score)
       .slice(0, o.beamWidth)
 
-    if (fresh.every(a => a.verdict.score <= bestScore) && round > 0) stagnantRounds++
+    // Stagnation only counts when the round actually produced verified attempts that failed
+    // to improve — an empty round (all retried infra failures / dedup skips) is not evidence
+    // the model is stuck reasoning, so it must not trip the patience budget.
+    if (fresh.length > 0 && fresh.every(a => a.verdict.score <= bestScore) && round > 0) stagnantRounds++
     if (stagnantRounds >= o.patience) {
       return finish('exhausted', `no improvement for ${o.patience} rounds — abstaining honestly`)
     }

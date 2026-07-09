@@ -25,6 +25,7 @@
 import fs from 'fs'
 import path from 'path'
 import { extractFeatures, type SynthFile } from './index'
+import { enqueueFm } from '../agent/fmQueue'
 import { deriveTests, derivePropertyTests } from './derive'
 import { deriveInvariantTests, deriveOptsTransformSmokeTest } from './deriveInvariant'
 import { distillHint } from './errorHints'
@@ -101,7 +102,8 @@ const LOCAL_SYNTH_TIMEOUT_MS = Number(
 
 /** Default proposer: the on-device Apple FM (offline). Injectable for tests / other backends. */
 async function defaultLocalSynth(system: string, user: string): Promise<string> {
-  const res = await fetch(`${LOCAL_FM_URL}/v1/chat/completions`, {
+  // Serialized through the FM queue (single-session daemon); synthesis is foreground → high.
+  const res = await enqueueFm(() => fetch(`${LOCAL_FM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -109,7 +111,7 @@ async function defaultLocalSynth(system: string, user: string): Promise<string> 
       max_tokens: 1200, temperature: 0.2,
     }),
     signal: AbortSignal.timeout(LOCAL_SYNTH_TIMEOUT_MS),
-  })
+  }), { priority: 'high', label: 'universalSynth' })
   if (!res.ok) throw new Error(`local FM ${res.status}`)
   const data: any = await res.json()
   return String(data.choices?.[0]?.message?.content ?? '')

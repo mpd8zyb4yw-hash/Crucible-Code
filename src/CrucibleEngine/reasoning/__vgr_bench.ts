@@ -98,6 +98,19 @@ async function run() {
     hopeless.status !== 'solved' && hopeless.solution === null,
     `status ${hopeless.status}`)
 
+  // Infra resilience: transient FM failures (null proposals) must NOT burn the reasoning
+  // budget or trip patience — the loop must still converge. This is the live-exhaustion fix.
+  let flakyCalls = 0
+  const flakyProposer = async (): Promise<Candidate<string> | null> => {
+    flakyCalls++
+    // Return null (simulating an overloaded-daemon empty response) on 4 of the first 5 calls.
+    if (flakyCalls <= 5 && flakyCalls % 2 === 1) return null
+    return { value: RIGHT, fingerprint: fp(RIGHT) }
+  }
+  const resilient = await solveCodeTask(TASK, { maxModelCalls: 4, beamWidth: 1, patience: 2 }, flakyProposer)
+  ok('transient FM failures (null proposals) do NOT abort the search — it still certifies',
+    resilient.status === 'solved', `status ${resilient.status} after ${flakyCalls} proposal call(s)`)
+
   // ── PART C — spec extraction + consensus filter (deterministic, injected completer) ──
   console.log('\nPART C — spec extraction: NL → checkable spec, with consensus guard')
 
