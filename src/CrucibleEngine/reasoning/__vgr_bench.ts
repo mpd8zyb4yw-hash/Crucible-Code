@@ -23,6 +23,7 @@ import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode } from './codeVerifier'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
+import { detectTargetPath, planEmit } from './emitPlan'
 import { extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import type { Candidate, ProposeContext } from './types'
 
@@ -253,6 +254,29 @@ async function run() {
     mkAttempt('export function square(n){ return n===5 ? 0 : n*n }'),     // fails only [5]
   ] as any)
   ok('recovery REFUSES when independent impls fail DIFFERENT cases (no agreement)', disagree === null)
+
+  // ── PART H — emit planning (where certified code goes: create vs append-to-existing) ─
+  console.log('\nPART H — emit planning (edit existing files, not just create)')
+  ok('detectTargetPath finds an explicit path', detectTargetPath('add initials to src/utils/strings.ts') === 'src/utils/strings.ts')
+  ok('detectTargetPath returns null for prose with no path', detectTargetPath('sort the array in ascending order') === null)
+
+  const GOOD_CODE = 'export function initials(name: string): string {\n  return name.split(" ").map(w => w[0]).join("")\n}'
+  const p1 = await planEmit('write initials(name)', 'initials', GOOD_CODE, null, null)
+  ok('no target path → new src/<entry>.ts', p1.mode === 'create' && p1.rel === 'src/initials.ts')
+
+  const p2 = await planEmit('add initials to src/strings.ts', 'initials', GOOD_CODE, null)
+  ok('target path, file absent → create at requested path', p2.mode === 'create' && p2.rel === 'src/strings.ts')
+
+  const existing = 'export function slug(s: string): string {\n  return s.toLowerCase()\n}\n'
+  const p3 = await planEmit('add initials to src/strings.ts', 'initials', GOOD_CODE, existing)
+  ok('target exists + appendable → APPEND (combined compiles, keeps existing fn)',
+    p3.mode === 'append' && p3.rel === 'src/strings.ts' && p3.content.includes('slug') && p3.content.includes('initials'), p3.detail)
+
+  const p4 = await planEmit('add initials to src/strings.ts', 'initials', GOOD_CODE, existing + '\nexport function initials(n){return n}')
+  ok('target already defines the fn → new file (no duplicate definition)', p4.mode === 'create' && p4.rel === 'src/initials.ts')
+
+  const p5 = await planEmit('add initials to src/strings.ts', 'initials', GOOD_CODE, 'export function slug(s){ this is not valid ts ((( ')
+  ok('appending would break compile → new file (existing left untouched)', p5.mode === 'create' && p5.rel === 'src/initials.ts')
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
