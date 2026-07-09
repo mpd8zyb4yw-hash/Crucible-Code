@@ -55,13 +55,21 @@ ground truth certifies; the loop explores/prunes/backtracks/abstains.
   TypeScript, which raw `node` can't run, so every candidate was failing at load regardless of correctness.
 - Docs re-pointed: `CLAUDE.md`, `ROADMAP.md` lead with the north star → DOCTRINE.md.
 
+**FM daemon contention — FIXED (cont.56, commit ee589fc).** Was the top blocker: live VGR exhausted on
+`initials` (solves in 3 calls unloaded) because the single-session daemon, hit concurrently by
+background work, returned empty responses that burned the search's patience budget. Two fixes:
+(a) `fmQueue.ts` — a concurrency-1 priority queue in front of the daemon (interactive=HIGH, pipeline/
+background=NORMAL); every daemon call site routed through it; `/api/diag.fmQueue` shows depth (observed
+maxDepth 11 under load). (b) `search.ts` — null/empty proposals are retried on a separate bounded budget,
+never charged to the reasoning/patience budget. Result: `initials` now certifies LIVE in 1 call. bench 12/12.
+
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
-1. **FM daemon contention.** Live VGR occasionally EXHAUSTS on a trivial task (`initials`) that solves
-   in 1 call in isolation — the background `autoImprove`/keepalive/corpus daemons hammer the single-session
-   FM concurrently and degrade its output (see fmReact.ts's FmTransientError note). Serialize/queue FM
-   access or pause background FM load during a live VGR search. This is now the top blocker to VGR
-   reliability on the live server (the logic is proven; the daemon starves it).
-2. **Flip `CRUCIBLE_VGR=1` on by default** once #1 is fixed, and reuse the deterministic
+1. **Latency is the new cost.** Serialized FM + multi-call searches make a live VGR request slow
+   (~20s/call × several, serialized behind background work). Options: reduce K/beam for interactive,
+   pause the background autoImprove pass while a foreground VGR search is active (the queue makes
+   foreground preempt on ORDERING but can't preempt an in-flight 600s background call — give background
+   local calls a shorter timeout, or gate autoImprove off during live requests).
+2. **Flip `CRUCIBLE_VGR=1` on by default** once latency is acceptable, and reuse the deterministic
    `synth/derive.ts extractSpecExamples` cases (already computed on the synth path) as VGR's acceptance
    set instead of re-deriving — better ground truth, one fewer model dependency.
 3. **Multi-file / no-example tasks:** VGR currently emits one `src/<entry>.ts` and needs ≥1 checkable
