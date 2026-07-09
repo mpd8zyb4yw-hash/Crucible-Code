@@ -25,6 +25,8 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { detectTargetPath, planEmit } from './emitPlan'
 import { extractCodeSpec, harvestExplicitExamples } from './specExtractor'
+import { detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
+import type { CandidateFile } from './codeVerifier'
 import type { Candidate, ProposeContext } from './types'
 
 let pass = 0, fail = 0
@@ -305,6 +307,42 @@ async function run() {
   ], { entry: 'double', cases: [{ args: [3], expected: 6, entry: 'double' }] })
   ok('wrong logic in an imported file → rejected with actual-vs-expected signal',
     !mfWrong.pass && mfWrong.signals[0].includes('got 0, expected 6'))
+
+  // ── PART J — multi-FILE loop (detection + spec + proposer→bundle→certify, no live model) ─
+  console.log('\nPART J — multi-file synthesis loop (deterministic proof)')
+
+  ok('isMultiFileRequest true for ≥2 named files',
+    isMultiFileRequest('Create src/math.ts exporting add and src/index.ts importing it'))
+  ok('isMultiFileRequest false for a one-file request',
+    !isMultiFileRequest('write sumEvens in src/sum.ts'))
+  ok('detectRequestedFiles finds both paths',
+    JSON.stringify(detectRequestedFiles('put it in src/math.ts and src/index.ts')) === '["src/math.ts","src/index.ts"]')
+
+  const parsed = parseFileSet('// file: src/math.ts\n```ts\nexport function add(a,b){return a+b}\n```\n// file: src/index.ts\n```ts\nimport { add } from "./math"\nexport function double(x){return add(x,x)}\n```')
+  ok('parseFileSet reads both files from a `// file:` + fenced-block response',
+    parsed.length === 2 && parsed[0].path === 'src/math.ts' && parsed[1].path === 'src/index.ts' && parsed[0].source.includes('add'))
+
+  // A request with USER-stated examples (gold) so spec extraction needs no live model.
+  const MF_TASK = 'Create src/math.ts exporting add and src/index.ts that imports add and exports double. Examples: add(2,5) === 7, double(3) === 6, double(0) === 0.'
+  const MF_WRONG: CandidateFile[] = [
+    { path: 'src/math.ts', source: 'export function add(a,b){return a-b}' },
+    { path: 'src/index.ts', source: "import { add } from './math'\nexport function double(x){return add(x,x)}" },
+  ]
+  const MF_RIGHT: CandidateFile[] = [
+    { path: 'src/math.ts', source: 'export function add(a,b){return a+b}' },
+    { path: 'src/index.ts', source: "import { add } from './math'\nexport function double(x){return add(x,x)}" },
+  ]
+  // Mock proposer: emits the WRONG file set until it has seen a failing verdict, then the RIGHT one.
+  const mfMock = async (ctx: ProposeContext<CandidateFile[]>): Promise<Candidate<CandidateFile[]>> => {
+    const set = ctx.history.some(a => !a.verdict.pass) ? MF_RIGHT : MF_WRONG
+    return { value: set, fingerprint: 'mf' + (ctx.history.some(a => !a.verdict.pass) ? 'R' : 'W') }
+  }
+  const mf = await solveMultiFileRequest(MF_TASK, { maxModelCalls: 6, beamWidth: 1 }, mfMock)
+  console.log(`    multi-file result: ${mf.status} in ${mf.search?.modelCalls} call(s) — ${mf.detail}`)
+  ok('multi-file loop CERTIFIES a correct file set through execution (wrong graph rejected, then fixed)',
+    mf.status === 'solved' && !!mf.files && mf.files.length === 2)
+  ok('multi-file loop needed ≥2 calls (first proposal was rejected by cross-file execution, not trusted)',
+    (mf.search?.modelCalls ?? 0) >= 2)
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()

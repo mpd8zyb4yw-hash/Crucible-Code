@@ -36,6 +36,7 @@ import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './s
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectTargetPath, planEmit } from './src/CrucibleEngine/reasoning/emitPlan'
+import { isMultiFileRequest, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
@@ -2968,9 +2969,53 @@ app.post('/api/chat', async (req, res) => {
         && (isCodeImplementationTask(message ?? '') || isCodeEditTask(message ?? ''))) {
       try {
         send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
-        const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2 })
-        debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls }, { severity: 'info' })
-        if (vgr.status === 'solved' && vgr.code && vgr.entry) {
+
+        // ── Multi-FILE branch — a request spanning ≥2 files / cross-file imports ──────
+        // The model proposes a FILE SET; the verifier bundles the import graph and runs the
+        // cases across it. On certification we write every file; if any target file already
+        // exists we do NOT overwrite (never corrupt real files) — we fall through instead.
+        if (isMultiFileRequest(message ?? '')) {
+          send({ type: 'thought', text: 'Multi-file request detected — proposing a file set, bundling the import graph, certifying by execution…' })
+          const mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2 })
+          debugBus.emit('agent', 'vgr_multifile_result', { status: mf.status, files: mf.files?.map(f => f.path), calls: mf.search?.modelCalls }, { severity: 'info' })
+          if (mf.status === 'solved' && mf.files?.length) {
+            const collisions = mf.files.filter(f => fs.existsSync(path.join(projectPath, f.path.replace(/^\.\//, ''))))
+            if (collisions.length) {
+              send({ type: 'thought', text: `VGR multi-file certified ${mf.files.length} file(s), but ${collisions.length} target path(s) already exist — not overwriting existing files; handing off.` })
+            } else {
+              const written: string[] = []
+              const rels: string[] = []
+              // Each file gets a UNIQUE event id so the UI maps every tool_result to its own
+              // tool_call card (the reducer keys results by id — reusing one id collapses them).
+              for (let i = 0; i < mf.files.length; i++) {
+                const f = mf.files[i]
+                const rel = f.path.replace(/^\.\//, '')
+                const abs = path.join(projectPath, rel)
+                fs.mkdirSync(path.dirname(abs), { recursive: true })
+                fs.writeFileSync(abs, f.source)
+                written.push(abs); rels.push(rel)
+                const id = `vgr_mf_${i}`
+                send({ type: 'tool_call', id, tool: 'write_file', args: { path: rel } })
+                send({ type: 'tool_result', id, tool: 'write_file', ok: true, output: `VGR-certified ${rel} — part of a ${mf.files.length}-file import graph (no external model)` })
+              }
+              onFileMutated(written)
+              send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified across ${rels.length} file(s) against ${mf.cases?.length ?? 0} case(s) in ${mf.search?.modelCalls ?? 0} model call(s) — cross-file imports bundled + run — ${mf.detail}` })
+              const answer = `Wrote and CERTIFIED a ${rels.length}-file module (${rels.join(', ')}) via verification-guided reasoning — the model proposed a file set, execution bundled the import graph and verified every case (${mf.cases?.length ?? 0} passed). Zero external model calls.`
+              send({ type: 'final', text: answer, meta: { vgrCertified: true, multiFile: true, files: rels, entry: mf.entry, modelCalls: mf.search?.modelCalls, confidence: 1 } })
+              patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+              if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+              historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr-multifile', models: ['crucible-vgr'], synthesis: answer })
+              handled = true
+            }
+          } else {
+            send({ type: 'thought', text: `VGR multi-file could not certify (${mf.status}) — trying single-file, then handing off.` })
+          }
+        }
+
+        // ── Single-FILE solve — when not multi-file, or the multi-file branch didn't ship. ──
+        const vgr = handled ? null : await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2 })
+        if (vgr) debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls }, { severity: 'info' })
+        if (vgr && vgr.status === 'solved' && vgr.code && vgr.entry) {
           // Decide WHERE it lands: an explicit target path in the request → that file (append if
           // it exists and the combined file still compiles), else a new src/<entry>.ts. Never
           // corrupts an existing file (planEmit downgrades to a new file if appending would break).
@@ -2984,8 +3029,8 @@ app.post('/api/chat', async (req, res) => {
           fs.mkdirSync(path.dirname(abs), { recursive: true })
           fs.writeFileSync(abs, plan.content)
           onFileMutated([abs])
-          send({ type: 'tool_call', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', args: { path: rel } })
-          send({ type: 'tool_result', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${vgr.cases?.length ?? 0} executed cases passed, no external model)` })
+          send({ type: 'tool_call', id: 'vgr_0', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', args: { path: rel } })
+          send({ type: 'tool_result', id: 'vgr_0', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${vgr.cases?.length ?? 0} executed cases passed, no external model)` })
           send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified against ${vgr.cases?.length ?? 0} case(s) in ${vgr.search?.modelCalls ?? 0} model call(s) — ${vgr.detail}` })
           const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — the model proposed, execution verified every case (${vgr.cases?.length ?? 0} passed). Zero external model calls.`
           send({ type: 'final', text: answer, meta: { vgrCertified: true, entry: vgr.entry, modelCalls: vgr.search?.modelCalls, confidence: 1 } })
@@ -2993,7 +3038,7 @@ app.post('/api/chat', async (req, res) => {
           if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
           historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr', models: ['crucible-vgr'], synthesis: answer })
           handled = true
-        } else {
+        } else if (vgr) {
           // Honest: could not CERTIFY a solution → do not ship a guess; fall through.
           send({ type: 'thought', text: `VGR could not certify a solution (${vgr.status}: ${vgr.detail}) — handing off without shipping unverified code.` })
         }
