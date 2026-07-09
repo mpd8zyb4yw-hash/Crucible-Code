@@ -20,7 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { checkFmAvailable } from '../agent/fmReact'
-import { verifyCode } from './codeVerifier'
+import { verifyCode, verifyMultiFileCode } from './codeVerifier'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { detectTargetPath, planEmit } from './emitPlan'
@@ -277,6 +277,34 @@ async function run() {
 
   const p5 = await planEmit('add initials to src/strings.ts', 'initials', GOOD_CODE, 'export function slug(s){ this is not valid ts ((( ')
   ok('appending would break compile → new file (existing left untouched)', p5.mode === 'create' && p5.rel === 'src/initials.ts')
+
+  // ── PART I — multi-file verification (cross-file import graph, execution-certified) ─
+  // The mission gap: real SWE spans multiple files with imports. The verifier BUNDLES the
+  // files (resolving cross-file edges) and executes cases against the whole graph, so a
+  // multi-file candidate is certified by execution — same contract as one-file VGR.
+  console.log('\nPART I — multi-file verification (cross-file imports)')
+  const mfGood = await verifyMultiFileCode([
+    { path: 'math.ts', source: 'export function add(a: number, b: number): number { return a + b }' },
+    { path: 'index.ts', source: "import { add } from './math'\nexport function double(x: number): number { return add(x, x) }" },
+  ], { entry: 'double', cases: [
+    { args: [3], expected: 6, entry: 'double' },
+    { args: [2, 5], expected: 7, entry: 'add' },
+  ] })
+  ok('correct cross-file graph → certified (case targets an import-consuming fn)', mfGood.pass, mfGood.signals[0])
+
+  const mfBadImport = await verifyMultiFileCode([
+    { path: 'math.ts', source: 'export function add(a: number, b: number): number { return a + b }' },
+    { path: 'index.ts', source: "import { add } from './nope'\nexport function double(x: number): number { return add(x, x) }" },
+  ], { entry: 'double', cases: [{ args: [3], expected: 6 }] })
+  ok('broken import path → rejected at bundle time (never ships an unbuildable graph)',
+    !mfBadImport.pass && mfBadImport.signals[0].includes('bundle/compile error'))
+
+  const mfWrong = await verifyMultiFileCode([
+    { path: 'math.ts', source: 'export function add(a: number, b: number): number { return a - b }' },
+    { path: 'index.ts', source: "import { add } from './math'\nexport function double(x: number): number { return add(x, x) }" },
+  ], { entry: 'double', cases: [{ args: [3], expected: 6, entry: 'double' }] })
+  ok('wrong logic in an imported file → rejected with actual-vs-expected signal',
+    !mfWrong.pass && mfWrong.signals[0].includes('got 0, expected 6'))
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
