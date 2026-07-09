@@ -15,8 +15,9 @@
 
 import { proposeCode } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
+import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
-import { type Completer, extractCodeSpec } from './specExtractor'
+import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 export interface SolveCodeInput {
@@ -80,17 +81,54 @@ export async function solveCodingRequest(
   nl: string,
   opts: SearchOpts & { specSamples?: number; specComplete?: Completer } = {},
 ): Promise<CodingRequestResult> {
+  // Ground-truth priority (DOCTRINE.md — trust order): 1) the USER's own worked examples
+  // (gold), 2) a GENERAL PROPERTY (sort=sorted-permutation, codec=roundtrip, …; true for all
+  // inputs, no model bias), 3) only as a last resort, model-invented consensus cases (which
+  // can be confidently wrong — the vote-bias trap). Properties are preferred over model cases
+  // precisely because a model-invented case with no user anchor can make a solvable spec
+  // unsatisfiable and force a false exhaust (observed live on sortAsc).
+
+  // 1) USER-stated examples — gold, trusted without consensus.
+  const harvested = harvestExplicitExamples(nl)
+  if (harvested.cases.length >= 1) {
+    const result = await solveCodeTask({ goal: nl, entry: harvested.entry, cases: harvested.cases }, opts)
+    return {
+      status: result.status,
+      code: result.status === 'solved' ? (result.solution?.value ?? null) : null,
+      entry: harvested.entry, cases: harvested.cases, search: result,
+      detail: `${harvested.cases.length} user example(s) (gold); ${result.detail}`,
+    }
+  }
+
+  // 2) A GENERAL PROPERTY, when a high-confidence family matches.
+  const prop = derivePropertySpec(nl)
+  if (prop) {
+    const spec: TaskSpec = {
+      goal: nl, domain: 'code',
+      acceptance: { entry: prop.entry, family: prop.family, assertions: prop.assertions } as unknown as Record<string, unknown>,
+    }
+    const result = await search(spec, proposeCode, verifyByProperty as Verifier<string>, opts)
+    return {
+      status: result.status,
+      code: result.status === 'solved' ? (result.solution?.value ?? null) : null,
+      entry: prop.entry, cases: null, search: result,
+      detail: `no example → ${prop.family} property spec (${prop.assertions.length} propert${prop.assertions.length === 1 ? 'y' : 'ies'}); ${result.detail}`,
+    }
+  }
+
+  // 3) Last resort — model-invented consensus cases (bias-prone; used only when nothing better).
   const extraction = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete })
-  if (!extraction.ok || !extraction.spec) {
-    return { status: 'abstained', code: null, entry: null, cases: null, search: null,
-      detail: `could not form a checkable spec: ${extraction.reason ?? 'unknown'}` }
+  if (extraction.ok && extraction.spec) {
+    const { entry, cases } = extraction.spec
+    const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
+    return {
+      status: result.status,
+      code: result.status === 'solved' ? (result.solution?.value ?? null) : null,
+      entry, cases, search: result,
+      detail: `${extraction.detail}; ${result.detail}`,
+    }
   }
-  const { entry, cases } = extraction.spec
-  const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
-  return {
-    status: result.status,
-    code: result.status === 'solved' ? (result.solution?.value ?? null) : null,
-    entry, cases, search: result,
-    detail: `${extraction.detail}; ${result.detail}`,
-  }
+
+  return { status: 'abstained', code: null, entry: null, cases: null, search: null,
+    detail: `could not form a checkable spec: ${extraction.reason ?? 'unknown'}` }
 }

@@ -22,6 +22,7 @@
 import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode } from './codeVerifier'
 import { solveCodeTask, solveCodingRequest } from './solve'
+import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { extractCodeSpec } from './specExtractor'
 import type { Candidate, ProposeContext } from './types'
 
@@ -159,6 +160,22 @@ async function run() {
   ok('solveCodingRequest wires extraction → search and never returns unverified code',
     e2e.status === 'solved' ? e2e.code !== null : e2e.code === null,
     `status ${e2e.status}`)
+
+  // ── PART D — property verification (no example → certify by general property) ──────
+  console.log('\nPART D — property-based certification (no worked example)')
+  const propSpecObj = derivePropertySpec('write a function sortAsc(arr) that sorts an array of numbers ascending')
+  ok('derives a sort property spec from a no-example request',
+    !!propSpecObj && propSpecObj.family === 'sort' && propSpecObj.assertions.length >= 3,
+    propSpecObj ? `${propSpecObj.assertions.length} properties` : 'none')
+  if (propSpecObj) {
+    const pspec = { goal: 'sortAsc', domain: 'code', acceptance: { entry: propSpecObj.entry, family: propSpecObj.family, assertions: propSpecObj.assertions } as any }
+    const right = await verifyByProperty({ value: 'export function sortAsc(a){return a.slice().sort((x,y)=>x-y)}', fingerprint: 'r' }, pspec as any)
+    ok('a correct sort SATISFIES every property', right.pass, right.signals[0])
+    // Wrong: returns input unsorted → the "sorted" property must fail (general truth, not a memorized case).
+    const wrong = await verifyByProperty({ value: 'export function sortAsc(a){return a}', fingerprint: 'w' }, pspec as any)
+    ok('an incorrect sort VIOLATES a property (certification is real, not memorized)',
+      !wrong.pass && wrong.signals.some(s => /sorted/.test(s)), wrong.signals[0])
+  }
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
