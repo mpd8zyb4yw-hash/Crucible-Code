@@ -100,11 +100,18 @@ Extractor tags each case by its target function (entries[] + tagged cases); veri
 case to its case.entry; proposer emits all required functions. Live: "add(a,b) and sub(a,b)…" → both
 certified in 1 call, each against its own cases. bench 27/27. (Still ONE file — multi-FILE is next.)
 
+**Emit planning DONE + wired (cont.56, 8d13b79 + a7316a9):** `emitPlan.ts` (pure, bench 34/34) decides
+where certified code lands — explicit target path → that file (APPEND if it exists and the combined file
+still compiles, else downgrade to a new file, never corrupting the existing one), else `src/<entry>.ts`.
+Wired into the server VGR block. **LIVE ROUTING FINDING:** "add X to <existing file>" phrasing routes to
+the LEGACY edit-file agent path BEFORE the VGR block, so emitPlan's append only fires for create-style
+requests today. Fixing = moving/co-gating VGR ahead of the edit path (routing change near the agent
+stack) — deferred to avoid colliding with the parallel cloud session.
+
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
-1. **Multi-FILE specs.** VGR now does multi-function-in-one-file but still emits a single file. Extend to
-   tasks spanning multiple files (an entry per file + cross-file imports; the semantic index + synth
-   repo-context model this). AND edit EXISTING files (append a certified function to a real repo file via
-   the applyLayer never-regress gate), not just create new ones. THE mission gap.
+1. **Route edit-phrased requests through VGR** (the finding above): let "add/modify X in <file>" reach the
+   VGR block (which already has emitPlan append). Then true **multi-FILE specs** — an entry per file +
+   cross-file imports (semantic index + synth repo-context model this). THE mission gap.
 2. **Widen property families further** (parsers, numeric min/max, stateful classes) — same recurrence/
    reference-derivation pattern in `SUPP_FAMILIES` (propertyVerifier.ts).
 3. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
