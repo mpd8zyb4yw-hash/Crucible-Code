@@ -54,15 +54,26 @@ export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidat
       }).join('\n\n')
     : ''
 
-  const diversifyNote = diversify
-    ? '\n\nYour recent attempts are stuck repeating the same idea. Take a FUNDAMENTALLY DIFFERENT approach — different algorithm or structure, not a cosmetic tweak.'
+  // SEMANTIC-THRASH detection (sample-efficiency): the model may make the SAME logical
+  // mistake with cosmetically-different code (e.g. `.join(/\s+/)` vs `.join(/\s+/)` again),
+  // so fingerprint-dedup never sees it. If the identical FAILURE SIGNAL recurs, the model is
+  // anchored — point it at the exact culprit instead of just repeating "try differently".
+  const sig = (a: typeof history[number]) => (a.verdict.signals[0] ?? '')
+  const lastSig = recent.length ? sig(recent[recent.length - 1]) : ''
+  const repeats = lastSig && recent.filter(a => sig(a) === lastSig).length >= 2
+  const stuckNote = repeats
+    ? `\n\n## YOU ARE STUCK — READ THIS CAREFULLY\nYour last attempts produced the EXACT SAME wrong result every time:\n"${lastSig}"\nThat means the bug is in a SPECIFIC line, not the overall approach. Look at HOW you build the return value — a wrong argument to a call (e.g. passing a regex where a string is required, an off-by-one, wrong separator, wrong comparison). Identify the one wrong expression and change THAT. Do not rewrite the whole thing the same way again.`
     : ''
 
-  const user = `## Task\n${spec.goal}${feedback}${diversifyNote}\n\nReturn the corrected full module now.`
+  const diversifyNote = (diversify || repeats)
+    ? '\n\nYour recent attempts are stuck. Change the SPECIFIC operation that produces the wrong output — different call, argument, or operator — not a cosmetic rename.'
+    : ''
+
+  const user = `## Task\n${spec.goal}${feedback}${stuckNote}${diversifyNote}\n\nReturn the corrected full module now.`
 
   const raw = await fmComplete(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
-    { temperature: diversify ? 0.7 : 0.3 },
+    { temperature: (diversify || repeats) ? 0.8 : 0.3 },
   )
   if (!raw || !raw.trim()) return null
   const code = extractCode(raw)

@@ -2940,13 +2940,16 @@ app.post('/api/chat', async (req, res) => {
     // VGR closes that hole: the model only PROPOSES; every candidate is EXECUTED against
     // an auto-extracted, consensus-guarded spec; only a case-passing implementation is
     // emitted, otherwise it abstains and falls through. This is the doctrine's live path.
-    // Gated behind CRUCIBLE_VGR=1 (default off) until proven on real traffic — additive,
-    // zero behavior change when the flag is unset. See src/CrucibleEngine/reasoning/.
-    if (!handled && !resumable && !iterCheckpoint && process.env.CRUCIBLE_VGR === '1'
+    // DEFAULT-ON (cont.56): this is the doctrine's live path, now proven reliable + latency-
+    // gated on real traffic. It runs ONLY after deterministic synth (L0/L1) misses, and only
+    // ships CERTIFIED code — on any abstain it falls through unchanged. So default-on strictly
+    // adds certification to tasks that would otherwise hand off unverified. Set CRUCIBLE_VGR=0
+    // to disable. See DOCTRINE.md + src/CrucibleEngine/reasoning/.
+    if (!handled && !resumable && !iterCheckpoint && process.env.CRUCIBLE_VGR !== '0'
         && isCodeImplementationTask(message ?? '')) {
       try {
         send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
-        const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2 })
+        const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2 })
         debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls }, { severity: 'info' })
         if (vgr.status === 'solved' && vgr.code && vgr.entry) {
           const rel = `src/${vgr.entry}.ts`
