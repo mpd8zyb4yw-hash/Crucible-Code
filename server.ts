@@ -2370,6 +2370,20 @@ function isCodeImplementationTask(message: string): boolean {
   return buildVerb && (hasCodePath || codeNoun)
 }
 
+// Edit-phrased code requests ("add a slugify function to src/strings.ts", "modify
+// utils.ts to …") don't match isCodeImplementationTask (which requires a build verb),
+// so historically they routed to the model-driven agent loop and shipped PLAUSIBLE-BUT-
+// UNVERIFIED edits. This detector lets them reach the VGR block instead, whose emitPlan
+// APPENDS certified code to the named file (recompile-checked, never corrupts it).
+// Conservative: an edit verb AND an explicit code path — the path is required anyway for
+// emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
+function isCodeEditTask(message: string): boolean {
+  const m = message ?? ''
+  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite)\b/i.test(m)
+  const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
+  return editVerb && hasCodePath
+}
+
 // Decide whether a goal warrants the multi-specialist meta-router (decompose →
 // specialist DAG → critic → strategist synthesis) instead of the planner/loop.
 // Gate conservatively: genuine multi-part work spanning ≥2 specialist archetypes
@@ -2745,7 +2759,11 @@ app.post('/api/chat', async (req, res) => {
     // daemon (on-device, zero API) to produce a tiny tool-call plan (1–3 steps).
     // FM output is validated against a strict schema; any ambiguity → null → LLM.
     // Skipped when resuming a persisted multi-step task or when FM is unavailable.
-    if (!resumable && !iterCheckpoint && localInferenceAvailable && isAgenticIntent) {
+    // Code-edit-shaped requests are deliberately excluded here: the FM planner would emit an
+    // unverified edit_file plan, whereas VGR (below) certifies the change by execution before
+    // appending it to the target file. Let them fall through to the VGR block.
+    if (!resumable && !iterCheckpoint && localInferenceAvailable && isAgenticIntent
+        && !isCodeEditTask(message ?? '')) {
       try {
         const fmPlan = await localFmPlan(message ?? '', (sys, usr) => callLocalModel(sys, usr, 12000))
         if (fmPlan) {
@@ -2947,7 +2965,7 @@ app.post('/api/chat', async (req, res) => {
     // adds certification to tasks that would otherwise hand off unverified. Set CRUCIBLE_VGR=0
     // to disable. See DOCTRINE.md + src/CrucibleEngine/reasoning/.
     if (!handled && !resumable && !iterCheckpoint && process.env.CRUCIBLE_VGR !== '0'
-        && isCodeImplementationTask(message ?? '')) {
+        && (isCodeImplementationTask(message ?? '') || isCodeEditTask(message ?? ''))) {
       try {
         send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
         const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2 })
