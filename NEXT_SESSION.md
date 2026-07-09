@@ -89,16 +89,19 @@ propertyVerifier.ts — factorial/fibonacci/gcd/isPrime/capitalize/sum/reverse/c
 RECURRENCE / REFERENCE-DERIVATION / INVOLUTION general properties, NOT in the shared synth path (zero
 prove:all risk), each tightly name-gated against the collision class. bench 21/21.
 
+**Model-consensus fallback ROBUSTIFIED (cont.56, 9fdbf55):** `recoverFromPoisonedCase` in solve.ts — when
+the model-consensus search exhausts, if ≥2 independent impls unanimously fail the SAME single case (pass
+all others), that CASE is dropped (cross-derivation agreement > one model-invented value) and a candidate
+is re-certified against the cleaned set. Strictly gated (≥3 cases, ≥2 agreeing, winner must pass the rest);
+never ships code failing a trusted case; no model calls. bench 24/24.
+
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
 1. **Multi-file specs.** VGR still emits ONE `src/<entry>.ts` for a single function. Extend to tasks that
    span files / multiple exports (the semantic index + synth repo-context already model this). Until then
    VGR only handles single-function requests; larger asks fall through to the legacy loop. THE mission gap.
-2. **Robustify the model-consensus fallback.** When no user example AND no property family matches, VGR
-   still uses model-invented cases as a hard gate — one poisoned case → false exhaust. Consider a
-   largest-consistent-subset acceptance or a stronger consensus threshold (still honest, less brittle).
-3. **Widen property families further** (parsers, numeric reductions, stateful classes) — same recurrence/
-   reference-derivation pattern in `SUPP_FAMILIES`.
-4. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
+2. **Widen property families further** (parsers, numeric min/max, stateful classes) — same recurrence/
+   reference-derivation pattern in `SUPP_FAMILIES` (propertyVerifier.ts).
+3. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
    correctors) and `synthDriver` regex gates; replace any that patch a *specific* answer with a
    *general property* verifier, or delete them. They are doctrine violations.
 4. **Sample-efficiency pass (continued):** semantic-thrash detection landed (96a5237); next add minimized
