@@ -77,13 +77,19 @@ can't preempt in-flight); mitigate by giving background local FM calls a short t
 LOCAL_FM_TIMEOUT_MS, up to 600s in strict). 41s is still slow for interactive — the multi-call serial
 search is inherently latency-heavy on one ANE session.
 
+**Spec sourcing — DONE (cont.56, 4860796 + 940bdb7):** VGR ground-truth priority is now explicit —
+(1) USER examples (gold; harvested via VGR regex UNIONED with synth/derive extractSpecExamples),
+(2) GENERAL PROPERTY (new `propertyVerifier.ts` reuses `derive.ts derivePropertyTests`: sort/codec/
+validator/transform families, executed in the codeVerifier harness), (3) model-consensus cases (last
+resort). No-example tasks now certify: `sortAsc` → 5 sort properties → `arr.sort((a,b)=>a-b)`. bench 15/15.
+
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
-1. **Reuse `synth/derive.ts extractSpecExamples`** cases (already computed on the synth path) as VGR's
-   acceptance set instead of re-deriving via the model — better ground truth, one fewer model dependency,
-   and removes VGR's dependence on the model to restate the user's own examples.
-2. **Multi-file / no-example tasks:** VGR currently emits one `src/<entry>.ts` and needs ≥1 checkable
-   case. Extend to property-based verifiers (reuse `derive.ts derivePropertyTests`) so tasks without a
-   literal example can still be certified, and to multi-file specs.
+1. **Multi-file specs.** VGR still emits ONE `src/<entry>.ts` for a single function. Extend to tasks that
+   span files / multiple exports (the semantic index + synth repo-context already model this). Until then
+   VGR only handles single-function requests; larger asks fall through to the legacy loop.
+2. **Widen property families.** `derivePropertyTests` covers sort/codec/validator/transform/comparator/
+   set-op/object-transform. Add families (parsers, numeric, stateful classes) so more no-example tasks
+   certify instead of falling to bias-prone model-consensus cases.
 3. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
    correctors) and `synthDriver` regex gates; replace any that patch a *specific* answer with a
    *general property* verifier, or delete them. They are doctrine violations.
