@@ -83,14 +83,21 @@ search is inherently latency-heavy on one ANE session.
 validator/transform families, executed in the codeVerifier harness), (3) model-consensus cases (last
 resort). No-example tasks now certify: `sortAsc` → 5 sort properties → `arr.sort((a,b)=>a-b)`. bench 15/15.
 
+**Property coverage widened (cont.56, 416a3d5):** a model-free triage showed nearly every common
+no-example task fell to the bias-prone model-consensus path. Added VGR-side `SUPP_FAMILIES` in
+propertyVerifier.ts (factorial/fibonacci/gcd/isPrime/capitalize) certified by RECURRENCE / REFERENCE-
+DERIVATION general properties — NOT in the shared synth path (zero prove:all risk). bench 18/18.
+
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
 1. **Multi-file specs.** VGR still emits ONE `src/<entry>.ts` for a single function. Extend to tasks that
    span files / multiple exports (the semantic index + synth repo-context already model this). Until then
-   VGR only handles single-function requests; larger asks fall through to the legacy loop.
-2. **Widen property families.** `derivePropertyTests` covers sort/codec/validator/transform/comparator/
-   set-op/object-transform. Add families (parsers, numeric, stateful classes) so more no-example tasks
-   certify instead of falling to bias-prone model-consensus cases.
-3. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
+   VGR only handles single-function requests; larger asks fall through to the legacy loop. THE mission gap.
+2. **Robustify the model-consensus fallback.** When no user example AND no property family matches, VGR
+   still uses model-invented cases as a hard gate — one poisoned case → false exhaust. Consider a
+   largest-consistent-subset acceptance or a stronger consensus threshold (still honest, less brittle).
+3. **Widen property families further** (parsers, numeric reductions, stateful classes) — same recurrence/
+   reference-derivation pattern in `SUPP_FAMILIES`.
+4. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
    correctors) and `synthDriver` regex gates; replace any that patch a *specific* answer with a
    *general property* verifier, or delete them. They are doctrine violations.
 4. **Sample-efficiency pass (continued):** semantic-thrash detection landed (96a5237); next add minimized
