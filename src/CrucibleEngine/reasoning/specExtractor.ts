@@ -18,6 +18,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { fmComplete } from '../agent/fmReact'
+import { extractSpecExamples } from '../synth/derive'
 import type { CodeCase } from './codeVerifier'
 
 /** Injectable completer so the consensus/parse logic is testable without a live model. */
@@ -76,20 +77,46 @@ function evalLiteral(src: string): unknown {
 
 export interface Harvested { entry: string; cases: CodeCase[] }
 
+/** Parse a call expression "entry(argSrc)" → [entry, argSrc]; null if not a call. */
+function parseCall(lhs: string): [string, string] | null {
+  const m = /^([A-Za-z_$][\w$]*)\s*\(([\s\S]*)\)\s*$/.exec(lhs.trim())
+  return m ? [m[1], m[2]] : null
+}
+
+/** Add one (name, argsSrc, rhs) example to the per-entry map, evaluating literals. */
+function addExample(byEntry: Map<string, CodeCase[]>, name: string, argsSrc: string, rhs: unknown | string): void {
+  let args: unknown[], expected: unknown
+  try {
+    args = evalLiteral('[' + argsSrc + ']') as unknown[]
+    expected = typeof rhs === 'string' ? evalLiteral(rhs) : rhs
+  } catch { return }  // not a clean literal pair → skip (never guess)
+  if (!Array.isArray(args)) return
+  const list = byEntry.get(name) ?? []
+  const key = JSON.stringify(args)
+  if (list.some(c => JSON.stringify(c.args) === key)) return  // dedup within an entry
+  list.push({ args, expected, name: `${name}(${argsSrc.trim()})` })
+  byEntry.set(name, list)
+}
+
+// Harvest USER-PROVIDED examples (trusted ground truth — the user stated them, not the model)
+// from TWO deterministic sources unioned: (1) this module's own permissive regex, and (2) the
+// synth path's `extractSpecExamples`, which uses extractFeatures to resolve the real exported
+// name (so it catches examples my regex would miss, and stays consistent with what the L0/L1
+// synth oracle keys on). Trusted → no model consensus required.
 export function harvestExplicitExamples(nl: string): Harvested {
   const byEntry = new Map<string, CodeCase[]>()
-  for (const m of nl.matchAll(EXAMPLE_RX)) {
-    const [, name, argsSrc, rhs] = m
-    let args: unknown[], expected: unknown
-    try {
-      args = evalLiteral('[' + argsSrc + ']') as unknown[]
-      expected = evalLiteral(rhs)
-    } catch { continue }  // not a clean literal pair → skip (never guess)
-    if (!Array.isArray(args)) continue
-    const list = byEntry.get(name) ?? []
-    list.push({ args, expected, name: `${name}(${argsSrc.trim()})` })
-    byEntry.set(name, list)
-  }
+
+  // Source 1 — permissive regex over the raw request text.
+  for (const m of nl.matchAll(EXAMPLE_RX)) addExample(byEntry, m[1], m[2], m[3])
+
+  // Source 2 — the synth path's example extractor (feature-aware entry resolution).
+  try {
+    for (const { lhs, rhs } of extractSpecExamples(nl)) {
+      const call = parseCall(lhs)
+      if (call) addExample(byEntry, call[0], call[1], rhs)
+    }
+  } catch { /* best-effort; regex source still applies */ }
+
   // Pick the entry with the most stated examples (the one the request is really about).
   let best: Harvested = { entry: '', cases: [] }
   for (const [entry, cases] of byEntry) if (cases.length > best.cases.length) best = { entry, cases }
