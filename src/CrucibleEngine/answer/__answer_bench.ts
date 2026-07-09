@@ -50,6 +50,37 @@ console.log('== critic pass: sanity signals ==')
   check('clean factual answer → no issues', good.issues.length === 0, JSON.stringify(good.issues))
 }
 
+console.log('== critic pass: clock arithmetic fixes in place ==')
+{
+  const a = critiqueAnswer('The first is 3 hours ahead, so 4:00 PM + 3 hours = 3:00 PM when it catches up.', 'x')
+  check('wrong clock result flagged', a.issues.some(i => i.kind === 'clock'), JSON.stringify(a.issues))
+  check('clock result corrected to 7:00 PM', /7:00 PM/.test(a.text), a.text)
+  check('clock issue carries fixedText (no re-prompt)', a.issues.filter(i => i.kind === 'clock').every(i => !!i.fixedText))
+
+  const b = critiqueAnswer('Adding 5 hours to 10:00 PM gives 3:00 AM.', 'x')
+  check('correct clock statement (wrap past midnight) → no clock issue', !b.issues.some(i => i.kind === 'clock'), JSON.stringify(b.issues))
+
+  const c = critiqueAnswer('Adding 5 hours to 10:00 PM gives 2:00 AM.', 'x')
+  check('wrong wrap-past-midnight flagged + fixed to 3:00 AM', c.issues.some(i => i.kind === 'clock') && /3:00 AM/.test(c.text), c.text)
+
+  // Subtraction, incl. the stray-negative form the FM emits ("= -4:00 PM").
+  const f = critiqueAnswer('9:00 PM - 4 hours = -4:00 PM, so I arrive then.', 'x')
+  check('subtraction w/ stray negative flagged', f.issues.some(i => i.kind === 'clock'), JSON.stringify(f.issues))
+  check('subtraction corrected to 5:00 PM (no stray minus on result)', /=\s*5:00 PM/.test(f.text), f.text)
+
+  const g = critiqueAnswer('Subtract 3 hours from 1:00 AM = 10:00 PM.', 'x')
+  check('subtract-from wrap-before-midnight correct → no clock issue', !g.issues.some(i => i.kind === 'clock'), JSON.stringify(g.issues))
+}
+
+console.log('== critic pass: self-contradiction triggers repair ==')
+{
+  const d = critiqueAnswer('The value always goes up and never goes up over the interval.', 'x')
+  check('contradiction flagged', d.issues.some(i => i.kind === 'contradiction'), JSON.stringify(d.issues))
+  check('contradiction has no fixedText (needs FM repair)', d.issues.filter(i => i.kind === 'contradiction').every(i => !i.fixedText))
+  const e = critiqueAnswer('The speed increases steadily throughout the trip.', 'x')
+  check('consistent answer → no contradiction issue', !e.issues.some(i => i.kind === 'contradiction'), JSON.stringify(e.issues))
+}
+
 console.log('== self-consistency: final-answer normalization (voting key) ==')
 {
   // Times in any format must collapse to one comparable token so votes aggregate.

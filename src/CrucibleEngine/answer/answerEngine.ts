@@ -234,6 +234,7 @@ function buildRepairDirective(issues: Issue[]): string {
       case 'empty': return 'Your reply was empty. Provide a complete answer to the question.'
       case 'truncated': return 'Your reply was cut off. Provide the complete answer, finishing every sentence.'
       case 'nonanswer': return 'You acknowledged the request but did not answer it. Give the actual answer now.'
+      case 'contradiction': return `Your reply contradicts itself (${i.detail}). Resolve the contradiction and give one consistent answer.`
       default: return i.detail
     }
   })
