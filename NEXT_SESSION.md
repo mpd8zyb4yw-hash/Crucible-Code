@@ -17,41 +17,46 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-08, cont. 54 — answer-engine overhaul: system-is-the-brain Q&A path, Stages 1+2 shipped & live-verified)
+## CURRENT STATE (last updated 2026-07-09, cont. 55 — answer-engine Stage 3: deterministic clock + contradiction critics; live capability boundary found)
 
 **This session (branch crucible-northstar-sessions):**
-- **User report reproduced live** (JWT curl): "even simple questions get horrific answers."
-  Multi-step reasoning wrong (train catch-up → 10pm/5pm; correct 7pm), explanations shallow (one
-  sentence for "explain a hash map"). Root cause: the FM was the brain — its raw, depth-throttled
-  output shipped unchecked (`layer1`===`synthesis` verbatim; strict simple path was a bare
-  `callLocalModel('answer in 1-3 sentences')`). Violated the MISSION (intelligence in the system).
-- **Also this session:** disabled TTS auto-speak in agent/Remote-Brain mode (666d4d6, App.tsx),
-  per user. And REVERTED a wrong attempt to let agent mode escalate to the free pool — the
-  constraint is offline-only / no-escalation / no-token-limits; the free pool is off-limits here.
-- **Built `src/CrucibleEngine/answer/`** — the verification-gated answer engine (see
-  [[crucible-answer-engine]] memory). answerQuery: classify facets → grounding → **depth-scaled**
-  prompt (no more 1-3 sentence throttle) → deterministic critics (arithmetic oracle + sanity) →
-  one bounded repair → else abstain. **Stage 2 self-consistency**: K=5 sampled derivations,
-  oracle-corrected, majority-voted (`normalizeAnswer`) — what made reasoning reliable without a
-  bigger model. Wired into server.ts strict simple + conversational paths; under strict
-  answerQuery is PRIMARY and the unverified GGUF ensemble is bypassed.
-- **Live-verified:** hash-map explanation shallow→thorough; train word problem → **7:00 PM**
-  correct; apples problem → 26; capital/17×23/population clean. answer:bench 18/18, prove:all
-  251/251, my files tsc-clean.
+- **Continued the answer-engine overhaul** (Stages 1+2 landed cont.54; see [[crucible-answer-engine]]).
+  Mission recap: the SYSTEM is the brain (classify → grounding → depth-scaled prompt → deterministic
+  critics → repair-or-abstain), the FM is only the messenger. Strict-offline, NO escalation.
+- **Stage 3 shipped (481539a)** — two new strict-offline critics in `answer/verify.ts`, both zero
+  model / zero network, wired into `critiqueAnswer`:
+  - `correctClockArithmetic`: evaluates "<time> ± N hours = <result>" and "adding/subtracting N
+    hours to/from <time>" on a 12h clock (wraps noon/midnight), splices the correct result — incl.
+    the stray-negative form the FM emits ("9:00 PM - 4 hours = -4:00 PM"). Fixes wrong final-step
+    clock math left in the shown work.
+  - consistency critic (reuses `verifyConsistency`): flags self-contradiction → one FM repair round.
+  - `__answer_bench.ts` 29/29; prove:all 251/251; my files tsc-clean.
+- **Live-verified after restart:** train → **7:00 PM** (clean derivation), capital → clean, clock
+  "= wrong time" inline steps corrected. TTS-in-agent-mode still off (666d4d6).
 
-**Known residual (next — Stages 3 & 4):**
-- **Stage 3 — retrieval-grounding entailment critic.** The research DAG still garbles some
-  trivial facts (routing "capital of France" to it produced a self-contradiction), so
-  `EXTERNAL_FACT` was NARROWED to volatile cues (latest/price/news/weather) as a stopgap.
-  Proper fix: extract loop.ts `groundFinal` into a shared helper + number/string entailment vs
-  retrieved evidence.
+**IMPORTANT capability boundary found live (this is the real next lever):**
+- The FM frequently derives times by **incremental counting** ("subtract 1 hour: 8:00 PM; subtract
+  another: 7:00 PM …") and ends **off-by-one** ("A store closes 9 PM, arrive 4h before" → voted
+  **6:00 PM**, correct 5:00 PM; movie "10 PM + 5h" sometimes → 1:00 AM). This form is unparseable by
+  phrasing correctors, and **self-consistency's majority vote can lock onto the wrong value** — the
+  engine then ships it `verified:true, corrections:0`. Phrasing correctors + voting are NOT enough.
+- **Robust fix (do next, mission-aligned "system computes it"):** a deterministic **elapsed-time
+  solver** for the clean templates ("starts/leaves at T … for/lasts N hours" → T+N; "N hours
+  before/after T" → T∓N). When it fires, it OVERRIDES the vote (or seeds it as an oracle vote), so
+  the FM's flawed counting can't win. Keep it conservative — only fire on unambiguous templates,
+  no-op otherwise (never corrupt a correct answer). Cross-sentence referents ("before *closing*")
+  stay out of scope / honest-uncertainty.
+
+**Other known residual (lower priority):**
 - **Stage 4 — kill the regex tangle.** Live-wire `capabilityRouter.classify` to replace
-  `classifyFacets`' heuristics + remove SIMPLE_RX/NEEDS_ENSEMBLE_RX/PREMISE_RX and synthDriver's
-  isResearchShaped/isComplex/isCodeShaped once the engine subsumes them.
-- **Temporal arithmetic** ("4:00 PM + 3 hours = 3:00 PM" intermediate slip) not oracle-checked —
-  final voted answer was right, but the shown work had a clock-math error. Add to verify.ts.
-- **Latency:** consensus is ~75s for K=5 sequential FM calls. Fine offline per no-token-limits,
-  but consider parallelizing if the daemon supports concurrent sessions.
+  `classifyFacets` heuristics + remove SIMPLE_RX/NEEDS_ENSEMBLE_RX/PREMISE_RX and synthDriver's
+  isResearchShaped/isComplex/isCodeShaped. Cleanup/robustness, not a quality win — regression risk.
+- **Stage 3 web-entailment DEFERRED (documented decision):** a live-web number/string entailment
+  critic was scoped but deferred — the DAG already grounds volatile facts, the simple-fact garble is
+  already fixed by Stages 1-2 (DAG bypassed for timeless facts), and a web-entailment gate risks
+  false abstains + needs live-web test infra. `EXTERNAL_FACT` stays narrowed to volatile cues.
+- **Latency:** consensus ~75s for K=5 sequential FM calls. Fine offline per no-token-limits; consider
+  parallelizing if the FM daemon supports concurrent sessions.
 
 ## SUPERSEDED STATE (cont. 53 — 583ab6e: fixed a live, damaging routing bug where multi-part CODING prompts abstained via the research DAG instead of being answered)
 
