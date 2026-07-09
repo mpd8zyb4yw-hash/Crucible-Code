@@ -35,6 +35,7 @@ import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/Cruci
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
+import { detectTargetPath, planEmit } from './src/CrucibleEngine/reasoning/emitPlan'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
@@ -2952,13 +2953,21 @@ app.post('/api/chat', async (req, res) => {
         const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2 })
         debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls }, { severity: 'info' })
         if (vgr.status === 'solved' && vgr.code && vgr.entry) {
-          const rel = `src/${vgr.entry}.ts`
+          // Decide WHERE it lands: an explicit target path in the request → that file (append if
+          // it exists and the combined file still compiles), else a new src/<entry>.ts. Never
+          // corrupts an existing file (planEmit downgrades to a new file if appending would break).
+          const targetPath = detectTargetPath(message ?? '')
+          const existingAbs = targetPath ? path.join(projectPath, targetPath) : null
+          let existing: string | null = null
+          try { if (existingAbs && fs.existsSync(existingAbs)) existing = fs.readFileSync(existingAbs, 'utf-8') } catch { /* treat as absent */ }
+          const plan = await planEmit(message ?? '', vgr.entry, vgr.code, existing, targetPath)
+          const rel = plan.rel
           const abs = path.join(projectPath, rel)
           fs.mkdirSync(path.dirname(abs), { recursive: true })
-          fs.writeFileSync(abs, vgr.code)
+          fs.writeFileSync(abs, plan.content)
           onFileMutated([abs])
-          send({ type: 'tool_call', tool: 'write_file', args: { path: rel } })
-          send({ type: 'tool_result', tool: 'write_file', ok: true, output: `VGR-certified ${rel} (${vgr.cases?.length ?? 0} executed cases passed, no external model)` })
+          send({ type: 'tool_call', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', args: { path: rel } })
+          send({ type: 'tool_result', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${vgr.cases?.length ?? 0} executed cases passed, no external model)` })
           send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified against ${vgr.cases?.length ?? 0} case(s) in ${vgr.search?.modelCalls ?? 0} model call(s) — ${vgr.detail}` })
           const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — the model proposed, execution verified every case (${vgr.cases?.length ?? 0} passed). Zero external model calls.`
           send({ type: 'final', text: answer, meta: { vgrCertified: true, entry: vgr.entry, modelCalls: vgr.search?.modelCalls, confidence: 1 } })
