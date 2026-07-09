@@ -205,10 +205,16 @@ export async function extractCodeSpec(
   }
 
   // Entry name: prefer the one the USER named in an explicit example; else majority vote.
+  // The entry MUST be a plain JS identifier — never a file path. On a multi-file request the
+  // model sometimes names the entry "src/mathx.ts", which yields a spec whose cases can never
+  // resolve to a function and burns the whole model-call budget on a guaranteed exhaust. Reject
+  // non-identifier entries up front so a poisoned spec abstains cheaply instead.
+  const IDENT = /^[A-Za-z_$][\w$]*$/
   const entryVotes = new Map<string, number>()
-  for (const p of proposals) if (p.entry) entryVotes.set(p.entry, (entryVotes.get(p.entry) ?? 0) + 1)
-  const entry = harvested.entry || ([...entryVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '')
-  if (!entry) return { ok: false, reason: 'could not name a concrete entry function (request too vague — abstaining)' }
+  for (const p of proposals) if (p.entry && IDENT.test(p.entry)) entryVotes.set(p.entry, (entryVotes.get(p.entry) ?? 0) + 1)
+  const harvestedEntry = IDENT.test(harvested.entry) ? harvested.entry : ''
+  const entry = harvestedEntry || ([...entryVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '')
+  if (!entry) return { ok: false, reason: 'could not name a concrete entry function (no valid identifier — request too vague or path-shaped; abstaining)' }
 
   // Consensus over cases: group every proposed case by argsKey; for each arg-set, the
   // expected value must AGREE across a majority of the proposals that included it.
