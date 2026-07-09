@@ -368,6 +368,16 @@ async function run() {
   ok('multi-file loop needed ≥2 calls (first proposal was rejected by cross-file execution, not trusted)',
     (mf.search?.modelCalls ?? 0) >= 2)
 
+  // Coverage gate: a candidate that COLLAPSES a ≥2-file request into one file is rejected
+  // (correct-but-not-asked), so the loop never "solves" by ignoring the requested layout.
+  const collapseMock = async (): Promise<Candidate<CandidateFile[]>> => ({
+    value: [{ path: 'src/math.ts', source: 'export function add(a,b){return a+b}\nexport function double(x){return add(x,x)}' }],
+    fingerprint: 'collapse',
+  })
+  const collapsed = await solveMultiFileRequest(MF_TASK, { maxModelCalls: 3, beamWidth: 1 }, collapseMock)
+  ok('collapsing a 2-file request into ONE file is rejected by the coverage gate (never falsely "solved")',
+    collapsed.status !== 'solved' && collapsed.files === null)
+
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
   console.log(`\nPART B — live on-device FM proposer ${fmUp ? '(daemon UP)' : '(SKIPPED — daemon down)'}`)

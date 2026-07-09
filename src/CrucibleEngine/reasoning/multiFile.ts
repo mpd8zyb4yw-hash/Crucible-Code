@@ -56,27 +56,51 @@ function fingerprintFiles(files: CandidateFile[]): string {
   return `m${(h >>> 0).toString(36)}`
 }
 
+const PATH_SRC = String.raw`((?:\.\.?\/)?(?:[\w.-]+\/)*[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs))`
+// A file marker that is a COMMENT whose content is (optionally "file:" and) just a path — e.g.
+// `// file: src/math.ts`, `# src/math.ts`. Deliberately does NOT match a real code line like
+// `import { add } from './calc'` (that starts with `import`, not a comment path-only line).
+const MARKER_LINE = new RegExp(String.raw`^\s*(?://+|#)\s*(?:file\s*:)?\s*${PATH_SRC}\s*$`, 'i')
+const PATH_ANY = new RegExp(PATH_SRC)
+
 /**
- * Parse a model response into a FILE SET. Accepts two authoring styles (union of both):
- *   1) a path on the fence info line:            ```ts src/math.ts  ↵  <code>  ↵  ```
- *   2) a path on the line(s) just before a fence: // file: src/math.ts  ↵  ```  ↵ <code> ↵ ```
+ * Parse a model response into a FILE SET. A file's path is resolved from whichever of these the
+ * model used (small models place the marker inconsistently, so accept ALL three):
+ *   1) the fence info line:                 ```ts src/math.ts ↵ <code> ↵ ```
+ *   2) the FIRST LINE INSIDE the block:     ``` ↵ // file: src/math.ts ↵ <code> ↵ ```  (marker stripped)
+ *   3) a line just BEFORE the fence:        // file: src/math.ts ↵ ``` ↵ <code> ↵ ```
  * Later blocks win on a duplicate path (the model's final revision of that file).
  */
 export function parseFileSet(raw: string): CandidateFile[] {
   const byPath = new Map<string, string>()
-  const PATH = String.raw`((?:\.\.?\/)?(?:[\w.-]+\/)*[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs))`
+  const fenceRx = /```([^\n]*)\n([\s\S]*?)```/g
+  for (let m; (m = fenceRx.exec(raw)); ) {
+    const info = m[1]
+    let body = m[2]
+    let p: string | undefined
 
-  // Style 1 — path in the fence info string.
-  const infoRx = new RegExp(String.raw`\`\`\`[a-zA-Z]*[ \t]+${PATH}[ \t]*\n([\s\S]*?)\`\`\``, 'g')
-  for (let m; (m = infoRx.exec(raw)); ) byPath.set(m[1].replace(/^\.\//, ''), m[2].trim())
+    // 1) path in the fence info string (```ts src/math.ts)
+    const infoMatch = info.match(PATH_ANY)
+    if (infoMatch) p = infoMatch[1]
 
-  // Style 2 — path on a line immediately preceding the opening fence.
-  const preRx = new RegExp(String.raw`(?:^|\n)[^\n]*?${PATH}[^\n]*\n\`\`\`[a-zA-Z]*\n([\s\S]*?)\`\`\``, 'g')
-  for (let m; (m = preRx.exec(raw)); ) {
-    const p = m[1].replace(/^\.\//, '')
-    if (!byPath.has(p)) byPath.set(p, m[2].trim())  // don't clobber a Style-1 capture of the same file
+    // 2) first line inside the block is a `// file: <path>` marker → use it, then strip the line
+    if (!p) {
+      const nl = body.indexOf('\n')
+      const firstLine = nl >= 0 ? body.slice(0, nl) : body
+      const mk = firstLine.match(MARKER_LINE)
+      if (mk) { p = mk[1]; body = nl >= 0 ? body.slice(nl + 1) : '' }
+    }
+
+    // 3) a marker on the line(s) immediately preceding the opening fence
+    if (!p) {
+      const preceding = raw.slice(Math.max(0, m.index - 120), m.index)
+      const preLine = preceding.split('\n').reverse().find(l => l.trim())
+      const pm = preLine?.match(PATH_ANY)
+      if (pm) p = pm[1]
+    }
+
+    if (p) byPath.set(p.replace(/^\.\//, ''), body.trim())
   }
-
   return [...byPath].map(([path, source]) => ({ path, source })).filter(f => f.source.length > 0)
 }
 
@@ -102,8 +126,24 @@ export function multiFileProposer(requestedFiles: string[]): Proposer<CandidateF
       'output will be BUNDLED and EXECUTED against hidden test cases immediately. Return a correct,',
       'multi-file ES-module implementation and nothing else — no prose.',
       '',
-      'Emit EACH file as a line `// file: <path>` on its own, immediately followed by a fenced code',
-      'block with that file\'s FULL contents. Emit one block per file.',
+      'Emit EACH file as its own fenced code block whose FIRST LINE is `// file: <path>`, followed',
+      'by that file\'s FULL contents. Emit one block per file.',
+      '',
+      'CRITICAL import rule: a function is defined in EXACTLY ONE file. Any OTHER file that uses it',
+      'must `import { fn } from \'./thatFile\'` (relative path, NO extension). Never use a function',
+      'a file has not defined or imported. Never re-declare the same function in two files.',
+      '',
+      '### Example of the exact required format (a DIFFERENT task — do not copy its logic):',
+      '```',
+      '// file: src/greet.ts',
+      'export function greet(name) { return "hi " + name }',
+      '```',
+      '```',
+      '// file: src/main.ts',
+      "import { greet } from './greet'",
+      'export function welcome(name) { return greet(name) + "!" }',
+      '```',
+      '(`main.ts` imports `greet` from `./greet` because `greet` is defined in greet.ts.)',
       '',
       layout,
       `The module graph must export these function(s): ${entries.map(e => '`' + e + '`').join(', ')} — each must be defined and correct; they are tested together across the files.`,
@@ -132,9 +172,28 @@ export function multiFileProposer(requestedFiles: string[]): Proposer<CandidateF
   }
 }
 
-/** Verifier<CandidateFile[]>: bundle the graph and execute the acceptance cases against it. */
-const multiFileVerifier: Verifier<CandidateFile[]> = (cand, spec) =>
-  verifyMultiFileCode(cand.value, spec.acceptance as unknown as CodeAcceptance)
+/**
+ * Verifier<CandidateFile[]>: first a STRUCTURAL gate — when the request named ≥2 files, the
+ * candidate must actually emit all of them as separate files (a weak model likes to collapse
+ * everything into one; that's correct-but-not-what-was-asked, so it's rejected with a pointed
+ * signal that pushes the next proposal to split). Then the behavioral gate: bundle the import
+ * graph and execute the acceptance cases. Both are deterministic — no model.
+ */
+const multiFileVerifier: Verifier<CandidateFile[]> = (cand, spec) => {
+  const acc = spec.acceptance as unknown as CodeAcceptance & { files?: string[] }
+  const requested = (acc.files ?? []).map(f => f.replace(/^\.\//, ''))
+  if (requested.length >= 2) {
+    const have = new Set(cand.value.map(f => f.path.replace(/^\.\//, '')))
+    const missing = requested.filter(r => !have.has(r))
+    if (missing.length) {
+      return {
+        pass: false, score: -100,
+        signals: [`must emit ALL ${requested.length} requested files as SEPARATE \`// file:\` blocks — missing: ${missing.join(', ')}. Split the functions across the files and import across them by relative path; do not collapse everything into one file.`],
+      }
+    }
+  }
+  return verifyMultiFileCode(cand.value, acc)
+}
 
 export interface MultiFileResult {
   /** 'solved' → certified file set in .files; else no trustworthy spec/solution. */
