@@ -171,13 +171,29 @@ export function buildIntelligenceHandlers(projectDir: string): Partial<Record<st
     },
 
     confidence_calibration: async () => {
-      // Report confidence calibration trends from pipeline history
+      // Report confidence calibration trends from pipeline history.
+      // History moved from a single `.crucible/history.json` to PER-USER `history-<id>.json`
+      // (+ `history-default.json`); the server renames the legacy blob → history-default.json
+      // on startup. Reading the old path alone (the pre-fix behavior) therefore ALWAYS threw
+      // once migration ran, silently killing this report. Aggregate every per-user history
+      // file, sort by timestamp, and fall back to the legacy blob for un-migrated installs.
       try {
-        const histFile = path.join(projectDir, '.crucible', 'history.json')
-        const history: any[] = JSON.parse(fs.readFileSync(histFile, 'utf8'))
-        const recent = history.slice(-100)
+        const dir = path.join(projectDir, '.crucible')
+        let files: string[] = []
+        try { files = fs.readdirSync(dir).filter(f => /^history-.*\.json$/.test(f)) } catch { /* no .crucible dir yet */ }
+        if (!files.length && fs.existsSync(path.join(dir, 'history.json'))) files = ['history.json']
+        const all: any[] = []
+        for (const f of files) {
+          try {
+            const arr = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))
+            if (Array.isArray(arr)) all.push(...arr)
+          } catch { /* skip an unreadable/corrupt file, keep the rest */ }
+        }
+        if (!all.length) { daemonLog(projectDir, 'confidence_calibration: no pipeline history yet'); return }
+        all.sort((a: any, b: any) => (a.ts ?? 0) - (b.ts ?? 0))
+        const recent = all.slice(-100)
         const avgScore = recent.reduce((s: number, h: any) => s + (h.compositeScore ?? 0.5), 0) / Math.max(recent.length, 1)
-        daemonLog(projectDir, `confidence_calibration: avg composite score ${avgScore.toFixed(3)} over last ${recent.length} rounds`)
+        daemonLog(projectDir, `confidence_calibration: avg composite score ${avgScore.toFixed(3)} over last ${recent.length} rounds (${files.length} history file(s))`)
         debugBus.emit('system', 'confidence_calibration_report', {
           avgScore,
           roundCount: recent.length,
