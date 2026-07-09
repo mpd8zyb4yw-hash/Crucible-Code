@@ -189,6 +189,15 @@ async function run() {
     ['write isPrime(n)', 'isPrime',
       'export function isPrime(n){if(n<2)return false;for(let d=2;d*d<=n;d++)if(n%d===0)return false;return true}',
       'export function isPrime(n){return n%2!==0}'],
+    ['write sumArray(nums) returning the sum', 'sum',
+      'export function sumArray(a){return a.reduce((x,y)=>x+y,0)}',
+      'export function sumArray(a){return a.length}'],
+    ['write reverseString(s)', 'reverse',
+      'export function reverseString(s){return s.split("").reverse().join("")}',
+      'export function reverseString(s){return s}'],
+    ['write chunk(arr,size) splitting an array into chunks', 'chunk',
+      'export function chunk(a,n){const r=[];for(let i=0;i<a.length;i+=n)r.push(a.slice(i,i+n));return r}',
+      'export function chunk(a,n){return [a]}'],
   ]
   for (const [nl, fam, good, bad] of supCases) {
     const s = derivePropertySpec(nl)

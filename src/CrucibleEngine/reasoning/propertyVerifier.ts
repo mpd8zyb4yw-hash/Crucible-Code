@@ -112,6 +112,37 @@ const SUPP_FAMILIES: SuppFamily[] = [
       `prop('${E} empty→empty', ${E}('') === '')`,
     ],
   },
+  {
+    // Numeric reduction. Tight name gate — 'sum'/'summarize'/'summary' collision class is
+    // exactly why this only matches the bare reduction names, never a substring.
+    family: 'sum', test: e => /^(sum|sumArray|total|addAll|sumOf|arraySum)$/i.test(e),
+    assertions: E => [
+      `prop('${E}([])=0', ${E}([]) === 0)`,
+      `prop('${E}([x])=x', ${E}([7]) === 7)`,
+      `prop('${E} matches reduce', (() => { const xs=[3,-1,4,1,5,9,2]; return ${E}(xs) === xs.reduce((a,b)=>a+b,0) })())`,
+      `prop('${E} additive over concat', ${E}([1,2,3,4,5]) === ${E}([1,2]) + ${E}([3,4,5]))`,
+    ],
+  },
+  {
+    // Involution: reversing twice is identity, length is preserved. Works for string OR array
+    // (JSON.stringify compares both). Name-gated to the bare reverse forms.
+    family: 'reverse', test: e => /^(reverse|reverseString|reverseArray|reverseArr|reverseStr|rev)$/i.test(e),
+    assertions: E => [
+      `prop('${E} involution (twice = identity)', (() => { const x='abcde'; return ${E}(${E}(x)) === x })() || (() => { const x=[1,2,3,4]; return JSON.stringify(${E}(${E}(x))) === JSON.stringify(x) })())`,
+      `prop('${E} length preserved', (() => { const r=${E}('abcde'); return (r && r.length === 5) })() || (() => { const r=${E}([1,2,3]); return r.length === 3 })())`,
+      `prop('${E} first↔last', (() => { const r=${E}('abc'); return r[0]==='c' && r[2]==='a' })() || (() => { const r=${E}([1,2,3]); return r[0]===3 && r[2]===1 })())`,
+    ],
+  },
+  {
+    // chunk(arr, size): flattening the chunks reconstructs the input; every chunk ≤ size.
+    family: 'chunk', test: e => /^(chunk|chunkArray|partition|batch|splitEvery)$/i.test(e),
+    assertions: E => [
+      `prop('${E} flattens back to input', JSON.stringify(${E}([1,2,3,4,5], 2).flat()) === JSON.stringify([1,2,3,4,5]))`,
+      `prop('${E} respects size', ${E}([1,2,3,4,5], 2).every(c => c.length <= 2 && c.length >= 1))`,
+      `prop('${E} empty→empty', ${E}([], 3).length === 0)`,
+      `prop('${E} exact-multiple count', ${E}([1,2,3,4], 2).length === 2)`,
+    ],
+  },
 ]
 
 /** Best-effort entry-name extraction for supplemental gating (extractFeatures, else first call). */
