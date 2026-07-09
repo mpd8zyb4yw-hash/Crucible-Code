@@ -83,10 +83,11 @@ search is inherently latency-heavy on one ANE session.
 validator/transform families, executed in the codeVerifier harness), (3) model-consensus cases (last
 resort). No-example tasks now certify: `sortAsc` → 5 sort properties → `arr.sort((a,b)=>a-b)`. bench 15/15.
 
-**Property coverage widened (cont.56, 416a3d5):** a model-free triage showed nearly every common
-no-example task fell to the bias-prone model-consensus path. Added VGR-side `SUPP_FAMILIES` in
-propertyVerifier.ts (factorial/fibonacci/gcd/isPrime/capitalize) certified by RECURRENCE / REFERENCE-
-DERIVATION general properties — NOT in the shared synth path (zero prove:all risk). bench 18/18.
+**Property coverage widened (cont.56, 416a3d5 + e129726):** a model-free triage showed nearly every
+common no-example task fell to the bias-prone model-consensus path. Added VGR-side `SUPP_FAMILIES` in
+propertyVerifier.ts — factorial/fibonacci/gcd/isPrime/capitalize/sum/reverse/chunk — certified by
+RECURRENCE / REFERENCE-DERIVATION / INVOLUTION general properties, NOT in the shared synth path (zero
+prove:all risk), each tightly name-gated against the collision class. bench 21/21.
 
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
 1. **Multi-file specs.** VGR still emits ONE `src/<entry>.ts` for a single function. Extend to tasks that
