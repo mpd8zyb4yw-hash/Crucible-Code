@@ -54,6 +54,12 @@ ground truth certifies; the loop explores/prunes/backtracks/abstains.
 - **Real bug fixed:** `codeVerifier` now transpiles TS→JS (esbuild) before executing — the FM emits
   TypeScript, which raw `node` can't run, so every candidate was failing at load regardless of correctness.
 - Docs re-pointed: `CLAUDE.md`, `ROADMAP.md` lead with the north star → DOCTRINE.md.
+- **VGR is now DEFAULT-ON (commit 96a5237)** — `CRUCIBLE_VGR !== '0'`; runs after synth L0/L1 miss, ships
+  only certified code, falls through on abstain. Verified firing with no env flag. Interactive budget 8 calls.
+- **Semantic-thrash detection (codeProposer, 96a5237):** the FM makes the SAME logical error with
+  cosmetically-different code (live: `.join(/\s+/)` — regex-as-separator → "fox/\s+/brown…"), invisible to
+  fingerprint-dedup. Now a recurring failure-SIGNAL triggers a pointed "you're stuck, fix THIS line" hint +
+  higher temperature. reverseWords (which anchored on this) now solves.
 
 **FM daemon contention — FIXED (cont.56, commit ee589fc).** Was the top blocker: live VGR exhausted on
 `initials` (solves in 3 calls unloaded) because the single-session daemon, hit concurrently by
@@ -72,18 +78,18 @@ LOCAL_FM_TIMEOUT_MS, up to 600s in strict). 41s is still slow for interactive �
 search is inherently latency-heavy on one ANE session.
 
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
-1. **Flip `CRUCIBLE_VGR=1` on by default** (latency now acceptable-ish), and reuse the deterministic
-   `synth/derive.ts extractSpecExamples` cases (already computed on the synth path) as VGR's acceptance
-   set instead of re-deriving — better ground truth, one fewer model dependency.
-3. **Multi-file / no-example tasks:** VGR currently emits one `src/<entry>.ts` and needs ≥1 checkable
+1. **Reuse `synth/derive.ts extractSpecExamples`** cases (already computed on the synth path) as VGR's
+   acceptance set instead of re-deriving via the model — better ground truth, one fewer model dependency,
+   and removes VGR's dependence on the model to restate the user's own examples.
+2. **Multi-file / no-example tasks:** VGR currently emits one `src/<entry>.ts` and needs ≥1 checkable
    case. Extend to property-based verifiers (reuse `derive.ts derivePropertyTests`) so tasks without a
    literal example can still be certified, and to multi-file specs.
-4. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
+3. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
    correctors) and `synthDriver` regex gates; replace any that patch a *specific* answer with a
    *general property* verifier, or delete them. They are doctrine violations.
-4. **Sample-efficiency pass:** richer verifier feedback = fewer model calls. Add minimized
-   counterexamples and, for reasoning tasks, an independent deterministic derivation that OVERRIDES
-   the K-sample vote (replaces vote-counting, which amplifies model bias — documented failure).
+4. **Sample-efficiency pass (continued):** semantic-thrash detection landed (96a5237); next add minimized
+   counterexamples in `codeVerifier` signals, and for reasoning tasks an independent deterministic
+   derivation that OVERRIDES the K-sample vote (replaces vote-counting, which amplifies model bias).
 5. **Collapse the two agent stacks.** The orphaned capabilityRouter/decompositionDag/nodeExecutor
    stack should either become the VGR-shaped live path or be deleted. Maintaining dead "proven" code
    is why `prove:all` is green while the product underperforms.
