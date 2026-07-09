@@ -23,6 +23,8 @@ import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
 export interface SolveCodeInput {
   goal: string
   entry: string
+  /** All functions the module must export (multi-function specs). Defaults to [entry]. */
+  entries?: string[]
   cases: CodeAcceptance['cases']
   context?: string
   timeoutMs?: number

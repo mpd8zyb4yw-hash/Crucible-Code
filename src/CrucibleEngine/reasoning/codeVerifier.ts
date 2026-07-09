@@ -29,11 +29,15 @@ export interface CodeCase {
   expected: unknown
   /** Optional label for feedback readability. */
   name?: string
+  /** Which exported function this case targets. Defaults to the acceptance `entry`. */
+  entry?: string
 }
 
 export interface CodeAcceptance {
-  /** Name of the exported function the candidate must define. */
+  /** Primary exported function the candidate must define (default target for untagged cases). */
   entry: string
+  /** All exported functions the candidate must define (multi-function specs). Defaults to [entry]. */
+  entries?: string[]
   cases: CodeCase[]
   /** Per-run execution timeout (ms). */
   timeoutMs?: number
@@ -122,27 +126,30 @@ function firstError(stderr: string): string {
   return (m ?? stderr.trim().split('\n')[0] ?? '').slice(0, 240)
 }
 
-// The runner is written to disk and executed in a fresh process. It imports the
-// candidate module, applies each case, deep-compares, and prints one JSON line.
+// The runner is written to disk and executed in a fresh process. It imports the candidate
+// module and applies each case to ITS target function (case.entry, else the primary entry),
+// so a multi-function module is verified across all its exports in one run.
 function RUNNER(entry: string, cases: CodeCase[]): string {
   return `import * as mod from './candidate.mjs'
 const CASES = ${JSON.stringify(cases)};
-const fn = mod[${JSON.stringify(entry)}] ?? mod.default;
+const DEFAULT_ENTRY = ${JSON.stringify(entry)};
 function eq(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 const outcomes = [];
-if (typeof fn !== 'function') {
-  outcomes.push({ ok: false, name: 'export', error: 'no exported function ' + ${JSON.stringify(entry)} + ' (or default)', expected: 'function' });
-} else {
-  for (let i = 0; i < CASES.length; i++) {
-    const c = CASES[i];
-    const name = c.name ?? ('#' + i);
-    try {
-      const actual = fn(...(c.args ?? []));
-      const resolved = actual && typeof actual.then === 'function' ? await actual : actual;
-      outcomes.push({ ok: eq(resolved, c.expected), name, actual: resolved, expected: c.expected });
-    } catch (e) {
-      outcomes.push({ ok: false, name, error: String(e && e.message ? e.message : e), expected: c.expected });
-    }
+for (let i = 0; i < CASES.length; i++) {
+  const c = CASES[i];
+  const target = c.entry ?? DEFAULT_ENTRY;
+  const fn = mod[target] ?? (target === DEFAULT_ENTRY ? mod.default : undefined);
+  const name = c.name ?? (target + ' #' + i);
+  if (typeof fn !== 'function') {
+    outcomes.push({ ok: false, name, error: 'no exported function ' + target, expected: 'function' });
+    continue;
+  }
+  try {
+    const actual = fn(...(c.args ?? []));
+    const resolved = actual && typeof actual.then === 'function' ? await actual : actual;
+    outcomes.push({ ok: eq(resolved, c.expected), name, actual: resolved, expected: c.expected });
+  } catch (e) {
+    outcomes.push({ ok: false, name, error: String(e && e.message ? e.message : e), expected: c.expected });
   }
 }
 process.stdout.write('\\n' + JSON.stringify({ outcomes }) + '\\n');

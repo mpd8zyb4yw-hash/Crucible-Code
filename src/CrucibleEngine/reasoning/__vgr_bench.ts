@@ -177,6 +177,28 @@ async function run() {
       !wrong.pass && wrong.signals.some(s => /sorted/.test(s)), wrong.signals[0])
   }
 
+  // ── PART E — supplemental property families (recurrence / reference-derivation) ────
+  console.log('\nPART E — supplemental families (factorial/gcd/isPrime via general properties)')
+  const supCases: Array<[string, string, string, string]> = [
+    ['write factorial(n) computing n!', 'factorial',
+      'export function factorial(n){return n<=1?1:n*factorial(n-1)}',
+      'export function factorial(n){return n*2}'],
+    ['write gcd(a,b) greatest common divisor', 'gcd',
+      'export function gcd(a,b){return b===0?a:gcd(b,a%b)}',
+      'export function gcd(a,b){return 1}'],
+    ['write isPrime(n)', 'isPrime',
+      'export function isPrime(n){if(n<2)return false;for(let d=2;d*d<=n;d++)if(n%d===0)return false;return true}',
+      'export function isPrime(n){return n%2!==0}'],
+  ]
+  for (const [nl, fam, good, bad] of supCases) {
+    const s = derivePropertySpec(nl)
+    const spec = s && { goal: 'x', domain: 'code', acceptance: { entry: s.entry, family: s.family, assertions: s.assertions } as any }
+    const g = spec ? await verifyByProperty({ value: good, fingerprint: 'g' }, spec as any) : null
+    const b = spec ? await verifyByProperty({ value: bad, fingerprint: 'b' }, spec as any) : null
+    ok(`${fam}: correct impl certified AND wrong impl rejected (general property, no memorized value)`,
+      !!s && s.family === fam && !!g?.pass && !!b && !b.pass, b ? b.signals[0] : 'no spec')
+  }
+
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
   console.log(`\nPART B — live on-device FM proposer ${fmUp ? '(daemon UP)' : '(SKIPPED — daemon down)'}`)

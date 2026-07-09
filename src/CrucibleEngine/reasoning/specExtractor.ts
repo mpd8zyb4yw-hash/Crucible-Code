@@ -75,7 +75,14 @@ function evalLiteral(src: string): unknown {
   return Function('"use strict"; return (' + s + ')')()
 }
 
-export interface Harvested { entry: string; cases: CodeCase[] }
+export interface Harvested {
+  /** Primary entry (the function with the most stated examples). */
+  entry: string
+  /** All exported functions the request states examples for (multi-function specs). */
+  entries: string[]
+  /** All cases across all entries, each tagged with its target `entry`. */
+  cases: CodeCase[]
+}
 
 /** Parse a call expression "entry(argSrc)" → [entry, argSrc]; null if not a call. */
 function parseCall(lhs: string): [string, string] | null {
@@ -117,10 +124,15 @@ export function harvestExplicitExamples(nl: string): Harvested {
     }
   } catch { /* best-effort; regex source still applies */ }
 
-  // Pick the entry with the most stated examples (the one the request is really about).
-  let best: Harvested = { entry: '', cases: [] }
-  for (const [entry, cases] of byEntry) if (cases.length > best.cases.length) best = { entry, cases }
-  return best
+  const entries = [...byEntry.keys()]
+  if (!entries.length) return { entry: '', entries: [], cases: [] }
+  // Primary = the entry with the most stated examples (the function the request centers on).
+  const primary = entries.reduce((a, b) => ((byEntry.get(b)!.length > byEntry.get(a)!.length) ? b : a))
+  // Flatten ALL entries' cases, tagging each with its target function so the verifier can
+  // route it. This is what lets a single request certify several functions at once.
+  const cases: CodeCase[] = []
+  for (const [entry, cs] of byEntry) for (const c of cs) cases.push({ ...c, entry })
+  return { entry: primary, entries, cases }
 }
 
 /** Parse the model's JSON (tolerating a ```json fence and surrounding prose). */

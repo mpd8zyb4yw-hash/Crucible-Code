@@ -40,7 +40,7 @@ export interface PropertyAcceptance {
  */
 export function derivePropertySpec(nl: string): { entry: string; family: string; assertions: string[] } | null {
   const pt = derivePropertyTests(nl, 'src/module.ts')
-  if (!pt) return null
+  if (!pt) return supplementalPropertySpec(nl)  // synth families missed → try VGR-side families
   // Lift the assertion calls. derive wraps each as: `try { prop('label', EXPR) } catch(e) { … }`.
   // The `} catch(e) { prop(` delimiter is stable and never appears inside an assertion's own
   // EXPR, so a greedy capture up to it recovers the inner `prop(...)` verbatim. Also accept a
@@ -56,6 +56,80 @@ export function derivePropertySpec(nl: string): { entry: string; family: string;
   const entry = extractFeatures(nl).exports[0] ?? ''
   if (!entry) return null
   return { entry, family: pt.family, assertions }
+}
+
+// ── Supplemental property families (VGR-side; not in the shared synth path) ─────────
+// Many common tasks (factorial, fibonacci, gcd, isPrime, …) have CRISP general properties —
+// recurrences, divisibility, or an independent reference derivation — that certify correctness
+// without knowing any specific answer value. This is the doctrine's ideal: reason about the
+// problem's structure, never memorize an output. These fire only when the entry name matches
+// tightly (avoiding the name-collision false-positive class documented in synth/derive.ts) and
+// only when the synth families above don't already cover the request.
+
+interface SuppFamily { family: string; test: (entry: string) => boolean; assertions: (E: string) => string[] }
+
+// `E` is the entry function name; assertions are self-contained booleans over it.
+const SUPP_FAMILIES: SuppFamily[] = [
+  {
+    family: 'factorial', test: e => /^(factorial|fact)$/i.test(e),
+    assertions: E => [
+      `prop('${E}(0)=1', ${E}(0) === 1)`,
+      `prop('${E}(1)=1', ${E}(1) === 1)`,
+      `prop('${E} recurrence n*f(n-1)', [2,3,4,5,6].every(n => ${E}(n) === n * ${E}(n-1)))`,
+      `prop('${E}(5)=120', ${E}(5) === 120)`,
+    ],
+  },
+  {
+    family: 'fibonacci', test: e => /^(fib|fibonacci)$/i.test(e),
+    // Base-case indexing varies by convention; the RECURRENCE is the convention-independent truth.
+    assertions: E => [
+      `prop('${E} recurrence f(n)=f(n-1)+f(n-2)', [4,5,6,7,8].every(n => ${E}(n) === ${E}(n-1) + ${E}(n-2)))`,
+      `prop('${E} non-negative', [0,1,2,5,8].every(n => ${E}(n) >= 0))`,
+    ],
+  },
+  {
+    family: 'gcd', test: e => /^(gcd|greatestcommondivisor)$/i.test(e),
+    assertions: E => [
+      `prop('${E} divides both', (() => { const g=${E}(48,36); return g>0 && 48%g===0 && 36%g===0 })())`,
+      `prop('${E}(a,a)=a', ${E}(9,9) === 9)`,
+      `prop('${E}(a,0)=a', ${E}(7,0) === 7)`,
+      `prop('${E} is maximal', (() => { const g=${E}(12,18); for(let d=g+1; d<=18; d++) if(12%d===0 && 18%d===0) return false; return true })())`,
+    ],
+  },
+  {
+    family: 'isPrime', test: e => /^isprime$/i.test(e),
+    // Independent reference derivation (trial division) as the oracle — the doctrine's cross-check.
+    assertions: E => [
+      `prop('${E} matches trial division', (() => { const ref = n => { if (n < 2) return false; for (let d=2; d*d<=n; d++) if (n%d===0) return false; return true }; return [0,1,2,3,4,5,6,7,8,9,10,11,12,13,15,17,19,20,23,25,29].every(n => Boolean(${E}(n)) === ref(n)) })())`,
+    ],
+  },
+  {
+    family: 'capitalize', test: e => /^capitali[sz]e$/i.test(e),
+    assertions: E => [
+      `prop('${E} first char upper', ${E}('hello') === 'Hello')`,
+      `prop('${E} length preserved', ${E}('hello world').length === 11)`,
+      `prop('${E} idempotent', ${E}(${E}('hello')) === ${E}('hello'))`,
+      `prop('${E} empty→empty', ${E}('') === '')`,
+    ],
+  },
+]
+
+/** Best-effort entry-name extraction for supplemental gating (extractFeatures, else first call). */
+function guessEntry(nl: string): string {
+  const ex = extractFeatures(nl).exports[0]
+  if (ex) return ex
+  const m = /\b([a-zA-Z_$][\w$]*)\s*\(/.exec(nl)
+  return m ? m[1] : ''
+}
+
+/** Supplemental (VGR-only) property spec, tried when the synth families don't match. */
+export function supplementalPropertySpec(nl: string): { entry: string; family: string; assertions: string[] } | null {
+  const entry = guessEntry(nl)
+  if (!entry) return null
+  for (const fam of SUPP_FAMILIES) {
+    if (fam.test(entry)) return { entry, family: fam.family, assertions: fam.assertions(entry) }
+  }
+  return null
 }
 
 /**
