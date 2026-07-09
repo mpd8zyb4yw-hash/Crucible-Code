@@ -34,6 +34,7 @@ import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
+import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { isDesktopActionGoal } from './src/CrucibleEngine/ambiguity'
@@ -2920,6 +2921,45 @@ app.post('/api/chat', async (req, res) => {
       } catch (synthErr: any) {
         debugBus.emit('agent', 'synth_error', { error: String(synthErr?.message ?? synthErr).slice(0, 120) }, { severity: 'warn' })
         // fall through to the model-driven loop
+      }
+    }
+
+    // ── Verification-Guided Reasoning (DOCTRINE.md) — certified model-proposed code ──
+    // When deterministic synthesis (L0/L1 above) misses, the legacy fallback hands the
+    // task to the model-driven agent loop, which can ship PLAUSIBLE-BUT-UNVERIFIED code.
+    // VGR closes that hole: the model only PROPOSES; every candidate is EXECUTED against
+    // an auto-extracted, consensus-guarded spec; only a case-passing implementation is
+    // emitted, otherwise it abstains and falls through. This is the doctrine's live path.
+    // Gated behind CRUCIBLE_VGR=1 (default off) until proven on real traffic — additive,
+    // zero behavior change when the flag is unset. See src/CrucibleEngine/reasoning/.
+    if (!handled && !resumable && !iterCheckpoint && process.env.CRUCIBLE_VGR === '1'
+        && isCodeImplementationTask(message ?? '')) {
+      try {
+        send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
+        const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2 })
+        debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls }, { severity: 'info' })
+        if (vgr.status === 'solved' && vgr.code && vgr.entry) {
+          const rel = `src/${vgr.entry}.ts`
+          const abs = path.join(projectPath, rel)
+          fs.mkdirSync(path.dirname(abs), { recursive: true })
+          fs.writeFileSync(abs, vgr.code)
+          onFileMutated([abs])
+          send({ type: 'tool_call', tool: 'write_file', args: { path: rel } })
+          send({ type: 'tool_result', tool: 'write_file', ok: true, output: `VGR-certified ${rel} (${vgr.cases?.length ?? 0} executed cases passed, no external model)` })
+          send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified against ${vgr.cases?.length ?? 0} case(s) in ${vgr.search?.modelCalls ?? 0} model call(s) — ${vgr.detail}` })
+          const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — the model proposed, execution verified every case (${vgr.cases?.length ?? 0} passed). Zero external model calls.`
+          send({ type: 'final', text: answer, meta: { vgrCertified: true, entry: vgr.entry, modelCalls: vgr.search?.modelCalls, confidence: 1 } })
+          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+          if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+          historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr', models: ['crucible-vgr'], synthesis: answer })
+          handled = true
+        } else {
+          // Honest: could not CERTIFY a solution → do not ship a guess; fall through.
+          send({ type: 'thought', text: `VGR could not certify a solution (${vgr.status}: ${vgr.detail}) — handing off without shipping unverified code.` })
+        }
+      } catch (vgrErr: any) {
+        debugBus.emit('agent', 'vgr_error', { error: String(vgrErr?.message ?? vgrErr).slice(0, 120) }, { severity: 'warn' })
+        // fall through to the model-driven loop — never blocks the request
       }
     }
 

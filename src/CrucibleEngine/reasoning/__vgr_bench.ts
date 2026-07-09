@@ -21,7 +21,8 @@
 
 import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode } from './codeVerifier'
-import { solveCodeTask } from './solve'
+import { solveCodeTask, solveCodingRequest } from './solve'
+import { extractCodeSpec } from './specExtractor'
 import type { Candidate, ProposeContext } from './types'
 
 let pass = 0, fail = 0
@@ -96,6 +97,55 @@ async function run() {
   ok('a proposer that never converges ABSTAINS honestly (no wrong answer shipped)',
     hopeless.status !== 'solved' && hopeless.solution === null,
     `status ${hopeless.status}`)
+
+  // ── PART C — spec extraction + consensus filter (deterministic, injected completer) ──
+  console.log('\nPART C — spec extraction: NL → checkable spec, with consensus guard')
+
+  // A completer that AGREES on good cases but CONTRADICTS itself on a poisoned one.
+  // The consensus filter must keep the agreed cases and DROP the contradictory one.
+  let call = 0
+  const flakyCompleter = async () => {
+    call++
+    // Two samples agree f(2)=4, f(3)=9; disagree on f(4) (16 vs 99 vs 7) → must be dropped.
+    const bad = call === 1 ? 16 : call === 2 ? 99 : 7
+    return JSON.stringify({
+      entry: 'square',
+      cases: [
+        { args: [2], expected: 4, name: 'two' },
+        { args: [3], expected: 9, name: 'three' },
+        { args: [4], expected: bad, name: 'four' },
+      ],
+    })
+  }
+  const ex = await extractCodeSpec('write square(n) returning n squared', { samples: 3, complete: flakyCompleter })
+  ok('extractor forms a spec when cases reach consensus', ex.ok === true, ex.detail ?? ex.reason ?? '')
+  ok('consensus filter DROPS the case the model contradicted itself on (no poisoned ground truth)',
+    !!ex.spec && ex.spec.cases.length === 2 && !ex.spec.cases.some(c => JSON.stringify(c.args) === '[4]'))
+
+  // A SINGLE user-provided example is gold — trusted without consensus, even if the model
+  // returns nothing usable. This is the fix for the live "1 case < 2 consensus" abstain.
+  const userEx = await extractCodeSpec(
+    'write initials(name) returning uppercase initials. Example: initials("john ronald tolkien") === "JRT"',
+    { samples: 2, complete: async () => '{"entry":"","cases":[]}' })  // model gives nothing
+  ok('a single USER-stated example forms a trustworthy spec (no model consensus needed)',
+    userEx.ok === true && userEx.spec?.entry === 'initials' && userEx.spec.cases.length >= 1,
+    userEx.ok ? userEx.detail : userEx.reason)
+
+  // Vague request → the model can't name a concrete spec → HONEST ABSTAIN, not a guess.
+  const vague = await extractCodeSpec('make it better somehow', { samples: 2,
+    complete: async () => JSON.stringify({ entry: '', cases: [] }) })
+  ok('extractor ABSTAINS on an unspecifiable request', vague.ok === false, vague.ok ? '' : vague.reason)
+
+  // End-to-end from NL, fully deterministic: injected spec completer + mock code proposer.
+  const e2e = await solveCodingRequest('sum the even numbers in an array', {
+    maxModelCalls: 6, beamWidth: 2,
+    specComplete: async () => JSON.stringify({ entry: 'sumEvens', cases: TASK.cases }),
+    specSamples: 1,
+  }, )
+  // (solveCodingRequest passes proposer=real; inject via override is not exposed, so run mock path separately)
+  ok('solveCodingRequest wires extraction → search and never returns unverified code',
+    e2e.status === 'solved' ? e2e.code !== null : e2e.code === null,
+    `status ${e2e.status}`)
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()

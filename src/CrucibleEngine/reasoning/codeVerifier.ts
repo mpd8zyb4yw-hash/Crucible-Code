@@ -19,6 +19,7 @@ import { execFile } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { transform } from 'esbuild'
 import type { Candidate, TaskSpec, Verdict } from './types'
 
 export interface CodeCase {
@@ -60,7 +61,19 @@ export async function verifyCode(candidate: Candidate<string>, spec: TaskSpec): 
   const runPath = path.join(dir, 'run.mjs')
 
   try {
-    fs.writeFileSync(modPath, src, 'utf-8')
+    // The model naturally emits TypeScript (type annotations, `satisfies`, enums…). Node
+    // cannot execute that, so a raw run would fail EVERY candidate at load time regardless
+    // of correctness. Transpile TS→JS first (types stripped) so EXECUTION tests behavior,
+    // not syntax. A genuine syntax error still surfaces here as a load error (rich signal).
+    let js = src
+    try {
+      const out = await transform(src, { loader: 'ts', format: 'esm', target: 'node18' })
+      js = out.code
+    } catch (e: any) {
+      const msg = (e?.errors?.[0]?.text ?? e?.message ?? 'syntax error') as string
+      return { pass: false, score: -1000, signals: [`syntax error (does not compile): ${String(msg).slice(0, 200)}`] }
+    }
+    fs.writeFileSync(modPath, js, 'utf-8')
     fs.writeFileSync(runPath, RUNNER(acc.entry, acc.cases), 'utf-8')
 
     const out = await new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {

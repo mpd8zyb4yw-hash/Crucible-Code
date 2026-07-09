@@ -37,22 +37,37 @@ ground truth certifies; the loop explores/prunes/backtracks/abstains.
   - `codeVerifier.ts` (**executes** candidates vs acceptance cases → high-information actual-vs-expected feedback; zero model),
   - `codeProposer.ts` (the ONLY place the model lives; threads prior-failure feedback into the next guess),
   - `solve.ts` (`solveCodeTask()` public entry), `README.md` (module literature).
-- **`npm run vgr:bench`** — 6/6 green. Proves: single-shot ships a wrong answer (sumEvens summed ALL
-  numbers), the loop rejects it via execution and certifies the correct one in 2 calls, a
-  non-converging proposer ABSTAINS (ships nothing), and the LIVE on-device FM solved a novel task
-  (dedupeStable) through the same loop.
-- Docs re-pointed: `CLAUDE.md` and `ROADMAP.md` now lead with the north star and point at DOCTRINE.md.
+- **`npm run vgr:bench`** — 11/11 green. Proves: single-shot ships a wrong answer, the loop rejects it
+  via execution and certifies the correct one, a non-converging proposer ABSTAINS, spec extraction's
+  consensus filter drops model-contradicted cases, a single USER example forms a trustworthy spec, and
+  the LIVE on-device FM solves novel tasks through the loop.
+- **LIVE-WIRED + PROVEN on real `/api/chat` traffic (behind `CRUCIBLE_VGR=1`, default off):** fired a
+  real coding request against the running server → `VGR-certified src/slugify.ts (1 executed case passed,
+  no external model)`; the emitted file behaviorally correct (`slugify("Hello, World!")==="hello-world"`).
+  Inserted in the synth-miss branch (server.ts ~2926): when deterministic synth (L0/L1) misses, VGR
+  proposes-verifies-certifies before the legacy unverified model loop.
+- **Spec extraction shipped** — `specExtractor.ts`: harvests USER-stated `f(x)===y` examples as GOLD
+  ground truth (trusted, no consensus) + model-proposed cases behind a cross-sample consensus filter.
+  Gold user examples are the certification gate; model cases are advisory only (a wrong model-invented
+  case must never make a solvable spec unsatisfiable — the vote-bias trap DOCTRINE.md warns about, hit
+  live on `initials` and fixed).
+- **Real bug fixed:** `codeVerifier` now transpiles TS→JS (esbuild) before executing — the FM emits
+  TypeScript, which raw `node` can't run, so every candidate was failing at load regardless of correctness.
+- Docs re-pointed: `CLAUDE.md`, `ROADMAP.md` lead with the north star → DOCTRINE.md.
 
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
-1. **Live-wire the VGR loop into the real `/api/chat` coding path.** Today `solveCodeTask` is proven in
-   isolation but the live coding path is still `agent/planner.ts` + `agent/loop.ts` (single-shot-ish +
-   memorized critics). Route real coding tasks through `search()` so ground-truth execution — not the
-   model's say-so — certifies every answer. This is the whole point; do it next.
-2. **Spec extraction:** turn a natural-language coding request into a `TaskSpec` (entry signature +
-   acceptance cases) automatically. Without auto-specs the loop needs hand-written cases. Generate
-   cases from: the request, the semantic index (signatures), and retrieved docs. Where a checkable
-   spec can't be formed → abstain honestly.
-3. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
+1. **FM daemon contention.** Live VGR occasionally EXHAUSTS on a trivial task (`initials`) that solves
+   in 1 call in isolation — the background `autoImprove`/keepalive/corpus daemons hammer the single-session
+   FM concurrently and degrade its output (see fmReact.ts's FmTransientError note). Serialize/queue FM
+   access or pause background FM load during a live VGR search. This is now the top blocker to VGR
+   reliability on the live server (the logic is proven; the daemon starves it).
+2. **Flip `CRUCIBLE_VGR=1` on by default** once #1 is fixed, and reuse the deterministic
+   `synth/derive.ts extractSpecExamples` cases (already computed on the synth path) as VGR's acceptance
+   set instead of re-deriving — better ground truth, one fewer model dependency.
+3. **Multi-file / no-example tasks:** VGR currently emits one `src/<entry>.ts` and needs ≥1 checkable
+   case. Extend to property-based verifiers (reuse `derive.ts derivePropertyTests`) so tasks without a
+   literal example can still be certified, and to multi-file specs.
+4. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
    correctors) and `synthDriver` regex gates; replace any that patch a *specific* answer with a
    *general property* verifier, or delete them. They are doctrine violations.
 4. **Sample-efficiency pass:** richer verifier feedback = fewer model calls. Add minimized
