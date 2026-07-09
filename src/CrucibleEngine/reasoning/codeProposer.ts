@@ -30,7 +30,8 @@ function extractCode(raw: string): string {
 
 export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidate<string> | null> {
   const { spec, history, diversify } = ctx
-  const acc = spec.acceptance as { entry: string }
+  const acc = spec.acceptance as { entry: string; entries?: string[] }
+  const multi = acc.entries && acc.entries.length > 1 ? acc.entries : null
 
   const system = [
     'You are a code-generation function inside a verification loop. You are NOT trusted —',
@@ -38,7 +39,9 @@ export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidat
     'return a correct implementation. Output ONE ES module in a single ``` code block and',
     'nothing else — no prose, no explanation.',
     '',
-    `Export a function named \`${acc.entry}\` (use \`export function ${acc.entry}(...)\`).`,
+    multi
+      ? `Export ALL of these functions from the one module (use \`export function <name>(...)\` for each): ${multi.map(e => '`' + e + '`').join(', ')}. Every one must be defined and correct — they are tested together.`
+      : `Export a function named \`${acc.entry}\` (use \`export function ${acc.entry}(...)\`).`,
     spec.context ? `\n## Grounding\n${spec.context}` : '',
   ].join('\n')
 

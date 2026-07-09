@@ -23,7 +23,7 @@ import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode } from './codeVerifier'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
-import { extractCodeSpec } from './specExtractor'
+import { extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import type { Candidate, ProposeContext } from './types'
 
 let pass = 0, fail = 0
@@ -207,6 +207,20 @@ async function run() {
     ok(`${fam}: correct impl certified AND wrong impl rejected (general property, no memorized value)`,
       !!s && s.family === fam && !!g?.pass && !!b && !b.pass, b ? b.signals[0] : 'no spec')
   }
+
+  // ── PART G — multi-function (multi-export) certification in one module ─────────────
+  console.log('\nPART G — multi-function synthesis (several exports certified together)')
+  const multiHarvest = harvestExplicitExamples('write add(a,b) and sub(a,b). add(2,3) === 5. sub(9,4) === 5. sub(1,1) === 0')
+  ok('harvests multiple functions with per-case entry tags',
+    multiHarvest.entries.length === 2 && multiHarvest.cases.every(c => c.entry) &&
+    multiHarvest.cases.filter(c => c.entry === 'sub').length === 2,
+    `entries [${multiHarvest.entries.join(',')}], ${multiHarvest.cases.length} tagged cases`)
+  const multiSpec = { goal: '', domain: 'code', acceptance: { entry: multiHarvest.entry, entries: multiHarvest.entries, cases: multiHarvest.cases } } as any
+  const bothRight = await verifyCode({ value: 'export function add(a,b){return a+b}\nexport function sub(a,b){return a-b}', fingerprint: 'r' }, multiSpec)
+  ok('a module correct on ALL functions is certified', bothRight.pass, bothRight.signals[0])
+  const oneWrong = await verifyCode({ value: 'export function add(a,b){return a+b}\nexport function sub(a,b){return a+b}', fingerprint: 'w' }, multiSpec)
+  ok('one wrong function fails on ITS cases (per-function ground truth)',
+    !oneWrong.pass && oneWrong.signals.some(s => /sub/.test(s)), oneWrong.signals[0])
 
   // ── PART F — poisoned-case recovery (cross-derivation drops a bad model case) ──────
   console.log('\nPART F — poisoned model-case recovery')

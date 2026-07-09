@@ -49,6 +49,7 @@ export async function solveCodeTask(
     context: input.context,
     acceptance: {
       entry: input.entry,
+      entries: input.entries && input.entries.length > 1 ? input.entries : undefined,
       cases: input.cases,
       timeoutMs: input.timeoutMs,
     } satisfies CodeAcceptance as unknown as Record<string, unknown>,
@@ -93,12 +94,13 @@ export async function solveCodingRequest(
   // 1) USER-stated examples — gold, trusted without consensus.
   const harvested = harvestExplicitExamples(nl)
   if (harvested.cases.length >= 1) {
-    const result = await solveCodeTask({ goal: nl, entry: harvested.entry, cases: harvested.cases }, opts)
+    const result = await solveCodeTask({ goal: nl, entry: harvested.entry, entries: harvested.entries, cases: harvested.cases }, opts)
+    const nFns = harvested.entries.length
     return {
       status: result.status,
       code: result.status === 'solved' ? (result.solution?.value ?? null) : null,
       entry: harvested.entry, cases: harvested.cases, search: result,
-      detail: `${harvested.cases.length} user example(s) (gold); ${result.detail}`,
+      detail: `${harvested.cases.length} user example(s) (gold)${nFns > 1 ? ` across ${nFns} functions [${harvested.entries.join(', ')}]` : ''}; ${result.detail}`,
     }
   }
 
