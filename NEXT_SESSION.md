@@ -63,13 +63,16 @@ background=NORMAL); every daemon call site routed through it; `/api/diag.fmQueue
 maxDepth 11 under load). (b) `search.ts` — null/empty proposals are retried on a separate bounded budget,
 never charged to the reasoning/patience budget. Result: `initials` now certifies LIVE in 1 call. bench 12/12.
 
+**Latency — PARTLY ADDRESSED (cont.56, commit a205213).** Foreground gate on fmQueue: /api/chat marks
+itself foreground; FM-heavy background schedulers (improvement daemon tick, keepalive warmup) skip while
+a request is live. Live `titleCase` certified in 41s; peak FM queue depth dropped 11→5 under load.
+Residual: a background call ALREADY in-flight when the request arrives can still block it once (the queue
+can't preempt in-flight); mitigate by giving background local FM calls a short timeout (they use
+LOCAL_FM_TIMEOUT_MS, up to 600s in strict). 41s is still slow for interactive — the multi-call serial
+search is inherently latency-heavy on one ANE session.
+
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
-1. **Latency is the new cost.** Serialized FM + multi-call searches make a live VGR request slow
-   (~20s/call × several, serialized behind background work). Options: reduce K/beam for interactive,
-   pause the background autoImprove pass while a foreground VGR search is active (the queue makes
-   foreground preempt on ORDERING but can't preempt an in-flight 600s background call — give background
-   local calls a shorter timeout, or gate autoImprove off during live requests).
-2. **Flip `CRUCIBLE_VGR=1` on by default** once latency is acceptable, and reuse the deterministic
+1. **Flip `CRUCIBLE_VGR=1` on by default** (latency now acceptable-ish), and reuse the deterministic
    `synth/derive.ts extractSpecExamples` cases (already computed on the synth path) as VGR's acceptance
    set instead of re-deriving — better ground truth, one fewer model dependency.
 3. **Multi-file / no-example tasks:** VGR currently emits one `src/<entry>.ts` and needs ≥1 checkable
