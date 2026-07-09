@@ -35,7 +35,7 @@ import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/Cruci
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { enqueueFm, fmQueueStats } from './src/CrucibleEngine/agent/fmQueue'
+import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { isDesktopActionGoal } from './src/CrucibleEngine/ambiguity'
@@ -2432,6 +2432,15 @@ app.post('/api/chat', async (req, res) => {
     }
   }
   console.log('[/api/chat] Received:', message?.slice(0, 80), '| mode:', mode, '| device:', device)
+
+  // Mark this as a live foreground request so background FM schedulers (autoImprove, the
+  // improvement daemon, prewarm rounds) yield the single-session daemon while it runs.
+  // Fires endForeground exactly once when the response closes, regardless of exit path.
+  beginForeground()
+  let _foregroundEnded = false
+  const _endForeground = () => { if (!_foregroundEnded) { _foregroundEnded = true; endForeground() } }
+  res.on('close', _endForeground)
+  res.on('finish', _endForeground)
 
   // ── /skill and /tool slash shortcuts (FABLE5_HANDOFF Feature 1 increment) ──
   // "I know exactly what I want to run": exact-name lookup, zero NL intent
@@ -7122,9 +7131,11 @@ const KEEPALIVE_STAGGER_MS  = 3_000
 const KEEPALIVE_PROMPT = [{ role: 'user' as const, content: 'Hi' }]
 
 async function runKeepaliveRound() {
-  // Keepalive pause guard — never consume free-tier quota with warmup pings while a
-  // real request is mid-flight (the counter is balanced in the /api/chat finally).
-  if (activePipelineRequests > 0) return
+  // Keepalive pause guard — never consume free-tier quota (or the single-session FM) with
+  // warmup pings while a real request is mid-flight. activePipelineRequests covers the
+  // pipeline path; isForegroundActive() also covers the agent/VGR path (which doesn't touch
+  // that counter) so a live coding search is never delayed by a warmup round.
+  if (activePipelineRequests > 0 || isForegroundActive()) return
   const models = MODEL_REGISTRY.filter(m => {
     const state = getCircuitState(m.id)
     return state !== 'tripped'
@@ -7527,6 +7538,10 @@ function startListening(port: number, attempt = 0) {
 
     // Improvement daemon tick (Track G1) — runs every 15 min
     setInterval(() => {
+      // Yield the single-session FM to live requests: skip this heavy background pass
+      // (learning cycles, self-play — all FM-bound) while any interactive request runs.
+      // It will run on the next tick once the user is idle.
+      if (isForegroundActive()) return
       daemonTick(process.cwd(), {
         failure_taxonomy: async () => {
           const clusters = buildFailureTaxonomy(process.cwd())

@@ -63,6 +63,18 @@ function pump(): void {
  * WAITING run before lower-priority waiting jobs; an already-running job is never preempted.
  * The returned promise settles with fn's result/error — the queue is transparent.
  */
+// ── Foreground gate ────────────────────────────────────────────────────────────────
+// The queue serializes and lets interactive work jump AHEAD of waiting background work,
+// but it cannot preempt a background call already in-flight — so a long background FM pass
+// can still delay a live request by one call. The complementary fix: background schedulers
+// (autoImprove, the improvement daemon, prewarm rounds) call `isForegroundActive()` and
+// SKIP their FM work entirely while any interactive request is running. Foreground marks
+// itself with begin/endForeground around the request lifecycle.
+let foregroundCount = 0
+export function beginForeground(): void { foregroundCount++ }
+export function endForeground(): void { foregroundCount = Math.max(0, foregroundCount - 1) }
+export function isForegroundActive(): boolean { return foregroundCount > 0 }
+
 export function enqueueFm<T>(fn: () => Promise<T>, opts: { priority?: FmPriority; label?: string } = {}): Promise<T> {
   fmQueueStats.enqueued++
   return new Promise<T>((resolve, reject) => {
