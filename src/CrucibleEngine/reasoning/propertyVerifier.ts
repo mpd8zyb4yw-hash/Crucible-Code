@@ -143,6 +143,79 @@ const SUPP_FAMILIES: SuppFamily[] = [
       `prop('${E} exact-multiple count', ${E}([1,2,3,4], 2).length === 2)`,
     ],
   },
+  {
+    // max(xs): the result is a member of xs AND ≥ every element — cross-checked against Math.max.
+    family: 'max', test: e => /^(max|arrayMax|maximum|maxOf|largest)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches Math.max', (() => { const xs=[3,-1,4,1,5,9,2,6]; return ${E}(xs) === Math.max(...xs) })())`,
+      `prop('${E} is a member and maximal', (() => { const xs=[3,-1,4,1,5]; const m=${E}(xs); return xs.includes(m) && xs.every(x => x <= m) })())`,
+      `prop('${E}([x])=x', ${E}([7]) === 7)`,
+      `prop('${E} negatives', ${E}([-5,-2,-9]) === -2)`,
+    ],
+  },
+  {
+    // min(xs): mirror of max — member of xs AND ≤ every element, cross-checked against Math.min.
+    family: 'min', test: e => /^(min|arrayMin|minimum|minOf|smallest)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches Math.min', (() => { const xs=[3,-1,4,1,5,9,2,6]; return ${E}(xs) === Math.min(...xs) })())`,
+      `prop('${E} is a member and minimal', (() => { const xs=[3,-1,4,1,5]; const m=${E}(xs); return xs.includes(m) && xs.every(x => x >= m) })())`,
+      `prop('${E}([x])=x', ${E}([7]) === 7)`,
+      `prop('${E} negatives', ${E}([-5,-2,-9]) === -9)`,
+    ],
+  },
+  {
+    // clamp(x, lo, hi): result stays in [lo,hi], is identity inside the range, and saturates outside.
+    family: 'clamp', test: e => /^(clamp|clip|bound|constrain)$/i.test(e),
+    assertions: E => [
+      `prop('${E} identity in range', ${E}(5, 1, 10) === 5)`,
+      `prop('${E} saturates low', ${E}(-3, 0, 10) === 0)`,
+      `prop('${E} saturates high', ${E}(50, 0, 10) === 10)`,
+      `prop('${E} always within bounds', [-100,-1,0,3,7,10,11,999].every(x => { const r=${E}(x,0,10); return r>=0 && r<=10 }))`,
+      `prop('${E} idempotent', ${E}(${E}(50,0,10),0,10) === ${E}(50,0,10))`,
+    ],
+  },
+  {
+    // average(xs): equals sum/length — an independent reference derivation, not a memorized value.
+    family: 'average', test: e => /^(average|mean|avg)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches sum/length', (() => { const xs=[2,4,6,8]; return ${E}(xs) === xs.reduce((a,b)=>a+b,0)/xs.length })())`,
+      `prop('${E}([x])=x', ${E}([7]) === 7)`,
+      `prop('${E} between min and max', (() => { const xs=[3,-1,4,1,5]; const a=${E}(xs); return a>=Math.min(...xs) && a<=Math.max(...xs) })())`,
+    ],
+  },
+  {
+    // power(base, exp): recurrence b^n = b·b^(n-1) with b^0 = 1 — convention-free structural truth.
+    family: 'power', test: e => /^(power|pow|exponent|ipow|intpow)$/i.test(e),
+    assertions: E => [
+      `prop('${E}(b,0)=1', ${E}(2,0) === 1 && ${E}(9,0) === 1)`,
+      `prop('${E} recurrence b*p(b,n-1)', [1,2,3,4,5,6,7,8].every(n => ${E}(2,n) === 2 * ${E}(2,n-1)))`,
+      `prop('${E}(2,10)=1024', ${E}(2,10) === 1024)`,
+      `prop('${E}(5,2)=25', ${E}(5,2) === 25)`,
+    ],
+  },
+  {
+    // isPalindrome(s): matches an independent reference (equals its own reversal, case/space as given).
+    family: 'isPalindrome', test: e => /^(isPalindrome|palindrome|checkPalindrome)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches reverse-equality reference', (() => { const ref = s => s === [...s].reverse().join(''); return ['racecar','level','abba','','a','abc','hello','noon'].every(s => Boolean(${E}(s)) === ref(s)) })())`,
+    ],
+  },
+  {
+    // digitSum(n): equals the sum of |n|'s decimal digits — independent reference derivation.
+    family: 'digitSum', test: e => /^(digitSum|sumDigits|digitalSum|sumOfDigits)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches digit-sum reference', (() => { const ref = n => String(Math.abs(n)).split('').reduce((a,d)=>a+Number(d),0); return [0,5,10,99,123,4567,1000000].every(n => ${E}(n) === ref(n)) })())`,
+      `prop('${E}(single digit)=itself', [0,3,7,9].every(d => ${E}(d) === d))`,
+    ],
+  },
+  {
+    // countVowels(s): equals the reference regex count — independent derivation, no memorized answer.
+    family: 'countVowels', test: e => /^(countVowels|vowelCount|numVowels)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches regex reference', (() => { const ref = s => (s.match(/[aeiou]/gi) || []).length; return ['hello','sky','aeiou','AEIOU','','rhythm','education'].every(s => ${E}(s) === ref(s)) })())`,
+      `prop('${E} empty=0', ${E}('') === 0)`,
+    ],
+  },
 ]
 
 /** Best-effort entry-name extraction for supplemental gating (extractFeatures, else first call). */
