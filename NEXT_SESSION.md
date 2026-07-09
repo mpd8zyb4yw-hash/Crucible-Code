@@ -95,10 +95,16 @@ all others), that CASE is dropped (cross-derivation agreement > one model-invent
 is re-certified against the cleaned set. Strictly gated (≥3 cases, ≥2 agreeing, winner must pass the rest);
 never ships code failing a trusted case; no model calls. bench 24/24.
 
+**Multi-FUNCTION synthesis DONE (cont.56, c2ca1e1):** VGR now certifies several exports in ONE module.
+Extractor tags each case by its target function (entries[] + tagged cases); verifier RUNNER routes each
+case to its case.entry; proposer emits all required functions. Live: "add(a,b) and sub(a,b)…" → both
+certified in 1 call, each against its own cases. bench 27/27. (Still ONE file — multi-FILE is next.)
+
 **THE NEXT LEVER (highest priority — this is where capability now comes from):**
-1. **Multi-file specs.** VGR still emits ONE `src/<entry>.ts` for a single function. Extend to tasks that
-   span files / multiple exports (the semantic index + synth repo-context already model this). Until then
-   VGR only handles single-function requests; larger asks fall through to the legacy loop. THE mission gap.
+1. **Multi-FILE specs.** VGR now does multi-function-in-one-file but still emits a single file. Extend to
+   tasks spanning multiple files (an entry per file + cross-file imports; the semantic index + synth
+   repo-context model this). AND edit EXISTING files (append a certified function to a real repo file via
+   the applyLayer never-regress gate), not just create new ones. THE mission gap.
 2. **Widen property families further** (parsers, numeric min/max, stateful classes) — same recurrence/
    reference-derivation pattern in `SUPP_FAMILIES` (propertyVerifier.ts).
 3. **Kill the memorized-answer critics.** Audit `answer/verify.ts` (clock-arith splicer, phrasing
