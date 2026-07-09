@@ -1,0 +1,114 @@
+# Crucible — DOCTRINE (the North Star)
+
+> **This file supersedes every older statement of purpose in this repository.**
+> Read it before ROADMAP.md, before NEXT_SESSION.md, before writing a single line of code.
+> If any other doc, comment, or benchmark contradicts this, THIS wins — and that other
+> doc is wrong and should be corrected to match. Last set: 2026-07-09.
+
+---
+
+## The one sentence
+
+> **Correctness comes from the LOOP, not the oracle.**
+>
+> An unreliable small generator **+** a sound deterministic verifier **+** search
+> **=** a system *more reliable than the generator itself.*
+
+This is not a slogan and not a hope. It is a **provable** fact and it is how every system
+that does frontier reasoning on modest compute already works: SMT-guided program synthesis,
+property-based testing, AlphaProof/AlphaGeometry (a small net proposes, a symbolic engine
+verifies, tree search explores), AlphaCode (sample candidates, filter by *execution*). The
+generator's error rate stops mattering the moment the system can **detect and reject** its
+errors and try again against ground truth.
+
+## Why this is our thesis (the constraint that forged it)
+
+Crucible runs on an **8GB unified-memory Mac with ~2GB of headroom**. The primary model is
+Apple's on-device Foundation Model (~3B, on the ANE, weights shared by the OS so they cost us
+almost no process RAM). **This is the correct model for this hardware and it is not going to
+get bigger.** A 7B won't fit; a 14–32B is physically impossible here.
+
+We went to the Moon on a computer with ~4KB of RAM. It worked because the **guidance loop**
+did the reasoning: measure state, compute error against ground truth, correct, repeat. The
+Apollo Guidance Computer could not "solve" the trajectory in one shot — the *loop* did. That
+is exactly our move. We are not short on intelligence because we are short on parameters. We
+are intelligent to the exact degree that our **verification-and-search infrastructure** is
+good. **Every performance gain must come from better infra, not a bigger model.** Anyone who
+frames a Crucible problem as "we need more parameters" has misunderstood the entire project.
+
+## What we are building toward (the literal success bar)
+
+**Frontier SWE work — reasoning about NOVEL problems whose answers we do not know in
+advance — produced entirely within our constraints:**
+
+1. Non-trivial, multi-file changes; real debugging; real refactors.
+2. Complex apps with deep backends (auth, data layers, real APIs — not toy CRUD).
+3. Finding advanced, non-obvious bugs through real reasoning and testing.
+4. Genuinely correct fixes — certified, not plausible-looking.
+5. **Zero external paid / rate-limited model API calls.** Local model(s) + Crucible's own
+   deterministic tooling do ALL the reasoning. Internet is allowed, but only as a data
+   source accessed by our own tooling — never a paid model in the loop.
+
+## What this is NOT (explicitly forbidden framing)
+
+- **NOT preloaded answers.** Hard-coding the fix for a specific failing prompt (e.g. a
+  string-splicer that "corrects" one clock-arithmetic phrasing) is **whack-a-mole, not
+  reasoning, and is banned as a strategy.** The system must reason about problems it has
+  never seen. A verifier that checks a *general property* is doctrine; a critic that patches
+  one memorized answer is debt — delete it.
+- **NOT "trust the model."** The model is never the source of truth. Its output is a
+  *proposal* that is worthless until ground truth certifies it.
+- **NOT self-consistency vote-counting as a substitute for verification.** K identical
+  samples of the same biased reasoning vote for the same wrong answer. Independent
+  *derivation* (model chain-of-thought AND deterministic execution, accept only on
+  agreement) is doctrine; majority-vote-and-ship is not.
+- **NOT "we need a bigger model."** See above. This framing is out of scope, permanently.
+
+## The architecture doctrine (how every feature must be shaped)
+
+Every capability Crucible gains should be an instance of the same loop:
+
+1. **Formalize "correct" first.** Turn the request into a *mechanically-checkable* spec —
+   signatures (from the semantic index), invariants, executable acceptance checks. If we
+   cannot state what correct means, we **abstain** — we do not guess. This step *is* the
+   reasoning substrate.
+2. **Sketch + holes, not free generation.** The system builds the *structure* from sound
+   primitives (types, the index, retrieved facts); the model only fills leaves small enough
+   that (a) a 3B can plausibly get them and (b) a verifier can check them in isolation.
+   Novelty is handled by *composing* sound pieces the system has never combined before.
+3. **Propose → verify → backtrack search.** The model proposes candidates; a deterministic
+   verifier certifies each against ground truth; a beam of survivors is explored and pruned;
+   dead branches backtrack. This is where reasoning about the unknown actually happens.
+4. **Maximize information per model call.** The scarce resource is *model calls* (serial ANE,
+   ~20s each), NOT parameters. Every rejected candidate must return **rich structured
+   feedback** — the exact type error, the failing assertion's actual-vs-expected values, a
+   minimized counterexample — so the next proposal converges in a handful of calls, not
+   hundreds. **Sample-efficiency is the moat. Optimize it above almost everything else.**
+5. **Abstain honestly.** There is no paid model to escalate to. When the loop cannot certify
+   a candidate within budget, it returns an honest non-answer. `abstain === abstain`. A loud,
+   correct "I could not verify this" beats a confident wrong answer every time.
+
+## The reference implementation
+
+`src/CrucibleEngine/reasoning/` is the canonical embodiment of this doctrine — read it as the
+worked example, extend it, and route real traffic through it:
+
+- `types.ts` — the vocabulary (Candidate, Verdict, Proposer, Verifier, TaskSpec, SearchResult).
+- `search.ts` — the deterministic propose→verify→backtrack beam engine. **The model never
+  touches control flow here.** This file is the reasoner.
+- `codeVerifier.ts` — ground truth for code: *executes* candidates against acceptance cases,
+  returns high-information feedback. Zero model.
+- `codeProposer.ts` — the ONLY place the model lives; turns spec + prior-failure feedback into
+  the next guess.
+- `solve.ts` — assembles them: `solveCodeTask(spec) → certified solution | honest abstain`.
+- `__vgr_bench.ts` (`npm run vgr:bench`) — proves the thesis: single-shot ships a wrong answer;
+  the loop rejects it via execution and certifies a correct one; a non-converging proposer
+  abstains instead of shipping garbage.
+
+## How to hold yourself to this (every session, no exceptions)
+
+Before building anything, ask: **"Where is the deterministic verifier, and what is the
+ground truth?"** If you can't answer, you are about to build oracle-trust or a memorized-answer
+patch — stop and reshape it into the loop. When you finish, ask: **"Did this make the system
+reason better about problems it has never seen, or did it just paper over one it had?"** Only
+the former counts. Everything else is the reason two months produced zero capability gain.

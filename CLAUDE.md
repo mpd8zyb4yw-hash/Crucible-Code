@@ -1,11 +1,25 @@
 # Crucible
 
-**STOP — read [`ROADMAP.md`](./ROADMAP.md) before any coding work.**
+**STOP — read [`DOCTRINE.md`](./DOCTRINE.md) FIRST, then [`ROADMAP.md`](./ROADMAP.md), before any coding work.**
 
-`ROADMAP.md` is the single source of truth for this project: what exists, what's planned, the
-working rules, run commands, and the dated change log. It replaces all prior handoff docs.
+`DOCTRINE.md` is the NORTH STAR and supersedes every older statement of purpose in this repo.
+The thesis in one line: **correctness comes from the LOOP, not the oracle** — an unreliable
+small on-device model + a sound deterministic verifier + search = a system more reliable than
+the model. We do NOT need a bigger model (8GB Mac, ~3B ANE model is the permanent ceiling and
+the correct choice); every performance gain comes from better verification-and-search infra,
+never more parameters. NOT preloaded/memorized answers — the system must reason about NOVEL
+problems it has not seen. Reference implementation: `src/CrucibleEngine/reasoning/`
+(`npm run vgr:bench`). If ROADMAP.md or any comment contradicts DOCTRINE.md, the doctrine
+wins and the other doc is wrong — fix it to match.
 
-Non-negotiables (full detail in ROADMAP.md):
+`ROADMAP.md` is the operational source of truth: what exists, what's planned, run commands, and
+the dated change log — all in service of the doctrine above.
+
+Non-negotiables (full detail in DOCTRINE.md + ROADMAP.md):
+- **Correctness from the loop** — every feature is an instance of propose→verify→backtrack:
+  formalize "correct" as a mechanical check, let the model only PROPOSE, certify with a
+  deterministic verifier, maximize information-per-model-call, abstain honestly when it can't be
+  verified. No oracle-trust, no memorized-answer critics, no "we need a bigger model" framing.
 - **Verify, never guess** — confirm a feature is actually wired in (grep for callers) before
   marking it done or assuming it's missing.
 - **Free-tier philosophy** — free models + the self-refinement pipeline ("garbage in, gold out").

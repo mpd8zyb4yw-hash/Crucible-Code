@@ -1,6 +1,24 @@
 # Crucible — Master Roadmap & Handoff
 
-> ## ⭐ MISSION (2026-06-29, success bar sharpened 2026-07-06) — supersedes all older framing below
+> ## 🧭 NORTH STAR (2026-07-09) — read [`DOCTRINE.md`](./DOCTRINE.md); it supersedes ALL framing in this file
+>
+> **Correctness comes from the LOOP, not the oracle.** An unreliable small on-device model
+> (~3B Apple FM — the permanent, correct ceiling for an 8GB Mac) **+** a sound deterministic
+> verifier **+** search **=** a system *more reliable than the model.* This is provable and is
+> how AlphaProof/AlphaCode/SMT-synthesis all work. **We do NOT need more parameters** — every
+> gain comes from better verification-and-search infra. **We do NOT ship preloaded/memorized
+> answers** — the system must reason about NOVEL problems; a critic that patches one specific
+> failing prompt is banned debt, not progress. The model only ever *proposes*; deterministic
+> ground truth (execution / compiler / property / independent derivation) certifies; the loop
+> explores, prunes, backtracks, and **abstains honestly** when it cannot certify.
+>
+> Reference implementation of the doctrine: [`src/CrucibleEngine/reasoning/`](./src/CrucibleEngine/reasoning/)
+> — `npm run vgr:bench` proves single-shot ships a wrong answer while the loop rejects it via
+> execution and certifies a correct one. **Every future feature must be shaped as this loop.**
+> The MISSION block below is retained for the success-bar detail (items 1-5), but where its
+> language implies "Claude-parity via the model" or oracle-trust, DOCTRINE.md governs.
+>
+> ## ⭐ MISSION (2026-06-29, success bar sharpened 2026-07-06; subordinate to the NORTH STAR above)
 >
 > **Goal: model-cost-independent agentic coding at Claude/Codex-parity output quality.**
 > "Model-cost-independent" means: no paid external model APIs; no token-/rate-limited
