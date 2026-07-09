@@ -21,7 +21,7 @@
 
 import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode } from './codeVerifier'
-import { solveCodeTask, solveCodingRequest } from './solve'
+import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { extractCodeSpec } from './specExtractor'
 import type { Candidate, ProposeContext } from './types'
@@ -207,6 +207,38 @@ async function run() {
     ok(`${fam}: correct impl certified AND wrong impl rejected (general property, no memorized value)`,
       !!s && s.family === fam && !!g?.pass && !!b && !b.pass, b ? b.signals[0] : 'no spec')
   }
+
+  // ── PART F — poisoned-case recovery (cross-derivation drops a bad model case) ──────
+  console.log('\nPART F — poisoned model-case recovery')
+  // square spec with a POISONED case at index 2: square(4) should be 16, model said 99.
+  const sqCases = [
+    { args: [2], expected: 4, name: 'two' },
+    { args: [3], expected: 9, name: 'three' },
+    { args: [4], expected: 99, name: 'four(poison)' },
+    { args: [5], expected: 25, name: 'five' },
+  ]
+  const mkAttempt = (code: string) => ({
+    candidate: { value: code, fingerprint: fp(code) },
+    verdict: { pass: false, score: -1, signals: ['case four(poison) → got 16, expected 99'] },
+  })
+  // Two INDEPENDENT correct implementations — both fail only the poisoned case.
+  const twoIndependent = [
+    mkAttempt('export function square(n){ return n*n }'),
+    mkAttempt('export function square(n){ return Math.pow(n,2) }'),
+  ]
+  const rec = await recoverFromPoisonedCase('square', sqCases, twoIndependent as any)
+  ok('recovery drops the poisoned case when ≥2 independent impls agree it is wrong',
+    !!rec && rec.nAgree >= 2 && rec.cleaned.length === 3 && !rec.cleaned.some(c => JSON.stringify(c.args) === '[4]'),
+    rec ? `dropped 1, ${rec.nAgree} agreed` : 'no recovery')
+  // Only ONE candidate → NOT enough evidence; must NOT drop (could be a real bug, not poison).
+  const one = await recoverFromPoisonedCase('square', sqCases, [twoIndependent[0]] as any)
+  ok('recovery REFUSES to drop on a single implementation (no false certification)', one === null)
+  // Candidates disagreeing on WHICH case fails → no consensus → no drop.
+  const disagree = await recoverFromPoisonedCase('square', sqCases, [
+    mkAttempt('export function square(n){ return n*n }'),                 // fails only [4]
+    mkAttempt('export function square(n){ return n===5 ? 0 : n*n }'),     // fails only [5]
+  ] as any)
+  ok('recovery REFUSES when independent impls fail DIFFERENT cases (no agreement)', disagree === null)
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
