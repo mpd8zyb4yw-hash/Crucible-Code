@@ -19,7 +19,7 @@
 import { fmComplete } from '../agent/fmReact'
 import { type CandidateFile, type CodeAcceptance, type CodeCase, verifyMultiFileCode } from './codeVerifier'
 import { search, type SearchOpts } from './search'
-import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
+import { type Completer, detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import type { Candidate, ProposeContext, Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 // A path-like token (slash or code extension, no spaces) — same conservative shape emitPlan uses.
@@ -231,9 +231,19 @@ export async function solveMultiFileRequest(
     entry = harvested.entry; entries = harvested.entries; cases = harvested.cases
     provenance = `${cases.length} user example(s) (gold)${entries.length > 1 ? ` across ${entries.length} functions` : ''}`
   } else {
-    const ext = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete })
-    if (!ext.ok || !ext.spec) return abstain(`could not form a checkable spec: ${ext.reason ?? 'unknown'}`)
-    entry = ext.spec.entry; entries = [entry]; cases = ext.spec.cases; provenance = ext.detail ?? ''
+    // No user examples. When the request names ≥2 functions, extract consensus cases for ALL of
+    // them (so every export is verified, not just one); otherwise use the single-function extractor.
+    const declared = detectDeclaredFunctions(nl)
+    const mfx = declared.length >= 2
+      ? await extractMultiFunctionSpec(nl, declared, { samples: opts.specSamples, complete: opts.specComplete })
+      : { ok: false as const, reason: 'fewer than 2 declared functions' }
+    if (mfx.ok && mfx.spec) {
+      entry = mfx.spec.entry; entries = mfx.spec.entries; cases = mfx.spec.cases; provenance = mfx.detail ?? ''
+    } else {
+      const ext = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete })
+      if (!ext.ok || !ext.spec) return abstain(`could not form a checkable spec: ${ext.reason ?? mfx.reason ?? 'unknown'}`)
+      entry = ext.spec.entry; entries = [entry]; cases = ext.spec.cases; provenance = ext.detail ?? ''
+    }
   }
 
   const spec: TaskSpec = {

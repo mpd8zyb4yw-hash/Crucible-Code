@@ -24,7 +24,7 @@ import { verifyCode, verifyMultiFileCode } from './codeVerifier'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { detectTargetPath, planEmit } from './emitPlan'
-import { extractCodeSpec, harvestExplicitExamples } from './specExtractor'
+import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
 import type { CandidateFile } from './codeVerifier'
 import type { Candidate, ProposeContext } from './types'
@@ -377,6 +377,30 @@ async function run() {
   const collapsed = await solveMultiFileRequest(MF_TASK, { maxModelCalls: 3, beamWidth: 1 }, collapseMock)
   ok('collapsing a 2-file request into ONE file is rejected by the coverage gate (never falsely "solved")',
     collapsed.status !== 'solved' && collapsed.files === null)
+
+  // No-USER-example MULTI-FUNCTION path: consensus cases extracted for EVERY named function, then
+  // the whole graph certified — proven deterministically with an injected completer + mock proposer.
+  const NOEX = 'Create src/mathx.ts exporting square(n) and src/use.ts importing square and exporting sumSquares(a, b).'
+  ok('detectDeclaredFunctions finds both named functions',
+    JSON.stringify(detectDeclaredFunctions(NOEX).sort()) === '["square","sumSquares"]')
+  const specCompleter = async () => JSON.stringify({ cases: [
+    { entry: 'square', args: [3], expected: 9 }, { entry: 'square', args: [0], expected: 0 },
+    { entry: 'sumSquares', args: [3, 4], expected: 25 }, { entry: 'sumSquares', args: [0, 0], expected: 0 },
+  ] })
+  const mfx = await extractMultiFunctionSpec(NOEX, detectDeclaredFunctions(NOEX), { samples: 3, complete: specCompleter })
+  ok('multi-function extraction yields consensus cases for BOTH functions',
+    mfx.ok && mfx.spec?.entries.length === 2 && mfx.spec.cases.some(c => c.entry === 'square') && mfx.spec.cases.some(c => c.entry === 'sumSquares'),
+    mfx.detail)
+  const noexProposer = async (): Promise<Candidate<CandidateFile[]>> => ({
+    value: [
+      { path: 'src/mathx.ts', source: 'export function square(n){return n*n}' },
+      { path: 'src/use.ts', source: "import { square } from './mathx'\nexport function sumSquares(a,b){return square(a)+square(b)}" },
+    ], fingerprint: 'noex',
+  })
+  const noex = await solveMultiFileRequest(NOEX, { specComplete: specCompleter, specSamples: 3, maxModelCalls: 3, beamWidth: 1 }, noexProposer)
+  ok('no-example multi-function graph is CERTIFIED across files (every export verified, not just one)',
+    noex.status === 'solved' && noex.files?.length === 2 && (noex.entries?.length ?? 0) === 2,
+    noex.detail)
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()

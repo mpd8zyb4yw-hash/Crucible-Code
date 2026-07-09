@@ -135,6 +135,130 @@ export function harvestExplicitExamples(nl: string): Harvested {
   return { entry: primary, entries, cases }
 }
 
+// ── Multi-FUNCTION spec extraction (for multi-file no-example requests) ─────────────
+// A multi-file request with no user examples ("src/a.ts exporting square(n) and src/b.ts
+// exporting sumSquares(a,b)…") names SEVERAL functions but states no f(x)===y. extractCodeSpec
+// only models ONE function, so the other exports go unverified. This extracts consensus cases
+// for EACH named function at once: the consensus filter keys on (entry, args) so each function's
+// ground truth is cross-checked independently. Same doctrine — model proposes, consensus certifies.
+
+const IDENT_RX = /^[A-Za-z_$][\w$]*$/
+const NON_FN_WORDS = new Set(['if', 'for', 'while', 'return', 'function', 'const', 'let', 'var', 'switch', 'catch'])
+
+/** Function names the request explicitly asks to export/define (identifier before `(`). */
+export function detectDeclaredFunctions(nl: string): string[] {
+  const names = new Set<string>()
+  // "exporting/exports/defines/expose the NAME(" — a declared export.
+  for (const m of nl.matchAll(/\b(?:export(?:ing|s)?|expose[sd]?|defines?|declares?)\s+(?:a\s+|the\s+|an\s+)?([A-Za-z_$][\w$]*)\s*\(/gi)) names.add(m[1])
+  // Any bare call-shaped signature "NAME(args)" (in a no-example request these ARE the fns).
+  for (const m of nl.matchAll(/\b([A-Za-z_$][\w$]*)\s*\([^)]*\)/g)) names.add(m[1])
+  return [...names].filter(n => IDENT_RX.test(n) && !NON_FN_WORDS.has(n.toLowerCase()))
+}
+
+const MULTI_SYSTEM = (fns: string[]) => [
+  'You convert a coding request into a MACHINE-CHECKABLE test specification for MULTIPLE functions.',
+  'You are inside a verification system: the cases you emit become the ground truth implementations are',
+  'executed against, so they must be UNAMBIGUOUS and CORRECT. Only include a case whose expected output',
+  'is fully determined by the request — never guess.',
+  '',
+  `The request defines these functions: ${fns.map(f => '`' + f + '`').join(', ')}.`,
+  'Output STRICT JSON and nothing else, shape:',
+  '{ "cases": [ { "entry": "<functionName>", "args": [<json args>], "expected": <json value>, "name": "<short>" } ] }',
+  '',
+  '- Every case MUST set "entry" to the function it targets (exactly one of the names above).',
+  '- Give 2-4 cases PER function covering normal, boundary, and edge inputs.',
+  '- "args" is ALWAYS a JSON array (a single argument 5 is written [5], never 5).',
+  '- If you cannot determine ANY concrete expected output, output {"cases":[]}.',
+  '',
+  '### Example (for a DIFFERENT request defining `inc` and `add` — do not copy its values):',
+  '{ "cases": [',
+  '  { "entry": "inc", "args": [4], "expected": 5, "name": "inc" },',
+  '  { "entry": "inc", "args": [0], "expected": 1, "name": "inc zero" },',
+  '  { "entry": "add", "args": [2, 3], "expected": 5, "name": "add" },',
+  '  { "entry": "add", "args": [0, 0], "expected": 0, "name": "add zero" } ] }',
+  'Note EVERY named function has its OWN cases, and every "args" is an array.',
+].join('\n')
+
+export interface MultiFunctionSpec { entry: string; entries: string[]; cases: CodeCase[] }
+
+/**
+ * Extract consensus cases for several named functions from a no-example request. Draws `samples`
+ * independent proposals; keeps a case only when its (entry,args)→expected agrees across a majority.
+ * Requires ≥2 functions to survive with ≥1 case each (else the single-function path is enough and
+ * this abstains). No user examples are consulted here — that path is handled upstream.
+ */
+export async function extractMultiFunctionSpec(
+  nl: string,
+  fns: string[],
+  opts: { samples?: number; complete?: Completer } = {},
+): Promise<{ ok: boolean; spec?: MultiFunctionSpec; detail?: string; reason?: string }> {
+  const targets = fns.filter(f => IDENT_RX.test(f))
+  if (targets.length < 2) return { ok: false, reason: 'fewer than 2 named functions — use the single-function path' }
+  const samples = Math.max(1, opts.samples ?? 3)
+  const complete = opts.complete ?? fmComplete
+  const allow = new Set(targets)
+
+  const proposals: CodeCase[][] = []
+  for (let i = 0; i < samples; i++) {
+    let raw: string
+    try {
+      raw = await complete(
+        [{ role: 'system', content: MULTI_SYSTEM(targets) }, { role: 'user', content: `Request:\n${nl}` }],
+        { temperature: i === 0 ? 0.1 : 0.5 },
+      )
+    } catch { continue }
+    const parsed = parseRaw(raw)
+    const cs: CodeCase[] = []
+    if (parsed && Array.isArray((parsed as any).cases)) {
+      for (const c of (parsed as any).cases) {
+        // Coerce a scalar `args` to a single-element list — weak models often write `"args": 5`
+        // meaning `[5]`. Dropping those (Array.isArray only) lost most of a function's cases.
+        if (c && typeof c === 'object' && 'args' in c && 'expected' in c && typeof c.entry === 'string' && allow.has(c.entry)) {
+          const args = Array.isArray(c.args) ? c.args : [c.args]
+          cs.push({ entry: c.entry, args, expected: c.expected, name: c.name })
+        }
+      }
+    }
+    if (cs.length) proposals.push(cs)
+  }
+  if (!proposals.length) return { ok: false, reason: 'no parseable multi-function spec proposal from the model' }
+
+  // Consensus keyed on (entry, args): each function's ground truth is cross-checked independently.
+  const byKey = new Map<string, { entry: string; args: unknown[]; name?: string; expected: Map<string, { v: unknown; n: number }> }>()
+  for (const p of proposals) {
+    const seen = new Set<string>()
+    for (const c of p) {
+      const key = `${c.entry}|${argsKey(c.args)}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const slot = byKey.get(key) ?? { entry: c.entry!, args: c.args, name: c.name, expected: new Map() }
+      const vk = valKey(c.expected)
+      const ev = slot.expected.get(vk) ?? { v: c.expected, n: 0 }
+      ev.n++; slot.expected.set(vk, ev)
+      byKey.set(key, slot)
+    }
+  }
+  const majority = samples === 1 ? 1 : Math.floor(samples / 2) + 1
+  const cases: CodeCase[] = []
+  for (const slot of byKey.values()) {
+    const top = [...slot.expected.values()].sort((a, b) => b.n - a.n)[0]
+    if (top && (samples === 1 || top.n >= majority)) {
+      cases.push({ entry: slot.entry, args: slot.args as unknown[], expected: top.v, name: slot.name })
+    }
+  }
+
+  // Require ≥2 distinct functions to survive consensus (each with ≥1 case) — else this isn't a
+  // trustworthy multi-function spec and we abstain rather than certify a half-specified graph.
+  const covered = [...new Set(cases.map(c => c.entry!))]
+  if (covered.length < 2) return { ok: false, reason: `only ${covered.length} function(s) reached consensus — multi-function spec not trustworthy` }
+  const primary = covered.reduce((a, b) => (cases.filter(c => c.entry === b).length > cases.filter(c => c.entry === a).length ? b : a))
+  return {
+    ok: true,
+    spec: { entry: primary, entries: covered, cases },
+    detail: `${cases.length} model-consensus case(s) across ${covered.length} functions [${covered.join(', ')}]`,
+  }
+}
+
 /** Parse the model's JSON (tolerating a ```json fence and surrounding prose). */
 function parseRaw(text: string): RawSpec | null {
   if (!text) return null
@@ -159,8 +283,10 @@ function normalizeCases(raw: RawSpec): { entry: string; cases: CodeCase[] } {
   const cases: CodeCase[] = []
   if (Array.isArray(raw.cases)) {
     for (const c of raw.cases) {
-      if (c && typeof c === 'object' && 'args' in c && 'expected' in c && Array.isArray((c as any).args)) {
-        cases.push({ args: (c as any).args, expected: (c as any).expected, name: (c as any).name })
+      // Coerce a scalar `args` to `[args]` — weak models write `"args": 5` for a single argument.
+      if (c && typeof c === 'object' && 'args' in c && 'expected' in c) {
+        const a = (c as any).args
+        cases.push({ args: Array.isArray(a) ? a : [a], expected: (c as any).expected, name: (c as any).name })
       }
     }
   }
