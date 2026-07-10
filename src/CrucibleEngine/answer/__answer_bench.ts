@@ -5,7 +5,7 @@
 import { classifyFacets } from './answerEngine'
 import { critiqueAnswer } from './verify'
 import { normalizeAnswer } from './selfConsistency'
-import { applyRecomputation, evalArithmeticExpr, recomputeWordProblem, type Completer } from './wordProblem'
+import { applyRecomputation, evalArithmeticExpr, evalSteps, evalWithEnv, recomputeMultiStep, recomputeWordProblem, type Completer } from './wordProblem'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -33,6 +33,17 @@ console.log('== facet classification: routing ==')
 
   const chat = classifyFacets('I feel overwhelmed with work lately, any advice?')
   check('advice → converse (natural length), not external', chat.intent === 'converse' && !chat.needsExternalFact, JSON.stringify(chat))
+
+  // Broadened computation detection: discount/percent/money-math now route to recomputation.
+  const disc = classifyFacets('A shirt costs $40 and is discounted 25%. What is the sale price?')
+  check('discount/percent problem → needsComputation (routes to recomputation)', disc.needsComputation, JSON.stringify(disc))
+  const total = classifyFacets('You buy 3 notebooks at $4 each and 2 pens at $1.50 each. What is the total cost?')
+  check('"what is the total cost" with numbers → needsComputation', total.needsComputation, JSON.stringify(total))
+  // Guard: a numberless / non-quantitative question must NOT be misrouted as computation.
+  const cap2 = classifyFacets('What is the capital of France?')
+  check('lookup with no numbers → NOT needsComputation (no over-routing)', !cap2.needsComputation, JSON.stringify(cap2))
+  const priceLookup = classifyFacets('What is the price of a Tesla Model 3?')
+  check('bare price lookup (no numbers in Q) → NOT needsComputation', !priceLookup.needsComputation, JSON.stringify(priceLookup))
 }
 
 console.log('== critic pass: arithmetic oracle fixes in place ==')
@@ -148,6 +159,41 @@ console.log('== word-problem recomputation: reconcile the machine value with the
   check('a correct stated answer is CONFIRMED, not altered', right.confirmed && right.text.includes('150'), JSON.stringify(right))
   const none = applyRecomputation('The train is quite fast on that route.', recomp)
   check('a draft with no number gets an explicit machine Answer appended', /Answer:\s*150 miles/.test(none.text), none.text)
+
+  // SAFETY: a computed elapsed-hours value must NOT overwrite a correct time-of-day answer.
+  const clockDraft = 'The second train catches up 3 hours later.\nAnswer: 7:00 PM'
+  const guarded = applyRecomputation(clockDraft, { value: 3, unit: 'hours', expression: '(80-60)', agreement: 1, samples: 3 })
+  check('time-of-day answer is NOT corrupted by a bare-quantity recomputation (7:00 PM preserved)',
+    !guarded.corrected && guarded.text === clockDraft, guarded.text)
+}
+
+console.log('== multi-step recomputation: variable-resolving DAG evaluation ==')
+{
+  check('evalWithEnv resolves known vars ((a)-(b) with a=80,b=60 → 20)', evalWithEnv('a - b', { a: 80, b: 60 }) === 20)
+  check('evalWithEnv composes signs correctly (a + b with b=-5 → 5)', evalWithEnv('a + b', { a: 10, b: -5 }) === 5)
+  check('evalWithEnv REJECTS an unknown var (→ null, no guessing)', evalWithEnv('a * c', { a: 2 }) === null)
+  // Catch-up problem: head start / relative speed → hours to catch up.
+  const steps = [
+    { var: 'head_start', expr: '60 * 1' },   // train A's 1-hour lead distance
+    { var: 'rel_speed', expr: '80 - 60' },   // B closes at 20 mph
+    { var: 'catch', expr: 'head_start / rel_speed' },
+  ]
+  check('evalSteps evaluates a step DAG (catch-up → 3 hours)', evalSteps(steps, 'catch') === 3)
+  check('evalSteps returns null when the answer var is undefined', evalSteps(steps, 'nope') === null)
+}
+
+console.log('== multi-step recomputation: consensus over independent step DAGs ==')
+{
+  const dag = '{"steps":[{"var":"h","expr":"60*1"},{"var":"r","expr":"80-60"},{"var":"c","expr":"h/r"}],"answer":"c","unit":"hours"}'
+  const dagAlt = '{"steps":[{"var":"lead","expr":"60"},{"var":"gain","expr":"80-60"},{"var":"t","expr":"lead/gain"}],"answer":"t","unit":"hours"}'
+  const agree = await recomputeMultiStep('A train leaves at 3pm at 60mph; another leaves at 4pm at 80mph. Hours until it catches up?', {
+    samples: 3, complete: replay([dag, dagAlt, dag]),
+  })
+  check('independent step DAGs agree → 3 hours (machine computes, model only sets up)', !!agree && agree.value === 3, JSON.stringify(agree))
+
+  const badDag = '{"steps":[{"var":"c","expr":"h / r"}],"answer":"c"}' // references undefined vars → unevaluable
+  const noquorum = await recomputeMultiStep('x', { samples: 3, complete: replay([badDag, badDag, badDag]) })
+  check('unevaluable step DAGs (undefined vars) → abstains', noquorum === null, JSON.stringify(noquorum))
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)

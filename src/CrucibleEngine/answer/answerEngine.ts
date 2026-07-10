@@ -17,7 +17,7 @@ import { solveNonCodeTurn } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
-import { applyRecomputation, recomputeWordProblem } from './wordProblem'
+import { applyRecomputation, recomputeMultiStep, recomputeWordProblem } from './wordProblem'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -67,19 +67,29 @@ const CODE_CONSTRUCT = /\b(function|method|class|code|script|program|lambda|clos
 const EXTERNAL_FACT = /\b(latest|current(ly)?|todays?|tonight|right now|this (week|month|year)|recent(ly)?|news|headline|prices?|stock|shares?|market|weather|forecast|temperature|scores?|who won|standings?|release date|released|newest|as of|up to date|nowadays)\b/i
 const MULTISTEP = /\b(and then|first[, ]|then |after that|finally|step by step|as well as)\b|.*\?.*\?/i
 const REASON = /\b(if\b[^?]*\b(then|will|would|does)|how (long|far|fast|many|much) (until|before|would|will|does|do)|calculate|solve|prove|derive|catch up|how old|what time|percentage|ratio|average|per (hour|day|week|minute|second)|mph|km\/h)\b/i
+// A quantitative ASK that REASON misses — discount/percent/money math and "what is the <quantity>"
+// questions. Gated by NUMERIC below, so it never fires without numbers to compute over. This is
+// what routes an arithmetic question into deterministic recomputation instead of a raw FM guess.
+const COMPUTE_ASK = /(\d\s*%|\bpercent\b|\bdiscount(ed)?\b|\bsales? tax\b|\btip\b|\bsale price\b|\btotal (cost|price|amount|of)\b|\bhow much (is|are|does|do|will|would|much|in total)\b|\bwhat(?:'| i)?s?\s+the\s+(total|sum|product|difference|area|perimeter|average|mean|cost|price|result|remainder)\b)/i
 const EXPLAIN = /\b(explain|how (does|do|to)|describe|what (is|are) (a |an |the )?[a-z]|why (does|do|is|are)|walk me through|tell me about|difference between|compare|pros and cons|trade-?offs?)\b/i
 const NUMERIC = /\d/
 
 export function classifyFacets(message: string): AnswerFacets {
   const m = message ?? ''
   const isCode = CODE_GEN.test(m) || CODE_FENCE.test(m) || (LANG.test(m) && CODE_CONSTRUCT.test(m))
-  const needsComputation = !isCode && NUMERIC.test(m) && REASON.test(m)
-  // A computation-bearing reasoning question with two or more quantities is inherently
-  // multi-step (relate the quantities → compute → conclude), even without an explicit "and
-  // then". This is the signal Stage 2 uses to decompose + oracle-check each step.
+  // A computation-bearing question that STATES two or more quantities is inherently multi-step
+  // (relate → compute → conclude); it is also the signal that disambiguates a self-contained math
+  // problem from a volatile lookup that merely shares a word like "price".
   const multiQuantity = (m.match(/\d+(?:\.\d+)?/g) || []).length >= 2
+  const extFactRaw = !isCode && EXTERNAL_FACT.test(m)
+  // Computation wins over external-fact ONLY when the question supplies its own operands (≥2
+  // numbers): "shirt costs $40, discounted 25%, sale price?" is arithmetic, while "price of a
+  // Tesla Model 3?" (one incidental digit) is a volatile lookup. A single-number arithmetic ask
+  // still counts when it isn't an external-fact lookup at all.
+  const needsComputation = !isCode && NUMERIC.test(m) && (REASON.test(m) || COMPUTE_ASK.test(m)) && (multiQuantity || !extFactRaw)
+  // A self-contained math problem is not a retrieval, even if it shares a volatile-fact keyword.
+  const needsExternalFact = extFactRaw && !needsComputation
   const needsMultiStep = !isCode && (MULTISTEP.test(m) || (needsComputation && (/\band\b/i.test(m) || multiQuantity)))
-  const needsExternalFact = !isCode && EXTERNAL_FACT.test(m)
 
   let intent: AnswerIntent
   if (isCode) intent = 'reason'
@@ -227,7 +237,12 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   let recomputed = false
   if (facets.needsComputation && !usedRetrieval && !signal?.aborted) {
     try {
+      // Try the single-expression extractor FIRST — it is fast (~3s) and, because the model can
+      // nest ("120 - (3/4 * 120) - 15"), it already covers most compound problems. Only when it
+      // can't form a quorum AND the question is multi-step do we pay for the richer (slower) step-
+      // DAG setup, which handles the genuinely irreducible cases (relative speed, head start).
       const recomp = await recomputeWordProblem(message)
+        ?? (facets.needsMultiStep ? await recomputeMultiStep(message) : null)
       if (recomp) {
         const rec = applyRecomputation(text, recomp)
         if (rec.corrected) {
