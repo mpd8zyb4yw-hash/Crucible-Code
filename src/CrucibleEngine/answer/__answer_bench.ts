@@ -5,6 +5,7 @@
 import { classifyFacets } from './answerEngine'
 import { critiqueAnswer } from './verify'
 import { normalizeAnswer } from './selfConsistency'
+import { applyRecomputation, evalArithmeticExpr, recomputeWordProblem, type Completer } from './wordProblem'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -91,6 +92,62 @@ console.log('== self-consistency: final-answer normalization (voting key) ==')
     String(normalizeAnswer('First the head start is 60 miles.\nAnswer: 26')))
   check('currency/commas stripped ($1,200 → 1200)', normalizeAnswer('Answer: $1,200') === 'n:1200', String(normalizeAnswer('Answer: $1,200')))
   check('empty / no answer → null', normalizeAnswer('   ') === null)
+}
+
+console.log('== word-problem recomputation: safe arithmetic evaluation (machine does the math) ==')
+{
+  check('evaluates a product (60 * 2.5 = 150)', evalArithmeticExpr('60 * 2.5') === 150)
+  check('respects parentheses ((3 + 4) * 2 = 14)', evalArithmeticExpr('(3 + 4) * 2') === 14)
+  check('division with a fraction (10 / 4 = 2.5)', evalArithmeticExpr('10 / 4') === 2.5)
+  check('unicode × normalized (60 × 2.5 = 150)', evalArithmeticExpr('60 × 2.5') === 150)
+  check('caret power (2 ^ 3 = 8)', evalArithmeticExpr('2 ^ 3') === 8)
+  check('REJECTS a variable (60 * t → null, never evals identifiers)', evalArithmeticExpr('60 * t') === null)
+  check('REJECTS a bare number (no operator → not a computation)', evalArithmeticExpr('150') === null)
+}
+
+// A completer that replays canned JSON extractions in order (proves the loop, no live model).
+const replay = (jsons: string[]): Completer => {
+  let i = 0
+  return async () => jsons[Math.min(i++, jsons.length - 1)]
+}
+
+console.log('== word-problem recomputation: consensus over independent SETUPS ==')
+{
+  // All three setups agree → machine value 150 (the model never computes it).
+  const agree = await recomputeWordProblem('A train travels 60 mph for 2.5 hours. How far?', {
+    samples: 3, complete: replay(['{"expression":"60 * 2.5","unit":"miles"}', '{"expression":"60*2.5","unit":"miles"}', '{"expression":"(60)*(2.5)","unit":"mi"}']),
+  })
+  check('quorum of agreeing setups → value 150 miles', !!agree && agree.value === 150 && agree.unit === 'miles', JSON.stringify(agree))
+
+  // A 2-of-3 majority still certifies; the odd wrong setup is outvoted.
+  const majority = await recomputeWordProblem('x', {
+    samples: 3, complete: replay(['{"expression":"60 * 2.5","unit":"miles"}', '{"expression":"60 * 2.5","unit":""}', '{"expression":"60 * 2","unit":"miles"}']),
+  })
+  check('2-of-3 setups agree → majority value 150 (odd wrong setup outvoted)', !!majority && majority.value === 150, JSON.stringify(majority))
+
+  // No two setups agree → ABSTAIN (null), never fabricate an answer.
+  const noquorum = await recomputeWordProblem('x', {
+    samples: 3, complete: replay(['{"expression":"60 * 2.5"}', '{"expression":"60 * 2"}', '{"expression":"60 * 3"}']),
+  })
+  check('no two setups agree → abstains (null), never guesses', noquorum === null, JSON.stringify(noquorum))
+
+  // A setup that smuggles a variable evaluates to null and contributes no vote → abstain.
+  const novalue = await recomputeWordProblem('x', {
+    samples: 3, complete: replay(['{"expression":"60 * t"}', '{"expression":"speed * time"}', '{"expression":""}']),
+  })
+  check('non-evaluable setups → abstains (machine refuses to guess)', novalue === null, JSON.stringify(novalue))
+}
+
+console.log('== word-problem recomputation: reconcile the machine value with the draft ==')
+{
+  const recomp = { value: 150, unit: 'miles', expression: '60 * 2.5', agreement: 1, samples: 3 }
+  // THE gap: the draft states a WRONG bare answer with no equation to critique — corrected anyway.
+  const wrong = applyRecomputation('The train travels 140 miles in that time.', recomp)
+  check('wrong bare answer (140) corrected to the machine value (150)', wrong.corrected && /150 miles|travels 150/.test(wrong.text), wrong.text)
+  const right = applyRecomputation('So the distance is 150 miles.', recomp)
+  check('a correct stated answer is CONFIRMED, not altered', right.confirmed && right.text.includes('150'), JSON.stringify(right))
+  const none = applyRecomputation('The train is quite fast on that route.', recomp)
+  check('a draft with no number gets an explicit machine Answer appended', /Answer:\s*150 miles/.test(none.text), none.text)
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)

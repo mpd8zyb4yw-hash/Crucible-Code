@@ -17,6 +17,7 @@ import { solveNonCodeTurn } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
+import { applyRecomputation, recomputeWordProblem } from './wordProblem'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -217,8 +218,36 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
 
   if (corrections) emit?.({ type: 'verify', passed: true, report: `Corrected ${corrections} arithmetic error(s) with the deterministic oracle.` })
 
+  // ── Word-problem recomputation (VGR for answers) ───────────────────────────
+  // For a computation question, separate the SETUP (model) from the ARITHMETIC (machine): the
+  // model translates the problem into an expression, the machine evaluates it, and a quorum of
+  // independent extractions must agree. This catches a WRONG bare answer that no in-text
+  // arithmetic critic can see (nothing was written as an equation). Only fires on non-retrieval
+  // computation questions; abstains silently (keeps the draft) when no quorum forms.
+  let recomputed = false
+  if (facets.needsComputation && !usedRetrieval && !signal?.aborted) {
+    try {
+      const recomp = await recomputeWordProblem(message)
+      if (recomp) {
+        const rec = applyRecomputation(text, recomp)
+        if (rec.corrected) {
+          text = rec.text
+          corrections += 1
+          recomputed = true
+          emit?.({ type: 'verify', passed: true, report: `Recomputed the answer deterministically: ${recomp.expression} = ${formatRecomp(recomp)} (${recomp.samples} independent setups, ${Math.round(recomp.agreement * 100)}% agreed). Corrected a mismatched stated value.` })
+        } else if (rec.confirmed) {
+          recomputed = true
+          emit?.({ type: 'verify', passed: true, report: `Verified the answer by independent recomputation: ${recomp.expression} = ${formatRecomp(recomp)} (${recomp.samples} setups agreed).` })
+        } else {
+          text = rec.text // draft stated no number; appended an explicit machine-computed Answer.
+          recomputed = true
+        }
+      }
+    } catch { /* non-blocking: keep the critic-checked draft */ }
+  }
+
   debugBus.emit('pipeline', 'answered', {
-    message: message.slice(0, 80), intent: facets.intent, usedRetrieval, corrections, repaired, len: text.length,
+    message: message.slice(0, 80), intent: facets.intent, usedRetrieval, corrections, repaired, recomputed, len: text.length,
     ...(consensusAgreement !== null ? { consensusAgreement: Number(consensusAgreement.toFixed(2)) } : {}),
   }, { severity: 'info' })
 
@@ -226,6 +255,11 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     text, verified: true, abstained: false, ...base,
     usedRetrieval, corrections, repaired,
   }
+}
+
+function formatRecomp(recomp: { value: number; unit?: string }): string {
+  const shown = Number.isInteger(recomp.value) ? String(recomp.value) : String(Math.round(recomp.value * 1e6) / 1e6)
+  return recomp.unit ? `${shown} ${recomp.unit}` : shown
 }
 
 function buildRepairDirective(issues: Issue[]): string {
