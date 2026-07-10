@@ -312,8 +312,13 @@ Recent landed (this session, branch tip):
   on-device FM wrote lcm calling gcd across the file boundary, certified via 7 cross-
   function properties, no examples, 1 call ~3s.
 - e466d62 — property-based certification for MULTI-FILE (no-example, no consensus).
-IN PROGRESS: continuing to widen property families (range/zip/roundTo/mode/F→C next).
 DO NOT edit `reasoning/*` or `synth/*` without claiming here first.
+- 353406d — LANDED +5 more families (range/zip/roundTo/mode/fahrenheitToCelsius).
+  bench 62/62. LIVE: C→F + F→C temperature bundle certified both directions, 1 call
+  ~2.5s, no examples. Family registry (SUPP_FAMILIES) is shared by the single-file
+  supplemental path AND the multi-file per-function path, so every family added helps
+  both. Now 14 base + 22 supplemental families. Next: keep widening, or (needs a LANE-R
+  ack on server.ts) the capabilityRouter/decompositionDag collapse.
 
 ### LANE R — self-refinement engine (OTHER session)
 Owned files: `selfPatcher.ts`, `loopSignal.ts`, `autoImprove*`, `domainVerifiers.ts`,
