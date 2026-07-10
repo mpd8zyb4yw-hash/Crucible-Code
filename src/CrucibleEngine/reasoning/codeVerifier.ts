@@ -199,6 +199,78 @@ export async function verifyMultiFileCode(
   }
 }
 
+/**
+ * Verify a MULTI-FILE candidate against GENERAL PROPERTY assertions (no worked example). Bundles
+ * the import graph exactly like verifyMultiFileCode, then evaluates `prop('label', <bool>)`
+ * assertions whose bare function references resolve against the bundled exports (brought into
+ * scope via globalThis). This is how a no-example multi-file request certifies — e.g. `reverse`
+ * in one file + `isPrime` in another, each checked by its family's invariants across the graph.
+ */
+export async function verifyMultiFileByProperty(
+  files: CandidateFile[],
+  acc: { assertions: string[]; family?: string; timeoutMs?: number },
+): Promise<Verdict> {
+  const timeoutMs = acc.timeoutMs ?? 5000
+  if (!files.length) return { pass: false, score: -1000, signals: ['no files in candidate'] }
+  if (!acc.assertions?.length) return { pass: false, score: -1000, signals: ['no property assertions to check'] }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vgr-mfp-'))
+  try {
+    const written: string[] = []
+    for (const f of files) {
+      const rel = f.path.replace(/^\.\//, '')
+      const abs = path.join(dir, rel)
+      fs.mkdirSync(path.dirname(abs), { recursive: true })
+      fs.writeFileSync(abs, f.source, 'utf-8')
+      written.push(rel)
+    }
+    const barrel = written.map(rel => `export * from './${rel.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')}'`).join('\n')
+    fs.writeFileSync(path.join(dir, '__barrel.ts'), barrel, 'utf-8')
+    const runSrcPath = path.join(dir, '__run.ts')
+    fs.writeFileSync(runSrcPath, MULTI_PROP_RUNNER(acc.assertions), 'utf-8')
+
+    const bundlePath = path.join(dir, '__bundle.mjs')
+    try {
+      await build({
+        entryPoints: [runSrcPath], bundle: true, format: 'esm', platform: 'node',
+        target: 'node18', outfile: bundlePath, logLevel: 'silent', absWorkingDir: dir,
+      })
+    } catch (e: any) {
+      const msg = (e?.errors?.[0]?.text ?? e?.message ?? 'bundle error') as string
+      return { pass: false, score: -1000, signals: [`bundle/compile error (cross-file graph does not build): ${String(msg).slice(0, 220)}`] }
+    }
+
+    const out = await new Promise<{ stdout: string; stderr: string }>(resolve => {
+      execFile('node', [bundlePath], { cwd: dir, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 },
+        (_err, stdout, stderr) => resolve({ stdout, stderr }))
+    })
+    const line = out.stdout.split('\n').reverse().find(l => l.trim().startsWith('{"fail"'))
+    if (!line) {
+      const reason = firstError(out.stderr) || 'multi-file candidate failed to load or run (no result emitted)'
+      return { pass: false, score: -1000, signals: [`load/runtime error: ${reason}`] }
+    }
+    let fail: string[] = []
+    try { fail = (JSON.parse(line).fail ?? []) as string[] } catch { /* treat as no result */ }
+    if (fail.length === 0) {
+      return { pass: true, score: 0, signals: [`all ${acc.assertions.length} ${acc.family ?? 'property'} propert${acc.assertions.length === 1 ? 'y' : 'ies'} held across ${files.length} file(s)`] }
+    }
+    return { pass: false, score: -fail.length, signals: fail.slice(0, 6).map(f => `property violated: ${f}`) }
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
+  }
+}
+
+// Property harness over the bundled graph: bring every export into scope (globalThis) so the
+// assertions' bare function references resolve, then evaluate each prop() and report violations.
+function MULTI_PROP_RUNNER(assertions: string[]): string {
+  return `import * as __mod from './__barrel.ts'
+Object.assign(globalThis, __mod);
+const __fail = [];
+function prop(label, cond) { try { if (!cond) __fail.push(label); } catch (e) { __fail.push(label + ' [threw: ' + (e && e.message ? e.message : e) + ']'); } }
+${assertions.map(a => a + ';').join('\n')}
+process.stdout.write('\\n' + JSON.stringify({ fail: __fail }) + '\\n');
+`
+}
+
 // Same execution contract as RUNNER, but imports the synthetic barrel (which re-exports
 // every candidate file) so cases resolve against the whole module graph, not one file.
 function MULTI_RUNNER(entry: string, cases: CodeCase[]): string {

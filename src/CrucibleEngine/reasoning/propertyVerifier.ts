@@ -237,6 +237,20 @@ export function supplementalPropertySpec(nl: string): { entry: string; family: s
 }
 
 /**
+ * Property spec for a SPECIFIC function name (not auto-detected from the NL). Used by the
+ * multi-file path to derive properties per declared export — e.g. `reverse` and `isPrime` in a
+ * two-file request each resolve to their own family's assertions. Returns null when the name
+ * matches no high-confidence family. Name-gated exactly as SUPP_FAMILIES (no substring collisions).
+ */
+export function propertyForFunction(fn: string): { entry: string; family: string; assertions: string[] } | null {
+  if (!fn) return null
+  for (const fam of SUPP_FAMILIES) {
+    if (fam.test(fn)) return { entry: fn, family: fam.family, assertions: fam.assertions(fn) }
+  }
+  return null
+}
+
+/**
  * Verify a candidate against its property assertions by EXECUTION. Deterministic ground
  * truth: the candidate's own exported functions are checked against invariants that hold
  * for every correct implementation. Reports each violated property as high-info feedback.

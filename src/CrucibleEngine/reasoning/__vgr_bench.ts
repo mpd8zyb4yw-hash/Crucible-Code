@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { detectTargetPath, planEmit } from './emitPlan'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
-import { detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
+import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
 import type { CandidateFile } from './codeVerifier'
 import type { Candidate, ProposeContext } from './types'
 
@@ -401,6 +401,31 @@ async function run() {
   ok('no-example multi-function graph is CERTIFIED across files (every export verified, not just one)',
     noex.status === 'solved' && noex.files?.length === 2 && (noex.entries?.length ?? 0) === 2,
     noex.detail)
+
+  // No-example PROPERTY path: each declared function that matches a family is certified by its
+  // invariants ACROSS the bundle — no model-invented cases at all (doctrine's preferred no-example tier).
+  const PROP_NL = 'Create src/strings.ts exporting reverse(s) and src/numbers.ts exporting isPrime(n).'
+  const dp = deriveMultiFileProperties(detectDeclaredFunctions(PROP_NL))
+  ok('deriveMultiFileProperties collects invariants for EACH property-shaped function',
+    !!dp && dp.entries.length === 2 && dp.families.includes('reverse') && dp.families.includes('isPrime'))
+  const propRight = async (): Promise<Candidate<CandidateFile[]>> => ({
+    value: [
+      { path: 'src/strings.ts', source: 'export function reverse(s){return s.split("").reverse().join("")}' },
+      { path: 'src/numbers.ts', source: 'export function isPrime(n){if(n<2)return false;for(let d=2;d*d<=n;d++)if(n%d===0)return false;return true}' },
+    ], fingerprint: 'pr',
+  })
+  const propWrong = async (): Promise<Candidate<CandidateFile[]>> => ({
+    value: [
+      { path: 'src/strings.ts', source: 'export function reverse(s){return s}' },
+      { path: 'src/numbers.ts', source: 'export function isPrime(n){if(n<2)return false;for(let d=2;d*d<=n;d++)if(n%d===0)return false;return true}' },
+    ], fingerprint: 'pw',
+  })
+  const pg = await solveMultiFileRequest(PROP_NL, { maxModelCalls: 2, beamWidth: 1 }, propRight)
+  ok('no-example PROPERTY multi-file graph CERTIFIED across files (no model-invented cases)',
+    pg.status === 'solved' && pg.files?.length === 2, pg.detail)
+  const pw = await solveMultiFileRequest(PROP_NL, { maxModelCalls: 2, beamWidth: 1 }, propWrong)
+  ok('a property-violating file in the graph is REJECTED (real certification, not memorized)',
+    pw.status !== 'solved' && !!pw.search?.best?.verdict.signals.some(s => /property violated/.test(s)))
 
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()

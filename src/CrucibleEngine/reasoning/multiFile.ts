@@ -17,10 +17,11 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { fmComplete } from '../agent/fmReact'
-import { type CandidateFile, type CodeAcceptance, type CodeCase, verifyMultiFileCode } from './codeVerifier'
+import { type CandidateFile, type CodeAcceptance, type CodeCase, verifyMultiFileByProperty, verifyMultiFileCode } from './codeVerifier'
+import { propertyForFunction } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
-import type { Candidate, ProposeContext, Proposer, SearchResult, TaskSpec, Verifier } from './types'
+import type { Candidate, ProposeContext, Proposer, SearchResult, TaskSpec, Verdict, Verifier } from './types'
 
 // A path-like token (slash or code extension, no spaces) — same conservative shape emitPlan uses.
 const FILE_RX = /\b((?:\.\.?\/)?(?:[\w.-]+\/)*[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs))\b/g
@@ -181,18 +182,50 @@ export function multiFileProposer(requestedFiles: string[]): Proposer<CandidateF
  */
 const multiFileVerifier: Verifier<CandidateFile[]> = (cand, spec) => {
   const acc = spec.acceptance as unknown as CodeAcceptance & { files?: string[] }
-  const requested = (acc.files ?? []).map(f => f.replace(/^\.\//, ''))
-  if (requested.length >= 2) {
-    const have = new Set(cand.value.map(f => f.path.replace(/^\.\//, '')))
-    const missing = requested.filter(r => !have.has(r))
-    if (missing.length) {
-      return {
-        pass: false, score: -100,
-        signals: [`must emit ALL ${requested.length} requested files as SEPARATE \`// file:\` blocks — missing: ${missing.join(', ')}. Split the functions across the files and import across them by relative path; do not collapse everything into one file.`],
-      }
-    }
-  }
+  const gate = coverageGate(cand.value, acc.files)
+  if (gate) return gate
   return verifyMultiFileCode(cand.value, acc)
+}
+
+/** Verifier<CandidateFile[]> for the PROPERTY path — same coverage gate, then bundle+check props. */
+const multiFilePropertyVerifier: Verifier<CandidateFile[]> = (cand, spec) => {
+  const acc = spec.acceptance as unknown as { files?: string[]; assertions: string[]; family?: string }
+  const gate = coverageGate(cand.value, acc.files)
+  if (gate) return gate
+  return verifyMultiFileByProperty(cand.value, acc)
+}
+
+/**
+ * Structural coverage gate shared by both multi-file verifiers: when ≥2 files were requested, the
+ * candidate must emit all of them as separate files (a weak model likes to collapse them into one —
+ * correct-but-not-asked). Returns a failing Verdict with a pointed split signal, or null to proceed.
+ */
+function coverageGate(files: CandidateFile[], requestedFiles?: string[]): Verdict | null {
+  const requested = (requestedFiles ?? []).map(f => f.replace(/^\.\//, ''))
+  if (requested.length < 2) return null
+  const have = new Set(files.map(f => f.path.replace(/^\.\//, '')))
+  const missing = requested.filter(r => !have.has(r))
+  if (!missing.length) return null
+  return {
+    pass: false, score: -100,
+    signals: [`must emit ALL ${requested.length} requested files as SEPARATE \`// file:\` blocks — missing: ${missing.join(', ')}. Split the functions across the files and import across them by relative path; do not collapse everything into one file.`],
+  }
+}
+
+/**
+ * Derive property assertions for a no-example multi-file request by checking EACH declared function
+ * against the property families. Returns the union of every matching function's assertions (so a
+ * request defining `reverse` + `isPrime` certifies both), or null when no function matches a family.
+ */
+export function deriveMultiFileProperties(fns: string[]): { entries: string[]; families: string[]; assertions: string[] } | null {
+  const entries: string[] = []
+  const families: string[] = []
+  const assertions: string[] = []
+  for (const fn of fns) {
+    const p = propertyForFunction(fn)
+    if (p) { entries.push(fn); families.push(p.family); assertions.push(...p.assertions) }
+  }
+  return assertions.length ? { entries, families, assertions } : null
 }
 
 export interface MultiFileResult {
@@ -231,9 +264,33 @@ export async function solveMultiFileRequest(
     entry = harvested.entry; entries = harvested.entries; cases = harvested.cases
     provenance = `${cases.length} user example(s) (gold)${entries.length > 1 ? ` across ${entries.length} functions` : ''}`
   } else {
-    // No user examples. When the request names ≥2 functions, extract consensus cases for ALL of
-    // them (so every export is verified, not just one); otherwise use the single-function extractor.
+    // No user examples. DOCTRINE ORDER (trust): a GENERAL PROPERTY beats model-invented cases, so
+    // try property families FIRST — for each declared function that matches a family, certify the
+    // whole graph against that family's invariants (true for all inputs, no model bias). This
+    // sidesteps the weak-FM consensus ceiling entirely when the functions are property-shaped.
     const declared = detectDeclaredFunctions(nl)
+    const props = deriveMultiFileProperties(declared)
+    if (props) {
+      const pspec: TaskSpec = {
+        goal: nl, domain: 'code',
+        acceptance: {
+          entry: props.entries[0], entries: props.entries.length > 1 ? props.entries : undefined,
+          assertions: props.assertions, family: [...new Set(props.families)].join('+'),
+          files: requestedFiles.length ? requestedFiles : undefined,
+        } as unknown as Record<string, unknown>,
+      }
+      const proposer = proposerOverride ?? multiFileProposer(requestedFiles)
+      const result = await search(pspec, proposer, multiFilePropertyVerifier, opts)
+      return {
+        status: result.status,
+        files: result.status === 'solved' ? (result.solution?.value ?? null) : null,
+        entry: props.entries[0], entries: props.entries, cases: null, requestedFiles, search: result,
+        detail: `no example → ${props.assertions.length} propert${props.assertions.length === 1 ? 'y' : 'ies'} across ${props.entries.length} function(s) [${props.entries.join(', ')}]${requestedFiles.length ? `; target files [${requestedFiles.join(', ')}]` : ''}; ${result.detail}`,
+      }
+    }
+
+    // Else fall to model-consensus. When the request names ≥2 functions, extract consensus cases
+    // for ALL of them (so every export is verified, not just one); otherwise single-function.
     const mfx = declared.length >= 2
       ? await extractMultiFunctionSpec(nl, declared, { samples: opts.specSamples, complete: opts.specComplete })
       : { ok: false as const, reason: 'fewer than 2 declared functions' }
