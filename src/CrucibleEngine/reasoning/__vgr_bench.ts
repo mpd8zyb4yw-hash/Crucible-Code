@@ -23,6 +23,7 @@ import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode, verifyMultiFileCode } from './codeVerifier'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
+import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { detectTargetPath, planEmit } from './emitPlan'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -459,6 +460,56 @@ async function run() {
   ok('no-example temperature bundle CERTIFIED by widened property families',
     tmpg.status === 'solved' && tmpg.files?.length === 2, tmpg.detail)
 
+  // ── DIFFERENTIAL CONSENSUS — certify an ARBITRARY function with no property family ──
+  // titleCase matches NO property family, so the strong property path abstains. Differential
+  // consensus derives its ground truth from agreement across independently-written impls on
+  // system-fuzzed inputs — the mechanism that reaches beyond the family whitelist. All impls
+  // deterministic (injected sampler) so this proves the ORACLE with zero model dependency.
+  const mkImpl = (source: string) => ({ source, fingerprint: implFingerprint(source) })
+  const TITLE = 'Write titleCase(s) that upper-cases the first letter of each space-separated word and lower-cases the rest.'
+
+  // No property family covers titleCase — this is exactly the gap differential closes.
+  ok('property path ABSTAINS on titleCase (no family) — the gap differential must cover',
+    derivePropertySpec(TITLE) === null)
+
+  // Three genuinely-independent CORRECT implementations (split/map, regex-replace, char-reduce).
+  const titleImpls = [
+    mkImpl(`export function titleCase(s){return s.split(' ').map(w=>w?w[0].toUpperCase()+w.slice(1).toLowerCase():w).join(' ')}`),
+    mkImpl(`export function titleCase(s){return s.replace(/\\S+/g,w=>w.charAt(0).toUpperCase()+w.substring(1).toLowerCase())}`),
+    mkImpl(`export function titleCase(s){let o='',b=true;for(const c of s){if(c===' '){o+=c;b=true}else{o+=b?c.toUpperCase():c.toLowerCase();b=false}}return o}`),
+  ]
+  const diff = await deriveDifferentialSpec(TITLE, { sampleImpls: async () => titleImpls, minCases: 4 })
+  ok('differential consensus DERIVES a trustworthy spec for titleCase (no family, no user examples)',
+    diff.ok && !!diff.spec && diff.spec.cases.length >= 4, diff.detail ?? diff.reason)
+
+  if (diff.ok && diff.spec) {
+    const acc = { goal: '', domain: 'code' as const, acceptance: { entry: 'titleCase', cases: diff.spec.cases } as any }
+    // A FRESH correct impl (not among the samplers) passes every derived case → the spec is sound.
+    const fresh = { value: `export function titleCase(s){return s.split(' ').map(w=>w.length?w[0].toUpperCase()+w.slice(1).toLowerCase():'').join(' ')}`, fingerprint: 'fresh' }
+    const vFresh = await verifyCode(fresh, acc)
+    ok('a fresh correct impl PASSES every differentially-derived case (spec is sound, not overfit)', vFresh.pass, vFresh.signals[0])
+    // A plausible-but-WRONG impl (only capitalizes the first letter of the whole string) is REJECTED.
+    const wrong = { value: `export function titleCase(s){return s.charAt(0).toUpperCase()+s.slice(1)}`, fingerprint: 'wrong' }
+    const vWrong = await verifyCode(wrong, acc)
+    ok('a plausible-but-wrong impl is REJECTED by the derived cases (real gate, not a rubber stamp)', !vWrong.pass, vWrong.signals[0])
+  }
+
+  // ABSTAIN when no quorum forms: three impls that never agree → no trustworthy ground truth.
+  const noAgree = await deriveDifferentialSpec(TITLE, {
+    sampleImpls: async () => [
+      mkImpl(`export function titleCase(s){return s.length}`),
+      mkImpl(`export function titleCase(s){return s.toUpperCase()}`),
+      mkImpl(`export function titleCase(s){return s.split('').reverse().join('')}`),
+    ], minCases: 4,
+  })
+  ok('differential ABSTAINS when independent impls never agree (never fabricates ground truth)', !noAgree.ok, noAgree.reason)
+
+  // ECHO GUARD: the same implementation sampled twice is ONE source, not corroboration.
+  const echo = await deriveDifferentialSpec(TITLE, {
+    sampleImpls: async () => [titleImpls[0], mkImpl(titleImpls[0].source)], minCases: 4,
+  })
+  ok('differential rejects an ECHOED impl as its own corroboration (needs ≥2 DISTINCT sources)', !echo.ok, echo.reason)
+
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
   console.log(`\nPART B — live on-device FM proposer ${fmUp ? '(daemon UP)' : '(SKIPPED — daemon down)'}`)
@@ -475,6 +526,18 @@ async function run() {
     console.log(`    live result: ${live.status} in ${live.modelCalls} call(s) — ${live.detail}`)
     ok('live on-device loop reaches a certified solution OR abstains honestly (never ships unverified)',
       live.status === 'solved' || live.solution === null)
+
+    // Live end-to-end DIFFERENTIAL path: an arbitrary function with no property family and no
+    // user examples, solved (or honestly abstained) entirely from the on-device weak model —
+    // impls sampled live, inputs system-fuzzed, outputs cross-checked by execution.
+    const dlive = await solveCodingRequest(
+      'Write titleCase(s) that upper-cases the first letter of each space-separated word and lower-cases the rest.',
+      { maxModelCalls: 8, beamWidth: 2, differential: { samples: 4, minCases: 3 } },
+    )
+    const viaDifferential = (dlive.detail ?? '').includes('differential consensus')
+    console.log(`    live differential: ${dlive.status}${viaDifferential ? ' [via differential path]' : ''} — ${dlive.detail}`)
+    ok('live differential path certifies an arbitrary function OR abstains honestly (no property family)',
+      dlive.status === 'solved' ? dlive.code !== null : dlive.code === null)
   }
 
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed\n`)

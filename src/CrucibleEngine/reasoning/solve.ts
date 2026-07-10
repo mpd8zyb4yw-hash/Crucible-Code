@@ -15,6 +15,7 @@
 
 import { proposeCode } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
+import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
@@ -82,14 +83,16 @@ export interface CodingRequestResult {
  */
 export async function solveCodingRequest(
   nl: string,
-  opts: SearchOpts & { specSamples?: number; specComplete?: Completer } = {},
+  opts: SearchOpts & { specSamples?: number; specComplete?: Completer; differential?: DifferentialOpts | false } = {},
 ): Promise<CodingRequestResult> {
   // Ground-truth priority (DOCTRINE.md — trust order): 1) the USER's own worked examples
   // (gold), 2) a GENERAL PROPERTY (sort=sorted-permutation, codec=roundtrip, …; true for all
-  // inputs, no model bias), 3) only as a last resort, model-invented consensus cases (which
-  // can be confidently wrong — the vote-bias trap). Properties are preferred over model cases
-  // precisely because a model-invented case with no user anchor can make a solvable spec
-  // unsatisfiable and force a false exhaust (observed live on sortAsc).
+  // inputs, no model bias), 3) DIFFERENTIAL CONSENSUS (system-fuzzed inputs + agreement across
+  // independently-written implementations — no name whitelist, so it reaches ARBITRARY functions),
+  // 4) only as a last resort, model-invented consensus cases (model picks BOTH input and output,
+  // so it can be confidently wrong — the vote-bias trap). Each tier is preferred over the next
+  // because it removes a source of model bias: a property removes it entirely; differential
+  // removes input-selection bias and grounds outputs in executed code rather than a stated value.
 
   // 1) USER-stated examples — gold, trusted without consensus.
   const harvested = harvestExplicitExamples(nl)
@@ -120,7 +123,32 @@ export async function solveCodingRequest(
     }
   }
 
-  // 3) Last resort — model-invented consensus cases (bias-prone; used only when nothing better).
+  // 3) DIFFERENTIAL CONSENSUS — for arbitrary functions with no named-property family. The
+  // SYSTEM fuzzes the inputs (no input bias) and independently-written implementations vote on
+  // the outputs by EXECUTION (a far harder oracle than a model stating a value). Preferred over
+  // the model-invents-both path below because neither the inputs nor the outputs are model-chosen.
+  // Skipped only when a caller explicitly disables it (differential:false).
+  if (opts.differential !== false) {
+    const diff = await deriveDifferentialSpec(nl, { ...opts.differential })
+    if (diff.ok && diff.spec) {
+      const { entry, cases } = diff.spec
+      const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
+      if (result.status === 'solved') {
+        return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
+          detail: `${diff.detail}; ${result.detail}` }
+      }
+      // A differentially-agreed case can still be poisoned by a shared systematic bug — the same
+      // cross-derivation recovery applies (independent impls unanimously failing ONE case → drop it).
+      const rec = await recoverFromPoisonedCase(entry, cases, result.attempts)
+      if (rec) {
+        return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
+          detail: `${diff.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against ${rec.cleaned.length}` }
+      }
+      // Fall through to the weaker path only if differential could not certify.
+    }
+  }
+
+  // 4) Last resort — model-invented consensus cases (bias-prone; used only when nothing better).
   const extraction = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete })
   if (extraction.ok && extraction.spec) {
     const { entry, cases } = extraction.spec
