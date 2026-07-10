@@ -17,9 +17,25 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-10, cont. 58 — differential-consensus removes the property-family whitelist ceiling)
+## CURRENT STATE (last updated 2026-07-10, cont. 58 — the certification ladder now reaches beyond the name whitelist, two ways)
 
 **Read [`DOCTRINE.md`](./DOCTRINE.md) before anything else.** It supersedes all older framing.
+
+**cont.58 (f7c8dab) — metamorphic relations from spec text (the un-foolable tier).** Built on top of the
+differential work below. The name-gated property whitelist misses any function DESCRIBED in prose but named
+custom (`arrange` "ascending order", `flipOrder` "reversed"). `reasoning/metamorphicSpec.ts`
+(`deriveMetamorphicSpec`) detects the relation-CLASS from the DESCRIPTION and certifies against a COMPLETE
+metamorphic relation set — sort = {permutation ∧ ordered}, reverse = {position-map} — checked by execution
+with zero expected values. This is the tier ABOVE differential: a true invariant CANNOT be satisfied by a
+systematically-wrong output every sample shared, so it directly patches differential's documented shared-bug
+hole (a descending sort that value-consensus over all-descending samples would wrongly certify is REJECTED by
+the ordered-ascending relation). Wired as **path 2.5** (after name-property, before differential); direction
+(asc/desc) read from prose; guards against non-sequence idioms ("reverse engineer", topological sort).
+`vgr:bench` **80/80**; live-verified (real FM certifies custom-named `arrange` via the metamorphic path in 4
+calls, no examples/no model-invented values). **The full ladder is now: 1 user-examples → 2 name-property →
+2.5 metamorphic-from-spec → 3 differential-consensus → 4 model-invents-both → 5 abstain.** Next metamorphic
+levers: extend the complete-relation catalog (codec roundtrip pair when named custom; filter as a *partial*
+constraint combined with differential; idempotent-normalizer classes).
 
 **cont.58 (a5e2bff) — the ceiling that was removed.** The strong property-verifier path only fired when the
 entry function NAME matched one of ~40 hardcoded families (`sort`, `gcd`, `reverse`, …); every arbitrary
