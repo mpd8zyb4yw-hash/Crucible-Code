@@ -17,9 +17,25 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-10, cont. 58 — the certification ladder now reaches beyond the name whitelist, two ways)
+## CURRENT STATE (last updated 2026-07-10, cont. 58 — verification-guided reasoning now spans BOTH coding and answers)
 
 **Read [`DOCTRINE.md`](./DOCTRINE.md) before anything else.** It supersedes all older framing.
+
+**cont.58 (ff616d3) — word-problem recomputation: the FIRST deterministic verifier on the ANSWER side.**
+The coding side had a rich verification ladder; open Q&A had none — the largest north-star gap. The answer
+engine's arithmetic critic only fixed equations the model WROTE OUT; a bare stated answer ("the train travels
+140 miles") had no equation to check, and self-consistency voting certified a shared arithmetic bias.
+`answer/wordProblem.ts` applies the doctrine to answers: the model PROPOSES the SETUP (translate the problem
+to ONE arithmetic expression), the MACHINE evaluates it (`evalArithmeticExpr`, whitelisted, never evals
+identifiers → un-foolable arithmetic), and K independent extractions must reach a QUORUM on the value or it
+abstains (`recomputeWordProblem` → null). `applyRecomputation` corrects a mismatched stated number in place,
+confirms a correct one, or appends an Answer line. Wired into `answerQuery` for non-retrieval computation
+questions. `answer:bench` **43/43** (was 29); live-verified (60mph×2.5h→150 miles, $3×7→21 dollars, 12×8→96
+cm², all via machine-eval consensus setups). **Next answer-side levers:** multi-step word problems (chain/
+decompose expressions), non-arithmetic verifiers (unit/magnitude sanity, constraint-satisfaction), extend the
+setup/consensus split to date-time and rate/ratio problems that don't reduce to one flat expression.
+
+
 
 **cont.58 (f7c8dab) — metamorphic relations from spec text (the un-foolable tier).** Built on top of the
 differential work below. The name-gated property whitelist misses any function DESCRIBED in prose but named
