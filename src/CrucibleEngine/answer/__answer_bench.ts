@@ -2,7 +2,7 @@
 // the critic pass. NO model calls, NO network (the FM draft is nondeterministic and slow, so
 // live answer quality is verified separately via the JWT curl harness). Run:
 //   npx tsx src/CrucibleEngine/answer/__answer_bench.ts
-import { classifyFacets } from './answerEngine'
+import { classifyFacets, ensureTrailingAnswer } from './answerEngine'
 import { critiqueAnswer } from './verify'
 import { normalizeAnswer } from './selfConsistency'
 import { applyRecomputation, evalArithmeticExpr, evalSteps, evalWithEnv, recomputeMultiStep, recomputeWordProblem, type Completer } from './wordProblem'
@@ -164,7 +164,15 @@ console.log('== word-problem recomputation: reconcile the machine value with the
   const clockDraft = 'The second train catches up 3 hours later.\nAnswer: 7:00 PM'
   const guarded = applyRecomputation(clockDraft, { value: 3, unit: 'hours', expression: '(80-60)', agreement: 1, samples: 3 })
   check('time-of-day answer is NOT corrupted by a bare-quantity recomputation (7:00 PM preserved)',
-    !guarded.corrected && guarded.text === clockDraft, guarded.text)
+    !guarded.corrected && guarded.text === clockDraft && guarded.guarded === true, guarded.text)
+
+  // The verified value is stated cleanly at the end even when the derivation is truncated…
+  const truncated = 'Step 1: the discount is 25% of 40 which is 10. Step 2: subtract to get the'
+  const capped = ensureTrailingAnswer(truncated, recomp)
+  check('a truncated derivation gets a clean trailing **Answer: 150 miles** line', /\*\*Answer: 150 miles\*\*\s*$/.test(capped), capped)
+  // …but a draft already ending in a clean answer line is NOT duplicated.
+  const clean = 'Work it out.\nAnswer: 150 miles'
+  check('an existing clean answer line is not duplicated', ensureTrailingAnswer(clean, recomp) === clean, ensureTrailingAnswer(clean, recomp))
 }
 
 console.log('== multi-step recomputation: variable-resolving DAG evaluation ==')

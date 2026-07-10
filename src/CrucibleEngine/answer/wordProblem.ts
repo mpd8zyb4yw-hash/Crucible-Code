@@ -291,6 +291,9 @@ export interface Reconciliation {
   corrected: boolean
   /** True when the draft already agreed with the machine value. */
   confirmed: boolean
+  /** True when reconciliation was deliberately SKIPPED (e.g. a time-of-day answer the clock critic
+   * owns) — the caller must not treat the value as applied or append a bare-quantity answer line. */
+  guarded?: boolean
 }
 
 /**
@@ -310,7 +313,7 @@ function answerIsTimeOfDay(draft: string): boolean {
 
 export function applyRecomputation(draft: string, recomp: Recomputation): Reconciliation {
   // Safety: never override a time-of-day answer with a bare quantity (clock critic's domain).
-  if (answerIsTimeOfDay(draft)) return { text: draft, corrected: false, confirmed: false }
+  if (answerIsTimeOfDay(draft)) return { text: draft, corrected: false, confirmed: false, guarded: true }
 
   const stated = draftAnswerNumber(draft)
   const unit = recomp.unit ? ` ${recomp.unit}` : ''

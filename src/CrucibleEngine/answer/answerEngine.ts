@@ -243,8 +243,8 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       // DAG setup, which handles the genuinely irreducible cases (relative speed, head start).
       const recomp = await recomputeWordProblem(message)
         ?? (facets.needsMultiStep ? await recomputeMultiStep(message) : null)
-      if (recomp) {
-        const rec = applyRecomputation(text, recomp)
+      const rec = recomp ? applyRecomputation(text, recomp) : null
+      if (recomp && rec && !rec.guarded) {
         if (rec.corrected) {
           text = rec.text
           corrections += 1
@@ -256,6 +256,13 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         } else {
           text = rec.text // draft stated no number; appended an explicit machine-computed Answer.
           recomputed = true
+        }
+        // The MACHINE (not the shown work) certifies the value, so a verbose/truncated derivation no
+        // longer matters: guarantee the verified answer is stated cleanly at the very end, and drop any
+        // 'truncated' flag — the answer is now complete and correct regardless of where the prose stopped.
+        if (recomputed) {
+          text = ensureTrailingAnswer(text, recomp)
+          issues = issues.filter(i => i.kind !== 'truncated')
         }
       }
     } catch { /* non-blocking: keep the critic-checked draft */ }
@@ -275,6 +282,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
 function formatRecomp(recomp: { value: number; unit?: string }): string {
   const shown = Number.isInteger(recomp.value) ? String(recomp.value) : String(Math.round(recomp.value * 1e6) / 1e6)
   return recomp.unit ? `${shown} ${recomp.unit}` : shown
+}
+
+// Guarantee the machine-verified value is stated cleanly at the very end. If the last non-empty
+// line already IS an answer line stating this value, leave it; otherwise append a bold Answer line
+// so a verbose or token-truncated derivation still ends with the correct, verified result.
+export function ensureTrailingAnswer(text: string, recomp: { value: number; unit?: string }): string {
+  const shown = formatRecomp(recomp)
+  const valueToken = formatRecomp({ value: recomp.value }) // number without unit
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const last = lines[lines.length - 1] ?? ''
+  if (/\banswer\s*[:=*]/i.test(last) && last.includes(valueToken)) return text
+  return `${text.trimEnd()}\n\n**Answer: ${shown}**`
 }
 
 function buildRepairDirective(issues: Issue[]): string {
