@@ -216,6 +216,79 @@ const SUPP_FAMILIES: SuppFamily[] = [
       `prop('${E} empty=0', ${E}('') === 0)`,
     ],
   },
+  {
+    // lcm(a,b): a*b/gcd — multiple of both and minimal. Pairs with the gcd family for number-theory bundles.
+    family: 'lcm', test: e => /^(lcm|leastCommonMultiple|lowestCommonMultiple)$/i.test(e),
+    assertions: E => [
+      `prop('${E} is common multiple', (() => { const m=${E}(4,6); return m>0 && m%4===0 && m%6===0 })())`,
+      `prop('${E} matches a*b/gcd', (() => { const g=(a,b)=>{while(b){[a,b]=[b,a%b]}return a}; return [[4,6],[3,5],[12,18],[7,7],[8,12]].every(([a,b]) => ${E}(a,b) === a*b/g(a,b)) })())`,
+      `prop('${E} is minimal', (() => { const m=${E}(4,6); for(let k=1;k<m;k++) if(k%4===0 && k%6===0) return false; return true })())`,
+    ],
+  },
+  {
+    // isEven(n): parity matches n%2===0 — independent modulo reference.
+    family: 'isEven', test: e => /^(isEven|even|checkEven)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches n%2===0', [-4,-3,-1,0,1,2,3,7,8,100,101].every(n => Boolean(${E}(n)) === (n%2===0)))`,
+    ],
+  },
+  {
+    // isOdd(n): parity matches n%2!==0 — independent modulo reference.
+    family: 'isOdd', test: e => /^(isOdd|odd|checkOdd)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches n%2!==0', [-4,-3,-1,0,1,2,3,7,8,100,101].every(n => Boolean(${E}(n)) === (Math.abs(n%2)===1)))`,
+    ],
+  },
+  {
+    // unique(xs): dedupes preserving membership — matches Set-based reference, idempotent.
+    family: 'unique', test: e => /^(unique|dedupe|dedup|distinct|uniq|removeDuplicates)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches Set reference', (() => { const xs=[1,2,2,3,1,4,4,4,5]; return JSON.stringify(${E}(xs)) === JSON.stringify([...new Set(xs)]) })())`,
+      `prop('${E} idempotent', (() => { const xs=[3,1,3,2,1]; const a=${E}(xs); return JSON.stringify(${E}(a)) === JSON.stringify(a) })())`,
+      `prop('${E} no duplicates remain', (() => { const r=${E}([1,1,2,3,3]); return r.length === new Set(r).size })())`,
+    ],
+  },
+  {
+    // flatten(xs): one-level flatten matches Array.prototype.flat() reference.
+    family: 'flatten', test: e => /^(flatten|flat|flattenArray|flattenOnce)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches Array.flat', (() => { const xs=[[1,2],[3],[4,5,6],[]]; return JSON.stringify(${E}(xs)) === JSON.stringify(xs.flat()) })())`,
+      `prop('${E} length = sum of parts', (() => { const xs=[[1,2],[3,4,5],[6]]; return ${E}(xs).length === 6 })())`,
+    ],
+  },
+  {
+    // median(xs): matches sort-and-middle reference; lies within [min,max].
+    family: 'median', test: e => /^(median|middleValue)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches sort-middle reference', (() => { const ref = xs => { const s=[...xs].sort((a,b)=>a-b); const m=s.length>>1; return s.length%2 ? s[m] : (s[m-1]+s[m])/2 }; return [[3,1,2],[5,2,8,1],[7],[4,4,4,4]].every(xs => ${E}(xs) === ref(xs)) })())`,
+      `prop('${E} within [min,max]', (() => { const xs=[3,1,4,1,5,9]; const m=${E}(xs); return m>=Math.min(...xs) && m<=Math.max(...xs) })())`,
+    ],
+  },
+  {
+    // primeFactors(n): product of factors = n, every factor prime — self-checking, no memorized list.
+    family: 'primeFactors', test: e => /^(primeFactors|factorize|primeFactorization|factors)$/i.test(e),
+    assertions: E => [
+      `prop('${E} product equals n', [12,60,17,100,97,360].every(n => ${E}(n).reduce((a,b)=>a*b,1) === n))`,
+      `prop('${E} all factors prime', (() => { const isP=p=>{ if(p<2)return false; for(let d=2;d*d<=p;d++) if(p%d===0) return false; return true }; return [12,60,100,360].every(n => ${E}(n).every(isP)) })())`,
+      `prop('${E} non-decreasing', [12,60,360].every(n => { const f=${E}(n); return f.every((x,i) => i===0 || x>=f[i-1]) }))`,
+    ],
+  },
+  {
+    // celsiusToFahrenheit(c): affine C*9/5+32, matches reference at sampled points.
+    family: 'celsiusToFahrenheit', test: e => /^(celsiusToFahrenheit|cToF|celsiusToF|toFahrenheit)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches C*9/5+32', [-40,0,37,100,20,-273].every(c => Math.abs(${E}(c) - (c*9/5+32)) < 1e-9))`,
+      `prop('${E} fixed point at -40', Math.abs(${E}(-40) - (-40)) < 1e-9)`,
+    ],
+  },
+  {
+    // countWords(s): matches whitespace-split reference count.
+    family: 'countWords', test: e => /^(countWords|wordCount|numWords)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches split reference', (() => { const ref = s => (s.trim() === '' ? 0 : s.trim().split(/\\s+/).length); return ['hello world','  one   two three ','','single','a b c d e'].every(s => ${E}(s) === ref(s)) })())`,
+      `prop('${E} empty/blank=0', ${E}('') === 0 && ${E}('   ') === 0)`,
+    ],
+  },
 ]
 
 /** Best-effort entry-name extraction for supplemental gating (extractFeatures, else first call). */

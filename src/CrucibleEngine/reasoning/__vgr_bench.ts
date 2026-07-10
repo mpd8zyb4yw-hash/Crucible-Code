@@ -427,6 +427,22 @@ async function run() {
   ok('a property-violating file in the graph is REJECTED (real certification, not memorized)',
     pw.status !== 'solved' && !!pw.search?.best?.verdict.signals.some(s => /property violated/.test(s)))
 
+  // Widened families: a number-theory bundle (gcd + lcm) certifies purely by cross-function
+  // invariants — lcm's a*b/gcd reference is checked alongside gcd's own family, no examples.
+  const NT_NL = 'Create src/gcd.ts exporting gcd(a,b) and src/lcm.ts exporting lcm(a,b).'
+  const ntDp = deriveMultiFileProperties(detectDeclaredFunctions(NT_NL))
+  ok('deriveMultiFileProperties resolves the widened lcm family alongside gcd',
+    !!ntDp && ntDp.families.includes('gcd') && ntDp.families.includes('lcm'))
+  const ntRight = async (): Promise<Candidate<CandidateFile[]>> => ({
+    value: [
+      { path: 'src/gcd.ts', source: 'export function gcd(a,b){a=Math.abs(a);b=Math.abs(b);while(b){[a,b]=[b,a%b]}return a}' },
+      { path: 'src/lcm.ts', source: 'export function lcm(a,b){const g=(x,y)=>{while(y){[x,y]=[y,x%y]}return x};return a*b/g(a,b)}' },
+    ], fingerprint: 'ntr',
+  })
+  const ntg = await solveMultiFileRequest(NT_NL, { maxModelCalls: 2, beamWidth: 1 }, ntRight)
+  ok('no-example gcd+lcm number-theory bundle CERTIFIED by widened property families',
+    ntg.status === 'solved' && ntg.files?.length === 2, ntg.detail)
+
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
   console.log(`\nPART B — live on-device FM proposer ${fmUp ? '(daemon UP)' : '(SKIPPED — daemon down)'}`)
