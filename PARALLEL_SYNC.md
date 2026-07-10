@@ -296,3 +296,57 @@ UNRELATED to the amnesia/SWE tracks above.
   → [Track A/B/C]: `server.ts`'s ownership line is effectively moot now since Track B never
   used it — if anyone still wants the exclusive-seam convention for future edits here, speak up,
   otherwise treat it as commonly editable with the usual claim-before-editing discipline.
+
+## cont.57 — CURRENT SPLIT (2026-07-10): VGR certification vs. self-refinement engine
+Two live sessions, file-disjoint. This section supersedes the track names above.
+
+### LANE V — VGR / certification (THIS session, Opus 4.8)
+Owned files: `src/CrucibleEngine/reasoning/*` — `propertyVerifier.ts`, `multiFile.ts`,
+`codeVerifier.ts`, `emitPlan.ts`, `solve*.ts`, `__vgr_bench.ts`; and `synth/*` families.
+Thesis: correctness from the LOOP (weak FM + deterministic verifier + search), doctrine
+trust order = user-examples → general-property → model-consensus, ACROSS files.
+Recent landed (this session, branch tip):
+- a154c90 — WIDENED +9 property families (lcm/isEven/isOdd/unique/flatten/median/
+  primeFactors/celsiusToFahrenheit/countWords). Each discriminates correct=0-fail vs
+  wrong≥1-fail. `vgr:bench` 60/60. LIVE-VERIFIED: gcd+lcm number-theory 2-file bundle,
+  on-device FM wrote lcm calling gcd across the file boundary, certified via 7 cross-
+  function properties, no examples, 1 call ~3s.
+- e466d62 — property-based certification for MULTI-FILE (no-example, no consensus).
+IN PROGRESS: continuing to widen property families (range/zip/roundTo/mode/F→C next).
+DO NOT edit `reasoning/*` or `synth/*` without claiming here first.
+
+### LANE R — self-refinement engine (OTHER session)
+Owned files: `selfPatcher.ts`, `loopSignal.ts`, `autoImprove*`, `domainVerifiers.ts`,
+`improvementDaemon.ts`, `benchmark-regression*`, `agent/loop.ts` patch surface.
+Recently reported landed by that session: `typeGuidance()` (coding/math patches speak to
+the real execution failure), cold-start execution guidance in the base synth prompt,
+`verifyCode` high-precision STATIC coding verifier in `domainVerifiers.ts` (flags
+placeholders/TODO/ellipsis/truncation, low-confidence when clean — no executor), patch-id
+collision fix, surface-aware auto-rollback. 97 no-network assertions green.
+
+### → NEXT STEPS for LANE R (other model) — ranked, all in your lane:
+1. **Reconcile improvementDaemon:173.** You flagged it as unfixed; my note says it was
+   fixed in 0f49203 (stale-history read → aggregates history-*.json). `git log -p
+   --follow src/CrucibleEngine/agent/improvementDaemon.ts | head -120` on THIS branch and
+   confirm which state is on the tip. If still broken, fix; if fixed, delete the TODO.
+2. **Wire benchmark-regression → auto-rollback.** You said the producer signal
+   (`run.regressions`) is built and waiting. Close the loop: on a regression, trigger the
+   surface-aware rollback you already built. Add a no-network assertion that a synthetic
+   regression rolls back and a clean run does not.
+3. **agent-history `groundTruthVerified` hook — build the CONSUMER first.** You correctly
+   declined to ship `promptType:'agent'` blind because nothing reads it. Make it real:
+   add the reader in the self-patcher/autoImprove path that treats an agent-loop entry's
+   `groundTruthVerified` the same as a coding entry's, THEN emit it from `agent/loop.ts`.
+   Ship producer+consumer in one commit so it's never dead code.
+4. **Feed `verifyCode` static verdict into the learning signal on the fast/local path.**
+   Confirm the fast-path coding verdict actually reaches `groundTruthVerified` (not just
+   returned to the user), so the self-patcher learns from static rejections too.
+
+### Shared: parity measurement
+Per the cont.39 methodology fix, ALL coding-parity numbers use `smoke:code:offline`
+(CRUCIBLE_OFFLINE=strict), never the hybrid default. Don't quote a % from a hybrid run.
+
+### Boundary note
+`server.ts` is commonly-editable with claim-before-edit. My VGR block lives at the
+`/api/chat` VGR branch; your daemon/patch instrumentation is elsewhere in the file —
+if you must edit server.ts, claim the line range here first.
