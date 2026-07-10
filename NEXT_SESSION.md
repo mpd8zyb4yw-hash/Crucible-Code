@@ -30,10 +30,18 @@ to ONE arithmetic expression), the MACHINE evaluates it (`evalArithmeticExpr`, w
 identifiers → un-foolable arithmetic), and K independent extractions must reach a QUORUM on the value or it
 abstains (`recomputeWordProblem` → null). `applyRecomputation` corrects a mismatched stated number in place,
 confirms a correct one, or appends an Answer line. Wired into `answerQuery` for non-retrieval computation
-questions. `answer:bench` **43/43** (was 29); live-verified (60mph×2.5h→150 miles, $3×7→21 dollars, 12×8→96
-cm², all via machine-eval consensus setups). **Next answer-side levers:** multi-step word problems (chain/
-decompose expressions), non-arithmetic verifiers (unit/magnitude sanity, constraint-satisfaction), extend the
-setup/consensus split to date-time and rate/ratio problems that don't reduce to one flat expression.
+questions. `answer:bench` **55/55**; live-verified (60mph×2.5h→150 miles, $3×7→21 dollars, 12×8→96 cm²).
+Extended (72d0b4d): (1) multi-step step-DAG fallback (`recomputeMultiStep`/`evalSteps`) for irreducible
+problems; single-expression stays the fast workhorse since the model nests; (2) safety guard — never
+overwrite a time-of-day answer with a bare quantity; (3) broadened `needsComputation` so discount/percent/
+"what is the total|cost|price" actually route to recomputation (disambiguated from volatile lookups by
+operand count). Live: `answerQuery` now emits "Verified by independent recomputation: 40*(1-0.25)=30 dollars".
+**Next answer-side levers:** (a) KNOWN ISSUE — reason-intent step-by-step prompt overruns the token cap →
+correct compute answers get a 'truncated' flag + repair round (verbose/slow); since the machine value is
+known, append a clean "Answer: <verified value>" and/or tighten the reason prompt (the machine, not the shown
+work, certifies). (b) non-arithmetic verifiers (unit/magnitude sanity, constraint-satisfaction). (c) date-time
+and rate/ratio problems that don't reduce to arithmetic. (d) short-factual self-consistency + abstention for
+lookups (currently a single FM call).
 
 
 
