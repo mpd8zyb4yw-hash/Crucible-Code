@@ -289,6 +289,46 @@ const SUPP_FAMILIES: SuppFamily[] = [
       `prop('${E} empty/blank=0', ${E}('') === 0 && ${E}('   ') === 0)`,
     ],
   },
+  {
+    // range(n) or range(a,b): consecutive integers, matches an index-built reference.
+    family: 'range', test: e => /^(range|iota|sequence|intRange)$/i.test(e),
+    assertions: E => [
+      `prop('${E}(n) is 0..n-1', (() => { const r=${E}(5); return JSON.stringify(r) === JSON.stringify([0,1,2,3,4]) })() || (() => { const r=${E}(0,5); return JSON.stringify(r) === JSON.stringify([0,1,2,3,4]) })())`,
+      `prop('${E} consecutive by 1', (() => { const r=${E}(6); return r.every((x,i) => i===0 || x===r[i-1]+1) })() || (() => { const r=${E}(2,8); return r.every((x,i) => i===0 || x===r[i-1]+1) })())`,
+    ],
+  },
+  {
+    // zip(a,b): pairs positionally, length = min of inputs — matches an index-built reference.
+    family: 'zip', test: e => /^(zip|pairwise|zipWith|zipArrays)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches index reference', (() => { const a=[1,2,3], b=['x','y','z']; const ref=a.map((v,i)=>[v,b[i]]); return JSON.stringify(${E}(a,b)) === JSON.stringify(ref) })())`,
+      `prop('${E} length = min', (() => { const r=${E}([1,2,3,4],[9,8]); return r.length === 2 })())`,
+    ],
+  },
+  {
+    // roundTo(x, dp): matches the Math.round(x*10^dp)/10^dp reference at sampled points.
+    family: 'roundTo', test: e => /^(roundTo|round2|roundToDecimal|roundDp|toFixedNum)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches scaled-round reference', (() => { const ref=(x,d)=>Math.round(x*10**d)/10**d; return [[3.14159,2],[2.5,0],[1.005,2],[9.87654,3],[100,1]].every(([x,d]) => Math.abs(${E}(x,d) - ref(x,d)) < 1e-9) })())`,
+      `prop('${E} idempotent at same dp', (() => { const r=${E}(3.14159,2); return Math.abs(${E}(r,2) - r) < 1e-9 })())`,
+    ],
+  },
+  {
+    // mode(xs): most-frequent value — is a member and no other value is strictly more frequent.
+    family: 'mode', test: e => /^(mode|mostFrequent|mostCommon)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches frequency reference', (() => { const xs=[1,2,2,3,3,3,4]; const ref=(a)=>{const c={};let best=a[0],bc=0;for(const v of a){c[v]=(c[v]||0)+1;if(c[v]>bc){bc=c[v];best=v}}return best}; return ${E}(xs) === ref(xs) })())`,
+      `prop('${E} is a member and maximal-frequency', (() => { const xs=[5,5,1,2,2,2,9]; const m=${E}(xs); const f=v=>xs.filter(x=>x===v).length; return xs.includes(m) && xs.every(x => f(x) <= f(m)) })())`,
+    ],
+  },
+  {
+    // fahrenheitToCelsius(f): affine (f-32)*5/9 and inverse-consistent with the C→F direction.
+    family: 'fahrenheitToCelsius', test: e => /^(fahrenheitToCelsius|fToC|toCelsius|fahrenheitToC)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches (f-32)*5/9', [-40,32,98.6,212,68].every(f => Math.abs(${E}(f) - (f-32)*5/9) < 1e-9))`,
+      `prop('${E} fixed point at -40', Math.abs(${E}(-40) - (-40)) < 1e-9)`,
+    ],
+  },
 ]
 
 /** Best-effort entry-name extraction for supplemental gating (extractFeatures, else first call). */

@@ -443,6 +443,22 @@ async function run() {
   ok('no-example gcd+lcm number-theory bundle CERTIFIED by widened property families',
     ntg.status === 'solved' && ntg.files?.length === 2, ntg.detail)
 
+  // Second widened batch: a temperature-conversion bundle (C→F + F→C) certifies by the two
+  // affine references — no examples, both directions independently property-checked.
+  const TMP_NL = 'Create src/toF.ts exporting celsiusToFahrenheit(c) and src/toC.ts exporting fahrenheitToCelsius(f).'
+  const tmpDp = deriveMultiFileProperties(detectDeclaredFunctions(TMP_NL))
+  ok('deriveMultiFileProperties resolves both temperature families (C→F and F→C)',
+    !!tmpDp && tmpDp.families.includes('celsiusToFahrenheit') && tmpDp.families.includes('fahrenheitToCelsius'))
+  const tmpRight = async (): Promise<Candidate<CandidateFile[]>> => ({
+    value: [
+      { path: 'src/toF.ts', source: 'export function celsiusToFahrenheit(c){return c*9/5+32}' },
+      { path: 'src/toC.ts', source: 'export function fahrenheitToCelsius(f){return (f-32)*5/9}' },
+    ], fingerprint: 'tmp',
+  })
+  const tmpg = await solveMultiFileRequest(TMP_NL, { maxModelCalls: 2, beamWidth: 1 }, tmpRight)
+  ok('no-example temperature bundle CERTIFIED by widened property families',
+    tmpg.status === 'solved' && tmpg.files?.length === 2, tmpg.detail)
+
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
   console.log(`\nPART B — live on-device FM proposer ${fmUp ? '(daemon UP)' : '(SKIPPED — daemon down)'}`)
