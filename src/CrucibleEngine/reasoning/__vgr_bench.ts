@@ -24,6 +24,7 @@ import { verifyCode, verifyMultiFileCode } from './codeVerifier'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
+import { deriveMetamorphicSpec } from './metamorphicSpec'
 import { detectTargetPath, planEmit } from './emitPlan'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -510,6 +511,51 @@ async function run() {
   })
   ok('differential rejects an ECHOED impl as its own corroboration (needs ≥2 DISTINCT sources)', !echo.ok, echo.reason)
 
+  // ── METAMORPHIC RELATION from SPEC TEXT — certify a CUSTOM-NAMED sort/reverse ──────
+  // `arrange` and `flipOrder` match NO name-gated family, but the DESCRIPTION says "ascending
+  // order" / "reversed" — so the complete metamorphic relation certifies them. Crucially this
+  // is UN-FOOLABLE: a descending sort (which value-consensus over all-descending samples would
+  // wrongly "certify") is REJECTED by the ordered-ascending relation. Deterministic, no model.
+  const metaProp = (entry: string, family: string, assertions: string[]) =>
+    ({ goal: '', domain: 'code' as const, acceptance: { entry, family, assertions } as any })
+
+  const ARRANGE = 'Write arrange(items) that returns the items in ascending order.'
+  ok('property whitelist ABSTAINS on custom-named sort `arrange` (no /sort/ in the name)',
+    derivePropertySpec(ARRANGE) === null)
+  const mArr = deriveMetamorphicSpec(ARRANGE)
+  ok('metamorphic detects sort(asc) from the DESCRIPTION of `arrange` (name-independent)',
+    !!mArr && mArr.family === 'sort(asc)' && mArr.entry === 'arrange', mArr?.family)
+
+  if (mArr) {
+    const acc = metaProp(mArr.entry, mArr.family, mArr.assertions)
+    const rightAsc = await verifyByProperty({ value: `export function arrange(a){return [...a].sort((x,y)=>x<y?-1:x>y?1:0)}`, fingerprint: 'r' }, acc)
+    ok('a correct ascending sort PASSES the metamorphic relation', rightAsc.pass, rightAsc.signals[0])
+    // THE un-foolable demo: a systematically-wrong DESCENDING sort is rejected by ordered-asc.
+    const desc = await verifyByProperty({ value: `export function arrange(a){return [...a].sort((x,y)=>x>y?-1:x<y?1:0)}`, fingerprint: 'd' }, acc)
+    ok('a DESCENDING sort is REJECTED (un-foolable: value-consensus could not catch a shared bug here)', !desc.pass, desc.signals[0])
+    // An element-dropping "sort" is rejected by permutation-preservation.
+    const drop = await verifyByProperty({ value: `export function arrange(a){return [...a].sort((x,y)=>x-y).slice(1)}`, fingerprint: 'x' }, acc)
+    ok('an element-dropping sort is REJECTED by permutation-preservation', !drop.pass, drop.signals[0])
+  }
+
+  const FLIP = 'Write flipOrder(seq) that returns the sequence reversed.'
+  const mFlip = deriveMetamorphicSpec(FLIP)
+  ok('metamorphic detects reverse from the DESCRIPTION of `flipOrder` (name-independent)',
+    !!mFlip && mFlip.family === 'reverse', mFlip?.family)
+  if (mFlip) {
+    const acc = metaProp(mFlip.entry, mFlip.family, mFlip.assertions)
+    const rev = await verifyByProperty({ value: `export function flipOrder(s){return Array.isArray(s)?[...s].reverse():[...s].reverse().join('')}`, fingerprint: 'r' }, acc)
+    ok('a correct reverse PASSES the metamorphic relation', rev.pass, rev.signals[0])
+    const id = await verifyByProperty({ value: `export function flipOrder(s){return s}`, fingerprint: 'i' }, acc)
+    ok('the identity function is REJECTED as a reverse (position-map fails)', !id.pass, id.signals[0])
+  }
+
+  // Direction + guard against false positives.
+  ok('metamorphic reads DESCENDING direction from the spec',
+    deriveMetamorphicSpec('Write orderBy(xs) returning them in descending order.')?.family === 'sort(desc)')
+  ok('metamorphic does NOT fire on the "reverse engineer" idiom (not a sequence reversal)',
+    deriveMetamorphicSpec('Write a tool to reverse engineer the config file format.') === null)
+
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
   console.log(`\nPART B — live on-device FM proposer ${fmUp ? '(daemon UP)' : '(SKIPPED — daemon down)'}`)
@@ -538,6 +584,18 @@ async function run() {
     console.log(`    live differential: ${dlive.status}${viaDifferential ? ' [via differential path]' : ''} — ${dlive.detail}`)
     ok('live differential path certifies an arbitrary function OR abstains honestly (no property family)',
       dlive.status === 'solved' ? dlive.code !== null : dlive.code === null)
+
+    // Live end-to-end METAMORPHIC path: a CUSTOM-NAMED sort described only in prose, certified
+    // against the (permutation ∧ ordered) invariant by the on-device weak model — no name family,
+    // no user examples, no model-invented values.
+    const mlive = await solveCodingRequest(
+      'Write arrange(items) that returns the items sorted in ascending order.',
+      { maxModelCalls: 8, beamWidth: 2 },
+    )
+    const viaMeta = (mlive.detail ?? '').includes('metamorphic')
+    console.log(`    live metamorphic: ${mlive.status}${viaMeta ? ' [via metamorphic path]' : ''} — ${mlive.detail}`)
+    ok('live metamorphic path certifies a custom-named sort OR abstains honestly',
+      mlive.status === 'solved' ? mlive.code !== null : mlive.code === null)
   }
 
   console.log(`\n${fail === 0 ? 'PASS' : 'FAIL'} — ${pass} passed, ${fail} failed\n`)

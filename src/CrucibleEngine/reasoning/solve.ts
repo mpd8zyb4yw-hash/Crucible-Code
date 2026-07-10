@@ -16,6 +16,7 @@
 import { proposeCode } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
+import { deriveMetamorphicSpec } from './metamorphicSpec'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
@@ -85,14 +86,16 @@ export async function solveCodingRequest(
   nl: string,
   opts: SearchOpts & { specSamples?: number; specComplete?: Completer; differential?: DifferentialOpts | false } = {},
 ): Promise<CodingRequestResult> {
-  // Ground-truth priority (DOCTRINE.md — trust order): 1) the USER's own worked examples
-  // (gold), 2) a GENERAL PROPERTY (sort=sorted-permutation, codec=roundtrip, …; true for all
-  // inputs, no model bias), 3) DIFFERENTIAL CONSENSUS (system-fuzzed inputs + agreement across
+  // Ground-truth priority (DOCTRINE.md — trust order): 1) the USER's own worked examples (gold),
+  // 2) a NAME-GATED PROPERTY (sort=sorted-permutation, codec=roundtrip, …; a true invariant),
+  // 2.5) a METAMORPHIC RELATION detected from the SPEC TEXT (name-independent; also a true
+  // invariant, so it reaches custom-named sort/reverse the whitelist misses and cannot be fooled
+  // by a shared systematic bug), 3) DIFFERENTIAL CONSENSUS (system-fuzzed inputs + agreement across
   // independently-written implementations — no name whitelist, so it reaches ARBITRARY functions),
   // 4) only as a last resort, model-invented consensus cases (model picks BOTH input and output,
   // so it can be confidently wrong — the vote-bias trap). Each tier is preferred over the next
-  // because it removes a source of model bias: a property removes it entirely; differential
-  // removes input-selection bias and grounds outputs in executed code rather than a stated value.
+  // because it removes a source of model bias: true invariants (2, 2.5) remove it entirely;
+  // differential removes input-selection bias and grounds outputs in executed code, not a value.
 
   // 1) USER-stated examples — gold, trusted without consensus.
   const harvested = harvestExplicitExamples(nl)
@@ -121,6 +124,25 @@ export async function solveCodingRequest(
       entry: prop.entry, cases: null, search: result,
       detail: `no example → ${prop.family} property spec (${prop.assertions.length} propert${prop.assertions.length === 1 ? 'y' : 'ies'}); ${result.detail}`,
     }
+  }
+
+  // 2.5) METAMORPHIC RELATION from the SPEC TEXT (name-independent, un-foolable). Catches the
+  // custom-named cases the name-gated property whitelist misses (`arrange` "ascending", `flipOrder`
+  // "reversed"). Certifies against a COMPLETE relation set (sort = permutation ∧ ordered; reverse =
+  // position-map) — a true invariant, so it cannot be fooled by a systematic bug shared across
+  // samples the way value-consensus can. Ranked above differential precisely for that reason.
+  const meta = deriveMetamorphicSpec(nl)
+  if (meta) {
+    const spec: TaskSpec = {
+      goal: nl, domain: 'code',
+      acceptance: { entry: meta.entry, family: meta.family, assertions: meta.assertions } as unknown as Record<string, unknown>,
+    }
+    const result = await search(spec, proposeCode, verifyByProperty as Verifier<string>, opts)
+    if (result.status === 'solved') {
+      return { status: result.status, code: result.solution?.value ?? null, entry: meta.entry, cases: null, search: result,
+        detail: `no example → ${meta.family} metamorphic spec (${meta.assertions.length} relation${meta.assertions.length === 1 ? '' : 's'}); ${result.detail}` }
+    }
+    // Not solved by the metamorphic relation → fall through (a mis-detected class shouldn't block).
   }
 
   // 3) DIFFERENTIAL CONSENSUS — for arbitrary functions with no named-property family. The
