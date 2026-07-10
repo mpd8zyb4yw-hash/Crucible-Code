@@ -17,9 +17,32 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-09, cont. 56 — NORTH STAR reset: Verification-Guided Reasoning is now the thesis)
+## CURRENT STATE (last updated 2026-07-10, cont. 58 — differential-consensus removes the property-family whitelist ceiling)
 
 **Read [`DOCTRINE.md`](./DOCTRINE.md) before anything else.** It supersedes all older framing.
+
+**cont.58 (a5e2bff) — the ceiling that was removed.** The strong property-verifier path only fired when the
+entry function NAME matched one of ~40 hardcoded families (`sort`, `gcd`, `reverse`, …); every arbitrary
+function fell to the weak "model invents both the input and the expected output" path or abstained. Widening
+the whitelist one family per commit never reaches open-ended requests. `reasoning/differentialSpec.ts`
+(`deriveDifferentialSpec`) closes this the doctrine-sound way — N-version differential testing: the SYSTEM
+fuzzes inputs (shape-hypotheses + edge cases, no input bias), K independently-FRAMED implementations
+(iterative/recursive/functional/built-in) are executed on them, and where a quorum of ≥2 DISTINCT-fingerprint
+impls agree on an output, that (input→output) becomes derived ground truth; the final candidate is certified
+against it by execution. No name gate → reaches ARBITRARY functions. Wired as **path 3** of the
+`solveCodingRequest` ladder (1 user-examples → 2 named-property → 3 differential → 4 model-invents-both →
+5 abstain), INSIDE the function, so it is live on `/api/chat` with **zero `server.ts` edit** (no merge
+contention) and FM sampling routes through `fmQueue` (no contention). `vgr:bench` **69/69** (was 62);
+live-verified with the real on-device FM (titleCase 6 cases, repeatStr 8 cases w/ arity-2 inferred, both
+certified; countVowels2 honest-abstains). HONEST LIMIT (file header): a systematic bug shared across ALL
+samples can still poison a case → named properties remain preferred (a true invariant can't be fooled).
+**Next in-lane levers:** (a) metamorphic-relation properties derived from spec text (idempotence, monotonicity,
+length-preservation) to lift more functions into the un-foolable property tier; (b) tighten differential
+coverage for the countVowels2-class near-misses (2/3 quorum); (c) apply the same differential oracle to the
+**answer engine** — open-ended Q&A still has no deterministic verifier, the largest remaining north-star gap.
+
+---
+
 
 **The reframe (this session):** After an audit, the project's true north star was made explicit and
 wired into all top-level literature: **correctness comes from the LOOP, not the oracle.** An
