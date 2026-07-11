@@ -40,7 +40,7 @@ import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectTargetPath, isModifyRequest, planEmit } from './src/CrucibleEngine/reasoning/emitPlan'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
-import { isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
+import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
@@ -3077,7 +3077,20 @@ app.post('/api/chat', async (req, res) => {
         // exists we do NOT overwrite (never corrupt real files) — we fall through instead.
         if (isMultiFileRequest(message ?? '')) {
           send({ type: 'thought', text: 'Multi-file request detected — proposing a file set, bundling the import graph, certifying by execution…' })
-          const mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2 })
+          // Modify-shaped requests get the CURRENT contents of the named files as grounding —
+          // the proposer edits real code instead of re-inventing the files blind.
+          let mfContext: string | undefined
+          if (isModifyRequest(message ?? '')) {
+            const chunks: string[] = []
+            for (const rel of detectRequestedFilesMF(message ?? '')) {
+              try {
+                const src = fs.readFileSync(path.join(projectPath, rel), 'utf-8')
+                if (src.length <= 4000) chunks.push(`Current contents of \`${rel}\` (modify this, keep unrelated code intact):\n\`\`\`\n${src}\n\`\`\``)
+              } catch { /* absent — nothing to ground */ }
+            }
+            if (chunks.length) mfContext = chunks.join('\n\n')
+          }
+          const mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext })
           debugBus.emit('agent', 'vgr_multifile_result', { status: mf.status, files: mf.files?.map(f => f.path), calls: mf.search?.modelCalls }, { severity: 'info' })
           if (mf.status === 'solved' && mf.files?.length) {
             const collisions = mf.files.filter(f => fs.existsSync(path.join(projectPath, f.path.replace(/^\.\//, ''))))

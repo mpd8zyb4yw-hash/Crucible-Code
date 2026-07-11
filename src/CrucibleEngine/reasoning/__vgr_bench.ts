@@ -388,6 +388,11 @@ async function run() {
   )
   ok('unmergeable collision (arity break at a call site) → null, whole set refused', mBad === null)
 
+  const phantomFiles = detectRequestedFiles('Fix greet in src/greet.ts and welcome in src/main.ts. main.ts imports greet from ./greet.')
+  ok('a bare basename re-mention does NOT become a phantom extra requested file',
+    phantomFiles.length === 2 && phantomFiles.includes('src/greet.ts') && phantomFiles.includes('src/main.ts'),
+    phantomFiles.join(', '))
+
   // ── PART I — multi-file verification (cross-file import graph, execution-certified) ─
   // The mission gap: real SWE spans multiple files with imports. The verifier BUNDLES the
   // files (resolving cross-file edges) and executes cases against the whole graph, so a

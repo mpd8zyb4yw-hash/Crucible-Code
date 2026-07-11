@@ -28,11 +28,15 @@ import type { Candidate, ProposeContext, Proposer, SearchResult, TaskSpec, Verdi
 // A path-like token (slash or code extension, no spaces) — same conservative shape emitPlan uses.
 const FILE_RX = /\b((?:\.\.?\/)?(?:[\w.-]+\/)*[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs))\b/g
 
-/** Every distinct code-file path named in the request, in first-seen order, "./" stripped. */
+/** Every distinct code-file path named in the request, in first-seen order, "./" stripped.
+ * A BARE filename that matches the basename of a pathed mention is the SAME file — prose
+ * like "add X to src/main.ts … main.ts imports greet" must not demand a phantom root-level
+ * main.ts (which the coverage gate would then require and whose imports could never resolve). */
 export function detectRequestedFiles(nl: string): string[] {
   const seen = new Set<string>()
   for (const m of nl.matchAll(FILE_RX)) seen.add(m[1].replace(/^\.\//, ''))
-  return [...seen]
+  const all = [...seen]
+  return all.filter(f => f.includes('/') || !all.some(o => o !== f && o.endsWith('/' + f)))
 }
 
 /**
@@ -283,7 +287,7 @@ export interface MultiFileResult {
  */
 export async function solveMultiFileRequest(
   nl: string,
-  opts: SearchOpts & { specSamples?: number; specComplete?: Completer } = {},
+  opts: SearchOpts & { specSamples?: number; specComplete?: Completer; context?: string } = {},
   proposerOverride?: Proposer<CandidateFile[]>,
 ): Promise<MultiFileResult> {
   const requestedFiles = detectRequestedFiles(nl)
@@ -306,7 +310,7 @@ export async function solveMultiFileRequest(
     const props = deriveMultiFileProperties(declared)
     if (props) {
       const pspec: TaskSpec = {
-        goal: nl, domain: 'code',
+        goal: nl, domain: 'code', context: opts.context,
         acceptance: {
           entry: props.entries[0], entries: props.entries.length > 1 ? props.entries : undefined,
           assertions: props.assertions, family: [...new Set(props.families)].join('+'),
@@ -338,7 +342,7 @@ export async function solveMultiFileRequest(
   }
 
   const spec: TaskSpec = {
-    goal: nl, domain: 'code',
+    goal: nl, domain: 'code', context: opts.context,
     acceptance: {
       entry,
       entries: entries.length > 1 ? entries : undefined,
