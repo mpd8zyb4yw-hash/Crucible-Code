@@ -17,7 +17,26 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 66f — WHOLE-TREE SIGNATURE PROPAGATION)
+## CURRENT STATE (last updated 2026-07-11, cont. 66g — BUILD-NEGOTIATION LOOP FIXED)
+
+**cont.66g (3a724d4) — user-caught "utter failure": the build-negotiation loop.**
+- Symptom: after "make me a game", a whole multi-turn negotiation (different?→fps?→battle royale→
+  "i trust you, do your thing"→"build the game") fell ENTIRELY to the weak FM, which role-played a
+  planning assistant ("Great choice! Here's a basic outline: Game Setup, Player Movement…") and
+  NEVER built anything. clarifyBuild only handles the FIRST turn; no state carried the accumulating
+  spec; greenlight phrases triggered no build.
+- Fix: `src/CrucibleEngine/answer/buildNegotiation.ts` — resolveBuildTurn(message, history) fires on
+  an explicit greenlight + a build topic in the last 6 turns, ASSEMBLES a concrete single-file-HTML
+  spec, and routes it to the real builder. Over-scope asks (battle-royale/FPS/3D) are honestly
+  downscoped to a runnable browser mini-game, said aloud. server.ts forces the agent path on 'build'
+  and hands the assembled `agentGoal` to the loop/planner. conversational:bench 67/67 (+11), tsc clean.
+- **NOT live-confirmed** — greenlight→build routing is deterministic-only; end-to-end live game build
+  wasn't run (shared/contended backend + multi-min agent loop). NEXT: live-FM confirm a runnable
+  artifact is produced; optionally handle mid-negotiation REFINEMENT turns (still hit FM role-play).
+
+---
+
+## PRIOR — cont. 66f (WHOLE-TREE SIGNATURE PROPAGATION)
 
 **cont.66f (fdbf641) — whole-tree signature propagation shipped (mission item 1, remaining bulk of modify-path).**
 - planEmit only reconciled call sites INSIDE the modified file. A signature change to an exported
