@@ -9,6 +9,7 @@ import { applyRecomputation, evalArithmeticExpr, evalSteps, evalWithEnv, recompu
 import { applyDateRecomputation, evalDateSetup, isDateQuestion, recomputeDate } from './dateTime'
 import { checkConstraints } from './constraints'
 import { corroborateFact, extractClaimKey } from './factConsensus'
+import { convert, isConversionQuestion, parseConversion, recomputeConversion } from './unitConvert'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -263,6 +264,45 @@ console.log('== constraint critics: the question refutes a bad setup ==')
   check('unit mismatch across recognized families flagged (asked hours, answered miles)', checkConstraints('How many hours will it take?', 3, 'miles').some(v => v.kind === 'unit-mismatch'))
   check('same-family unit passes (asked hours, answered hours)', checkConstraints('How many hours will it take?', 3, 'hours').length === 0)
   check('unrecognized unit never flags (open-ended unit words unpoliced)', checkConstraints('How many hours will it take?', 3, 'widgets').length === 0)
+}
+
+console.log('== unit conversion: deterministic table (Tier 1, zero model) ==')
+{
+  const mph = parseConversion('How fast is 60 mph in km/h?')
+  check('60 mph → km/h ≈ 96.56064', !!mph && Math.abs(mph.result - 96.56064) < 1e-6, JSON.stringify(mph))
+  const kg = parseConversion('Convert 5 kg to pounds.')
+  check('5 kg → pounds ≈ 11.0231', !!kg && Math.abs(kg.result - 11.0231) < 1e-3, JSON.stringify(kg))
+  const temp = parseConversion('What is 100 celsius in fahrenheit?')
+  check('100 °C → 212 °F (affine, not linear)', !!temp && Math.abs(temp.result - 212) < 1e-9, JSON.stringify(temp))
+  const back = parseConversion('What is 32 fahrenheit in celsius?')
+  check('32 °F → 0 °C', !!back && Math.abs(back.result) < 1e-9, JSON.stringify(back))
+  const hm = parseConversion('How many minutes is 2.5 hours?')
+  check('"how many minutes is 2.5 hours" → 150', !!hm && hm.result === 150, JSON.stringify(hm))
+  check('cross-family conversion refused (kg → miles)', convert(5, 'kg', 'miles') === null)
+  check('unknown unit refused', convert(5, 'blorps', 'kg') === null)
+}
+
+console.log('== unit conversion: gating (no false positives on prose) ==')
+{
+  check('conversion question detected', isConversionQuestion('How fast is 60 mph in km/h?'))
+  check('"convert X kg to pounds" detected', isConversionQuestion('Convert 5 kg to pounds'))
+  check('plain factual question NOT detected', !isConversionQuestion('What is the capital of France?'))
+  check('"I\'m going in a minute" NOT detected (ambiguous in/m don\'t count)', !isConversionQuestion("I'm going in 1 minute, ok?"))
+  const rate = 'A train travels 60 mph for 2.5 hours. How far does it go?'
+  check('rate word problem may gate as conversion…', isConversionQuestion(rate))
+  const nores = await recomputeConversion(rate, { samples: 3, complete: replay(['{"value":null}', '{"value":null}', '{"value":null}']) })
+  check('…but recomputeConversion abstains on it (falls through to wordProblem lane)', nores === null, JSON.stringify(nores))
+}
+
+console.log('== unit conversion: Tier 2 model-setup quorum (odd phrasings) ==')
+{
+  const setup = '{"value":26.2,"from":"miles","to":"km"}'
+  const agree = await recomputeConversion('A marathon covers 26.2 of those American miles — what is that in the metric distance unit?', {
+    samples: 3, complete: replay([setup, setup, '{"value":26.2,"from":"mi","to":"kilometers"}']),
+  })
+  check('quorum on the CONVERTED value → ≈42.16 km', !!agree && Math.abs(agree.value - 42.164813) < 1e-3 && agree.unit === 'km', JSON.stringify(agree))
+  const noq = await recomputeConversion('what about that thing?', { samples: 3, complete: replay(['{"value":1,"from":"kg","to":"lb"}', '{"value":2,"from":"kg","to":"lb"}', '{"value":3,"from":"kg","to":"lb"}']) })
+  check('no quorum → abstains', noq === null, JSON.stringify(noq))
 }
 
 console.log('== fact consensus: claim-key extraction ==')

@@ -19,6 +19,7 @@ import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
 import { applyRecomputation, recomputeMultiStep, recomputeWordProblem } from './wordProblem'
 import { applyDateRecomputation, isDateQuestion, recomputeDate } from './dateTime'
+import { isConversionQuestion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
 import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
 
@@ -258,14 +259,19 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         issues = issues.filter(i => i.kind !== 'truncated')
       }
     } catch { /* non-blocking */ }
-  } else if (facets.needsComputation && !usedRetrieval && !signal?.aborted) {
+  } else if ((facets.needsComputation || isConversionQuestion(message)) && !usedRetrieval && !signal?.aborted) {
     try {
       // Try the single-expression extractor FIRST — it is fast (~3s) and, because the model can
       // nest ("120 - (3/4 * 120) - 15"), it already covers most compound problems. Only when it
       // can't form a quorum AND the question is multi-step do we pay for the richer (slower) step-
       // DAG setup, which handles the genuinely irreducible cases (relative speed, head start).
-      let recomp = await recomputeWordProblem(message)
-        ?? (facets.needsMultiStep ? await recomputeMultiStep(message) : null)
+      // Unit conversions try FIRST: Tier 1 parses deterministically (zero model calls, the
+      // factor table is ground truth); a non-conversion falls through to the arithmetic lanes.
+      let recomp = isConversionQuestion(message) ? await recomputeConversion(message) : null
+      if (!recomp && facets.needsComputation) {
+        recomp = await recomputeWordProblem(message)
+          ?? (facets.needsMultiStep ? await recomputeMultiStep(message) : null)
+      }
       // Constraint gate: a quorum value that violates a constraint the QUESTION itself imposes
       // (asked unit, percent/probability range, count integrality, part-of-whole) means the
       // SETUP was wrong across samples — the documented honest limit of recomputation. Reject
@@ -280,14 +286,19 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       }
       const rec = recomp ? applyRecomputation(text, recomp) : null
       if (recomp && rec && !rec.guarded) {
+        // samples === 0 marks a Tier-1 conversion: parsed + converted purely from the unit
+        // table, no model setup involved — the strongest provenance we can report.
+        const how = recomp.samples === 0
+          ? 'deterministic unit-conversion table, no model involved'
+          : `${recomp.samples} independent setups, ${Math.round(recomp.agreement * 100)}% agreed`
         if (rec.corrected) {
           text = rec.text
           corrections += 1
           recomputed = true
-          emit?.({ type: 'verify', passed: true, report: `Recomputed the answer deterministically: ${recomp.expression} = ${formatRecomp(recomp)} (${recomp.samples} independent setups, ${Math.round(recomp.agreement * 100)}% agreed). Corrected a mismatched stated value.` })
+          emit?.({ type: 'verify', passed: true, report: `Recomputed the answer deterministically: ${recomp.expression} = ${formatRecomp(recomp)} (${how}). Corrected a mismatched stated value.` })
         } else if (rec.confirmed) {
           recomputed = true
-          emit?.({ type: 'verify', passed: true, report: `Verified the answer by independent recomputation: ${recomp.expression} = ${formatRecomp(recomp)} (${recomp.samples} setups agreed).` })
+          emit?.({ type: 'verify', passed: true, report: `Verified the answer by independent recomputation: ${recomp.expression} = ${formatRecomp(recomp)} (${how}).` })
         } else {
           text = rec.text // draft stated no number; appended an explicit machine-computed Answer.
           recomputed = true
