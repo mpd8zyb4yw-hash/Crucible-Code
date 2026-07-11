@@ -3,7 +3,7 @@
 > **This file supersedes every older statement of purpose in this repository.**
 > Read it before ROADMAP.md, before NEXT_SESSION.md, before writing a single line of code.
 > If any other doc, comment, or benchmark contradicts this, THIS wins — and that other
-> doc is wrong and should be corrected to match. Last set: 2026-07-09.
+> doc is wrong and should be corrected to match. Last set: 2026-07-11.
 
 ---
 
@@ -23,10 +23,13 @@ errors and try again against ground truth.
 
 ## Why this is our thesis (the constraint that forged it)
 
-Crucible runs on an **8GB unified-memory Mac with ~2GB of headroom**. The primary model is
+Crucible runs on an **8GB unified-memory Mac with ~2GB of headroom**. The primary model today is
 Apple's on-device Foundation Model (~3B, on the ANE, weights shared by the OS so they cost us
-almost no process RAM). **This is the correct model for this hardware and it is not going to
-get bigger.** A 7B won't fit; a 14–32B is physically impossible here.
+almost no process RAM). A 7B won't fit; a 14–32B is physically impossible here. But the constraint
+is not "this model is as big as we can go." **The direction of travel is the opposite of bigger —
+it is a smaller, reasoning-denser _cognitive core_ (see below).** The right model for Crucible is
+not the largest that fits; it is the *smallest* one whose reasoning, wrapped in the loop, still
+certifies — because everything it does NOT try to memorize is one less thing it can be wrong about.
 
 We went to the Moon on a computer with ~4KB of RAM. It worked because the **guidance loop**
 did the reasoning: measure state, compute error against ground truth, correct, repeat. The
@@ -35,6 +38,51 @@ is exactly our move. We are not short on intelligence because we are short on pa
 are intelligent to the exact degree that our **verification-and-search infrastructure** is
 good. **Every performance gain must come from better infra, not a bigger model.** Anyone who
 frames a Crucible problem as "we need more parameters" has misunderstood the entire project.
+
+## The cognitive core (the model we actually want)
+
+Karpathy's framing, adopted here as foundational: the endpoint is not a large model that knows
+everything — it is a **cognitive core**. A very small on-device model (**~1B parameters**, and if
+that means training/distilling our own, so be it) that is deliberately **stripped of encyclopedic
+knowledge** and instead holds one thing to a very high standard: **reasoning**. It does not try to
+remember the capital of a country, an API's exact signature, or a library's option names. It knows
+*how to think* and *how to look things up*. Facts live in retrieval (the corpus, the semantic index,
+the web via our own tooling); the core's job is to reason over facts it fetches, not to be a lossy
+compressed encyclopedia that hallucinates them.
+
+Why this closes the gap rather than widening it:
+
+- **Memorized knowledge in weights is the same failure mode as a preloaded answer, one level down.**
+  A weight that "remembers" a fact is a fact we cannot verify at inference time and that goes stale.
+  A *retrieved* fact carries provenance and can be checked. Externalizing knowledge turns
+  hallucination-shaped errors into lookup-shaped ones — and lookups are verifiable. This is the
+  "NOT preloaded answers" rule applied to the model's parameters, not just our critics.
+- **Every parameter spent on recall is a parameter not spent on reasoning.** On an 8GB device the
+  budget is brutal. A 1B core that spends its capacity on *reasoning depth* — planning, error
+  attribution, composing sound primitives, converging on verifier feedback — beats a 3B that spread
+  the same capacity across memorizing a trillion tokens it will mostly get subtly wrong. Small +
+  sharp + retrieval > big + blurry.
+- **It makes the loop the whole game, which is exactly our thesis.** A core that reasons but does not
+  claim to *know* has no choice but to formalize, retrieve, propose, and let the verifier certify.
+  The cognitive core and "correctness comes from the loop" are the same bet stated at two levels.
+
+**Design consequences (binding going forward):**
+
+1. **Prefer the smallest core that still reasons.** When choosing or training a model, optimize
+   reasoning quality per parameter, not knowledge coverage. A ~1B reasoning-dense core (self-trained
+   / distilled if needed) is the target; the current ~3B FM is a stepping stone, not the destination.
+2. **Treat baked-in factual knowledge as debt, not an asset.** Do not lean on the model "just knowing"
+   a fact. If a capability depends on recall, route it through retrieval so the fact is fetched and
+   verifiable. A feature that works only because the model memorized something is fragile by
+   construction.
+3. **Invest disproportionately in reasoning + retrieval infra.** The two levers that matter are (a)
+   making the core's reasoning *very* powerful and sample-efficient inside the loop, and (b) making
+   "look it up" fast, well-ranked, and trustworthy. These are where effort goes; growing the model is
+   not on the menu.
+4. **Self-training is on the table when it sharpens reasoning or shrinks the core.** Distilling a
+   smaller, more reasoning-dense core — or fine-tuning for loop-shaped behavior (formalize, emit
+   structured self-critique, converge on verifier feedback) — is a legitimate and encouraged move.
+   Training to memorize more facts is not.
 
 ## What we are building toward (the literal success bar)
 
@@ -62,7 +110,14 @@ advance — produced entirely within our constraints:**
   samples of the same biased reasoning vote for the same wrong answer. Independent
   *derivation* (model chain-of-thought AND deterministic execution, accept only on
   agreement) is doctrine; majority-vote-and-ship is not.
-- **NOT "we need a bigger model."** See above. This framing is out of scope, permanently.
+- **NOT "we need a bigger model."** See above. This framing is out of scope, permanently — and
+  the cognitive-core doctrine makes it doubly wrong: the direction is *smaller and reasoning-denser*
+  (~1B core + retrieval), not bigger. "We need more parameters" and "we need to memorize more" are
+  the same misunderstanding.
+- **NOT knowledge baked into weights.** The model must not be relied on to *know* facts (APIs,
+  signatures, library options, world facts). Encyclopedic recall in parameters is unverifiable,
+  stale-prone, hallucination-shaped debt. Facts are *retrieved* (corpus / index / web via our
+  tooling) so they carry provenance and can be checked. The core reasons; it does not remember.
 
 ## The architecture doctrine (how every feature must be shaped)
 
