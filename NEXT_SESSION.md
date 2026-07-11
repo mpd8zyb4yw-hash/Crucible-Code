@@ -17,7 +17,42 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 64 — cognitive-core doctrine + converge telemetry)
+## CURRENT STATE (last updated 2026-07-11, cont. 65 — COUNCIL DEBATE ensemble + MiniCPM5-1B seated)
+
+**cont.65 (6c0336b) — the co-equal on-device council is LIVE, end-to-end, in the default (strict) chat path.**
+User directive executed: two-plus independently-trained on-device models as PEERS that debate — not
+primary/backup — fully in-process (node-llama-cpp, no Ollama/HTTP).
+
+- **`agent/debate.ts` — `runDebate()`:** blind proposals → cross-examination/revision → deterministic
+  verdict via shared `agent/consensus.ts` (oracle arithmetic > consensus vote > honest plurality).
+  Seeded proposals (a caller's already-computed draft joins without re-inference), per-peer timeouts,
+  unanimity early-exit, errored-rebuttal-keeps-proposal. `npm run debate:bench` 34/34, scripted peers.
+- **MiniCPM5-1B seated (the cognitive-core pick):** catalog entry (Apache-2.0, 688MB Q4_K_M,
+  sha256-pinned, `.crucible/models/minicpm5-1b-q4_k_m.gguf` DOWNLOADED on this Mac), loads + infers
+  in-process. `<think>` scratchpad stripped at pool level. LIVE: proposes in ~5–15s warm.
+- **8GB-device fix that makes the council real:** Apple FM peer rides OUTSIDE the GGUF RAM budget
+  (it lives in the OS model service) + macOS freemem floor (total*0.25) — budget-1 devices now seat
+  a genuine 2+ voice council instead of degrading to solo (first live run WAS solo; fixed).
+- **Strict-path integration (production default):** the answer engine's verified draft is seated as a
+  council voice; MiniCPM + FM cross-examine it; `local_debate` SSE ships the transcript. DISPLAY-HONEST:
+  the shipped text is never overruled by a lexical vote (answerQuery's deterministic critics outrank the
+  council) — agreement/dissent is surfaced, not hidden. Gated to code/reasoning domains.
+- **UI council card (chat):** on local replies, a collapsed `COUNCIL — 3 of 3 voices agree · 97%` chip
+  expands to per-voice verdict/agreed/dissented/revised marks with struck-through abandoned positions;
+  same section renders in the ensemble process trail (`CouncilDebateSection`, MessageList.tsx).
+  LIVE-VERIFIED in the browser (3-voice unanimous: answer-engine + minicpm5-1b + track-s-fm, 15.4s).
+  `app/` bundle rebuilt + committed.
+- Benches: debate 34/34, strengthen 13/13, answer 127/127, tsc clean.
+- **HONEST LIMITS / NEXT:** (1) no live *disagreement→revision* observed yet (all live runs were
+  unanimous; the rebuttal path is bench-proven only — force a disagreement live). (2) Non-strict routed
+  path debates GGUF-vs-GGUF — RAM-risky on 8GB; council there leans on the FM peer. (3) Council verdict
+  does not yet feed VGR coding tiers (differential consensus and the council are separate consensus
+  machineries — consider unifying). (4) Head-to-head telemetry MiniCPM vs FM (win-rate per domain) not
+  aggregated — needed before any "promote to primary" decision.
+
+---
+
+### cont.64 (below) — cognitive-core doctrine + converge telemetry
 
 **cont.64 — two things this session:**
 
