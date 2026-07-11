@@ -17,7 +17,27 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 66e — LIVE-FM ORACLE-CLOSURE CONFIRM + prose-extraction fix)
+## CURRENT STATE (last updated 2026-07-11, cont. 66f — WHOLE-TREE SIGNATURE PROPAGATION)
+
+**cont.66f (fdbf641) — whole-tree signature propagation shipped (mission item 1, remaining bulk of modify-path).**
+- planEmit only reconciled call sites INSIDE the modified file. A signature change to an exported
+  function also breaks callers in OTHER modules. New `planEmitTree` (emitPlan.ts) scans sibling
+  files that import `entry` from the target path, mechanically trims the safe cases (trailing-param
+  removal), and — all-or-nothing — refuses the WHOLE edit (downgrades to a fresh `src/<entry>.ts`,
+  every existing file untouched) when ANY importer can't absorb the change.
+- Specifier resolution (`importsEntryFrom`/`resolveSpecifier`) means a same-named import from a
+  DIFFERENT module is never touched; an importer that also shadows the name forces a downgrade.
+- Wired into server.ts single-file VGR write block: bounded project TS walk (`collectProjectTsFiles`,
+  cap 400, skips deps/build) gathers siblings only on a modify-shaped request with a target file;
+  propagated edits are written + streamed as their own tool_call/tool_result cards.
+- vgr:bench 135/135 (+6 whole-tree cases: cross-file trim, non-importer untouched, required-param
+  downgrade, defaulted-param no-op, wrong-specifier skip, shadow downgrade). tsc clean.
+- **NOT yet live-FM-confirmed** — deterministic bench only; next session should run a real /api/chat
+  modify against a scratch project with a cross-file importer (recipe in [[crucible-retrieval-gate-fix]]).
+
+---
+
+## PRIOR — cont. 66e (LIVE-FM ORACLE-CLOSURE CONFIRM + prose-extraction fix)
 
 **cont.66c (0cdb3d2 → ae93e56) — all three modify-path increments shipped + consensus unified, everything live/bench-verified.**
 
