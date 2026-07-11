@@ -17,7 +17,35 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 65b — CONTEXTUAL UNDERSTANDING fix)
+## CURRENT STATE (last updated 2026-07-11, cont. 66 — CODEBASE AUDIT + DEAD-CODE SWEEP)
+
+**cont.66 (d0730b5) — import-graph audit of the whole repo, then the dead-code sweep it justified.**
+Audit: ~96k LOC / 942 files; 632 are path-loaded synth skills (NOT dead despite zero imports);
+227 real modules reachable from entry points (server.ts, main.tsx, electron.cjs, modelRegistry.ts).
+Deleted 1,871 LOC with zero import-graph reachers: old localModels stack
+({router,gate,policy}.ts, strengthen/, its two benches — superseded by agent/localModelRouter +
+debate/consensus), parked decompositionDag.ts + nodeExecutor.ts, unwired Tier-2 apply-layer
+(contextAssembly.ts, apply/applyLayer.ts, synth/{mockInjection,triage}.ts), scratch test.ts.
+KEPT synth-taxonomy.ts (has npm script synth:taxonomy). Verified: tsc clean, vgr:bench 114/114,
+synth:prove 4/4. capabilityRouter.ts header fixed: classify() IS live (answerEngine +
+agent/localModelRouter import it); only its routing half is parked. NOTE: agent/
+strengthenCandidates (live, used by debate.ts via consensus.ts) is a DIFFERENT module from the
+deleted localModels/strengthen — don't confuse them.
+
+**Next, in recommended order (from the audit):**
+1. **Retrieval-routing gate** — highest correctness-per-effort. retrievalLayer.ts is fully wired,
+   but answerEngine.classifyFacets' EXTERNAL_FACT gate failed to fire on "who won the 2018 World
+   Cup" → wrong parametric answer ("Brazil"). Fix the classifier that decides WHEN to ground.
+2. **Multi-file editing of EXISTING codebases** — mission item 1's real gap: VGR does greenfield
+   synthesis well but can't yet make verified surgical cross-file edits in a large existing tree.
+3. **Unify consensus** — answer/factConsensus.ts still rides the old localModels/orchestrator;
+   fold it (and eventually VGR differential consensus) onto agent/consensus.ts.
+4. **Decompose server.ts (8,119 lines)** — the /api/chat handler breeds control-flow bugs
+   (both cont.65b bugs were size-enabled). Contended with the cloud session — coordinate first.
+
+---
+
+### cont.65b — CONTEXTUAL UNDERSTANDING fix
 
 **cont.65b (8cbe6d7) — fixed the context-blindness the user caught.** "test" → FM invented
 "help you with your test!", which poisoned the persona (identity became "a study assistant"; a
