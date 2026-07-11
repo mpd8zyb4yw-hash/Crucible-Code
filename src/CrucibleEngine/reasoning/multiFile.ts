@@ -16,8 +16,10 @@
 // never by the model's say-so. Abstain still means abstain.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { transform } from 'esbuild'
 import { fmComplete } from '../agent/fmReact'
 import { type CandidateFile, type CodeAcceptance, type CodeCase, verifyMultiFileByProperty, verifyMultiFileCode } from './codeVerifier'
+import { mergeCertifiedSource } from './emitPlan'
 import { propertyForFunction } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
@@ -226,6 +228,38 @@ export function deriveMultiFileProperties(fns: string[]): { entries: string[]; f
     if (p) { entries.push(fn); families.push(p.family); assertions.push(...p.assertions) }
   }
   return assertions.length ? { entries, families, assertions } : null
+}
+
+/**
+ * Merge a certified file set into a project where some target paths ALREADY EXIST (the
+ * modify-inside-multi-file case). Colliding files are structurally merged (same-named
+ * declarations spliced with annotation grafting + call-site reconciliation, new ones
+ * appended, imports unioned); non-colliding files pass through as-is. EVERY merged file
+ * must still parse (esbuild). All-or-nothing: any unmergeable file → null, and the caller
+ * must refuse the whole write. Callers should re-verify the returned set by execution
+ * (verifyMultiFileCode) before writing — this merge is structural, not behavioral.
+ */
+export async function mergeCertifiedFileSet(
+  certified: CandidateFile[],
+  existingByPath: Map<string, string>,
+): Promise<{ files: CandidateFile[]; detail: string } | null> {
+  const out: CandidateFile[] = []
+  const notes: string[] = []
+  for (const f of certified) {
+    const rel = f.path.replace(/^\.\//, '')
+    const existing = existingByPath.get(rel)
+    if (existing == null) { out.push(f); continue }
+    const merged = mergeCertifiedSource(existing, f.source)
+    if (!merged) return null
+    try {
+      await transform(merged.content, { loader: 'ts', format: 'esm', target: 'node18' })
+    } catch {
+      return null
+    }
+    out.push({ path: f.path, source: merged.content })
+    notes.push(`${rel}: replaced [${merged.spliced.join(', ') || '—'}], added [${merged.appended.join(', ') || '—'}]${merged.callSitesRepaired ? `, ${merged.callSitesRepaired} call site(s) updated` : ''}`)
+  }
+  return { files: out, detail: notes.join('; ') }
 }
 
 export interface MultiFileResult {

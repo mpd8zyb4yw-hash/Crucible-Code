@@ -389,6 +389,82 @@ function scanStatementEnd(content: string, from: number): number {
   return content.length
 }
 
+// ─── Multi-file merge (modify inside multi-file requests) ─────────────────────
+
+/** Top-level declaration names in a module source (exported or not), first-seen order. */
+export function topLevelDeclarations(source: string): string[] {
+  const rx = /^[ \t]*(?:export\s+)?(?:async\s+)?(?:function\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=)/gm
+  const seen = new Set<string>()
+  for (let m; (m = rx.exec(source)); ) seen.add(m[1] ?? m[2])
+  return [...seen]
+}
+
+const IMPORT_LINE_RX = /^import\s[^\n]*$/gm
+const NAMED_IMPORT_RX = /^import\s*\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2\s*;?\s*$/
+
+/**
+ * Merge a CERTIFIED module source into an EXISTING file at the same path: existing
+ * declarations with the same name are spliced in place (annotations grafted, call sites
+ * reconciled), new ones are appended, and the certified file's imports are unioned in.
+ * Only valid for modify-shaped requests — the caller gates on isModifyRequest.
+ * Returns null (with a reason) on ANY doubt; callers must then refuse the whole write,
+ * never merge half a file. The merged content still needs the caller's compile/execution
+ * re-verification — this function is structural, not behavioral.
+ */
+export function mergeCertifiedSource(
+  existing: string,
+  certified: string,
+): { content: string; spliced: string[]; appended: string[]; callSitesRepaired: number } | null {
+  let merged = existing
+
+  // 1) Imports: union the certified file's imports into the existing file.
+  const certImports = certified.match(IMPORT_LINE_RX) ?? []
+  const body = certified.replace(IMPORT_LINE_RX, '').trim()
+  for (const line of certImports) {
+    const nm = NAMED_IMPORT_RX.exec(line.trim())
+    if (!nm) return null // non-named import form — too ambiguous to merge safely
+    const [, names, , spec] = nm
+    const specRx = new RegExp(`^import\\s[^\\n]*from\\s*['"]${spec.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`, 'm')
+    const existingLineM = specRx.exec(merged)
+    if (!existingLineM) { merged = line.trimEnd() + '\n' + merged; continue }
+    const fullLine = merged.slice(existingLineM.index).split('\n')[0]
+    const em = NAMED_IMPORT_RX.exec(fullLine.trim())
+    if (!em) return null // same specifier, non-named existing import — bail
+    const union = [...new Set([...em[1].split(','), ...names.split(',')].map(s => s.trim()).filter(Boolean))]
+    merged = merged.replace(fullLine, `import { ${union.join(', ')} } from '${spec}'`)
+  }
+
+  // 2) Each top-level declaration: splice over a same-named existing one, else append.
+  const spliced: string[] = []
+  const appended: string[] = []
+  let callSitesRepaired = 0
+  for (const name of topLevelDeclarations(body)) {
+    const certSpan = extractFunctionSpan(body, name)
+    if (!certSpan) return null // can't isolate the certified declaration — no blind copy
+    const certDef = body.slice(certSpan.start, certSpan.end).trim()
+    const oldSpan = extractFunctionSpan(merged, name)
+    if (oldSpan) {
+      const original = merged.slice(oldSpan.start, oldSpan.end)
+      const grafted = graftAnnotations(certDef, original, name)
+      const replaced = merged.slice(0, oldSpan.start) + grafted + merged.slice(oldSpan.end)
+      const rec = reconcileCallSites(
+        replaced, name, oldSpan.start, oldSpan.start + grafted.length,
+        parseSignature(grafted, name), parseSignature(original, name),
+      )
+      if (!rec) return null // a call site can't absorb the new signature
+      merged = rec.content
+      callSitesRepaired += rec.repaired
+      spliced.push(name)
+    } else if (alreadyDefines(merged, name)) {
+      return null // defined in a shape we can't locate (e.g. re-export) — no duplicate risk
+    } else {
+      merged = merged.replace(/\s*$/, '') + '\n\n' + certDef + '\n'
+      appended.push(name)
+    }
+  }
+  return { content: merged, spliced, appended, callSitesRepaired }
+}
+
 /**
  * Decide where the certified `code` (defining `entry`) should be written.
  *

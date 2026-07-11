@@ -38,8 +38,9 @@ import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './s
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectTargetPath, planEmit } from './src/CrucibleEngine/reasoning/emitPlan'
-import { isMultiFileRequest, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
+import { detectTargetPath, isModifyRequest, planEmit } from './src/CrucibleEngine/reasoning/emitPlan'
+import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
+import { isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
@@ -3080,27 +3081,55 @@ app.post('/api/chat', async (req, res) => {
           debugBus.emit('agent', 'vgr_multifile_result', { status: mf.status, files: mf.files?.map(f => f.path), calls: mf.search?.modelCalls }, { severity: 'info' })
           if (mf.status === 'solved' && mf.files?.length) {
             const collisions = mf.files.filter(f => fs.existsSync(path.join(projectPath, f.path.replace(/^\.\//, ''))))
-            if (collisions.length) {
-              send({ type: 'thought', text: `VGR multi-file certified ${mf.files.length} file(s), but ${collisions.length} target path(s) already exist — not overwriting existing files; handing off.` })
-            } else {
+            let filesToWrite = mf.files
+            let mergeNote = ''
+            let mergeFailed = false
+            if (collisions.length && isModifyRequest(message ?? '')) {
+              // Modify-shaped request touching existing files → structural merge (splice
+              // same-named declarations, append new, union imports), then RE-VERIFY the
+              // merged graph by execution against the same cases before any write.
+              const existingByPath = new Map<string, string>()
+              for (const f of collisions) {
+                const rel = f.path.replace(/^\.\//, '')
+                try { existingByPath.set(rel, fs.readFileSync(path.join(projectPath, rel), 'utf-8')) } catch { /* treat as absent */ }
+              }
+              const merged = await mergeCertifiedFileSet(mf.files, existingByPath)
+              const reverified = merged && mf.cases?.length
+                ? await verifyMultiFileCode(merged.files, { entry: mf.entry ?? '', entries: mf.entries ?? undefined, cases: mf.cases })
+                : null
+              if (merged && (!mf.cases?.length || reverified?.pass)) {
+                filesToWrite = merged.files
+                mergeNote = ` — merged into ${collisions.length} existing file(s) (${merged.detail})${reverified?.pass ? '; merged graph re-verified by execution' : ''}`
+                send({ type: 'thought', text: `VGR multi-file: merged certified code into ${collisions.length} existing file(s)${reverified?.pass ? ' and re-certified the merged graph by execution' : ''}.` })
+              } else {
+                mergeFailed = true
+                send({ type: 'thought', text: `VGR multi-file certified ${mf.files.length} file(s), but ${merged ? 'the merged graph failed execution re-verification' : `${collisions.length} existing target(s) could not be merged safely`} — not touching existing files; handing off.` })
+              }
+            } else if (collisions.length) {
+              mergeFailed = true
+              send({ type: 'thought', text: `VGR multi-file certified ${mf.files.length} file(s), but ${collisions.length} target path(s) already exist and the request is not modify-shaped — not overwriting existing files; handing off.` })
+            }
+            if (!mergeFailed) {
               const written: string[] = []
               const rels: string[] = []
               // Each file gets a UNIQUE event id so the UI maps every tool_result to its own
               // tool_call card (the reducer keys results by id — reusing one id collapses them).
-              for (let i = 0; i < mf.files.length; i++) {
-                const f = mf.files[i]
+              const mergedPaths = new Set(collisions.map(f => f.path.replace(/^\.\//, '')))
+              for (let i = 0; i < filesToWrite.length; i++) {
+                const f = filesToWrite[i]
                 const rel = f.path.replace(/^\.\//, '')
                 const abs = path.join(projectPath, rel)
                 fs.mkdirSync(path.dirname(abs), { recursive: true })
                 fs.writeFileSync(abs, f.source)
                 written.push(abs); rels.push(rel)
                 const id = `vgr_mf_${i}`
-                send({ type: 'tool_call', id, tool: 'write_file', args: { path: rel } })
-                send({ type: 'tool_result', id, tool: 'write_file', ok: true, output: `VGR-certified ${rel} — part of a ${mf.files.length}-file import graph (no external model)` })
+                const tool = mergedPaths.has(rel) ? 'edit_file' : 'write_file'
+                send({ type: 'tool_call', id, tool, args: { path: rel } })
+                send({ type: 'tool_result', id, tool, ok: true, output: `VGR-certified ${rel} — part of a ${filesToWrite.length}-file import graph (no external model)${mergedPaths.has(rel) ? ' — merged into the existing file' : ''}` })
               }
               onFileMutated(written)
-              send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified across ${rels.length} file(s) against ${mf.cases?.length ?? 0} case(s) in ${mf.search?.modelCalls ?? 0} model call(s) — cross-file imports bundled + run — ${mf.detail}` })
-              const answer = `Wrote and CERTIFIED a ${rels.length}-file module (${rels.join(', ')}) via verification-guided reasoning — the model proposed a file set, execution bundled the import graph and verified every case (${mf.cases?.length ?? 0} passed). Zero external model calls.`
+              send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified across ${rels.length} file(s) against ${mf.cases?.length ?? 0} case(s) in ${mf.search?.modelCalls ?? 0} model call(s) — cross-file imports bundled + run — ${mf.detail}${mergeNote}` })
+              const answer = `Wrote and CERTIFIED a ${rels.length}-file module (${rels.join(', ')}) via verification-guided reasoning — the model proposed a file set, execution bundled the import graph and verified every case (${mf.cases?.length ?? 0} passed). Zero external model calls.${mergeNote}`
               send({ type: 'final', text: answer, meta: { vgrCertified: true, multiFile: true, files: rels, entry: mf.entry, modelCalls: mf.search?.modelCalls, confidence: 1 } })
               patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
               if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])

@@ -25,9 +25,9 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectTargetPath, planEmit } from './emitPlan'
+import { detectTargetPath, mergeCertifiedSource, planEmit } from './emitPlan'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
-import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
+import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
 import type { CandidateFile } from './codeVerifier'
 import type { Candidate, ProposeContext } from './types'
 
@@ -358,6 +358,35 @@ async function run() {
   const noCalls = 'export function pad(s: string, width: number, fill: string): string {\n  return s.padStart(width, fill)\n}\n'
   const p14 = await planEmit('change pad in src/strings.ts', 'pad', WIDENED, noCalls)
   ok('signature change with NO call sites in the file → modify proceeds', p14.mode === 'modify', p14.detail)
+
+  // Multi-file merge: certified module source merged into an EXISTING file (splice same-named,
+  // append new, union imports) — the modify-inside-multi-file building block.
+  const mExisting = "import { helper } from './util'\n\nexport function greet(name: string): string {\n  return 'hi ' + name\n}\n\nexport const KEEP = 1\n"
+  const mCertified = "import { helper, extra } from './util'\n\nexport function greet(name) {\n  return 'hello ' + helper(name)\n}\n\nexport function shout(name) {\n  return greet(name).toUpperCase()\n}"
+  const mg = mergeCertifiedSource(mExisting, mCertified)
+  ok('merge splices same-named fn (types grafted), appends the new one, keeps the rest',
+    !!mg && mg.spliced.includes('greet') && mg.appended.includes('shout')
+    && mg.content.includes('greet(name: string): string') && mg.content.includes("'hello '")
+    && !mg.content.includes("'hi '") && mg.content.includes('KEEP'), mg?.content.slice(0, 80))
+  ok('merge unions named imports from the same specifier',
+    !!mg && /import \{ helper, extra \} from '\.\/util'/.test(mg.content))
+
+  const mSet = await mergeCertifiedFileSet(
+    [
+      { path: 'src/greet.ts', source: mCertified },
+      { path: 'src/new.ts', source: "import { greet } from './greet'\nexport const hi = greet('x')" },
+    ],
+    new Map([['src/greet.ts', mExisting]]),
+  )
+  ok('mergeCertifiedFileSet merges colliding files, passes new files through',
+    !!mSet && mSet.files.length === 2 && mSet.files[0].source.includes('KEEP')
+    && mSet.files[1].source.includes("greet('x')"), mSet?.detail)
+
+  const mBad = await mergeCertifiedFileSet(
+    [{ path: 'src/a.ts', source: 'export function f(x) { return x }' }],
+    new Map([['src/a.ts', 'function f(a: number, b: number) { return a + b }\nexport { f }\nexport const use = f(1, 2)\n']]),
+  )
+  ok('unmergeable collision (arity break at a call site) → null, whole set refused', mBad === null)
 
   // ── PART I — multi-file verification (cross-file import graph, execution-certified) ─
   // The mission gap: real SWE spans multiple files with imports. The verifier BUNDLES the
