@@ -25,6 +25,7 @@
 
 import { fmComplete } from '../agent/fmReact'
 import type { Completer } from './wordProblem'
+import { convert } from './unitConvert'
 
 export interface ExplainCheck {
   /** How many claims were extracted and checked. */
@@ -60,6 +61,24 @@ export function extractCheckableClaims(text: string, cap = 3): string[] {
   return out
 }
 
+// ── Deterministic pre-pass: conversion claims the MACHINE can judge outright ──────────
+// "1 mile = 1.60934 km" / "60 mph is about 96.6 km/h" — the unit table IS ground truth for
+// these, so they never reach (or waste) an FM verdict. Wrong beyond 1% → flagged with
+// machine certainty; right → confirmed, claim removed from the FM-verdict pool.
+
+const CONV_CLAIM = /(-?\d[\d,]*(?:\.\d+)?)\s*([a-zA-Z°][a-zA-Z/°]{0,12})\s*(?:=|is|equals?|≈|~|about|approximately|roughly)+\s*(?:about |approximately |roughly )?(-?\d[\d,]*(?:\.\d+)?)\s*([a-zA-Z°][a-zA-Z/°]{0,12})/
+
+/** 'right' | 'wrong' when the table can judge the claim; null when it can't. */
+export function judgeConversionClaim(claim: string): 'right' | 'wrong' | null {
+  const m = CONV_CLAIM.exec(claim)
+  if (!m) return null
+  const a = Number(m[1].replace(/,/g, '')); const b = Number(m[3].replace(/,/g, ''))
+  const expected = convert(a, m[2], m[4])
+  if (expected === null || !isFinite(a) || !isFinite(b)) return null
+  if (expected === 0) return Math.abs(b) < 1e-9 ? 'right' : 'wrong'
+  return Math.abs(b - expected) / Math.abs(expected) <= 0.01 ? 'right' : 'wrong'
+}
+
 // ── Decorrelated verdicts ────────────────────────────────────────────────────────────
 
 const VERDICT_SYSTEM = [
@@ -90,7 +109,14 @@ export async function checkExplanation(
 
   const flagged: string[] = []
   let verdicts = 0
+  const forModel: string[] = []
   for (const claim of claims) {
+    const machine = judgeConversionClaim(claim)
+    if (machine === 'wrong') flagged.push(claim)
+    else if (machine === null) forModel.push(claim)
+    // 'right' → confirmed by the table, nothing more to do.
+  }
+  for (const claim of forModel) {
     const results = await Promise.all(Array.from({ length: k }, async (_, i) => {
       try {
         return parseVerdict(await complete(

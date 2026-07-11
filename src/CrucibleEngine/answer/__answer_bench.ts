@@ -10,7 +10,7 @@ import { applyDateRecomputation, evalDateSetup, isDateQuestion, recomputeDate } 
 import { checkConstraints } from './constraints'
 import { askedCount, corroborateFact, extractClaimKey, extractClaimSet, isListQuestion } from './factConsensus'
 import { convert, isConversionQuestion, parseConversion, recomputeConversion } from './unitConvert'
-import { applyExplainCheck, checkExplanation, extractCheckableClaims } from './explainCheck'
+import { applyExplainCheck, checkExplanation, extractCheckableClaims, judgeConversionClaim } from './explainCheck'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -375,6 +375,16 @@ console.log('== explain spot checks: decorrelated verdict quorum ==')
     const out = applyExplainCheck(draft, refuted)
     check('flagged claim named in an explicit caution appended to the answer', /Caution — independent spot checks/.test(out) && /1793/.test(out.split('Caution')[1]), out.slice(-160))
   }
+}
+
+console.log('== explain spot checks: machine-judged conversion claims (no FM verdict spent) ==')
+{
+  check('correct conversion claim judged right ("1 mile is 1.609 km")', judgeConversionClaim('One conversion: 1 mile is about 1.609 km.') === 'right')
+  check('wrong conversion claim judged wrong ("1 mile is 2.6 km")', judgeConversionClaim('Note that 1 mile is about 2.6 km.') === 'wrong')
+  check('non-conversion sentence → null (falls to FM verdicts)', judgeConversionClaim('It was invented by Hans Peter Luhn in 1953.') === null)
+  const draft = 'Speed conversions matter. For example, 60 mph equals about 40 km/h on the highway.'
+  const chk = await checkExplanation(draft, { verdictsPerClaim: 3, complete: replay(['yes', 'yes', 'yes']) })
+  check('a machine-refuted conversion is flagged even when FM verdicts would say yes', !!chk && chk.flagged.length === 1 && chk.verdicts === 0, JSON.stringify(chk))
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)
