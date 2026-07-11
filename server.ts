@@ -2670,6 +2670,30 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
+  // ── Mid-negotiation refinement short-circuit ──────────────────────────────────
+  // While a build is under discussion, a refinement turn ("a simple fps game?", "battle royale",
+  // "can it be something different?") must be answered deterministically — not handed to the weak
+  // FM, which role-plays a planning assistant ("Great choice! Here's an outline…") and builds
+  // nothing (the 2026-07-11 negotiation-loop failure). resolveBuildTurn returns action 'clarify'
+  // with the concrete reply; we ship it here, before any agent/task machinery, like the counting
+  // gate. Un-poisonable and instant. (Greenlights — action 'build' — flow to the agent branch.)
+  if (buildTurn.action === 'clarify' && buildTurn.text) {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    const send = (payload: object) => {
+      const line = `data: ${JSON.stringify(payload)}\n\n`
+      res.write(line)
+      if (chatSessionId) broadcastEvent(chatSessionId, line, res)
+    }
+    debugBus.emit('agent', 'build_negotiation_clarify', { topic: buildTurn.topic, downscoped: !!buildTurn.note, message: (message ?? '').slice(0, 60) }, { severity: 'info' })
+    send({ type: 'final', text: buildTurn.text })
+    patchActiveSessionRound(chatUser, chatRoundId, { synthesis: buildTurn.text, synthesisDone: true, synthStreaming: false })
+    historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'build-negotiation-clarify', models: ['system/build-negotiation'], synthesis: buildTurn.text })
+    res.write('data: [DONE]\n\n'); res.end()
+    return
+  }
+
   const isAgenticIntent = slashAgentTool !== null || mode === 'agent' || detectAgentTask(message ?? '') || agenticFollowup || buildTurn.action === 'build'
   if (agenticFollowup && !detectAgentTask(message ?? '')) {
     console.log('[/api/chat] Sticky agentic routing — continuation of a recent agent task')

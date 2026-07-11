@@ -16,11 +16,14 @@
 // out loud) and routes it to the actual builder. No FM role-play, un-poisonable, instant.
 
 export interface BuildTurn {
-  /** 'build' → route to the real builder with `spec`; 'passthrough' → not a greenlight, leave
-   * the turn to the existing paths. */
-  action: 'build' | 'passthrough'
+  /** 'build' → route to the real builder with `spec`; 'clarify' → answer a mid-negotiation
+   * refinement turn deterministically with `text` (do NOT let the weak FM role-play); 'passthrough'
+   * → not our turn, leave it to the existing paths. */
+  action: 'build' | 'clarify' | 'passthrough'
   /** The concrete, assembled build instruction handed to the agent loop (action === 'build'). */
   spec?: string
+  /** The deterministic reply to a mid-negotiation refinement turn (action === 'clarify'). */
+  text?: string
   /** A user-facing honesty note when we scoped the request down to something buildable. */
   note?: string
   /** The genre/topic we resolved, for logging. */
@@ -68,6 +71,26 @@ const GENRES = [
 // We keep the SPIRIT but scope down to a browser mini-game — and say so.
 const OVER_SCOPE = /\b(battle\s*royale|fps|first[-\s]?person|3d|three[-\s]?d|multiplayer|mmo|open\s*world|aaa|photorealistic|ray[-\s]?trac|vr|augmented reality)\b/i
 
+// A creation intent anywhere in a user turn — the marker that a BUILD (not a factual chat) was
+// what the conversation was about. Shared by the greenlight and refinement paths.
+const CREATE_VERB = /\b(build|make|create|write|code|develop|design|generate|whip\s+up|put\s+together)\b/i
+
+// Explicit "let's change/adjust the plan" markers on the CURRENT turn. A refinement that names a
+// concrete genre doesn't need one of these (the genre itself is the signal); a CONTENTLESS
+// refinement ("can it be something different?") relies on them so we don't hijack an unrelated turn.
+const REFINE_CONNECTIVE = /\b(instead|rather|actually|different|something\s+else|what\s+else|anything\s+else|change\s+it|how\s+about|what\s+about|can\s+it\s+be|can\s+you\s+make\s+it|not\s+that|other\s+than)\b/i
+
+// A pure acknowledgement — the ENTIRE turn is gratitude/approval with no request. Mid-negotiation
+// these still fell to the weak FM, which role-played a planning assistant ("I'd be happy to help
+// you create a game! 1. Board Game … use Unity or Unreal Engine"). We answer with a warm, honest
+// nudge instead. Anchored whole-message + short so a real request that merely opens with "cool" or
+// "thanks for the …" is never swallowed. ("ok"/"okay"/"sounds good" are already greenlights.)
+const BARE_ACK = /^\s*(?:thanks?(?:\s+you)?|thank\s+you|thx|ty|cool|nice|great|awesome|sweet|perfect|neat|got\s+it|makes\s+sense|good\s+(?:to\s+know|stuff)|that\s+helps?|helpful)(?:[\s,!.]+(?:thanks?|that\s+helps?|cool|nice|great|man|though))?[\s!.,]*$/i
+
+function capitalize(s: string): string {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s
+}
+
 /** Pull every genre mentioned across the negotiation, most-recent-turn last. */
 function extractGenres(texts: string[]): string[] {
   const found: string[] = []
@@ -90,19 +113,28 @@ function extractArtifact(texts: string[]): string | null {
 
 /**
  * Resolve a build-negotiation turn. `history` is the prior conversation ({user, assistant} per
- * turn). Returns action 'build' with a concrete spec ONLY when the CURRENT message is a greenlight
- * AND the conversation actually established a build topic — otherwise 'passthrough'.
+ * turn). Two outcomes the SYSTEM owns deterministically (never the weak FM):
+ *  - action 'build' — the CURRENT message is a greenlight AND the conversation established a build
+ *    topic → assemble a concrete spec and hand it to the real builder.
+ *  - action 'clarify' — the CURRENT message REFINES a build already under discussion (names a genre,
+ *    or asks for a different direction) but isn't yet a greenlight → a deterministic negotiation
+ *    reply (confirm + honest scope + invite a one-word go-ahead) instead of FM role-play.
+ * Otherwise 'passthrough'.
  */
 export function resolveBuildTurn(
   message: string,
   history: Array<{ user?: string; assistant?: string }> = [],
 ): BuildTurn {
-  if (!isGreenlight(message)) return { action: 'passthrough' }
-
   // Only the recent window counts — a build discussed 20 turns ago must not make a later
-  // unrelated "yes" build something stale.
+  // unrelated "yes" build (or a stray genre word clarify) something stale.
   const recent = history.slice(-6)
   const userTurns = recent.map(h => h?.user ?? '').filter(Boolean)
+  if (isGreenlight(message)) return resolveGreenlight(message, userTurns)
+  return resolveRefinement(message, userTurns)
+}
+
+/** A greenlight ("do your thing", "build it") after a build was under discussion → assemble + build. */
+function resolveGreenlight(message: string, userTurns: string[]): BuildTurn {
   const allUserText = [...userTurns, message]
 
   // A build must actually have been under discussion: an artifact noun or a game genre appeared,
@@ -110,7 +142,7 @@ export function resolveBuildTurn(
   // never build.
   const artifact = extractArtifact(allUserText)
   const genres = extractGenres(allUserText)
-  const wantedBuild = allUserText.some(t => /\b(build|make|create|write|code|develop|design|generate|whip\s+up|put\s+together)\b/i.test(t))
+  const wantedBuild = allUserText.some(t => CREATE_VERB.test(t))
   if ((!artifact && genres.length === 0) || !wantedBuild) return { action: 'passthrough' }
 
   const genre = genres[genres.length - 1] || null // most-recent wins
@@ -156,5 +188,82 @@ export function resolveBuildTurn(
       `Build a complete, working ${label} as a single self-contained HTML file ` +
       '(HTML + CSS + vanilla JS, dependency-free) that opens and runs in any browser, ' +
       'based on what we discussed. Make it functional, not a mock-up.',
+  }
+}
+
+/**
+ * A mid-negotiation REFINEMENT turn (not a greenlight, not the first bare build). The bug this
+ * fixes (2026-07-11): turns like "a simple fps game?", "battle royale", "can it be something
+ * different?" fell to the weak FM, which role-played a planning assistant and built nothing. We
+ * answer them deterministically: confirm what we heard, downscope honestly when the ask exceeds
+ * what runs on-device, and invite a one-word go-ahead. Conservative by construction — fires ONLY
+ * when a build was already established in PRIOR turns (the FIRST bare build is owned by
+ * clarifyBuild) AND the current turn actually refines it.
+ */
+function resolveRefinement(message: string, userTurns: string[]): BuildTurn {
+  // A build must already have been under discussion in earlier turns — never hijack a fresh
+  // conversation, and never double-handle the first bare "make me a game" (clarifyBuild owns it).
+  const priorGenres = extractGenres(userTurns)
+  const establishedInHistory =
+    (extractArtifact(userTurns) != null || priorGenres.length > 0) && userTurns.some(t => CREATE_VERB.test(t))
+  if (!establishedInHistory) return { action: 'passthrough' }
+
+  const cur = (message ?? '').trim()
+  if (!cur || cur.split(/\s+/).length > 14) return { action: 'passthrough' }
+  const curLow = cur.toLowerCase()
+
+  // A bare acknowledgement ("thanks, that helps", "cool") — keep the door open deterministically
+  // instead of letting the FM role-play. Checked before the refinement signals: it has neither a
+  // genre nor a connective, so it would otherwise pass through to the FM.
+  if (BARE_ACK.test(cur)) {
+    return {
+      action: 'clarify',
+      topic: priorGenres[priorGenres.length - 1] ?? 'game',
+      text:
+        `Anytime. Whenever you want, just say "go" (or name the game you'd like) and I'll build ` +
+        `and run it for you right here — or keep tossing ideas around with me first.`,
+    }
+  }
+
+  // The current turn must POSITIVELY refine the build: it names a concrete genre, or it uses an
+  // explicit "change direction" marker. An unrelated aside ("what time is it?") passes through.
+  const curGenres = extractGenres([cur])
+  const refined = curGenres.length > 0 || REFINE_CONNECTIVE.test(curLow)
+  if (!refined) return { action: 'passthrough' }
+
+  // Named a concrete genre → confirm it (honestly downscoping over-ambitious asks) and offer to build.
+  if (curGenres.length > 0) {
+    const g = curGenres[curGenres.length - 1]
+    if (OVER_SCOPE.test(curLow)) {
+      return {
+        action: 'clarify',
+        topic: g,
+        note: `downscoped ${g}`,
+        text:
+          `A full ${g} game isn't something I can build and run entirely on-device — but I can build ` +
+          `a browser mini-game that captures the spirit: a fast top-down arena shooter you actually ` +
+          `play (WASD to move, mouse to aim, survive as long as you can). Want me to build that? ` +
+          `Just say "go" (or "do your thing") and I'll start — or point me in another direction.`,
+      }
+    }
+    return {
+      action: 'clarify',
+      topic: g,
+      text:
+        `${capitalize(g)} — I can build that as a playable browser game and run it for you. ` +
+        `Want me to go ahead? Say "go" and I'll build it, or tell me more about how it should play.`,
+    }
+  }
+
+  // Contentless refinement ("something different", "not that", "what else?") → concrete options.
+  return {
+    action: 'clarify',
+    topic: priorGenres[priorGenres.length - 1] ?? 'game',
+    text:
+      `Sure — we can go a different direction. A few I can build and run right now:\n\n` +
+      `- **Snake** — classic arrow-key snake\n` +
+      `- **Breakout** — bounce a ball to smash the bricks\n` +
+      `- **Asteroids** — fly and shoot in open space\n\n` +
+      `Tell me which one (or describe your own) and I'll build it — or say "you pick" and I'll choose.`,
   }
 }

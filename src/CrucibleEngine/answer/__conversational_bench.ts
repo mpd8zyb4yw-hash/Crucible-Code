@@ -95,6 +95,63 @@ console.log('\n== greenlight after a build discussion assembles a spec and BUILD
   check('"do your thing" after an app discussion → build', goApp.action === 'build' && /app/i.test(goApp.spec || ''))
 }
 
+// ── Mid-negotiation refinement turns: deterministic clarify, never FM role-play ──
+// The "lower-severity" half of the 2026-07-11 failure: turns 2–4 (game→different?→fps?→
+// battle royale) fell to the weak FM before the user greenlit. Each must resolve to a concrete
+// system-owned reply that confirms + honestly downscopes + invites a go-ahead.
+console.log('\n== mid-negotiation refinements → deterministic clarify (not FM role-play) ==')
+{
+  const base = [{ user: 'make me a game', assistant: 'Happy to build you a game — what kind? Snake / Memory / Number guessing' }]
+
+  const diff = resolveBuildTurn('can it be something different than the ones you described?', base)
+  check('"…something different…" → clarify', diff.action === 'clarify', diff.action)
+  check('contentless refinement offers concrete options', !!diff.text && /snake/i.test(diff.text!))
+
+  const fps = resolveBuildTurn('a simple fps game?', base)
+  check('"a simple fps game?" → clarify', fps.action === 'clarify', fps.action)
+  check('fps is honestly downscoped (on-device limit stated)', !!fps.text && /on-device|entirely on-device/i.test(fps.text!))
+  check('fps clarify invites a one-word greenlight', !!fps.text && /\b(go|do your thing)\b/i.test(fps.text!))
+
+  const br = resolveBuildTurn('battle royale', [...base, { user: 'a simple fps game?', assistant: 'Sure, an FPS.' }])
+  check('"battle royale" → clarify + downscoped', br.action === 'clarify' && /on-device/i.test(br.text || ''), br.action)
+
+  const snake = resolveBuildTurn('snake', base)
+  check('"snake" (in-scope) → clarify offering to build, no downscope', snake.action === 'clarify' && /snake/i.test(snake.text || '') && !/on-device/i.test(snake.text || ''))
+
+  const about = resolveBuildTurn('what about a chess game?', base)
+  check('"what about a chess game?" → clarify naming chess', about.action === 'clarify' && /chess/i.test(about.text || ''), about.topic)
+
+  // Bare acknowledgements mid-negotiation must NOT fall to FM role-play (the live "thanks, that
+  // helps" → "create a Board Game… use Unity or Unreal Engine" hole).
+  for (const ack of ['thanks, that helps', 'cool', 'got it, thanks', 'nice', 'awesome thanks', 'makes sense']) {
+    const r = resolveBuildTurn(ack, base)
+    check(`"${ack}" mid-build → clarify nudge (not role-play)`, r.action === 'clarify' && /\bgo\b/i.test(r.text || ''), r.action)
+  }
+}
+
+console.log('\n== refinement handler does NOT hijack unrelated / fresh turns ==')
+{
+  // No build established yet in history → the refinement path must stay out of it.
+  check('genre word with empty history → passthrough (clarifyBuild owns turn 1)',
+    resolveBuildTurn('snake', []).action === 'passthrough')
+  // A build IS under discussion, but this turn is an unrelated aside → passthrough.
+  const base = [{ user: 'make me a game', assistant: 'what kind?' }]
+  check('"what time is it?" mid-build → passthrough',
+    resolveBuildTurn('what time is it?', base).action === 'passthrough')
+  // The first bare build itself must NOT be captured as a refinement (no prior build in history).
+  check('first "make me a game" → passthrough (not a refinement)',
+    resolveBuildTurn('make me a game', []).action === 'passthrough')
+  // A refinement after a NON-build discussion must not fire.
+  check('genre word after a factual chat → passthrough',
+    resolveBuildTurn('snake', [{ user: 'tell me about snakes', assistant: 'Snakes are reptiles…' }]).action === 'passthrough')
+  // A bare ack with no build under discussion is just a normal "thanks" — passthrough.
+  check('"thanks" with empty history → passthrough',
+    resolveBuildTurn('thanks', []).action === 'passthrough')
+  // A real content request that merely OPENS with an ack word is not swallowed as an ack.
+  check('"cool, can you add a leaderboard?" → passthrough (real request, not a bare ack)',
+    resolveBuildTurn('cool, can you add a leaderboard?', base).action === 'passthrough')
+}
+
 console.log('\n== greenlights WITHOUT a build topic must NOT build (no false positives) ==')
 {
   check('"yes" to a factual chat → passthrough',
