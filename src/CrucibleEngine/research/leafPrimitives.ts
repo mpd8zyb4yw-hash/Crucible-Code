@@ -219,10 +219,23 @@ const PREMISE_RISK_SYSTEM =
   'TYPE: CLAIM|MECHANISM\n' +
   'CONFIDENCE: <0.1-1.0>'
 
+// Deterministic guard that runs BEFORE the FM classifier: an open selection question
+// ("who won X?", "what is X?", "which team scored Y?") presupposes only that SOMEONE/
+// SOMETHING satisfies the predicate — an existential presupposition, not a contestable
+// embedded claim between named entities. The FM classifier misfires on these (observed
+// live 2026-07-11: "who won the 2018 World Cup?" → bearsClaim, then checkPremiseGrounding
+// invented a contradiction at confidence 1.0 and replaced the grounded answer "France"
+// with its NEGATION). Premise-bearing questions this must NOT match keep their embedded
+// relational claim outside the wh-slot: "when did the US buy Alaska from Canada?",
+// "why did Einstein fail math?" — those start with when/why/how, not an open selection.
+const OPEN_SELECTION_QUESTION =
+  /^\s*(who|what|which(\s+\w+){0,2})\s+(won|wins|is|are|was|were|wrote|invented|discovered|created|directed|founded|scored|holds?|leads?|owns?|made|built|composed|painted|designed)\b/i
+
 export async function isPremiseBearing(
   question: string,
   fmCall: FmCall = defaultFmCall,
 ): Promise<PremiseRiskCheck> {
+  if (OPEN_SELECTION_QUESTION.test(question)) return { bearsClaim: false, confidence: 1 }
   const raw = await fmCall(PREMISE_RISK_SYSTEM, `QUESTION: ${question.slice(0, 200)}`, 12000)
   const lines = raw.split('\n').map(l => l.trim()).filter(Boolean)
   let bearsClaim = false
@@ -278,7 +291,55 @@ export async function checkPremiseGrounding(
     `QUESTION: ${question.slice(0, 200)}\n\n` +
     `VERIFIED FACTS:\n${factsBlock.slice(0, 2000)}`
   const raw = await fmCall(PREMISE_SYSTEM, user, 20000)
-  return parsePremiseCheck(raw)
+  const check = parsePremiseCheck(raw)
+  // Structural sanity gate (deterministic, un-foolable): a real premise correction states
+  // what the EVIDENCE says ("Alaska was purchased from Russia, not Canada"). A hallucinated
+  // one is typically the bare NEGATION of a verified fact ("France did not win the 2018
+  // World Cup" against the fact "France won the 2018 World Cup"). If the correction carries
+  // a negator and, with negators stripped, its content words are essentially a subset of a
+  // single NON-negated verified fact, it asserts the opposite of the evidence — reject it.
+  if (check.contradicted && correctionNegatesEvidence(check.correction, verifiedFacts)) {
+    return { contradicted: false, correction: '', confidence: 0 }
+  }
+  return check
+}
+
+const NEGATORS = /\b(not|never|no|didn't|did not|doesn't|does not|isn't|is not|wasn't|was not|weren't|were not|won't|will not|cannot|can't|no longer)\b/gi
+
+const ENTITY_STOPWORDS = /^(the|a|an|it|its|this|that|these|those|there|however|but|and|or|none|yes|no|correction)$/i
+
+// The information carriers of a factual sentence are its named entities and numbers —
+// verb-form differences ("won" vs "did not win") make word-overlap unreliable, but a
+// correction that introduces NO entity absent from the fact, while adding a negator,
+// is contentless negation. Entities = capitalized tokens (minus stopwords) + numbers.
+function entityTokens(s: string): string[] {
+  return (s.match(/\b(?:[A-Z][a-zA-Z'-]*|\d[\d,.]*)\b/g) ?? [])
+    .filter(t => !ENTITY_STOPWORDS.test(t))
+    .map(t => t.toLowerCase())
+}
+
+export function correctionNegatesEvidence(correction: string, verifiedFacts: string[]): boolean {
+  NEGATORS.lastIndex = 0
+  if (!NEGATORS.test(correction)) return false
+  const corrEntities = [...new Set(entityTokens(correction))]
+  if (corrEntities.length === 0) return false
+  // Common-noun information carriers too: "…is not made of cheese; it is rock" displaces
+  // the common noun "cheese", not a capitalized entity. Any content word (len ≥ 4, negators
+  // stripped) absent from the fact means the correction carries new information.
+  const corrWords = [...new Set(
+    correction.toLowerCase().replace(NEGATORS, ' ').match(/[a-z]{4,}/g) ?? [],
+  )]
+  for (const fact of verifiedFacts) {
+    NEGATORS.lastIndex = 0
+    if (NEGATORS.test(fact)) continue // fact itself negated → correction may legitimately agree
+    const factLower = fact.toLowerCase()
+    // Every entity AND every content word of the correction already appears in this
+    // non-negated fact → the correction adds nothing but the negation of that fact.
+    // A genuine correction names what it displaces ("…from Russia, not Canada" against
+    // a fact that never mentions Canada), so something is absent and it survives.
+    if (corrEntities.every(e => factLower.includes(e)) && corrWords.every(w => factLower.includes(w))) return true
+  }
+  return false
 }
 
 function parsePremiseCheck(raw: string): PremiseCheck {

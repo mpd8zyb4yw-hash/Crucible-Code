@@ -90,14 +90,20 @@ export interface NonCodeMeta {
   sources?: number
 }
 
-export async function solveNonCodeTurn(goal: string, projectPath?: string, history?: ConvTurn[], meta?: (m: NonCodeMeta) => void): Promise<string> {
+export async function solveNonCodeTurn(goal: string, projectPath?: string, history?: ConvTurn[], meta?: (m: NonCodeMeta) => void, opts?: { forceResearch?: boolean }): Promise<string> {
   // Check FM availability first
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — escalating')
 
   // ── Tier 1: Research DAG (for factual / research questions) ──────────────
-  // Only attempt if the goal looks research-shaped (asking for facts, docs, etc.)
-  const isResearchShaped = /\b(what is|how does|explain|describe|tell me|find|search|look up|latest|documentation|docs?|api|tutorial|example|compare|difference between|vs\.?|why is|why are|why was|why did|why does|when did|when was|when is|when will|who is|who was|where is|where was)\b/i.test(goal)
+  // Only attempt if the goal looks research-shaped (asking for facts, docs, etc.).
+  // opts.forceResearch: the CALLER already classified this as needing external facts
+  // (answerEngine's EXTERNAL_FACT gate) — this local shape-regex must not get a second
+  // veto. Split-brain bug this fixes: "who won the 2018 World Cup" fired EXTERNAL_FACT
+  // upstream but "who won" was missing from the regex below, so the DAG was skipped and
+  // a wrong parametric answer ("Brazil") shipped through the react/direct fallthrough.
+  const isResearchShaped = opts?.forceResearch === true ||
+    /\b(what is|how does|explain|describe|tell me|find|search|look up|latest|documentation|docs?|api|tutorial|example|compare|difference between|vs\.?|why is|why are|why was|why did|why does|when did|when was|when is|when will|who is|who was|who won|who wins|where is|where was)\b/i.test(goal)
 
   // Context-dependent follow-up detection: a research-shaped query that leans on
   // prior turns ("what is ITS population?", "and THAT one?") must NOT go to the

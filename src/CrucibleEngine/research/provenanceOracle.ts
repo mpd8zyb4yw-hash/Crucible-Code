@@ -440,10 +440,14 @@ export function filterGroundedSentences(
   verifiedClaims: VerifiedClaim[],
   minOverlap = 0.35,
 ): { grounded: string[]; cut: string[] } {
+  // Length floor of 3 (not 10): a terse entity answer to a lookup ("France.", "1867.")
+  // is the BEST possible synthesis, and a >10 floor silently deleted it, collapsing the
+  // final answer to the bullet-list fallback (observed live on "who won the 2018 World
+  // Cup?"). 3 still drops empty fragments and stray punctuation.
   const sentences = synthesizedText
     .split(/(?<=[.!?])\s+/)
     .map(s => s.trim())
-    .filter(s => s.length > 10)
+    .filter(s => s.length > 3)
 
   const grounded: string[] = []
   const cut: string[] = []
