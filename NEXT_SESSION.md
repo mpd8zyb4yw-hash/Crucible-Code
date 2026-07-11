@@ -17,7 +17,37 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 61 — ITERATE convergence loop; then cont.60 coding overhaul)
+## CURRENT STATE (last updated 2026-07-11, cont. 62 — iterate() WIRED into the coding path)
+
+**cont.62 (549ec0d) — the convergence loop is now in the request path, not just a primitive.** cont.61
+built `iterate()` but nothing called it. This session wired it into coding:
+- **`reasoning/codeResearch.ts` — the doctrine-sound code-domain `ResearchFn` (2 channels).**
+  - **Channel 1 (always safe):** each epoch is a fresh `search()` with empty history, so the rich
+    per-case feedback the last epoch earned is otherwise lost at the epoch boundary. Ch1 distils the
+    best failure's signals into a "known failing behaviour" note appended to `spec.context` — guides the
+    proposer, can never change ground truth. Returns null when nothing is NEW (no manufactured progress).
+  - **Channel 2 (sound verifier-tightening):** on a stall over a THIN case set, derive fresh cases by
+    DIFFERENTIAL CONSENSUS (≥2 independently-written impls agree by execution) and merge the new ones —
+    independently-justified ground truth, never a model guess. Fires only while cases ≤ threshold.
+  - `mergeCodeAcceptance` unions cases by (entry,args); **existing value WINS a collision** (research
+    never silently rewrites a trusted expected value).
+- **`iterateCodeTask` (solve.ts)** drives proposeCode/verifyCode through `iterate()` with the code
+  research fn + merge. **Opt-in `converge` mode** on `solveCodingRequest` tiers 3/4 (differential,
+  model-invents) is a **pure ADD** — a non-solve falls straight through to today's single-shot +
+  poisoned-case recovery, so it can only certify MORE, never regress. Wired in solve.ts, NOT server.ts.
+- **`__code_research_bench.ts` (npm run vgr:coderesearch) 11/11**: merge semantics, ch1 grounding +
+  null-on-stale, ch2 differential tightening (injected sampler, dedup, correctness), and an END-TO-END
+  `iterateCodeTask` solve over the REAL `verifyCode` that only converges once ch1 carries the prior
+  epoch's counterexample forward. vgr 114/114, iterate 12/12, tsc clean.
+- **HONEST LIMITS:** (1) ch2 tightening only bites AFTER a stall — it cannot reject a degenerate that
+  SOLVES a thin spec at epoch 0 (that protection lives at tier-3 differential spec derivation, not
+  here); ch1 is the real in-loop convergence win. (2) `converge` is **deterministic-only so far —
+  UNVERIFIED on live-FM `/api/chat`** (default OFF). NEXT: a live-FM run with `converge:true`, then flip
+  the default; Python verifier; answer-domain `iterate()`.
+
+---
+
+## PRIOR STATE (cont. 61 — ITERATE convergence loop)
 
 **cont.61 (902c4fd) — `iterate()`: the outer convergence loop the doctrine was missing.** `search()`
 is BOUNDED (abstains on a fixed budget/patience). `reasoning/iterate.ts` sits ABOVE it and turns a
