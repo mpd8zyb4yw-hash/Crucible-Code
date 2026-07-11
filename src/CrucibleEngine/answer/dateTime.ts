@@ -205,14 +205,23 @@ function draftStatesResult(draft: string, recomp: DateRecomputation): boolean {
 }
 
 /**
- * Reconcile: confirm when the draft states the machine result; otherwise append an explicit
- * verified Answer line (dates are too format-diverse to splice safely in place — a wrong date
- * mid-prose plus a correct bolded Answer line is unambiguous to the reader).
+ * Reconcile: confirm when the draft states the machine result; otherwise splice the machine
+ * date over any CONTRADICTING date the draft asserts (a date not mentioned in the question —
+ * question dates are the problem's givens, never the model's claim) and append an explicit
+ * verified Answer line, so no wrong date survives in the prose.
  */
-export function applyDateRecomputation(draft: string, recomp: DateRecomputation): DateReconciliation {
+export function applyDateRecomputation(draft: string, recomp: DateRecomputation, question = ''): DateReconciliation {
   if (draftStatesResult(draft, recomp)) return { text: draft, confirmed: true, corrected: false }
+
+  let text = draft
+  if (recomp.kind === 'date') {
+    const norm = (s: string) => s.toLowerCase().replace(/(st|nd|rd|th)\b/g, '').replace(/,/g, '')
+    const qNorm = norm(question)
+    const dateToken = new RegExp(`\\b${MONTH}\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`, 'gi')
+    text = text.replace(dateToken, tok => qNorm.includes(norm(tok)) ? tok : recomp.result)
+  }
   return {
-    text: `${draft.trimEnd()}\n\n**Answer: ${recomp.result}** (machine-verified calendar computation)`,
+    text: `${text.trimEnd()}\n\n**Answer: ${recomp.result}** (machine-verified calendar computation)`,
     confirmed: false,
     corrected: true,
   }

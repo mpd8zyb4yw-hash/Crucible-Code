@@ -244,6 +244,10 @@ console.log('== date recomputation: consensus + reconciliation ==')
   check('draft without the date gets a verified Answer line appended', !!rec && rec.corrected && /\*\*Answer: April 17, 2026\*\*/.test(rec.text), rec?.text)
   const conf = agree ? applyDateRecomputation('Counting forward, that is April 17th.', agree) : null
   check('draft already stating the date (ordinal form) is CONFIRMED unaltered', !!conf && conf.confirmed && !conf.corrected, conf?.text)
+  // A CONTRADICTING date in the prose is spliced out; the question's given date survives.
+  const splice = agree ? applyDateRecomputation('March 3, 2026, plus 45 days equals June 1, 2026.', agree, 'What date is 45 days after March 3, 2026?') : null
+  check('wrong asserted date spliced to the machine date; question date preserved',
+    !!splice && !/June 1, 2026/.test(splice.text) && /March 3, 2026/.test(splice.text) && /April 17, 2026/.test(splice.text), splice?.text)
 }
 
 console.log('== constraint critics: the question refutes a bad setup ==')

@@ -246,7 +246,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     try {
       const recomp = await recomputeDate(message)
       if (recomp) {
-        const rec = applyDateRecomputation(text, recomp)
+        const rec = applyDateRecomputation(text, recomp, message)
         recomputed = true
         if (rec.corrected) {
           text = rec.text
