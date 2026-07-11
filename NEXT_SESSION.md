@@ -17,7 +17,46 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 66 — CODEBASE AUDIT + DEAD-CODE SWEEP)
+## CURRENT STATE (last updated 2026-07-11, cont. 66b — RETRIEVAL GATE FIXED + VGR IN-PLACE MODIFY)
+
+**cont.66b (f6c7ff3 + 2425f46) — two gap-closing fixes, both LIVE-VERIFIED via real /api/chat.**
+
+**1. Retrieval-routing fixed (the '2018 World Cup → Brazil' bug).** Three stacked bugs:
+(a) SPLIT-BRAIN: EXTERNAL_FACT fired correctly in answerEngine, but solveNonCodeTurn re-decided
+research-shape with its own regex (missing "who won") and skipped the web DAG → parametric
+'Brazil'. Fix: answerEngine passes {forceResearch:true}; the caller's decision can't be re-vetoed.
+(b) PREMISE-GATE HALLUCINATION: checkPremiseGrounding invented a contradiction at confidence 1.0
+and REPLACED the grounded answer with its negation ('France did not win…'). Fix: two deterministic
+guards in leafPrimitives.ts — OPEN_SELECTION_QUESTION (who/what/which + selection verb = existential
+presupposition, skip premise check, no FM call) and correctionNegatesEvidence (reject a 'correction'
+whose entities+content words are all inside a non-negated verified fact = bare negation of evidence;
+genuine corrections like Alaska-from-Russia-not-Canada survive — 5-case matrix).
+(c) TERSE-ANSWER DELETION: filterGroundedSentences' >10-char floor deleted 'France.' → floor now 3.
+Also: EXTERNAL_FACT broadened with current-officeholder cues (who is the CEO/president/…).
+LIVE: 'who won the 2018 World Cup?' → 'France won the 2018 World Cup.' grounded 82%, 2 sources.
+answer:bench 127/127, conversational:bench 56/56.
+
+**2. VGR certified in-place MODIFY (mission item 1 increment).** emitPlan mode 'modify': modify-
+shaped request + target file already defines entry → definition spliced with the certified impl
+(string/comment-aware brace matcher, fn decls + arrow consts), whole file must recompile else
+downgrade to fresh file (never blind-splice). isCodeEditTask verb list gained fix/correct/repair/
+improve/adjust/replace/refactor — 'fix initials in src/strings.ts …' previously fell to the agent
+loop which LIVE shipped a WRONG unverified fix (name[0].toUpperCase()); after the fix VGR certifies
+by execution and replaces in place, rest of file intact. vgr:bench 118/118.
+
+**Next, in order:**
+1. **Existing-repo editing, next increments:** (a) preserve the original function's TYPE
+   annotations when splicing (certified impl came back untyped `name` — cosmetic but real);
+   (b) call-site awareness: when a modify changes arity/signature, find+update callers across
+   the tree (multiFile machinery is the base); (c) modify inside MULTI-file requests.
+2. **Retrieval hardening:** research:bench sweep after the premise-gate change (only spot-checked
+   live); consider consensus-vote premise corrections (≥2 independent FM verdicts).
+3. **Unify consensus** — factConsensus still rides old localModels/orchestrator → agent/consensus.ts.
+4. **Decompose server.ts (8.1k lines)** — coordinate with cloud session first.
+
+---
+
+### cont.66 — CODEBASE AUDIT + DEAD-CODE SWEEP (earlier today)
 
 **cont.66 (d0730b5) — import-graph audit of the whole repo, then the dead-code sweep it justified.**
 Audit: ~96k LOC / 942 files; 632 are path-loaded synth skills (NOT dead despite zero imports);
