@@ -22,6 +22,7 @@ import { applyDateRecomputation, isDateQuestion, recomputeDate } from './dateTim
 import { isConversionQuestion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
 import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
+import { applyExplainCheck, checkExplanation } from './explainCheck'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -335,13 +336,35 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     } catch { /* corroboration is best-effort; the draft still ships */ }
   }
 
+  // ── Explain spot checks — the last unverified lane. Embedded factual claims (years,
+  // measures, attributions) are extracted deterministically and judged in isolation by K
+  // decorrelated verdicts; majority-refuted claims ship with an explicit caution. Weakest
+  // verifier by design (model-judged), so it only ever FLAGS, never rewrites.
+  let explainFlags = 0
+  if (facets.intent === 'explain' && !usedRetrieval && !facets.isCode
+      && process.env.CRUCIBLE_EXPLAIN_CHECK !== '0' && !signal?.aborted) {
+    try {
+      const chk = await checkExplanation(text)
+      if (chk) {
+        explainFlags = chk.flagged.length
+        text = applyExplainCheck(text, chk)
+        emit?.({
+          type: 'verify', passed: chk.flagged.length === 0,
+          report: chk.flagged.length
+            ? `Spot-checked ${chk.checked} embedded claim(s); ${chk.flagged.length} could not be confirmed — flagged in the answer.`
+            : `Spot-checked ${chk.checked} embedded factual claim(s) with ${chk.verdicts} independent verdicts — none refuted.`,
+        })
+      }
+    } catch { /* spot check is best-effort */ }
+  }
+
   debugBus.emit('pipeline', 'answered', {
     message: message.slice(0, 80), intent: facets.intent, usedRetrieval, corrections, repaired, recomputed, len: text.length,
     ...(consensusAgreement !== null ? { consensusAgreement: Number(consensusAgreement.toFixed(2)) } : {}),
   }, { severity: 'info' })
 
   return {
-    text, verified: !(factChecked && !factChecked.confirmed), abstained: false, ...base,
+    text, verified: !(factChecked && !factChecked.confirmed) && explainFlags === 0, abstained: false, ...base,
     usedRetrieval, corrections, repaired,
   }
 }

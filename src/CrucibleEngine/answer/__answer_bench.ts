@@ -10,6 +10,7 @@ import { applyDateRecomputation, evalDateSetup, isDateQuestion, recomputeDate } 
 import { checkConstraints } from './constraints'
 import { askedCount, corroborateFact, extractClaimKey, extractClaimSet, isListQuestion } from './factConsensus'
 import { convert, isConversionQuestion, parseConversion, recomputeConversion } from './unitConvert'
+import { applyExplainCheck, checkExplanation, extractCheckableClaims } from './explainCheck'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -348,6 +349,32 @@ console.log('== fact consensus: multi-fact (list-shaped) lookups ==')
     samples: 3, complete: replay(['Jupiter, Saturn, and Neptune.', 'Jupiter, Saturn and Neptune.']),
   })
   check('claim count ≠ asked count (2 vs 3) → NOT confirmed', !!short && !short.confirmed, JSON.stringify(short))
+}
+
+console.log('== explain spot checks: checkable-claim extraction (deterministic) ==')
+{
+  const text = 'A hash map stores key-value pairs. It was invented by Hans Peter Luhn in 1953. Average lookup is O(1). The load factor is usually kept below 75 percent to limit collisions.'
+  const claims = extractCheckableClaims(text)
+  check('year + attribution + measure sentences extracted (cap 3)', claims.length === 2 && /Luhn/.test(claims[0]) && /75 percent/.test(claims[1]), JSON.stringify(claims))
+  check('fuzzy prose alone → no claims', extractCheckableClaims('It builds intuition first, then adds detail where it helps.').length === 0)
+  check('code blocks are never treated as prose claims', extractCheckableClaims('Use this:\n```\nconst x = 1999\n```\nSimple as that, nothing else needed here.').length === 0)
+}
+
+console.log('== explain spot checks: decorrelated verdict quorum ==')
+{
+  const draft = 'The metric system is used worldwide. The metre was defined in 1793 as one ten-millionth of the distance from the equator to the North Pole.'
+  const allYes = await checkExplanation(draft, { verdictsPerClaim: 3, complete: replay(['yes', 'yes', 'yes']) })
+  check('all-yes verdicts → nothing flagged', !!allYes && allYes.checked === 1 && allYes.flagged.length === 0, JSON.stringify(allYes))
+  const refuted = await checkExplanation(draft, { verdictsPerClaim: 3, complete: replay(['no', 'no', 'unsure']) })
+  check('majority-no verdicts → claim flagged', !!refuted && refuted.flagged.length === 1, JSON.stringify(refuted))
+  const split = await checkExplanation(draft, { verdictsPerClaim: 3, complete: replay(['no', 'unsure', 'unsure']) })
+  check('split/unsure verdicts never flag (precision over recall)', !!split && split.flagged.length === 0, JSON.stringify(split))
+  const nothing = await checkExplanation('It depends on what you value most in a language.', { complete: replay(['yes']) })
+  check('no checkable claims → null (no verdict calls spent)', nothing === null)
+  if (refuted) {
+    const out = applyExplainCheck(draft, refuted)
+    check('flagged claim named in an explicit caution appended to the answer', /Caution — independent spot checks/.test(out) && /1793/.test(out.split('Caution')[1]), out.slice(-160))
+  }
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)
