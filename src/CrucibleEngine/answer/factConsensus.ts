@@ -69,6 +69,40 @@ function keysAgree(a: string, b: string): boolean {
   return a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))
 }
 
+// ── Multi-fact (list-shaped) lookups ─────────────────────────────────────────────────
+// "Name the three largest…" / "What are the planets…" answers assert a SET of claims; a
+// single claim key under-checks them (one right item corroborates while two wrong ones ride
+// along). Extract the claim SET (proper nouns + numbers, question entities excluded) and
+// require EVERY draft claim to be corroborated by a quorum of resamples.
+
+const LIST_ASK = /\b(list|name)\b|\bwhat are\b|\bwhich (?:\w+ )?are\b/i
+const COUNT_WORDS: Record<string, number> = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 }
+
+/** How many items the question asks for, when it states a count ("the three largest…"). */
+export function askedCount(question: string): number | null {
+  const m = /\b(two|three|four|five|six|seven|eight|nine|ten|\d{1,2})\s+(?:largest|biggest|smallest|longest|shortest|tallest|highest|lowest|most|first|best|main|primary|\w+est)\b/i.exec(question)
+  if (!m) return null
+  const w = m[1].toLowerCase()
+  return COUNT_WORDS[w] ?? (Number(w) >= 2 && Number(w) <= 20 ? Number(w) : null)
+}
+
+export function isListQuestion(question: string): boolean {
+  return LIST_ASK.test(question ?? '') || askedCount(question ?? '') !== null
+}
+
+/** All distinct claim keys in a text (proper nouns + standalone numbers), question-excluded. */
+export function extractClaimSet(text: string, question: string): string[] {
+  const t = (text ?? '').trim()
+  if (!t) return []
+  const q = (question ?? '').toLowerCase()
+  const out = new Set<string>()
+  for (const m of t.matchAll(/\b([A-Z][a-zA-Z'’-]+(?:\s+(?:of|the|de|da|von|van|[A-Z][a-zA-Z'’-]+))*)\b/g)) {
+    const r = m[1].split(/\s+/).filter((w, i) => !(i === 0 && STOP.has(w))).join(' ')
+    if (r && !STOP.has(r) && !q.includes(r.toLowerCase())) out.add(r.toLowerCase())
+  }
+  return [...out]
+}
+
 const RESAMPLE_SYSTEM =
   'Answer the factual question directly and concisely in one sentence. State only the answer — no preamble. If you are not sure, say "unsure".'
 
@@ -83,8 +117,9 @@ export async function corroborateFact(
   draft: string,
   opts: { samples?: number; complete?: Completer; timeoutMs?: number } = {},
 ): Promise<FactConsensus | null> {
+  const listShaped = isListQuestion(message)
   const key = extractClaimKey(draft, message)
-  if (!key) return null
+  if (!key && !listShaped) return null
   const complete = opts.complete ?? fmComplete
   const resamples = Math.max(2, (opts.samples ?? 3) - 1)
 
@@ -117,13 +152,28 @@ export async function corroborateFact(
     }
   } catch { /* ensemble is best-effort; FM-only consensus still stands */ }
 
+  // List-shaped: EVERY claim the draft asserts must be corroborated by a quorum of resample
+  // sets, and the claim count must match an explicitly asked count.
+  if (listShaped) {
+    const claims = extractClaimSet(draft, message)
+    if (!claims.length) return null
+    const sets = texts.map(t => extractClaimSet(t, message)).filter(s => s.length)
+    const votes = sets.length + 1
+    if (votes < 2) return null
+    const quorum = Math.max(1, Math.floor(sets.length / 2) + 1)
+    const corroborated = claims.filter(c => sets.filter(s => s.some(k => keysAgree(k, c))).length >= quorum)
+    const want = askedCount(message)
+    const confirmed = corroborated.length === claims.length && (want === null || claims.length === want)
+    return { confirmed, agreement: corroborated.length / claims.length, votes, key: claims.join(', '), ensembleModels }
+  }
+
   const voteKeys = texts.map(t => extractClaimKey(t, message)).filter((k): k is string => !!k && !/^unsure$/.test(k))
   const votes = voteKeys.length + 1 // + the draft itself
   if (votes < 2) return null
 
-  const agreeing = 1 + voteKeys.filter(k => keysAgree(k, key)).length
+  const agreeing = 1 + voteKeys.filter(k => keysAgree(k, key!)).length
   const quorum = Math.max(2, Math.floor(votes / 2) + 1)
-  return { confirmed: agreeing >= quorum, agreement: agreeing / votes, votes, key, ensembleModels }
+  return { confirmed: agreeing >= quorum, agreement: agreeing / votes, votes, key: key!, ensembleModels }
 }
 
 /** The explicit unverified note appended when corroboration fails (honesty over confidence). */

@@ -8,7 +8,7 @@ import { normalizeAnswer } from './selfConsistency'
 import { applyRecomputation, evalArithmeticExpr, evalSteps, evalWithEnv, recomputeMultiStep, recomputeWordProblem, type Completer } from './wordProblem'
 import { applyDateRecomputation, evalDateSetup, isDateQuestion, recomputeDate } from './dateTime'
 import { checkConstraints } from './constraints'
-import { corroborateFact, extractClaimKey } from './factConsensus'
+import { askedCount, corroborateFact, extractClaimKey, extractClaimSet, isListQuestion } from './factConsensus'
 import { convert, isConversionQuestion, parseConversion, recomputeConversion } from './unitConvert'
 
 let pass = 0, fail = 0
@@ -325,6 +325,29 @@ console.log('== fact consensus: quorum stamps, disagreement ships unverified =='
   check('resamples drift → NOT confirmed (ships with unverified note)', !!drift && !drift.confirmed, JSON.stringify(drift))
   const nokey = await corroborateFact('x', '???', { samples: 3, complete: replay(['a', 'b']) })
   check('draft with no extractable claim → null (nothing to corroborate)', nokey === null)
+}
+
+console.log('== fact consensus: multi-fact (list-shaped) lookups ==')
+{
+  check('asked count parsed ("three largest" → 3)', askedCount('Name the three largest planets in the solar system.') === 3)
+  check('list question detected', isListQuestion('What are the primary colors?'))
+  check('non-list question not detected', !isListQuestion('What is the capital of France?'))
+  const claims = extractClaimSet('The three largest planets are Jupiter, Saturn, and Neptune.', 'Name the three largest planets in the solar system.')
+  check('claim SET extracted (3 planets, question entities excluded)', claims.length === 3 && claims.includes('jupiter'), JSON.stringify(claims))
+
+  const Q = 'Name the three largest planets in the solar system.'
+  const good = await corroborateFact(Q, 'The three largest planets are Jupiter, Saturn, and Neptune.', {
+    samples: 3, complete: replay(['Jupiter, Saturn, and Neptune.', 'They are Jupiter, Saturn and Neptune.']),
+  })
+  check('all claims corroborated + count matches → confirmed', !!good && good.confirmed, JSON.stringify(good))
+  const drift = await corroborateFact(Q, 'The three largest planets are Jupiter, Saturn, and Mars.', {
+    samples: 3, complete: replay(['Jupiter, Saturn, and Neptune.', 'Jupiter, Saturn and Neptune.']),
+  })
+  check('one uncorroborated claim (Mars) → NOT confirmed', !!drift && !drift.confirmed, JSON.stringify(drift))
+  const short = await corroborateFact(Q, 'The largest planets are Jupiter and Saturn.', {
+    samples: 3, complete: replay(['Jupiter, Saturn, and Neptune.', 'Jupiter, Saturn and Neptune.']),
+  })
+  check('claim count ≠ asked count (2 vs 3) → NOT confirmed', !!short && !short.confirmed, JSON.stringify(short))
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)
