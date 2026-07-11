@@ -22,6 +22,7 @@ import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-
 import { createCheckpoint, rollbackToCheckpoint, getCheckpoints } from './src/CrucibleEngine/checkpoint'
 import { registry } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
+import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
@@ -2615,6 +2616,30 @@ app.post('/api/chat', async (req, res) => {
   // Sticky agentic follow-up: a continuation/repair reply in a session that just ran
   // an agent task stays on the agent path (keeps tool access for "fix it / try again").
   const agenticFollowup = isContinuationPhrase(message ?? '') && hasRecentAgentTask(chatSessionId)
+  // ── Deterministic counting gate — "how many r's in strawberry" (verify, never guess) ──
+  // Letter/substring counting is arithmetic, not generation: free models routinely hallucinate
+  // it (pattern-completing a prior answer). Compute the real answer with zero model calls, before
+  // any pipeline, so it's never wrong. Uses this server's own final-answer event shape.
+  if (mode !== 'agent' && mode !== 'seeker' && mode !== 'code' && slashAgentTool === null && !slash) {
+    const countAns = answerCountingQuery(message ?? '')
+    if (countAns) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      const send = (payload: object) => {
+        const line = `data: ${JSON.stringify(payload)}\n\n`
+        res.write(line)
+        if (chatSessionId) broadcastEvent(chatSessionId, line, res)
+      }
+      debugBus.emit('pipeline', 'counting_gate', { needle: countAns.needle, haystack: countAns.haystack, count: countAns.count }, { severity: 'info' })
+      send({ type: 'final', text: countAns.text })
+      patchActiveSessionRound(chatUser, chatRoundId, { synthesis: countAns.text, synthesisDone: true, synthStreaming: false })
+      historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'counting', models: ['system/count-verifier'], synthesis: countAns.text })
+      res.write('data: [DONE]\n\n'); res.end()
+      return
+    }
+  }
+
   const isAgenticIntent = slashAgentTool !== null || mode === 'agent' || detectAgentTask(message ?? '') || agenticFollowup
   if (agenticFollowup && !detectAgentTask(message ?? '')) {
     console.log('[/api/chat] Sticky agentic routing — continuation of a recent agent task')
