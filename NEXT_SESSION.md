@@ -17,7 +17,29 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 59b — ALL answer intents verified incl. explanations; 318/318)
+## CURRENT STATE (last updated 2026-07-11, cont. 59c — FATAL chat-freeze fixed; retrieval grounding provenance; 322/322)
+
+**cont.59c (897070c) — FATAL FIX: chat froze after one query.** The new answer-side verification lanes
+(fact consensus / explain spot-checks / recompute setups) fire 3-7 serialized FM calls per answer, but every
+`fmComplete` call enqueued at priority:'high' with the strict 600s ceiling — so leftover HIGH verification
+calls from query N tied with query N+1's draft on the concurrency-1 fmQueue, and any call nearing 600s blocked
+ALL later queries ("starts okay, stops after one query, infects the chat"). FIX: `fmComplete` now takes
+`{ timeoutMs, priority, signal }`; `answerEngine` runs every OPTIONAL lane through a bounded `verifyComplete`
+— priority:'normal' (a fresh request's HIGH draft always preempts leftover verification) + 30s ceiling
+(`CRUCIBLE_VERIFY_TIMEOUT_MS`; a wedged optional call is abandoned, the draft still ships) + honors the request
+signal. `server.ts /api/chat` builds a turn `AbortController` that fires on client disconnect → passed to
+`answerQuery` so a give-up stops the fan-out; plus an orphan-server sweep at boot (lingering `server.ts`
+instances were hammering the single FM bridge). Repro (6 sequential mixed queries): ALL return, queue drains
+to depth 0, 0 failures. LESSON in [[crucible-answer-engine]]: on a concurrency-1 single-session FM, every new
+multi-call lane MUST be lower-priority + short-timeout than the primary draft.
+Also landed: **retrieval grounding provenance** — `solveNonCodeTurn` now reports a `NonCodeMeta` (via
+dag/dag-abstain/react/direct); a DAG answer is stamped provenance-grounded, while an FM ReAct/direct
+FALLTHROUGH (parametric knowledge wearing a retrieval label) is routed through the normal fact-consensus /
+explain verification lanes instead of shipping unchecked. bench:all **322/322**.
+
+---
+
+## PRIOR STATE (cont. 59b — ALL answer intents verified incl. explanations; 318/318)
 
 **cont.59b (same session, continued) — the remaining cont.59 levers all landed:**
 - **Unit conversion** (`answer/unitConvert.ts`): Tier 1 parses "<n> <unit> to <unit>" deterministically and
