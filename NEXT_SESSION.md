@@ -17,7 +17,29 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 63 — converge WIRED + live-validated on /api/chat)
+## CURRENT STATE (last updated 2026-07-11, cont. 64 — cognitive-core doctrine + converge telemetry)
+
+**cont.64 — two things this session:**
+
+1. **DOCTRINE shift (foundational, user directive): the COGNITIVE CORE (Karpathy).** DOCTRINE.md now
+   has a §"The cognitive core (the model we actually want)". The endpoint is NOT a large model that
+   knows everything — it is a **very small on-device core (~1B params, self-trained/distilled if
+   needed) stripped of encyclopedic knowledge, holding only powerful, well-optimized REASONING + the
+   ability to LOOK THINGS UP.** Facts live in retrieval (corpus/index/web via our tooling), never in
+   weights. Baked-in factual recall = unverifiable, stale, hallucination-shaped debt — the same
+   failure as a preloaded answer, one level down. Direction of travel is **smaller + reasoning-denser,
+   not bigger**; the ~3B FM is a stepping stone. Binding: prefer the smallest core that still reasons;
+   treat baked knowledge as debt; invest disproportionately in reasoning + retrieval infra;
+   self-train only to sharpen reasoning / shrink the core, never to memorize more. New forbidden
+   framing: "NOT knowledge baked into weights." **This shapes every future build decision.**
+
+2. **Converge-epochs telemetry (0970e88).** `CodingRequestResult.converged?:{epochs,modelCalls}` set by
+   tryConverge; both server call sites record `convergedEpochs` in debug history + emit `vgr_converge_win`
+   (event + streamed thought) when `epochs>1`. **To flip converge default-ON:** run real coding traffic
+   with `CRUCIBLE_CONVERGE=1`, grep history for `vgr_converge_win`; ≥1 genuine win + no regression ⇒ flip.
+   The question that gates the default is now answerable from data, not a lucky live catch.
+
+### cont.63 (below) — converge WIRED + live-validated on /api/chat
 
 **cont.63 (83f13c7) — converge is now callable live and observable; validated no-regression.**
 - Both server.ts VGR call sites (`~3086` file-emit, `~3564` synthesis) pass
