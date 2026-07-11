@@ -17,42 +17,49 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 66b — RETRIEVAL GATE FIXED + VGR IN-PLACE MODIFY)
+## CURRENT STATE (last updated 2026-07-11, cont. 66c — MODIFY-PATH INCREMENTS + MULTI-FILE MODIFY LIVE + CONSENSUS UNIFIED)
 
-**cont.66b (f6c7ff3 + 2425f46) — two gap-closing fixes, both LIVE-VERIFIED via real /api/chat.**
+**cont.66c (0cdb3d2 → ae93e56) — all three modify-path increments shipped + consensus unified, everything live/bench-verified.**
 
-**1. Retrieval-routing fixed (the '2018 World Cup → Brazil' bug).** Three stacked bugs:
-(a) SPLIT-BRAIN: EXTERNAL_FACT fired correctly in answerEngine, but solveNonCodeTurn re-decided
-research-shape with its own regex (missing "who won") and skipped the web DAG → parametric
-'Brazil'. Fix: answerEngine passes {forceResearch:true}; the caller's decision can't be re-vetoed.
-(b) PREMISE-GATE HALLUCINATION: checkPremiseGrounding invented a contradiction at confidence 1.0
-and REPLACED the grounded answer with its negation ('France did not win…'). Fix: two deterministic
-guards in leafPrimitives.ts — OPEN_SELECTION_QUESTION (who/what/which + selection verb = existential
-presupposition, skip premise check, no FM call) and correctionNegatesEvidence (reject a 'correction'
-whose entities+content words are all inside a non-negated verified fact = bare negation of evidence;
-genuine corrections like Alaska-from-Russia-not-Canada survive — 5-case matrix).
-(c) TERSE-ANSWER DELETION: filterGroundedSentences' >10-char floor deleted 'France.' → floor now 3.
-Also: EXTERNAL_FACT broadened with current-officeholder cues (who is the CEO/president/…).
-LIVE: 'who won the 2018 World Cup?' → 'France won the 2018 World Cup.' grounded 82%, 2 sources.
-answer:bench 127/127, conversational:bench 56/56.
+**1. Modify-path increments (mission item 1) — DONE, LIVE-VERIFIED.**
+- **Type-annotation grafting** (emitPlan.parseSignature/graftAnnotations): untyped certified code
+  inherits the original definition's param/return annotations positionally (arity-equal only).
+- **Call-site arity reconciliation** (findCallSites/reconcileCallSites): esbuild's compile gate does
+  NOT typecheck arity, so signature changes are reconciled deterministically — trailing-param removal
+  trims call-site args mechanically; unabsorbable changes downgrade to a fresh file, never a silent break.
+- **Modify inside MULTI-file requests** (emitPlan.mergeCertifiedSource + multiFile.mergeCertifiedFileSet
+  + server branch): collisions on a modify-shaped request are structurally merged (same-named decls
+  spliced with graft+reconcile, new ones appended, named imports unioned), all-or-nothing, and the
+  MERGED graph is re-verified by execution before any write. Non-modify collisions still refuse.
+- **Root cause of live multi-file abstains found+fixed**: detectRequestedFiles turned a bare basename
+  re-mention ("main.ts imports greet") into a PHANTOM third requested file; the coverage gate then
+  demanded a root-level main.ts whose ./greet import could never resolve → every search exhausted.
+  Also: modify-shaped multi-file requests now thread CURRENT file contents to the proposer as grounding
+  (opts.context → spec.context) — edit real code, not reinvent blind.
+- LIVE /api/chat: 2-file modify (greet.ts + main.ts) certified in 1 model call, merged into BOTH
+  existing files (unrelated code preserved, welcome spliced in place), merged graph re-executed.
+  vgr:bench 129/129. LESSON (recurring): FM variance means one live run isn't enough — when VGR
+  abstains the agent loop still ships junk "oracle-verified" per-file writes (its oracle typechecks
+  files in ISOLATION so cross-file imports always fail: "Cannot find module './greet'"). That agent-loop
+  oracle gap is now the visible next hole.
 
-**2. VGR certified in-place MODIFY (mission item 1 increment).** emitPlan mode 'modify': modify-
-shaped request + target file already defines entry → definition spliced with the certified impl
-(string/comment-aware brace matcher, fn decls + arrow consts), whole file must recompile else
-downgrade to fresh file (never blind-splice). isCodeEditTask verb list gained fix/correct/repair/
-improve/adjust/replace/refactor — 'fix initials in src/strings.ts …' previously fell to the agent
-loop which LIVE shipped a WRONG unverified fix (name[0].toUpperCase()); after the fix VGR certifies
-by execution and replaces in place, rest of file intact. vgr:bench 118/118.
+**2. research:bench sweep after the premise-gate change: 9/10 correct, 1 honest abstain, 0 wrong.**
+
+**3. Consensus unified**: extractClaimKey/keysAgree moved to agent/consensus.ts (one system-wide
+definition; factConsensus re-exports). consensus.agrees now falls back to claim-key comparison for
+terse answers ("Paris." vs "The capital is Paris" now cluster). answer:bench 127/127, debate:bench 34/34.
+(factConsensus still calls localModels/orchestrator for ensemble voters — that part is live, not dead.)
 
 **Next, in order:**
-1. **Existing-repo editing, next increments:** (a) preserve the original function's TYPE
-   annotations when splicing (certified impl came back untyped `name` — cosmetic but real);
-   (b) call-site awareness: when a modify changes arity/signature, find+update callers across
-   the tree (multiFile machinery is the base); (c) modify inside MULTI-file requests.
-2. **Retrieval hardening:** research:bench sweep after the premise-gate change (only spot-checked
-   live); consider consensus-vote premise corrections (≥2 independent FM verdicts).
-3. **Unify consensus** — factConsensus still rides old localModels/orchestrator → agent/consensus.ts.
-4. **Decompose server.ts (8.1k lines)** — coordinate with cloud session first.
+1. **Agent-loop per-file oracle is cross-file blind** — it typechecks each file in an isolated temp
+   dir, so ANY relative import fails tsc and it grinds to abstain (or worse, ships the files it could
+   check). Either give the oracle the sibling files, or route multi-file agent tasks through the VGR
+   multi-file machinery.
+2. **Signature-change propagation across the TREE** (call sites in OTHER files — single-file
+   reconciliation shipped; whole-tree is the remaining bulk of mission item 1).
+3. **Consensus-vote premise corrections** (≥2 independent FM verdicts before a premise 'correction').
+4. **Decompose server.ts (8.2k lines)** — coordinate with cloud session first.
+
 
 ---
 
