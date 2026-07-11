@@ -260,6 +260,169 @@ export async function recomputeWordProblem(
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONVERGENCE — iterate() applied to the answer domain (word-problem recomputation)
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// recomputeWordProblem draws K setups ONCE and abstains if no quorum forms. But a genuinely
+// correct setup the model produces most-but-not-all of the time can lose an unlucky first
+// draw (1-1-1 split, or 2 evaluable that disagree) and be abstained on — even though a
+// dominant cluster EXISTS in the distribution. That is the exact shape iterate() rescues.
+//
+// Same contract as reasoning/iterate.ts, mapped to consensus-over-samples (search()'s
+// per-candidate verifier doesn't fit — consensus is inherently multi-sample):
+//   • ACCUMULATE samples across epochs instead of throwing the batch away — the pool only grows.
+//   • PROGRESS = the largest agreeing value-cluster grew this epoch. Terminate when it reaches
+//     quorum (solved), when growth stalls after research (abstain), or on a reality budget
+//     (max samples / epochs / abort). The model NEVER decides to stop.
+//   • RESEARCH on a stall is Channel-1 ONLY (safe proposer grounding): show the model the
+//     CONFLICTING setups its own samples produced and ask it to re-read and pick the one that
+//     matches the described operation. It cannot change ground truth — the arithmetic is still
+//     the machine's, and only a quorum on the machine-evaluated VALUE certifies.
+//
+// SOUND / pure ADD: it only ever draws MORE independent samples and still requires a quorum on
+// a deterministically-evaluated value, so it can certify MORE than single-shot, never less.
+// HONEST LIMIT (same as single-shot): a wrong setup shared across ALL samples still passes —
+// convergence rescues split/unlucky draws, it does NOT fix systematic setup bias.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface WordProblemIterateOpts {
+  complete?: Completer
+  /** Samples drawn per epoch. Default 3. */
+  batchSize?: number
+  /** Hard cap on epochs regardless of progress. Default 4. */
+  maxEpochs?: number
+  /** Hard ceiling on total samples drawn across all epochs (reality budget). Default 12. */
+  maxSamples?: number
+  /** Consecutive stalled epochs (research included) tolerated before abstaining. Default 1. */
+  stallLimit?: number
+  signal?: AbortSignal
+  emit?: (ev: { type: string; text: string }) => void
+}
+
+export interface WordProblemIterateResult {
+  /** Solved → the certified recomputation; null → honest abstain. */
+  recomputation: Recomputation | null
+  epochs: number
+  samples: number
+  /** Present when convergence EARNED the answer (a later epoch reached quorum the first missed). */
+  converged?: { epochs: number; samples: number }
+  detail: string
+}
+
+/**
+ * Convergence loop over recomputeWordProblem's consensus. Keeps drawing independent setups
+ * while the top value-cluster is still growing, folds the conflicting setups back into the
+ * prompt on a stall (safe grounding), and terminates deterministically. Drop-in over
+ * recomputeWordProblem — returns the same Recomputation shape (or null to abstain).
+ */
+export async function iterateWordProblem(
+  message: string,
+  opts: WordProblemIterateOpts = {},
+): Promise<WordProblemIterateResult> {
+  const complete = opts.complete ?? fmComplete
+  const batchSize = Math.max(1, opts.batchSize ?? 3)
+  const maxEpochs = Math.max(1, opts.maxEpochs ?? 4)
+  const maxSamples = Math.max(batchSize, opts.maxSamples ?? 12)
+  const stallLimit = Math.max(1, opts.stallLimit ?? 1)
+  const emit = opts.emit ?? (() => {})
+
+  const pool: Array<{ value: number; unit: string; expr: string }> = []
+  let prevTop = 0
+  let stalled = 0
+  let epoch = 0
+  // Budget is DRAW ATTEMPTS, not pool size — a model that keeps emitting unevaluable setups
+  // must not be able to spin the loop forever (an empty pool never hits a pool-size cap).
+  let attempts = 0
+
+  // Cluster the pool by evaluated value; return the dominant cluster and its quorum threshold.
+  const clusters = () => {
+    const byVal = new Map<string, { value: number; n: number; unit: string; expr: string; exprs: Set<string> }>()
+    for (const e of pool) {
+      const k = valueKey(e.value)
+      const slot = byVal.get(k) ?? { value: e.value, n: 0, unit: e.unit, expr: e.expr, exprs: new Set<string>() }
+      slot.n++
+      if (!slot.unit && e.unit) slot.unit = e.unit
+      slot.exprs.add(e.expr)
+      byVal.set(k, slot)
+    }
+    const ranked = [...byVal.values()].sort((a, b) => b.n - a.n)
+    // Majority of the EVALUABLE pool — a genuinely-dominant setup satisfies it as n grows;
+    // a true 50/50 ambiguity never does (→ honest abstain).
+    const quorum = Math.max(2, Math.floor(pool.length / 2) + 1)
+    return { ranked, top: ranked[0], quorum }
+  }
+
+  for (epoch = 0; epoch < maxEpochs && attempts < maxSamples; epoch++) {
+    if (opts.signal?.aborted) break
+
+    // Channel-1 research: on a split, show the model its own conflicting setups (safe grounding).
+    const { ranked: preRanked } = clusters()
+    let grounding = ''
+    if (epoch > 0 && preRanked.length >= 2) {
+      const conflicting = preRanked.slice(0, 3)
+        .map(c => `  • setup "${[...c.exprs][0]}" → ${formatValue(c.value)}`)
+        .join('\n')
+      grounding =
+        `\n\nYour previous attempts DISAGREED on the setup:\n${conflicting}\n` +
+        `Re-read the problem carefully and produce the ONE setup whose operations match ` +
+        `exactly what is described. Do not compute the result.`
+      emit({ type: 'thought', text: `epoch ${epoch}: setups split ${preRanked.length} ways — re-grounding on the conflict` })
+    } else {
+      emit({ type: 'thought', text: `epoch ${epoch}: drawing ${batchSize} independent setup(s) (${pool.length}/${maxSamples} so far)` })
+    }
+
+    const room = maxSamples - attempts
+    const draws = Math.min(batchSize, room)
+    for (let i = 0; i < draws; i++) {
+      if (opts.signal?.aborted) break
+      attempts++
+      let raw: string
+      try {
+        raw = await complete(
+          [{ role: 'system', content: SYSTEM }, { role: 'user', content: `Problem:\n${message}${grounding}` }],
+          { temperature: pool.length === 0 && i === 0 ? 0.1 : 0.5 },
+        )
+      } catch { continue }
+      const parsed = parseExpr(raw)
+      if (!parsed || !parsed.expression) continue
+      const value = evalArithmeticExpr(parsed.expression)
+      if (value === null) continue
+      pool.push({ value, unit: parsed.unit.trim(), expr: parsed.expression.trim() })
+    }
+
+    if (pool.length < 2) { prevTop = 0; continue } // no corroboration yet
+
+    const { top, quorum } = clusters()
+    if (top && top.n >= quorum) {
+      emit({ type: 'thought', text: `converged: ${top.n}/${pool.length} setups agree on ${formatValue(top.value)} (quorum ${quorum})` })
+      return {
+        recomputation: {
+          value: top.value, unit: top.unit || undefined, expression: top.expr,
+          agreement: top.n / pool.length, samples: pool.length,
+        },
+        epochs: epoch + 1, samples: pool.length,
+        converged: epoch > 0 ? { epochs: epoch + 1, samples: pool.length } : undefined,
+        detail: `word-problem recomputation converged in ${epoch + 1} epoch(s): ${top.n}/${pool.length} agree on ${formatValue(top.value)}`,
+      }
+    }
+
+    // Progress = the dominant cluster grew. No growth after we injected grounding → stall.
+    const improved = (top?.n ?? 0) > prevTop
+    if (!improved && grounding) { stalled++; if (stalled > stallLimit) break }
+    else if (improved) stalled = 0
+    prevTop = top?.n ?? 0
+  }
+
+  return {
+    recomputation: null,
+    epochs: epoch, samples: pool.length,
+    detail: pool.length < 2
+      ? 'no evaluable setup corroborated — abstained'
+      : `no quorum after ${pool.length} sample(s) — abstained (setups genuinely disagree)`,
+  }
+}
+
 // ── Reconcile the machine value with the drafted answer ──────────────────────────────
 
 /** Format a number the way an answer reads (integer without a trailing .0; else trimmed). */
