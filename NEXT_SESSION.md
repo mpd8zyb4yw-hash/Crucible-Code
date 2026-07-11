@@ -17,22 +17,57 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 66g — BUILD-NEGOTIATION LOOP FIXED)
+## CURRENT STATE (last updated 2026-07-12, cont. 66h — REFINEMENT TURNS FIXED + 66f/66g LIVE-CONFIRMED)
 
-**cont.66g (3a724d4) — user-caught "utter failure": the build-negotiation loop.**
-- Symptom: after "make me a game", a whole multi-turn negotiation (different?→fps?→battle royale→
-  "i trust you, do your thing"→"build the game") fell ENTIRELY to the weak FM, which role-played a
-  planning assistant ("Great choice! Here's a basic outline: Game Setup, Player Movement…") and
-  NEVER built anything. clarifyBuild only handles the FIRST turn; no state carried the accumulating
-  spec; greenlight phrases triggered no build.
-- Fix: `src/CrucibleEngine/answer/buildNegotiation.ts` — resolveBuildTurn(message, history) fires on
-  an explicit greenlight + a build topic in the last 6 turns, ASSEMBLES a concrete single-file-HTML
-  spec, and routes it to the real builder. Over-scope asks (battle-royale/FPS/3D) are honestly
-  downscoped to a runnable browser mini-game, said aloud. server.ts forces the agent path on 'build'
-  and hands the assembled `agentGoal` to the loop/planner. conversational:bench 67/67 (+11), tsc clean.
-- **NOT live-confirmed** — greenlight→build routing is deterministic-only; end-to-end live game build
-  wasn't run (shared/contended backend + multi-min agent loop). NEXT: live-FM confirm a runnable
-  artifact is produced; optionally handle mid-negotiation REFINEMENT turns (still hit FM role-play).
+**cont.66h (4cb3677) — closed the "lower-severity" half of the negotiation-loop failure AND
+live-FM-confirmed both cont.66f and cont.66g (which shipped deterministic-only).**
+
+**1. Mid-negotiation refinement turns (the FM role-play hole) — FIXED + LIVE.**
+- Symptom: BEFORE a greenlight, the refinement turns ("a simple fps game?", "battle royale",
+  "can it be something different?", and bare acks like "thanks, that helps") fell to the weak FM,
+  which role-played a planning assistant ("create a Board Game… use Unity or Unreal Engine") and
+  built nothing. cont.66g's resolveBuildTurn only handled the greenlight; refinements passed through.
+- Fix (`buildNegotiation.ts` + `server.ts`): resolveBuildTurn now also returns action **'clarify'**
+  for a refinement turn while a build is established in PRIOR history and NOT yet a greenlight —
+  named genre → confirm + honest on-device downscope + invite a one-word go-ahead; contentless
+  "different?" → concrete options; **bare ack** ("thanks/cool/got it") → a warm "just say go" nudge.
+  server.ts ships the clarify text via an EARLY deterministic short-circuit (like the counting gate,
+  before any agent/task machinery — sidesteps the dangling-`running`-status issue that clarifyBuild's
+  post-startTask gate has). Conservative: never hijacks a fresh turn, an unrelated aside, or a real
+  request that merely opens with an ack word. conversational:bench 67→**87**, tsc clean, bench:all 362/362.
+- LIVE-CONFIRMED on real /api/chat: the three refinement turns + "thanks, that helps" all return the
+  deterministic reply instead of FM role-play (was: "…use Unity or Unreal Engine").
+
+**2. Whole-tree signature propagation (cont.66f) — LIVE-FM-CONFIRMED (was deterministic-only).**
+- Scratch project (`greet.ts` imported+called by `main.ts`), real /api/chat modify. RECONCILE path:
+  greet(name,greeting)→greet(name) certified (24 cases, 1 model call, differential consensus); main.ts's
+  2-arg call trimmed to `greet('World')`; both compile (clean `tsc -p`) + run → "Hello, World!".
+  REFUSE/all-or-nothing path: combine(a,b)→combine(a,b,c) that caller.ts can't absorb → whole edit
+  downgraded to a fresh `src/combine.ts`; mathx.ts + caller.ts **byte-identical** (sha unchanged) — no
+  partial corruption. Both TreeEmit branches behave live exactly as the bench claimed.
+
+**3. Greenlight → runnable artifact (cont.66g) — LIVE-FM-CONFIRMED end-to-end.**
+- Full negotiation history + "i trust you, do your thing" → build_negotiation_resolved → honest
+  downscope thought ("a full battle royale is beyond on-device… a browser mini-game you can play
+  right now") → agent_start → single-file-HTML target → wrote `game.html` (self-contained canvas app).
+  Executed under a DOM/canvas harness: 300 loop frames + simulated input, **zero runtime throw** — it
+  genuinely opens and runs.
+- **HONEST CEILING (the real next gap):** the artifact RUNS but its game LOGIC is buggy (weak-3B-FM
+  raw HTML/JS): `if(enemies.length===0) gameOver=true` trips frame 1 so enemies stop spawning; bullets
+  accumulate dx/dy but never apply them (don't move); `gameOver` never sets `dead` (no game-over
+  screen); only left/right despite the WASD spec. It's **syntax-verified but behaviorally unverified** —
+  there is NO deterministic verifier for interactive/canvas-game behavior the way VGR has one for pure
+  functions. This is the doctrine frontier: "correctness from the loop" hasn't reached interactive artifacts.
+
+**NEXT (in priority order):**
+1. **Behavioral verification for HTML/canvas builds** — the biggest quality gap. Options: headless
+   execution smoke (no-throw + key invariants like "score increments on hit", "player stays in bounds")
+   as an emit-gate; or a small metamorphic battery for game state. Ship only artifacts that pass.
+2. **Ordinal option-picking** in negotiation ("the first one", "the second") — currently only genre
+   names/connectives are caught; an ordinal reference to the offered list falls through to the FM.
+3. **Fix clarifyBuild's dangling `running` status** (startTask flips it before the clarify gate, no
+   completeTask on early return) — latent multi-turn suppression; the 66h refinement handler dodges it
+   by short-circuiting early, but the first-turn clarifier still leaves the session `running`.
 
 ---
 
