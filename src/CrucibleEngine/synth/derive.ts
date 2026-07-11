@@ -43,6 +43,29 @@ function countTopLevelParams(params: string): number {
 
 export interface SpecExample { lhs: string; rhs: string }
 
+/** True when `lhs` is a single call expression — an identifier chain (optionally with
+ *  member access) immediately followed by a parenthesised argument list whose matching
+ *  close paren is the LAST non-space character. This rejects English prose that merely
+ *  happens to contain a `name(` token and a `returns`/`=>` separator (e.g. a whole
+ *  request sentence), which the loose `callsAName` test alone would wave through and
+ *  then embed verbatim into the generated test — producing a self-inflicted TS syntax
+ *  error that fails every candidate. Accepts greet('World'), chunk([1,2,3], 2),
+ *  editDistance('kitten','sitting'), obj.method(x). */
+function isCallShaped(lhs: string): boolean {
+  const s = lhs.trim()
+  const head = s.match(/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\s*\(/)
+  if (!head) return false
+  let depth = 0, quote: string | null = null
+  for (let i = head[0].length - 1; i < s.length; i++) {
+    const ch = s[i]
+    if (quote) { if (ch === quote && s[i - 1] !== '\\') quote = null; continue }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; continue }
+    if ('([{'.includes(ch)) depth++
+    else if (')]}'.includes(ch)) { depth--; if (depth === 0) return s.slice(i + 1).trim() === '' }
+  }
+  return false
+}
+
 /** Extract the worked `call → expected` example pairs from a spec's own text.
  *  This is deriveTests' exact extraction, exported so the user-skill pipeline can
  *  record the SAME examples the oracle verified into a catalog entry's tests[]. */
@@ -62,7 +85,8 @@ export function extractSpecExamples(spec: string): SpecExample[] {
     const lhs = parts[0].trim()
     let rhs = parts[1].trim().replace(/[.;,]+$/, '')
     if (!lhs || !rhs) continue
-    if (!callsAName.test(lhs)) continue            // LHS must be the call
+    if (!callsAName.test(lhs)) continue            // LHS must call a known export
+    if (!isCallShaped(lhs)) continue               // …and be a call expression, not prose
     examples.push({ lhs, rhs })
   }
   return examples
