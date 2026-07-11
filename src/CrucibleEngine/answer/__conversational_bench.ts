@@ -1,6 +1,7 @@
 // Pure, offline bench for the deterministic conversational meta-handler. No model calls.
 // Run: npx tsx src/CrucibleEngine/answer/__conversational_bench.ts  (npm run conversational:bench)
 import { matchMeta, clarifyBuild } from './conversational'
+import { resolveBuildTurn } from './buildNegotiation'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -63,6 +64,49 @@ console.log('\n== SPECIFIC build requests are NOT intercepted (must build, retur
 for (const b of ['build me a snake game', 'make a todo app in react', 'create a portfolio website for a photographer', 'build a calculator that does percentages', 'write a python script to rename files', 'build me a game where you dodge asteroids']) {
   const r = clarifyBuild(b)
   check(`"${b}" → null (builds)`, r === null, r ? 'intercepted' : 'null')
+}
+
+// ── Build negotiation: greenlight after a discussion must BUILD, not re-clarify ──
+// This is the 2026-07-11 "utter failure" bug: game→different→fps→battle royale→"i trust you,
+// do your thing"→"build the game" looped forever in FM role-play and never built anything.
+console.log('\n== greenlight after a build discussion assembles a spec and BUILDS ==')
+{
+  const negotiation = [
+    { user: 'make me a game', assistant: 'Happy to build you a game — what kind? Snake / Memory / Number guessing' },
+    { user: 'can it be something different than the ones you described?', assistant: 'Sure — a text adventure?' },
+    { user: 'a simple fps game?', assistant: 'Sure, an FPS. Which kind?' },
+    { user: 'battle royale', assistant: "Great choice! Here's an outline…" },
+  ]
+  const trust = resolveBuildTurn('i trust you, do your thing', negotiation)
+  check('"i trust you, do your thing" → build (not another outline)', trust.action === 'build', trust.action)
+  check('assembled spec is concrete + runnable', !!trust.spec && /browser|canvas|html/i.test(trust.spec!))
+  check('battle-royale/fps ask is honestly downscoped', !!trust.note && /on-device|beyond/i.test(trust.note!))
+
+  const buildIt = resolveBuildTurn('build the game', negotiation)
+  check('"build the game" → build', buildIt.action === 'build', buildIt.action)
+
+  const snakeChat = [{ user: 'make me a game', assistant: 'what kind?' }, { user: 'snake', assistant: 'ok, snake?' }]
+  const goSnake = resolveBuildTurn('go ahead', snakeChat)
+  check('"go ahead" after picking snake → build a snake game', goSnake.action === 'build' && /snake/i.test(goSnake.spec || ''), goSnake.topic)
+  check('normal-scope game gets NO downscope note', !goSnake.note)
+
+  const appChat = [{ user: 'build me an app', assistant: 'what should it do?' }, { user: 'a todo list', assistant: 'ok' }]
+  const goApp = resolveBuildTurn('do your thing', appChat)
+  check('"do your thing" after an app discussion → build', goApp.action === 'build' && /app/i.test(goApp.spec || ''))
+}
+
+console.log('\n== greenlights WITHOUT a build topic must NOT build (no false positives) ==')
+{
+  check('"yes" to a factual chat → passthrough',
+    resolveBuildTurn('yes', [{ user: 'is the sky blue?', assistant: 'Yes.' }]).action === 'passthrough')
+  check('"go ahead" with empty history → passthrough',
+    resolveBuildTurn('go ahead', []).action === 'passthrough')
+  check('"do it" after a non-build discussion → passthrough',
+    resolveBuildTurn('do it', [{ user: 'explain recursion', assistant: '…' }]).action === 'passthrough')
+  // A real spec-bearing build request is NOT a bare greenlight — it flows through the normal
+  // builder path, not this resolver (which only fires on go-aheads).
+  check('"build me a snake game" (has its own spec) → passthrough here',
+    resolveBuildTurn('build me a snake game', []).action === 'passthrough')
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

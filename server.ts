@@ -37,6 +37,7 @@ import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/Cruci
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
+import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectTargetPath, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
@@ -2458,6 +2459,20 @@ app.post('/api/chat', async (req, res) => {
     if (roundConversation.size > 500) roundConversation.delete(roundConversation.keys().next().value as string)
   }
 
+  // ── Build-negotiation resolution ─────────────────────────────────────────────
+  // After a build has been under discussion, an explicit greenlight ("build the game",
+  // "i trust you, do your thing", "go ahead") must ASSEMBLE the accumulated spec from history
+  // and route to the real builder — not let the weak FM role-play another planning outline.
+  // Deterministic; passthrough when the turn isn't a greenlight or no topic was established.
+  const buildTurn = resolveBuildTurn(message ?? '', Array.isArray(history) ? history : [])
+  // The goal handed to the agent/builder. Defaults to the user's literal message; the negotiation
+  // resolver overrides it with a concrete, buildable spec when it fires. `message` stays intact
+  // for history/persistence fidelity.
+  const agentGoal = buildTurn.action === 'build' && buildTurn.spec ? buildTurn.spec : (message ?? '')
+  if (buildTurn.action === 'build') {
+    debugBus.emit('agent', 'build_negotiation_resolved', { topic: buildTurn.topic, downscoped: !!buildTurn.note }, { severity: 'info' })
+  }
+
   const chatUser = getAuthUser(req)
   // ── Register this run as a server-owned task and buffer its event stream ──────
   // One write-hook captures EVERY 'data:' line (both the agent path and the synthesis
@@ -2655,14 +2670,14 @@ app.post('/api/chat', async (req, res) => {
     }
   }
 
-  const isAgenticIntent = slashAgentTool !== null || mode === 'agent' || detectAgentTask(message ?? '') || agenticFollowup
+  const isAgenticIntent = slashAgentTool !== null || mode === 'agent' || detectAgentTask(message ?? '') || agenticFollowup || buildTurn.action === 'build'
   if (agenticFollowup && !detectAgentTask(message ?? '')) {
     console.log('[/api/chat] Sticky agentic routing — continuation of a recent agent task')
     debugBus.emit('agent', 'sticky_agentic_route', { message: (message ?? '').slice(0, 80) }, { severity: 'info' })
   }
 
   // ── Agent mode — sustained tool loop instead of the synthesis pipeline ─────
-  if (slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
+  if (buildTurn.action === 'build' || slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -2754,7 +2769,9 @@ app.post('/api/chat', async (req, res) => {
     // *completed* prior task must NOT suppress clarification of a brand-new vague build.
     // (No isContinuationPhrase guard here — it false-positives on "build me a game", and
     // genuine continuations like "run it" never match clarifyBuild in the first place.)
-    if (!resumable && !iterCheckpoint && !hadActiveTaskBefore) {
+    // Skip the vague-build clarifier when the negotiation already resolved to a concrete build —
+    // the user has moved past clarification (they greenlit) and we're about to build.
+    if (buildTurn.action !== 'build' && !resumable && !iterCheckpoint && !hadActiveTaskBefore) {
       const buildClarify = clarifyBuild(message ?? '')
       if (buildClarify) {
         send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: buildClarify, done: true })
@@ -2764,6 +2781,16 @@ app.post('/api/chat', async (req, res) => {
         endAgent()
         return
       }
+    }
+
+    // Build negotiation resolved to a concrete goal → tell the user what we're building (and,
+    // when we scoped an over-ambitious ask down to something that actually runs on-device, say
+    // so honestly) before the builder starts. agentGoal already carries the assembled spec.
+    if (buildTurn.action === 'build') {
+      const lead = buildTurn.note
+        ? buildTurn.note
+        : `On it — building ${buildTurn.topic ? `a ${buildTurn.topic} game` : 'that'} now.`
+      send({ type: 'thought', text: lead })
     }
 
     // Build/update codebase index non-blocking; extract relevant context for this query
@@ -3326,8 +3353,8 @@ app.post('/api/chat', async (req, res) => {
           // Run escalated off-device — flip the badge/pill so ON-DEVICE never lies.
           send({ type: 'agent_start', driver: currentDriverLabel(), projectPath, resumed: false }))
 
-    if (resumable || needsPlan(message)) {
-      const goal = resumable?.goal ?? message
+    if (resumable || needsPlan(agentGoal)) {
+      const goal = resumable?.goal ?? agentGoal
       const sessionId = resumable?.id ?? newSessionId(t0)
       const persist = (steps: any[], completedSummaries: string[], status: 'running' | 'done' | 'failed') =>
         saveSession({ id: sessionId, goal, projectPath, steps, completedSummaries, status, createdAt: resumable?.createdAt ?? t0, updatedAt: t0 })
@@ -3372,7 +3399,7 @@ app.post('/api/chat', async (req, res) => {
     } else {
       const verifier = makeVerifier({ command: req.body.verifyCommand })
       const result = await runAgentLoop({
-        goal: message,
+        goal: agentGoal,
         projectPath,
         userId: chatUser?.id,
         driveTurn: activeDriveTurn,
@@ -3387,14 +3414,14 @@ app.post('/api/chat', async (req, res) => {
           // Prefer accumulated session messages (stateful continuity) over raw history array
           sessionMessages.length > 1
             ? [...sessionMessages.filter(m => m.role !== 'user' || m !== sessionMessages[sessionMessages.length - 1]),
-               { role: 'user', content: message }]
+               { role: 'user', content: agentGoal }]
             : history.length > 0 ? [
                 { role: 'system', content: '' },
                 ...history.flatMap((h: {user: string, assistant: string}) => [
                   { role: 'user', content: h.user },
                   { role: 'assistant', content: h.assistant }
                 ]),
-                { role: 'user', content: message }
+                { role: 'user', content: agentGoal }
               ] : undefined
         ),
         systemPreamble: `${defaultSystemPreamble(projectPath)}${slashAgentTool ? `\n\nTOOL SHORTCUT: the user invoked this request through the /${slashAgentTool} shortcut — prefer the ${slashAgentTool} tool where it fits, and use any other tools you need to finish.` : ''}\n\nDEVICE CONTEXT: This request came from a ${device === 'mobile' ? 'mobile phone' : 'desktop'}. When the user asks to open apps, files, or URLs — always execute the action on the Mac desktop, never on the user's phone. If the request is ambiguous, assume they want it on the Mac.\n\nUSER LOCATION: Timezone is Europe/Rome. Use this to infer the user region for location-dependent queries like weather. Never ask for location unless the query is too specific for timezone inference.${detectExternalExecIntent(message ?? '') ? '\n\nEXECUTION INTENT DETECTED: The user wants you to perform an action on an external system (open a URL, play media, launch an app). Do NOT return a link or describe how to do it. Do NOT construct YouTube URLs from memory — video IDs from training data are dead links. For YouTube: call search_youtube with a specific query, pick the best result URL from the live results, then call open_app with that URL. For other media/apps: use web_search to find the URL, then open_app. Execute — do not instruct.' : ''}\n\n${[openGoalsCtx, taskHistoryCtx, globalMemory, episodeContext, graphDigest, decisionCtx, memoryDigest, codebaseContext].filter(Boolean).join('\n\n')}`,
