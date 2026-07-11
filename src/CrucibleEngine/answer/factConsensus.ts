@@ -16,10 +16,15 @@
 // the registry contributes zero voters and behavior is FM-only (identical everywhere else).
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { extractClaimKey, keysAgree } from '../agent/consensus'
 import { fmComplete } from '../agent/fmReact'
 import type { Completer } from './wordProblem'
 import { getRegistry } from '../localModels/registry'
 import { orchestrate } from '../localModels/orchestrator'
+
+// Claim-key normalization + agreement live in agent/consensus.ts (the system-wide consensus
+// machinery — debate, local-model corroboration, and fact checks share ONE definition).
+export { extractClaimKey } from '../agent/consensus'
 
 export interface FactConsensus {
   /** True when a quorum of independent answers agreed with the draft's key claim. */
@@ -34,40 +39,7 @@ export interface FactConsensus {
   ensembleModels: string[]
 }
 
-// ── Claim-key normalization ────────────────────────────────────────────────────────
-// A short factual answer's key claim is (in priority order): a number with optional unit,
-// else a proper-noun phrase, else the first clause lowercased. Comparison happens on this
-// key, so phrasing differences ("Paris." / "The capital is Paris") still agree.
-
 const STOP = new Set(['The', 'A', 'An', 'It', 'Its', 'This', 'That', 'There', 'They', 'He', 'She', 'I', 'Yes', 'No', 'In', 'On', 'As', 'At'])
-
-export function extractClaimKey(text: string, question?: string): string | null {
-  const t = (text ?? '').trim()
-  if (!t) return null
-  // Number (with thousands separators / decimals) — normalize commas away.
-  const num = t.match(/-?\d[\d,]*(?:\.\d+)?/)
-  if (num) return num[0].replace(/,/g, '')
-  // Proper-noun phrase: longest run of Capitalized words that isn't a sentence-starter stopword.
-  // Entities the QUESTION already mentions carry no new information (the claim in "the capital
-  // of Australia is Canberra" is Canberra, not Australia) — exclude them when possible.
-  const q = (question ?? '').toLowerCase()
-  const runs = [...t.matchAll(/\b([A-Z][a-zA-Z'’-]+(?:\s+(?:of|the|de|da|von|van|[A-Z][a-zA-Z'’-]+))*)\b/g)]
-    .map(m => m[1])
-    .map(r => r.split(/\s+/).filter((w, i) => !(i === 0 && STOP.has(w))).join(' '))
-    .filter(r => r && !STOP.has(r))
-  const fresh = q ? runs.filter(r => !q.includes(r.toLowerCase())) : runs
-  const pool = fresh.length ? fresh : runs
-  if (pool.length) return pool.sort((a, b) => b.length - a.length)[0].toLowerCase()
-  // Fallback: first clause, aggressively normalized.
-  const clause = t.split(/[.!?\n]/)[0].toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
-  return clause || null
-}
-
-function keysAgree(a: string, b: string): boolean {
-  if (a === b) return true
-  // Substring containment covers "paris" vs "paris france".
-  return a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))
-}
 
 // ── Multi-fact (list-shaped) lookups ─────────────────────────────────────────────────
 // "Name the three largest…" / "What are the planets…" answers assert a SET of claims; a

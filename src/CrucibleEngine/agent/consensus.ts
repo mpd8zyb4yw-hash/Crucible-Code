@@ -29,6 +29,43 @@ export function scoreAnswer(answer: string): { score: number; reason: string } {
   return { score: 0.75, reason: 'plausible answer' }
 }
 
+// ── Claim-key normalization (shared with answer/factConsensus) ─────────────────────
+// A short factual answer's key claim is (in priority order): a number with optional unit,
+// else a proper-noun phrase, else the first clause lowercased. Comparison happens on this
+// key, so phrasing differences ("Paris." / "The capital is Paris") still agree. This is
+// THE system-wide definition — factConsensus re-exports it; do not fork a second copy.
+
+const STOP = new Set(['The', 'A', 'An', 'It', 'Its', 'This', 'That', 'There', 'They', 'He', 'She', 'I', 'Yes', 'No', 'In', 'On', 'As', 'At'])
+
+export function extractClaimKey(text: string, question?: string): string | null {
+  const t = (text ?? '').trim()
+  if (!t) return null
+  // Number (with thousands separators / decimals) — normalize commas away.
+  const num = t.match(/-?\d[\d,]*(?:\.\d+)?/)
+  if (num) return num[0].replace(/,/g, '')
+  // Proper-noun phrase: longest run of Capitalized words that isn't a sentence-starter stopword.
+  // Entities the QUESTION already mentions carry no new information (the claim in "the capital
+  // of Australia is Canberra" is Canberra, not Australia) — exclude them when possible.
+  const q = (question ?? '').toLowerCase()
+  const runs = [...t.matchAll(/\b([A-Z][a-zA-Z'’-]+(?:\s+(?:of|the|de|da|von|van|[A-Z][a-zA-Z'’-]+))*)\b/g)]
+    .map(m => m[1])
+    .map(r => r.split(/\s+/).filter((w, i) => !(i === 0 && STOP.has(w))).join(' '))
+    .filter(r => r && !STOP.has(r))
+  const fresh = q ? runs.filter(r => !q.includes(r.toLowerCase())) : runs
+  const pool = fresh.length ? fresh : runs
+  if (pool.length) return pool.sort((a, b) => b.length - a.length)[0].toLowerCase()
+  // Fallback: first clause, aggressively normalized.
+  const clause = t.split(/[.!?\n]/)[0].toLowerCase().replace(/[^a-z0-9 ]/g, '').trim()
+  return clause || null
+}
+
+/** One definition of "these claim keys agree": equality or substring containment. */
+export function keysAgree(a: string, b: string): boolean {
+  if (a === b) return true
+  // Substring containment covers "paris" vs "paris france".
+  return a.length >= 3 && b.length >= 3 && (a.includes(b) || b.includes(a))
+}
+
 /** Rough lexical overlap between two answers — a cheap stand-in for "do these agree". */
 export function agrees(a: string, b: string): boolean {
   // Numeric veto first: two answers asserting different standalone numbers are NOT in
@@ -42,7 +79,12 @@ export function agrees(a: string, b: string): boolean {
   }
   const words = (s: string) => new Set(s.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [])
   const wa = words(a), wb = words(b)
-  if (wa.size < 3 || wb.size < 3) return false // too short to judge agreement reliably
+  if (wa.size < 3 || wb.size < 3) {
+    // Too short for lexical overlap ("Paris." vs "The capital is Paris") — fall back to
+    // the claim-key comparison so terse factual answers can still corroborate each other.
+    const ka = extractClaimKey(a), kb = extractClaimKey(b)
+    return !!ka && !!kb && keysAgree(ka, kb)
+  }
   let shared = 0
   for (const w of wa) if (wb.has(w)) shared++
   return shared / Math.min(wa.size, wb.size) >= 0.3
