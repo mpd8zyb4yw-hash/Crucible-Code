@@ -16,7 +16,7 @@
 import { proposeCode } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
-import { deriveMetamorphicSpec } from './metamorphicSpec'
+import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
@@ -137,12 +137,40 @@ export async function solveCodingRequest(
       goal: nl, domain: 'code',
       acceptance: { entry: meta.entry, family: meta.family, assertions: meta.assertions } as unknown as Record<string, unknown>,
     }
+    // CANONICAL FAST-PATH — "Crucible IS the model." For a known class the correct impl is
+    // known; emit the verified reference (ZERO model calls) and certify it against the SAME
+    // invariant before shipping. A reference that fails the invariant (user tweaked the spec)
+    // falls through to the search. This is the fastest, most 0-API path in the engine.
+    const canon = canonicalImpl(meta)
+    if (canon) {
+      try {
+        const v = await verifyByProperty({ value: canon, fingerprint: 'canonical' }, spec)
+        if (v.pass) {
+          return { status: 'solved', code: canon, entry: meta.entry, cases: null, search: null as never,
+            detail: `no example → ${meta.family} canonical reference (0 model calls, certified against ${meta.assertions.length} invariant${meta.assertions.length === 1 ? '' : 's'})` }
+        }
+      } catch { /* fall through to the search */ }
+    }
     const result = await search(spec, proposeCode, verifyByProperty as Verifier<string>, opts)
     if (result.status === 'solved') {
       return { status: result.status, code: result.solution?.value ?? null, entry: meta.entry, cases: null, search: result,
         detail: `no example → ${meta.family} metamorphic spec (${meta.assertions.length} relation${meta.assertions.length === 1 ? '' : 's'}); ${result.detail}` }
     }
     // Not solved by the metamorphic relation → fall through (a mis-detected class shouldn't block).
+  }
+
+  // A STRONG metamorphic invariant is ground truth. If one exists but its own search didn't
+  // converge, the LOWER tiers (differential / model-invented) must NOT be allowed to certify a
+  // candidate the invariant would REJECT — that is exactly the shared-systematic-bug hole
+  // (observed live 2026-07-11: 4 sampled slugify impls all left doubled/edge hyphens, so
+  // differential "agreed" on the wrong output). Gate every lower-tier solution through it.
+  const metaGate = async (code: string | null): Promise<boolean> => {
+    if (!meta || !code) return true
+    try {
+      const v = await verifyByProperty({ value: code, fingerprint: 'metagate' },
+        { goal: nl, domain: 'code', acceptance: { entry: meta.entry, family: meta.family, assertions: meta.assertions } } as unknown as TaskSpec)
+      return v.pass
+    } catch { return true }  // a gate error must not block an otherwise-valid path
   }
 
   // 3) DIFFERENTIAL CONSENSUS — for arbitrary functions with no named-property family. The
@@ -155,14 +183,14 @@ export async function solveCodingRequest(
     if (diff.ok && diff.spec) {
       const { entry, cases } = diff.spec
       const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
-      if (result.status === 'solved') {
+      if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
         return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
-          detail: `${diff.detail}; ${result.detail}` }
+          detail: `${diff.detail}${meta ? ` (also passed the ${meta.family} invariant)` : ''}; ${result.detail}` }
       }
       // A differentially-agreed case can still be poisoned by a shared systematic bug — the same
       // cross-derivation recovery applies (independent impls unanimously failing ONE case → drop it).
       const rec = await recoverFromPoisonedCase(entry, cases, result.attempts)
-      if (rec) {
+      if (rec && await metaGate(rec.code)) {
         return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
           detail: `${diff.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against ${rec.cleaned.length}` }
       }
@@ -175,7 +203,7 @@ export async function solveCodingRequest(
   if (extraction.ok && extraction.spec) {
     const { entry, cases } = extraction.spec
     const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
-    if (result.status === 'solved') {
+    if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
       return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
         detail: `${extraction.detail}; ${result.detail}` }
     }
@@ -184,7 +212,7 @@ export async function solveCodingRequest(
     // others), that case — not the code — is the bad one (cross-derivation agreement). Drop it
     // and re-certify against the cleaned set. Never ships code failing a case we still trust.
     const rec = await recoverFromPoisonedCase(entry, cases, result.attempts)
-    if (rec) {
+    if (rec && await metaGate(rec.code)) {
       return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
         detail: `${extraction.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against the remaining ${rec.cleaned.length}` }
     }

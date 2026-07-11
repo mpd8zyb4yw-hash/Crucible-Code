@@ -3523,6 +3523,49 @@ app.post('/api/chat', async (req, res) => {
     return
   }
 
+  // ── VGR coding pre-gate (non-agent flow) ─────────────────────────────────
+  // A plain "write a TypeScript function that …" is NOT detected as an agent task, so it
+  // used to skip the whole agent branch (which owns the VGR block) and fall through to the
+  // answer engine — shipping RAW, unverified FM code (observed 2026-07-11: a buggy slugify
+  // that left a trailing hyphen and didn't collapse runs, with a comment claiming the right
+  // output). This gate gives those requests the SAME execution-certified path as agentic
+  // coding, but INLINE (no file writes, no heavy loop): propose candidates → execute each
+  // against a derived spec (user examples → named property → metamorphic → differential) →
+  // ship only a certified solution; on abstain, fall through UNCHANGED to the FM path below.
+  // NB: fires for ANY triage tier — a "write a function" request classifies as 'full'
+  // (substantive), so gating on tier would exclude exactly the coding requests we want.
+  if (process.env.CRUCIBLE_VGR !== '0' && mode !== 'agent'
+      && (isCodeImplementationTask(message ?? '') || isCodeEditTask(message ?? ''))
+      && !isMultiFileRequest(message ?? '')) {
+    try {
+      send({ type: 'stage', stage: 1, status: 'start' })
+      send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates and certifying each by execution (no external model)…' })
+      const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2, signal: turnSignal })
+      if (vgr.status === 'solved' && vgr.code) {
+        const nCases = vgr.cases?.length ?? 0
+        const how = /canonical reference/.test(vgr.detail ?? '')
+          ? 'a verified canonical reference, checked against the spec invariants — no model was used at all'
+          : nCases > 0
+            ? `executing ${nCases} case(s) against a spec derived without any external model`
+            : 'checking it against invariants derived from the description — no external model was used'
+        const body = `Here is a solution, certified by ${how}.\n\n\`\`\`typescript\n${vgr.code.trim()}\n\`\`\``
+        send({ type: 'verify', passed: true, report: `VGR-certified \`${vgr.entry}\` — ${vgr.detail}` })
+        send({ type: 'layer1', modelId: 'local/crucible-vgr', model: 'Crucible (VGR)', text: body, done: true })
+        send({ type: 'stage', stage: 1, status: 'done' })
+        send({ type: 'synthesis', modelId: 'local/crucible-vgr', model: 'Crucible', text: body, done: true, replace: false })
+        send({ type: 'stage', stage: 5, status: 'done' })
+        debugBus.emit('pipeline', 'vgr_pregate_certified', { query: message.slice(0, 60), entry: vgr.entry, cases: nCases }, { severity: 'info', requestId })
+        if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
+        return
+      }
+      // Not certified → hand off to the normal path (never ship unverified from here).
+      send({ type: 'thought', text: `VGR could not certify a solution (${vgr.status}) — answering with the on-device model.` })
+      debugBus.emit('pipeline', 'vgr_pregate_abstain', { query: message.slice(0, 60), status: vgr.status }, { severity: 'info', requestId })
+    } catch (e: any) {
+      debugBus.emit('pipeline', 'vgr_pregate_error', { error: String(e?.message ?? e).slice(0, 120) }, { severity: 'warn', requestId })
+    }
+  }
+
   // ── Simple triage — single fast model ───────────────────────────────────
   if (triageTier === 'simple') {
     // Standing constraint: under CRUCIBLE_OFFLINE=strict, NO external calls — ever.

@@ -24,7 +24,7 @@ import { verifyCode, verifyMultiFileCode } from './codeVerifier'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
-import { deriveMetamorphicSpec } from './metamorphicSpec'
+import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { detectTargetPath, planEmit } from './emitPlan'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -610,6 +610,43 @@ async function run() {
     deriveMetamorphicSpec('Write best(nums) that finds the largest sum of a contiguous subarray of the numbers in the array.') === null)
   ok('AMBIGUITY guard: prose matching two reference classes refuses to certify',
     deriveMetamorphicSpec('Write pick(xs) that keeps only the even numbers and returns the unique values.') === null)
+
+  // ── STRING metamorphic classes + counterexample signals ──────────────────────────
+  const SLUG = 'Write slugify(s) that lowercases, trims, and replaces non-alphanumeric runs with single hyphens.'
+  const mSlug = deriveMetamorphicSpec(SLUG)
+  ok('slug class detected from prose', !!mSlug && mSlug.family === 'slug', mSlug?.family)
+  if (mSlug) {
+    const acc = metaProp(mSlug.entry, mSlug.family, mSlug.assertions)
+    const buggy = await verifyByProperty({ value: `export function slugify(s){return s.toLowerCase().replace(/[^a-z0-9-]/gi,'-')}`, fingerprint: 'b' }, acc)
+    ok('a slugify leaving edge/double hyphens is REJECTED', !buggy.pass, buggy.signals[0])
+    ok('the rejection signal carries a CONCRETE counterexample (input = output)', /slugify\(.*\).*=.*"/.test(buggy.signals.join(' ')), buggy.signals[0])
+    const good = await verifyByProperty({ value: `export function slugify(s){return s.toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'')}`, fingerprint: 'g' }, acc)
+    ok('a correct slugify PASSES the slug invariants', good.pass, good.signals[0])
+  }
+  ok('weak string-transform property no longer certifies (falls through to strong tiers)',
+    derivePropertySpec(SLUG) === null)
+
+  // ── CANONICAL fast-path: verified reference, ZERO model calls ─────────────────────
+  {
+    const canonQs: Array<[string, string]> = [
+      ['Write slugify(s) that lowercases, trims, and replaces non-alphanumeric runs with single hyphens.', 'slug'],
+      ['Write flipList(xs) that returns the array reversed.', 'reverse'],
+      ['Write biggest(nums) that returns the largest number in an array.', 'max'],
+      ['Write arrange(items) that returns the items in ascending order.', 'sort(asc)'],
+    ]
+    for (const [q, fam] of canonQs) {
+      const spec = deriveMetamorphicSpec(q)
+      const canon = spec ? canonicalImpl(spec) : null
+      ok(`canonical reference exists for ${fam}`, !!canon && canon.includes(spec!.entry), spec?.family)
+      if (spec && canon) {
+        const v = await verifyByProperty({ value: canon, fingerprint: 'c' }, metaProp(spec.entry, spec.family, spec.assertions))
+        ok(`canonical ${fam} impl PASSES its own invariant (certified, 0 model calls)`, v.pass, v.signals[0])
+      }
+    }
+    // End-to-end: solveCodingRequest returns the canonical solution with ZERO model calls.
+    const solved = await solveCodingRequest('Write slugify(s) that lowercases, trims, and replaces non-alphanumeric runs with single hyphens.', { maxModelCalls: 6 })
+    ok('solveCodingRequest ships canonical slug with 0 model calls', solved.status === 'solved' && /canonical reference \(0 model calls/.test(solved.detail ?? ''), solved.detail)
+  }
 
   // ── DIFFERENTIAL determinism guard: nondeterministic output never becomes ground truth ──
   const RANDQ = 'Write jitter(n) that returns a random number derived from n.'

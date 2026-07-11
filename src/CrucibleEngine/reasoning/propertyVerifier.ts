@@ -55,6 +55,12 @@ export function derivePropertySpec(nl: string): { entry: string; family: string;
   if (!assertions.length) return null
   const entry = extractFeatures(nl).exports[0] ?? ''
   if (!entry) return null
+  // The 'string-transform' / 'object-transform' families carry only TRIVIAL invariants
+  // (returns-a-string, idempotent, shape-preserving) that a wrong impl also satisfies — they
+  // "certified" a buggy slugify (leading/trailing + doubled hyphens) live 2026-07-11. Refuse
+  // to certify on them: return null so the ladder falls through to the STRONG metamorphic
+  // string classes (slug/trim/case invariants, tier 2.5) and then differential consensus.
+  if (pt.family === 'string-transform' || pt.family === 'object-transform') return null
   return { entry, family: pt.family, assertions }
 }
 
@@ -381,6 +387,11 @@ export async function verifyByProperty(candidate: Candidate<string>, spec: TaskS
 ;(async () => {
   const __fail = [];
   function prop(label, cond) { try { if (!cond) __fail.push(label); } catch (e) { __fail.push(label + ' [threw: ' + (e && e.message ? e.message : e) + ']'); } }
+  // check(): like prop, but the test fn returns a COUNTEREXAMPLE string on failure (or null
+  // on pass). A concrete "f(input) = actual, expected …" signal is what lets a weak proposer
+  // fix the exact bug instead of guessing at a property NAME. Falls back to the label if the
+  // fn returns a bare true/false.
+  function check(label, fn) { try { const d = fn(); if (d) __fail.push(typeof d === 'string' ? d : label); } catch (e) { __fail.push(label + ' [threw: ' + (e && e.message ? e.message : e) + ']'); } }
 ${acc.assertions.map(a => '  ' + a + ';').join('\n')}
   process.stdout.write('\\n' + JSON.stringify({ fail: __fail }) + '\\n');
 })();
