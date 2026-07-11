@@ -229,14 +229,71 @@ function stage(
     fs.mkdirSync(path.dirname(abs), { recursive: true })
     fs.writeFileSync(abs, f.content)
   }
-  const cfgPath = writeTsConfig(cfgDir, scratch, projectPath)
   let testAbs: string | null = null
   if (testFile) {
     testAbs = path.join(scratch, testFile.path)
     fs.mkdirSync(path.dirname(testAbs), { recursive: true })
     fs.writeFileSync(testAbs, testFile.content)
   }
+
+  // Cross-file closure: contextFiles are RELEVANCE-ranked (top-K from searchIndex), so a
+  // sibling the candidate actually imports can miss the cut — then every candidate fails
+  // Gate A with "Cannot find module './x'" and the task grinds to abstain. Resolve the
+  // staged files' relative-import closure against the real project and copy in exactly
+  // the files the code needs. Deterministic, no ranking involved.
+  if (projectPath) {
+    try {
+      stageImportClosure(scratch, projectPath, [
+        ...files.map(f => f.path),
+        ...(testFile ? [testFile.path] : []),
+      ])
+    } catch { /* best-effort — tsc reports whatever is still missing */ }
+  }
+
+  const cfgPath = writeTsConfig(cfgDir, scratch, projectPath)
   return { scratch, cfgDir, cfgPath, testAbs }
+}
+
+const REL_IMPORT_RE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*|import\s+)['"](\.{1,2}\/[^'"]+)['"]/g
+
+/** For an extensionless import base, the file paths TS would try, in order. */
+function importResolutionCandidates(baseRel: string): string[] {
+  if (/\.(ts|tsx|js|mjs|cjs)$/.test(baseRel)) return [baseRel]
+  return [`${baseRel}.ts`, `${baseRel}.tsx`, `${baseRel}/index.ts`, `${baseRel}.js`, `${baseRel}/index.js`]
+}
+
+/**
+ * Walk relative imports of the staged files; any that don't resolve inside scratch are
+ * copied from the project at the same relative path, transitively (a copied sibling's own
+ * relative imports are followed too). Never copies over an already-staged file — candidate
+ * content always wins — and never follows a path that escapes the project root.
+ */
+function stageImportClosure(scratch: string, projectPath: string, seedRels: string[]): void {
+  const projRoot = path.resolve(projectPath)
+  const queue = seedRels.map(r => path.normalize(r))
+  const visited = new Set<string>()
+  while (queue.length) {
+    const rel = queue.pop()!
+    if (visited.has(rel)) continue
+    visited.add(rel)
+    let src: string
+    try { src = fs.readFileSync(path.join(scratch, rel), 'utf8') } catch { continue }
+    for (const m of src.matchAll(REL_IMPORT_RE)) {
+      const baseRel = path.normalize(path.join(path.dirname(rel), m[1]))
+      if (baseRel.startsWith('..')) continue // escapes the root — not ours to stage
+      for (const cand of importResolutionCandidates(baseRel)) {
+        if (fs.existsSync(path.join(scratch, cand))) { queue.push(cand); break }
+        const projAbs = path.join(projRoot, cand)
+        if (fs.existsSync(projAbs) && fs.statSync(projAbs).isFile()) {
+          const dest = path.join(scratch, cand)
+          fs.mkdirSync(path.dirname(dest), { recursive: true })
+          fs.copyFileSync(projAbs, dest)
+          queue.push(cand)
+          break
+        }
+      }
+    }
+  }
 }
 
 function cleanup(scratch: string, cfgDir: string): void {

@@ -203,7 +203,14 @@ export async function synthesizeUniversal(
   const TRIPWIRE_STREAK = 3
   let fmCalls = 0
 
-  const oracleOpts = contextFiles.length ? { contextFiles, spec } : { spec }
+  // projectPath rides along so the oracle can (a) symlink the project's node_modules and
+  // (b) stage the candidate's relative-import closure — without it, a sibling file the
+  // candidate imports but relevance-search missed fails Gate A on every candidate.
+  const oracleOpts = {
+    spec,
+    ...(contextFiles.length ? { contextFiles } : {}),
+    ...(opts.projectPath ? { projectPath: opts.projectPath } : {}),
+  }
 
   // ── Property tests: weaker but still oracle-gated fallback when no behavioral examples. ──
   // derivePropertyTests recognises structural families (codec, filter-opts, sort, validator…)
