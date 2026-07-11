@@ -17,9 +17,48 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-10, cont. 58 — verification-guided reasoning now spans BOTH coding and answers)
+## CURRENT STATE (last updated 2026-07-11, cont. 59 — every answer lane now has a verifier; no-regression ledger live)
 
 **Read [`DOCTRINE.md`](./DOCTRINE.md) before anything else.** It supersedes all older framing.
+
+**cont.59 (2de180b) — four fronts landed, all live-verified where a live path exists.**
+1. **Calendar recomputation** (`answer/dateTime.ts`): date-offset / weekday / days-between questions get the
+   wordProblem treatment — model proposes a strict-JSON setup, MACHINE does UTC calendar arithmetic (leap
+   years, rollover-rejection), K-setup quorum or abstain. Self-contained (explicit-date) questions only;
+   "today"-anchored asks are refused (volatile lane). Contradicting dates are SPLICED out of the prose
+   (question givens preserved). LIVE-VERIFIED: FM asserted "June 1, 2026", machine certified April 17, 2026,
+   final reply clean.
+2. **Constraint critics** (`answer/constraints.ts`): the question's own constraints (asked-unit family,
+   percent∈[0,100], probability range, count integrality/non-negativity, part-of-whole ≤ N) deterministically
+   REJECT a recomputed value — the shared-wrong-setup honest limit of recomputation now has a guard. A
+   violating quorum value is never stamped "machine-verified".
+3. **Short-factual consensus** (`answer/factConsensus.ts`): lookups — the last unverified lane — get K
+   independent resamples; claim-key extraction excludes entities the question already mentions; quorum stamps
+   verified, no quorum appends an explicit unverified note (verified:false). Installed non-FM localModels
+   (ONNX registry) join as genuinely independent ensemble voters — first live consumer of the dormant
+   ensemble subsystem; zero voters on an uninstalled machine (identical behavior). LIVE-VERIFIED (Canberra,
+   100% agreement). Gate off with CRUCIBLE_FACT_SC=0.
+4. **Coding-ladder depth**: `metamorphicSpec.ts` gained 8 reference-oracle relation classes detected from
+   prose (dedupe/max/min/sum/average/deep-flatten/filter even|odd|positive) — reference computed INSIDE the
+   assertion, complete by construction; compound-problem guard (subarray/pair/digits/…) and two-class
+   ambiguity guard refuse rather than guess. `differentialSpec.ts` gained a DETERMINISM guard: one impl is
+   re-run over the battery, changed outputs are dropped, mostly-unstable output aborts derivation
+   (randomness can never become ground truth). vgr:bench 93/93 incl. live PART B.
+5. **`npm run bench:all`** (`src/CrucibleEngine/__bench_all.ts`): runs all 8 deterministic suites, appends
+   per-suite counts to `.bench-history.jsonl` (gitignored), exits nonzero on any failure OR a pass-count
+   shrink vs the previous entry — the monotonic never-regress rule finally has a cross-session enforcer.
+   Baseline 285/285 (286 after the splice check). Run it before every handoff.
+
+**Next levers (cont.59 ranking):** (a) rate/ratio + unit-conversion problems that don't reduce to plain
+arithmetic ("how fast in km/h if 60 mph" — needs a conversion-table evaluator, same setup/quorum shape);
+(b) apply the consensus oracle to EXPLAIN-intent answers (currently zero verification on explanations —
+hardest, highest-value open gap); (c) multi-fact lookups ("list the three largest…") where claim-key
+extraction only captures one claim; (d) more reference-oracle classes (count-occurrences, string
+normalizers) + codec-roundtrip metamorphic for custom-named encode/decode pairs; (e) live `arrange`
+request routed via differential, not metamorphic (bench-verified detection, but the live ladder took the
+differential path — worth one debugging pass over solve.ts ordering).
+
+---
 
 **cont.58 (ff616d3) — word-problem recomputation: the FIRST deterministic verifier on the ANSWER side.**
 The coding side had a rich verification ladder; open Q&A had none — the largest north-star gap. The answer
