@@ -105,6 +105,12 @@ export interface CodingRequestResult {
   cases: CodeAcceptance['cases'] | null
   search: SearchResult<string> | null
   detail: string
+  /**
+   * Present only when the opt-in `converge` loop produced this solution. `epochs > 1` means the
+   * convergence loop actually EARNED the answer (single-shot would have stalled) — the signal we
+   * watch to decide whether converge is worth turning on by default. Absent on the single-shot path.
+   */
+  converged?: { epochs: number; modelCalls: number }
 }
 
 /**
@@ -148,6 +154,7 @@ export async function solveCodingRequest(
       return {
         status: 'solved', code: it.solution.value, entry, cases, search: null,
         detail: `${detailPrefix} → converged in ${it.epochs} epoch(s) (${it.modelCalls} model call(s)); ${it.detail}`,
+        converged: { epochs: it.epochs, modelCalls: it.modelCalls },
       }
     }
     return null

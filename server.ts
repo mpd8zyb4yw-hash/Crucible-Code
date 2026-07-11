@@ -3088,7 +3088,13 @@ app.post('/api/chat', async (req, res) => {
           converge: process.env.CRUCIBLE_CONVERGE === '1',
           emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
         })
-        if (vgr) debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls }, { severity: 'info' })
+        if (vgr) debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls, convergedEpochs: vgr.converged?.epochs ?? null }, { severity: 'info' })
+        // The signal that justifies flipping converge default-ON: the loop earned an answer
+        // single-shot would have stalled on. epochs===1 means converge was a harmless no-op.
+        if (vgr?.converged && vgr.converged.epochs > 1) {
+          debugBus.emit('agent', 'vgr_converge_win', { entry: vgr.entry, epochs: vgr.converged.epochs, modelCalls: vgr.converged.modelCalls }, { severity: 'info' })
+          send({ type: 'thought', text: `VGR · convergence EARNED this — ${vgr.converged.epochs} epochs, ${vgr.converged.modelCalls} model call(s) (single-shot would have stalled)` })
+        }
         if (vgr && vgr.status === 'solved' && vgr.code && vgr.entry) {
           // Decide WHERE it lands: an explicit target path in the request → that file (append if
           // it exists and the combined file still compiles), else a new src/<entry>.ts. Never
@@ -3581,7 +3587,12 @@ app.post('/api/chat', async (req, res) => {
         send({ type: 'stage', stage: 1, status: 'done' })
         send({ type: 'synthesis', modelId: 'local/crucible-vgr', model: 'Crucible', text: body, done: true, replace: false })
         send({ type: 'stage', stage: 5, status: 'done' })
-        debugBus.emit('pipeline', 'vgr_pregate_certified', { query: message.slice(0, 60), entry: vgr.entry, cases: nCases }, { severity: 'info', requestId })
+        debugBus.emit('pipeline', 'vgr_pregate_certified', { query: message.slice(0, 60), entry: vgr.entry, cases: nCases, convergedEpochs: vgr.converged?.epochs ?? null }, { severity: 'info', requestId })
+        // Convergence actually earned this (single-shot would have stalled) — the signal we watch.
+        if (vgr.converged && vgr.converged.epochs > 1) {
+          debugBus.emit('pipeline', 'vgr_converge_win', { entry: vgr.entry, epochs: vgr.converged.epochs, modelCalls: vgr.converged.modelCalls }, { severity: 'info', requestId })
+          send({ type: 'thought', text: `VGR · convergence EARNED this — ${vgr.converged.epochs} epochs, ${vgr.converged.modelCalls} model call(s) (single-shot would have stalled)` })
+        }
         if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
         return
       }
