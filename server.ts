@@ -2484,6 +2484,13 @@ app.post('/api/chat', async (req, res) => {
   res.on('close', _endForeground)
   res.on('finish', _endForeground)
 
+  // Abort the turn's in-flight/queued FM work when the client disconnects, so a user who
+  // gives up (or the browser closes the SSE) doesn't leave verification fan-out draining the
+  // single-session FM gate and starving the next request. Passed as `signal` to answerQuery.
+  const _turnAbort = new AbortController()
+  res.on('close', () => { if (!res.writableFinished) _turnAbort.abort() })
+  const turnSignal = _turnAbort.signal
+
   // ── /skill and /tool slash shortcuts (FABLE5_HANDOFF Feature 1 increment) ──
   // "I know exactly what I want to run": exact-name lookup, zero NL intent
   // classification, zero model calls. `/skill <id>` emits a proven catalog
@@ -3538,7 +3545,7 @@ app.post('/api/chat', async (req, res) => {
       // Strict-offline: local Apple FM only, retrieval via our own tooling, never an external
       // model. Replaces the old bare callLocalModel('answer in 1-3 sentences') bypass.
       const t0l = Date.now()
-      const result = await answerQuery(message, { history, emit: send })
+      const result = await answerQuery(message, { history, emit: send, signal: turnSignal })
       send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: result.text, done: true })
       send({ type: 'stage', stage: 1, status: 'done' })
       send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: result.text, done: true, replace: false })
@@ -3643,7 +3650,7 @@ app.post('/api/chat', async (req, res) => {
       let routed: Awaited<ReturnType<typeof routeLocalModelQuery>> = null
       let answer: string
       if (_offlineConvMode === 'strict') {
-        answer = (await answerQuery(message, { history: histSlice, emit: send })).text
+        answer = (await answerQuery(message, { history: histSlice, emit: send, signal: turnSignal })).text
       } else {
         if (hasReadyLocalModels()) {
           try {
@@ -7625,6 +7632,24 @@ function startListening(port: number, attempt = 0) {
     // J2: expire stale world model facts at startup
     try { const r = expireStaleEntities(); if (r.expired) console.log(`[J2] Expired ${r.expired} stale entity facts`) } catch {}
     debugBus.emit('system', 'server_start', { port, cwd: process.cwd() })
+    // Orphan sweep: a Crucible server that lost (or never won) the port can LINGER with all
+    // its background daemons (keepalive, improvement ticks — every one FM-bound) and starve
+    // this live instance's chat turns on the single FM bridge (observed 2026-07-11: five
+    // lingering instances → chat stopped answering after the first query). We hold the port,
+    // so any other orphaned (reparented-to-init) server.ts process is by definition stale.
+    // Conservative match: node + server.ts, NOT a `tsx watch` supervisor, not us/our parent.
+    try {
+      const rows = execSync(`ps -eo pid=,ppid=,command= | grep 'server\\.ts' | grep node | grep -v grep`, { encoding: 'utf8' })
+        .split('\n').map(l => l.trim()).filter(Boolean)
+      for (const row of rows) {
+        const m = /^(\d+)\s+(\d+)\s+(.*)$/.exec(row)
+        if (!m) continue
+        const [pid, ppid, cmd] = [Number(m[1]), Number(m[2]), m[3] as unknown as string] as [number, number, string]
+        if (pid === process.pid || pid === process.ppid || /\bwatch\b/.test(cmd)) continue
+        if (ppid !== 1) continue // only clearly-orphaned processes; live supervised trees are left alone
+        try { process.kill(pid, 'SIGKILL'); console.warn(`[OrphanSweep] Killed lingering server.ts orphan ${pid}`) } catch { /* already gone */ }
+      }
+    } catch { /* sweep is best-effort */ }
     // Track P — seed the MASTERPIECE corpus off the request path so the first
     // light-mode call (which runs on every prompt) is not slowed by ONNX warmup.
     warmCorpus()

@@ -13,7 +13,7 @@
 // multi-step decomposition, grounding entailment, and the capabilityRouter facet classifier.
 
 import { checkFmAvailable, fmComplete, type ConvTurn } from '../agent/fmReact'
-import { solveNonCodeTurn } from '../agent/synthDriver'
+import { solveNonCodeTurn, type NonCodeMeta } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
@@ -142,8 +142,18 @@ const ABSTAIN_TEXT =
  * Answer one query through the verification-gated single-call path.
  * Never throws; on unrecoverable failure returns an honest abstention.
  */
+// Optional verification lanes (fact consensus, explain checks, recomputation setups) must
+// never hold the concurrency-1 FM gate for the full strict ceiling — a slow/wedged optional
+// call would starve the NEXT live request (observed 2026-07-11: chat froze after one query
+// because leftover HIGH-priority verification calls blocked the next draft). They run at
+// 'normal' priority (so a fresh request's HIGH draft preempts them) with a short timeout
+// (so a wedged one is abandoned, leaving the draft to ship), and honor the request signal.
+const VERIFY_TIMEOUT_MS = Number(process.env.CRUCIBLE_VERIFY_TIMEOUT_MS ?? 30_000)
+
 export async function answerQuery(message: string, opts: AnswerOpts = {}): Promise<AnswerResult> {
   const { history, emit, signal } = opts
+  const verifyComplete = (msgs: Array<{ role: string; content: string }>, o?: { temperature?: number }) =>
+    fmComplete(msgs, { temperature: o?.temperature, timeoutMs: VERIFY_TIMEOUT_MS, priority: 'normal', signal })
   const facets = classifyFacets(message)
   const base: Omit<AnswerResult, 'text' | 'verified' | 'abstained'> = {
     facets, usedRetrieval: false, sources: [], corrections: 0, repaired: false,
@@ -170,10 +180,11 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   const useConsensus = !usedRetrieval && !facets.isCode && facets.needsMultiStep && facets.needsComputation
   let draft = ''
   let consensusAgreement: number | null = null
+  let retrievalMeta: NonCodeMeta | null = null
   try {
     if (usedRetrieval) {
       emit?.({ type: 'thought', text: 'Researching with retrieval + tools…' })
-      draft = (await solveNonCodeTurn(message, undefined, Array.isArray(history) ? history.slice(-6) : undefined)).trim()
+      draft = (await solveNonCodeTurn(message, undefined, Array.isArray(history) ? history.slice(-6) : undefined, m => { retrievalMeta = m })).trim()
     } else if (useConsensus) {
       const c = await solveByConsensus(message, sys, historyToMessages(history), emit)
       draft = c.text.trim()
@@ -233,6 +244,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
 
   if (corrections) emit?.({ type: 'verify', passed: true, report: `Corrected ${corrections} arithmetic error(s) with the deterministic oracle.` })
 
+  // ── Retrieval grounding provenance ─────────────────────────────────────────
+  // A research-DAG answer is already grounded by the provenance oracle cascade — surface
+  // that. An FM ReAct/direct FALLTHROUGH is NOT retrieval-grounded (parametric knowledge
+  // wearing a retrieval label), so the normal verification lanes below must still apply.
+  const rMeta = retrievalMeta as NonCodeMeta | null
+  const retrievalUngrounded = usedRetrieval && (rMeta === null || rMeta.via === 'react' || rMeta.via === 'direct')
+  if (usedRetrieval && rMeta?.via === 'dag') {
+    emit?.({ type: 'verify', passed: true, report: `Retrieval answer grounded by the provenance oracle cascade (confidence ${Math.round((rMeta.confidence ?? 0) * 100)}%${rMeta.sources ? `, ${rMeta.sources} source(s)` : ''}).` })
+  } else if (retrievalUngrounded && text) {
+    emit?.({ type: 'verify', passed: false, report: 'Retrieval fell through to the on-device model (no web grounding) — applying the standard verification lanes.' })
+  }
+
   // ── Word-problem recomputation (VGR for answers) ───────────────────────────
   // For a computation question, separate the SETUP (model) from the ARITHMETIC (machine): the
   // model translates the problem into an expression, the machine evaluates it, and a quorum of
@@ -246,7 +269,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // proposes the setup, UTC date math computes the result, a quorum certifies it.
   if (isDateQuestion(message) && !usedRetrieval && !signal?.aborted) {
     try {
-      const recomp = await recomputeDate(message)
+      const recomp = await recomputeDate(message, { complete: verifyComplete })
       if (recomp) {
         const rec = applyDateRecomputation(text, recomp, message)
         recomputed = true
@@ -268,10 +291,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       // DAG setup, which handles the genuinely irreducible cases (relative speed, head start).
       // Unit conversions try FIRST: Tier 1 parses deterministically (zero model calls, the
       // factor table is ground truth); a non-conversion falls through to the arithmetic lanes.
-      let recomp = isConversionQuestion(message) ? await recomputeConversion(message) : null
+      let recomp = isConversionQuestion(message) ? await recomputeConversion(message, { complete: verifyComplete }) : null
       if (!recomp && facets.needsComputation) {
-        recomp = await recomputeWordProblem(message)
-          ?? (facets.needsMultiStep ? await recomputeMultiStep(message) : null)
+        recomp = await recomputeWordProblem(message, { complete: verifyComplete })
+          ?? (facets.needsMultiStep ? await recomputeMultiStep(message, { complete: verifyComplete }) : null)
       }
       // Constraint gate: a quorum value that violates a constraint the QUESTION itself imposes
       // (asked unit, percent/probability range, count integrality, part-of-whole) means the
@@ -320,10 +343,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // a quorum on the key claim stamps it verified, no quorum ships it with an explicit
   // unverified note. Gated off with CRUCIBLE_FACT_SC=0 (adds ~2 FM calls per lookup).
   let factChecked: FactConsensus | null = null
-  if (facets.intent === 'lookup' && !usedRetrieval && !facets.needsComputation && !facets.isCode
+  if (facets.intent === 'lookup' && (!usedRetrieval || retrievalUngrounded) && !facets.needsComputation && !facets.isCode
       && !recomputed && process.env.CRUCIBLE_FACT_SC !== '0' && !signal?.aborted) {
     try {
-      factChecked = await corroborateFact(message, text)
+      factChecked = await corroborateFact(message, text, { complete: verifyComplete })
       if (factChecked) {
         const ens = factChecked.ensembleModels.length ? ` (incl. ${factChecked.ensembleModels.length} independent local model(s))` : ''
         if (factChecked.confirmed) {
@@ -341,10 +364,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // decorrelated verdicts; majority-refuted claims ship with an explicit caution. Weakest
   // verifier by design (model-judged), so it only ever FLAGS, never rewrites.
   let explainFlags = 0
-  if (facets.intent === 'explain' && !usedRetrieval && !facets.isCode
+  if (facets.intent === 'explain' && (!usedRetrieval || retrievalUngrounded) && !facets.isCode
       && process.env.CRUCIBLE_EXPLAIN_CHECK !== '0' && !signal?.aborted) {
     try {
-      const chk = await checkExplanation(text)
+      const chk = await checkExplanation(text, { complete: verifyComplete })
       if (chk) {
         explainFlags = chk.flagged.length
         text = applyExplainCheck(text, chk)

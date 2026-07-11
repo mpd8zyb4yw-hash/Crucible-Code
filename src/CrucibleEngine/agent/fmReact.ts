@@ -63,11 +63,24 @@ const FM_GEN_RETRIES = Number(process.env.CRUCIBLE_FM_GEN_RETRIES ?? 2)
 /** Marks a retryable transient generation failure (as opposed to a permanent error). */
 class FmTransientError extends Error {}
 
-async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS, temperature?: number): Promise<string> {
+export interface FmCallOpts {
+  temperature?: number
+  /** Per-call daemon timeout. Verification lanes pass a SHORT one so a slow/wedged optional
+   *  call can't hold the concurrency-1 gate for the full strict ceiling and starve the next
+   *  live request. */
+  timeoutMs?: number
+  /** Queue priority. The primary draft is 'high'; optional verification lanes are 'normal'
+   *  so a NEW request's draft always jumps ahead of leftover verification work. */
+  priority?: 'high' | 'normal' | 'low'
+  /** Abort signal — a disconnected client cancels its remaining verification fan-out. */
+  signal?: AbortSignal
+}
+
+async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS, temperature?: number, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal): Promise<string> {
   let lastErr: any
   for (let attempt = 0; attempt <= FM_GEN_RETRIES; attempt++) {
     try {
-      return await callFmInner(system, messages, timeoutMs, temperature)
+      return await callFmInner(system, messages, timeoutMs, temperature, priority, signal)
     } catch (e: any) {
       lastErr = e
       // Transient on-device generation failure — brief backoff then retry a fresh session.
@@ -87,10 +100,16 @@ async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIME
   throw lastErr
 }
 
-async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2): Promise<string> {
+async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal): Promise<string> {
   // Serialize the single-session daemon (fmQueue): interactive React/VGR/chat runs at HIGH
   // priority so it jumps ahead of any waiting background (autoImprove) work. Prevents the
-  // concurrent-load GenerationError that starved live VGR searches.
+  // concurrent-load GenerationError that starved live VGR searches. Optional verification
+  // lanes pass priority:'normal' so a fresh request's HIGH draft preempts them on the gate.
+  if (signal?.aborted) throw new Error('aborted before FM call')
+  // Combine the caller's abort signal with the per-call timeout so a disconnected client
+  // (or a wedged call hitting the ceiling) both release the gate promptly.
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
   const res = await enqueueFm(() => fetch(`${FM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -100,8 +119,8 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
       max_tokens: 1536,
       temperature,
     }),
-    signal: AbortSignal.timeout(timeoutMs),
-  }), { priority: 'high', label: 'fmReact' })
+    signal: combined,
+  }), { priority, label: priority === 'high' ? 'fmReact' : 'fmVerify' })
   if (!res.ok) throw new Error(`FM HTTP ${res.status}`)
   const data = await res.json() as any
   // The daemon returns HTTP 200 with an `{error:{message}}` body on an on-device
@@ -562,14 +581,14 @@ export async function checkFmAvailable(): Promise<boolean> {
  */
 export async function fmComplete(
   messages: Array<{ role: string; content: string }>,
-  opts?: { temperature?: number },
+  opts?: FmCallOpts,
 ): Promise<string> {
   try {
     const system = messages.find(m => m.role === 'system')?.content ??
       'You are Crucible, an expert AI assistant. Answer concisely and accurately.'
     const convo = messages.filter(m => m.role !== 'system') as FmMessage[]
     if (!convo.length) return ''
-    return await callFm(system, convo, FM_TIMEOUT_MS, opts?.temperature)
+    return await callFm(system, convo, opts?.timeoutMs ?? FM_TIMEOUT_MS, opts?.temperature, opts?.priority ?? 'high', opts?.signal)
   } catch {
     return ''
   }

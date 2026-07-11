@@ -80,7 +80,17 @@ async function _callLocalFm(system: string, user: string, ms = _RESEARCH_FM_TIME
  * (research DAG → FM ReAct → FM direct answer, in order).
  * Throws only if the Apple FM daemon is completely unavailable.
  */
-export async function solveNonCodeTurn(goal: string, projectPath?: string, history?: ConvTurn[]): Promise<string> {
+/** Grounding provenance for a solveNonCodeTurn answer — which tier produced it and, for the
+ * research DAG, at what oracle confidence. Lets the caller (answerEngine) distinguish a
+ * provenance-grounded retrieval answer from an FM-parametric fallthrough that still needs
+ * its own verification lanes. */
+export interface NonCodeMeta {
+  via: 'dag' | 'dag-abstain' | 'react' | 'direct'
+  confidence?: number
+  sources?: number
+}
+
+export async function solveNonCodeTurn(goal: string, projectPath?: string, history?: ConvTurn[], meta?: (m: NonCodeMeta) => void): Promise<string> {
   // Check FM availability first
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — escalating')
@@ -129,6 +139,7 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   if (isResearchShaped && !contextDependent && !isCodeShaped) {
     let dagAnswer = ''
     let dagConfidence = 0
+    let dagSources = 0
     // Conversational answers stay plain-sentence; only surface the
     // confidence/sources scaffold when the user explicitly asks for it.
     const wantsSources = /\b(sources?|cite|citations?|references?|provenance|evidence|confidence|how do you know|according to)\b/i.test(goal)
@@ -144,12 +155,14 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
         if (ev.type === 'research_done') {
           dagAnswer = ev.text ?? ''
           dagConfidence = ev.confidence ?? 0
+          dagSources = ev.sources ?? 0
         }
       }
       if (dagAnswer && dagConfidence > 0) {
         debugBus.emit('agent', 'offline_research_hit', {
           goal: goal.slice(0, 80), confidence: dagConfidence, answerLen: dagAnswer.length,
         }, { severity: 'info' })
+        meta?.({ via: 'dag', confidence: dagConfidence, sources: dagSources })
         return dagAnswer
       }
       // Confident abstention: the DAG ran, retrieved sources, and concluded it
@@ -164,6 +177,7 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
         debugBus.emit('agent', 'offline_research_abstain', {
           goal: goal.slice(0, 80), answerLen: dagAnswer.length,
         }, { severity: 'info' })
+        meta?.({ via: 'dag-abstain', confidence: 0 })
         return dagAnswer
       }
       // Non-premise research-shaped prompt whose DAG came back empty/abstained: this is a
@@ -202,6 +216,7 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
           rounds: result.rounds,
           toolsUsed: result.toolsUsed,
         }, { severity: 'info' })
+        meta?.({ via: 'react' })
         return result.answer
       }
     } catch (e: any) {
@@ -217,6 +232,7 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   const directAnswer = await fmDirectAnswer(goal, undefined, history)
   if (directAnswer) {
     debugBus.emit('agent', 'fm_direct_hit', { goal: goal.slice(0, 80) }, { severity: 'info' })
+    meta?.({ via: 'direct' })
     return directAnswer
   }
 
