@@ -17,7 +17,25 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 65 — COUNCIL DEBATE ensemble + MiniCPM5-1B seated)
+## CURRENT STATE (last updated 2026-07-11, cont. 65b — CONTEXTUAL UNDERSTANDING fix)
+
+**cont.65b (8cbe6d7) — fixed the context-blindness the user caught.** "test" → FM invented
+"help you with your test!", which poisoned the persona (identity became "a study assistant"; a
+joke request role-played AS the user); "build me a game" free-associated off stale session
+history and shipped the recycled greeting as "AGENT COMPLETE ✓ verified · 0 tools". Fix (system
+owns deterministic answers): `answer/conversational.ts` matchMeta (greeting/identity/capability =
+fixed canonical text, un-poisonable, FM-offline-safe) + clarifyBuild (bare "build me a game" →
+option-rich clarify; "build me a snake game" → null → real builder). answerEngine: meta
+short-circuit + system prompt with identity/most-recent-message-anchoring/anti-roleplay.
+server: build-clarifier gated on `hadActiveTaskBefore` (KEY: startTask flips session→running
+before the check, so a live status read is useless). intentClassifier: creation verbs →
+complex_task. `npm run conversational:bench` 56/56, answer:bench 127/127, LIVE-VERIFIED in browser.
+Open gap surfaced (separate): "who won the 2018 World Cup"→"Brazil" (wrong) — parametric-recall/
+retrieval gap, not this fix. See [[crucible-contextual-understanding-fix]].
+
+---
+
+### cont.65 — COUNCIL DEBATE ensemble + MiniCPM5-1B seated
 
 **cont.65 (6c0336b) — the co-equal on-device council is LIVE, end-to-end, in the default (strict) chat path.**
 User directive executed: two-plus independently-trained on-device models as PEERS that debate — not
