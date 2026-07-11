@@ -34,13 +34,13 @@
 - **Metamorphic live gap FIXED**: bare "sort" now uses a NUMERIC battery (string inputs only when prose
   says strings/alphabetical) — the FM's correct (a,b)=>a-b no longer fails the relation and falls to
   differential (which had certified the shared NaN misordering). Live `arrange` → metamorphic, 1 call.
-- bench:all now **318/318** across 8 suites. Every answerQuery intent (reason/lookup/explain/converse-adjacent
+- bench:all now **322/322** across 8 suites (explain-check upgrade: conversion-shaped claims are judged by
+  the exact unit table ±1% BEFORE any FM verdict — machine refutation overrides model verdicts; lever (c) DONE). Every answerQuery intent (reason/lookup/explain/converse-adjacent
   compute, dates, conversions) has at least one verifier lane.
 
 **Next levers (cont.59b ranking):** (a) grounding-entailment for RETRIEVAL answers (usedRetrieval currently
 bypasses all new lanes); (b) conversation-history-aware verification (follow-ups re-verify against prior
-turns); (c) explain-check upgrade: route numeric claims into the deterministic evaluators instead of FM
-verdicts; (d) compound conversions ("mpg to L/100km", currency excluded); (e) coding side: codec-roundtrip
+turns); (d) compound conversions ("mpg to L/100km", currency excluded); (e) coding side: codec-roundtrip
 metamorphic for custom-named encode/decode pairs; differential shared-bug reduction via forced-diverse
 prompts (ask one impl in a deliberately different paradigm).
 
