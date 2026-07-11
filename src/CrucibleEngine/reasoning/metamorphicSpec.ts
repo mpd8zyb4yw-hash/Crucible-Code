@@ -51,6 +51,10 @@ function guessEntry(nl: string): string {
 function detectsReverse(lower: string): boolean {
   // Exclude idioms that contain "reverse" but are not "reverse a collection".
   if (/reverse[\s-]?(engineer|proxy|dns|geocod|lookup|shell|mortgage)/.test(lower)) return false
+  // "reverse the ORDER OF WORDS / the words / a sentence" is word-level, NOT element/char
+  // reversal — the canonical [...xs].reverse() would char-reverse it, shipping a wrong answer
+  // (observed 2026-07-11). A custom sub-unit ⇒ defer to the search, don't canonically reverse.
+  if (/\b(word|sentence|line|token|clause|paragraph)s?\b/.test(lower)) return false
   return /\breverse[ds]?\b/.test(lower) || /\bin reverse order\b/.test(lower) || /\bbackwards?\b/.test(lower)
 }
 
@@ -66,6 +70,12 @@ function detectsSort(lower: string): 'asc' | 'desc' | null {
   if (!hasSortWord) return null
   // Topological / structural sorts are a different shape — never certify them as comparison sorts.
   if (/topolog|topo[\s_-]?sort|dependency|graph/.test(lower)) return null
+  // A CUSTOM sort KEY ("sort by length / by their age / by the second field") is not the default
+  // comparison sort — the canonical value-comparator would be wrong (observed 2026-07-11). Any
+  // "sort … by <attribute>" (that isn't the trivial "in ascending/descending order") defers to
+  // the search. The direction words "by ascending/descending" are not a key, so allow those.
+  if (/\bsort(s|ed|ing)?\b[^.]*\bby\s+(?!ascending|descending|increasing|decreasing)/.test(lower)) return null
+  if (/\bby\s+(their|its|the)\s+\w+|\bby\s+(length|size|name|age|value|key|date|count|price|score|weight)\b/.test(lower)) return null
   const desc =
     /\bdescending\b/.test(lower) ||
     /\bdecreasing\b/.test(lower) ||

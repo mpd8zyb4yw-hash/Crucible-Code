@@ -648,6 +648,16 @@ async function run() {
     ok('solveCodingRequest ships canonical slug with 0 model calls', solved.status === 'solved' && /canonical reference \(0 model calls/.test(solved.detail ?? ''), solved.detail)
   }
 
+  // ── Canonical OVER-FIRE guards: a tweaked spec must NOT get the wrong canonical impl ──────
+  ok('word-order reversal does NOT canonical-reverse (char reverse would be wrong)',
+    deriveMetamorphicSpec('Write reverseWords(s) that reverses the order of words in a sentence.') === null)
+  ok('sort BY a custom key does NOT canonical-sort (value comparator would be wrong)',
+    deriveMetamorphicSpec('Write sortByLength(xs) that sorts strings by their length ascending.') === null)
+  ok('sort by age does NOT canonical-sort', deriveMetamorphicSpec('Write ranked(users) that sorts records by age.') === null)
+  ok('plain "in ascending order" STILL canonical-sorts (direction word is not a key)',
+    deriveMetamorphicSpec('Write arrange(xs) that returns them in ascending order.')?.family === 'sort(asc)')
+  ok('plain array reverse STILL fires', deriveMetamorphicSpec('Write flip(xs) that reverses an array.')?.family === 'reverse')
+
   // ── DIFFERENTIAL determinism guard: nondeterministic output never becomes ground truth ──
   const RANDQ = 'Write jitter(n) that returns a random number derived from n.'
   const randImpl = (src: string) => ({ source: src, fingerprint: implFingerprint(src) })
