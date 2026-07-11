@@ -306,6 +306,26 @@ async function run() {
   const p5 = await planEmit('add initials to src/strings.ts', 'initials', GOOD_CODE, 'export function slug(s){ this is not valid ts ((( ')
   ok('appending would break compile → new file (existing left untouched)', p5.mode === 'create' && p5.rel === 'src/initials.ts')
 
+  // Certified in-place MODIFY of an existing definition (mission item 1: edit real files).
+  const oldDef = 'export function slug(s: string): string {\n  return s.toLowerCase()\n}\n\nexport function initials(name: string): string {\n  return name[0]\n}\n\nexport const OTHER = 1\n'
+  const p6 = await planEmit('fix initials in src/strings.ts so it uses every word', 'initials', GOOD_CODE, oldDef)
+  ok('modify-shaped + fn exists → in-place REPLACE, rest of file intact',
+    p6.mode === 'modify' && p6.rel === 'src/strings.ts' && p6.content.includes('map(w => w[0])')
+    && !p6.content.includes('return name[0]') && p6.content.includes('slug') && p6.content.includes('OTHER'), p6.detail)
+
+  const arrowDef = 'export const initials = (name: string): string => name[0];\nexport const KEEP = 2\n'
+  const p7 = await planEmit('update initials in src/strings.ts', 'initials', GOOD_CODE, arrowDef)
+  ok('modify replaces an arrow-const definition too',
+    p7.mode === 'modify' && !p7.content.includes('name[0];') && p7.content.includes('KEEP'), p7.detail)
+
+  const reExported = 'function initials(n: string) { return n[0] }\nexport { initials }\n'
+  const p8 = await planEmit('fix initials in src/strings.ts', 'initials', GOOD_CODE, reExported)
+  ok('modify that would double-export → compile gate downgrades to new file',
+    p8.mode === 'create' && p8.rel === 'src/initials.ts', p8.detail)
+
+  const p9 = await planEmit('add initials to src/strings.ts please', 'initials', GOOD_CODE, oldDef)
+  ok('non-modify verb + fn exists → still avoids duplicate via new file', p9.mode === 'create', p9.detail)
+
   // ── PART I — multi-file verification (cross-file import graph, execution-certified) ─
   // The mission gap: real SWE spans multiple files with imports. The verifier BUNDLES the
   // files (resolving cross-file edges) and executes cases against the whole graph, so a

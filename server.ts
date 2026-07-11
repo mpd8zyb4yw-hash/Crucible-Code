@@ -2409,7 +2409,7 @@ function isCodeImplementationTask(message: string): boolean {
 // emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
-  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite)\b/i.test(m)
+  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
   return editVerb && hasCodePath
 }
@@ -3139,7 +3139,7 @@ app.post('/api/chat', async (req, res) => {
           fs.mkdirSync(path.dirname(abs), { recursive: true })
           fs.writeFileSync(abs, plan.content)
           onFileMutated([abs])
-          send({ type: 'tool_call', id: 'vgr_0', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', args: { path: rel } })
+          send({ type: 'tool_call', id: 'vgr_0', tool: plan.mode !== 'create' ? 'edit_file' : 'write_file', args: { path: rel } })
           // Certification basis: case-based tiers report N executed cases; the property /
           // metamorphic tiers carry `cases: null` and are certified against invariants, so
           // "0 cases passed" would misread as "nothing verified". Describe what actually held.
@@ -3147,7 +3147,7 @@ app.post('/api/chat', async (req, res) => {
           const certBasis = nCasesCert > 0
             ? `${nCasesCert} executed case(s) passed`
             : 'general invariants held — property/metamorphic certification'
-          send({ type: 'tool_result', id: 'vgr_0', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${certBasis}, no external model)` })
+          send({ type: 'tool_result', id: 'vgr_0', tool: plan.mode !== 'create' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${certBasis}, no external model)` })
           send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified — ${certBasis} in ${vgr.search?.modelCalls ?? 0} model call(s) — ${vgr.detail}` })
           const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — the model proposed, execution verified the result (${certBasis}). Zero external model calls.`
           send({ type: 'final', text: answer, meta: { vgrCertified: true, entry: vgr.entry, modelCalls: vgr.search?.modelCalls, confidence: 1 } })
