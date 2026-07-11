@@ -17,7 +17,27 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 62 — iterate() WIRED into the coding path)
+## CURRENT STATE (last updated 2026-07-11, cont. 63 — converge WIRED + live-validated on /api/chat)
+
+**cont.63 (83f13c7) — converge is now callable live and observable; validated no-regression.**
+- Both server.ts VGR call sites (`~3086` file-emit, `~3564` synthesis) pass
+  `converge: process.env.CRUCIBLE_CONVERGE === '1'` (default OFF) and forward iterate()/search
+  thoughts to the SSE stream (`"VGR · …"`). Previously `emit` was unwired, so iterate's per-epoch
+  convergence thoughts never reached the client — a live convergence run was invisible.
+- **Live-FM validated** on a standalone converge server:
+  `CRUCIBLE_CONVERGE=1 PORT=3007 CRUCIBLE_VGR=1 JWT_SECRET=converge-test-secret npx tsx server.ts`,
+  mint a `crucible_session` JWT cookie (see auth-testing memory), POST `/api/chat`. `converge:true`
+  certifies correctly with ZERO regression on tier-1 (scoreWord/rle w/ examples) and no-example
+  tier-2/3 (titleCase differential, normalizeSlug property).
+- **NOT yet observed:** an actual epoch>1 convergence live (forcing a weak-FM stall on demand is
+  stochastic). No-regression is proven; default stays OFF until epoch>1 is seen.
+- **Bug fixed (surfaced by the live run):** the file-emit branch hardcoded "(N cases passed)";
+  property/metamorphic certs carry `cases:null` → it printed "0 passed" (reads as "nothing
+  verified"). Now: "general invariants held — property/metamorphic certification".
+- vgr 114/114, iterate 12/12, coderesearch 11/11.
+- **NOTE:** emitted files land in the per-session workspace `projectPath`, not the repo root.
+
+### cont.62 (below) — iterate() WIRED into the coding path
 
 **cont.62 (549ec0d) — the convergence loop is now in the request path, not just a primitive.** cont.61
 built `iterate()` but nothing called it. This session wired it into coding:
