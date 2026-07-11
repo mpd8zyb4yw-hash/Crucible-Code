@@ -550,6 +550,18 @@ async function run() {
     ok('the identity function is REJECTED as a reverse (position-map fails)', !id.pass, id.signals[0])
   }
 
+  // Domain from prose: a bare "sort" is numeric (the FM's (a,b)=>a-b comparator must PASS);
+  // string inputs join the battery only when the prose says so. (Live gap found cont.59: the
+  // string battery failed a correct numeric sort → fell to differential, which certified the
+  // shared NaN misordering.)
+  if (mArr) {
+    const acc = metaProp(mArr.entry, mArr.family, mArr.assertions)
+    const numeric = await verifyByProperty({ value: `export function arrange(a){return [...a].sort((x,y)=>x-y)}`, fingerprint: 'n' }, acc)
+    ok('a numeric-comparator sort PASSES a bare "ascending order" request (numeric battery)', numeric.pass, numeric.signals[0])
+  }
+  const mAlpha = deriveMetamorphicSpec('Write arrange(words) that sorts the strings alphabetically in ascending order.')
+  ok('alphabetical prose → string battery selected', !!mAlpha && mAlpha.assertions[0].includes('banana'), mAlpha?.assertions[0]?.slice(0, 80))
+
   // Direction + guard against false positives.
   ok('metamorphic reads DESCENDING direction from the spec',
     deriveMetamorphicSpec('Write orderBy(xs) returning them in descending order.')?.family === 'sort(desc)')

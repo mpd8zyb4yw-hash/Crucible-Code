@@ -82,11 +82,22 @@ function detectsSort(lower: string): 'asc' | 'desc' | null {
 // that does NOT depend on the candidate's own comparator being correct. Ordering uses native
 // `<=`/`>=`, which are a consistent total order on both numbers and strings.
 
-const SORT_BATTERY =
-  '[[3,1,2],[5,1,4,1,5],[],[9],[-3,0,7,-1],[2,2,2],[10,-10,5,0],["banana","apple","cherry"],["x"],["dog","ant","cat","bee"]]'
+// The battery's element DOMAIN comes from the prose. A bare "sort the items" is read as a
+// numeric sort (the FM's natural `(a,b)=>a-b` comparator is CORRECT for that reading — a
+// string battery would fail it and push the request down to differential, which then
+// wrongly certifies the shared NaN-comparator misordering; observed live, cont.59). Only
+// when the prose says strings/words/names do string inputs join the battery.
+const SORT_BATTERY_NUM = '[[3,1,2],[5,1,4,1,5],[],[9],[-3,0,7,-1],[2,2,2],[10,-10,5,0],[8,6],[1,2,3],[0]]'
+const SORT_BATTERY_STR = '[["banana","apple","cherry"],["x"],["dog","ant","cat","bee"],["b","a"],[],["zz","aa","mm"]]'
 const REVERSE_BATTERY = '[[1,2,3,4],[1],[],[9,8,7],[5,5,6],"abcde","x","","racecar",[0,-1,-2]]'
 
-function sortAssertions(E: string, dir: 'asc' | 'desc'): string[] {
+function sortBatteryFor(lower: string): string {
+  return /\b(strings?|words?|names?|letters?|alphabetical(ly)?|lexicographic)\b/.test(lower)
+    ? SORT_BATTERY_STR
+    : SORT_BATTERY_NUM
+}
+
+function sortAssertions(E: string, dir: 'asc' | 'desc', SORT_BATTERY: string): string[] {
   const cmp = dir === 'asc' ? '<=' : '>='
   return [
     // Permutation: output is a rearrangement of the input (no elements added/dropped/changed).
@@ -230,7 +241,7 @@ export function deriveMetamorphicSpec(nl: string): MetamorphicSpec | null {
   const lower = nl.toLowerCase()
 
   const dir = detectsSort(lower)
-  if (dir) return { entry, family: `sort(${dir})`, assertions: sortAssertions(entry, dir) }
+  if (dir) return { entry, family: `sort(${dir})`, assertions: sortAssertions(entry, dir, sortBatteryFor(lower)) }
 
   if (detectsReverse(lower)) return { entry, family: 'reverse', assertions: reverseAssertions(entry) }
 
