@@ -18,6 +18,9 @@ import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
 import { applyRecomputation, recomputeMultiStep, recomputeWordProblem } from './wordProblem'
+import { applyDateRecomputation, isDateQuestion, recomputeDate } from './dateTime'
+import { checkConstraints } from './constraints'
+import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -235,14 +238,46 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // arithmetic critic can see (nothing was written as an equation). Only fires on non-retrieval
   // computation questions; abstains silently (keeps the draft) when no quorum forms.
   let recomputed = false
-  if (facets.needsComputation && !usedRetrieval && !signal?.aborted) {
+
+  // ── Calendar recomputation — date/weekday/days-between questions don't reduce to a numeric
+  // expression, so they get their own deterministic calendar evaluator (dateTime.ts): the model
+  // proposes the setup, UTC date math computes the result, a quorum certifies it.
+  if (isDateQuestion(message) && !usedRetrieval && !signal?.aborted) {
+    try {
+      const recomp = await recomputeDate(message)
+      if (recomp) {
+        const rec = applyDateRecomputation(text, recomp)
+        recomputed = true
+        if (rec.corrected) {
+          text = rec.text
+          corrections += 1
+          emit?.({ type: 'verify', passed: true, report: `Machine calendar computation: ${recomp.setup} → ${recomp.result} (${recomp.samples} independent setups, ${Math.round(recomp.agreement * 100)}% agreed). Appended the verified answer.` })
+        } else {
+          emit?.({ type: 'verify', passed: true, report: `Verified the date answer by independent calendar recomputation: ${recomp.result} (${recomp.samples} setups agreed).` })
+        }
+        issues = issues.filter(i => i.kind !== 'truncated')
+      }
+    } catch { /* non-blocking */ }
+  } else if (facets.needsComputation && !usedRetrieval && !signal?.aborted) {
     try {
       // Try the single-expression extractor FIRST — it is fast (~3s) and, because the model can
       // nest ("120 - (3/4 * 120) - 15"), it already covers most compound problems. Only when it
       // can't form a quorum AND the question is multi-step do we pay for the richer (slower) step-
       // DAG setup, which handles the genuinely irreducible cases (relative speed, head start).
-      const recomp = await recomputeWordProblem(message)
+      let recomp = await recomputeWordProblem(message)
         ?? (facets.needsMultiStep ? await recomputeMultiStep(message) : null)
+      // Constraint gate: a quorum value that violates a constraint the QUESTION itself imposes
+      // (asked unit, percent/probability range, count integrality, part-of-whole) means the
+      // SETUP was wrong across samples — the documented honest limit of recomputation. Reject
+      // it: never stamp "machine-verified" on a value the question's own constraints refute.
+      if (recomp) {
+        const violations = checkConstraints(message, recomp.value, recomp.unit)
+        if (violations.length) {
+          emit?.({ type: 'verify', passed: false, report: `Rejected the recomputed value ${recomp.value}: ${violations.map(v => v.detail).join(' ')}` })
+          debugBus.emit('pipeline', 'recomputation_rejected', { message: message.slice(0, 80), value: recomp.value, violations: violations.map(v => v.kind) }, { severity: 'warn' })
+          recomp = null
+        }
+      }
       const rec = recomp ? applyRecomputation(text, recomp) : null
       if (recomp && rec && !rec.guarded) {
         if (rec.corrected) {
@@ -268,13 +303,34 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     } catch { /* non-blocking: keep the critic-checked draft */ }
   }
 
+  // ── Short-factual self-consistency — the last unverified lane. A lookup answered from
+  // parametric memory gets K independent resamples (+ any installed non-FM ensemble voters);
+  // a quorum on the key claim stamps it verified, no quorum ships it with an explicit
+  // unverified note. Gated off with CRUCIBLE_FACT_SC=0 (adds ~2 FM calls per lookup).
+  let factChecked: FactConsensus | null = null
+  if (facets.intent === 'lookup' && !usedRetrieval && !facets.needsComputation && !facets.isCode
+      && !recomputed && process.env.CRUCIBLE_FACT_SC !== '0' && !signal?.aborted) {
+    try {
+      factChecked = await corroborateFact(message, text)
+      if (factChecked) {
+        const ens = factChecked.ensembleModels.length ? ` (incl. ${factChecked.ensembleModels.length} independent local model(s))` : ''
+        if (factChecked.confirmed) {
+          emit?.({ type: 'verify', passed: true, report: `Fact corroborated: ${Math.round(factChecked.agreement * 100)}% of ${factChecked.votes} independent answers${ens} agreed on "${factChecked.key}".` })
+        } else {
+          text += UNVERIFIED_NOTE
+          emit?.({ type: 'verify', passed: false, report: `Independent answers disagreed (${Math.round(factChecked.agreement * 100)}% of ${factChecked.votes} agreed on "${factChecked.key}") — shipped with an explicit unverified note.` })
+        }
+      }
+    } catch { /* corroboration is best-effort; the draft still ships */ }
+  }
+
   debugBus.emit('pipeline', 'answered', {
     message: message.slice(0, 80), intent: facets.intent, usedRetrieval, corrections, repaired, recomputed, len: text.length,
     ...(consensusAgreement !== null ? { consensusAgreement: Number(consensusAgreement.toFixed(2)) } : {}),
   }, { severity: 'info' })
 
   return {
-    text, verified: true, abstained: false, ...base,
+    text, verified: !(factChecked && !factChecked.confirmed), abstained: false, ...base,
     usedRetrieval, corrections, repaired,
   }
 }

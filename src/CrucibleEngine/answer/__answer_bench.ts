@@ -6,6 +6,9 @@ import { classifyFacets, ensureTrailingAnswer } from './answerEngine'
 import { critiqueAnswer } from './verify'
 import { normalizeAnswer } from './selfConsistency'
 import { applyRecomputation, evalArithmeticExpr, evalSteps, evalWithEnv, recomputeMultiStep, recomputeWordProblem, type Completer } from './wordProblem'
+import { applyDateRecomputation, evalDateSetup, isDateQuestion, recomputeDate } from './dateTime'
+import { checkConstraints } from './constraints'
+import { corroborateFact, extractClaimKey } from './factConsensus'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -202,6 +205,82 @@ console.log('== multi-step recomputation: consensus over independent step DAGs =
   const badDag = '{"steps":[{"var":"c","expr":"h / r"}],"answer":"c"}' // references undefined vars → unevaluable
   const noquorum = await recomputeMultiStep('x', { samples: 3, complete: replay([badDag, badDag, badDag]) })
   check('unevaluable step DAGs (undefined vars) → abstains', noquorum === null, JSON.stringify(noquorum))
+}
+
+console.log('== date recomputation: detection (self-contained calendar questions only) ==')
+{
+  check('explicit-date offset question detected', isDateQuestion('What date is 45 days after March 3, 2026?'))
+  check('days-between question detected', isDateQuestion('How many days are there between March 3, 2026 and July 11, 2026?'))
+  check('weekday question detected', isDateQuestion('What day of the week is January 1, 2027?'))
+  check('"today"-anchored question REFUSED (volatile, not self-contained)', !isDateQuestion('What date is 45 days after today?'))
+  check('no explicit date → refused', !isDateQuestion('What day of the week is best for meetings?'))
+  check('plain arithmetic question → refused (wordProblem lane)', !isDateQuestion('What is 40 * 25% discounted?'))
+}
+
+console.log('== date recomputation: deterministic calendar arithmetic (machine, not model) ==')
+{
+  const add = evalDateSetup({ base: '2026-03-03', op: 'add', amount: 45, unit: 'days' })
+  check('45 days after 2026-03-03 → April 17, 2026', !!add && add.result === 'April 17, 2026', JSON.stringify(add))
+  const leap = evalDateSetup({ base: '2024-02-28', op: 'add', amount: 2, unit: 'days' })
+  check('leap year handled (2024-02-28 + 2 days → March 1, 2024)', !!leap && leap.result === 'March 1, 2024', JSON.stringify(leap))
+  const wd = evalDateSetup({ base: '2026-07-11', op: 'weekday' })
+  check('weekday of 2026-07-11 → Saturday', !!wd && wd.result === 'Saturday', JSON.stringify(wd))
+  const diff = evalDateSetup({ base: '2026-03-03', op: 'diff', other: '2026-07-11' })
+  check('days between 2026-03-03 and 2026-07-11 → 130 days', !!diff && diff.result === '130 days', JSON.stringify(diff))
+  check('invalid rollover date (2026-02-30) REJECTED', evalDateSetup({ base: '2026-02-30', op: 'weekday' }) === null)
+  check('negative offset REJECTED (setup invalid, not "close enough")', evalDateSetup({ base: '2026-01-01', op: 'add', amount: -3, unit: 'days' }) === null)
+  const months = evalDateSetup({ base: '2026-01-31', op: 'add', amount: 1, unit: 'months' })
+  check('month offset evaluates deterministically', !!months, JSON.stringify(months))
+}
+
+console.log('== date recomputation: consensus + reconciliation ==')
+{
+  const setup = '{"base":"2026-03-03","op":"add","amount":45,"unit":"days"}'
+  const agree = await recomputeDate('What date is 45 days after March 3, 2026?', { samples: 3, complete: replay([setup, setup, '{"base":"2026-03-03","op":"add","amount":45,"unit":"day"}']) })
+  check('agreeing setups → April 17, 2026 certified', !!agree && agree.result === 'April 17, 2026', JSON.stringify(agree))
+  const noq = await recomputeDate('x', { samples: 3, complete: replay(['{"base":""}', 'not json', '{"base":"2026-13-99","op":"weekday"}']) })
+  check('no evaluable quorum → abstains (null)', noq === null, JSON.stringify(noq))
+  const rec = agree ? applyDateRecomputation('It lands sometime in mid-April.', agree) : null
+  check('draft without the date gets a verified Answer line appended', !!rec && rec.corrected && /\*\*Answer: April 17, 2026\*\*/.test(rec.text), rec?.text)
+  const conf = agree ? applyDateRecomputation('Counting forward, that is April 17th.', agree) : null
+  check('draft already stating the date (ordinal form) is CONFIRMED unaltered', !!conf && conf.confirmed && !conf.corrected, conf?.text)
+}
+
+console.log('== constraint critics: the question refutes a bad setup ==')
+{
+  check('percent > 100 violates "what percent" ask', checkConstraints('What percent of 50 is 10?', 500).some(v => v.kind === 'percent-range'), JSON.stringify(checkConstraints('What percent of 50 is 10?', 500)))
+  check('percent within [0,100] passes', checkConstraints('What percent of 50 is 10?', 20).length === 0)
+  check('negative count violates "how many apples"', checkConstraints('How many apples are left?', -3).some(v => v.kind === 'count-negative'))
+  check('fractional count violates "how many people"', checkConstraints('How many people fit in the elevator?', 6.5).some(v => v.kind === 'count-not-integer'))
+  check('fractional value OK for continuous units (how many hours → 2.5)', checkConstraints('How many hours does the trip take?', 2.5).length === 0, JSON.stringify(checkConstraints('How many hours does the trip take?', 2.5)))
+  check('fractional value OK under rate/average phrasing', checkConstraints('What is the average number of goals per game?', 2.4).length === 0)
+  check('part-of-whole: answer cannot exceed the stated whole (30 of the 20)', checkConstraints('How many of the 20 students passed?', 30).some(v => v.kind === 'exceeds-whole'))
+  check('part-of-whole within bounds passes', checkConstraints('How many of the 20 students passed?', 14).length === 0)
+  check('unit mismatch across recognized families flagged (asked hours, answered miles)', checkConstraints('How many hours will it take?', 3, 'miles').some(v => v.kind === 'unit-mismatch'))
+  check('same-family unit passes (asked hours, answered hours)', checkConstraints('How many hours will it take?', 3, 'hours').length === 0)
+  check('unrecognized unit never flags (open-ended unit words unpoliced)', checkConstraints('How many hours will it take?', 3, 'widgets').length === 0)
+}
+
+console.log('== fact consensus: claim-key extraction ==')
+{
+  check('number is the key claim', extractClaimKey('It is 8,849 meters tall.') === '8849', String(extractClaimKey('It is 8,849 meters tall.')))
+  check('proper noun is the key claim (question entity excluded)', extractClaimKey('The capital of Australia is Canberra.', 'What is the capital of Australia?') === 'canberra', String(extractClaimKey('The capital of Australia is Canberra.', 'What is the capital of Australia?')))
+  check('multiword proper noun preferred', extractClaimKey('It was written by Gabriel Garcia Marquez in exile.') === 'gabriel garcia marquez', String(extractClaimKey('It was written by Gabriel Garcia Marquez in exile.')))
+  check('empty → null', extractClaimKey('   ') === null)
+}
+
+console.log('== fact consensus: quorum stamps, disagreement ships unverified ==')
+{
+  const agree = await corroborateFact('What is the capital of Australia?', 'The capital of Australia is Canberra.', {
+    samples: 3, complete: replay(['Canberra.', 'The capital is Canberra.']),
+  })
+  check('resamples agree → confirmed', !!agree && agree.confirmed && agree.votes >= 3, JSON.stringify(agree))
+  const drift = await corroborateFact('Who invented the zipper?', 'It was invented by Whitcomb Judson.', {
+    samples: 3, complete: replay(['Gideon Sundback invented it.', 'Elias Howe.']),
+  })
+  check('resamples drift → NOT confirmed (ships with unverified note)', !!drift && !drift.confirmed, JSON.stringify(drift))
+  const nokey = await corroborateFact('x', '???', { samples: 3, complete: replay(['a', 'b']) })
+  check('draft with no extractable claim → null (nothing to corroborate)', nokey === null)
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)
