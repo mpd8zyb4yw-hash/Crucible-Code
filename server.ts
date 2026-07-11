@@ -23,6 +23,7 @@ import { createCheckpoint, rollbackToCheckpoint, getCheckpoints } from './src/Cr
 import { registry } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
+import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
@@ -3572,13 +3573,20 @@ app.post('/api/chat', async (req, res) => {
           { role: 'user', content: message },
         ], { requestId })
         const latencyMs = Date.now() - t0s
-        send({ type: 'layer1', modelId: fastModel.id, model: fastModel.label, text: reply, done: true })
+        // Universal verification baseline: the fast single-model path skips the full pipeline for
+        // speed, so it also skipped every check — a raw unverified guess reached the user. Run one
+        // deterministic verify + (only if flagged) one cheap same-model repair before emitting.
+        const vr = await verifyAndRepair(message, simplePT, reply,
+          (system, user) => callModel(fastModel, [{ role: 'system', content: system }, { role: 'user', content: user }], { requestId }))
+        const finalReply = vr.text
+        if (vr.repaired) send({ type: 'verify', passed: true, report: `Corrected before sending: ${vr.issues.join('; ')}` })
+        send({ type: 'layer1', modelId: fastModel.id, model: fastModel.label, text: finalReply, done: true })
         send({ type: 'stage', stage: 1, status: 'done' })
-        send({ type: 'synthesis', modelId: fastModel.id, model: fastModel.label, text: reply, done: true, replace: false })
+        send({ type: 'synthesis', modelId: fastModel.id, model: fastModel.label, text: finalReply, done: true, replace: false })
         send({ type: 'stage', stage: 5, status: 'done' })
-        recordModelOutcome(fastModel.id, reply.length > 0, latencyMs)
+        recordModelOutcome(fastModel.id, finalReply.length > 0, latencyMs)
         triggerImprovementPass()
-        summariseSession(message, reply, process.cwd(), 'success', callModel).catch(() => {})
+        summariseSession(message, finalReply, process.cwd(), 'success', callModel).catch(() => {})
         debugBus.emit('pipeline', 'triage_simple', { query: message.slice(0, 60), model: fastModel.label, latencyMs }, { severity: 'info', requestId })
         res.write('data: [DONE]\n\n')
         res.end()
