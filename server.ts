@@ -211,6 +211,29 @@ function patchConversationRound(userId: string | null, conversationId: string, r
 
 const CIRCUIT_STATE_FILE = path.join(process.cwd(), '.circuit-state.json')
 
+// ── Build/version stamp ───────────────────────────────────────────────────────
+// So you can VERIFY which code the running server actually has — the #1 confusion today
+// was "git is updated but the long-lived tsx process still runs old code." Surfaced at
+// /api/version and in /api/diag as `version`, and logged once at boot. Reads git at startup;
+// degrades to 'unknown' without failing if git isn't available (packaged build). (execSync is
+// imported at the bottom of this file; ESM hoists top-level imports so it's available here.)
+const BUILD_INFO = (() => {
+  const bootedAt = new Date().toISOString()
+  try {
+    const g = (cmd: string) => execSync(cmd, { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    return {
+      commit: g('git rev-parse --short HEAD'),
+      subject: g('git log -1 --pretty=%s'),
+      committedAt: g('git log -1 --pretty=%cI'),
+      dirty: g('git status --porcelain').length > 0,
+      bootedAt,
+    }
+  } catch {
+    return { commit: 'unknown', subject: '', committedAt: '', dirty: false, bootedAt }
+  }
+})()
+console.log(`[Crucible] running commit ${BUILD_INFO.commit}${BUILD_INFO.dirty ? '+dirty' : ''} — "${BUILD_INFO.subject}" (booted ${BUILD_INFO.bootedAt})`)
+
 // ── Keepalive pause guard ─────────────────────────────────────────────────────
 // Incremented on pipeline entry, decremented in finally. Keepalive pings skip
 // all model calls when > 0 to avoid consuming quota during live requests.
@@ -692,6 +715,7 @@ app.use('/api', (req: express.Request, res: express.Response, next: express.Next
   if (req.path === '/screen-stream') return next()   // no cookie on phone; LAN-only stream
   if (req.path === '/screen-diag') return next()     // LAN diagnostic — no cookie (curl'd on the Mac)
   if (req.path === '/diag') return next()            // diagnostic endpoint — no auth needed
+  if (req.path === '/version') return next()         // build stamp — no auth needed
   return requireAuth(req, res, next)
 })
 
@@ -6557,6 +6581,10 @@ app.get('/api/debug/substrate', (_req, res) => {
 // GET /api/diag — ONE-CALL full-system snapshot. Every subsystem in a single
 // response so a diagnosis needs no grep / log-reading. Each block is independently
 // guarded: a failure in one subsystem yields { error } for that block, never a 500.
+// GET /api/version — the exact code the running server has. Hit this (or crucible.cam/api/version)
+// to confirm a fix actually landed: `commit`/`subject` should match the commit you expect.
+app.get('/api/version', (_req, res) => { res.json(BUILD_INFO) })
+
 app.get('/api/diag', (_req, res) => {
   const avg = (xs: number[]) => xs.length ? +(xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(3) : 0
   const block = <T>(fn: () => T): T | { error: string } => {
@@ -6663,6 +6691,7 @@ app.get('/api/diag', (_req, res) => {
   res.json({
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
+    version: BUILD_INFO,
     pipeline, fmQueue, models, substrate, masterpiece, anima, corpus, errors,
   })
 })

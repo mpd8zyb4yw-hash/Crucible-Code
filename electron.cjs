@@ -91,7 +91,10 @@ function spawnBackend() {
     });
   } else {
     // Dev/source path — absolute server.ts path because cwd is the data dir.
-    serverProc = spawn('/opt/homebrew/bin/npx', ['tsx', SERVER_TS], {
+    // `tsx watch` so a `git pull` of new server code is picked up without a manual restart.
+    // Safe: runtime writes go to dot-dirs (.crucible/, .circuit-state.json) that tsx-watch
+    // ignores, so the server's own file writes never trigger a reload loop.
+    serverProc = spawn('/opt/homebrew/bin/npx', ['tsx', 'watch', SERVER_TS], {
       cwd: DATA_DIR,
       shell: false,
       env,
