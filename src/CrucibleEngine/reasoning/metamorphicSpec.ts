@@ -130,11 +130,99 @@ function reverseAssertions(E: string): string[] {
   ]
 }
 
+// ── Reference-oracle relations (complete by construction) ────────────────────────────
+// For several prose-describable behaviors the COMPLETE relation is simply "output equals a
+// deterministic reference computation the assertion itself performs" — first-occurrence
+// dedupe, max/min, sum, average, deep flatten, keep-even/odd/positive/negative. The reference
+// lives IN the assertion (zero model, spec-derived), so like sort/reverse it cannot be
+// satisfied by a systematically-wrong output shared across sampled implementations.
+
+const INT_ARR_BATTERY =
+  '[[3,1,2,1,3],[5,5,5],[1],[9,-2,0,-2,7],[2,4,6,8],[-1,-3,-5],[10,3,10,3],[7,2,9,4,1,6]]'
+
+/** One assertion: candidate output ≡ the reference function on every battery input. */
+function referenceAssertion(E: string, label: string, refJs: string, battery: string = INT_ARR_BATTERY): string[] {
+  return [
+    `prop('${E} matches the ${label} reference computation', (() => {
+      const REF = ${refJs};
+      const B = ${battery};
+      const done = B.filter(x => { try { ${E}(x); return true } catch { return false } });
+      if (done.length < 4) return false;
+      return done.every(x => JSON.stringify(${E}(x)) === JSON.stringify(REF(x)));
+    })())`,
+  ]
+}
+
+// Contexts where a superficially-matching keyword means a DIFFERENT problem (max subarray,
+// largest product pair, sum of digits…) — never certify those against the simple reference.
+const COMPOUND_GUARD = /\b(subarray|substring|sub-array|contiguous|consecutive|pair|two |digits?|prime|difference|product of|divisible|matrix|nested object|window)\b/
+
+interface RefClass { family: string; detect: RegExp; refJs: string; battery?: string }
+
+const REF_CLASSES: RefClass[] = [
+  {
+    family: 'dedupe',
+    detect: /\b(remove|delete|drop|eliminate)s?\b[^.]*\bduplicates?\b|\bunique (elements?|values?|items?|numbers?)\b|\bdistinct (elements?|values?|items?|numbers?)\b|\bdeduplicate/,
+    refJs: '(x) => x.filter((v, i) => x.indexOf(v) === i)',
+  },
+  {
+    family: 'max',
+    detect: /\b(largest|greatest|maximum|biggest|highest)\s+(number|value|element|item)\b[^.]*\b(array|list|numbers)\b/,
+    refJs: '(x) => Math.max(...x)',
+    battery: '[[3,1,2],[5],[9,-2,0,7],[-1,-3,-5],[10,3,10],[7,2,9,4,1,6],[0,0],[100,-100]]',
+  },
+  {
+    family: 'min',
+    detect: /\b(smallest|lowest|minimum|least)\s+(number|value|element|item)\b[^.]*\b(array|list|numbers)\b/,
+    refJs: '(x) => Math.min(...x)',
+    battery: '[[3,1,2],[5],[9,-2,0,7],[-1,-3,-5],[10,3,10],[7,2,9,4,1,6],[0,0],[100,-100]]',
+  },
+  {
+    family: 'sum',
+    detect: /\b(sum|total) of (all )?(the )?(numbers?|elements?|values?|integers?|items?)\b|\badds? up (all )?(the )?(numbers?|elements?|values?)\b/,
+    refJs: '(x) => x.reduce((a, b) => a + b, 0)',
+  },
+  {
+    family: 'average',
+    detect: /\b(average|mean) of (all )?(the )?(numbers?|elements?|values?)\b/,
+    refJs: '(x) => x.reduce((a, b) => a + b, 0) / x.length',
+  },
+  {
+    family: 'flatten',
+    detect: /\bflatten(s|ing)?\b[^.]*\b(nested|deeply|array|list)\b/,
+    refJs: '(x) => x.flat(Infinity)',
+    battery: '[[[1,[2,3]],[4]],[[1],[2],[3]],[[[[5]]],6],[[1,2],[3,[4,[5]]]],[[0],[-1,[-2]]],[[7,8,9]],[[],[1]],[[[2],[3]],[]]]',
+  },
+  {
+    family: 'filter(even)',
+    detect: /\b(keep|return|select|get|find)s?\b[^.]*\bonly\b[^.]*\beven\b|\bonly the even\b|\b(filter|remove|drop|exclude)s? (out )?(all )?(the )?odd\b|\bfilters? [^.]*\beven numbers\b/,
+    refJs: '(x) => x.filter(v => v % 2 === 0)',
+  },
+  {
+    family: 'filter(odd)',
+    detect: /\b(keep|return|select|get|find)s?\b[^.]*\bonly\b[^.]*\bodd\b|\bonly the odd\b|\b(filter|remove|drop|exclude)s? (out )?(all )?(the )?even\b/,
+    refJs: '(x) => x.filter(v => v % 2 !== 0)',
+  },
+  {
+    family: 'filter(positive)',
+    detect: /\b(keep|return|select|get|find)s?\b[^.]*\bonly\b[^.]*\bpositive\b|\bonly the positive\b|\b(filter|remove|drop|exclude)s? (out )?(all )?(the )?negatives?\b/,
+    refJs: '(x) => x.filter(v => v > 0)',
+  },
+]
+
+function detectReferenceClass(lower: string): RefClass | null {
+  if (COMPOUND_GUARD.test(lower)) return null
+  // Both even and odd phrasing present is ambiguous — refuse rather than guess.
+  const hits = REF_CLASSES.filter(c => c.detect.test(lower))
+  return hits.length === 1 ? hits[0] : null
+}
+
 /**
  * Derive a metamorphic property spec from the request's DESCRIPTION, name-independently.
  * Returns null when no COMPLETE relation-class is detected (→ caller falls through to
  * differential / model-consensus). Never certifies against an incomplete relation set
- * (e.g. bare "filter", which subset-preservation alone would not pin uniquely).
+ * (e.g. bare "filter" with an unrecognized predicate — subset-preservation alone would not
+ * pin the function uniquely).
  */
 export function deriveMetamorphicSpec(nl: string): MetamorphicSpec | null {
   const entry = guessEntry(nl)
@@ -145,6 +233,9 @@ export function deriveMetamorphicSpec(nl: string): MetamorphicSpec | null {
   if (dir) return { entry, family: `sort(${dir})`, assertions: sortAssertions(entry, dir) }
 
   if (detectsReverse(lower)) return { entry, family: 'reverse', assertions: reverseAssertions(entry) }
+
+  const ref = detectReferenceClass(lower)
+  if (ref) return { entry, family: ref.family, assertions: referenceAssertion(entry, ref.family, ref.refJs, ref.battery) }
 
   return null
 }

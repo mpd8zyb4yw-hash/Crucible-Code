@@ -556,6 +556,63 @@ async function run() {
   ok('metamorphic does NOT fire on the "reverse engineer" idiom (not a sequence reversal)',
     deriveMetamorphicSpec('Write a tool to reverse engineer the config file format.') === null)
 
+  // ── REFERENCE-ORACLE relation classes (dedupe / max / sum / average / flatten / filter) ──
+  // The complete relation is "output ≡ a deterministic reference the assertion computes itself"
+  // — spec-derived, zero model, un-foolable by shared implementation bugs.
+  const DEDUPE = 'Write pickUniques(xs) that removes duplicate values from a list.'
+  const mDedupe = deriveMetamorphicSpec(DEDUPE)
+  ok('reference class detects DEDUPE from prose (custom name)', !!mDedupe && mDedupe.family === 'dedupe', mDedupe?.family)
+  if (mDedupe) {
+    const acc = metaProp(mDedupe.entry, mDedupe.family, mDedupe.assertions)
+    const right = await verifyByProperty({ value: `export function pickUniques(a){return [...new Set(a)]}`, fingerprint: 'r' }, acc)
+    ok('a correct first-occurrence dedupe PASSES the reference relation', right.pass, right.signals[0])
+    const wrong = await verifyByProperty({ value: `export function pickUniques(a){return [...a]}`, fingerprint: 'w' }, acc)
+    ok('the identity function is REJECTED as a dedupe', !wrong.pass, wrong.signals[0])
+  }
+
+  const MAXQ = 'Write biggest(nums) that returns the largest number in an array.'
+  const mMax = deriveMetamorphicSpec(MAXQ)
+  ok('reference class detects MAX from prose (custom name)', !!mMax && mMax.family === 'max', mMax?.family)
+  if (mMax) {
+    const acc = metaProp(mMax.entry, mMax.family, mMax.assertions)
+    const right = await verifyByProperty({ value: `export function biggest(a){return Math.max(...a)}`, fingerprint: 'r' }, acc)
+    ok('a correct max PASSES the reference relation', right.pass, right.signals[0])
+    const first = await verifyByProperty({ value: `export function biggest(a){return a[0]}`, fingerprint: 'f' }, acc)
+    ok('returning the first element is REJECTED as max', !first.pass, first.signals[0])
+  }
+
+  const EVENS = 'Write keepEvens(xs) that keeps only the even numbers from the array.'
+  const mEven = deriveMetamorphicSpec(EVENS)
+  ok('reference class detects FILTER(even) from prose', !!mEven && mEven.family === 'filter(even)', mEven?.family)
+  if (mEven) {
+    const acc = metaProp(mEven.entry, mEven.family, mEven.assertions)
+    const right = await verifyByProperty({ value: `export function keepEvens(a){return a.filter(v=>v%2===0)}`, fingerprint: 'r' }, acc)
+    ok('a correct even-filter PASSES', right.pass, right.signals[0])
+    const inverted = await verifyByProperty({ value: `export function keepEvens(a){return a.filter(v=>v%2!==0)}`, fingerprint: 'i' }, acc)
+    ok('an INVERTED filter (keeps odds) is REJECTED', !inverted.pass, inverted.signals[0])
+  }
+
+  ok('reference class detects deep FLATTEN from prose',
+    deriveMetamorphicSpec('Write squash(arr) that flattens a deeply nested array into a flat list.')?.family === 'flatten')
+  ok('COMPOUND guard: "largest sum of a contiguous subarray" does NOT certify as simple max/sum',
+    deriveMetamorphicSpec('Write best(nums) that finds the largest sum of a contiguous subarray of the numbers in the array.') === null)
+  ok('AMBIGUITY guard: prose matching two reference classes refuses to certify',
+    deriveMetamorphicSpec('Write pick(xs) that keeps only the even numbers and returns the unique values.') === null)
+
+  // ── DIFFERENTIAL determinism guard: nondeterministic output never becomes ground truth ──
+  const RANDQ = 'Write jitter(n) that returns a random number derived from n.'
+  const randImpl = (src: string) => ({ source: src, fingerprint: implFingerprint(src) })
+  const nondet = await deriveDifferentialSpec(RANDQ, {
+    sampleImpls: async () => [
+      randImpl('export function jitter(n){return n + Math.random()}'),
+      randImpl('export function jitter(n){return Math.random() + n}'),
+      randImpl('export function jitter(n){return n * Math.random() + Math.random()}'),
+    ],
+    minCases: 3,
+  })
+  ok('differential ABSTAINS on a nondeterministic function (run-to-run instability detected)',
+    !nondet.ok && /nondeterministic|only \d/.test(nondet.reason ?? ''), nondet.reason)
+
   // ── PART B ──────────────────────────────────────────────────────────────────────
   const fmUp = await checkFmAvailable()
   console.log(`\nPART B — live on-device FM proposer ${fmUp ? '(daemon UP)' : '(SKIPPED — daemon down)'}`)

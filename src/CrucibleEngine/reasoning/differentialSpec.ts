@@ -322,12 +322,26 @@ export async function deriveDifferentialSpec(nl: string, opts: DifferentialOpts 
     perImpl.push({ fp: im.fingerprint, results })
   }
 
+  // Determinism guard: output that varies run-to-run (randomness, time, iteration-order
+  // leaks) must never become derived ground truth — re-run one impl over the same battery
+  // and drop any input whose result changed. If most of the battery is unstable, the
+  // function itself is nondeterministic → abstain outright.
+  const recheck = await runImplOverInputs(distinct[0].source, entry, inputs, timeoutMs)
+  const unstable = new Set<number>()
+  for (let i = 0; i < inputs.length; i++) {
+    if (perImpl[0].results[i] !== recheck[i]) unstable.add(i)
+  }
+  if (unstable.size > inputs.length / 2) {
+    return { ok: false, reason: `outputs are nondeterministic on ${unstable.size}/${inputs.length} inputs — differential ground truth impossible, abstaining` }
+  }
+
   // Quorum per input: among impls that produced a usable (JSON, non-throw) value, does a
   // majority AND ≥2 DISTINCT fingerprints agree on the same value? If so, that value is the
   // derived expected output for this input.
   const quorum = Math.max(2, Math.floor(distinct.length / 2) + 1)
   const cases: CodeCase[] = []
   for (let i = 0; i < inputs.length; i++) {
+    if (unstable.has(i)) continue
     const byVal = new Map<string, Set<string>>()  // value-json → set of fingerprints
     let usable = 0
     for (const im of perImpl) {
