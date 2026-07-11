@@ -531,3 +531,111 @@ export async function planEmit(
     return fresh(`appending to ${targetPath} would not compile → new file instead (existing file left untouched)`)
   }
 }
+
+// ─── Whole-tree signature propagation ──────────────────────────────────────────
+//
+// planEmit reconciles call sites INSIDE the modified file. But a signature change to an
+// exported function also breaks call sites in OTHER files that import it. This layer scans
+// sibling modules, repairs the mechanically-safe cases (trailing-param trim), and — crucially
+// — refuses the WHOLE edit when any importer can't absorb the change. Whole-tree is
+// all-or-nothing: we never ship a modify that knowingly breaks a caller elsewhere in the repo.
+
+/** Two signatures accept the same set of call arities (added/removed OPTIONAL or rest params
+ * that don't shift what existing positional calls need). When true, existing call sites in any
+ * file remain valid and no propagation is needed. */
+export function signaturesCallCompatible(a: Signature | null, b: Signature | null): boolean {
+  if (!a || !b) return false
+  const req = (s: Signature) => s.params.filter(p => !p.optional && !p.rest).length
+  const rest = (s: Signature) => s.params.some(p => p.rest)
+  return req(a) === req(b) && a.params.length === b.params.length && rest(a) === rest(b)
+}
+
+/** Resolve a relative import specifier (from `fromRel`'s directory) to a project-relative
+ * module path with no extension, for comparison against a target file. Returns null for
+ * bare/package specifiers (no leading `.`). */
+function resolveSpecifier(fromRel: string, spec: string): string | null {
+  if (!spec.startsWith('.')) return null
+  const fromDir = fromRel.includes('/') ? fromRel.slice(0, fromRel.lastIndexOf('/')) : ''
+  const parts = (fromDir ? fromDir.split('/') : []).concat(spec.split('/'))
+  const stack: string[] = []
+  for (const p of parts) {
+    if (p === '' || p === '.') continue
+    if (p === '..') stack.pop()
+    else stack.push(p)
+  }
+  return stack.join('/').replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+}
+
+/** True when `content` (a sibling module at `siblingRel`) imports `entry` from `targetRel`. */
+export function importsEntryFrom(content: string, entry: string, siblingRel: string, targetRel: string): boolean {
+  const targetNoExt = targetRel.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+  let m: RegExpExecArray | null
+  const rx = new RegExp(NAMED_IMPORT_RX.source, 'gm')
+  while ((m = rx.exec(content))) {
+    const names = m[1].split(',').map(s => s.trim().split(/\s+as\s+/)[0].trim())
+    if (!names.includes(entry)) continue
+    if (resolveSpecifier(siblingRel, m[3]) === targetNoExt) return true
+  }
+  return false
+}
+
+export interface TreeEmit {
+  /** The plan for the primary target file (possibly downgraded to a fresh file). */
+  primary: EmitPlan
+  /** Edits to sibling files whose call sites were repaired for the new signature. */
+  propagated: EmitPlan[]
+  notes: string[]
+}
+
+/**
+ * Extend a single-file emit to the whole tree. `siblings` maps project-relative paths (EXCLUDING
+ * the primary target) to their current contents. When the primary is a signature-changing modify,
+ * every sibling that imports `entry` from the target is checked: safe cases are repaired and
+ * emitted, and if ANY sibling can't absorb the change the entire edit downgrades to a fresh file
+ * (all existing files left untouched). The caller still compile/execution-re-verifies each write.
+ */
+export async function planEmitTree(
+  nl: string, entry: string, code: string, existing: string | null,
+  targetPath: string | null = detectTargetPath(nl),
+  siblings: Record<string, string> = {},
+): Promise<TreeEmit> {
+  const primary = await planEmit(nl, entry, code, existing, targetPath)
+  const notes: string[] = []
+
+  // Propagation only applies when we replaced an existing definition in a real target file.
+  if (primary.mode !== 'modify' || existing == null || !targetPath) return { primary, propagated: [], notes }
+
+  const oldSpan = extractFunctionSpan(existing, entry)
+  const newSpan = extractFunctionSpan(primary.content, entry)
+  const oldSig = oldSpan ? parseSignature(existing.slice(oldSpan.start, oldSpan.end), entry) : null
+  const newSig = newSpan ? parseSignature(primary.content.slice(newSpan.start, newSpan.end), entry) : null
+
+  // Signature unchanged (in a call-affecting way) → existing importers stay valid.
+  if (signaturesCallCompatible(oldSig, newSig)) return { primary, propagated: [], notes }
+
+  const fresh: EmitPlan = {
+    rel: `src/${entry}.ts`, content: code, mode: 'create',
+    detail: `certified ${entry} changes its signature in a way an importer of ${targetPath} can't absorb → new file instead (all existing files left untouched)`,
+  }
+
+  const propagated: EmitPlan[] = []
+  for (const [rel, content] of Object.entries(siblings)) {
+    if (rel === targetPath) continue
+    if (!importsEntryFrom(content, entry, rel, targetPath)) continue
+    if (alreadyDefines(content, entry)) return { primary: fresh, propagated: [], notes: [`${rel} both imports and shadows ${entry} — too ambiguous to reconcile`] }
+
+    // No local definition → reconcile across the whole file (defStart/defEnd out of range).
+    const rec = reconcileCallSites(content, entry, -1, -1, newSig, oldSig)
+    if (!rec) return { primary: fresh, propagated: [], notes: [`${rel} calls ${entry} in a way the new signature can't absorb → refused the whole edit`] }
+    if (rec.repaired === 0) continue // all call sites already fit
+    try {
+      await transform(rec.content, { loader: 'ts', format: 'esm', target: 'node18' })
+    } catch {
+      return { primary: fresh, propagated: [], notes: [`repairing ${rel}'s calls to ${entry} would not compile → refused the whole edit`] }
+    }
+    propagated.push({ rel, content: rec.content, mode: 'modify', detail: `updated ${rec.repaired} call site(s) of ${entry} for its new signature` })
+    notes.push(`${rel}: ${rec.repaired} call site(s) reconciled`)
+  }
+
+  return { primary, propagated, notes }
+}

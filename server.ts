@@ -38,7 +38,7 @@ import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './s
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectTargetPath, isModifyRequest, planEmit } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectTargetPath, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -3175,12 +3175,34 @@ app.post('/api/chat', async (req, res) => {
           const existingAbs = targetPath ? path.join(projectPath, targetPath) : null
           let existing: string | null = null
           try { if (existingAbs && fs.existsSync(existingAbs)) existing = fs.readFileSync(existingAbs, 'utf-8') } catch { /* treat as absent */ }
-          const plan = await planEmit(message ?? '', vgr.entry, vgr.code, existing, targetPath)
+          // Whole-tree: when this is an in-place modify that changes the signature, gather
+          // sibling modules so planEmitTree can reconcile (or refuse over) their call sites too.
+          const siblings: Record<string, string> = {}
+          if (targetPath && existing != null && isModifyRequest(message ?? '')) {
+            try {
+              for (const relSib of collectProjectTsFiles(projectPath)) {
+                if (relSib === targetPath) continue
+                try { siblings[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip unreadable */ }
+              }
+            } catch { /* tree walk best-effort */ }
+          }
+          const tree = await planEmitTree(message ?? '', vgr.entry, vgr.code, existing, targetPath, siblings)
+          const plan = tree.primary
           const rel = plan.rel
           const abs = path.join(projectPath, rel)
           fs.mkdirSync(path.dirname(abs), { recursive: true })
           fs.writeFileSync(abs, plan.content)
-          onFileMutated([abs])
+          const mutated = [abs]
+          // Apply the reconciled sibling edits (all-or-nothing already enforced by planEmitTree).
+          tree.propagated.forEach((p, i) => {
+            const pAbs = path.join(projectPath, p.rel)
+            fs.writeFileSync(pAbs, p.content)
+            mutated.push(pAbs)
+            send({ type: 'tool_call', id: `vgr_prop_${i}`, tool: 'edit_file', args: { path: p.rel } })
+            send({ type: 'tool_result', id: `vgr_prop_${i}`, tool: 'edit_file', ok: true, output: `VGR whole-tree propagation — ${p.detail}` })
+          })
+          if (tree.propagated.length) send({ type: 'thought', text: `VGR · whole-tree signature propagation — ${tree.notes.join('; ')}` })
+          onFileMutated(mutated)
           send({ type: 'tool_call', id: 'vgr_0', tool: plan.mode !== 'create' ? 'edit_file' : 'write_file', args: { path: rel } })
           // Certification basis: case-based tiers report N executed cases; the property /
           // metamorphic tiers carry `cases: null` and are certified against invariants, so
@@ -6025,6 +6047,28 @@ function ensureSandbox() {
   if (!fs.existsSync(SANDBOX_ROOT)) fs.mkdirSync(SANDBOX_ROOT, { recursive: true })
 }
 // Resolve a relative path against the sandbox root, refusing any escape (../, abs paths).
+// Bounded walk of a project's TypeScript/JavaScript sources (project-relative paths), for
+// whole-tree signature propagation. Skips deps/build dirs and caps total files so a huge repo
+// can't stall the VGR write path.
+function collectProjectTsFiles(root: string, cap = 400): string[] {
+  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.crucible', 'out', 'coverage', '.next'])
+  const out: string[] = []
+  const walk = (dir: string, rel: string) => {
+    if (out.length >= cap) return
+    let entries: fs.Dirent[]
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (out.length >= cap) return
+      if (e.name.startsWith('.') || SKIP.has(e.name)) continue
+      const childRel = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) walk(path.join(dir, e.name), childRel)
+      else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(e.name)) out.push(childRel)
+    }
+  }
+  walk(root, '')
+  return out
+}
+
 function sandboxResolve(relPath: string): string | null {
   const clean = (relPath || '').replace(/^\/+/, '')
   const abs = path.resolve(SANDBOX_ROOT, clean)

@@ -1,11 +1,5 @@
 [
   {
-    "hash": "a5ef2d4",
-    "message": "pre-write_file",
-    "timestamp": 1783368139595,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/filterModule"
-  },
-  {
     "hash": "870ea04",
     "message": "pre-write_file",
     "timestamp": 1783368385975,
@@ -298,5 +292,11 @@
     "message": "pre-write_file",
     "timestamp": 1783801609948,
     "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/8648152c-2639-433f-b3fb-f2ae8a0396f5/scratchpad/mfmod"
+  },
+  {
+    "hash": "b60bd82",
+    "message": "pre-write_file",
+    "timestamp": 1783804404611,
+    "projectPath": "/tmp/crucible-oracle-livetest"
   }
 ]

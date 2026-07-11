@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectTargetPath, mergeCertifiedSource, planEmit } from './emitPlan'
+import { detectTargetPath, mergeCertifiedSource, planEmit, planEmitTree } from './emitPlan'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
 import type { CandidateFile } from './codeVerifier'
@@ -358,6 +358,41 @@ async function run() {
   const noCalls = 'export function pad(s: string, width: number, fill: string): string {\n  return s.padStart(width, fill)\n}\n'
   const p14 = await planEmit('change pad in src/strings.ts', 'pad', WIDENED, noCalls)
   ok('signature change with NO call sites in the file → modify proceeds', p14.mode === 'modify', p14.detail)
+
+  // ── Whole-tree signature propagation — call sites in OTHER files ────────────────
+  const treeTarget = 'export function pad(s: string, width: number, fill: string): string {\n  return s.padStart(width, fill)\n}\n'
+  const importer = "import { pad } from './strings'\n\nexport const banner = pad('hi', 10, '*')\nexport const tag = pad('yo', 6, '.')\n"
+  const unrelated = "export const x = 1\n" // no import of pad — must stay untouched
+  const t1 = await planEmitTree('change pad in src/strings.ts to always pad with spaces', 'pad', NARROWED, treeTarget,
+    'src/strings.ts', { 'src/app.ts': importer, 'src/other.ts': unrelated })
+  ok('trailing-param removal → importer in ANOTHER file gets its call sites trimmed',
+    t1.primary.mode === 'modify' && t1.propagated.length === 1 && t1.propagated[0].rel === 'src/app.ts'
+    && t1.propagated[0].content.includes("pad('hi', 10)") && !t1.propagated[0].content.includes("pad('hi', 10, '*')"),
+    t1.notes.join('; '))
+  ok('non-importing sibling is left untouched (no spurious edit)',
+    t1.propagated.every(p => p.rel !== 'src/other.ts'))
+
+  const t2 = await planEmitTree('change pad in src/strings.ts to support right padding', 'pad', WIDENED, treeTarget,
+    'src/strings.ts', { 'src/app.ts': importer })
+  ok('new REQUIRED param an importer can\'t absorb → WHOLE edit downgrades to a fresh file',
+    t2.primary.mode === 'create' && t2.primary.rel === 'src/pad.ts' && t2.propagated.length === 0, t2.notes.join('; '))
+
+  const t3 = await planEmitTree('change pad in src/strings.ts to support right padding', 'pad', WIDENED_OPT, treeTarget,
+    'src/strings.ts', { 'src/app.ts': importer })
+  ok('added DEFAULTED param → importer call sites still fit → modify proceeds, no propagation',
+    t3.primary.mode === 'modify' && t3.propagated.length === 0)
+
+  const wrongSource = "import { pad } from './elsewhere'\nexport const b = pad('hi', 10, '*')\n"
+  const t4 = await planEmitTree('change pad in src/strings.ts to always pad with spaces', 'pad', NARROWED, treeTarget,
+    'src/strings.ts', { 'src/app.ts': wrongSource })
+  ok('same-named import from a DIFFERENT module is not touched (specifier resolution)',
+    t4.primary.mode === 'modify' && t4.propagated.length === 0)
+
+  const shadow = "import { pad } from './strings'\nfunction pad(x) { return x }\nexport const b = pad('hi', 10, '*')\n"
+  const t5 = await planEmitTree('change pad in src/strings.ts to always pad with spaces', 'pad', NARROWED, treeTarget,
+    'src/strings.ts', { 'src/app.ts': shadow })
+  ok('importer that also SHADOWS the name → ambiguous → whole edit downgrades to fresh file',
+    t5.primary.mode === 'create', t5.notes.join('; '))
 
   // Multi-file merge: certified module source merged into an EXISTING file (splice same-named,
   // append new, union imports) — the modify-inside-multi-file building block.
