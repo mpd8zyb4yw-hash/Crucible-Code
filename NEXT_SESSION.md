@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 66d — AGENT-LOOP ORACLE CROSS-FILE BLINDNESS FIXED)
+## CURRENT STATE (last updated 2026-07-11, cont. 66e — LIVE-FM ORACLE-CLOSURE CONFIRM + prose-extraction fix)
 
 **cont.66c (0cdb3d2 → ae93e56) — all three modify-path increments shipped + consensus unified, everything live/bench-verified.**
 
@@ -63,13 +63,27 @@ no contextFiles: rejected before, behavioral-certified after) + vgr:bench 129/12
 a candidate importing a sibling that does not exist yet anywhere (not staged, not on disk) still
 fails Gate A — that is a write-ordering question in the agent loop, not an oracle one.
 
+**cont.66e (6437919) — LIVE-FM CONFIRM DONE + a real prose-extraction bug it surfaced, fixed.**
+Fired the real /api/chat agent-loop task (new src/main.ts importing the existing ./greet ->
+./shout chain, no contextFiles) against a scratch project. First run STILL failed — but NOT
+with "Cannot find module" (the closure fix held); it failed on TS1005 ')' expected inside the
+oracle's OWN __derived__/spec.test.ts. Root cause: extractSpecExamples (synth/derive.ts) grabbed
+the entire English request sentence as a "worked example" because the prose contained a `name(`
+token and a "returns" separator, then embedded that prose verbatim into the generated test — a
+self-inflicted typecheck failure rejecting EVERY candidate before the import closure was ever
+exercised. Fixed with isCallShaped(): the LHS must be a single call expression (identifier chain
++ balanced parens to the last non-space char). After the fix + server restart, the SAME task
+certifies "tsc clean" in 1 offline cycle, writes correct main.ts, run() -> HELLO WORLD!.
+vgr:bench 129/129. LESSON (again): the deterministic bench feeds clean `f(x)===y` example lines,
+so it never exercises prose-extraction — the live FM path is the only place this class shows up.
+NOTE: had to restart the port-3001 backend (plain `tsx server.ts`, no hot-reload) to pick up the
+src edit; many stale server.ts processes were running (parallel-session hazard).
+
 **Next, in order:**
-1. **Live-FM confirm of the oracle-closure fix** on a real multi-file agent-loop task via
-   /api/chat (deterministic repro proven; the FM path is where mocks have lied before).
-2. **Signature-change propagation across the TREE** (call sites in OTHER files — single-file
+1. **Signature-change propagation across the TREE** (call sites in OTHER files — single-file
    reconciliation shipped; whole-tree is the remaining bulk of mission item 1).
-3. **Consensus-vote premise corrections** (≥2 independent FM verdicts before a premise 'correction').
-4. **Decompose server.ts (8.2k lines)** — coordinate with cloud session first.
+2. **Consensus-vote premise corrections** (≥2 independent FM verdicts before a premise 'correction').
+3. **Decompose server.ts (8.2k lines)** — coordinate with cloud session first.
 
 
 ---
