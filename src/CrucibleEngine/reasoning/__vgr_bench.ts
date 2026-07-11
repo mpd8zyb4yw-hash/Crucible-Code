@@ -326,6 +326,39 @@ async function run() {
   const p9 = await planEmit('add initials to src/strings.ts please', 'initials', GOOD_CODE, oldDef)
   ok('non-modify verb + fn exists → still avoids duplicate via new file', p9.mode === 'create', p9.detail)
 
+  // Type-annotation grafting: untyped certified code inherits the original's annotations.
+  const UNTYPED = 'export function initials(name) {\n  return name.split(" ").map(w => w[0]).join("")\n}'
+  const p10 = await planEmit('fix initials in src/strings.ts', 'initials', UNTYPED, oldDef)
+  ok('modify with UNTYPED certified code grafts the original param + return types',
+    p10.mode === 'modify' && p10.content.includes('initials(name: string): string'), p10.detail)
+
+  const arrowUntyped = await planEmit('update initials in src/strings.ts', 'initials',
+    'export const initials = (name) => name.split(" ").map(w => w[0]).join("")', arrowDef)
+  ok('grafting works on arrow-const definitions too',
+    arrowUntyped.mode === 'modify' && arrowUntyped.content.includes('(name: string): string'), arrowUntyped.detail)
+
+  // Call-site safety: esbuild's transform gate does NOT typecheck arity, so a signature
+  // change must be reconciled deterministically or the plan downgrades — never a silent break.
+  const withCalls = 'export function pad(s: string, width: number, fill: string): string {\n  return s.padStart(width, fill)\n}\n\nexport const banner = pad("hi", 10, "*")\n'
+  const NARROWED = 'export function pad(s: string, width: number): string {\n  return s.padStart(width, " ")\n}'
+  const p11 = await planEmit('change pad in src/strings.ts to always pad with spaces', 'pad', NARROWED, withCalls)
+  ok('trailing param removed → call sites mechanically TRIMMED to the new arity',
+    p11.mode === 'modify' && p11.content.includes('pad("hi", 10)') && !p11.content.includes('pad("hi", 10, "*")'), p11.detail)
+
+  const WIDENED = 'export function pad(s: string, width: number, fill: string, right: boolean): string {\n  return right ? s.padEnd(width, fill) : s.padStart(width, fill)\n}'
+  const p12 = await planEmit('change pad in src/strings.ts to support right padding', 'pad', WIDENED, withCalls)
+  ok('new REQUIRED param with existing call sites → downgrade to new file (no silent break)',
+    p12.mode === 'create' && p12.rel === 'src/pad.ts', p12.detail)
+
+  const WIDENED_OPT = 'export function pad(s: string, width: number, fill: string, right: boolean = false): string {\n  return right ? s.padEnd(width, fill) : s.padStart(width, fill)\n}'
+  const p13 = await planEmit('change pad in src/strings.ts to support right padding', 'pad', WIDENED_OPT, withCalls)
+  ok('new DEFAULTED param → existing call sites fit → modify proceeds',
+    p13.mode === 'modify' && p13.content.includes('right: boolean = false'), p13.detail)
+
+  const noCalls = 'export function pad(s: string, width: number, fill: string): string {\n  return s.padStart(width, fill)\n}\n'
+  const p14 = await planEmit('change pad in src/strings.ts', 'pad', WIDENED, noCalls)
+  ok('signature change with NO call sites in the file → modify proceeds', p14.mode === 'modify', p14.detail)
+
   // ── PART I — multi-file verification (cross-file import graph, execution-certified) ─
   // The mission gap: real SWE spans multiple files with imports. The verifier BUNDLES the
   // files (resolving cross-file edges) and executes cases against the whole graph, so a

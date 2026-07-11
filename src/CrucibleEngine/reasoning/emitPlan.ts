@@ -119,6 +119,259 @@ function skipString(content: string, i: number): number {
   return -1
 }
 
+// ─── Signature parsing (for annotation grafting + call-site safety) ───────────
+
+export interface ParamInfo {
+  /** Bare parameter name, or null for destructuring/rest patterns we don't rename. */
+  name: string | null
+  /** Full source text of the parameter (name, annotation, default). */
+  text: string
+  /** Has an explicit `: type` annotation. */
+  hasType: boolean
+  /** Optional (`?`) or defaulted (`=`) — call sites may omit it. */
+  optional: boolean
+  rest: boolean
+}
+
+export interface Signature {
+  params: ParamInfo[]
+  /** Return-type annotation text (without the leading `:`), or null. */
+  returnType: string | null
+  /** Absolute index of the opening paren of the param list in the source scanned. */
+  parenOpen: number
+  /** Absolute index of the matching closing paren. */
+  parenClose: number
+}
+
+/**
+ * Parse `entry`'s signature out of a definition source (`function entry(…)` or
+ * `const entry = (…) =>`). Null when it can't be located or parsed — callers must
+ * treat null as "unknown signature" and stay conservative, never guess.
+ */
+export function parseSignature(def: string, entry: string): Signature | null {
+  const e = entry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const m =
+    new RegExp(`(?:^|\\n)[ \\t]*(?:export\\s+)?(?:async\\s+)?function\\s+${e}\\s*\\(`).exec(def) ??
+    new RegExp(`(?:^|\\n)[ \\t]*(?:export\\s+)?(?:const|let|var)\\s+${e}\\s*=\\s*(?:async\\s*)?\\(`).exec(def)
+  if (!m) return null
+  const parenOpen = m.index + m[0].length - 1
+  const parenClose = matchParen(def, parenOpen)
+  if (parenClose === -1) return null
+
+  const params: ParamInfo[] = []
+  for (const text of splitTopLevel(def.slice(parenOpen + 1, parenClose))) {
+    const t = text.trim()
+    if (!t) continue
+    const rest = t.startsWith('...')
+    const nameM = /^(?:\.\.\.)?([A-Za-z_$][\w$]*)/.exec(t)
+    params.push({
+      name: nameM ? nameM[1] : null,
+      text: t,
+      hasType: hasTopLevelColon(t),
+      optional: /^(?:\.\.\.)?[A-Za-z_$][\w$]*\s*\?/.test(t) || hasTopLevelEquals(t),
+      rest,
+    })
+  }
+
+  // Return type: a top-level `:` right after the close paren, up to `{` (function body)
+  // or `=>` (arrow), scanned at bracket depth 0.
+  let returnType: string | null = null
+  let i = parenClose + 1
+  while (i < def.length && /\s/.test(def[i])) i++
+  if (def[i] === ':') {
+    let depth = 0
+    for (let j = i + 1; j < def.length; j++) {
+      const c = def[j]
+      if (c === '(' || c === '[' || c === '{') {
+        if (c === '{' && depth === 0) { returnType = def.slice(i + 1, j).trim(); break }
+        depth++
+      } else if (c === ')' || c === ']' || c === '}') depth--
+      else if (c === '=' && def[j + 1] === '>' && depth === 0) { returnType = def.slice(i + 1, j).trim(); break }
+    }
+    // Guard against `{` belonging to an object return type: if what we captured is empty, bail.
+    if (returnType === '') returnType = null
+  }
+  return { params, returnType, parenOpen, parenClose }
+}
+
+/** Index of the `)` matching def[open] (which must be `(`), or -1. String/comment aware. */
+function matchParen(content: string, open: number): number {
+  let depth = 0
+  for (let i = open; i < content.length; i++) {
+    const c = content[i]
+    if (c === '"' || c === "'" || c === '`') { i = skipString(content, i); if (i === -1) return -1; continue }
+    if (c === '/' && content[i + 1] === '/') { i = content.indexOf('\n', i); if (i === -1) return -1; continue }
+    if (c === '/' && content[i + 1] === '*') { i = content.indexOf('*/', i); if (i === -1) return -1; i++; continue }
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') { depth--; if (depth === 0 && c === ')') return i }
+  }
+  return -1
+}
+
+/** Split `s` at commas that sit at bracket depth 0 (outside strings). */
+function splitTopLevel(s: string): string[] {
+  const out: string[] = []
+  let depth = 0, start = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i]
+    if (c === '"' || c === "'" || c === '`') { i = skipString(s, i); if (i === -1) return [s]; continue }
+    if (c === '(' || c === '[' || c === '{' || c === '<') depth++
+    else if (c === ')' || c === ']' || c === '}' || c === '>') depth--
+    else if (c === ',' && depth === 0) { out.push(s.slice(start, i)); start = i + 1 }
+  }
+  out.push(s.slice(start))
+  return out
+}
+
+function hasTopLevelColon(param: string): boolean {
+  let depth = 0
+  for (let i = 0; i < param.length; i++) {
+    const c = param[i]
+    if (c === '(' || c === '[' || c === '{' || c === '<') depth++
+    else if (c === ')' || c === ']' || c === '}' || c === '>') depth--
+    else if (c === ':' && depth === 0) return true
+    else if (c === '=' && depth === 0) return false // default value starts — any later `:` is inside it
+  }
+  return false
+}
+
+function hasTopLevelEquals(param: string): boolean {
+  let depth = 0
+  for (let i = 0; i < param.length; i++) {
+    const c = param[i]
+    if (c === '(' || c === '[' || c === '{' || c === '<') depth++
+    else if (c === ')' || c === ']' || c === '}' || c === '>') depth--
+    else if (c === '=' && param[i + 1] !== '>' && depth === 0) return true
+  }
+  return false
+}
+
+/**
+ * Graft the ORIGINAL definition's type annotations onto untyped certified code, positionally.
+ * Only fires when both signatures parse and arity matches — the certified code was verified
+ * by execution against the same examples, so same-position params carry the same types.
+ * Best-effort: any doubt returns `code` unchanged (the compile gate still runs downstream).
+ */
+export function graftAnnotations(code: string, original: string, entry: string): string {
+  const newSig = parseSignature(code, entry)
+  const oldSig = parseSignature(original, entry)
+  if (!newSig || !oldSig || newSig.params.length !== oldSig.params.length) return code
+
+  let out = code
+  // Rewrite params right-to-left so earlier indices stay valid.
+  const pieces = newSig.params.map((p, i) => {
+    const o = oldSig.params[i]
+    if (p.hasType || !o.hasType || !p.name || p.rest !== o.rest) return p.text
+    const colon = topLevelColonIndex(o.text)
+    const oType = colon === -1 ? null : stripDefault(o.text.slice(colon + 1))
+    if (!oType) return p.text
+    const eq = hasTopLevelEquals(p.text) ? p.text.search(/=(?!>)/) : -1
+    return eq === -1
+      ? `${p.text.trimEnd()}: ${oType}`
+      : `${p.text.slice(0, eq).trimEnd()}: ${oType} ${p.text.slice(eq)}`
+  })
+  out = out.slice(0, newSig.parenOpen + 1) + pieces.join(', ') + out.slice(newSig.parenClose)
+
+  if (!newSig.returnType && oldSig.returnType) {
+    // Re-locate the (possibly shifted) close paren and insert the return annotation.
+    const reSig = parseSignature(out, entry)
+    if (reSig) out = out.slice(0, reSig.parenClose + 1) + `: ${oldSig.returnType}` + out.slice(reSig.parenClose + 1)
+  }
+  return out
+}
+
+function topLevelColonIndex(param: string): number {
+  let depth = 0
+  for (let i = 0; i < param.length; i++) {
+    const c = param[i]
+    if (c === '(' || c === '[' || c === '{' || c === '<') depth++
+    else if (c === ')' || c === ']' || c === '}' || c === '>') depth--
+    else if (c === ':' && depth === 0) return i
+    else if (c === '=' && depth === 0) return -1
+  }
+  return -1
+}
+
+/** Drop a trailing ` = default` from an annotation slice, keeping just the type text. */
+function stripDefault(typeText: string): string {
+  let depth = 0
+  for (let i = 0; i < typeText.length; i++) {
+    const c = typeText[i]
+    if (c === '(' || c === '[' || c === '{' || c === '<') depth++
+    else if (c === ')' || c === ']' || c === '}' || c === '>') depth--
+    else if (c === '=' && typeText[i + 1] !== '>' && depth === 0) return typeText.slice(0, i).trim()
+  }
+  return typeText.trim()
+}
+
+// ─── Call-site safety on signature change ──────────────────────────────────────
+
+interface CallSite { open: number; close: number; args: string[] }
+
+/** All `entry(…)` call sites in `content` OUTSIDE [defStart, defEnd) — the definition's own
+ * recursion already matches the new signature. Skips property access (`x.entry(`) and
+ * declarations (`function entry(`). */
+export function findCallSites(content: string, entry: string, defStart: number, defEnd: number): CallSite[] {
+  const e = entry.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const rx = new RegExp(`\\b${e}\\s*\\(`, 'g')
+  const sites: CallSite[] = []
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(content))) {
+    const at = m.index
+    if (at >= defStart && at < defEnd) continue
+    const before = content.slice(0, at)
+    if (/[.\w$]$/.test(before)) continue                       // x.entry( / myentry(
+    if (/(?:function|const|let|var)\s+$/.test(before)) continue // a declaration, not a call
+    const open = at + m[0].length - 1
+    const close = matchParen(content, open)
+    if (close === -1) continue
+    const inner = content.slice(open + 1, close)
+    sites.push({ open, close, args: inner.trim() === '' ? [] : splitTopLevel(inner).map(s => s.trim()) })
+  }
+  return sites
+}
+
+/**
+ * Given the file AFTER the definition splice, verify existing call sites still fit the new
+ * signature — and mechanically repair the one safe case (trailing params removed → trim
+ * extra args). Returns the (possibly rewritten) content, or null when a call site would
+ * break and no safe repair exists — the caller downgrades to a fresh file, never ships a
+ * silently broken call (esbuild's transform gate parses but does NOT typecheck arity).
+ */
+export function reconcileCallSites(
+  content: string, entry: string, defStart: number, defEnd: number,
+  newSig: Signature | null, oldSig: Signature | null,
+): { content: string; repaired: number } | null {
+  const sites = findCallSites(content, entry, defStart, defEnd)
+  if (!sites.length) return { content, repaired: 0 }
+  if (!newSig) return null // signature unknown → can't vouch for call sites
+
+  const hasRest = newSig.params.some(p => p.rest)
+  const required = newSig.params.filter(p => !p.optional && !p.rest).length
+  const total = newSig.params.length
+  const fits = (n: number) => n >= required && (hasRest || n <= total)
+
+  if (sites.every(s => fits(s.args.length))) return { content, repaired: 0 }
+
+  // Safe mechanical repair: the new params are a positional prefix of the old ones
+  // (trailing params dropped) → trim each call to the new arity.
+  const oldNames = oldSig?.params.map(p => p.name)
+  const newNames = newSig.params.map(p => p.name)
+  const isPrefix = !!oldNames && !hasRest && newNames.length < oldNames.length &&
+    newNames.every((n, i) => n !== null && n === oldNames[i])
+  if (!isPrefix) return null
+
+  let out = content
+  let repaired = 0
+  for (const s of [...sites].sort((a, b) => b.open - a.open)) {
+    if (fits(s.args.length)) continue
+    if (s.args.length < total) return null // too few args even for the new signature
+    out = out.slice(0, s.open + 1) + s.args.slice(0, total).join(', ') + out.slice(s.close)
+    repaired++
+  }
+  return { content: out, repaired }
+}
+
 /** End index (past trailing `;` if present) of the statement whose RHS begins at `from` —
  * scans at bracket depth 0 for a `;` or a blank-line boundary. */
 function scanStatementEnd(content: string, from: number): number {
@@ -167,11 +420,23 @@ export async function planEmit(
     if (isModifyRequest(nl)) {
       const span = extractFunctionSpan(existing, entry)
       if (span) {
-        const replaced =
-          existing.slice(0, span.start) + code.trim() + existing.slice(span.end)
+        const original = existing.slice(span.start, span.end)
+        const oldSig = parseSignature(original, entry)
+        // Keep the file's type annotations: graft the original's param/return types onto
+        // untyped certified code (positional, arity-equal only — best-effort).
+        const spliced = graftAnnotations(code.trim(), original, entry)
+        const newSig = parseSignature(spliced, entry)
+        const replaced = existing.slice(0, span.start) + spliced + existing.slice(span.end)
+        // If the signature changed, existing call sites must still fit (esbuild won't
+        // catch arity breaks) — trim trailing args when that's mechanically safe.
+        const reconciled = reconcileCallSites(replaced, entry, span.start, span.start + spliced.length, newSig, oldSig)
+        if (!reconciled) {
+          return fresh(`certified ${entry} changes its signature in a way existing call sites in ${targetPath} can't absorb → new file instead (existing file left untouched)`)
+        }
         try {
-          await transform(replaced, { loader: 'ts', format: 'esm', target: 'node18' })
-          return { rel: targetPath, content: replaced, mode: 'modify', detail: `replaced ${entry} in ${targetPath} with the certified implementation (full file recompiles)` }
+          await transform(reconciled.content, { loader: 'ts', format: 'esm', target: 'node18' })
+          const extra = reconciled.repaired ? `; updated ${reconciled.repaired} call site(s) for the new signature` : ''
+          return { rel: targetPath, content: reconciled.content, mode: 'modify', detail: `replaced ${entry} in ${targetPath} with the certified implementation (full file recompiles${extra})` }
         } catch {
           return fresh(`in-place replacement of ${entry} in ${targetPath} would not compile → new file instead (existing file left untouched)`)
         }
