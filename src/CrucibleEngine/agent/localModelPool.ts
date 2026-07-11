@@ -69,10 +69,22 @@ export async function unloadModel(id: string): Promise<void> {
   loaded.delete(id)
 }
 
+/** Thinking models (MiniCPM5) emit a <think>…</think> scratchpad before the answer.
+ *  Callers want only the answer: take what follows the last closing tag when present,
+ *  otherwise strip the markers — a truncated think block still beats an empty string. */
+function stripThinkBlock(raw: string): string {
+  const parts = raw.split('</think>')
+  if (parts.length > 1) {
+    const after = parts[parts.length - 1].trim()
+    if (after) return after
+  }
+  return raw.replace(/<\/?think>/g, '').trim()
+}
+
 /** Same shape as fmReact's callFm(): system+user in, plain text out. */
 export async function callLocalModel(id: string, system: string, user: string): Promise<string> {
   const { session } = await loadModel(id)
   const prompt = system ? `${system}\n\n${user}` : user
   const response = await session.prompt(prompt)
-  return String(response ?? '').trim()
+  return stripThinkBlock(String(response ?? ''))
 }

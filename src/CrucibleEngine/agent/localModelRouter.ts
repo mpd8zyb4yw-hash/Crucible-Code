@@ -16,19 +16,16 @@ import { modelStatus, isModelEnabled, isFireAllMode, getPinnedModelId } from './
 import { callLocalModel } from './localModelPool'
 import { fmDirectAnswer, checkFmAvailable } from './fmReact'
 import { recordOutcome, markWin } from '../localModels/telemetry'
-import { correctArithmetic } from '../domainVerifiers'
+import { type CandidateAnswer, scoreAnswer, strengthenCandidates } from './consensus'
+import { runDebate, type DebatePeer, type DebateResult } from './debate'
+
+// Re-exported so existing importers (__strengthen_bench) keep working after the move to consensus.ts.
+export { strengthenCandidates, type CandidateAnswer } from './consensus'
 
 const TIER_RANK: Record<LocalModelSpec['tier'], number> = { fast: 0, balanced: 1, quality: 2 }
 const CORROBORATE_DOMAINS = new Set<Domain>(['code', 'reasoning'])
 const ESCALATE_BELOW = 0.5
 
-export interface CandidateAnswer {
-  modelId: string
-  modelLabel: string
-  text: string
-  confidence: number
-  reason: string
-}
 
 export interface RoutedAnswer {
   text: string
@@ -46,6 +43,9 @@ export interface RoutedAnswer {
   contributors: string[]
   /** How the final answer was picked — surfaced in the UI, not just for debugging. */
   method: 'single-model' | 'oracle-arithmetic' | 'consensus-vote' | 'plurality-fallback'
+  /** Full council-debate transcript when the answer went through cross-examination —
+   *  drives the debate card in the chat UI. Absent on single-model fast paths. */
+  debate?: DebateResult
 }
 
 function readyModels(): LocalModelSpec[] {
@@ -62,6 +62,25 @@ export function hasReadyLocalModels(): boolean {
   return readyModels().length > 0
 }
 
+/**
+ * The device's available council seats for one query: ready GGUF peers up to the RAM
+ * budget, plus Apple FM (OS-hosted, never counted against the budget). Used by callers
+ * that convene a debate around an externally-produced draft (e.g. the strict-mode
+ * answer engine) rather than routing through routeLocalModelQuery.
+ */
+export async function councilPeers(user: string): Promise<DebatePeer[]> {
+  const candidates = readyModels()
+  const fmUp = await checkFmAvailable().catch(() => false)
+  const domain = classifyDomain(user)
+  const primary = pickPrimary(domain, candidates)
+  const ordered = primary ? [primary, ...candidates.filter(c => c.id !== primary.id)] : candidates
+  const peers: DebatePeer[] = ordered.slice(0, deviceParallelBudget()).map(spec => ({
+    modelId: spec.id, modelLabel: spec.label, call: (s: string, u: string) => callLocalModel(spec.id, s, u),
+  }))
+  if (fmUp) peers.push({ modelId: 'track-s-fm', modelLabel: 'Apple On-Device (Track S)', call: (_s: string, u: string) => fmDirectAnswer(u) })
+  return peers
+}
+
 /** Best-fit model for a domain: strength match first, then the cheapest tier. */
 function pickPrimary(domain: Domain, candidates: LocalModelSpec[]): LocalModelSpec | undefined {
   const withMatch = candidates.filter(m => m.strengths.includes(domain))
@@ -69,46 +88,17 @@ function pickPrimary(domain: Domain, candidates: LocalModelSpec[]): LocalModelSp
   return [...pool].sort((a, b) => TIER_RANK[a.tier] - TIER_RANK[b.tier])[0]
 }
 
-/** How many models this device can usefully run at once — degrades gracefully on low-RAM/core machines. */
+/** How many GGUF models this device can usefully run at once — degrades gracefully on
+ *  low-RAM/core machines. Counts ONLY in-process GGUF peers: Apple FM runs inside the
+ *  OS's own model service and costs this process nothing, so it is never budgeted here.
+ *  macOS reports file-cache pages as "used", so raw freemem() reads near-zero on a
+ *  healthy machine — floor the estimate at a quarter of total RAM (reclaimable). */
 function deviceParallelBudget(): number {
-  const freeGB = os.freemem() / 2 ** 30
+  const freeGB = Math.max(os.freemem() / 2 ** 30, os.totalmem() / 2 ** 30 * 0.25)
   const cores = os.cpus()?.length ?? 2
   if (freeGB >= 12 && cores >= 8) return 3
   if (freeGB >= 6 && cores >= 4) return 2
   return 1
-}
-
-/** Cheap, local, no-inference confidence heuristic — not a model call. */
-function scoreAnswer(answer: string): { score: number; reason: string } {
-  const trimmed = answer.trim()
-  if (!trimmed) return { score: 0, reason: 'empty answer' }
-  if (trimmed.length < 8) return { score: 0.2, reason: 'answer too short to be useful' }
-  if (/\b(i (don'?t|cannot|can'?t) (know|help|answer))\b/i.test(trimmed)) {
-    return { score: 0.15, reason: 'model declined to answer' }
-  }
-  if (/\[object Object\]|undefined|NaN/.test(trimmed)) {
-    return { score: 0.1, reason: 'malformed output' }
-  }
-  return { score: 0.75, reason: 'plausible answer' }
-}
-
-/** Rough lexical overlap between two answers — a cheap stand-in for "do these agree". */
-function agrees(a: string, b: string): boolean {
-  // Numeric veto first: two answers asserting different standalone numbers are NOT in
-  // agreement no matter how much surrounding boilerplate they share ("The answer is 42"
-  // vs "The answer is 17" must not be treated as corroborating).
-  const numbers = (s: string) => new Set((s.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number))
-  const na = numbers(a), nb = numbers(b)
-  if (na.size && nb.size) {
-    const overlap = [...na].some(n => nb.has(n))
-    if (!overlap) return false
-  }
-  const words = (s: string) => new Set(s.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [])
-  const wa = words(a), wb = words(b)
-  if (wa.size < 3 || wb.size < 3) return false // too short to judge agreement reliably
-  let shared = 0
-  for (const w of wa) if (wb.has(w)) shared++
-  return shared / Math.min(wa.size, wb.size) >= 0.3
 }
 
 async function callAsCandidate(
@@ -173,96 +163,75 @@ export async function routeLocalModelQuery(system: string, user: string): Promis
   }
 
   const budget = deviceParallelBudget()
-  const others: Array<{ modelId: string; modelLabel: string; call: () => Promise<string> }> = []
+  const ggufOthers: Array<{ modelId: string; modelLabel: string; call: (s: string, u: string) => Promise<string> }> = []
   for (const spec of candidates) {
     if (spec.id === primary.modelId) continue
-    others.push({ modelId: spec.id, modelLabel: spec.label, call: () => callLocalModel(spec.id, system, user) })
+    ggufOthers.push({ modelId: spec.id, modelLabel: spec.label, call: (s, u) => callLocalModel(spec.id, s, u) })
   }
-  if (fmUp && primary.modelId !== 'track-s-fm') {
-    others.push({ modelId: 'track-s-fm', modelLabel: 'Apple On-Device (Track S)', call: () => fmDirectAnswer(user) })
-  }
+  const fmPeer = fmUp && primary.modelId !== 'track-s-fm'
+    ? { modelId: 'track-s-fm', modelLabel: 'Apple On-Device (Track S)', call: (_s: string, u: string) => fmDirectAnswer(u) }
+    : null
 
   // Fire-all is an explicit, informed user override — it bypasses the device-parallel-budget
   // throttle that otherwise degrades fan-out on low-RAM/core machines, since the user has
   // deliberately asked for every downloaded model to run on every query regardless of cost.
-  const fanOut = fireAll ? others : others.slice(0, Math.max(0, budget - 1))
-  const results = (await Promise.all(fanOut.map(callAsCandidate))).filter((c): c is CandidateAnswer => !!c)
+  // The FM peer is appended OUTSIDE the budget slice: it lives in the OS's model service,
+  // not this process, so even a budget-1 (8GB) device seats a real two-voice council.
+  const fanOut = [
+    ...(fireAll ? ggufOthers : ggufOthers.slice(0, Math.max(0, budget - 1))),
+    ...(fmPeer ? [fmPeer] : []),
+  ]
 
-  const all = [primary, ...results].filter(c => c.text.trim().length > 0)
-  const strengthened = strengthenCandidates(all)
-  const winner = all.find(c => c.modelId === strengthened.winnerId) ?? primary
-  const rest = all.filter(c => c.modelId !== winner.modelId).sort((a, b) => b.confidence - a.confidence)
-  markWin(winner.modelId)
+  // Council debate (cont.58c) — co-equal peers, not primary-plus-backups: everyone proposes
+  // blind (the primary's answer is seeded, not recomputed), everyone cross-examines everyone,
+  // and the verdict is deterministic. Independent training lineages agreeing after adversarial
+  // review is the strongest corroboration this device can produce.
+  const peers: DebatePeer[] = [
+    {
+      modelId: primary.modelId,
+      modelLabel: primary.modelLabel,
+      call: primary.modelId === 'track-s-fm'
+        ? (_s, u) => fmDirectAnswer(u)
+        : (s, u) => callLocalModel(primary.modelId, s, u),
+    },
+    ...fanOut,
+  ]
+  const debate = await runDebate(peers, system, user, {
+    seedProposals: [{ modelId: primary.modelId, modelLabel: primary.modelLabel, text: primary.text }],
+  })
+
+  if (!debate) {
+    // Every peer failed — primary's own answer (already scored) is all we have.
+    markWin(primary.modelId)
+    return { text: primary.text, modelId: primary.modelId, modelLabel: primary.modelLabel, domain, confidence: primary.confidence, corroboration: [], corroborated: false, firedAll: fireAll, contributors: [primary.modelId], method: 'single-model' }
+  }
+
+  // Telemetry per peer from the propose round (the seeded primary was already recorded).
+  for (const e of debate.rounds[0].entries) {
+    if (e.modelId === primary.modelId) continue
+    const { score } = scoreAnswer(e.text)
+    recordOutcome({ modelId: e.modelId, latencyMs: e.latencyMs, confidence: e.errored ? 0 : score, won: false, errored: e.errored })
+  }
+  markWin(debate.winnerId)
+
+  const finalRound = debate.rounds[debate.rounds.length - 1].entries
+  const rest: CandidateAnswer[] = finalRound
+    .filter(e => e.modelId !== debate.winnerId && !e.errored && e.text)
+    .map(e => { const { score, reason } = scoreAnswer(e.text); return { modelId: e.modelId, modelLabel: e.modelLabel, text: e.text, confidence: score, reason } })
+    .sort((a, b) => b.confidence - a.confidence)
 
   return {
-    text: strengthened.text,
-    modelId: winner.modelId,
-    modelLabel: winner.modelLabel,
+    text: debate.text,
+    modelId: debate.winnerId,
+    modelLabel: debate.winnerLabel,
     domain,
-    confidence: strengthened.confidence,
+    confidence: debate.confidence,
     corroboration: rest,
-    corroborated: strengthened.contributors.length > 1,
+    corroborated: debate.contributors.length > 1,
     firedAll: fireAll,
-    contributors: strengthened.contributors,
-    method: strengthened.method,
+    contributors: debate.contributors,
+    method: debate.method,
+    debate,
   }
 }
 
-/**
- * Turn N candidate answers into one strengthened result. Deterministic-first, in order:
- *  1. Oracle tie-break — if any candidate contains a checkable arithmetic claim, correct it
- *     with domainVerifiers.correctArithmetic (zero inference) and prefer whichever candidate
- *     was already numerically correct (or the highest-confidence one, corrected in place).
- *  2. Consensus vote — cluster candidates by mutual lexical agreement (`agrees`), pick the
- *     largest cluster, and report honest confidence proportional to cluster size. A single
- *     dissenting voice among agreeing peers should NOT be reported as high-confidence.
- *  3. Plurality fallback — no cluster of 2+ agrees; return the highest-confidence single
- *     answer, but confidence is capped low since nothing corroborated it.
- */
-export function strengthenCandidates(
-  candidates: CandidateAnswer[],
-): { text: string; winnerId: string; confidence: number; contributors: string[]; method: RoutedAnswer['method'] } {
-  const ranked = [...candidates].sort((a, b) => b.confidence - a.confidence)
-  const top = ranked[0]
-
-  // 1. Oracle tie-break for arithmetic claims — only trust this path when we actually found
-  //    a checkable expression (corrections.length or "already correct" is indistinguishable
-  //    from "nothing checkable" unless we also test raw candidates for evaluable claims).
-  for (const c of ranked) {
-    const { corrections } = correctArithmetic(c.text)
-    if (corrections.length > 0) {
-      // c had a wrong claim we can fix deterministically — prefer whichever candidate needed
-      // NO correction (i.e. was already right) among those checking the same expression.
-      const alreadyCorrect = ranked.find(other => correctArithmetic(other.text).corrections.length === 0
-        && new RegExp(corrections[0].expr.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(other.text))
-      if (alreadyCorrect) {
-        return { text: alreadyCorrect.text, winnerId: alreadyCorrect.modelId, confidence: 0.95, contributors: [alreadyCorrect.modelId], method: 'oracle-arithmetic' }
-      }
-      const fixed = correctArithmetic(c.text)
-      return { text: fixed.text, winnerId: c.modelId, confidence: 0.9, contributors: [c.modelId], method: 'oracle-arithmetic' }
-    }
-  }
-
-  // 2. Consensus vote — group by mutual agreement, take the largest cluster.
-  const clusters: CandidateAnswer[][] = []
-  for (const c of ranked) {
-    const cluster = clusters.find(cl => agrees(cl[0].text, c.text))
-    if (cluster) cluster.push(c)
-    else clusters.push([c])
-  }
-  clusters.sort((a, b) => b.length - a.length || (b[0].confidence - a[0].confidence))
-  const bestCluster = clusters[0]
-
-  if (bestCluster.length > 1) {
-    const rep = [...bestCluster].sort((a, b) => b.confidence - a.confidence)[0]
-    // Honest confidence: scales with agreement fraction, never inflated past what the
-    // agreeing group actually supports — a 2-of-5 plurality is NOT high confidence.
-    const agreementFraction = bestCluster.length / ranked.length
-    const confidence = Math.min(0.97, rep.confidence + agreementFraction * 0.25)
-    return { text: rep.text, winnerId: rep.modelId, confidence, contributors: bestCluster.map(c => c.modelId), method: 'consensus-vote' }
-  }
-
-  // 3. No agreement at all among 2+ candidates — genuine disagreement. Do not boost
-  //    confidence past the top candidate's own honest score.
-  return { text: top.text, winnerId: top.modelId, confidence: Math.min(top.confidence, 0.6), contributors: [top.modelId], method: 'plurality-fallback' }
-}

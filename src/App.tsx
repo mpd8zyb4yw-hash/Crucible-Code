@@ -1296,6 +1296,15 @@ export default function App() {
             continue
           }
 
+          // Council debate — co-equal local models proposed, cross-examined, and a
+          // deterministic verdict picked the answer. Drives the debate card.
+          if (parsed.type === 'local_debate') {
+            if (parsed.debate) {
+              setRounds(prev => prev.map(r => r.id === roundId ? { ...r, localDebate: parsed.debate } : r))
+            }
+            continue
+          }
+
           // Genealogy — contribution rates per model in final synthesis
           if (parsed.type === 'genealogy') {
             setRounds(prev => prev.map(r => r.id !== roundId ? r : {

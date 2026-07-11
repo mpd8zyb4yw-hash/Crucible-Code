@@ -45,6 +45,19 @@ export function classifyDomain(goal: string): Domain {
 
 export const LOCAL_MODEL_CATALOG: LocalModelSpec[] = [
   {
+    id: 'minicpm5-1b',
+    label: 'MiniCPM5 1B',
+    params: '1B',
+    approxSizeGB: 0.69,
+    url: 'https://huggingface.co/openbmb/MiniCPM5-1B-GGUF/resolve/main/MiniCPM5-1B-Q4_K_M.gguf',
+    sha256: '81b64d05a23b17b34c475f42b3e72fbde62d4b92cc34541f7a8031d0752deafa',
+    filename: 'minicpm5-1b-q4_k_m.gguf',
+    license: 'Apache 2.0',
+    tier: 'balanced',
+    strengths: ['reasoning', 'code'],
+    strengthNote: 'Reasoning-dense 1B (2026): strong tool-use, code, and math for its size — the smallest council peer worth seating, and independent lineage from every other entry.',
+  },
+  {
     id: 'smollm2-1.7b',
     label: 'SmolLM2 1.7B Instruct',
     params: '1.7B',

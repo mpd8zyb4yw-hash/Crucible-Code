@@ -2,7 +2,7 @@
 import { useRef, memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import MoltenPour, { type MoltenPhase } from '../MoltenPour'
-import { CopyButton, FeedbackButtons, type DynamicModel, type Round } from './core'
+import { CopyButton, FeedbackButtons, type DynamicModel, type Round, type LocalDebateSummary } from './core'
 import { PipelineTheater, CritiqueGrid, narrateProcess } from './panels'
 import { AgentPanel, CollapsibleCode } from './AgentPanel'
 
@@ -19,6 +19,63 @@ import { AgentPanel, CollapsibleCode } from './AgentPanel'
 // without a layout reservation. Dropping the margin entirely removes the content shift;
 // the vessel now simply draws over whatever is above the card (transparent canvas, no
 // visual conflict) instead of pushing it out of the way.
+// ── Council debate card — co-equal on-device models: blind proposals, cross-
+// examination, deterministic verdict. Winner and revised positions are marked;
+// dissent is shown, not hidden. Used inside the ensemble process trail AND as a
+// standalone collapsible on local replies (the strict-path corroboration).
+export function CouncilDebateSection({ debate: d }: { debate: LocalDebateSummary }) {
+  const agreeCol = d.agreement === 'unanimous' ? 'rgba(77,220,160,0.9)'
+    : d.agreement === 'majority' ? 'rgba(255,200,80,0.9)'
+    : d.agreement === 'contested' ? 'rgba(248,124,124,0.9)'
+    : 'rgba(255,255,255,0.4)'
+  const finalRound = d.rounds[d.rounds.length - 1]
+  const proposeRound = d.rounds[0]
+  const methodLabel = d.method === 'oracle-arithmetic' ? 'machine-checked arithmetic'
+    : d.method === 'consensus-vote' ? 'consensus vote'
+    : d.method === 'plurality-fallback' ? 'unresolved split'
+    : 'single voice'
+  return (
+    <div>
+      <div style={{ fontSize: 9, letterSpacing: '0.09em', textTransform: 'uppercase' as const, color: 'rgba(130,160,255,0.55)', marginBottom: 4 }}>council debate</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' as const }}>
+        <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: agreeCol }}>{d.agreement}</span>
+        <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.4)' }}>{methodLabel}</span>
+        <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)', fontFamily: 'monospace' }}>{Math.round(d.confidence * 100)}%</span>
+        {d.rounds.length > 1 && <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.3)' }}>{d.rounds.length} rounds</span>}
+        {d.mindsChanged && <span style={{ fontSize: 9, color: 'rgba(130,160,255,0.7)' }}>cross-examination changed a position</span>}
+      </div>
+      {finalRound.entries.map(e => {
+        const isWinner = e.modelId === d.winnerId
+        const inConsensus = d.contributors.includes(e.modelId)
+        const proposed = proposeRound.entries.find(p => p.modelId === e.modelId)
+        const edgeCol = e.errored ? 'rgba(248,124,124,0.35)'
+          : isWinner ? 'rgba(77,220,160,0.5)'
+          : inConsensus ? 'rgba(130,160,255,0.4)'
+          : 'rgba(255,255,255,0.12)'
+        return (
+          <div key={e.modelId} style={{ paddingLeft: 9, borderLeft: `2px solid ${edgeCol}`, marginBottom: 7 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 2, flexWrap: 'wrap' as const }}>
+              <span style={{ fontSize: 10, fontWeight: 600, color: 'rgba(255,255,255,0.55)' }}>{e.modelLabel}</span>
+              {isWinner && <span style={{ fontSize: 8, letterSpacing: '0.09em', textTransform: 'uppercase' as const, color: 'rgba(77,220,160,0.8)', border: '1px solid rgba(77,220,160,0.3)', borderRadius: 3, padding: '1px 5px' }}>verdict</span>}
+              {!isWinner && inConsensus && <span style={{ fontSize: 8, letterSpacing: '0.09em', textTransform: 'uppercase' as const, color: 'rgba(130,160,255,0.7)', border: '1px solid rgba(130,160,255,0.25)', borderRadius: 3, padding: '1px 5px' }}>agreed</span>}
+              {!e.errored && !inConsensus && <span style={{ fontSize: 8, letterSpacing: '0.09em', textTransform: 'uppercase' as const, color: 'rgba(248,124,124,0.65)', border: '1px solid rgba(248,124,124,0.25)', borderRadius: 3, padding: '1px 5px' }}>dissented</span>}
+              {e.errored && <span style={{ fontSize: 8, letterSpacing: '0.09em', textTransform: 'uppercase' as const, color: 'rgba(248,124,124,0.65)' }}>unavailable</span>}
+              {e.changedPosition && <span style={{ fontSize: 8, letterSpacing: '0.06em', color: 'rgba(255,200,80,0.7)' }}>revised after review</span>}
+              {e.latencyMs > 0 && <span style={{ fontSize: 8, color: 'rgba(255,255,255,0.22)', fontFamily: 'monospace', marginLeft: 'auto' }}>{(e.latencyMs / 1000).toFixed(1)}s</span>}
+            </div>
+            {!e.errored && e.text && (
+              <div style={{ fontSize: 10.5, color: 'rgba(255,255,255,0.38)', lineHeight: 1.5, wordBreak: 'break-word' as const, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' }}>{e.text}</div>
+            )}
+            {e.changedPosition && proposed && proposed.text && (
+              <div style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.22)', lineHeight: 1.45, marginTop: 2, textDecoration: 'line-through', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' as const, overflow: 'hidden' }}>{proposed.text}</div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export function PourWrap({ active, phase, progress, children }: {
   active: boolean
   phase: MoltenPhase
@@ -307,6 +364,40 @@ export const MessageList = memo(function MessageList({
                           return pool ? `CRUCIBLE · FREE POOL${d ? ` · ${d.toUpperCase()}` : ''}` : 'CRUCIBLE · ON-DEVICE'
                         })()}
                       </div>
+                      {/* Council card on local replies — the strict-path corroboration:
+                          independent on-device models cross-examined this answer. */}
+                      {round.localDebate && (
+                        <details className="crucible-shows-work" style={{ marginTop: 10 }}>
+                          <summary style={{
+                            fontSize: 11, letterSpacing: '0.03em', cursor: 'pointer',
+                            userSelect: 'none' as const, listStyle: 'none',
+                            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' as const,
+                            padding: '7px 11px', borderRadius: 8,
+                            background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)',
+                            color: 'rgba(255,255,255,0.45)', transition: 'background 0.2s ease, border-color 0.2s ease',
+                          }}>
+                            <span className="crucible-sw-caret" style={{ fontFamily: 'monospace', fontSize: 10, color: 'rgba(255,255,255,0.3)', transition: 'transform 0.2s ease', display: 'inline-block' }}>▸</span>
+                            <span style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: 'rgba(130,160,255,0.55)', fontWeight: 600 }}>council</span>
+                            <span style={{
+                              minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const,
+                              color: round.localDebate.agreement === 'unanimous' ? 'rgba(77,220,160,0.7)'
+                                : round.localDebate.agreement === 'majority' ? 'rgba(255,200,80,0.7)'
+                                : round.localDebate.agreement === 'contested' ? 'rgba(248,124,124,0.7)'
+                                : 'rgba(255,255,255,0.4)',
+                            }}>
+                              {round.localDebate.contributors.length} of {round.localDebate.rounds[round.localDebate.rounds.length - 1].entries.length} voices {round.localDebate.agreement === 'unanimous' ? 'agree' : round.localDebate.agreement === 'majority' ? 'agree · majority' : round.localDebate.agreement === 'contested' ? 'agree · contested' : '· solo'}
+                              {'  ·  '}{Math.round(round.localDebate.confidence * 100)}%
+                            </span>
+                          </summary>
+                          <div className="crucible-sw-body" style={{
+                            marginTop: 8, padding: '13px 15px', borderRadius: 8,
+                            background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
+                            animation: 'panelUp 0.28s cubic-bezier(0.22,1,0.36,1)',
+                          }}>
+                            <CouncilDebateSection debate={round.localDebate} />
+                          </div>
+                        </details>
+                      )}
                     </>
                   )}
                   {round.synthesisDone && models.length > 0 && (() => {
@@ -354,6 +445,13 @@ export const MessageList = memo(function MessageList({
                      ...(dropped.length > 0 ? [{ label: `${dropped.length} dropped`, color: 'rgba(248,124,124,0.4)' }] : []),
                      ...(round.criticProblems && round.criticProblems.length > 0 ? [{ label: `${round.criticProblems.length} critic flag${round.criticProblems.length !== 1 ? 's' : ''}`, color: 'rgba(248,124,124,0.5)' }] : []),
                      ...(round.masterpiece?.connectionsSurvived ? [{ label: `masterpiece · ${round.masterpiece.connectionsSurvived} cross-domain`, color: 'rgba(130,160,255,0.55)' }] : []),
+                     ...(round.localDebate ? [{
+                       label: `council · ${round.localDebate.agreement}${round.localDebate.mindsChanged ? ' · minds changed' : ''}`,
+                       color: round.localDebate.agreement === 'unanimous' ? 'rgba(77,220,160,0.6)'
+                         : round.localDebate.agreement === 'majority' ? 'rgba(255,200,80,0.6)'
+                         : round.localDebate.agreement === 'contested' ? 'rgba(248,124,124,0.6)'
+                         : 'rgba(255,255,255,0.3)',
+                     }] : []),
                    ]
 
                    return (
@@ -443,6 +541,10 @@ export const MessageList = memo(function MessageList({
                                    })}
                                  </div>
                                )}
+
+                               {/* Council debate — co-equal local models: blind proposals,
+                                   cross-examination, deterministic verdict. */}
+                               {round.localDebate && <CouncilDebateSection debate={round.localDebate} />}
 
                                {/* Adversarial audit — critic findings, or all-clear fallback */}
                                <div>

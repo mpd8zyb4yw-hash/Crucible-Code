@@ -166,8 +166,9 @@ const mode: FireMode = pinnedModelId ? 'single' : pickingSingle ? 'single' : fir
         </span>
         <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
           Optional, free, open-weight models that run fully on this device — nothing downloads until you ask.
-          Crucible routes each query to the model best suited to it, and runs others in parallel to corroborate
-          when a query is ambiguous or high-stakes. A tray menu toggle exists for each model too.
+          Crucible routes each query to the model best suited to it, and convenes the others as a council when a
+          query is ambiguous or high-stakes: each model proposes blind, cross-examines its peers, and a
+          deterministic verdict picks the answer. A tray menu toggle exists for each model too.
         </span>
       </div>
 

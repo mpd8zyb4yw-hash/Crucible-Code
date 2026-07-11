@@ -42,6 +42,7 @@
     "answer:bench": "tsx src/CrucibleEngine/answer/__answer_bench.ts",
     "answer:iterate": "tsx src/CrucibleEngine/answer/__wordproblem_iterate_bench.ts",
     "vgr:bench": "tsx src/CrucibleEngine/reasoning/__vgr_bench.ts",
+    "debate:bench": "tsx src/CrucibleEngine/agent/__debate_bench.ts",
     "vgr:iterate": "tsx src/CrucibleEngine/reasoning/__iterate_bench.ts",
     "vgr:coderesearch": "tsx src/CrucibleEngine/reasoning/__code_research_bench.ts",
     "convo:coherence": "tsx __convo_coherence_bench.ts",

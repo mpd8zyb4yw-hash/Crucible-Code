@@ -227,6 +227,31 @@ export interface Round {
   animaTruths?: Array<{ observation: string; domain: string; confidencePct: number; confirmingInstances: number; fragility: string }>
   // Confidence-gated response commitment (low-confidence factual/reasoning answers)
   uncertainCommitment?: { overallScore: number; resolvingStep: string }
+  // Council debate (cont.58c) — co-equal local models propose blind, cross-examine each
+  // other, and a deterministic verdict picks the answer. Set from the 'local_debate' SSE
+  // event; absent when the answer came from a single model or a non-ensemble path.
+  localDebate?: LocalDebateSummary
+}
+
+export interface LocalDebateEntry {
+  modelId: string
+  modelLabel: string
+  text: string
+  latencyMs: number
+  errored: boolean
+  changedPosition?: boolean
+}
+
+export interface LocalDebateSummary {
+  agreement: 'unanimous' | 'majority' | 'contested' | 'solo'
+  method: 'single-model' | 'oracle-arithmetic' | 'consensus-vote' | 'plurality-fallback'
+  confidence: number
+  winnerId: string
+  winnerLabel: string
+  contributors: string[]
+  mindsChanged: boolean
+  totalLatencyMs: number
+  rounds: Array<{ kind: 'propose' | 'rebut'; entries: LocalDebateEntry[] }>
 }
 
 // ── Agent state (Section 7) — one reducer over the agent SSE event stream ─────

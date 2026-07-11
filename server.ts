@@ -51,7 +51,9 @@ import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
 import { listModelStatuses, downloadModel, deleteModel, setModelEnabled, setModelsLocation, getModelsConfig, setFireAllMode, setPinnedModelId } from './src/CrucibleEngine/agent/modelDownloadManager'
 import { isGgufRuntimeAvailable } from './src/CrucibleEngine/agent/localModelPool'
-import { routeLocalModelQuery, hasReadyLocalModels } from './src/CrucibleEngine/agent/localModelRouter'
+import { routeLocalModelQuery, hasReadyLocalModels, councilPeers } from './src/CrucibleEngine/agent/localModelRouter'
+import { runDebate } from './src/CrucibleEngine/agent/debate'
+import { classifyDomain } from './src/CrucibleEngine/agent/localModelCatalog'
 import { getStats } from './src/CrucibleEngine/localModels/telemetry'
 import { read_pdf } from './src/CrucibleEngine/tools/visionTools'
 import { runLearningCycle } from './src/CrucibleEngine/corpus/routingLearner'
@@ -3729,9 +3731,29 @@ app.post('/api/chat', async (req, res) => {
       // answer). Default mode ('1') keeps the GGUF ensemble → solveNonCodeTurn chain so an
       // OfflineEscalateError can still fall through to the external ensemble below.
       let routed: Awaited<ReturnType<typeof routeLocalModelQuery>> = null
+      let strictDebate: Awaited<ReturnType<typeof runDebate>> = null
       let answer: string
       if (_offlineConvMode === 'strict') {
         answer = (await answerQuery(message, { history: histSlice, emit: send, signal: turnSignal })).text
+        // Council corroboration (cont.58c): the answer engine's verified draft is seated as
+        // one voice and the local council (GGUF pool + Apple FM) cross-examines it. Display
+        // layer ONLY — the shipped text is never overruled by a lexical vote (answerQuery's
+        // deterministic critics outrank the council), but agreement/dissent is surfaced
+        // honestly in the debate card. Gated to corroboration domains to keep idle-chat cheap.
+        try {
+          const dom = classifyDomain(message)
+          if (answer && answer.trim() && (dom === 'code' || dom === 'reasoning')) {
+            const peers = await councilPeers(message)
+            if (peers.length >= 1) {
+              const engineVoice = { modelId: 'answer-engine', modelLabel: 'Crucible Answer Engine', call: async () => answer }
+              strictDebate = await runDebate([engineVoice, ...peers], '', message, {
+                seedProposals: [{ modelId: 'answer-engine', modelLabel: 'Crucible Answer Engine', text: answer }],
+              })
+            }
+          }
+        } catch (e: any) {
+          debugBus.emit('pipeline', 'council_corroboration_error', { query: message.slice(0, 60), error: String(e?.message ?? e) }, { severity: 'warn', requestId })
+        }
       } else {
         if (hasReadyLocalModels()) {
           try {
@@ -3791,6 +3813,37 @@ app.post('/api/chat', async (req, res) => {
           ? { contributors: routed.contributors, confidence: routed.confidence, method: routed.method, corroboratedBy: routed.corroboration.map(c => c.modelId) }
           : {}
         send({ type: 'layer1', modelId: provenanceModelId, model: provenanceModel, text: answer, done: true, ...provenanceExtra })
+        // Council-debate transcript (cont.58c) — when the local ensemble cross-examined
+        // itself, ship the full propose/rebut/verdict trail so the UI can render the
+        // debate card. Entry texts are clipped: the card shows positions, not essays.
+        const debateForUi = routed?.debate ?? strictDebate
+        if (debateForUi) {
+          const d = debateForUi
+          send({
+            type: 'local_debate',
+            debate: {
+              agreement: d.agreement,
+              method: d.method,
+              confidence: d.confidence,
+              winnerId: d.winnerId,
+              winnerLabel: d.winnerLabel,
+              contributors: d.contributors,
+              mindsChanged: d.mindsChanged,
+              totalLatencyMs: d.totalLatencyMs,
+              rounds: d.rounds.map(r => ({
+                kind: r.kind,
+                entries: r.entries.map(e => ({
+                  modelId: e.modelId,
+                  modelLabel: e.modelLabel,
+                  text: e.text.length > 600 ? e.text.slice(0, 600) + '…' : e.text,
+                  latencyMs: e.latencyMs,
+                  errored: e.errored,
+                  changedPosition: e.changedPosition === true,
+                })),
+              })),
+            },
+          })
+        }
         send({ type: 'stage', stage: 1, status: 'done' })
         send({ type: 'synthesis', modelId: provenanceModelId, model: 'Crucible', text: answer, done: true, replace: false, ...provenanceExtra })
         send({ type: 'stage', stage: 5, status: 'done' })
