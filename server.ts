@@ -3083,7 +3083,11 @@ app.post('/api/chat', async (req, res) => {
         }
 
         // ── Single-FILE solve — when not multi-file, or the multi-file branch didn't ship. ──
-        const vgr = handled ? null : await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2 })
+        const vgr = handled ? null : await solveCodingRequest(message ?? '', {
+          maxModelCalls: 8, beamWidth: 2,
+          converge: process.env.CRUCIBLE_CONVERGE === '1',
+          emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
+        })
         if (vgr) debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls }, { severity: 'info' })
         if (vgr && vgr.status === 'solved' && vgr.code && vgr.entry) {
           // Decide WHERE it lands: an explicit target path in the request → that file (append if
@@ -3100,9 +3104,16 @@ app.post('/api/chat', async (req, res) => {
           fs.writeFileSync(abs, plan.content)
           onFileMutated([abs])
           send({ type: 'tool_call', id: 'vgr_0', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', args: { path: rel } })
-          send({ type: 'tool_result', id: 'vgr_0', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${vgr.cases?.length ?? 0} executed cases passed, no external model)` })
-          send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified against ${vgr.cases?.length ?? 0} case(s) in ${vgr.search?.modelCalls ?? 0} model call(s) — ${vgr.detail}` })
-          const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — the model proposed, execution verified every case (${vgr.cases?.length ?? 0} passed). Zero external model calls.`
+          // Certification basis: case-based tiers report N executed cases; the property /
+          // metamorphic tiers carry `cases: null` and are certified against invariants, so
+          // "0 cases passed" would misread as "nothing verified". Describe what actually held.
+          const nCasesCert = vgr.cases?.length ?? 0
+          const certBasis = nCasesCert > 0
+            ? `${nCasesCert} executed case(s) passed`
+            : 'general invariants held — property/metamorphic certification'
+          send({ type: 'tool_result', id: 'vgr_0', tool: plan.mode === 'append' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${certBasis}, no external model)` })
+          send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified — ${certBasis} in ${vgr.search?.modelCalls ?? 0} model call(s) — ${vgr.detail}` })
+          const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — the model proposed, execution verified the result (${certBasis}). Zero external model calls.`
           send({ type: 'final', text: answer, meta: { vgrCertified: true, entry: vgr.entry, modelCalls: vgr.search?.modelCalls, confidence: 1 } })
           patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
           if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
@@ -3550,7 +3561,13 @@ app.post('/api/chat', async (req, res) => {
       // must fail FAST to the FM rather than burn the full budget (twoSum ran 88s pre-fix).
       const vgrTimeout = AbortSignal.timeout(Number(process.env.CRUCIBLE_VGR_PREGATE_MS ?? 40_000))
       const vgrSignal = AbortSignal.any([turnSignal, vgrTimeout])
-      const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 6, beamWidth: 2, signal: vgrSignal })
+      const vgr = await solveCodingRequest(message ?? '', {
+        maxModelCalls: 6, beamWidth: 2, signal: vgrSignal,
+        converge: process.env.CRUCIBLE_CONVERGE === '1',
+        // Forward VGR/iterate() reasoning thoughts (per-epoch convergence steps, proposer
+        // diagnostics) to the live stream so a convergence run is observable, not silent.
+        emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
+      })
       if (vgr.status === 'solved' && vgr.code) {
         const nCases = vgr.cases?.length ?? 0
         const how = /canonical reference/.test(vgr.detail ?? '')
