@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 66c — MODIFY-PATH INCREMENTS + MULTI-FILE MODIFY LIVE + CONSENSUS UNIFIED)
+## CURRENT STATE (last updated 2026-07-11, cont. 66d — AGENT-LOOP ORACLE CROSS-FILE BLINDNESS FIXED)
 
 **cont.66c (0cdb3d2 → ae93e56) — all three modify-path increments shipped + consensus unified, everything live/bench-verified.**
 
@@ -50,11 +50,22 @@ definition; factConsensus re-exports). consensus.agrees now falls back to claim-
 terse answers ("Paris." vs "The capital is Paris" now cluster). answer:bench 127/127, debate:bench 34/34.
 (factConsensus still calls localModels/orchestrator for ensemble voters — that part is live, not dead.)
 
+**cont.66d (52c22ce) — agent-loop oracle cross-file blindness FIXED.**
+Root cause was two-fold: (a) the oracle staged only relevance-ranked contextFiles (top-5
+searchIndex), so a sibling the candidate actually imports could miss the cut and every candidate
+failed Gate A with "Cannot find module './x'"; (b) universal.ts never passed projectPath to the
+oracle, so the node_modules symlink never happened on the agent-loop path either. Fix:
+oracle.stage() now resolves the staged files' relative-import closure against the real project
+(transitive, TS resolution order .ts/.tsx/index.ts/.js, candidate content always wins, never
+escapes the root) and copies exactly what the code needs; universal.ts threads projectPath into
+oracleOpts (pureCode already did). Proven by direct repro (candidate main.ts → ./greet → ./shout,
+no contextFiles: rejected before, behavioral-certified after) + vgr:bench 129/129. Residual gap:
+a candidate importing a sibling that does not exist yet anywhere (not staged, not on disk) still
+fails Gate A — that is a write-ordering question in the agent loop, not an oracle one.
+
 **Next, in order:**
-1. **Agent-loop per-file oracle is cross-file blind** — it typechecks each file in an isolated temp
-   dir, so ANY relative import fails tsc and it grinds to abstain (or worse, ships the files it could
-   check). Either give the oracle the sibling files, or route multi-file agent tasks through the VGR
-   multi-file machinery.
+1. **Live-FM confirm of the oracle-closure fix** on a real multi-file agent-loop task via
+   /api/chat (deterministic repro proven; the FM path is where mocks have lied before).
 2. **Signature-change propagation across the TREE** (call sites in OTHER files — single-file
    reconciliation shipped; whole-tree is the remaining bulk of mission item 1).
 3. **Consensus-vote premise corrections** (≥2 independent FM verdicts before a premise 'correction').
