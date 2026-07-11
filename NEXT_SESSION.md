@@ -17,7 +17,33 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 60 — DOGFOODING: coding-quality overhaul; canonical 0-API refs; 341/341)
+## CURRENT STATE (last updated 2026-07-11, cont. 61 — ITERATE convergence loop; then cont.60 coding overhaul)
+
+**cont.61 (902c4fd) — `iterate()`: the outer convergence loop the doctrine was missing.** `search()`
+is BOUNDED (abstains on a fixed budget/patience). `reasoning/iterate.ts` sits ABOVE it and turns a
+single search into "iterate until correct (or as-correct-as-reality-allows)":
+- **Progress-gated, not fixed-budget.** Runs search() as one EPOCH; keeps spending epochs *while the
+  best verdict score strictly improves* (escalating beam+calls). Climbs across epochs a single search
+  would abstain on.
+- **Research injection on stall.** When an epoch fails to improve, an optional `ResearchFn` folds
+  grounding into the next epoch — SAFE for the proposer (append `spec.context`) and, only with
+  independently-justified data, TIGHTENING for the verifier (merge `spec.acceptance`, e.g. a derived
+  counterexample). "Sound or nothing" — never inject a case the model merely believes.
+- **Deterministic termination.** Stops on exactly one of: certified pass · no-progress-after-research
+  for `stallLimit` epochs · reality budget (wall-clock / global model-call ceiling / epoch cap / abort).
+  The model NEVER decides to stop — "indefinite" only while provably improving.
+- **`__iterate_bench.ts` (npm run vgr:iterate, 12/12)** proves all 4 exits + climb-across-epochs +
+  sound-acceptance verifier-tightening, deterministically (mock proposer/verifier, no FM). tsc clean,
+  vgr:bench still 114/114.
+- **NOT yet wired live.** iterate() is a proven reusable primitive; nothing calls it in the request
+  path yet. NEXT: a code-domain `ResearchFn` (retrieve reference material / derive counterexamples) and
+  wrap `solveCodingRequest`'s model-invents tier in iterate() — deserves its own live-FM cycle (mocks
+  miss proposer/prompt reality, per cont.57f). Do NOT edit the contended server.ts merge region; wire
+  inside solve.ts.
+
+---
+
+## PRIOR STATE (cont. 60 — DOGFOODING: coding-quality overhaul; canonical 0-API refs; 341/341)
 
 **cont.60 — dogfooded via real /api/chat and fixed the coding path (benches were 322/322 GREEN while
 live coding shipped buggy unverified code — always dogfood).** A plain "write a TypeScript function …"
