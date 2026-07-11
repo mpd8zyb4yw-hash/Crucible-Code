@@ -15,7 +15,9 @@
 
 import { proposeCode } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
+import { makeCodeResearchFn, mergeCodeAcceptance } from './codeResearch'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
+import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -61,6 +63,40 @@ export async function solveCodeTask(
   return search(spec, proposer, verifier, opts)
 }
 
+/**
+ * CONVERGING solve: the same execution-grounded contract as solveCodeTask, but driven by
+ * iterate() — the outer loop keeps spending epochs while the best score is climbing and,
+ * when it stalls, injects the code-domain ResearchFn (prior-epoch counterexamples into the
+ * proposer; sound differential-consensus cases into the verifier). Certifies where a single
+ * bounded search() would abstain. Termination stays deterministic (pass / research-stall /
+ * reality budget). `research` defaults to the code research fn built from `nl`; pass a
+ * proposerOverride/research for deterministic tests (see __code_research_bench.ts).
+ */
+export async function iterateCodeTask(
+  input: SolveCodeInput & { nl?: string },
+  opts: IterateOpts<string> = {},
+  proposerOverride?: Proposer<string>,
+): Promise<IterateResult<string>> {
+  const spec: TaskSpec = {
+    goal: input.goal,
+    domain: 'code',
+    context: input.context,
+    acceptance: {
+      entry: input.entry,
+      entries: input.entries && input.entries.length > 1 ? input.entries : undefined,
+      cases: input.cases,
+      timeoutMs: input.timeoutMs,
+    } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+  }
+  const proposer: Proposer<string> = proposerOverride ?? proposeCode
+  const research = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal })
+  return iterate(spec, proposer, verifyCode, {
+    mergeAcceptance: mergeCodeAcceptance,
+    ...opts,
+    research,
+  })
+}
+
 export interface CodingRequestResult {
   /** 'solved' → certified code in .code; 'abstained' → no trustworthy spec/solution. */
   status: SearchResult<string>['status'] | 'abstained'
@@ -84,8 +120,39 @@ export interface CodingRequestResult {
  */
 export async function solveCodingRequest(
   nl: string,
-  opts: SearchOpts & { specSamples?: number; specComplete?: Completer; differential?: DifferentialOpts | false } = {},
+  opts: SearchOpts & {
+    specSamples?: number
+    specComplete?: Completer
+    differential?: DifferentialOpts | false
+    /**
+     * Opt-in convergence: on the case-based tiers (differential, model-invents), drive the
+     * search with iterate() so it keeps climbing across epochs and injects research on a
+     * stall, instead of a single bounded search(). A pure ADD — it can only certify MORE
+     * (a non-solve falls straight through to today's single-shot + poisoned-case recovery).
+     * Pass tuning via `iterate` (epoch/budget caps, differential opts for the research fn).
+     */
+    converge?: boolean
+    iterate?: Partial<IterateOpts<string>>
+  } = {},
 ): Promise<CodingRequestResult> {
+  // Shared converging attempt for the case-based tiers. Returns a solved CodingRequestResult
+  // or null (→ caller falls through to the single-shot path, preserving recovery/metaGate).
+  const tryConverge = async (
+    entry: string, cases: CodeAcceptance['cases'], detailPrefix: string,
+  ): Promise<CodingRequestResult | null> => {
+    if (!opts.converge) return null
+    const it = await iterateCodeTask({ goal: nl, nl, entry, cases }, {
+      signal: opts.signal, emit: opts.emit, ...opts.iterate,
+    })
+    if (it.status === 'solved' && it.solution && await metaGate(it.solution.value)) {
+      return {
+        status: 'solved', code: it.solution.value, entry, cases, search: null,
+        detail: `${detailPrefix} → converged in ${it.epochs} epoch(s) (${it.modelCalls} model call(s)); ${it.detail}`,
+      }
+    }
+    return null
+  }
+
   // Ground-truth priority (DOCTRINE.md — trust order): 1) the USER's own worked examples (gold),
   // 2) a NAME-GATED PROPERTY (sort=sorted-permutation, codec=roundtrip, …; a true invariant),
   // 2.5) a METAMORPHIC RELATION detected from the SPEC TEXT (name-independent; also a true
@@ -182,6 +249,8 @@ export async function solveCodingRequest(
     const diff = await deriveDifferentialSpec(nl, { ...opts.differential })
     if (diff.ok && diff.spec) {
       const { entry, cases } = diff.spec
+      const conv = await tryConverge(entry, cases, diff.detail)
+      if (conv) return conv
       const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
       if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
         return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
@@ -202,6 +271,8 @@ export async function solveCodingRequest(
   const extraction = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete })
   if (extraction.ok && extraction.spec) {
     const { entry, cases } = extraction.spec
+    const conv = await tryConverge(entry, cases, extraction.detail)
+    if (conv) return conv
     const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
     if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
       return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
