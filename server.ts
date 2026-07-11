@@ -3534,13 +3534,23 @@ app.post('/api/chat', async (req, res) => {
   // ship only a certified solution; on abstain, fall through UNCHANGED to the FM path below.
   // NB: fires for ANY triage tier — a "write a function" request classifies as 'full'
   // (substantive), so gating on tier would exclude exactly the coding requests we want.
-  if (process.env.CRUCIBLE_VGR !== '0' && mode !== 'agent'
+  // VGR certifies by EXECUTING JS/TS — it cannot verify Python/Go/Rust/etc., and proposing JS
+  // for a Python request would be doubly wrong. Skip the gate when another language is asked for
+  // (explicit language word OR a non-JS/TS file path) so those hand off to the FM immediately
+  // instead of burning the search budget on an unverifiable, wrong-language attempt.
+  const wantsNonJsLang = /\b(python|py|golang|rust|ruby|php|swift|kotlin|scala|haskell|elixir|c\+\+|c#|\bgo\b|\bjava\b|\bc\b)\b/i.test(message ?? '')
+    || /\.(py|go|rs|rb|php|java|swift|kt|cpp|cc|cs|c)\b/.test(message ?? '')
+  if (process.env.CRUCIBLE_VGR !== '0' && mode !== 'agent' && !wantsNonJsLang
       && (isCodeImplementationTask(message ?? '') || isCodeEditTask(message ?? ''))
       && !isMultiFileRequest(message ?? '')) {
     try {
       send({ type: 'stage', stage: 1, status: 'start' })
       send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates and certifying each by execution (no external model)…' })
-      const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 8, beamWidth: 2, signal: turnSignal })
+      // Time-box the search: canonical/property paths are instant; a non-certifiable function
+      // must fail FAST to the FM rather than burn the full budget (twoSum ran 88s pre-fix).
+      const vgrTimeout = AbortSignal.timeout(Number(process.env.CRUCIBLE_VGR_PREGATE_MS ?? 40_000))
+      const vgrSignal = AbortSignal.any([turnSignal, vgrTimeout])
+      const vgr = await solveCodingRequest(message ?? '', { maxModelCalls: 6, beamWidth: 2, signal: vgrSignal })
       if (vgr.status === 'solved' && vgr.code) {
         const nCases = vgr.cases?.length ?? 0
         const how = /canonical reference/.test(vgr.detail ?? '')
