@@ -36,6 +36,7 @@ import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
+import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectTargetPath, planEmit } from './src/CrucibleEngine/reasoning/emitPlan'
 import { isMultiFileRequest, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
@@ -2674,8 +2675,12 @@ app.post('/api/chat', async (req, res) => {
     // Classifies every agent-mode message before dispatch so we can handle
     // conversational_redirect (mid-task corrections) separately from new tasks.
     const agentSession = chatSessionId ? getOrCreateSession(chatSessionId) : null
+    // Capture whether a task was ALREADY running BEFORE this request — startTask() below
+    // flips this same session object to 'running', so any later status read is useless for
+    // "was the user mid-task when they sent this?". The build-clarifier gate needs this.
+    const hadActiveTaskBefore = agentSession?.status === 'running'
     const intentResult = classifyIntent(message ?? '', {
-      hasActiveTask: agentSession?.status === 'running',
+      hasActiveTask: hadActiveTaskBefore,
     })
     console.log(`[Agent] Intent: ${intentResult.intent} (${intentResult.confidence})`)
     debugBus.emit('agent', 'intent_classified', { intent: intentResult.intent, confidence: intentResult.confidence, sessionId: chatSessionId }, { severity: 'info' })
@@ -2737,6 +2742,29 @@ app.post('/api/chat', async (req, res) => {
     const taskHistoryCtx = chatSessionId ? buildTaskContext(chatSessionId) : ''
     // Accumulated session messages — used as initialMessages for context continuity across turns
     const sessionMessages = chatSessionId ? getSessionMessages(chatSessionId) : []
+    // ── Underspecified creation request → clarify, don't hallucinate ──────────
+    // "build me a game" (a generic verb + generic noun, no spec) has nothing to build
+    // FROM. The single agent loop, seeded with prior session messages, let the weak FM
+    // free-associate off stale history — it emitted a recycled greeting and reported
+    // "build complete · verified" (the 2026-07-11 nonsense the user caught). A capable
+    // collaborator asks the one question that unblocks the build. Deterministic reply,
+    // rendered as a normal chat turn (no agent card), un-poisonable by history. Skipped
+    // only when a task is actively RUNNING (a mid-task redirect the loop should own). A
+    // *completed* prior task must NOT suppress clarification of a brand-new vague build.
+    // (No isContinuationPhrase guard here — it false-positives on "build me a game", and
+    // genuine continuations like "run it" never match clarifyBuild in the first place.)
+    if (!resumable && !iterCheckpoint && !hadActiveTaskBefore) {
+      const buildClarify = clarifyBuild(message ?? '')
+      if (buildClarify) {
+        send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: buildClarify, done: true })
+        send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: buildClarify, done: true, replace: false })
+        patchActiveSessionRound(chatUser, chatRoundId, { synthesis: buildClarify, synthesisDone: true, synthStreaming: false })
+        debugBus.emit('agent', 'build_clarify', { message: (message ?? '').slice(0, 60) }, { severity: 'info' })
+        endAgent()
+        return
+      }
+    }
+
     // Build/update codebase index non-blocking; extract relevant context for this query
     let codebaseContext = ''
     try {

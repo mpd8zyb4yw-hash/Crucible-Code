@@ -124,9 +124,17 @@ export function classifyIntent(
     }
   }
 
+  // Creation/build requests — "build me a game", "make an app", "write a script". These
+  // are agentic (an artifact gets produced), NOT chat, and were previously misclassified
+  // as conversational_reply because the action-verb list below had no creation verbs.
+  if (/\b(build|make|create|write|code|develop|design|generate|implement|scaffold|program|whip up|put together)\b/i.test(msg)
+      && /\b(game|app|application|web ?site|web ?page|site|program|tool|script|project|dashboard|widget|demo|prototype|component|feature|function|class|page|bot|clone|calculator|simulator|animation|visuali[sz]ation|editor|quiz|puzzle|something)\b/i.test(msg)) {
+    return { intent: 'complex_task', confidence: 'high' }
+  }
+
   // Word count heuristic: short messages with action verbs = simple, long = complex
   const wordCount = msg.split(/\s+/).length
-  const hasActionVerb = /\b(open|launch|play|search|find|go|click|type|close|quit|download|install|navigate|browse)\b/i.test(msg)
+  const hasActionVerb = /\b(open|launch|play|search|find|go|click|type|close|quit|download|install|navigate|browse|build|make|create|write|code|develop|generate|implement)\b/i.test(msg)
 
   if (hasActionVerb) {
     if (wordCount <= 6) return { intent: 'simple_command', confidence: 'medium' }

@@ -23,6 +23,7 @@ import { isConversionQuestion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
 import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
 import { applyExplainCheck, checkExplanation } from './explainCheck'
+import { matchMeta } from './conversational'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -111,7 +112,16 @@ export function classifyFacets(message: string): AnswerFacets {
 // isn't gagged into a wrong one-liner on a reasoning problem, nor made verbose on a lookup.
 
 function systemPromptFor(facets: AnswerFacets, evidence: string): string {
-  const base = 'You are Crucible, an expert assistant. Be accurate above all — if you are not sure, say so plainly rather than guessing.'
+  // Identity + turn-anchoring + anti-roleplay are the load-bearing lines. Without them the
+  // weak FM (a) invents a persona from an ambiguous opener and carries it forward, and (b)
+  // starts speaking AS the user ("I'm studying English literature…") when prior turns bleed
+  // in. "Answer the MOST RECENT message" + "never speak as the user" kill both failure modes.
+  const base =
+    "You are Crucible, a private AI assistant that runs entirely on the user's own device. " +
+    'Answer the user\'s MOST RECENT message directly. Any earlier messages are context only — ' +
+    'do not repeat a previous answer, do not resume a task the user did not just ask for, and ' +
+    'never write as if you were the user (you respond TO the user, you are not them). ' +
+    'Be accurate above all — if you are not sure, say so plainly rather than guessing.'
   const grounding = evidence
     ? `\n\n## Retrieved evidence (ground your answer in THIS; do not contradict it)\n${evidence}`
     : ''
@@ -159,6 +169,16 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     facets, usedRetrieval: false, sources: [], corrections: 0, repaired: false,
   }
   debugBus.emit('pipeline', 'facets', { message: message.slice(0, 80), ...facets }, { severity: 'info' })
+
+  // Deterministic conversational layer — greetings, "who are you", "what can you do" are
+  // FIXED FACTS about Crucible, not something to reason over. Answering them here (before the
+  // FM is even consulted) is fast, un-poisonable, and correct even when the model is offline.
+  // This is the root fix for the "test → invented studying task → poisoned persona" failure.
+  const meta = matchMeta(message)
+  if (meta) {
+    debugBus.emit('pipeline', 'meta_response', { kind: meta.kind, message: message.slice(0, 60) }, { severity: 'info' })
+    return { text: meta.text, verified: true, abstained: false, ...base, facets: { ...facets, intent: 'converse' } }
+  }
 
   if (!(await checkFmAvailable())) {
     return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base }
