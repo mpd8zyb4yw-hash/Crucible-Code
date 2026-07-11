@@ -2621,7 +2621,10 @@ app.post('/api/chat', async (req, res) => {
   // Letter/substring counting is arithmetic, not generation: free models routinely hallucinate
   // it (pattern-completing a prior answer). Compute the real answer with zero model calls, before
   // any pipeline, so it's never wrong. Uses this server's own final-answer event shape.
-  if (mode !== 'agent' && mode !== 'seeker' && mode !== 'code' && slashAgentTool === null && !slash) {
+  // NB: `mode` DEFAULTS to 'code' (line ~2436), so we must NOT exclude 'code' here or the gate
+  // would never fire on a normal request. answerCountingQuery is precise (only "how many/count X
+  // in Y") so it can't hijack a real code-gen ask; we only skip explicit agent/seeker/tool tasks.
+  if (mode !== 'agent' && mode !== 'seeker' && slashAgentTool === null && !slash && !detectAgentTask(message ?? '')) {
     const countAns = answerCountingQuery(message ?? '')
     if (countAns) {
       res.setHeader('Content-Type', 'text/event-stream')
