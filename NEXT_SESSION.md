@@ -17,7 +17,35 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 59 — every answer lane now has a verifier; no-regression ledger live)
+## CURRENT STATE (last updated 2026-07-11, cont. 59b — ALL answer intents verified incl. explanations; 318/318)
+
+**cont.59b (same session, continued) — the remaining cont.59 levers all landed:**
+- **Unit conversion** (`answer/unitConvert.ts`): Tier 1 parses "<n> <unit> to <unit>" deterministically and
+  answers from an exact factor table with ZERO model involvement (samples:0 provenance → "no model
+  involved"); Tier 2 = K model-extracted setups + quorum on the CONVERTED value for odd phrasings.
+  Affine temperature handled; ambiguous unit homonyms (in/single letters) don't gate. LIVE: FM said
+  96.5604, table corrected to 96.56064 km/h.
+- **Multi-fact lookups** (factConsensus): list-shaped asks corroborate the claim SET — every draft claim
+  needs a resample-set quorum AND the claim count must match an asked count ("three largest").
+- **Explain spot checks** (`answer/explainCheck.ts`): THE last unverified lane. Checkable sub-claims
+  (years/measures/attributions) extracted deterministically, each judged in isolation by K decorrelated
+  verdicts; majority-refuted claims get a named caution appended (flags, never rewrites; split/unsure
+  never flags). LIVE: 3 claims, 6 verdicts. CRUCIBLE_EXPLAIN_CHECK=0 disables.
+- **Metamorphic live gap FIXED**: bare "sort" now uses a NUMERIC battery (string inputs only when prose
+  says strings/alphabetical) — the FM's correct (a,b)=>a-b no longer fails the relation and falls to
+  differential (which had certified the shared NaN misordering). Live `arrange` → metamorphic, 1 call.
+- bench:all now **318/318** across 8 suites. Every answerQuery intent (reason/lookup/explain/converse-adjacent
+  compute, dates, conversions) has at least one verifier lane.
+
+**Next levers (cont.59b ranking):** (a) grounding-entailment for RETRIEVAL answers (usedRetrieval currently
+bypasses all new lanes); (b) conversation-history-aware verification (follow-ups re-verify against prior
+turns); (c) explain-check upgrade: route numeric claims into the deterministic evaluators instead of FM
+verdicts; (d) compound conversions ("mpg to L/100km", currency excluded); (e) coding side: codec-roundtrip
+metamorphic for custom-named encode/decode pairs; differential shared-bug reduction via forced-diverse
+prompts (ask one impl in a deliberately different paradigm).
+
+---
+### (superseded cont.59 summary below, kept for rationale)
 
 **Read [`DOCTRINE.md`](./DOCTRINE.md) before anything else.** It supersedes all older framing.
 
