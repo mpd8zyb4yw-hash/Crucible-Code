@@ -17,7 +17,35 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-11, cont. 59c — FATAL chat-freeze fixed; retrieval grounding provenance; 322/322)
+## CURRENT STATE (last updated 2026-07-11, cont. 60 — DOGFOODING: coding-quality overhaul; canonical 0-API refs; 341/341)
+
+**cont.60 — dogfooded via real /api/chat and fixed the coding path (benches were 322/322 GREEN while
+live coding shipped buggy unverified code — always dogfood).** A plain "write a TypeScript function …"
+was NOT detected as an agent task, so it skipped the whole VGR block and shipped RAW FM code (a buggy
+slugify: trailing + doubled hyphens, comment claiming the correct output).
+- **VGR coding PRE-GATE** (server.ts, non-agent flow): every code-impl/edit request — ALL triage tiers
+  (a coding ask classifies 'full', so the first gate wrongly excluded it) — runs `solveCodingRequest`
+  and ships only execution-certified code INLINE; else falls through unchanged. Skips non-JS/TS
+  languages (VGR is JS/TS-execution only) and is time-boxed (`CRUCIBLE_VGR_PREGATE_MS`=40s) so a
+  non-certifiable function fails fast to the FM. twoSum 88s→19s certified; Python 35s→19s skip.
+- **CANONICAL reference library** (`metamorphicSpec.canonicalImpl`): a detected class
+  (slug/trim/sort/reverse/dedupe/max/min/sum/average/flatten/filter/case) ships a KNOWN-CORRECT impl
+  certified against its own invariant with **ZERO model calls** — slugify 102s+wrong → 0.1s+correct.
+- **Weak property families no longer certify**: `string-transform`/`object-transform` had only trivial
+  invariants (returns-a-string, idempotent) → false confidence; now `null` → fall to strong tiers.
+- **Strong STRING invariants** (slug/trim/upper/lower) + **counterexample-carrying `check()` signals**
+  (report concrete input→output + fix hint so a weak 3B converges) + **metaGate** (a strong invariant
+  is ground truth — differential/model-invented may never ship a candidate it rejects; closes the
+  shared-systematic-bug hole live) + **over-fire guards** (word-order reverse ≠ char reverse; sort-by-key
+  ≠ default sort). vgr:bench 114/114, bench:all **341/341**.
+- **NEXT / biggest coding gap:** PYTHON (and Go/Rust) are raw-FM passthrough — VGR execution-certifies
+  JS/TS only. A python-subprocess verifier + Python canonical refs would extend the certified path to
+  the most-requested language. Also: latency (canonical is instant but the turn is ~16-19s of pipeline
+  overhead — worth profiling the non-VGR stages).
+
+---
+
+## PRIOR STATE (cont. 59c — FATAL chat-freeze fixed; retrieval grounding provenance; 322/322)
 
 **cont.59c (897070c) — FATAL FIX: chat froze after one query.** The new answer-side verification lanes
 (fact consensus / explain spot-checks / recompute setups) fire 3-7 serialized FM calls per answer, but every
