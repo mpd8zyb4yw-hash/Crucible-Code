@@ -30,6 +30,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { extractFeatures } from '../synth/index'
+import { entryFromExamples } from '../synth/derive'
 
 export interface MetamorphicSpec {
   entry: string
@@ -317,7 +318,7 @@ function detectStringClass(lower: string, entry: string): MetamorphicSpec | null
  * pin the function uniquely).
  */
 export function deriveMetamorphicSpec(nl: string): MetamorphicSpec | null {
-  const entry = guessEntry(nl)
+  const entry = entryFromExamples(nl) || guessEntry(nl)
   if (!entry) return null
   const lower = nl.toLowerCase()
 

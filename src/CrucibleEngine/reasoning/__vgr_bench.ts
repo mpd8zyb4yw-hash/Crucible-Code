@@ -26,6 +26,7 @@ import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { detectTargetPath, mergeCertifiedSource, planEmit, planEmitTree } from './emitPlan'
+import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
 import type { CandidateFile } from './codeVerifier'
@@ -409,6 +410,20 @@ async function run() {
     'src/strings.ts', { 'src/app.ts': aliased })
   ok('aliased importer with an unabsorbable REQUIRED param → whole edit downgrades to fresh file',
     t7.primary.mode === 'create' && t7.propagated.length === 0, t7.notes.join('; '))
+
+  // ── Worked-example extraction: EMBEDDED in prose + multi-per-line + entry inference ──────
+  // Real /api/chat prompts state examples inside a sentence ("For example pad('hi', 5) returns
+  // '   hi'"); the whole-line-must-be-a-call extraction missed them → VGR got 0 user examples
+  // and abstained on ordinary modifies (live-confirmed). Scan embedded call→literal pairs.
+  const proseSpec = "Write a function pad(s, width). For example pad('hi', 5) returns '   hi' and pad('abc', 3) returns 'abc'."
+  const exEmbed = extractSpecExamples(proseSpec)
+  ok('embedded + multi-per-line examples both extracted from a prose sentence',
+    exEmbed.length === 2 && exEmbed[0].lhs === "pad('hi', 5)" && exEmbed[0].rhs === "'   hi'"
+    && exEmbed[1].lhs === "pad('abc', 3)" && exEmbed[1].rhs === "'abc'", JSON.stringify(exEmbed))
+  ok('prose with NO literal RHS is not mis-extracted (66e anti-prose guard holds)',
+    extractSpecExamples('Build me a slug(text) that converts text to a url slug').length === 0)
+  ok('entry inferred from the example call name, not stray prose ("takes only (s, width)")',
+    entryFromExamples("change pad so it takes only (s, width). pad('hi', 5) => '   hi'") === 'pad')
 
   // Multi-file merge: certified module source merged into an EXISTING file (splice same-named,
   // append new, union imports) — the modify-inside-multi-file building block.

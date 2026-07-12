@@ -43,6 +43,7 @@ import * as path from 'node:path'
 import { transform } from 'esbuild'
 import { fmComplete } from '../agent/fmReact'
 import { extractFeatures } from '../synth/index'
+import { entryFromExamples } from '../synth/derive'
 import type { CodeCase } from './codeVerifier'
 
 /** An implementation candidate: its source and a fingerprint (distinctness gate). */
@@ -303,7 +304,7 @@ export async function deriveDifferentialSpec(nl: string, opts: DifferentialOpts 
   const timeoutMs = opts.timeoutMs ?? 5000
   const sample = opts.sampleImpls ?? sampleImplsFM
 
-  const entry = (opts.entry && opts.entry.trim()) || extractFeatures(nl).exports[0] || guessEntry(nl)
+  const entry = (opts.entry && opts.entry.trim()) || entryFromExamples(nl) || extractFeatures(nl).exports[0] || guessEntry(nl)
   if (!entry) return { ok: false, reason: 'no entry function name could be inferred' }
 
   const impls = await sample(nl, entry, samples)

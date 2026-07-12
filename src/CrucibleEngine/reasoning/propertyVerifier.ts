@@ -21,7 +21,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { transform } from 'esbuild'
 import { extractFeatures } from '../synth/index'
-import { derivePropertyTests } from '../synth/derive'
+import { derivePropertyTests, entryFromExamples } from '../synth/derive'
 import type { Candidate, TaskSpec, Verdict } from './types'
 
 export interface PropertyAcceptance {
@@ -53,7 +53,7 @@ export function derivePropertySpec(nl: string): { entry: string; family: string;
     if (l.startsWith('prop(')) assertions.push(l)
   }
   if (!assertions.length) return null
-  const entry = extractFeatures(nl).exports[0] ?? ''
+  const entry = entryFromExamples(nl) || extractFeatures(nl).exports[0] || ''
   if (!entry) return null
   // The 'string-transform' / 'object-transform' families carry only TRIVIAL invariants
   // (returns-a-string, idempotent, shape-preserving) that a wrong impl also satisfies — they
