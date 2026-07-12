@@ -3,7 +3,7 @@
 //
 // Guards the long-horizon recall contract: turn 500 must still be able to see turn 1 when it's
 // relevant, recent turns are always kept, and the window stays within budget.
-import { selectMemory, buildRecallContext } from './conversationMemory'
+import { selectMemory, buildRecallContext, buildRecallContextAsync, semanticRecallActive } from './conversationMemory'
 import type { ConvTurn } from '../agent/fmReact'
 
 let pass = 0, fail = 0
@@ -96,6 +96,30 @@ console.log('\n== budget is actually enforced on the packed window ==')
   // Mandatory turns (recent+anchor) can nudge slightly over; allow a small margin over budget.
   check('packed size near/under budget', packedChars <= budget * 1.6, `packed ${packedChars} vs budget ${budget}`)
 }
+
+console.log('\n== semantic recall: a token-less back-reference still retrieves its turn ==')
+await (async () => {
+  // A middle turn about a bakery/inventory topic; the query is a synonym back-reference that shares
+  // NO salient tokens with it ("pastry ingredient stock" vs "bakery … flour and sugar inventory"),
+  // so lexical overlap scores 0 and drops it under a tight budget. Semantic embedding recovers it.
+  const convo: ConvTurn[] = [{ user: 'Hello, I want to chat about various random topics today', assistant: 'Sure!' }]
+  for (let i = 0; i < 6; i++) convo.push({ user: `random note ${i} about football scores and movie reviews`, assistant: `noted ${i}` })
+  convo.push({ user: 'I run a small bakery and use a spreadsheet to track flour and sugar inventory levels', assistant: 'A spreadsheet works but an app could help.' })
+  for (let i = 0; i < 6; i++) convo.push({ user: `random note ${i + 10} about football scores and movie reviews`, assistant: `noted ${i + 10}` })
+  const q = 'what did I say about managing my pastry ingredient stock earlier'
+  const opts = { recentKeep: 2, anchorKeep: 1, budgetChars: 520, perTurnClip: 200 }
+  const has = (s: string) => /bakery|flour and sugar/i.test(s)
+  const lex = buildRecallContext(convo, q, opts)
+  check('lexical alone MISSES the token-less back-reference (baseline)', !has(lex.recallBlock), lex.recallBlock)
+  if (!semanticRecallActive()) {
+    console.log('  SKIP semantic pull assertions — ONNX embeddings unavailable (hash fallback ≈ lexical)')
+    return
+  }
+  const sem = await buildRecallContextAsync(convo, q, opts)
+  check('semantic recall RECOVERS the bakery turn lexical dropped', has(sem.recallBlock), sem.recallBlock)
+  const neg = await buildRecallContextAsync(convo, 'who won the champions league final match', opts)
+  check('semantic recall does NOT false-pull the bakery turn for an unrelated query', !has(neg.recallBlock))
+})()
 
 console.log(`\n${pass}/${pass + fail} passed`)
 if (fail > 0) process.exit(1)

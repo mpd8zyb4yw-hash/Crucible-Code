@@ -26,7 +26,7 @@ import { applyExplainCheck, checkExplanation } from './explainCheck'
 import { matchMeta } from './conversational'
 import { answerWithWebGrounding } from './groundedAnswer'
 import { isCodingQuery } from '../retrieval/retrievalLayer'
-import { buildRecallContext } from './conversationMemory'
+import { buildRecallContextAsync } from './conversationMemory'
 import { detectTruncation, buildContinuationMessages, stitchContinuation } from './longOutput'
 
 export type AnswerIntent = 'lookup' | 'definition' | 'explain' | 'reason' | 'converse'
@@ -255,7 +255,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // older turns THIS message needs (first-turn anchor + relevance-retrieved) are surfaced as a
   // labeled "earlier in this conversation" evidence block in the system prompt — the one place the
   // model reliably reads facts. This is what lets turn 500 recall turn 1. Deterministic, no summary.
-  const recall = buildRecallContext(rawHistory, message)
+  const recall = await buildRecallContextAsync(rawHistory, message)
   const history = recall.recentTurns
   if (recall.recalledCount > 0 || recall.omitted > 0) {
     debugBus.emit('pipeline', 'memory_window', { total: Array.isArray(rawHistory) ? rawHistory.length : 0, recent: history.length, recalled: recall.recalledCount, omitted: recall.omitted }, { severity: 'info' })

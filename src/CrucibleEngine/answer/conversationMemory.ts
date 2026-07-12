@@ -22,9 +22,17 @@
 // dropped, a compact "[…N earlier turns omitted…]" marker is inserted so the model knows there is
 // unshown history rather than assuming the shown turns are the whole conversation.
 //
-// Pure and deterministic: no model calls, no network. Same inputs → same window, every time.
+// The LEXICAL selection (selectMemory / buildRecallContext) is pure and deterministic: no model
+// calls, no network, same inputs → same window, every time. It matches on shared salient TOKENS,
+// so a back-reference that shares no words with the turn it means ("that thing we discussed" →
+// a turn about "the bakery inventory app") won't retrieve. buildRecallContextAsync adds a bounded,
+// best-effort SEMANTIC supplement on top: when the lexical pass is thin (vague/back-reference
+// query), it embeds the query + the older turns lexical missed (on-device MiniLM, cached) and pulls
+// in the closest by cosine. It only ever ADDS turns the lexical pass didn't already keep, degrades
+// to the lexical result if embeddings are unavailable, and is gated by CRUCIBLE_SEMANTIC_RECALL.
 
 import type { ConvTurn } from '../agent/fmReact'
+import { embed, cosineSimilarity, isOnnxAvailable } from '../masterpiece/corpus/embed'
 
 export interface MemoryOpts {
   /** Char budget for the assembled history (≈ 4 chars/token). Default fits a few thousand tokens
@@ -184,17 +192,126 @@ export function buildRecallContext(history: ConvTurn[] | undefined, currentMessa
     return { recentTurns, recallBlock: '', recalledCount: 0, omitted: older.length }
   }
 
-  const lines = sel.keptIndex.map(i => {
-    const t = older[i]
-    const u = clip(t.user, opts.perTurnClip ?? DEFAULT_CLIP)
-    const a = clip(t.assistant, 300)
-    return `- (turn ${i + 1}) User: ${u}${a ? `\n  You replied: ${a}` : ''}`
-  })
-  const recallBlock = lines.join('\n')
+  const recallBlock = sel.keptIndex.map(i => renderRecallLine(older[i], i, opts)).join('\n')
   return {
     recentTurns,
     recallBlock,
     recalledCount: sel.keptIndex.length,
     omitted: older.length - sel.keptIndex.length,
   }
+}
+
+function renderRecallLine(t: ConvTurn, originalIdx: number, opts: MemoryOpts): string {
+  const u = clip(t.user, opts.perTurnClip ?? DEFAULT_CLIP)
+  const a = clip(t.assistant, 300)
+  return `- (turn ${originalIdx + 1}) User: ${u}${a ? `\n  You replied: ${a}` : ''}`
+}
+
+// ── Semantic recall supplement ──────────────────────────────────────────────────
+// Lexical relevance misses a back-reference that shares no salient tokens with its target. This
+// adds the closest older turns by EMBEDDING cosine — but only when the lexical pass was thin (so a
+// well-specified query pays zero embedding cost) and only turns lexical didn't already keep. On the
+// hash fallback (ONNX unavailable) the embedding degrades to content-word overlap ≈ lexical, so the
+// worst case is "no worse than lexical". Bounded: scans at most SEM_SCAN candidates, adds ≤ SEM_MAX.
+// MiniLM cosine for topically-related but differently-worded short turns lands ~0.20–0.40, while
+// unrelated pairs sit near 0 (measured: a bakery/inventory turn scores 0.24 against a "pastry
+// ingredient stock" back-reference vs −0.01 for football filler). A 0.22 floor separates the two
+// with margin; the SEM_MAX add-cap bounds the blast radius of a borderline pull either way.
+const SEM_MIN = Number(process.env.CRUCIBLE_SEMANTIC_MIN ?? 0.22)   // cosine floor to count as related
+const SEM_MAX = Number(process.env.CRUCIBLE_SEMANTIC_MAX_ADD ?? 3)  // most extra turns to pull in
+const SEM_SCAN = Number(process.env.CRUCIBLE_SEMANTIC_SCAN ?? 120)  // candidate cap (bounds cost)
+
+// Turn-embedding cache so a turn is embedded once across requests, not re-embedded every call.
+const _turnEmb = new Map<string, Float32Array>()
+const EMB_CACHE_MAX = 4000
+
+function embedTextFor(t: ConvTurn): string {
+  // Weight the USER side (what they cared about); a little assistant context helps disambiguate.
+  return clip(t.user, 400) + (t.assistant ? ' ' + clip(t.assistant, 200) : '')
+}
+
+async function embedTurnCached(t: ConvTurn): Promise<Float32Array> {
+  const key = `${t.user ?? ''} ${t.assistant ?? ''}`
+  const hit = _turnEmb.get(key)
+  if (hit) return hit
+  const v = await embed(embedTextFor(t))
+  if (_turnEmb.size >= EMB_CACHE_MAX) {
+    const oldest = _turnEmb.keys().next().value
+    if (oldest !== undefined) _turnEmb.delete(oldest)
+  }
+  _turnEmb.set(key, v)
+  return v
+}
+
+/** Return `keptIndex` plus any older turns that are semantically close to `message` but were
+ *  lexically missed. Best-effort: on any failure returns `keptIndex` unchanged. */
+async function addSemanticTurns(older: ConvTurn[], message: string, keptIndex: number[], opts: MemoryOpts): Promise<number[]> {
+  const want = salientTokens(message)
+  // Only spend embeddings when lexical is THIN — a vague/back-reference query (few salient tokens)
+  // or one where lexical matched almost nothing. Well-specified queries stay on the free fast path.
+  const lexicalHits = keptIndex.filter(i => relevance(older[i], want) > 0).length
+  if (want.size > 3 && lexicalHits > 1) return keptIndex
+
+  const keptSet = new Set(keptIndex)
+  const cand: number[] = []
+  for (let i = older.length - 1; i >= 0 && cand.length < SEM_SCAN; i--) if (!keptSet.has(i)) cand.push(i)
+  if (cand.length === 0) return keptIndex
+
+  const qv = await embed(message)
+  const scored: Array<{ i: number; s: number }> = []
+  for (const i of cand) scored.push({ i, s: cosineSimilarity(qv, await embedTurnCached(older[i])) })
+  scored.sort((a, b) => b.s - a.s)
+
+  const perTurnClip = opts.perTurnClip ?? DEFAULT_CLIP
+  const budget = opts.budgetChars ?? DEFAULT_BUDGET
+  const cost = (i: number) => clip(older[i].user, perTurnClip).length + clip(older[i].assistant, perTurnClip).length + 24
+  let used = keptIndex.reduce((s, i) => s + cost(i), 0)
+  const out = [...keptIndex]
+  let added = 0
+  for (const { i, s } of scored) {
+    if (added >= SEM_MAX || s < SEM_MIN) break
+    const c = cost(i)
+    if (used + c > budget) continue
+    out.push(i); used += c; added++
+  }
+  return out
+}
+
+/**
+ * Async superset of buildRecallContext: the same lexical selection, plus a bounded semantic pass
+ * that recovers older turns a token-only match would miss. Falls back to the exact lexical result
+ * when semantic recall is disabled or embeddings are unavailable.
+ */
+export async function buildRecallContextAsync(history: ConvTurn[] | undefined, currentMessage: string, opts: MemoryOpts = {}): Promise<RecallContext> {
+  const all = Array.isArray(history) ? history.filter(h => h && (h.user || h.assistant)) : []
+  const n = all.length
+  const recentKeep = Math.max(0, opts.recentKeep ?? DEFAULT_RECENT)
+  const recentStart = Math.max(0, n - recentKeep)
+  const recentTurns = all.slice(recentStart)
+  if (recentStart === 0) return { recentTurns, recallBlock: '', recalledCount: 0, omitted: 0 }
+
+  const older = all.slice(0, recentStart)
+  const lexOpts: MemoryOpts = {
+    ...opts,
+    recentKeep: 0,
+    anchorKeep: Math.max(1, opts.anchorKeep ?? DEFAULT_ANCHOR),
+    budgetChars: opts.budgetChars ?? DEFAULT_BUDGET,
+  }
+  const sel = selectMemory(older, currentMessage, lexOpts)
+  let keptIndex = sel.keptIndex
+  if (process.env.CRUCIBLE_SEMANTIC_RECALL !== '0') {
+    try { keptIndex = await addSemanticTurns(older, currentMessage, keptIndex, lexOpts) }
+    catch { /* best-effort: the lexical selection stands */ }
+  }
+  if (keptIndex.length === 0) return { recentTurns, recallBlock: '', recalledCount: 0, omitted: older.length }
+
+  const sorted = [...keptIndex].sort((a, b) => a - b)
+  const recallBlock = sorted.map(i => renderRecallLine(older[i], i, opts)).join('\n')
+  return { recentTurns, recallBlock, recalledCount: sorted.length, omitted: older.length - sorted.length }
+}
+
+/** True when real (ONNX) semantic embeddings are active — used by benches to assert synonymy
+ *  recall only when the neural model is present (the hash fallback is lexical-equivalent). */
+export function semanticRecallActive(): boolean {
+  return process.env.CRUCIBLE_SEMANTIC_RECALL !== '0' && isOnnxAvailable()
 }
