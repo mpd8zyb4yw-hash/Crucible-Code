@@ -59,7 +59,38 @@
     creation verb (stable-sort order preserved). ground:bench 8/8→**11/11**, bench:all **373/373**, tsc
     clean.
 
-**TOP NEXT ITEMS:** (1) **re-verify absolute latencies on a SINGLE server** — cont.67's numbers were ~2x inflated by two instances sharing one FM daemon (concurrency-1 fmQueue). The structural wins (streaming, deferred council) are verified; the real single-user ms are unknown. (2) wire a real agentic consumer for MiniCPM. (3) the streamed answer is long/verbose on some parametric turns (~500 tokens) — consider a tighter length target for the direct path too. (4) DONE (item 11). Residual: intent tie-break is title-parenthetical only — same-base ties WITHOUT a Wikipedia disambiguator (bare titles) still fall to overlap+stable-sort.
+12. **Items 1-4 all closed (this session, commit a51337a + latency run):**
+    - **(1) Single-server latency re-verified** on a fresh PORT=3011 instance (auth via minted JWT,
+      SSE timestamps for first-token / answer-done / stream-end). ISOLATED numbers: direct/explain
+      "hash map" firstToken **2.0s**, answerDone 19s (~4800 chars — the explain cap is generous by
+      design); lookup "capital of Australia" firstToken **2.3s**, answerDone **7.0s** (659 chars);
+      "boiling point" 4.5s/11.4s (970 chars); grounded "useEffect" 2.6s/31.5s. **CONTENTION is the
+      inflator, worse than 2x:** the SAME capital lookup measured **68.7s** while the other chat's
+      3001 server was actively hitting the shared FM daemon, then **7.0s** isolated (~10x). Streaming
+      confirmed working single-user (first token 2-4.5s across all paths). HONEST GAP: explain-intent
+      answers are still long/slow (19s) — a simple "what is X" classified `explain` decodes ~1100
+      tokens; consider a lighter "definition" sub-intent.
+    - **(2) MiniCPM agentic consumer wired** — `corroborateFact` (answer/factConsensus.ts) now adds
+      MiniCPM (GGUF pool) as an independent-architecture voter, distinct from the ONNX registry
+      voters and sharing no confabulation bias with Apple FM. `isMiniCpmAvailable()` (new, in
+      miniCpmHarness.ts) gates it to a no-op when the model isn't downloaded / runtime missing;
+      `CRUCIBLE_MINICPM_VOTER=0` disables. LIVE-CONFIRMED on this Mac (the answer:bench jumped
+      0.9s→44s from real GGUF inference before I set the flag off in the bench to keep its
+      NO-model-calls contract).
+    - **(3) Direct-path length caps** — `maxTokensFor(facets)` in answerEngine.ts caps output per
+      intent (lookup 320 / converse 448 / explain 1100 / reason 1536) and the converse system prompt
+      was tightened against padding. Live effect visible: lookups now 659-970 chars (were running to
+      ~500 verbose tokens). Reason/explain keep their room so a chain never truncates.
+    - **(4) Exact-base tie-break** — a title whose content tokens equal the salient entity exactly is
+      the canonical article (+0.15, below the 0.25 intent bonus). Closes the bare-same-base residual.
+    ground:bench 11→13, bench:all **375/375**, tsc clean.
+
+**TOP NEXT ITEMS:** (1) a lighter "definition" sub-intent so simple "what is X" asks don't decode
+the full explain budget (19s). (2) run a launchd LaunchAgent for the backend so two chats can't
+share one FM daemon and inflate each other's latency (the contention root — see the 68s vs 7s
+finding). (3) grounded-synthesis output isn't capped by maxTokensFor (groundedAnswer has its own
+path) — thread a length target through it too. (4) HTML/canvas builds are still behaviorally
+unverified (the standing #1 capability gap from cont.66h).
 
 ---
 
