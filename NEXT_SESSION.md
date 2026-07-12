@@ -17,7 +17,22 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 68d — HTML GAME behavioral verifier hardened + stale "unverified" note corrected; on top of semantic recall + definition sub-intent + long-horizon memory)
+## CURRENT STATE (last updated 2026-07-13 — MODIFY/CREATE + RENAME path hardened end-to-end; answer engine gains consensus premise verifier; 441/441)
+
+**This session (10 commits cfede63→5d35906, branch crucible-northstar-sessions) — the offline modify/create/refactor loop and the answer engine each closed their remaining verification holes, most surfaced by LIVE /api/chat testing that the deterministic benches structurally can't (they feed clean f(x)===y lines).**
+
+- **Whole-tree signature propagation — aliased-import hole fixed** (cfede63): reconcileCallSites used the export name even when a sibling did `import { pad as p }`, so `p(…)` call sites were missed → broken aliased call shipped. `importedLocalNames` resolves aliases.
+- **Embedded worked-example extraction + entry-from-examples** (e21a96f): examples inside prose ("For example pad('hi',5) returns '   hi'") + multi-per-line were dropped → VGR got 0 examples and abstained on ordinary modifies; entry was misread from stray prose ("takes **only**(s,width)"). Now scans embedded `call SEP literal` pairs; `entryFromExamples` infers entry from the demonstrated call.
+- **Retry-until-certified, single + multi-file** (e95d545, 71981dd): the on-device proposer certifies an ordinary modify ~50% per attempt; bounded (CRUCIBLE_VGR_ATTEMPTS=3) abort-aware retry lifts it to ~88%+. Pure upside — VGR abstains honestly, so retry never ships a wrong write. Live 4/4.
+- **Multi-file gold-path harvest fix** (fcf0373): declared-in-prose fns weren't seeding `extractSpecExamples` → weak-FM exhaustion; seed with `detectDeclaredFunctions` → live-certifies "create two files" in one attempt.
+- **Behavioral example gate** (3bf9689): the agent-loop fallback shipped `unverified` when a project had no test script; now runs the request's stated examples against the written files via `verifyMultiFileCode`. examplegate:bench 4/4.
+- **Consensus-vote premise corrections** (c2fe8f0): the first consensus verifier on the ANSWER engine — `checkPremiseGrounding` samples K=3 votes, ships a correction only on a strict majority that agrees on the DISPLACED fact (ignoring shared question subject). Kills the lone-hallucination World-Cup class. premise:bench 8/8.
+- **Whole-tree RENAME refactor** (e75f0bf, 77b053e): deterministic (0 model calls) `planRenameTree` renames def + importer specifiers + call sites, alias-preserving, all-or-nothing (abstains on bare-value use / collision / re-export barrel), each rewrite compile-verified. `rename` added to isCodeEditTask. Live-confirmed 3-file rename, project tsc-clean.
+- bench:all **441/441** across 13 suites (registered the 2 new suites, 5d35906); prove:all 251/251; tsc clean throughout.
+
+**NEXT (open):** decompose server.ts (monolith + parallel-session merge-contention file — HIGH conflict risk, coordinate); broaden answer-engine consensus beyond premise checks; behavioral verification for non-example creative/interactive code (the class still outside any gate). RENAME limits: only named function exports, bare-value uses abstain, transitive re-export chains abstain (not chased).
+
+---
 
 **cont.68d (commit d8d7f0c, branch crucible-northstar-sessions) — HTML game verifier + a STALE-NOTE correction.**
 Investigated the standing "#1 gap: HTML/canvas behaviorally unverified" and found it STALE: a real
