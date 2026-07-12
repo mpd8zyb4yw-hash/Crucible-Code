@@ -66,6 +66,19 @@ export default function App() {
   // not a tab — toggling it never unmounts the conversation underneath (see AgentsTabView.tsx).
   const [agentsOpen, setAgentsOpen] = useState(false)
   const [composerExpandOpen, setComposerExpandOpen] = useState(false)
+  // ── Composer attachments — files the user uploads into the workspace sandbox via the
+  // paperclip button. Each send prepends a note referencing them so the agent knows they
+  // exist and where to read them (they land in the sandbox, visible in the code workspace). ──
+  const [attachments, setAttachments] = useState<{ name: string; path: string; bytes: number }[]>([])
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // ── Voice mode — local whisper.cpp dictation + auto-spoken replies (full voice loop). ──
+  const [recording, setRecording] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const [voiceLoop, setVoiceLoop] = useState(false)   // when on, replies are spoken via /api/tts
+  const [voiceReady, setVoiceReady] = useState<boolean | null>(null)  // null = unknown, false = model not downloaded
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
   // (+) expander popups — 'models' pins one on-device model for routing (server-side
   // localModelRouter honors it), 'agents' is the quick agent-command list (item H).
   const [expanderPopup, setExpanderPopup] = useState<'models' | 'agents' | null>(null)
@@ -102,6 +115,13 @@ export default function App() {
   useEffect(() => {
     apiFetch(`${API_BASE}/api/library/tools`, { credentials: 'include' }).then(r => r.json())
       .then(t => setSlashTools([...(t.dynamic ?? []), ...(t.builtin ?? [])]))
+      .catch(() => {})
+  }, [])
+  // Probe the local whisper.cpp voice stack once, so the mic button can offer setup when it's
+  // not installed instead of failing on first use.
+  useEffect(() => {
+    apiFetch(`${API_BASE}/api/voice/status`, { credentials: 'include' }).then(r => r.json())
+      .then(s => setVoiceReady(!!s?.ready))
       .catch(() => {})
   }, [])
   const slashMatch = /^\/(\S*)$/.exec(input)
@@ -911,12 +931,96 @@ export default function App() {
   // displayText: what the transcript shows as the user's message when the actual message
   // sent to the server is an internal scaffold (agent-pane templates). Never show the user
   // prompt-engineering they didn't type.
+  // ── File upload → workspace sandbox ─────────────────────────────────────────
+  const uploadFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files).slice(0, 8)   // sane cap per action
+    if (!list.length) return
+    setUploading(true)
+    try {
+      for (const file of list) {
+        if (file.size > 25 * 1024 * 1024) { haptic('heavy'); continue }  // matches server 25 MB limit
+        const data: string = await new Promise((resolve, reject) => {
+          const r = new FileReader()
+          r.onload = () => resolve(String(r.result))
+          r.onerror = () => reject(r.error)
+          r.readAsDataURL(file)   // data URL — server strips the prefix
+        })
+        try {
+          const resp = await fetch('/api/sandbox/upload', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: file.name, data }),
+          })
+          const j = await resp.json()
+          if (j?.success) setAttachments(prev => [...prev, { name: j.path, path: j.path, bytes: j.bytes }])
+        } catch { /* skip a failed file; others still upload */ }
+      }
+    } finally { setUploading(false) }
+  }
+  const removeAttachment = (p: string) => setAttachments(prev => prev.filter(a => a.path !== p))
+
+  // ── Voice mode — local whisper.cpp STT + /api/tts talkback ───────────────────
+  const speakReply = (text: string) => {
+    if (!voiceLoop || !text?.trim()) return
+    // Strip code fences/markdown noise so talkback stays natural.
+    const clean = text.replace(/```[\s\S]*?```/g, ' code block ').replace(/[#*`_>]/g, '').slice(0, 1200)
+    fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: clean }) }).catch(() => {})
+  }
+  const stopRecording = () => {
+    try { mediaRecorderRef.current?.stop() } catch { /* already stopped */ }
+    setRecording(false)
+  }
+  const startRecording = async () => {
+    if (recording) { stopRecording(); return }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const rec = new MediaRecorder(stream)
+      audioChunksRef.current = []
+      rec.ondataavailable = e => { if (e.data.size) audioChunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || 'audio/webm' })
+        if (blob.size < 800) return   // nothing captured
+        setTranscribing(true)
+        try {
+          const data: string = await new Promise((resolve, reject) => {
+            const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = () => reject(r.error); r.readAsDataURL(blob)
+          })
+          const resp = await fetch('/api/voice/transcribe', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audio: data, mime: blob.type }),
+          })
+          const j = await resp.json()
+          if (j?.needsModel) { setVoiceReady(false); haptic('heavy'); return }
+          const text = (j?.text || '').trim()
+          if (text) {
+            setVoiceReady(true)
+            // Full voice loop: dictate straight into a send (which will also speak the reply).
+            if (voiceLoop) void send(text)
+            else setInput(prev => (prev ? prev + ' ' : '') + text)
+          }
+        } catch { /* transient — leave composer untouched */ }
+        finally { setTranscribing(false) }
+      }
+      mediaRecorderRef.current = rec
+      rec.start()
+      setRecording(true)
+      haptic('medium')
+    } catch { haptic('heavy') }   // mic permission denied / no device
+  }
+
   const send = async (overrideMessage?: string, modeOverride?: string, ensembleConfirmed = false, displayText?: string) => {
     // In Remote Brain mode every send goes straight to the Mac agent loop.
     if (remoteBrain && !modeOverride) modeOverride = 'agent'
     if (thinking) return
-    const userMessage = (overrideMessage ?? input).trim()
-    if (!userMessage || userMessage.length < 4) return
+    const typed = (overrideMessage ?? input).trim()
+    if (!typed || typed.length < 4) return
+    // Fold any workspace attachments into the message the SERVER sees (so the agent knows the
+    // files exist and where to read them) while keeping the VISIBLE transcript text clean.
+    const attachNote = attachments.length
+      ? `\n\n[User attached ${attachments.length} file(s) to the workspace sandbox: ${attachments.map(a => a.path).join(', ')}. Read them from the sandbox if relevant to this request.]`
+      : ''
+    const userMessage = typed + attachNote
+    const visibleText = displayText?.trim() || typed
     // ── Ensemble opt-in + BYOK gate ───────────────────────────────────────────
     // The external pipeline ('quorum') is never entered without the user's own key AND an
     // explicit go-ahead. Local modes (code/seeker/research/agent) are unaffected.
@@ -937,17 +1041,17 @@ export default function App() {
     const convId = conversationIdRef.current
     setConvLiveRound(convId, roundId)
     localStorage.setItem('crucible_has_sent', '1')
-    setInput(''); setConvThinking(convId, true); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
+    setInput(''); setAttachments([]); setConvThinking(convId, true); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
     setConvAgentStart(convId, Date.now()); setAgentElapsed(0); setConvAgentProgress(convId, null)
     prewarmTokenRef.current = null
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
-    const nextRounds = [...rounds, emptyRound(roundId, displayText?.trim() || userMessage, convId)]
-    setAllRounds(prev => [...prev, emptyRound(roundId, displayText?.trim() || userMessage, convId)])
+    const nextRounds = [...rounds, emptyRound(roundId, visibleText, convId)]
+    setAllRounds(prev => [...prev, emptyRound(roundId, visibleText, convId)])
     // Record this as the active server-owned task so that if the tab is backgrounded /
     // reloaded mid-run, we can reconnect to its buffered stream and replay on return.
     // Store the DISPLAY text — reconnect rebuilds the visible round from this, and the raw
     // agent-pane template must never resurface in the transcript on resume.
-    try { localStorage.setItem('crucible_active_task', JSON.stringify({ taskId: roundId, userMessage: displayText?.trim() || userMessage, ts: Date.now(), convId })) } catch {}
+    try { localStorage.setItem('crucible_active_task', JSON.stringify({ taskId: roundId, userMessage: visibleText, ts: Date.now(), convId })) } catch {}
     // First send is a user gesture — a good moment to enable "answer ready" push.
     void ensurePushSubscription()
     // Persist the new turn IMMEDIATELY (non-debounced) so closing the tab before the
@@ -1054,6 +1158,8 @@ export default function App() {
               setRounds(prev => prev.map(r => r.id !== roundId ? r : r.agent?.clarification ? r : { ...r, synthesis: parsed.text ?? r.synthesis, synthesisDone: true }))
               // TTS intentionally disabled in agent / Remote Brain mode: on the phone the answer
               // is already on screen, and the Mac reading every agent turn aloud was noise, not signal.
+              // EXCEPT when the user explicitly turned on the voice loop — then speak the reply.
+              if (parsed.text) speakReply(parsed.text)
             }
             continue
           }
@@ -1193,6 +1299,7 @@ export default function App() {
               const synthText = synthesisRef.current[roundId] ?? ''
               if (synthText) {
                 setTimeout(() => runVerify(roundId, synthText, userMessage), 200)
+                speakReply(synthText)
               }
 
 
@@ -2739,7 +2846,27 @@ export default function App() {
               Type at least 4 characters to send
             </div>
           )}
-          {/* ── Single row: (+) expander + textarea + mode chip + send ── */}
+          {/* ── Attachment chips — files uploaded into the workspace sandbox this turn ── */}
+          {attachments.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '2px 4px 8px 36px' }}>
+              {attachments.map(a => (
+                <span key={a.path} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, maxWidth: 220,
+                  padding: '4px 8px', borderRadius: 8, fontSize: 11, color: '#c8c8d4',
+                  background: 'rgba(124,124,248,0.1)', border: '1px solid rgba(124,124,248,0.22)',
+                }}>
+                  <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M8.5 3.5v4a2.5 2.5 0 0 1-5 0V3a1.5 1.5 0 0 1 3 0v4a.5.5 0 0 1-1 0V3.5" stroke="#9d9dfa" strokeWidth="1" strokeLinecap="round"/></svg>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</span>
+                  <button onClick={() => removeAttachment(a.path)} title="Remove" style={{ background: 'none', border: 'none', color: '#77778c', cursor: 'pointer', padding: 0, fontSize: 13, lineHeight: 1 }}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <input
+            ref={fileInputRef} type="file" multiple hidden
+            onChange={e => { if (e.target.files) void uploadFiles(e.target.files); e.target.value = '' }}
+          />
+          {/* ── Single row: (+) expander + attach + mic + textarea + mode chip + send ── */}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
               onClick={() => { setComposerExpandOpen(o => !o); setExpanderPopup(null) }}
@@ -2757,6 +2884,46 @@ export default function App() {
               <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
                 <path d="M5.5 1v9M1 5.5h9" stroke={composerExpandOpen ? '#b0b0f8' : '#77778c'} strokeWidth="1.5" strokeLinecap="round" />
               </svg>
+            </button>
+            {/* Attach a file into the workspace sandbox */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              title={uploading ? 'Uploading…' : 'Attach a file to the workspace'}
+              style={{
+                width: 26, height: 26, borderRadius: '50%', flexShrink: 0, cursor: uploading ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                border: '1px solid rgba(255,255,255,0.09)', background: 'rgba(255,255,255,0.04)',
+                opacity: uploading ? 0.5 : 1, transition: 'background 0.2s',
+              }}
+            >
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                <path d="M9.5 4v5.5a2.5 2.5 0 0 1-5 0V3.5a1.5 1.5 0 0 1 3 0v5.5a.5.5 0 0 1-1 0V4.5" stroke="#8a8a9e" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {/* Voice — local whisper.cpp dictation; long-press-free toggle. Right-click toggles the
+                full voice loop (auto-speak replies). */}
+            <button
+              onClick={() => voiceReady === false ? setTab('settings') : void startRecording()}
+              onContextMenu={e => { e.preventDefault(); setVoiceLoop(v => !v) }}
+              disabled={transcribing}
+              title={voiceReady === false ? 'Voice model not installed — open Settings' : recording ? 'Stop & transcribe' : transcribing ? 'Transcribing…' : `Dictate (voice loop ${voiceLoop ? 'ON — replies spoken' : 'off; right-click to enable'})`}
+              style={{
+                width: 26, height: 26, borderRadius: '50%', flexShrink: 0, cursor: transcribing ? 'default' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                border: `1px solid ${recording ? 'rgba(255,110,26,0.5)' : voiceLoop ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.09)'}`,
+                background: recording ? 'rgba(255,110,26,0.16)' : voiceLoop ? 'rgba(124,124,248,0.14)' : 'rgba(255,255,255,0.04)',
+                transition: 'background 0.2s, border-color 0.2s',
+              }}
+            >
+              {transcribing ? (
+                <span style={{ width: 9, height: 9, borderRadius: '50%', border: '1.5px solid #9d9dfa', borderTopColor: 'transparent', animation: 'spin 0.7s linear infinite' }} />
+              ) : (
+                <svg width="12" height="12" viewBox="0 0 12 14" fill="none">
+                  <rect x="4" y="1" width="4" height="7" rx="2" stroke={recording ? '#ff8a3d' : voiceLoop ? '#b0b0f8' : '#8a8a9e'} strokeWidth="1.2" />
+                  <path d="M2.5 6.5a3.5 3.5 0 0 0 7 0M6 10v2.5" stroke={recording ? '#ff8a3d' : voiceLoop ? '#b0b0f8' : '#8a8a9e'} strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+              )}
             </button>
             <textarea
               ref={textareaRef}

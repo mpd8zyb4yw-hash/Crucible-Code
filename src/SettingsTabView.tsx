@@ -4,9 +4,56 @@
 // and provider auto-detection as the modal (src/ensemble.tsx) — this is just the full-page
 // home for it now that the tab shell exists.
 
-import { useRef } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { detectKeyProvider, type EnsembleState } from './ensemble'
 import LocalModelsPanel from './LocalModelsPanel'
+
+// ── Voice setup — surfaces whether the local whisper.cpp STT stack is installed, so the
+// composer's mic button has a home to point to. On-device by design (no cloud STT). ──
+function VoiceSetupSection() {
+  const [st, setSt] = useState<{ ready: boolean; hasWhisper: boolean; hasFfmpeg: boolean; hasModel: boolean; modelPath: string } | null>(null)
+  const refresh = () => fetch('/api/voice/status', { credentials: 'include' }).then(r => r.json()).then(setSt).catch(() => {})
+  useEffect(() => { refresh() }, [])
+  const Row = ({ label, ok, hint }: { label: string; ok: boolean; hint: string }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11.5 }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: ok ? '#4db89e' : '#c98a4a', flexShrink: 0 }} />
+      <span style={{ color: '#d0d0e0', minWidth: 96 }}>{label}</span>
+      <span style={{ color: ok ? '#4db89e' : '#77778c' }}>{ok ? 'installed' : hint}</span>
+    </div>
+  )
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Voice</span>
+        <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
+          Dictate into the composer and hear replies spoken back — fully on-device via whisper.cpp,
+          no audio ever leaves this Mac. The mic button appears in the composer; right-click it to
+          toggle the full voice loop (spoken replies).
+        </span>
+      </div>
+      <div style={{ padding: '12px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {st ? (
+          st.ready ? (
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#4db89e' }}>Voice stack ready — the mic button will dictate.</span>
+          ) : (
+            <>
+              <Row label="whisper-cli" ok={st.hasWhisper} hint="not found on PATH / ./bin" />
+              <Row label="ffmpeg" ok={st.hasFfmpeg} hint="not found on PATH / ./bin" />
+              <Row label="speech model" ok={st.hasModel} hint="ggml-base.en.bin missing" />
+              <div style={{ fontSize: 11, lineHeight: 1.6, color: '#77778c', marginTop: 4, fontFamily: "'SF Mono','Fira Code',monospace", background: 'rgba(0,0,0,0.25)', padding: '8px 10px', borderRadius: 8, whiteSpace: 'pre-wrap' }}>
+{`brew install whisper-cpp ffmpeg
+mkdir -p .crucible/whisper && curl -L -o .crucible/whisper/ggml-base.en.bin \\
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`}
+              </div>
+              <span style={{ fontSize: 10.5, color: '#4a4a5e' }}>Or set WHISPER_BIN / FFMPEG_BIN / WHISPER_MODEL to existing installs. Model path: {st.modelPath}</span>
+            </>
+          )
+        ) : <span style={{ fontSize: 11.5, color: '#55556a' }}>Checking voice stack…</span>}
+        <button onClick={refresh} style={{ alignSelf: 'flex-start', padding: '5px 12px', borderRadius: 999, border: '1px solid rgba(124,124,248,0.35)', background: 'rgba(124,124,248,0.12)', color: '#b0b0ff', fontSize: 11, fontWeight: 600, cursor: 'pointer', marginTop: 2 }}>Re-check</button>
+      </div>
+    </div>
+  )
+}
 
 export default function SettingsTabView({ ensemble, advanced }: {
   ensemble: EnsembleState
@@ -111,6 +158,8 @@ export default function SettingsTabView({ ensemble, advanced }: {
             <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', color: '#4db89e' }}>ALWAYS ON</span>
           </div>
         </div>
+
+        <VoiceSetupSection />
 
         <LocalModelsPanel />
 

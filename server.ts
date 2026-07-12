@@ -54,6 +54,7 @@ import { runResearchSession } from './src/CrucibleEngine/researchMode'
 import { runResearchDag } from './src/CrucibleEngine/research/researchDag'
 import { listModelStatuses, downloadModel, deleteModel, setModelEnabled, setModelsLocation, getModelsConfig, setFireAllMode, setPinnedModelId } from './src/CrucibleEngine/agent/modelDownloadManager'
 import { isGgufRuntimeAvailable } from './src/CrucibleEngine/agent/localModelPool'
+import { voiceStatus, transcribeAudio } from './src/CrucibleEngine/agent/voiceTranscribe'
 import { routeLocalModelQuery, hasReadyLocalModels, councilPeers } from './src/CrucibleEngine/agent/localModelRouter'
 import { runDebate } from './src/CrucibleEngine/agent/debate'
 import { classifyDomain } from './src/CrucibleEngine/agent/localModelCatalog'
@@ -2108,6 +2109,27 @@ app.post('/api/tts', (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : ''
   if (text.trim()) speak(text).catch(() => {})
   res.json({ ok: true })
+})
+
+// GET /api/voice/status — is the local whisper.cpp voice stack installed? The composer's mic
+// button uses this to decide between "dictate" and "guide the user to setup".
+app.get('/api/voice/status', async (_req, res) => {
+  try { res.json({ ok: true, ...(await voiceStatus()) }) }
+  catch (e: any) { res.status(500).json({ ok: false, error: String(e?.message ?? e) }) }
+})
+
+// POST /api/voice/transcribe — on-device speech-to-text. Accepts a base64 audio data URL from
+// the browser's MediaRecorder, runs it through local whisper.cpp, returns the text. When the
+// local stack isn't installed yet it returns { needsModel:true } so the UI prompts setup.
+app.post('/api/voice/transcribe', express.json({ limit: '25mb' }), async (req, res) => {
+  const audio = String(req.body?.audio || '')
+  if (!audio) return res.status(400).json({ error: 'missing audio' })
+  try {
+    const r = await transcribeAudio(audio, String(req.body?.mime || 'audio/webm'))
+    if (r.ok) return res.json({ ok: true, text: r.text })
+    if (r.needsModel) return res.json({ ok: false, needsModel: true, status: r.status })
+    return res.status(500).json({ ok: false, error: r.error })
+  } catch (e: any) { res.status(500).json({ ok: false, error: String(e?.message ?? e) }) }
 })
 
 // A single quick tunnel reused across calls so we don't spawn one per request.
@@ -6159,6 +6181,42 @@ app.post('/api/sandbox/write', (req, res) => {
     fs.mkdirSync(path.dirname(abs), { recursive: true })
     fs.writeFileSync(abs, req.body?.content ?? '', 'utf-8')
     res.json({ success: true })
+  } catch (e: any) { res.status(500).json({ error: e.message }) }
+})
+
+// Upload a file INTO the sandbox from the composer's attach button. Accepts a base64
+// data URL (or raw base64) so it rides the same JSON transport as the rest of the sandbox
+// API — but with its own 25 MB body limit (the global express.json() cap is 100 KB, far too
+// small for a real attachment). Binary-safe: content is written from a Buffer, not a string.
+// Names are sanitised and resolved through sandboxResolve, so an upload can never escape the
+// sandbox root. Collisions get a numeric suffix rather than clobbering an existing file.
+app.post('/api/sandbox/upload', express.json({ limit: '25mb' }), (req, res) => {
+  ensureSandbox()
+  const rawName = String(req.body?.name || '').trim()
+  const b64 = String(req.body?.data || '')
+  if (!rawName) return res.status(400).json({ error: 'missing file name' })
+  if (!b64) return res.status(400).json({ error: 'missing file data' })
+  // Keep only the base filename, strip anything path-like, allow a safe charset.
+  const safeName = path.basename(rawName).replace(/[^\w.\-() ]+/g, '_').slice(0, 120) || 'upload'
+  // Accept a data URL ("data:<mime>;base64,AAAA…") or bare base64.
+  const comma = b64.indexOf(',')
+  const payload = b64.startsWith('data:') && comma !== -1 ? b64.slice(comma + 1) : b64
+  let buf: Buffer
+  try { buf = Buffer.from(payload, 'base64') } catch { return res.status(400).json({ error: 'invalid base64' }) }
+  if (!buf.length) return res.status(400).json({ error: 'empty file' })
+  // Resolve inside the sandbox; on name collision append -1, -2, … so nothing is overwritten.
+  let rel = safeName
+  let abs = sandboxResolve(rel)
+  if (!abs) return res.status(400).json({ error: 'path outside sandbox' })
+  const ext = path.extname(safeName)
+  const stem = safeName.slice(0, safeName.length - ext.length)
+  for (let n = 1; fs.existsSync(abs) && n < 1000; n++) {
+    rel = `${stem}-${n}${ext}`
+    abs = sandboxResolve(rel)!
+  }
+  try {
+    fs.writeFileSync(abs, buf)
+    res.json({ success: true, path: rel, bytes: buf.length })
   } catch (e: any) { res.status(500).json({ error: e.message }) }
 })
 
