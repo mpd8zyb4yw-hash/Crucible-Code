@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 66j — VOICE ROUND-TRIP VERIFIED [prior: 66i game-loop/readout verifier, compound-routing fix, upload+voice UI])
+## CURRENT STATE (last updated 2026-07-12, cont. 66j — VOICE ROUND-TRIP VERIFIED + INVERTED-CONTROLS BEHAVIORAL INVARIANT [prior: 66i game-loop/readout verifier, compound-routing fix, upload+voice UI])
 
 **cont.66i (68eb42a, 60db198, ea409fa) — four shipped items this session:**
 
@@ -28,6 +28,16 @@
    game whose readout is "Score: NaN"/undefined/Infinity. First game-STATE invariant beyond aliveness;
    directly attacks the cont.66h "runs but logic buggy" ceiling. html:bench 2/2, tsc clean. NOTE: this
    is a start on the behavioral-verifier gap, NOT its closure — physics/movement still unverified.
+   **UPDATE cont.66j (5d8844a): SECOND behavioral invariant added — INVERTED-CONTROLS.** The Electron
+   harness now drives a Left-only then Right-only burst and measures the horizontal ink centroid each
+   phase (CENTROID probe in htmlVerifyMain.cjs); correct L/R controls end the player mass further right.
+   Common-mode motion (scrolling obstacles/gravity) drifts both phases the same way and cancels in the
+   left→right difference, so only key-driven player motion survives. Rejects ONLY a strong reversal
+   (≥18% of canvas width) with a min-ink guard → fail-open (games not using L/R show ~0 delta and pass).
+   html:bench now 4/4 on the real Electron gate, stable across repeated runs, tsc clean. STILL OPEN:
+   this covers horizontal-direction correctness only; vertical/jump physics, collision, and game-over/
+   terminal-state reachability remain syntax-verified. The centroid difference is the reusable primitive
+   for the next physics invariant (e.g. gravity = downward centroid drift with no input).
 
 2. **Compound-request routing fix (60db198):** THE user-reported agent bug — "close firefox, then
    youtube X, then brightness 0" executed ONLY the youtube clause. Root cause: resolveSearchAndSelect
