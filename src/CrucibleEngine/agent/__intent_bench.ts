@@ -65,6 +65,16 @@ async function main() {
   assert(resolveLocalIntent('play the third video') === null, 'bare selector defers to smarter layers (no literal search)')
   assert(resolveLocalIntent('play it') === null, 'pronoun-only command defers')
 
+  // ── COMPOUND-DROP REGRESSION: a genuinely sequenced request that merely MENTIONS youtube
+  //    must NOT be hijacked by search-select (which would run only the youtube clause and
+  //    silently drop "close firefox" + "brightness 0"). It must defer (null) to the LLM loop. ──
+  assert(resolveLocalIntent('close all firefox tabs, then launch youtube search for cats and play a video then turn brightness to 0') === null,
+    'hard-sequenced compound request (then…then) defers to the loop, not a lone youtube play')
+  assert(resolveLocalIntent('play cats on youtube then set brightness to 0') === null,
+    'search-select does not swallow a trailing "then set brightness" command')
+  assert(resolveLocalIntent('search youtube for jazz and close firefox') === null,
+    'a foreign action leaked into the subject ("and close firefox") defers to the loop')
+
   // ── REGRESSION: ordinary play/open still work unchanged ──
   const play = resolveLocalIntent('play bohemian rhapsody on youtube')
   assert(play?.intent === 'play_media' && play?.steps[0]?.args?.query === 'bohemian rhapsody', 'plain "play X on youtube" still resolves with the right subject')

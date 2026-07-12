@@ -211,6 +211,12 @@ function resolveSearchAndSelect(m: string): LocalPlan | null {
   // A subject that is itself only a selector/pronoun means there's nothing real to search
   // (e.g. a bare "play the third video") — defer to the smarter layers instead of guessing.
   if (SELECTOR_ONLY_RE.test(subject)) return null
+  // Foreign-action guard: if a separate command leaked into the subject ("…for cats and close
+  // firefox", "…play a video then turn brightness to 0"), the request is genuinely compound and
+  // this single search-select plan would silently drop the other actions. Defer to the LLM loop.
+  // (The legit "search for X and play the Nth video" has already had its selector peeled off, so
+  // a surviving action verb here can only be a foreign command, never the play-selector.)
+  if (/\b(?:close|quit|launch|turn|set|adjust|increase|decrease|mute|unmute|lock|sleep|brightness|volume|wi-?fi|dark mode|empty|delete|open|then|after that)\b/i.test(subject)) return null
 
   // If there was no explicit search verb and no selector, this is just "youtube <x>" —
   // let resolvePlayMedia / resolveOpen own that; only claim it when we add real value
@@ -424,9 +430,16 @@ export function resolveLocalIntent(message: string): LocalPlan | null {
   const m = (message ?? '').trim()
   if (!m || m.length > 200) return null  // long prose → not a simple command
   // Search-then-select is a multi-context command we CAN comprehend — try it FIRST, before the
-  // compound-request bail below would defer it to the (hallucination-prone) LLM loop.
-  const ss = resolveSearchAndSelect(m)
-  if (ss) return ss
+  // compound-request bail below would defer it to the (hallucination-prone) LLM loop. BUT only
+  // when the request isn't HARD-sequenced: "…then …", "after that …" signals genuinely separate
+  // actions ("close firefox, then youtube X, then brightness 0"), and search-select would grab
+  // only the youtube clause and silently drop the rest. Hard-sequenced → straight to the loop.
+  // The legit search-select case joins its clauses with "and"/"," ("search X and play the 3rd"),
+  // never "then", so this gate costs it nothing.
+  if (!MULTI_STEP_LOCAL.test(m)) {
+    const ss = resolveSearchAndSelect(m)
+    if (ss) return ss
+  }
   // Any OTHER compound / multi-verb request → not a single action; defer to the loop.
   if (MULTI_STEP_LOCAL.test(m) || (m.match(ACTION_VERB_LOCAL)?.length ?? 0) >= 3) return null
   for (const r of RESOLVERS) {
