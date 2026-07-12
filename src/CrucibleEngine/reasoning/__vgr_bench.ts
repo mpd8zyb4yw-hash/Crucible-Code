@@ -444,6 +444,15 @@ async function run() {
     { 'src/index.ts': "export { trim } from './strings'\n" })
   ok('rename is NOT blocked by a re-export of a DIFFERENT symbol from the same module',
     !!rReexportOther && rReexportOther.propagated.length === 0)
+  ok('rename rewrites a RECURSIVE self-call along with the definition',
+    renameInModule('export function fact(n: number): number { return n <= 1 ? 1 : n * fact(n - 1) }\n', 'fact', 'factorial', 'define')
+    === 'export function factorial(n: number): number { return n <= 1 ? 1 : n * factorial(n - 1) }\n')
+  ok('rename leaves the name inside COMMENTS and STRING literals untouched',
+    renameInModule("// pad pads a string\nexport function pad(s: string){ return 'pad:' + s }\n", 'pad', 'padLeft', 'define')
+    === "// pad pads a string\nexport function padLeft(s: string){ return 'pad:' + s }\n")
+  ok('rename does not partially match a SUBSTRING method (padStart survives)',
+    renameInModule('export function pad(s: string){ return s.padStart(2) }\n', 'pad', 'padLeft', 'define')
+    === 'export function padLeft(s: string){ return s.padStart(2) }\n')
 
   // ── Worked-example extraction: EMBEDDED in prose + multi-per-line + entry inference ──────
   // Real /api/chat prompts state examples inside a sentence ("For example pad('hi', 5) returns
