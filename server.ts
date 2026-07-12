@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectTargetPath, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -2444,7 +2444,7 @@ function isCodeImplementationTask(message: string): boolean {
 // emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
-  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor)\b/i.test(m)
+  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
   return editVerb && hasCodePath
 }
@@ -3248,6 +3248,52 @@ app.post('/api/chat', async (req, res) => {
             }
           } else {
             send({ type: 'thought', text: `VGR multi-file could not certify (${mf.status}) — trying single-file, then handing off.` })
+          }
+        }
+
+        // ── RENAME refactor — a deterministic structural edit, no proposer needed. ──
+        // "rename X to Y" against a file that defines X: rewrite the definition + every importer's
+        // specifier and call sites (alias-preserving), all-or-nothing (planRenameTree refuses the
+        // whole edit on any unsafe use, leaving every file untouched). Each rewrite is compile-
+        // verified inside planRenameTree before it's returned.
+        if (!handled) {
+          const ren = detectRename(message ?? '')
+          const renTarget = ren ? detectTargetPath(message ?? '') : null
+          if (ren && renTarget) {
+            const renAbs = path.join(projectPath, renTarget)
+            let renExisting: string | null = null
+            try { if (fs.existsSync(renAbs)) renExisting = fs.readFileSync(renAbs, 'utf-8') } catch { /* absent */ }
+            if (renExisting != null) {
+              const siblings: Record<string, string> = {}
+              try {
+                for (const relSib of collectProjectTsFiles(projectPath)) {
+                  if (relSib === renTarget) continue
+                  try { siblings[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
+                }
+              } catch { /* best-effort */ }
+              const tree = await planRenameTree(ren.from, ren.to, renTarget, renExisting, siblings)
+              if (tree) {
+                const writes = [tree.primary, ...tree.propagated]
+                const mutated: string[] = []
+                writes.forEach((p, i) => {
+                  const pAbs = path.join(projectPath, p.rel)
+                  fs.writeFileSync(pAbs, p.content)
+                  mutated.push(pAbs)
+                  send({ type: 'tool_call', id: `vgr_rename_${i}`, tool: 'edit_file', args: { path: p.rel } })
+                  send({ type: 'tool_result', id: `vgr_rename_${i}`, tool: 'edit_file', ok: true, output: `Rename refactor — ${p.detail}` })
+                })
+                onFileMutated(mutated)
+                send({ type: 'verify', passed: true, signal: 'compile', report: `Rename ${ren.from} → ${ren.to} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
+                const answer = `Renamed ${ren.from} → ${ren.to} across ${writes.length} file(s) — definition, imports, and call sites updated (alias-preserving); every file recompiles. Zero model calls.`
+                send({ type: 'final', text: answer, meta: { renameRefactor: true, from: ren.from, to: ren.to, files: writes.map(w => w.rel), confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-rename', models: ['crucible-rename'], synthesis: answer })
+                handled = true
+              } else {
+                send({ type: 'thought', text: `Rename ${ren.from} → ${ren.to} could not be applied safely (an unsafe use of ${ren.from}, a name collision, or a non-compiling result) — handing off without a half-applied rename.` })
+              }
+            }
           }
         }
 

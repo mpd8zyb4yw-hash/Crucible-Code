@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectTargetPath, mergeCertifiedSource, planEmit, planEmitTree } from './emitPlan'
+import { detectRename, detectTargetPath, mergeCertifiedSource, planEmit, planEmitTree, planRenameTree, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -410,6 +410,34 @@ async function run() {
     'src/strings.ts', { 'src/app.ts': aliased })
   ok('aliased importer with an unabsorbable REQUIRED param → whole edit downgrades to fresh file',
     t7.primary.mode === 'create' && t7.propagated.length === 0, t7.notes.join('; '))
+
+  // ── Whole-tree RENAME refactor ──────────────────────────────────────────────────
+  ok('detectRename parses "rename X to Y"; ignores non-rename modifies',
+    JSON.stringify(detectRename('rename pad to padLeft in src/strings.ts')) === '{"from":"pad","to":"padLeft"}'
+    && detectRename('change pad to use spaces') === null)
+  const renDef = "export function pad(s: string, width: number): string {\n  return s.padStart(width)\n}\n"
+  const renImp = "import { pad } from './strings'\nexport const b = pad('hi', 5)\nexport const c = pad('yo', 3)\n"
+  const r1 = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/app.ts': renImp, 'src/other.ts': 'export const x=1' })
+  ok('rename: definition + importer specifier & call sites all rewritten, non-importer untouched',
+    !!r1 && r1.primary.content.includes('function padLeft(') && r1.propagated.length === 1
+    && r1.propagated[0].content.includes("import { padLeft }") && r1.propagated[0].content.includes("padLeft('hi', 5)")
+    && r1.propagated[0].content.includes("padLeft('yo', 3)"), r1?.notes.join('; '))
+  const renAlias = "import { pad as p } from './strings'\nexport const b = p('hi', 5)\n"
+  const r2 = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/app.ts': renAlias })
+  ok('rename: aliased importer rewrites the SPECIFIER only, call sites keep the alias `p`',
+    !!r2 && r2.propagated[0].content.includes('import { padLeft as p }') && r2.propagated[0].content.includes("p('hi', 5)"),
+    r2?.notes.join('; '))
+  const renValue = "import { pad } from './strings'\nexport const fns = [pad]\n" // bare value use
+  const r3 = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/app.ts': renValue })
+  ok('rename ABSTAINS (whole tree) when the old name is used as a bare value it can\'t safely rewrite',
+    r3 === null)
+  const r4 = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function padLeft(x:string){return x}\n', {})
+  ok('rename ABSTAINS on a name collision (target already defines the new name)', r4 === null)
+  const rMember = renameInModule("export function pad(){ return 1 }\nconst z = obj.pad\nconst s = 'pad'\n", 'pad', 'padLeft', 'define')
+  ok('renameInModule renames the definition but leaves member access (obj.pad) and strings untouched',
+    rMember === "export function padLeft(){ return 1 }\nconst z = obj.pad\nconst s = 'pad'\n")
+  ok('renameInModule REFUSES when the name is used as a bare value (const alias = pad)',
+    renameInModule("export function pad(){ return 1 }\nconst alias = pad\n", 'pad', 'padLeft', 'define') === null)
 
   // ── Worked-example extraction: EMBEDDED in prose + multi-per-line + entry inference ──────
   // Real /api/chat prompts state examples inside a sentence ("For example pad('hi', 5) returns

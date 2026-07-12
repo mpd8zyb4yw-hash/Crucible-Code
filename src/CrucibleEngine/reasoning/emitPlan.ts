@@ -659,3 +659,128 @@ export async function planEmitTree(
 
   return { primary, propagated, notes }
 }
+
+// ─── Rename refactor (rename an exported function across the whole tree) ─────────
+//
+// A signature change reconciles call ARGS; a RENAME changes the function's NAME, which breaks
+// every importer's named import AND every call site. This layer renames the definition and
+// rewrites importers' specifiers + call sites — all-or-nothing, ABSTAINING (null) the moment
+// the old name appears in a position it can't rewrite with confidence (used as a bare value,
+// object shorthand, aliased-to a conflicting binding, shadowed). Honest over clever: a refused
+// rename leaves every file untouched, never a half-applied one.
+
+/** Parse an explicit rename request: "rename OLD to|as|into NEW". Both must be identifiers and
+ *  differ. Returns null when the request isn't a rename (→ caller uses the normal modify path). */
+export function detectRename(nl: string): { from: string; to: string } | null {
+  const m = /\brename\s+(?:the\s+)?(?:function\s+|method\s+)?['"`]?([A-Za-z_$][\w$]*)['"`]?\s+(?:to|as|into)\s+['"`]?([A-Za-z_$][\w$]*)['"`]?/i.exec(nl)
+  if (!m || m[1] === m[2]) return null
+  return { from: m[1], to: m[2] }
+}
+
+/** Indices of every `\bword\b` in `content` that is real code — not inside a string/template/
+ *  comment and not a member access (`.word` / `?.word`). */
+function codeWordIndices(content: string, word: string): number[] {
+  const e = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const rx = new RegExp(`\\b${e}\\b`, 'g')
+  const out: number[] = []
+  // Mask string/comment regions once.
+  const inLiteral = new Uint8Array(content.length)
+  for (let i = 0; i < content.length; i++) {
+    const c = content[i]
+    if (c === '"' || c === "'" || c === '`') {
+      const end = skipString(content, i); if (end === -1) break
+      for (let k = i; k <= end; k++) inLiteral[k] = 1; i = end; continue
+    }
+    if (c === '/' && content[i + 1] === '/') {
+      const end = content.indexOf('\n', i); const stop = end === -1 ? content.length : end
+      for (let k = i; k < stop; k++) inLiteral[k] = 1; i = stop; continue
+    }
+    if (c === '/' && content[i + 1] === '*') {
+      const end = content.indexOf('*/', i); const stop = end === -1 ? content.length : end + 2
+      for (let k = i; k < stop; k++) inLiteral[k] = 1; i = stop - 1; continue
+    }
+  }
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(content))) {
+    const at = m.index
+    if (inLiteral[at]) continue
+    if (/[.?]\s*$/.test(content.slice(Math.max(0, at - 2), at))) continue // .word / ?.word member
+    out.push(at)
+  }
+  return out
+}
+
+/**
+ * Rename references to `from` → `to` within one module. `role` tunes what counts as safe:
+ *   'define'  — the file DEFINES `from` (rename its declaration, recursion, export specifiers).
+ *   'import'  — the file IMPORTS `from` from another module (rename the import specifier's
+ *               original name; when the binding is non-aliased, its call sites too).
+ * Returns the rewritten text, or null when `from` appears in any position not confidently
+ * rewritable — the caller then refuses the whole rename.
+ */
+export function renameInModule(content: string, from: string, to: string, role: 'define' | 'import'): string | null {
+  const idx = codeWordIndices(content, from)
+  if (!idx.length) return null // nothing to rename here
+  // Build replacements; bail on the first unclassifiable occurrence.
+  const edits: number[] = []
+  for (const at of idx) {
+    const before = content.slice(0, at)
+    const after = content.slice(at + from.length)
+    const lineStart = before.lastIndexOf('\n') + 1
+    const line = content.slice(lineStart, (content.indexOf('\n', at) + 1 || content.length + 1) - 1)
+    const isImportExportLine = /^\s*(?:import|export)\b/.test(line) && line.includes('{')
+
+    if (isImportExportLine) {
+      if (/^\s*as\b/.test(after)) { edits.push(at); continue }        // `from as x` — rename original, keep alias
+      if (/\bas\s+$/.test(before)) return null                       // `x as from` — `from` is a conflicting local binding
+      edits.push(at); continue                                        // plain `{ from }` specifier
+    }
+    if (/^\s*\(/.test(after)) { edits.push(at); continue }            // call: from(...)
+    if (/\b(?:function|const|let|var)\s+$/.test(before)) {
+      if (role !== 'define') return null                             // an importer shouldn't re-declare it
+      edits.push(at); continue                                        // the definition
+    }
+    return null                                                       // bare value / shorthand / type — refuse
+  }
+  // Apply right-to-left so indices stay valid.
+  let out = content
+  for (const at of [...edits].sort((a, b) => b - a)) out = out.slice(0, at) + to + out.slice(at + from.length)
+  return out
+}
+
+/**
+ * Whole-tree rename. Renames `from`→`to` in the target file's definition and in every sibling
+ * that imports it, preserving import aliases (an aliased importer keeps its local name, only the
+ * specifier's original changes). All-or-nothing: any file that can't be safely rewritten refuses
+ * the WHOLE rename (returns null). The caller must still compile-verify each write.
+ */
+export async function planRenameTree(
+  from: string, to: string, targetPath: string, existing: string,
+  siblings: Record<string, string> = {},
+): Promise<{ primary: EmitPlan; propagated: EmitPlan[]; notes: string[] } | null> {
+  if (!alreadyDefines(existing, from)) return null
+  // A rename to a name the target ALREADY defines would collide → refuse.
+  if (alreadyDefines(existing, to)) return null
+  const renamedTarget = renameInModule(existing, from, to, 'define')
+  if (renamedTarget == null) return null
+  const compiles = async (src: string) => {
+    try { await transform(src, { loader: 'ts', format: 'esm', target: 'node18' }); return true } catch { return false }
+  }
+  if (!(await compiles(renamedTarget))) return null
+  const primary: EmitPlan = { rel: targetPath, content: renamedTarget, mode: 'modify', detail: `renamed ${from} → ${to} in ${targetPath}` }
+
+  const propagated: EmitPlan[] = []
+  const notes: string[] = [`${targetPath}: definition renamed`]
+  for (const [rel, content] of Object.entries(siblings)) {
+    if (rel === targetPath) continue
+    const locals = importedLocalNames(content, from, rel, targetPath)
+    if (!locals.length) continue
+    if (alreadyDefines(content, from)) return null // imports AND shadows the name — too ambiguous
+    const renamed = renameInModule(content, from, to, 'import')
+    if (renamed == null) return null
+    if (!(await compiles(renamed))) return null
+    propagated.push({ rel, content: renamed, mode: 'modify', detail: `renamed import + call sites of ${from} → ${to}` })
+    notes.push(`${rel}: import ${locals.includes(from) ? '+ call sites ' : ''}renamed`)
+  }
+  return { primary, propagated, notes }
+}
