@@ -17,7 +17,44 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 66h — REFINEMENT TURNS FIXED + 66f/66g LIVE-CONFIRMED)
+## CURRENT STATE (last updated 2026-07-12, cont. 66i — GAME-LOOP DIVERSIFICATION + READOUT VERIFIER, COMPOUND-ROUTING FIX, UPLOAD + VOICE UI)
+
+**cont.66i (68eb42a, 60db198, ea409fa) — four shipped items this session:**
+
+1. **Game-repair loop hardened (68eb42a):** (a) proposer DIVERSIFICATION — alternate Apple FM ↔
+   MiniCPM5 (council GGUF, isGgufRuntimeAvailable-guarded) across repair attempts, each seeing the
+   other's rejection feedback (breaks the single-model oscillation that dead-ended 6/6). (b) VISIBLE-
+   READOUT invariant in htmlRuntimeVerify — verify-copy wraps canvas fillText/strokeText, rejects a
+   game whose readout is "Score: NaN"/undefined/Infinity. First game-STATE invariant beyond aliveness;
+   directly attacks the cont.66h "runs but logic buggy" ceiling. html:bench 2/2, tsc clean. NOTE: this
+   is a start on the behavioral-verifier gap, NOT its closure — physics/movement still unverified.
+
+2. **Compound-request routing fix (60db198):** THE user-reported agent bug — "close firefox, then
+   youtube X, then brightness 0" executed ONLY the youtube clause. Root cause: resolveSearchAndSelect
+   ran BEFORE the compound bail in resolveLocalIntent and fired on any youtube mention, collapsing the
+   whole request to one search-and-play. Fix: gate search-select on absence of hard sequencing
+   (then/after that) + foreign-action guard on the extracted subject. Now defers to the loop →
+   needsPlan() → runPlannedTask decomposes all steps. __intent_bench +3 regressions, all legit
+   search-select cases still green.
+
+3. **File upload UI (ea409fa):** the sandbox file-view backend had no upload path. Added POST
+   /api/sandbox/upload (base64, 25 MB, basename-sanitised, collision-safe) + composer paperclip button,
+   multi-file input, attachment chips; send folds a workspace note into the server message. Live-verified
+   write/read/traversal-guard via curl.
+
+4. **On-device voice mode (ea409fa):** whisper.cpp local STT (voiceTranscribe.ts: MediaRecorder→ffmpeg
+   16k wav→whisper-cli) + full voice loop (mic dictate + auto-speak replies via existing /api/tts).
+   GET /api/voice/status + POST /api/voice/transcribe; reports needsModel when the stack isn't installed.
+   Composer mic button (click=dictate, right-click=toggle voice loop) + Settings "Voice" section with
+   live per-dep status + install commands. **HONEST CEILING: whisper/ffmpeg/model NOT installed on this
+   Mac** — plumbing + UI + needsModel path are live-verified via curl, but an actual transcription has
+   NOT been run end-to-end. Next session: install the stack (brew install whisper-cpp ffmpeg + download
+   ggml-base.en.bin) and verify a real dictation round-trips; also composer buttons are tsc/vite-clean
+   and the app mounts, but the authed composer view was not screenshotted (OAuth wall in preview).
+
+---
+
+### Prior state — cont. 66h (REFINEMENT TURNS FIXED + 66f/66g LIVE-CONFIRMED)
 
 **cont.66h (4cb3677) — closed the "lower-severity" half of the negotiation-loop failure AND
 live-FM-confirmed both cont.66f and cont.66g (which shipped deterministic-only).**
