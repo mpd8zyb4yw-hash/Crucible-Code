@@ -32,6 +32,22 @@ console.log('== facet classification: routing ==')
   const hash = classifyFacets('Explain how a hash map works in simple terms.')
   check('explain → explain intent (thorough depth), not external', hash.intent === 'explain' && !hash.needsExternalFact, JSON.stringify(hash))
 
+  // Definition sub-intent: a bare "what is a <term>" is a light definition (short budget), NOT the
+  // full explain treatment (~1100 tokens ≈ 19s on the weak FM). But an explanatory expander
+  // (how/why/works/example/…) still routes to explain, and an entity FACT stays on lookup.
+  const defBare = classifyFacets('What is a hash map?')
+  check('bare "what is a hash map" → definition (light, not 1100-token explain)', defBare.intent === 'definition', JSON.stringify(defBare))
+  const defVerb = classifyFacets('define recursion')
+  check('"define recursion" → definition', defVerb.intent === 'definition', JSON.stringify(defVerb))
+  const defMean = classifyFacets('what does idempotent mean?')
+  check('"what does X mean" → definition', defMean.intent === 'definition', JSON.stringify(defMean))
+  const defExpander = classifyFacets('what is a hash map and how does it work?')
+  check('definition + expander ("how does it work") → explain (user wants depth)', defExpander.intent === 'explain', JSON.stringify(defExpander))
+  const defEntity = classifyFacets('What is the capital of Australia?')
+  check('entity fact ("capital of Australia") stays lookup, NOT definition', defEntity.intent === 'lookup', JSON.stringify(defEntity))
+  const defArith = classifyFacets('what is 2+2?')
+  check('arithmetic "what is 2+2" not misrouted to definition', defArith.intent !== 'definition', JSON.stringify(defArith))
+
   const train = classifyFacets('A train leaves at 3pm going 60mph. Another leaves at 4pm going 80mph in the same direction. When does the second catch up?')
   check('train word problem → reason intent + computation', train.intent === 'reason' && train.needsComputation, JSON.stringify(train))
   check('train word problem → multi-step', train.needsMultiStep, JSON.stringify(train))

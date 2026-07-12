@@ -29,7 +29,7 @@ import { isCodingQuery } from '../retrieval/retrievalLayer'
 import { buildRecallContext } from './conversationMemory'
 import { detectTruncation, buildContinuationMessages, stitchContinuation } from './longOutput'
 
-export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
+export type AnswerIntent = 'lookup' | 'definition' | 'explain' | 'reason' | 'converse'
 
 export interface AnswerFacets {
   needsExternalFact: boolean
@@ -87,6 +87,27 @@ const COMPUTE_ASK = /(\d\s*%|\bpercent\b|\bdiscount(ed)?\b|\bsales? tax\b|\btip\
 const EXPLAIN = /\b(explain|how (does|do|to)|describe|what (is|are) (a |an |the )?[a-z]|why (does|do|is|are)|walk me through|tell me about|difference between|compare|pros and cons|trade-?offs?)\b/i
 const NUMERIC = /\d/
 
+// ── Definition sub-intent ──────────────────────────────────────────────────────
+// A bare "what is a hash map" / "define recursion" / "what does X mean" wants a tight 2-4
+// sentence answer, but the EXPLAIN regex above swallows "what is a <term>" and routes it to the
+// full explain treatment (intuition→detail→example), which decodes ~1100 tokens ≈ 19s on the weak
+// FM (measured cont.67). A definition is a lighter ask; it gets its own short budget + concise
+// prompt. It fires ONLY on the term-definition shape with NO explanatory expander (how/why/works/
+// example/difference/…) — those signal the user actually wants depth — and NOT on entity-fact
+// lookups ("capital of Australia"), which stay on the web-grounded lookup path.
+const DEFINE = /^\s*(?:can you |could you |please )?(?:what(?:'s| is| are)\s+(?:a |an |the )?[a-z][\w-]*(?:\s+[\w-]+){0,3}\s*\??$|define\s+\w|what\s+does\s+.{1,40}\s+mean\b|what\s+is\s+meant\s+by\b|meaning\s+of\s+\w|what(?:'s| is)\s+(?:the\s+)?definition\s+of\b)/i
+const DEFINE_EXPANDER = /\b(how|why|works?|working|difference|differ|compare|comparison|versus|vs\.?|explain|walk me through|pros and cons|trade-?offs?|used for|use case|examples?|step by step|in detail|detailed|deep dive|elaborate|derive|derivation|internals?)\b/i
+// Relational/entity nouns that make a "what is the X of Y" a specific FACT lookup, not a term def.
+const FACTUAL_LOOKUP = /\b(capital|population|currency|language|president|prime minister|ceo|founder|author|inventor|distance|height|weight|born|died|located|time in|weather|price|gdp|area of)\b/i
+
+function isDefinitionAsk(m: string): boolean {
+  if (!DEFINE.test(m) || DEFINE_EXPANDER.test(m) || FACTUAL_LOOKUP.test(m)) return false
+  // A capitalized entity mid-sentence signals a specific fact ("capital of Australia", "GDP of
+  // France") that benefits from web grounding — leave those on the lookup path, not definition.
+  if (/(?<=\S\s)[A-Z][a-zA-Z]{2,}/.test(m)) return false
+  return true
+}
+
 export function classifyFacets(message: string): AnswerFacets {
   const m = message ?? ''
   const isCode = CODE_GEN.test(m) || CODE_FENCE.test(m) || (LANG.test(m) && CODE_CONSTRUCT.test(m))
@@ -107,6 +128,8 @@ export function classifyFacets(message: string): AnswerFacets {
   let intent: AnswerIntent
   if (isCode) intent = 'reason'
   else if (needsComputation || REASON.test(m)) intent = 'reason'
+  // Definition BEFORE explain: "what is a <term>" trips EXPLAIN, but a bare definition is lighter.
+  else if (isDefinitionAsk(m)) intent = 'definition'
   else if (EXPLAIN.test(m)) intent = 'explain'
   else if (/^\s*(what|who|when|where|which|name|list|define|how (many|much|old|tall|far))\b/i.test(m)) intent = 'lookup'
   else intent = 'converse'
@@ -144,6 +167,8 @@ function systemPromptFor(facets: AnswerFacets, evidence: string): string {
       return `${base}\n\nThink through this step by step. Show each calculation or logical step explicitly. Re-check any arithmetic. State the final answer clearly on its own line at the end, prefixed with "Answer:".${grounding}`
     case 'explain':
       return `${base}\n\nGive a clear, thorough explanation. Build intuition first, then detail; include a concrete example. Use markdown structure where it helps. Do not pad — every sentence should add information.${grounding}`
+    case 'definition':
+      return `${base}\n\nDefine the term directly in 2-4 sentences: a one-sentence plain-language definition first, then just enough to make it concrete (a short example or where it is used). Do not write a full tutorial, do not add sections, and do not pad — stop once the term is clearly defined.${grounding}`
     case 'lookup':
       return `${base}\n\nAnswer directly and concisely (1-3 sentences). Do not add unrequested detail.${grounding}`
     default:
@@ -159,6 +184,7 @@ function systemPromptFor(facets: AnswerFacets, evidence: string): string {
 function maxTokensFor(facets: AnswerFacets): number {
   switch (facets.intent) {
     case 'lookup': return 320    // 1-3 sentences + slack for a list
+    case 'definition': return 384 // 2-4 sentence definition + a short example (not a tutorial)
     case 'converse': return 448  // a tight paragraph or two
     case 'explain': return 1100  // intuition + detail + an example
     case 'reason': return 1536   // full step-by-step chain, never truncated
