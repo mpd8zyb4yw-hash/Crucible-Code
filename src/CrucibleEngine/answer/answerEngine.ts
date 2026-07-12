@@ -25,6 +25,7 @@ import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factCons
 import { applyExplainCheck, checkExplanation } from './explainCheck'
 import { matchMeta } from './conversational'
 import { answerWithWebGrounding } from './groundedAnswer'
+import { isCodingQuery } from '../retrieval/retrievalLayer'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -149,6 +150,27 @@ function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content:
 const ABSTAIN_TEXT =
   "I can't answer this reliably offline right now — the on-device model is unavailable, and strict mode never falls back to an external model. Try again in a moment."
 
+// ── Metacognitive gap-gate (deterministic) ─────────────────────────────────────
+// Decide when to close a knowledge gap with a web lookup vs. answer directly (fast).
+//
+// We tried true model self-assessment (a LOOKUP protocol; a 1-5 confidence rating) and the
+// weak Apple FM CANNOT introspect its own gaps: it rated "capital of Australia" and "what is a
+// variable" as needing a lookup (1/5) while rating "photosynthesis" 5/5 — noise. The protocol
+// variant also confused it into refusals ("CANNOT COMPLETE THIS REQUEST"). So the gate is a
+// deterministic heuristic tuned to the user's framing: research the SPECIALIZED/technical/
+// recent/precise questions (where the FM bluffs and retrieval is strong), answer the general
+// conceptual ones directly (where the FM is fine and the existing verification lanes still run).
+function shouldResearch(message: string, facets: AnswerFacets): boolean {
+  if (facets.needsExternalFact) return true                 // recency/volatility (also routed upstream)
+  if (isCodingQuery(message)) return true                   // API/library/language specifics — FM bluffs; SO/docs strong
+  // Specialized / precise / niche cues — the "mechanics of orbital trajectory" class.
+  if (/\b(mechanics|equations?|derivation|internals?|specification|spec|protocol|rfc|architecture|algorithm|theorem|formula|standard|version|release|changelog|benchmark|configuration|configure|install(?:ation)?|deprecat|migrat|troubleshoot|error|exception|best practices?|trade-?offs?|compared? (?:to|with)|difference between|vs\.?|versus)\b/i.test(message)) return true
+  // Proper-noun-heavy: specific products/tools/people/places beyond a single common entity.
+  const caps = (message.match(/(?<=\S\s)[A-Z][a-zA-Z0-9.+#-]{2,}/g) ?? []).length
+  if (caps >= 2) return true
+  return false                                              // general/basic → fast direct answer
+}
+
 /**
  * Answer one query through the verification-gated single-call path.
  * Never throws; on unrecoverable failure returns an honest abstention.
@@ -213,9 +235,11 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // dedicated verified paths.
   const isGenRequest = CODE_GEN.test(message) || CODE_FENCE.test(message)
   const isQuestionShaped = /^\s*(what|how|why|when|which|who|where|does|do|is|are|can|could|should|would|explain|describe|tell me|define|compare|list)\b/i.test(message) || message.trim().endsWith('?')
-  const useGrounding = !usedRetrieval && !useConsensus && !isGenRequest &&
+  const groundingEligible = !usedRetrieval && !useConsensus && !isGenRequest &&
     !facets.needsComputation && isQuestionShaped &&
     process.env.CRUCIBLE_WEB_GROUNDING !== '0'
+  // Gap-gate: only the specialized/technical/recent subset actually hits the web.
+  const researchGap = groundingEligible && shouldResearch(message, facets)
   let draft = ''
   let consensusAgreement: number | null = null
   let retrievalMeta: NonCodeMeta | null = null
@@ -235,7 +259,8 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       if (draft) {
         emit?.({ type: 'verify', passed: c.agreement >= 0.5, report: `Self-consistency: ${Math.round(c.agreement * 100)}% of ${c.samples} independent derivations agreed on the answer.` })
       }
-    } else if (useGrounding) {
+    } else if (researchGap) {
+      // Detected knowledge gap → close it with a web lookup, grounded + cited.
       const g = await answerWithWebGrounding(message, { history, emit, signal })
       if (g && g.text) {
         draft = g.text
@@ -243,10 +268,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         usedRetrieval = true          // gates the redundant FM verification lanes below
         groundedSources = g.sources
       } else {
-        // Web yielded nothing usable → answer from on-device knowledge. Never worse than before.
+        // Web yielded nothing usable → answer from on-device knowledge (never worse than before).
         emit?.({ type: 'thought', text: 'No usable web sources — answering from on-device knowledge.' })
         const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
-        draft = (await fmComplete(msgs)).trim()
+        draft = (await fmComplete(msgs, { signal })).trim()
       }
     } else {
       const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]

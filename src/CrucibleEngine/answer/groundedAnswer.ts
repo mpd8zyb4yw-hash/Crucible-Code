@@ -33,6 +33,9 @@ export interface GroundOpts {
   budgetMs?: number
   /** Per-source excerpt size (chars). */
   perSourceChars?: number
+  /** Explicit web-search query (e.g. the metacognitive gate's suggested terms). Falls back to
+   *  the message when absent. Synthesis always answers the original question. */
+  searchQuery?: string
 }
 
 const DEFAULT_BUDGET_MS = Number(process.env.CRUCIBLE_GROUND_BUDGET_MS ?? 14_000)
@@ -65,7 +68,7 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
   const { emit, signal } = opts
   emit?.({ type: 'thought', text: 'Searching the web for current, verifiable sources…' })
   let results: SearchResult[] = []
-  try { results = await search(query) } catch { results = [] }
+  try { results = await search(opts.searchQuery || query) } catch { results = [] }
   if (signal?.aborted || results.length === 0) return null
 
   const ranked = rankResults(results, query).slice(0, MAX_SOURCES)
