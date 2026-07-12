@@ -70,6 +70,7 @@ export default function App() {
   // paperclip button. Each send prepends a note referencing them so the agent knows they
   // exist and where to read them (they land in the sandbox, visible in the code workspace). ──
   const [attachments, setAttachments] = useState<{ name: string; path: string; bytes: number }[]>([])
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   // ── Voice mode — local whisper.cpp dictation + auto-spoken replies (full voice loop). ──
@@ -936,9 +937,11 @@ export default function App() {
     const list = Array.from(files).slice(0, 8)   // sane cap per action
     if (!list.length) return
     setUploading(true)
+    setUploadError(null)
+    const failed: string[] = []
     try {
       for (const file of list) {
-        if (file.size > 25 * 1024 * 1024) { haptic('heavy'); continue }  // matches server 25 MB limit
+        if (file.size > 25 * 1024 * 1024) { haptic('heavy'); failed.push(`${file.name} (over 25 MB)`); continue }
         const data: string = await new Promise((resolve, reject) => {
           const r = new FileReader()
           r.onload = () => resolve(String(r.result))
@@ -946,15 +949,23 @@ export default function App() {
           r.readAsDataURL(file)   // data URL — server strips the prefix
         })
         try {
-          const resp = await fetch('/api/sandbox/upload', {
+          // apiFetch + API_BASE like every other API call — a bare relative fetch broke in any
+          // deployment where the page origin doesn't proxy /api, and silently dropped the file.
+          const resp = await apiFetch(`${API_BASE}/api/sandbox/upload`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: file.name, data }),
           })
-          const j = await resp.json()
+          const j = await resp.json().catch(() => null)
           if (j?.success) setAttachments(prev => [...prev, { name: j.path, path: j.path, bytes: j.bytes }])
-        } catch { /* skip a failed file; others still upload */ }
+          else failed.push(`${file.name} (${j?.error || `HTTP ${resp.status}`})`)
+        } catch (e: any) { failed.push(`${file.name} (${String(e?.message || 'network error').slice(0, 60)})`) }
       }
-    } finally { setUploading(false) }
+    } finally {
+      setUploading(false)
+      // Surface failures instead of silently doing nothing — the #1 "I clicked attach and
+      // nothing happened" report. Auto-clears on the next successful action.
+      if (failed.length) setUploadError(`Could not attach: ${failed.join(', ')}`)
+    }
   }
   const removeAttachment = (p: string) => setAttachments(prev => prev.filter(a => a.path !== p))
 
@@ -963,7 +974,7 @@ export default function App() {
     if (!voiceLoop || !text?.trim()) return
     // Strip code fences/markdown noise so talkback stays natural.
     const clean = text.replace(/```[\s\S]*?```/g, ' code block ').replace(/[#*`_>]/g, '').slice(0, 1200)
-    fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: clean }) }).catch(() => {})
+    apiFetch(`${API_BASE}/api/tts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: clean }) }).catch(() => {})
   }
   const stopRecording = () => {
     try { mediaRecorderRef.current?.stop() } catch { /* already stopped */ }
@@ -985,7 +996,7 @@ export default function App() {
           const data: string = await new Promise((resolve, reject) => {
             const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = () => reject(r.error); r.readAsDataURL(blob)
           })
-          const resp = await fetch('/api/voice/transcribe', {
+          const resp = await apiFetch(`${API_BASE}/api/voice/transcribe`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ audio: data, mime: blob.type }),
           })
@@ -2844,6 +2855,13 @@ export default function App() {
               pointerEvents: 'none' as const, animation: 'fadeIn 0.2s',
             }}>
               Type at least 4 characters to send
+            </div>
+          )}
+          {/* Upload failure note — visible feedback instead of a silent no-op */}
+          {uploadError && (
+            <div style={{ padding: '2px 4px 6px 36px', fontSize: 11, color: '#e08a8a', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{uploadError}</span>
+              <button onClick={() => setUploadError(null)} title="Dismiss" style={{ background: 'none', border: 'none', color: '#77778c', cursor: 'pointer', padding: 0, fontSize: 13, lineHeight: 1 }}>×</button>
             </div>
           )}
           {/* ── Attachment chips — files uploaded into the workspace sandbox this turn ── */}

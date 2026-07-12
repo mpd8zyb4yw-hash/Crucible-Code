@@ -15,11 +15,25 @@
 import { execFile } from 'node:child_process'
 import { writeFile, unlink, mkdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import os from 'node:os'
 import path from 'node:path'
 
 const WHISPER_DIR = path.join(process.cwd(), '.crucible', 'whisper')
-const MODEL_PATH = process.env.WHISPER_MODEL || path.join(WHISPER_DIR, 'ggml-base.en.bin')
+// The packaged app runs the server with cwd = the Electron userData dir (all user data keys
+// off process.cwd() — see electron.cjs), but a model downloaded while running from the repo
+// lands in the CODE dir's .crucible/whisper. Resolve the model from either location so the
+// same install works in both run modes: env override → cwd (userData) → code dir.
+const CODE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
+function resolveModelPath(): string {
+  if (process.env.WHISPER_MODEL) return process.env.WHISPER_MODEL
+  const cwdModel = path.join(WHISPER_DIR, 'ggml-base.en.bin')
+  if (existsSync(cwdModel)) return cwdModel
+  const codeModel = path.join(CODE_DIR, '.crucible', 'whisper', 'ggml-base.en.bin')
+  if (existsSync(codeModel)) return codeModel
+  return cwdModel // canonical location — reported to the UI as where to install
+}
+const MODEL_PATH = resolveModelPath()
 
 /** Resolve an executable: explicit env path → bundled ./bin → bare name on PATH (let the OS find it). */
 function resolveBin(envVar: string, bundledName: string, fallback: string): string {
