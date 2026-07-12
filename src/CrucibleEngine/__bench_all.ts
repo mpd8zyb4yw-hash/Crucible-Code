@@ -34,6 +34,8 @@ const SUITES = [
   'contract:bench',
   'lintgate:bench',
   'repair:bench',
+  'examplegate:bench',
+  'premise:bench',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')
