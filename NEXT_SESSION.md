@@ -50,6 +50,26 @@ chips now render inside the sent user bubble (Round.attachments[] → MessageLis
 turns are visually distinct; preview-verified chip + content-aware answer + COUNCIL card 3/3 in
 one turn.
 
+**cont.66m-b FULL PARITY MAP (no code; user asked for the complete picture, not next-sessions):**
+Parity = PRODUCT of pillar floors, not sum of peaks. Pillar scores: synthesis 60% (certified but
+narrow triggers + pure-fn-only shapes), modification 25% (scratch-scale only; tests-as-oracle
+unbuilt = the research bet that decides the ceiling), agent 40%, conversation 30% (follow-up
+abstain + NO long-context story at all), knowledge 25% (corpus coverage is a content-acquisition
+project, unscoped), latency 20% (needs stream-then-certify architecture, not tuning), multimodal
+30% (no true image understanding; MiniCPM-V-class unexplored), verification moat 45% of own
+ambition (effectful code + open-QA unverified; two consensus engines unmerged), robustness 30%
+(bench-vs-live class needs adversarial live harness + routing regression corpus; server.ts ~8k-line
+monolith is a velocity risk), product 50% (no iOS). THREE TRUTHS: (1) 100% general parity
+unreachable on 3B — honest target: EXCEED frontier on verifiable coding (certified>plausible),
+"good enough" elsewhere; asymptote ~70-80% felt parity. (2) The distribution has never been
+measured — build a 200-real-prompt corpus as the north-star metric; all % are vibes until then.
+(3) Tests-as-oracle for repo modification is the bet that moves B 25%->70%. TIERS: 1=floors
+(the 5 triage items, ->~50-55%); 2=structural: convo-length scaling, repo-scale modify, live
+harness, server split, consensus merge, agent-path attachments (->~65%); 3=ceilings: offline
+knowledge corpus, effectful-code verification, vision model, 200-prompt benchmark, iOS
+(->70-80%); 4=DECLARED out of reach: frontier knowledge breadth, 100k contexts, taste on
+unverifiable tasks — abstain-and-say-why is the UX for these.
+
 **cont.66m AUDIT (no code): parity recalibrated 88% -> ~35-40%** — old % tracked milestone
 completion, not distribution coverage (user-felt sessions). Live probes: follow-up turn "which
 of those…" -> "I cannot answer that question" (strict-abstain kills multi-turn continuity —
