@@ -116,9 +116,12 @@ export function harvestExplicitExamples(nl: string): Harvested {
   // Source 1 — permissive regex over the raw request text.
   for (const m of nl.matchAll(EXAMPLE_RX)) addExample(byEntry, m[1], m[2], m[3])
 
-  // Source 2 — the synth path's example extractor (feature-aware entry resolution).
+  // Source 2 — the synth path's example extractor (feature-aware entry resolution). Seed it with
+  // the explicitly-declared function names too: a multi-file request ("Create src/x.ts exporting
+  // add(a,b) … For example add(2,3) returns 5") has no signature extractFeatures recognizes, so
+  // without this the embedded examples go unharvested and the request falls to weak-FM consensus.
   try {
-    for (const { lhs, rhs } of extractSpecExamples(nl)) {
+    for (const { lhs, rhs } of extractSpecExamples(nl, detectDeclaredFunctions(nl))) {
       const call = parseCall(lhs)
       if (call) addExample(byEntry, call[0], call[1], rhs)
     }

@@ -424,6 +424,14 @@ async function run() {
     extractSpecExamples('Build me a slug(text) that converts text to a url slug').length === 0)
   ok('entry inferred from the example call name, not stray prose ("takes only (s, width)")',
     entryFromExamples("change pad so it takes only (s, width). pad('hi', 5) => '   hi'") === 'pad')
+  // Multi-file prompts declare functions in prose ("Create src/x.ts exporting add(a,b)…") that
+  // extractFeatures doesn't recognize as exports → extractSpecExamples finds nothing UNLESS the
+  // caller seeds the declared names. This is what routed multi-file create onto the gold path.
+  const mfProse = "Create src/mathlib.ts exporting add(a, b) and square(x). For example add(2, 3) returns 5 and square(4) returns 16."
+  ok('extractSpecExamples finds nothing on bare declaration prose without seeded names',
+    extractSpecExamples(mfProse).length === 0)
+  ok('seeding declared names lets embedded multi-file examples extract (gold path unblocked)',
+    extractSpecExamples(mfProse, ['add', 'square']).length === 2)
 
   // Multi-file merge: certified module source merged into an EXISTING file (splice same-named,
   // append new, union imports) — the modify-inside-multi-file building block.
