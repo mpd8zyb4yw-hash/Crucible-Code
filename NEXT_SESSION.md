@@ -50,6 +50,19 @@ chips now render inside the sent user bubble (Round.attachments[] → MessageLis
 turns are visually distinct; preview-verified chip + content-aware answer + COUNCIL card 3/3 in
 one turn.
 
+**cont.66m AUDIT (no code): parity recalibrated 88% -> ~35-40%** — old % tracked milestone
+completion, not distribution coverage (user-felt sessions). Live probes: follow-up turn "which
+of those…" -> "I cannot answer that question" (strict-abstain kills multi-turn continuity —
+reproduced, #1 user-felt gap); kebab-case ask = 34s AND missed the VGR path (prose-shaped
+example not extracted — flagship triggers too narrowly); user-reported second-message-0-output
+NOT reproduced server-side (rapid turns fine, debug history clean) — PRIME SUSPECT: 66k council
+gate widening puts a 3-voice debate on the shared FM queue nearly every turn -> turn-2
+starvation under real load; secondary: client convLiveRound/reconnect. RANKED FOCUS: (1) kill
+follow-up-abstain class, (2) repro+fix 0-output under council load, (3) replace regex routing
+stack with learned router spine (retires the recurring hijack/starve bug class), (4) per-turn
+latency budget w/ progressive certification, (5) VGR prose-example triggers. Feature freeze
+until 1-3 closed.
+
 Open follow-ups: real-mic voice-mode multi-turn CONFIRMED by user (66k item closed); barge-in
 (speak to interrupt TTS); attachment content should also flow on the AGENT path (only /api/chat
 folds it today); OCR swift first-call latency (~1-2s) could be precompiled; audit remaining
