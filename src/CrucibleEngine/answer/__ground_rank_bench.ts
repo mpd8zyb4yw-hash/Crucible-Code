@@ -68,6 +68,39 @@ console.log('\n== authorship verb is not treated as an entity token ==')
   check('the play Hamlet is top-1', ranked[0]?.title === 'Hamlet', ranked[0]?.title)
 }
 
+console.log('\n== intent tie-break: "who wrote Dune" prefers (novel) over (franchise) ==')
+{
+  // Both strip to {dune} with equal overlap and zero extras — a pure disambiguator tie. The
+  // creation verb "wrote" implies the written work, so the novel must win.
+  const results = [
+    S('Dune (franchise)', 'Dune is an American science fiction media franchise.'),
+    S('Dune (novel)', 'Dune is a 1965 epic science fiction novel by Frank Herbert.'),
+  ]
+  const ranked = rankResults(results, 'who wrote Dune')
+  check('novel outranks franchise on an authorship query', ranked[0]?.title === 'Dune (novel)', ranked[0]?.title)
+}
+
+console.log('\n== intent tie-break: "who directed Dune" prefers (film) over (novel) ==')
+{
+  const results = [
+    S('Dune (novel)', 'Dune is a 1965 epic science fiction novel by Frank Herbert.'),
+    S('Dune (film)', 'Dune is a 2021 epic science fiction film directed by Denis Villeneuve.'),
+  ]
+  const ranked = rankResults(results, 'who directed Dune')
+  check('film outranks novel on a directing query', ranked[0]?.title === 'Dune (film)', ranked[0]?.title)
+}
+
+console.log('\n== intent tie-break stays inert without a creation verb ==')
+{
+  // No verb → no bonus; the pages tie and original order is preserved (stable sort).
+  const results = [
+    S('Dune (franchise)', 'Dune is an American science fiction media franchise.'),
+    S('Dune (novel)', 'Dune is a 1965 epic science fiction novel by Frank Herbert.'),
+  ]
+  const ranked = rankResults(results, 'Dune')
+  check('order preserved when no intent verb present', ranked[0]?.title === 'Dune (franchise)', ranked[0]?.title)
+}
+
 console.log('\n== no-salient-token query is passed through untouched ==')
 {
   const results = [S('A'), S('B')]

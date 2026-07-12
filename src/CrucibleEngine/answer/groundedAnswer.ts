@@ -68,6 +68,42 @@ function titleContentTokens(title: string): string[] {
   return [...new Set(bare.match(/[a-z0-9][a-z0-9.+#_-]{2,}/g) ?? [])].filter(t => !TITLE_STOP.has(t))
 }
 
+// Intent → disambiguator-class map. A creation verb in the query implies the WORK TYPE the
+// asker means: "who WROTE Dune" wants the written work, not the film franchise. Wikipedia
+// disambiguates same-name entities with a parenthetical ("Dune (novel)" / "Dune (franchise)"),
+// so when the base-token overlap ties, the page whose disambiguator matches the verb's class
+// should win. Each entry maps trigger verbs to the disambiguator keywords they favour.
+const INTENT_DISAMBIG: Array<{ verbs: string[]; classes: string[] }> = [
+  { verbs: ['wrote', 'written', 'write', 'author', 'authored', 'novelist', 'penned'],
+    classes: ['novel', 'book', 'novella', 'poem', 'play', 'story', 'short story', 'memoir', 'essay'] },
+  { verbs: ['directed', 'director', 'filmed'],
+    classes: ['film', 'movie', 'miniseries'] },
+  { verbs: ['painted', 'painter'],
+    classes: ['painting', 'artwork'] },
+  { verbs: ['composed', 'composer'],
+    classes: ['opera', 'symphony', 'ballet', 'concerto', 'composition'] },
+  { verbs: ['sang', 'sung', 'recorded', 'singer'],
+    classes: ['song', 'single', 'album'] },
+  { verbs: ['sculpted', 'sculptor'],
+    classes: ['sculpture', 'statue'] },
+]
+
+function titleDisambig(title: string): string {
+  return (title.toLowerCase().match(/\(([^)]*)\)/)?.[1] ?? '').trim()
+}
+
+/** Tiny tie-break bonus (< the 0.5 penalty step, so it only reorders exact ties): give a small
+ *  edge to the disambiguator page whose work-type matches a creation verb in the query. */
+function intentBonus(title: string, queryTokens: Set<string>): number {
+  const disambig = titleDisambig(title)
+  if (!disambig) return 0
+  for (const { verbs, classes } of INTENT_DISAMBIG) {
+    if (!verbs.some(v => queryTokens.has(v))) continue
+    if (classes.some(c => disambig.includes(c))) return 0.25
+  }
+  return 0
+}
+
 /**
  * Rank results by salient-token overlap, TITLE-weighted (a title match signals the page is
  * ABOUT the topic, not just mentioning it — this demotes tangential hits like "Rock cycle" for
@@ -87,6 +123,8 @@ export function rankResults(results: SearchResult[], query: string): SearchResul
   const sal = [...new Set((query.toLowerCase().match(/[a-z0-9][a-z0-9.+#_-]{2,}/g) ?? []))].filter(t => !RANK_STOP.has(t))
   if (sal.length === 0) return results
   const salSet = new Set(sal)
+  // Full query tokens (verbs included, unfiltered) drive the intent tie-break.
+  const queryTokens = new Set((query.toLowerCase().match(/[a-z0-9]+/g) ?? []))
   const scored = results.map(r => {
     const title = (r.title ?? '').toLowerCase()
     const body = `${r.snippet ?? ''} ${r.url ?? ''}`.toLowerCase()
@@ -94,7 +132,7 @@ export function rankResults(results: SearchResult[], query: string): SearchResul
     const overlap = sal.reduce((n, t) => n + (title.includes(t) ? 2 : 0) + (body.includes(t) ? 1 : 0), 0)
     // Canonical penalty: title content tokens the query never mentioned = derivative-page signal.
     const extras = titleContentTokens(r.title ?? '').filter(t => !salSet.has(t)).length
-    const score = overlap - 0.5 * Math.min(extras, 3)
+    const score = overlap - 0.5 * Math.min(extras, 3) + intentBonus(r.title ?? '', queryTokens)
     return { r, score, overlap }
   }).sort((a, b) => b.score - a.score)
   const top = scored[0]?.overlap ?? 0
