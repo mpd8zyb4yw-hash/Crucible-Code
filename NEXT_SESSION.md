@@ -17,7 +17,26 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 68c — SEMANTIC RECALL + DEFINITION SUB-INTENT + RECALL-INTO-GROUNDING; on top of long-horizon memory + long-output continuation)
+## CURRENT STATE (last updated 2026-07-12, cont. 68d — HTML GAME behavioral verifier hardened + stale "unverified" note corrected; on top of semantic recall + definition sub-intent + long-horizon memory)
+
+**cont.68d (commit d8d7f0c, branch crucible-northstar-sessions) — HTML game verifier + a STALE-NOTE correction.**
+Investigated the standing "#1 gap: HTML/canvas behaviorally unverified" and found it STALE: a real
+Electron-backed runtime verifier (`agent/htmlRuntimeVerify.ts` + `htmlVerifyMain.cjs`) has been WIRED
+into the live build path since the 2026-07-07 trust audit — `synthDriver.ts` calls
+`validateHtmlGame(html) ?? await runtimeVerifyHtml(html)` at the emit gate. It loads the artifact
+offscreen in bundled Electron and rejects (with FM-repair hints) on: runtime JS errors, no/blank
+canvas, blank-until-keypress, NaN/undefined/Infinity readouts, keyboard-registered-but-never-fired,
+FROZEN (not self-animated AND input-inert), and INVERTED left/right controls (ink-centroid probe).
+Electron gate confirmed working on this Mac; `__html_invariant_bench.ts` was 4/4. ADDED one new
+invariant: **terminal-state-on-load** — a game that reads "game over"/"you lose"/"you died" from frame
+0 (FM initialized `gameOver=true`, or spawned the player already colliding) is rejected. Snapshotted at
+LOAD, before the harness's synthetic key bursts, so a legitimate game-over the harness itself triggers
+can't false-trip it; loss/over phrases only (never "win" — appears in instructions). New bench case
+(draws+animates+takes input exactly like the GOOD game but reads GAME OVER on load) → rejected; html
+invariants **5/5**, `bench:all` 413/413, tsc clean. Corrected the stale note in the memory index +
+`crucible-contextual-understanding-fix` so future sessions don't re-chase a closed gap.
+
+**cont.68c (commit 32041c5, branch crucible-northstar-sessions) — SEMANTIC recall closes the lexical gap.**
 
 **cont.68c (commit 32041c5, branch crucible-northstar-sessions) — SEMANTIC recall closes the lexical gap.**
 Lexical recall (`selectMemory`) matches shared salient TOKENS, so a back-reference sharing no words
@@ -185,8 +204,12 @@ semantic back-reference ("that thing we discussed") won't retrieve (embedding in
 worth a real grounded-follow-up run.] [68c CLOSED the semantic-recall gap — token-less back-references
 now retrieve via MiniLM embeddings, live-verified.] Long-output continuation can still outrun 3 rounds
 on a huge build (raise the cap for code-gen intents, or detect "still growing" and extend). (3)
-HTML/canvas builds still behaviorally unverified (standing #1 capability gap from cont.66h) — now the
-top structural gap. [former item 3 — lighter "definition" sub-intent — DONE 68b; semantic recall — DONE 68c.]
+HTML GAME builds ARE behaviorally verified (Electron htmlRuntimeVerify wired into synthDriver; 68d
+hardened it + corrected the stale "unverified" note). The REMAINING HTML gaps: (a) NON-game interactive
+HTML (calculator/form/dashboard/data-viz) has NO behavioral verifier — the runtime gate is game-shaped
+(needs canvas + arrow keys); (b) smaller game-verifier gaps with higher false-positive risk (score-
+responds-to-gameplay, off-playfield/no-bounds, collision-dead). [DONE: definition sub-intent 68b,
+semantic recall 68c, terminal-state-on-load invariant 68d.]
 
 ---
 
