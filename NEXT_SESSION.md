@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 66i — GAME-LOOP DIVERSIFICATION + READOUT VERIFIER, COMPOUND-ROUTING FIX, UPLOAD + VOICE UI)
+## CURRENT STATE (last updated 2026-07-12, cont. 66j — VOICE ROUND-TRIP VERIFIED [prior: 66i game-loop/readout verifier, compound-routing fix, upload+voice UI])
 
 **cont.66i (68eb42a, 60db198, ea409fa) — four shipped items this session:**
 
@@ -46,11 +46,13 @@
    16k wav→whisper-cli) + full voice loop (mic dictate + auto-speak replies via existing /api/tts).
    GET /api/voice/status + POST /api/voice/transcribe; reports needsModel when the stack isn't installed.
    Composer mic button (click=dictate, right-click=toggle voice loop) + Settings "Voice" section with
-   live per-dep status + install commands. **HONEST CEILING: whisper/ffmpeg/model NOT installed on this
-   Mac** — plumbing + UI + needsModel path are live-verified via curl, but an actual transcription has
-   NOT been run end-to-end. Next session: install the stack (brew install whisper-cpp ffmpeg + download
-   ggml-base.en.bin) and verify a real dictation round-trips; also composer buttons are tsc/vite-clean
-   and the app mounts, but the authed composer view was not screenshotted (OAuth wall in preview).
+   live per-dep status + install commands. **VOICE ROUND-TRIP NOW VERIFIED (cont.66j, 2026-07-12):**
+   stack installed on this Mac (brew whisper-cpp + ffmpeg, ggml-base.en.bin 148MB at
+   .crucible/whisper/). Real end-to-end proof: macOS `say` → opus webm → `transcribeAudio()` returned
+   `{ok:true, text:"Crucible runs entirely on device without the cloud."}` (exact match, 0 cloud calls);
+   `voiceStatus().ready === true`. The whisper.cpp STT path is no longer just plumbing — it transcribes.
+   STILL OPEN: composer buttons are tsc/vite-clean and the app mounts, but the authed composer view was
+   not screenshotted (OAuth wall in preview) — attach/mic layout unconfirmed visually.
 
 ---
 
