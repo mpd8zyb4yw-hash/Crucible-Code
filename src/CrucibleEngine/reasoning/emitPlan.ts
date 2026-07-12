@@ -748,6 +748,23 @@ export function renameInModule(content: string, from: string, to: string, role: 
   return out
 }
 
+/** True when `content` RE-EXPORTS `entry` from `targetRel` (`export { entry } from './target'`).
+ *  A re-export forwards the name transitively, so a rename that doesn't chase the whole chain
+ *  would leave the barrel referencing a symbol that no longer exists — planRenameTree abstains. */
+export function reexportsEntryFrom(content: string, entry: string, siblingRel: string, targetRel: string): boolean {
+  const targetNoExt = targetRel.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+  const rx = /^export\s*(?:type\s*)?\{([^}]*)\}\s*from\s*(['"])([^'"]+)\2/gm
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(content))) {
+    if (resolveSpecifier(siblingRel, m[3]) !== targetNoExt) continue
+    for (const raw of m[1].split(',')) {
+      const orig = raw.trim().split(/\s+as\s+/)[0].trim()
+      if (orig === entry) return true
+    }
+  }
+  return false
+}
+
 /**
  * Whole-tree rename. Renames `from`→`to` in the target file's definition and in every sibling
  * that imports it, preserving import aliases (an aliased importer keeps its local name, only the
@@ -773,6 +790,9 @@ export async function planRenameTree(
   const notes: string[] = [`${targetPath}: definition renamed`]
   for (const [rel, content] of Object.entries(siblings)) {
     if (rel === targetPath) continue
+    // A re-export barrel forwards the name transitively — chasing that chain is out of scope, so
+    // refuse rather than leave `export { from } from './target'` dangling.
+    if (reexportsEntryFrom(content, from, rel, targetPath)) return null
     const locals = importedLocalNames(content, from, rel, targetPath)
     if (!locals.length) continue
     if (alreadyDefines(content, from)) return null // imports AND shadows the name — too ambiguous

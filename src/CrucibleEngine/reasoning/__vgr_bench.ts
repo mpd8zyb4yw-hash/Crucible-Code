@@ -438,6 +438,12 @@ async function run() {
     rMember === "export function padLeft(){ return 1 }\nconst z = obj.pad\nconst s = 'pad'\n")
   ok('renameInModule REFUSES when the name is used as a bare value (const alias = pad)',
     renameInModule("export function pad(){ return 1 }\nconst alias = pad\n", 'pad', 'padLeft', 'define') === null)
+  const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
+  ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
+  const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',
+    { 'src/index.ts': "export { trim } from './strings'\n" })
+  ok('rename is NOT blocked by a re-export of a DIFFERENT symbol from the same module',
+    !!rReexportOther && rReexportOther.propagated.length === 0)
 
   // ── Worked-example extraction: EMBEDDED in prose + multi-per-line + entry inference ──────
   // Real /api/chat prompts state examples inside a sentence ("For example pad('hi', 5) returns
