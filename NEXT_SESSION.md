@@ -17,7 +17,31 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 66j — VOICE ROUND-TRIP VERIFIED + INVERTED-CONTROLS BEHAVIORAL INVARIANT [prior: 66i game-loop/readout verifier, compound-routing fix, upload+voice UI])
+## CURRENT STATE (last updated 2026-07-12, cont. 66k — VOICE CONVERSATION MODE + ATTACHMENT UNDERSTANDING + COUNCIL VISIBILITY [prior 66j: voice round-trip verified, inverted-controls invariant, composer dead-ends fixed])
+
+**cont.66k (a99e75c) — four user-reported vision gaps closed in one pass:**
+
+1. **Voice CONVERSATION mode (ChatGPT-style):** mic click enters a hands-free loop — listen
+   (WebAudio VAD, 1.5s-silence auto-stop) → whisper transcribe → send → reply spoken via
+   /api/tts `wait:true` (server resolves AFTER `say` playback so the client knows when to
+   re-open the mic) → re-listen. Visible state overlay (breathing orb, Listening/Transcribing/
+   Thinking/Speaking + exit ×) floats above the composer; chat populates behind. Two empty
+   listens auto-exit. Right-click = one-shot dictation. Overlay DOM-verified in authed preview
+   with a stubbed silent stream. UNVERIFIED: a real spoken multi-turn on this Mac (needs a
+   human mic).
+2. **Attachment contextual awareness:** agent/attachmentContext.ts — /api/chat now folds real
+   file CONTENT into the message (text ≤24k/file inlined, images OCR'd on-device via Apple
+   Vision swift shell-out, binaries honestly declared, 48k total cap). LIVE-VERIFIED: chat
+   answered the launch code from an attached notes.txt; screen-region OCR extracted real text.
+3. **Image upload 413:** 25 MB file × ~1.37 base64 inflation blew the route's 25mb JSON cap →
+   raised to 40mb. (The visible upload-failure note from 66j is what surfaced this.)
+4. **Council/ensemble visibility:** debate gate widened (code|reasoning → +factual, +any turn
+   ≥60 chars; classifier's 'speed' default had been starving the council). LIVE-VERIFIED:
+   local_debate shipped 3 voices (answer-engine, minicpm5-1b, track-s-fm) unanimous 0.97.
+
+Open follow-ups from this pass: real-mic voice-mode session; barge-in (speak to interrupt TTS);
+attachment content should also flow on the AGENT path (only /api/chat folds it today); OCR swift
+first-call latency (~1-2s) could be precompiled.
 
 **cont.66i (68eb42a, 60db198, ea409fa) — four shipped items this session:**
 
