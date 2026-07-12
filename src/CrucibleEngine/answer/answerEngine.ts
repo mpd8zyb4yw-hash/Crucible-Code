@@ -12,7 +12,7 @@
 // draft, arithmetic + sanity critics, one bounded repair round, else abstain. Stages 2-4 add
 // multi-step decomposition, grounding entailment, and the capabilityRouter facet classifier.
 
-import { checkFmAvailable, fmComplete, type ConvTurn } from '../agent/fmReact'
+import { checkFmAvailable, fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { solveNonCodeTurn, type NonCodeMeta } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
@@ -165,6 +165,10 @@ const ABSTAIN_TEXT =
 // conceptual ones directly (where the FM is fine and the existing verification lanes still run).
 function shouldResearch(message: string, facets: AnswerFacets): boolean {
   if (facets.needsExternalFact) return true                 // recency/volatility (also routed upstream)
+  // Factual lookups ("what is the capital of X", "who wrote Y", "when did Z") — the weak FM is
+  // demonstrably unreliable on these (it fumbled "capital of Australia" into a clarify-request),
+  // while the web is authoritative and, streamed, fast. Look them up.
+  if (facets.intent === 'lookup') return true
   if (isCodingQuery(message)) return true                   // API/library/language specifics — FM bluffs; SO/docs strong
   // Specialized / precise / niche cues — the "mechanics of orbital trajectory" class.
   if (/\b(mechanics|equations?|derivation|internals?|specification|spec|protocol|rfc|architecture|algorithm|theorem|formula|standard|version|release|changelog|benchmark|configuration|configure|install(?:ation)?|deprecat|migrat|troubleshoot|error|exception|best practices?|trade-?offs?|compared? (?:to|with)|difference between|vs\.?|versus)\b/i.test(message)) return true
@@ -283,15 +287,24 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         draft = (await fmComplete(msgs, { signal })).trim()
       }
     } else {
+      // Direct on-device answer (common knowledge, fast path). STREAM it when an emit sink is
+      // wired so the first token lands in ~1s instead of after the whole answer decodes; the
+      // verification lanes below then polish it in place (server finalizes with replace:true).
       const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
-      draft = (await fmComplete(msgs)).trim()
+      if (emit) {
+        const onToken = (d: string) => emit({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: d, replace: false })
+        draft = (await fmStream(msgs, onToken, { signal })).trim()
+        streamed = true
+      } else {
+        draft = (await fmComplete(msgs, { signal })).trim()
+      }
     }
   } catch {
     draft = ''
   }
 
   if (!draft) {
-    return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval }
+    return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
   }
 
   // ── Check with deterministic critics ───────────────────────────────────────
@@ -328,7 +341,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     const fatal = issues.filter(i => i.kind === 'empty' || i.kind === 'nonanswer')
     if (fatal.length) {
       debugBus.emit('pipeline', 'abstain_after_repair', { message: message.slice(0, 80), issues: fatal.map(i => i.kind) }, { severity: 'warn' })
-      return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, corrections, repaired }
+      return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, corrections, repaired, streamed }
     }
   }
 
