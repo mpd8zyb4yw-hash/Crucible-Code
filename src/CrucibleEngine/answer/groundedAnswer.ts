@@ -56,29 +56,55 @@ interface Evidence {
 
 // Query stopwords so scoring keys on topical tokens, not "what/how/the/…".
 const RANK_STOP = new Set('what is are how does do did why who when where the of for a an in and or to with explain describe tell me about which that this it its'.split(/\s+/))
+// Title-side stopwords: query verbs/fillers that legitimately appear in a query but are NOT
+// part of the entity ("who WROTE Dune"). These must not count as "extra" content tokens when
+// judging how canonical a title is, and never inflate the extra-token penalty.
+const TITLE_STOP = new Set('wrote written write author authored by created made discovered invented directed produced founded designed built the of a an in on and or to'.split(/\s+/))
+
+function titleContentTokens(title: string): string[] {
+  // Strip parenthetical disambiguators — "Dune (novel)" is the canonical base article for the
+  // entity "Dune"; the "(novel)" qualifier should not read as extra specificity.
+  const bare = title.toLowerCase().replace(/\([^)]*\)/g, ' ')
+  return [...new Set(bare.match(/[a-z0-9][a-z0-9.+#_-]{2,}/g) ?? [])].filter(t => !TITLE_STOP.has(t))
+}
 
 /**
  * Rank results by salient-token overlap, TITLE-weighted (a title match signals the page is
  * ABOUT the topic, not just mentioning it — this demotes tangential hits like "Rock cycle" for
  * "water cycle"), then keep only sources scoring within a relative band of the best. Dropping
  * low-relevance sources keeps the evidence clean so the FM isn't grounded on noise.
+ *
+ * CANONICAL-TITLE PREFERENCE (cont.67): within the same overlap tier the base entity page must
+ * beat its derivatives. "who wrote Dune" hits "Dune Messiah", "Children of Dune" and
+ * "Dune (novel)" all with the same {dune} title overlap, and Wikipedia's own order often puts a
+ * sequel first — so the answer grounded on the wrong book. We subtract a small penalty for each
+ * title content token NOT asked for in the query (a sequel's "Messiah"/"Children" is extra
+ * specificity the base article lacks). The penalty is fractional and capped so it only reorders
+ * WITHIN an overlap tier — a genuinely more-relevant page (≥1 more matched salient token = ≥2
+ * points) always still wins.
  */
-function rankResults(results: SearchResult[], query: string): SearchResult[] {
+export function rankResults(results: SearchResult[], query: string): SearchResult[] {
   const sal = [...new Set((query.toLowerCase().match(/[a-z0-9][a-z0-9.+#_-]{2,}/g) ?? []))].filter(t => !RANK_STOP.has(t))
   if (sal.length === 0) return results
+  const salSet = new Set(sal)
   const scored = results.map(r => {
     const title = (r.title ?? '').toLowerCase()
     const body = `${r.snippet ?? ''} ${r.url ?? ''}`.toLowerCase()
     // Title matches count double; snippet/url matches count once.
-    const score = sal.reduce((n, t) => n + (title.includes(t) ? 2 : 0) + (body.includes(t) ? 1 : 0), 0)
-    return { r, score }
+    const overlap = sal.reduce((n, t) => n + (title.includes(t) ? 2 : 0) + (body.includes(t) ? 1 : 0), 0)
+    // Canonical penalty: title content tokens the query never mentioned = derivative-page signal.
+    const extras = titleContentTokens(r.title ?? '').filter(t => !salSet.has(t)).length
+    const score = overlap - 0.5 * Math.min(extras, 3)
+    return { r, score, overlap }
   }).sort((a, b) => b.score - a.score)
-  const top = scored[0]?.score ?? 0
+  const top = scored[0]?.overlap ?? 0
   if (top === 0) return scored.map(s => s.r)
-  // Keep the best source always; keep others only if they're at least ~40% as relevant — this
-  // drops the tangential long tail while still allowing genuine corroborating sources.
+  // Keep the best source always; keep others only if their raw overlap is at least ~40% as
+  // relevant — this drops the tangential long tail while still allowing genuine corroborating
+  // sources. Threshold is on overlap (not the penalized score) so a verbose-but-on-topic
+  // corroborator isn't dropped for its title length.
   const threshold = Math.max(1, top * 0.4)
-  return scored.filter((s, i) => i === 0 || s.score >= threshold).map(s => s.r)
+  return scored.filter((s, i) => i === 0 || s.overlap >= threshold).map(s => s.r)
 }
 
 /** Search → fetch top sources → assemble a budget-fit, citation-numbered evidence block. */

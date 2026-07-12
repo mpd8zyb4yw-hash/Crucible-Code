@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 67 — AGENTIC WEB GAP-CLOSING + TOKEN STREAMING: real-time web lookup wired into the knowledge path, first-token ~0.7s)
+## CURRENT STATE (last updated 2026-07-12, cont. 67 — AGENTIC WEB GAP-CLOSING + TOKEN STREAMING + CANONICAL-TITLE RANKING: real-time web lookup wired into the knowledge path, first-token ~0.7s, base articles now outrank derivatives)
 
 **cont.67 (commits 1a4bf8b→a124a3d, branch crucible-northstar-sessions) — NORTH-STAR REFRAME by the user:** parity closes by **web lookup/understanding/retrieval in real time**, NOT by memorizing or by adding models. The brain's job is metacognition — know what it doesn't know and close the gap the way a person does: look it up. Follow-up-abstain / 0-output / weak-explain are ONE bug: gap → dead-end instead of routing to research.
 
@@ -35,7 +35,21 @@
 8. **Source ranking tightened (339493d)** — rankResults now weights TITLE matches 2x, strips query stopwords, and keeps only sources within ~40% of the top score (drops the tangential long tail). Live: useEffect + rust now pull 3 on-topic SO threads each (was a mediocre single pick).
 9. **Deferred council (87c7706)** — the display-only council debate was AWAITED before the final synthesis(done:true), so the client showed "still streaming" through the whole ~15-25s debate. Now the answer's synthesis(done:true) is emitted FIRST, then the council runs and its `local_debate` card streams in after. Verified: parametric turn marks the answer done 45s before [DONE]; council ran in that gap. Answer completion no longer gated by the council.
 
-**TOP NEXT ITEMS:** (1) **re-verify absolute latencies on a SINGLE server** — this session's numbers were ~2x inflated by two instances sharing one FM daemon (concurrency-1 fmQueue). The structural wins (streaming, deferred council) are verified; the real single-user ms are unknown. (2) Wikipedia same-token ordering edge — "who wrote Dune" surfaces sequels above "Dune (novel)", "sky blue" picks the color article; correct source is in the set but not first. Needs a canonical-title preference / better factual-query normalization. (3) wire a real agentic consumer for MiniCPM. (4) the streamed answer is long/verbose on some parametric turns (~500 tokens) — consider a tighter length target for the direct path too.
+10. **Canonical-title ranking preference (this session)** — closes TOP-NEXT item (2). `rankResults`
+    (answer/groundedAnswer.ts) now subtracts a small, capped penalty for each title CONTENT token the
+    query never asked for, so within one salient-overlap tier the base entity article beats its
+    derivatives. LIVE-VERIFIED against real Wikipedia: "who wrote Dune" raw order was
+    `Dune: Part Three | List of Dune characters | Dune: Part Two | Dune (novel)…` (base novel 4th) →
+    ranked top-1 is now **Dune (novel)**; "who wrote Hamlet" → **Hamlet** (the play) first. Parenthetical
+    disambiguators ("(novel)"/"(film)") are stripped before counting extras (they're not extra
+    specificity); authorship verbs ("wrote/by/author") are in a TITLE_STOP set so they neither score
+    nor penalize. Penalty is fractional/capped (max −1.5 vs ±2 per matched salient token) so it only
+    reorders WITHIN a tier — a genuinely more-relevant page still wins; the 40% keep-threshold now keys
+    on RAW overlap so a verbose-but-on-topic corroborator isn't dropped for title length. New
+    `npm run ground:bench` (8/8, deterministic/offline) added to `bench:all` → **370/370** across 9
+    suites, tsc clean.
+
+**TOP NEXT ITEMS:** (1) **re-verify absolute latencies on a SINGLE server** — cont.67's numbers were ~2x inflated by two instances sharing one FM daemon (concurrency-1 fmQueue). The structural wins (streaming, deferred council) are verified; the real single-user ms are unknown. (2) wire a real agentic consumer for MiniCPM. (3) the streamed answer is long/verbose on some parametric turns (~500 tokens) — consider a tighter length target for the direct path too. (4) Wikipedia canonical-title follow-on: same-base ties across disambiguators ("Dune (novel)" vs "Dune (franchise)") aren't intent-ordered yet — an authorship query could prefer a (novel)/(book) qualifier. Item 10 fixes the sequel-demotion (the reported bug); this is the residual polish.
 
 ---
 
