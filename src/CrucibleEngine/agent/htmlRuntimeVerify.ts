@@ -38,6 +38,10 @@ interface Probe {
   // scans these for a broken numeric readout (NaN/undefined/Infinity). Undefined on the older
   // harness → the check is skipped (fail-open).
   texts?: string[]
+  // Readout snapshot captured at LOAD, before any synthetic input — used for the terminal-state
+  // check (a game that already reads "GAME OVER" before the player acts). Undefined on the older
+  // harness → the check is skipped (fail-open).
+  loadText?: string[]
   // Directional-control probe: horizontal ink centroid after a Left-only burst vs after a
   // Right-only burst. Correct left/right controls end the player mass further right. Null when
   // the harness couldn't measure it (no canvas ink) or on the older harness → check skipped.
@@ -148,6 +152,20 @@ export async function runtimeVerifyHtml(html: string): Promise<string | null> {
     if (!probe.canvas) return 'no <canvas> element present at runtime'
     if (!probe.drawn) return 'the canvas is completely blank — nothing is ever drawn; make sure the game loop starts on load and requestAnimationFrame re-schedules itself every frame'
     if (probe.drawnAtLoad === false) return 'the canvas stays blank until the first keypress — the game must draw its initial frame immediately on load'
+    // Terminal-state-on-load — a game-STATE invariant the aliveness checks are blind to. A game
+    // that already reads "GAME OVER" / "you lose" / "you died" before the player has pressed a key
+    // is over before it begins (the FM initialized a gameOver flag true, or spawned the player
+    // already colliding, or ran a lose-check on frame 0). Snapshot is taken at LOAD, BEFORE the
+    // synthetic key bursts, so a legitimate game-over the harness itself triggers can't false-trip
+    // this. Only loss/over phrases (never "win", which appears in instructions like "reach the goal
+    // to win"). Skipped on the older harness (loadText undefined → fail-open).
+    if (probe.loadText && probe.loadText.length) {
+      const term = probe.loadText.find(t => /\bgame\s*over\b|\byou\s*(?:lose|lost|died|die)\b/i.test(t))
+      if (term) {
+        return `the game shows a terminal "${term.trim().slice(0, 40)}" state on load, before the player has done anything — it is over before it begins. ` +
+          'Start the game in a PLAYABLE state: set any gameOver/dead flag to false at init, spawn the player somewhere not already colliding, and only run the lose check AFTER movement has happened — never on the first frame.'
+      }
+    }
     // Visible-readout sanity — the first game-STATE invariant (beyond "is it alive"). A real
     // game's score/status is a number; it is never the literal text "NaN", "undefined", or
     // "Infinity". The aliveness checks above happily pass a game that draws, animates and

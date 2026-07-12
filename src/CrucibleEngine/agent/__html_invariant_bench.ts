@@ -62,6 +62,29 @@ function loop() {
 requestAnimationFrame(loop);
 </script></body></html>`
 
+// Terminal-state-on-load (2026-07-12): draws, animates and takes input exactly like GOOD, but the
+// FM initialized gameOver=true, so every frame renders "GAME OVER" — the game is over before the
+// player acts. Aliveness/readout/direction gates are all blind to it (the readout is well-formed).
+// Must REJECT — and via the LOAD snapshot, so a real game-over from the harness's own key bursts
+// (see GOOD, which never reads terminal) can't false-trip the check.
+const TERMINAL_ON_LOAD = `${HEAD}
+<body><div id="hud">Score: 0</div>
+<canvas id="game" width="320" height="320"></canvas>
+<script>
+var c = document.getElementById('game'), ctx = c.getContext('2d');
+var x = 40, t = 0, gameOver = true; // BUG: initialized as already over
+window.addEventListener('keydown', function (e) { if (e.key === 'ArrowRight') x += 8; if (e.key === 'ArrowLeft') x -= 8; });
+function loop() {
+  t++;
+  ctx.fillStyle = '#101018'; ctx.fillRect(0, 0, 320, 320);
+  ctx.fillStyle = '#66ccff'; ctx.fillRect(x, 40 + (t * 3) % 240, 16, 16);
+  ctx.fillStyle = '#ffffff'; ctx.font = '16px sans-serif';
+  ctx.fillText(gameOver ? 'GAME OVER' : ('Score: ' + t), 10, 310);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script></body></html>`
+
 // Directional-control cases for the inverted-controls invariant (2026-07-12). A large player
 // block dominates the canvas ink so the horizontal centroid tracks the player, clamped to the
 // canvas so bursts pin it to an edge — giving a clean left-vs-right centroid separation.
@@ -128,6 +151,10 @@ async function main() {
   const dirInv = await runtimeVerifyHtml(DIR_INVERTED)
   const invRejected = dirInv !== null && /invert|left|right|controls/i.test(dirInv)
   check('inverted left/right controls are rejected', invRejected, `expected an inverted-controls rejection, got: ${dirInv}`)
+
+  const term = await runtimeVerifyHtml(TERMINAL_ON_LOAD)
+  const termRejected = term !== null && /terminal|over|begins|playable/i.test(term)
+  check('a game that is GAME OVER on load is rejected', termRejected, `expected a terminal-state rejection, got: ${term}`)
 
   console.log(`\nhtml runtime invariants: ${pass}/${pass + fail} passed`)
   process.exit(fail === 0 ? 0 : 1)

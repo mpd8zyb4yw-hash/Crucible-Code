@@ -16,7 +16,7 @@ const { app, BrowserWindow } = require('electron')
 const path = require('path')
 
 const target = process.argv[process.argv.length - 1]
-const out = { errors: [], canvas: false, drawn: false, selfAnimated: false, inputCausedChange: false, texts: [], dir: null }
+const out = { errors: [], canvas: false, drawn: false, selfAnimated: false, inputCausedChange: false, texts: [], loadText: [], dir: null }
 const done = (code) => { try { process.stdout.write(JSON.stringify(out) + '\n') } catch {} app.exit(code) }
 
 // A cheap two-stride signature of the canvas — a single strided sum can coincidentally
@@ -66,6 +66,19 @@ app.whenReady().then(async () => {
     out.drawnAtLoad = await win.webContents.executeJavaScript(
       `(() => { const s = ${SIG}; return !!s && s !== '0:0'; })()`, true
     ).catch(() => false)
+
+    // Readout snapshot taken NOW — before any synthetic input — so the terminal-state check sees
+    // the game's INITIAL state, not a legitimate game-over the key bursts below might trigger.
+    out.loadText = await win.webContents.executeJavaScript(
+      `(() => {
+        const arr = (window.__crucibleText || []).slice();
+        ['hud','score','status','scoreboard','message','msg','gameover','game-over','overlay'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el && el.textContent) arr.push(el.textContent);
+        });
+        return arr.slice(-40).map(s => String(s).slice(0, 120));
+      })()`, true
+    ).catch(() => [])
 
     // (2) Self-animation — sample twice with NO input in between.
     const s1 = await sig()
