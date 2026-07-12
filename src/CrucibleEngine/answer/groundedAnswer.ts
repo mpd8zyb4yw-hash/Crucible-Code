@@ -54,16 +54,31 @@ interface Evidence {
   titles: string[]
 }
 
-/** Rank a result set by salient-token overlap with the query (title+snippet), best first. */
+// Query stopwords so scoring keys on topical tokens, not "what/how/the/…".
+const RANK_STOP = new Set('what is are how does do did why who when where the of for a an in and or to with explain describe tell me about which that this it its'.split(/\s+/))
+
+/**
+ * Rank results by salient-token overlap, TITLE-weighted (a title match signals the page is
+ * ABOUT the topic, not just mentioning it — this demotes tangential hits like "Rock cycle" for
+ * "water cycle"), then keep only sources scoring within a relative band of the best. Dropping
+ * low-relevance sources keeps the evidence clean so the FM isn't grounded on noise.
+ */
 function rankResults(results: SearchResult[], query: string): SearchResult[] {
-  const sal = [...new Set((query.toLowerCase().match(/[a-z0-9][a-z0-9.+#_-]{2,}/g) ?? []))]
-  return [...results]
-    .map(r => {
-      const hay = `${r.title} ${r.snippet}`.toLowerCase()
-      return { r, score: sal.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0) }
-    })
-    .sort((a, b) => b.score - a.score)
-    .map(x => x.r)
+  const sal = [...new Set((query.toLowerCase().match(/[a-z0-9][a-z0-9.+#_-]{2,}/g) ?? []))].filter(t => !RANK_STOP.has(t))
+  if (sal.length === 0) return results
+  const scored = results.map(r => {
+    const title = (r.title ?? '').toLowerCase()
+    const body = `${r.snippet ?? ''} ${r.url ?? ''}`.toLowerCase()
+    // Title matches count double; snippet/url matches count once.
+    const score = sal.reduce((n, t) => n + (title.includes(t) ? 2 : 0) + (body.includes(t) ? 1 : 0), 0)
+    return { r, score }
+  }).sort((a, b) => b.score - a.score)
+  const top = scored[0]?.score ?? 0
+  if (top === 0) return scored.map(s => s.r)
+  // Keep the best source always; keep others only if they're at least ~40% as relevant — this
+  // drops the tangential long tail while still allowing genuine corroborating sources.
+  const threshold = Math.max(1, top * 0.4)
+  return scored.filter((s, i) => i === 0 || s.score >= threshold).map(s => s.r)
 }
 
 /** Search → fetch top sources → assemble a budget-fit, citation-numbered evidence block. */
