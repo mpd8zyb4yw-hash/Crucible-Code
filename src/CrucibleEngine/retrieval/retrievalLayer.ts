@@ -64,19 +64,29 @@ export function clearCache(): void {
 // ── Low-level fetch (direct https/http, redirect-following, timeout) ─────────────
 
 const UA = 'Crucible/1.0 (+offline-first grounding)'
+// Search engines and many docs sites reject non-browser User-Agents (this is why the
+// DuckDuckGo HTML endpoint returned nothing on burst requests — the "Crucible/1.0" UA
+// got challenged/blocked). Web search + page fetch present as a real browser; internal
+// keyless APIs (unpkg, wikipedia) keep the honest Crucible UA.
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 const MAX_BODY = 1_500_000  // 1.5 MB cap per page — defends against pathological dumps
 
-function rawGet(url: string, timeout = 6000, redirectsLeft = 4): Promise<string> {
+function rawGet(url: string, timeout = 6000, redirectsLeft = 4, ua = UA): Promise<string> {
   return new Promise((resolve, reject) => {
     let mod: typeof https | typeof http
     try { mod = url.startsWith('http://') ? http : https } catch { reject(new Error('bad url')); return }
-    const req = mod.get(url, { headers: { 'User-Agent': UA, 'Accept': 'text/html,application/json,*/*' } }, res => {
+    const headers: Record<string, string> = {
+      'User-Agent': ua,
+      'Accept': 'text/html,application/xhtml+xml,application/json,*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+    }
+    const req = mod.get(url, { headers }, res => {
       const status = res.statusCode ?? 0
       // Follow redirects (npm/unpkg/DefinitelyTyped all redirect heavily).
       if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
         res.resume()
         const next = new URL(res.headers.location, url).toString()
-        resolve(rawGet(next, timeout, redirectsLeft - 1))
+        resolve(rawGet(next, timeout, redirectsLeft - 1, ua))
         return
       }
       if (status < 200 || status >= 300) { res.resume(); reject(new Error(`HTTP ${status}`)); return }
@@ -94,31 +104,163 @@ function rawGet(url: string, timeout = 6000, redirectsLeft = 4): Promise<string>
 }
 
 // ── Capability: web search ───────────────────────────────────────────────────────
-// Multi-tier search: tries DuckDuckGo HTML first (keyless), falls back to
-// Wikipedia search API (also keyless). Both are graceful — failures yield [].
+// Multi-backend, keyless, graceful. The single-backend DDG-HTML design blocked on
+// burst (non-browser UA) and fell back to Wikipedia — which returns off-topic garbage
+// for non-encyclopedic queries (a React question surfaced "Firefighting"). This engine:
+//   1. presents a real browser UA (unblocks DDG),
+//   2. tries several independent backends until one yields RELEVANT results,
+//   3. relevance-gates every backend (drops a whole backend whose results share no
+//      salient query token — the firefighting case),
+//   4. only falls to Wikipedia for NON-coding factual queries (right corpus).
+
+// Coding / docs queries — Wikipedia is the wrong corpus for these; keep them on the
+// general web backends (which surface MDN / StackOverflow / official docs).
+const CODING_QUERY = /\b(function|method|class(?:es)?|api|sdk|library|framework|npm|yarn|pnpm|package|import|export|module|usestate|useeffect|hook|component|prop|jsx|tsx|async|await|promise|callback|regex|regexp|array|string|object|integer|boolean|typescript|javascript|python|rust|go(?:lang)?|java|kotlin|swift|c\+\+|c#|react|vue|angular|svelte|next\.?js|node|deno|express|django|flask|css|scss|html|dom|sql|query|schema|migration|error|exception|stack ?trace|traceback|compile|syntax|variable|const|let|var|def|lambda|closure|iterator|generator|decorator|annotation|type ?hint|interface|enum|struct|pointer|null|undefined|nan|git|docker|kubernetes|webpack|vite|eslint|pytest|jest)\b/i
+
+export function isCodingQuery(q: string): boolean {
+  return CODING_QUERY.test(q)
+}
+
+// Salient tokens = query words that carry topic meaning (drop interrogatives/stopwords).
+const REL_STOP = new Set(
+  ('what is are how does do did why who whom when where the of for a an in on at to with ' +
+   'was were be been being and or vs versus than then explain describe tell me about give ' +
+   'show list which that this it its their there here can could would should will may might ' +
+   'must do i you we they he she into from as by not no yes some any all more most much many ' +
+   'good best better right now please help need want get make use using used one two').split(/\s+/),
+)
+function salientTokens(query: string): string[] {
+  const toks = (query.toLowerCase().match(/[a-z0-9][a-z0-9.+#_-]{1,}/g) ?? [])
+    .filter(t => t.length >= 3 && !REL_STOP.has(t))
+  return [...new Set(toks)]
+}
+
+// Reject an entire backend result set that shares no salient token with the query
+// (off-topic garbage). Keep every result carrying ≥1 salient token; if none carry any
+// but SOME backend token overlap exists, keep the set (broad/entity queries score low).
+function relevanceGate(results: SearchResult[], query: string): SearchResult[] {
+  const sal = salientTokens(query)
+  if (sal.length === 0 || results.length === 0) return results
+  const scored = results.map(r => {
+    const hay = `${r.title} ${r.snippet} ${r.url}`.toLowerCase()
+    return { r, hits: sal.filter(t => hay.includes(t)).length }
+  })
+  const maxHits = Math.max(...scored.map(s => s.hits))
+  if (maxHits === 0) return []            // whole backend is off-topic → discard it
+  return scored.filter(s => s.hits >= 1).map(s => s.r)
+}
+
+// A backend that returned an anti-scrape challenge / empty shell should be treated as a
+// miss so the next backend gets a turn.
+async function ddgHtml(query: string): Promise<SearchResult[]> {
+  const html = await rawGet(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, 8000, 4, BROWSER_UA)
+  return parseDuckResults(html)
+}
+async function ddgLite(query: string): Promise<SearchResult[]> {
+  const html = await rawGet(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, 8000, 4, BROWSER_UA)
+  return parseDuckLite(html)
+}
+async function bing(query: string): Promise<SearchResult[]> {
+  const html = await rawGet(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=en&count=10`, 8000, 4, BROWSER_UA)
+  return parseBing(html)
+}
+
+function isPackageQuery(q: string): boolean {
+  return /\b(npm|yarn|pnpm|package|library|module|install|dependency|dependencies)\b/i.test(q)
+}
 
 export async function search(query: string): Promise<SearchResult[]> {
   const key = query.trim().toLowerCase()
   const cached = searchCache.get(key)
   if (cached) return cached
 
-  // Tier A: DuckDuckGo HTML endpoint (keyless, no API key)
+  const coding = isCodingQuery(query)
   let results: SearchResult[] = []
-  try {
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-    const html = await rawGet(url, 7000)
-    results = parseDuckResults(html)
-  } catch { results = [] }
 
-  // Tier B: Wikipedia search API fallback (always keyless, very reliable)
+  // Domain-routed structured APIs FIRST (keyless, reliable, structured — SERP scraping
+  // is dead: DDG/Bing/Mojeek/SearXNG all return 202/403/429/JS-shells to a server IP).
+  if (coding) {
+    try { results = await searchStackExchange(query) } catch { results = [] }
+    if (isPackageQuery(query)) {
+      try { results = dedupeByUrl([...results, ...await searchNpm(query)]) } catch { /* keep SE */ }
+    }
+  }
+  // Wikipedia REST — the general/factual catch-all (huge index, structured, keyless).
   if (results.length === 0) {
-    try {
-      results = await searchWikipedia(query)
-    } catch { results = [] }
+    try { results = await searchWikipediaRest(query) } catch { results = [] }
+  }
+  // Best-effort open-web scrapers LAST — usually blocked, but free when they work. The
+  // relevance gate discards anti-bot challenge shells (202 pages with no result markup).
+  if (results.length === 0) {
+    for (const backend of [ddgHtml, bing, ddgLite]) {
+      try {
+        const rel = relevanceGate(await backend(query), query)
+        if (rel.length > 0) { results = rel; break }
+      } catch { /* next backend */ }
+    }
   }
 
+  results = relevanceGate(results, query)
   searchCache.set(key, results)
   return results
+}
+
+function dedupeByUrl(results: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>()
+  return results.filter(r => (seen.has(r.url) ? false : (seen.add(r.url), true)))
+}
+
+// StackExchange (StackOverflow) API — the right corpus for programming questions.
+// Keyless; returns structured Q&A. We eager-fetch the highest-voted answer bodies for
+// the top questions and cache them under the question URL so downstream fetch() returns
+// the actual answer text, not a scraped (and often bot-blocked) SO page.
+async function searchStackExchange(query: string): Promise<SearchResult[]> {
+  const api = `https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(query)}&site=stackoverflow&pagesize=6&filter=withbody`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const data = JSON.parse(raw) as any
+  const items: any[] = data?.items ?? []
+  if (items.length === 0) return []
+  const results: SearchResult[] = items.slice(0, 6).map(it => ({
+    url: it.link,
+    title: decodeEntities(it.title ?? ''),
+    snippet: stripTags(it.body ?? '').slice(0, 300),
+  }))
+  // Eager-cache top answers so fetch() has real content.
+  const answerable = items.filter(i => (i.answer_count ?? 0) > 0).slice(0, 3)
+  if (answerable.length) {
+    try {
+      const ids = answerable.map(i => i.question_id).join(';')
+      const ansRaw = await rawGet(`https://api.stackexchange.com/2.3/questions/${ids}/answers?order=desc&sort=votes&site=stackoverflow&pagesize=6&filter=withbody`, 8000, 4, BROWSER_UA)
+      const ansItems: any[] = (JSON.parse(ansRaw) as any)?.items ?? []
+      const topByQ = new Map<number, string>()
+      for (const a of ansItems) {
+        if (!topByQ.has(a.question_id)) topByQ.set(a.question_id, stripBoilerplate(a.body ?? ''))
+      }
+      for (const it of answerable) {
+        const ans = topByQ.get(it.question_id)
+        if (ans && !pageCache.has(it.link)) {
+          pageCache.set(it.link, `${decodeEntities(it.title ?? '')}\n\n${ans}`.slice(0, 8000))
+        }
+      }
+    } catch { /* answers are a bonus; question excerpts already populate snippets */ }
+  }
+  return results
+}
+
+// npm registry search — for "what package does X" / dependency questions.
+async function searchNpm(query: string): Promise<SearchResult[]> {
+  const text = query.replace(/\b(npm|package|library|module|install|for|the|a|an|best|good)\b/gi, ' ').replace(/\s+/g, ' ').trim()
+  const api = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text || query)}&size=5`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const objs: any[] = (JSON.parse(raw) as any)?.objects ?? []
+  return objs.slice(0, 5).map(o => {
+    const p = o.package ?? {}
+    return {
+      url: p.links?.npm ?? `https://www.npmjs.com/package/${p.name}`,
+      title: `${p.name}${p.version ? ` @${p.version}` : ''}`,
+      snippet: `${p.description ?? ''}${p.keywords?.length ? ` (${p.keywords.slice(0, 6).join(', ')})` : ''}`.slice(0, 300),
+    }
+  })
 }
 
 function parseDuckResults(html: string): SearchResult[] {
@@ -137,6 +279,38 @@ function parseDuckResults(html: string): SearchResult[] {
   return out
 }
 
+// DuckDuckGo Lite — a stripped table layout with a different result markup than the
+// HTML endpoint, so it survives markup changes / blocks on the primary.
+function parseDuckLite(html: string): SearchResult[] {
+  const out: SearchResult[] = []
+  const linkRe = /<a[^>]*class="result-link"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
+  const snipRe = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/g
+  const snips: string[] = []
+  let s: RegExpExecArray | null
+  while ((s = snipRe.exec(html)) !== null) snips.push(stripTags(s[1]))
+  let m: RegExpExecArray | null
+  let i = 0
+  while ((m = linkRe.exec(html)) !== null && out.length < 10) {
+    const url = decodeDuckUrl(m[1])
+    if (/^https?:/.test(url)) { out.push({ url, title: stripTags(m[2]), snippet: snips[i] ?? '' }); i++ }
+  }
+  return out
+}
+
+// Bing organic results — independent index, more lenient to scraping than DDG on burst.
+function parseBing(html: string): SearchResult[] {
+  const out: SearchResult[] = []
+  const blockRe = /<li class="b_algo"[\s\S]*?<h2>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>([\s\S]*?)<\/li>/g
+  let m: RegExpExecArray | null
+  while ((m = blockRe.exec(html)) !== null && out.length < 10) {
+    const url = m[1]
+    if (!/^https?:/.test(url)) continue
+    const snipM = m[3].match(/<p[^>]*>([\s\S]*?)<\/p>/)
+    out.push({ url, title: stripTags(m[2]), snippet: snipM ? stripTags(snipM[1]) : '' })
+  }
+  return out
+}
+
 // DDG wraps real URLs in a redirect (/l/?uddg=<encoded>). Unwrap when present.
 function decodeDuckUrl(href: string): string {
   const m = href.match(/[?&]uddg=([^&]+)/)
@@ -144,39 +318,53 @@ function decodeDuckUrl(href: string): string {
   return href.startsWith('//') ? `https:${href}` : href
 }
 
-// Wikipedia search API — keyless, structured JSON, very reliable for factual queries.
-// Uses full-text search (action=query&list=search) so it finds content not just titles.
-async function searchWikipedia(query: string): Promise<SearchResult[]> {
-  // Full-text search — finds articles containing the query, even if title differs
-  const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&utf8=1&srlimit=5`
+// Wikipedia REST search — keyless, structured JSON. The REST search/page endpoint ranks
+// on relevance far better than the legacy list=search full-text API (which returned
+// "Air cycle machine" for "water cycle"). We eager-fetch a fuller plaintext extract for
+// the top result so downstream fetch() returns real article content, not just an intro.
+// Interrogative preamble ("how does … work", "what is …") dilutes Wikipedia's ranker so
+// it matches on the wrong noun ("how does the water cycle WORK" ranked "Air cycle
+// machine" over "Water cycle"). Reduce to the topical noun phrase for the encyclopedia
+// lookup; StackOverflow (natural-language ranked) keeps the full query.
+function encyclopedicQuery(q: string): string {
+  const reduced = q
+    .replace(/^\s*(how (?:do(?:es)?|did|can|would)|what(?:'s| is| are| was| were)|why (?:do(?:es)?|did|is|are|was|were)|when (?:did|does|do|is|was|were)|where (?:is|are|was|were)|who (?:is|was|are|were)|explain|describe|tell me about|give me|define|overview of)\b/i, '')
+    .replace(/\b(work|works|working|happen|happens|explained|basics|exactly|actually|really)\b\s*\??\s*$/i, '')
+    .replace(/\?+/g, ' ')
+    .replace(/\b(the|a|an)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return reduced.length >= 3 ? reduced : q
+}
+
+async function searchWikipediaRest(query: string): Promise<SearchResult[]> {
+  const q = encyclopedicQuery(query)
+  const searchUrl = `https://en.wikipedia.org/w/rest.php/v1/search/page?q=${encodeURIComponent(q)}&limit=6`
   const raw = await rawGet(searchUrl, 7000)
   const data = JSON.parse(raw) as any
-  const hits = data?.query?.search ?? []
-  if (hits.length === 0) return []
+  const pages: any[] = data?.pages ?? []
+  if (pages.length === 0) return []
 
-  const results: SearchResult[] = []
-  for (const hit of hits.slice(0, 5)) {
-    const title = hit.title ?? ''
-    const snippet = stripTags(hit.snippet ?? '')
-    const url = `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/ /g, '_'))}`
-    results.push({ url, title, snippet })
-  }
+  const results: SearchResult[] = pages.slice(0, 6).map(p => {
+    const title = p.title ?? ''
+    const key = p.key ?? title.replace(/ /g, '_')
+    return {
+      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(key)}`,
+      title,
+      snippet: stripTags(p.excerpt ?? p.description ?? ''),
+    }
+  })
 
-  // Eagerly fetch the intro extract for the top result and cache it so
-  // the subsequent fetch() call hits in-memory cache instead of doing another request.
   if (results[0]) {
     try {
-      const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&titles=${encodeURIComponent(results[0].title)}&format=json&redirects=1&exchars=3000`
+      const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext&titles=${encodeURIComponent(pages[0].title)}&format=json&redirects=1&exchars=6000`
       const extractRaw = await rawGet(extractUrl, 7000)
       const extractData = JSON.parse(extractRaw) as any
-      const pages = extractData?.query?.pages ?? {}
-      const page = Object.values(pages)[0] as any
+      const pageObjs = extractData?.query?.pages ?? {}
+      const page = Object.values(pageObjs)[0] as any
       if (page?.extract) {
         const text = stripTags(page.extract)
-        if (!pageCache.has(results[0].url)) {
-          pageCache.set(results[0].url, text)
-        }
-        // Richer snippet from the actual intro extract
+        if (!pageCache.has(results[0].url)) pageCache.set(results[0].url, text)
         results[0].snippet = text.slice(0, 300)
       }
     } catch { /* graceful */ }
@@ -190,7 +378,7 @@ export async function fetch(url: string): Promise<string> {
   const cached = pageCache.get(url)
   if (cached !== undefined) return cached
   let body = ''
-  try { body = await rawGet(url, 7000) } catch { body = '' }
+  try { body = await rawGet(url, 8000, 4, BROWSER_UA) } catch { body = '' }
   pageCache.set(url, body)
   return body
 }
