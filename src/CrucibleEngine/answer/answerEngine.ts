@@ -346,7 +346,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       const onToken = emit
         ? (d: string) => emit({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: d, replace: false })
         : undefined
-      const g = await answerWithWebGrounding(message, { history, emit, signal, onToken })
+      const g = await answerWithWebGrounding(message, { history, recallBlock: recall.recallBlock, emit, signal, onToken })
       if (g && g.text) {
         draft = g.text
         grounded = true

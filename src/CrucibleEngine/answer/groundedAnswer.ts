@@ -27,6 +27,11 @@ export interface GroundedResult {
 
 export interface GroundOpts {
   history?: ConvTurn[]
+  /** Older-turn recall (turn-1 anchor + relevance-retrieved), folded into the system prompt as an
+   *  authoritative "earlier in this conversation" block — the same long-horizon memory the direct
+   *  path uses, so a grounded follow-up ("what's the latest on the project I mentioned") still sees
+   *  the fact the user stated 200 turns ago. Lexical/deterministic; built by buildRecallContext. */
+  recallBlock?: string
   emit?: (event: Record<string, unknown>) => void
   signal?: AbortSignal
   /** Wall-clock ceiling for the whole grounding pass; on overrun the caller's fallback ships. */
@@ -263,8 +268,11 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   }
 
   emit?.({ type: 'thought', text: `Grounding the answer in ${ev.sources.length} source${ev.sources.length > 1 ? 's' : ''}…` })
+  const groundingSystem = opts.recallBlock
+    ? `${GROUNDING_SYSTEM}\n\n## Earlier in this conversation (facts the user already told you — treat as authoritative)\n${opts.recallBlock}`
+    : GROUNDING_SYSTEM
   const msgs = [
-    { role: 'system', content: GROUNDING_SYSTEM },
+    { role: 'system', content: groundingSystem },
     ...historyToMessages(history),
     { role: 'user', content: `Question: ${message}\n\n## EVIDENCE\n${ev.block}` },
   ]
