@@ -3932,7 +3932,11 @@ app.post('/api/chat', async (req, res) => {
           // code|reasoning-only gate + the classifier's 'speed' default meant most real
           // questions never seated the council, so the debate card effectively never showed.
           // Now every substantive turn corroborates; only short smalltalk stays cheap.
-          const councilWorthy = dom === 'code' || dom === 'reasoning' || dom === 'factual' || message.trim().length >= 60
+          // EXCEPT web-grounded answers: they already carry cited sources (stronger provenance
+          // than a lexical council vote), and the extra peer FM calls added ~60s to the turn on
+          // top of the already-streamed answer. Skip the council when we grounded on the web.
+          const councilWorthy = !strictResult.usedRetrieval &&
+            (dom === 'code' || dom === 'reasoning' || dom === 'factual' || message.trim().length >= 60)
           if (answer && answer.trim() && councilWorthy) {
             const peers = await councilPeers(message)
             if (peers.length >= 1) {
