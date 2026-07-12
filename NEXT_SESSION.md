@@ -49,7 +49,17 @@
     `npm run ground:bench` (8/8, deterministic/offline) added to `bench:all` → **370/370** across 9
     suites, tsc clean.
 
-**TOP NEXT ITEMS:** (1) **re-verify absolute latencies on a SINGLE server** — cont.67's numbers were ~2x inflated by two instances sharing one FM daemon (concurrency-1 fmQueue). The structural wins (streaming, deferred council) are verified; the real single-user ms are unknown. (2) wire a real agentic consumer for MiniCPM. (3) the streamed answer is long/verbose on some parametric turns (~500 tokens) — consider a tighter length target for the direct path too. (4) Wikipedia canonical-title follow-on: same-base ties across disambiguators ("Dune (novel)" vs "Dune (franchise)") aren't intent-ordered yet — an authorship query could prefer a (novel)/(book) qualifier. Item 10 fixes the sequel-demotion (the reported bug); this is the residual polish.
+11. **Intent-aware disambiguator tie-break (b437b08, this session)** — closes TOP-NEXT item (4), the
+    canonical-title residual. When a query carries a CREATION VERB, same-base disambiguator ties now
+    resolve by work type: `rankResults` gives a tiny capped bonus (0.25, < the 0.5 penalty step so it
+    only reorders exact ties) to the page whose parenthetical matches the verb's class. "who **wrote**
+    Dune" → Dune (novel) over Dune (franchise); "who **directed** Dune" → Dune (film) over Dune (novel).
+    Verb→class map (INTENT_DISAMBIG): wrote/authored→novel/book/poem/play; directed→film; painted→
+    painting; composed→opera/symphony; sang/recorded→song/album; sculpted→sculpture. Inert without a
+    creation verb (stable-sort order preserved). ground:bench 8/8→**11/11**, bench:all **373/373**, tsc
+    clean.
+
+**TOP NEXT ITEMS:** (1) **re-verify absolute latencies on a SINGLE server** — cont.67's numbers were ~2x inflated by two instances sharing one FM daemon (concurrency-1 fmQueue). The structural wins (streaming, deferred council) are verified; the real single-user ms are unknown. (2) wire a real agentic consumer for MiniCPM. (3) the streamed answer is long/verbose on some parametric turns (~500 tokens) — consider a tighter length target for the direct path too. (4) DONE (item 11). Residual: intent tie-break is title-parenthetical only — same-base ties WITHOUT a Wikipedia disambiguator (bare titles) still fall to overlap+stable-sort.
 
 ---
 
