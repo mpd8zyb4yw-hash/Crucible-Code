@@ -170,6 +170,22 @@ export const MessageList = memo(function MessageList({
                     overflowWrap: 'anywhere' as const, wordBreak: 'break-word' as const,
                   }}>
                   {round.userMessage}
+                  {/* Attachment chips — an attachment turn must be visually distinct from a
+                      plain message (cont.66k user report: no way to tell them apart). */}
+                  {round.attachments && round.attachments.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 7 }}>
+                      {round.attachments.map(name => (
+                        <span key={name} style={{
+                          display: 'inline-flex', alignItems: 'center', gap: 5, maxWidth: 200,
+                          padding: '3px 8px', borderRadius: 7, fontSize: 10.5, color: '#b8b8d0',
+                          background: 'rgba(124,124,248,0.12)', border: '1px solid rgba(124,124,248,0.28)',
+                        }}>
+                          <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M8.5 3.5v4a2.5 2.5 0 0 1-5 0V3a1.5 1.5 0 0 1 3 0v4a.5.5 0 0 1-1 0V3.5" stroke="#9d9dfa" strokeWidth="1" strokeLinecap="round"/></svg>
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 

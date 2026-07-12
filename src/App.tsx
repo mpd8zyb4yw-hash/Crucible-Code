@@ -1129,8 +1129,9 @@ export default function App() {
     setConvAgentStart(convId, Date.now()); setAgentElapsed(0); setConvAgentProgress(convId, null)
     prewarmTokenRef.current = null
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
-    const nextRounds = [...rounds, emptyRound(roundId, visibleText, convId)]
-    setAllRounds(prev => [...prev, emptyRound(roundId, visibleText, convId)])
+    const attachedNames = attachments.map(a => a.name)   // closure value — unaffected by setAttachments([]) above
+    const nextRounds = [...rounds, emptyRound(roundId, visibleText, convId, attachedNames)]
+    setAllRounds(prev => [...prev, emptyRound(roundId, visibleText, convId, attachedNames)])
     // Record this as the active server-owned task so that if the tab is backgrounded /
     // reloaded mid-run, we can reconnect to its buffered stream and replay on return.
     // Store the DISPLAY text — reconnect rebuilds the visible round from this, and the raw

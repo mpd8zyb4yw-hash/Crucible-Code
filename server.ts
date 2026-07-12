@@ -2280,6 +2280,11 @@ registry.register({
  *  "show me code / a snippet / an example" is a DISPLAY request → belongs in the ensemble
  *  pipeline (renders code in chat), NOT the file-writing agent loop. */
 function detectAgentTask(message: string): boolean {
+  // Routing must see only what the USER typed. Attachment plumbing appends the composer's
+  // note and (after foldAttachmentContext) the attached files' CONTENT — and file content
+  // trivially matches build-ish regexes below (any attached .ts file contains ".ts"), which
+  // hijacked "what can you tell me about this file?" onto the agent path (cont.66k report).
+  message = message.split('\nATTACHED FILE CONTENT')[0].split(/\[User attached \d+ file\(s\)/)[0]
   const m = message.toLowerCase()
   // Display-only intent — user wants to SEE code, not have files written/run.
   const wantsDisplay = /\b(show|display|paste|print|give)\b[\s\S]{0,30}\bcode\b/.test(m)

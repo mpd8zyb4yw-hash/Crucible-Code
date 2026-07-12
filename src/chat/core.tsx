@@ -164,6 +164,9 @@ export interface Round {
    *  streaming while another is displayed); the UI renders the convId-filtered view. */
   convId?: string
   userMessage: string
+  /** File names attached by the user this turn — rendered as chips on the sent bubble so an
+   *  attachment turn is visually distinct from a plain message. */
+  attachments?: string[]
   models: DynamicModel[]
   synthesisModelId: string
   promptType: string
@@ -338,9 +341,9 @@ export function agentReducer(state: AgentState | null | undefined, ev: any): Age
   }
 }
 
-export function emptyRound(id: string, userMessage: string, convId?: string): Round {
+export function emptyRound(id: string, userMessage: string, convId?: string, attachments?: string[]): Round {
   return {
-    id, convId, userMessage,
+    id, convId, userMessage, attachments,
     models: [], synthesisModelId: '', promptType: '', complexity: 'complex', cached: false,
     responses: {}, done: {}, scores: {},
     expandedModel: null,
