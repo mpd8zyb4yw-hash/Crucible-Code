@@ -284,24 +284,68 @@ export async function checkPremiseGrounding(
   question: string,
   verifiedFacts: string[],
   fmCall: FmCall = defaultFmCall,
+  samples = Math.max(1, Number(process.env.CRUCIBLE_PREMISE_VOTES ?? 3)),
 ): Promise<PremiseCheck> {
   if (verifiedFacts.length === 0) return { contradicted: false, correction: '', confidence: 0 }
   const factsBlock = verifiedFacts.map((f, i) => `FACT ${i + 1}: ${f}`).join('\n')
-  const user =
-    `QUESTION: ${question.slice(0, 200)}\n\n` +
-    `VERIFIED FACTS:\n${factsBlock.slice(0, 2000)}`
-  const raw = await fmCall(PREMISE_SYSTEM, user, 20000)
-  const check = parsePremiseCheck(raw)
-  // Structural sanity gate (deterministic, un-foolable): a real premise correction states
-  // what the EVIDENCE says ("Alaska was purchased from Russia, not Canada"). A hallucinated
-  // one is typically the bare NEGATION of a verified fact ("France did not win the 2018
-  // World Cup" against the fact "France won the 2018 World Cup"). If the correction carries
-  // a negator and, with negators stripped, its content words are essentially a subset of a
-  // single NON-negated verified fact, it asserts the opposite of the evidence — reject it.
-  if (check.contradicted && correctionNegatesEvidence(check.correction, verifiedFacts)) {
-    return { contradicted: false, correction: '', confidence: 0 }
+  const notContradicted = { contradicted: false, correction: '', confidence: 0 }
+
+  // CONSENSUS over K independent votes — a premise correction FLIPS the answer to the opposite
+  // of what the question assumed, so a single hallucinated "contradicted" (the 2018-World-Cup
+  // bug: one FM call said France did NOT win, at confidence 1.0) must never carry it alone.
+  // A correction ships only when a strict majority independently (a) flags a contradiction and
+  // (b) AGREES on what the correction is. Each vote is diversified by a benign nonce line so
+  // identical cached completions don't masquerade as independent corroboration.
+  const votes = await Promise.all(
+    Array.from({ length: samples }, async (_, i) => {
+      const user =
+        `QUESTION: ${question.slice(0, 200)}\n\n` +
+        `VERIFIED FACTS:\n${factsBlock.slice(0, 2000)}` +
+        (samples > 1 ? `\n\n(independent review #${i + 1})` : '')
+      try { return parsePremiseCheck(await fmCall(PREMISE_SYSTEM, user, 20000)) }
+      catch { return { contradicted: false, correction: '', confidence: 0 } as PremiseCheck }
+    }),
+  )
+
+  // A vote only counts as a real contradiction if it names a usable correction that isn't the
+  // bare negation of a verified fact (the deterministic un-foolable guard, applied per vote).
+  const contra = votes.filter(v =>
+    v.contradicted && v.correction.trim() && !correctionNegatesEvidence(v.correction, verifiedFacts))
+  if (contra.length * 2 <= samples) return notContradicted // no strict majority → outvoted
+
+  // The majority flagged a contradiction — but do they agree on WHICH one? Cluster the
+  // corrections by shared entity content; a real presupposition failure names the same
+  // displaced entity ("from Russia"), whereas independent hallucinations diverge. Agreement
+  // must be on the NEW asserted fact, so tokens already present in the QUESTION (the shared
+  // subject) are ignored — else "X is red not blue" and "X is purple not blue" would falsely
+  // corroborate on the subject "X". Require the largest agreeing cluster to be a strict majority.
+  const qTokens = new Set([
+    ...entityTokens(question),
+    ...(question.toLowerCase().match(/[a-z]{4,}/g) ?? []),
+  ])
+  let best: PremiseCheck[] = []
+  for (const anchor of contra) {
+    const cluster = contra.filter(v => correctionsAgree(v.correction, anchor.correction, qTokens))
+    if (cluster.length > best.length) best = cluster
   }
-  return check
+  if (best.length * 2 <= samples) return notContradicted // majority flagged but disagree on the fix
+
+  // Ship the highest-confidence member of the agreeing majority.
+  const chosen = best.reduce((a, b) => (b.confidence > a.confidence ? b : a))
+  return { contradicted: true, correction: chosen.correction, confidence: best.length / samples }
+}
+
+/** Two corrections corroborate when they share an entity token or content word that is NOT
+ *  already in the question — the same DISPLACED fact ("from Russia") stated two ways, rather
+ *  than the shared subject the question already names. `ignore` holds the question's own tokens.
+ *  Used to require the voting majority to agree on the fix, not merely on the topic. */
+export function correctionsAgree(a: string, b: string, ignore: Set<string> = new Set()): boolean {
+  const ea = new Set(entityTokens(a)), eb = new Set(entityTokens(b))
+  for (const e of ea) if (eb.has(e) && !ignore.has(e)) return true
+  const wa = new Set(a.toLowerCase().match(/[a-z]{4,}/g) ?? [])
+  const wb = new Set(b.toLowerCase().match(/[a-z]{4,}/g) ?? [])
+  for (const w of wa) if (!ENTITY_STOPWORDS.test(w) && wb.has(w) && !ignore.has(w)) return true
+  return false
 }
 
 const NEGATORS = /\b(not|never|no|didn't|did not|doesn't|does not|isn't|is not|wasn't|was not|weren't|were not|won't|will not|cannot|can't|no longer)\b/gi
