@@ -26,6 +26,7 @@ const SUITES = [
   'answer:bench',
   'ground:bench',
   'memory:bench',
+  'longout:bench',
   'vgr:bench',
   'fuzz:bench',
   'harden:bench',

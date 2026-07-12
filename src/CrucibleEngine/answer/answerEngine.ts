@@ -27,6 +27,7 @@ import { matchMeta } from './conversational'
 import { answerWithWebGrounding } from './groundedAnswer'
 import { isCodingQuery } from '../retrieval/retrievalLayer'
 import { buildRecallContext } from './conversationMemory'
+import { detectTruncation, buildContinuationMessages, stitchContinuation } from './longOutput'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -164,6 +165,12 @@ function maxTokensFor(facets: AnswerFacets): number {
     default: return 768
   }
 }
+
+// Intents whose answers can legitimately run long enough to hit the budget and need continuation.
+// Lookups are meant to be short — a lookup that fills its budget is verbose, not truncated, so it
+// is deliberately excluded (continuing it would fight the length cap).
+const LONG_CONT_INTENTS = new Set<AnswerFacets['intent']>(['explain', 'reason', 'converse'])
+const MAX_CONT_ROUNDS = Number(process.env.CRUCIBLE_LONG_CONT_ROUNDS ?? 3)
 
 function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content: string }> {
   if (!Array.isArray(history)) return []
@@ -331,12 +338,42 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       // wired so the first token lands in ~1s instead of after the whole answer decodes; the
       // verification lanes below then polish it in place (server finalizes with replace:true).
       const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
-      if (emit) {
-        const onToken = (d: string) => emit({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: d, replace: false })
+      const onToken = emit
+        ? (d: string) => emit({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: d, replace: false })
+        : undefined
+      if (onToken) {
         draft = (await fmStream(msgs, onToken, { signal, maxTokens: draftMaxTokens })).trim()
         streamed = true
       } else {
         draft = (await fmComplete(msgs, { signal, maxTokens: draftMaxTokens })).trim()
+      }
+      // Long-output continuation: a genuinely long answer can fill the token budget and stop
+      // mid-sentence / inside an open code block. When we detect that (high-precision signals only,
+      // so a finished answer is never extended), resume from exactly where it stopped and stitch —
+      // large builds ship whole instead of truncated. Bounded rounds; streams as it goes.
+      if (LONG_CONT_INTENTS.has(facets.intent) && process.env.CRUCIBLE_LONG_CONT !== '0') {
+        for (let round = 0; round < MAX_CONT_ROUNDS; round++) {
+          if (signal?.aborted) break
+          const trunc = detectTruncation(draft, draftMaxTokens)
+          if (!trunc.truncated) break
+          emit?.({ type: 'thought', text: `Answer hit the length budget (${trunc.reason}) — continuing where it left off…` })
+          const contMsgs = buildContinuationMessages(msgs, draft)
+          let piece = ''
+          try {
+            piece = onToken
+              ? (await fmStream(contMsgs, onToken, { signal, maxTokens: draftMaxTokens }))
+              : (await fmComplete(contMsgs, { signal, maxTokens: draftMaxTokens }))
+          } catch { break }
+          piece = piece.trim()
+          if (!piece) break
+          const before = draft.length
+          draft = stitchContinuation(draft, piece).trim()
+          if (draft.length <= before) break   // no net progress → stop (avoid loops)
+        }
+        // Safety net: if the rounds were exhausted with a code block still open (a very large build
+        // that outran the budget), close the fence so the answer renders as valid markdown instead
+        // of swallowing the rest of the page into an unterminated code block.
+        if ((draft.match(/```/g)?.length ?? 0) % 2 === 1) draft = draft.replace(/\s*$/, '') + '\n```'
       }
     }
   } catch {
