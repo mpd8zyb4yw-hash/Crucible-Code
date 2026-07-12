@@ -16,7 +16,7 @@ const { app, BrowserWindow } = require('electron')
 const path = require('path')
 
 const target = process.argv[process.argv.length - 1]
-const out = { errors: [], canvas: false, drawn: false, selfAnimated: false, inputCausedChange: false }
+const out = { errors: [], canvas: false, drawn: false, selfAnimated: false, inputCausedChange: false, texts: [] }
 const done = (code) => { try { process.stdout.write(JSON.stringify(out) + '\n') } catch {} app.exit(code) }
 
 // A cheap two-stride signature of the canvas — a single strided sum can coincidentally
@@ -71,6 +71,20 @@ app.whenReady().then(async () => {
     out.keys = await win.webContents.executeJavaScript(
       `window.__crucibleKeys ? { registered: window.__crucibleKeys.registered, fired: window.__crucibleKeys.fired } : null`, true
     ).catch(() => null)
+
+    // Visible readout — the score/status a player actually sees. The verify copy wraps canvas
+    // fillText/strokeText (window.__crucibleText); we add the HUD/score/status element text.
+    // runtimeVerifyHtml scans these for a broken numeric readout (NaN/undefined/Infinity).
+    out.texts = await win.webContents.executeJavaScript(
+      `(() => {
+        const arr = (window.__crucibleText || []).slice();
+        ['hud', 'score', 'status', 'scoreboard'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el && el.textContent) arr.push(el.textContent);
+        });
+        return arr.slice(-80).map(s => String(s).slice(0, 120));
+      })()`, true
+    ).catch(() => [])
 
     done(0)
   } catch (e) {

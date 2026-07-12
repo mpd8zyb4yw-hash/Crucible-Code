@@ -43,6 +43,7 @@ import { retrieveForTask } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
 import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
 import { runtimeVerifyHtml } from './htmlRuntimeVerify'
+import { callLocalModel, isGgufRuntimeAvailable } from './localModelPool'
 
 // ── Local FM helper (research turns only) ───────────────────────────────────
 // Mirrors callLocalModel in server.ts but lives here so synthDriver stays
@@ -779,11 +780,32 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   // history and telling the model "these were ALL already rejected, don't bring any back"
   // measurably reduces that thrash without changing the gate.
   const seenProblems: string[] = []
+  // A single weak model oscillates in a repair loop — it fixes the newly reported fault while
+  // regressing one it already fixed, and dead-ends (observed cont.66i: 6/6 escalation on the
+  // Apple FM alone). MiniCPM5 is a live on-device peer (the council model, node-llama-cpp) — a
+  // free second voice. We DIVERSIFY the proposer across attempts (Apple FM on odd, MiniCPM5 on
+  // even when the GGUF runtime is up), each seeing the other's diagnostic rejection feedback.
+  // The verifier gate is unchanged; only the proposal source varies — same doctrine as
+  // differential/model-consensus: ≥2 distinct impls beat one model iterated N times.
+  const ggufUp = await isGgufRuntimeAvailable().catch(() => false)
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const raw = await fmComplete([
-      { role: 'system', content: HTML_GAME_SYSTEM },
-      { role: 'user', content: `Build this game: ${state.goal}${feedback}\n\nOutput the JavaScript game logic now.` },
-    ])
+    const userMsg = `Build this game: ${state.goal}${feedback}\n\nOutput the JavaScript game logic now.`
+    let raw = ''
+    let proposer = 'apple-fm'
+    if (ggufUp && attempt % 2 === 0) {
+      try {
+        const r = await callLocalModel('minicpm5-1b', HTML_GAME_SYSTEM, userMsg)
+        if (r && r.trim()) { raw = r; proposer = 'minicpm5-1b' }
+      } catch { /* MiniCPM5 hiccup — fall through to the Apple FM below */ }
+    }
+    if (!raw.trim()) {
+      raw = await fmComplete([
+        { role: 'system', content: HTML_GAME_SYSTEM },
+        { role: 'user', content: userMsg },
+      ])
+      proposer = 'apple-fm'
+    }
+    debugBus.emit('agent', 'offline_html_proposer', { path: targetPath, attempt, model: proposer }, { severity: 'info' })
     const fence = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i)
     const js = sanitizeGameJs((fence ? fence[1] : raw).trim())
     const html = js ? buildGameShell(js, title) : ''
@@ -795,10 +817,10 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
       ? (validateHtmlGame(html) ?? await runtimeVerifyHtml(html))
       : 'empty completion'
     if (!problem) {
-      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt, bytes: html.length }, { severity: 'info' })
+      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt, model: proposer, bytes: html.length }, { severity: 'info' })
       return html
     }
-    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, problem }, { severity: 'info' })
+    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, model: proposer, problem }, { severity: 'info' })
     prevJs = js
     if (!seenProblems.includes(problem)) seenProblems.push(problem)
     const priorFaults = seenProblems.length > 1
@@ -808,7 +830,8 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
     feedback = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}${priorFaults}\n\n` +
       `Here is your previous code — FIX the specific problem above, keep what works, and output the FULL corrected JavaScript (nothing else):\n\n${prevJs.slice(0, 1800)}`
   }
-  throw new OfflineEscalateError(`FM could not produce a working game after ${MAX_ATTEMPTS} run-verified attempts`)
+  throw new OfflineEscalateError(
+    `${ggufUp ? 'Neither the Apple FM nor MiniCPM5' : 'FM'} could produce a working game after ${MAX_ATTEMPTS} run-verified attempts`)
 }
 
 function extractSelfTestCmd(goal: string): string | null {

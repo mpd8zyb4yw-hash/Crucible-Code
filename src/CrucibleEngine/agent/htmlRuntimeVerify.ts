@@ -33,6 +33,11 @@ interface Probe {
   errors: string[]; canvas: boolean; drawn: boolean; drawnAtLoad?: boolean
   selfAnimated?: boolean; inputCausedChange?: boolean
   keys?: { registered: number; fired: number } | null
+  // Visible readout — every distinct string the game DREW (canvas fillText/strokeText) plus
+  // the HUD/score/status element text, collected across the play session. runtimeVerifyHtml
+  // scans these for a broken numeric readout (NaN/undefined/Infinity). Undefined on the older
+  // harness → the check is skipped (fail-open).
+  texts?: string[]
 }
 
 // Injected into the VERIFY COPY only (never the shipped artifact): wraps keydown/keyup
@@ -73,17 +78,47 @@ const KEY_INSTRUMENTATION = `<script>
 })();
 </script>`
 
-function injectKeyInstrumentation(html: string): string {
-  // As early as possible so it wraps before any game script registers listeners.
+// Injected into the VERIFY COPY only: wraps canvas text drawing so the harness can read
+// what the game actually SHOWS a player — the score/status readout. The dominant "passes
+// aliveness but is broken" shape from the on-device FM is a game that runs, animates and
+// takes input but whose readout is "Score: NaN" (a counter used before init, or a
+// divide-by-zero / undefined-arithmetic on a collision). The pixel-signature gate is blind
+// to it. We capture every distinct drawn string; runtimeVerifyHtml rejects a garbage readout.
+const TEXT_INSTRUMENTATION = `<script>
+(function () {
+  window.__crucibleText = [];
+  function record(s) {
+    try {
+      s = String(s);
+      var arr = window.__crucibleText;
+      if (!s || (arr.length && arr[arr.length - 1] === s)) return; // collapse consecutive repeats
+      arr.push(s);
+      if (arr.length > 60) arr.shift();
+    } catch (e) { /* never let instrumentation break the game */ }
+  }
+  var proto = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
+  if (proto) {
+    ['fillText', 'strokeText'].forEach(function (m) {
+      var orig = proto[m];
+      if (typeof orig !== 'function') return;
+      proto[m] = function (text) { record(text); return orig.apply(this, arguments); };
+    });
+  }
+})();
+</script>`
+
+function injectInstrumentation(html: string): string {
+  // As early as possible so it wraps before any game script registers listeners or draws.
+  const probes = `${KEY_INSTRUMENTATION}\n${TEXT_INSTRUMENTATION}`
   const m = html.match(/<head[^>]*>/i)
-  if (m) return html.replace(m[0], `${m[0]}\n${KEY_INSTRUMENTATION}`)
-  return KEY_INSTRUMENTATION + html
+  if (m) return html.replace(m[0], `${m[0]}\n${probes}`)
+  return probes + html
 }
 
 export async function runtimeVerifyHtml(html: string): Promise<string | null> {
   const tmp = path.join(os.tmpdir(), `crucible-html-verify-${Date.now()}-${process.pid}.html`)
   try {
-    await writeFile(tmp, injectKeyInstrumentation(html), 'utf8')
+    await writeFile(tmp, injectInstrumentation(html), 'utf8')
     const probe = await new Promise<Probe>((resolve, reject) => {
       execFile(electronBin(), [HARNESS, tmp], { timeout: 20000, env: { ...process.env, ELECTRON_ENABLE_LOGGING: '0' } },
         (err, stdout) => {
@@ -109,6 +144,20 @@ export async function runtimeVerifyHtml(html: string): Promise<string | null> {
     if (!probe.canvas) return 'no <canvas> element present at runtime'
     if (!probe.drawn) return 'the canvas is completely blank — nothing is ever drawn; make sure the game loop starts on load and requestAnimationFrame re-schedules itself every frame'
     if (probe.drawnAtLoad === false) return 'the canvas stays blank until the first keypress — the game must draw its initial frame immediately on load'
+    // Visible-readout sanity — the first game-STATE invariant (beyond "is it alive"). A real
+    // game's score/status is a number; it is never the literal text "NaN", "undefined", or
+    // "Infinity". The aliveness checks above happily pass a game that draws, animates and
+    // takes input while its readout is garbage — a counter incremented before it was set to 0,
+    // or a divide-by-zero on a collision. This is the invariant the loop CAN verify without
+    // knowing the game's rules: what it prints must be well-formed. Only enforced when the
+    // probe actually collected drawn text (older harness → texts undefined → skip, fail-open).
+    if (probe.texts && probe.texts.length) {
+      const bad = probe.texts.find(t => /\b(?:NaN|Infinity)\b/.test(t) || /\bundefined\b/.test(t))
+      if (bad) {
+        return `the on-screen score/status reads "${bad.trim().slice(0, 60)}" — a counter or score became NaN/undefined/Infinity while the game ran. ` +
+          'Initialize every score/counter to 0 (e.g. `let score = 0`) BEFORE the game loop starts, never do arithmetic with a variable you have not assigned, and guard any division so you never divide by zero.'
+      }
+    }
     // Input responsiveness — the harness pressed all four arrow keys; a keyboard game
     // where no keydown handler ever fired is unplayable even if it draws and animates.
     if (probe.keys && probe.keys.registered > 0 && probe.keys.fired === 0) {
