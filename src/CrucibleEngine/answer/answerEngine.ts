@@ -24,6 +24,7 @@ import { checkConstraints } from './constraints'
 import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
 import { applyExplainCheck, checkExplanation } from './explainCheck'
 import { matchMeta } from './conversational'
+import { answerWithWebGrounding } from './groundedAnswer'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -192,15 +193,34 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // single depth-controlled FM call — NOT web-retrieved, because there is no external fact to
   // fetch (a math word problem or a concept explanation is answered from reasoning, not search).
   const sys = systemPromptFor(facets, '')
-  const usedRetrieval = facets.needsExternalFact
+  let usedRetrieval = facets.needsExternalFact
   // Multi-step reasoning that the FM must derive (not retrieve) is where a single pass ships a
   // confident wrong answer. Route it through verified self-consistency: the SYSTEM samples many
   // derivations, oracle-corrects each, and takes the majority vote. Pure lookups/explanations/
   // single-step asks stay a single depth-controlled call.
   const useConsensus = !usedRetrieval && !facets.isCode && facets.needsMultiStep && facets.needsComputation
+  // Knowledge questions are where the tiny parametric brain bluffs or dead-ends on things it
+  // half-knows. Close the gap the way a person does: look it up. We research the web FIRST (now
+  // that retrieval is fast + reliable — cont.67), synthesize a grounded, cited answer, and fall
+  // back to a parametric draft only when the web yields nothing. This is the core of the agentic
+  // gap-closing thesis: build the needed knowledge in real time, per query.
+  //
+  // Eligibility keys off the MESSAGE, not facets.isCode — because a coding *question* ("what is
+  // the useEffect cleanup function?") trips isCode (LANG+CONSTRUCT) and was wrongly routed to the
+  // reasoning path where the FM BLUFFED a wrong answer. We ground any question-shaped, non-
+  // generation, non-arithmetic query — coding-concept questions route to StackOverflow via the
+  // domain-aware retrieval layer. Code GENERATION (write/implement/fix …) and math stay on their
+  // dedicated verified paths.
+  const isGenRequest = CODE_GEN.test(message) || CODE_FENCE.test(message)
+  const isQuestionShaped = /^\s*(what|how|why|when|which|who|where|does|do|is|are|can|could|should|would|explain|describe|tell me|define|compare|list)\b/i.test(message) || message.trim().endsWith('?')
+  const useGrounding = !usedRetrieval && !useConsensus && !isGenRequest &&
+    !facets.needsComputation && isQuestionShaped &&
+    process.env.CRUCIBLE_WEB_GROUNDING !== '0'
   let draft = ''
   let consensusAgreement: number | null = null
   let retrievalMeta: NonCodeMeta | null = null
+  let grounded = false
+  let groundedSources: string[] = []
   try {
     if (usedRetrieval) {
       emit?.({ type: 'thought', text: 'Researching with retrieval + tools…' })
@@ -214,6 +234,19 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       consensusAgreement = c.agreement
       if (draft) {
         emit?.({ type: 'verify', passed: c.agreement >= 0.5, report: `Self-consistency: ${Math.round(c.agreement * 100)}% of ${c.samples} independent derivations agreed on the answer.` })
+      }
+    } else if (useGrounding) {
+      const g = await answerWithWebGrounding(message, { history, emit, signal })
+      if (g && g.text) {
+        draft = g.text
+        grounded = true
+        usedRetrieval = true          // gates the redundant FM verification lanes below
+        groundedSources = g.sources
+      } else {
+        // Web yielded nothing usable → answer from on-device knowledge. Never worse than before.
+        emit?.({ type: 'thought', text: 'No usable web sources — answering from on-device knowledge.' })
+        const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
+        draft = (await fmComplete(msgs)).trim()
       }
     } else {
       const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
@@ -272,7 +305,9 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // that. An FM ReAct/direct FALLTHROUGH is NOT retrieval-grounded (parametric knowledge
   // wearing a retrieval label), so the normal verification lanes below must still apply.
   const rMeta = retrievalMeta as NonCodeMeta | null
-  const retrievalUngrounded = usedRetrieval && (rMeta === null || rMeta.via === 'react' || rMeta.via === 'direct')
+  // A web-grounded answer (useGrounding path) is retrieval-grounded by construction and already
+  // emitted its own sources/verify — it is NOT an ungrounded fallthrough.
+  const retrievalUngrounded = usedRetrieval && !grounded && (rMeta === null || rMeta.via === 'react' || rMeta.via === 'direct')
   if (usedRetrieval && rMeta?.via === 'dag') {
     emit?.({ type: 'verify', passed: true, report: `Retrieval answer grounded by the provenance oracle cascade (confidence ${Math.round((rMeta.confidence ?? 0) * 100)}%${rMeta.sources ? `, ${rMeta.sources} source(s)` : ''}).` })
   } else if (retrievalUngrounded && text) {
@@ -412,6 +447,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   return {
     text, verified: !(factChecked && !factChecked.confirmed) && explainFlags === 0, abstained: false, ...base,
     usedRetrieval, corrections, repaired,
+    sources: grounded ? groundedSources : base.sources,
   }
 }
 

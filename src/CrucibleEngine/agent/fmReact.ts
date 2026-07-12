@@ -74,13 +74,16 @@ export interface FmCallOpts {
   priority?: 'high' | 'normal' | 'low'
   /** Abort signal — a disconnected client cancels its remaining verification fan-out. */
   signal?: AbortSignal
+  /** Cap generated tokens. Apple FM latency scales with OUTPUT length, so a focused answer
+   *  (grounded synthesis, short lookups) sets this low to stay fast. Defaults to 1536. */
+  maxTokens?: number
 }
 
-async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS, temperature?: number, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal): Promise<string> {
+async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS, temperature?: number, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal, maxTokens = 1536): Promise<string> {
   let lastErr: any
   for (let attempt = 0; attempt <= FM_GEN_RETRIES; attempt++) {
     try {
-      return await callFmInner(system, messages, timeoutMs, temperature, priority, signal)
+      return await callFmInner(system, messages, timeoutMs, temperature, priority, signal, maxTokens)
     } catch (e: any) {
       lastErr = e
       // Transient on-device generation failure — brief backoff then retry a fresh session.
@@ -100,7 +103,7 @@ async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIME
   throw lastErr
 }
 
-async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal): Promise<string> {
+async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal, maxTokens = 1536): Promise<string> {
   // Serialize the single-session daemon (fmQueue): interactive React/VGR/chat runs at HIGH
   // priority so it jumps ahead of any waiting background (autoImprove) work. Prevents the
   // concurrent-load GenerationError that starved live VGR searches. Optional verification
@@ -116,7 +119,7 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
     body: JSON.stringify({
       model: 'apple-fm',
       messages: [{ role: 'system', content: system }, ...messages],
-      max_tokens: 1536,
+      max_tokens: maxTokens,
       temperature,
     }),
     signal: combined,
@@ -588,7 +591,7 @@ export async function fmComplete(
       'You are Crucible, an expert AI assistant. Answer concisely and accurately.'
     const convo = messages.filter(m => m.role !== 'system') as FmMessage[]
     if (!convo.length) return ''
-    return await callFm(system, convo, opts?.timeoutMs ?? FM_TIMEOUT_MS, opts?.temperature, opts?.priority ?? 'high', opts?.signal)
+    return await callFm(system, convo, opts?.timeoutMs ?? FM_TIMEOUT_MS, opts?.temperature, opts?.priority ?? 'high', opts?.signal, opts?.maxTokens)
   } catch {
     return ''
   }
