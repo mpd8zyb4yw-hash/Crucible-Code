@@ -3917,38 +3917,24 @@ app.post('/api/chat', async (req, res) => {
       let strictDebate: Awaited<ReturnType<typeof runDebate>> = null
       let answer: string
       let answerStreamed = false
+      // Council corroboration is DEFERRED: running the peer FM calls here (before the answer's
+      // synthesis is emitted) made the client show "still streaming" through the whole ~15-25s
+      // debate even though the answer text was already on screen. Instead we mark this turn for
+      // a POST-answer council (run after the synthesis done:true below), so the answer completes
+      // immediately and the debate card streams in afterward.
+      let deferStrictCouncil = false
       if (_offlineConvMode === 'strict') {
         const strictResult = await answerQuery(message, { history: histSlice, emit: send, signal: turnSignal })
         answer = strictResult.text
         answerStreamed = strictResult.streamed === true
-        // Council corroboration (cont.58c): the answer engine's verified draft is seated as
-        // one voice and the local council (GGUF pool + Apple FM) cross-examines it. Display
-        // layer ONLY — the shipped text is never overruled by a lexical vote (answerQuery's
-        // deterministic critics outrank the council), but agreement/dissent is surfaced
-        // honestly in the debate card. Gated to corroboration domains to keep idle-chat cheap.
-        try {
-          const dom = classifyDomain(message)
-          // Widened gate (cont.66k, user-reported "where's the ensemble?"): the old
-          // code|reasoning-only gate + the classifier's 'speed' default meant most real
-          // questions never seated the council, so the debate card effectively never showed.
-          // Now every substantive turn corroborates; only short smalltalk stays cheap.
-          // EXCEPT web-grounded answers: they already carry cited sources (stronger provenance
-          // than a lexical council vote), and the extra peer FM calls added ~60s to the turn on
-          // top of the already-streamed answer. Skip the council when we grounded on the web.
-          const councilWorthy = !strictResult.usedRetrieval &&
-            (dom === 'code' || dom === 'reasoning' || dom === 'factual' || message.trim().length >= 60)
-          if (answer && answer.trim() && councilWorthy) {
-            const peers = await councilPeers(message)
-            if (peers.length >= 1) {
-              const engineVoice = { modelId: 'answer-engine', modelLabel: 'Crucible Answer Engine', call: async () => answer }
-              strictDebate = await runDebate([engineVoice, ...peers], '', message, {
-                seedProposals: [{ modelId: 'answer-engine', modelLabel: 'Crucible Answer Engine', text: answer }],
-              })
-            }
-          }
-        } catch (e: any) {
-          debugBus.emit('pipeline', 'council_corroboration_error', { query: message.slice(0, 60), error: String(e?.message ?? e) }, { severity: 'warn', requestId })
-        }
+        // Council corroboration (cont.58c): the answer engine's verified draft is seated as one
+        // voice and the local council (GGUF pool + Apple FM) cross-examines it. Display layer
+        // ONLY — the shipped text is never overruled. Gated to corroboration domains; SKIPPED for
+        // web-grounded answers (already cited — stronger provenance than a lexical vote).
+        const dom = classifyDomain(message)
+        const councilWorthy = !strictResult.usedRetrieval &&
+          (dom === 'code' || dom === 'reasoning' || dom === 'factual' || message.trim().length >= 60)
+        deferStrictCouncil = !!(answer && answer.trim() && councilWorthy)
       } else {
         if (hasReadyLocalModels()) {
           try {
@@ -4011,34 +3997,24 @@ app.post('/api/chat', async (req, res) => {
         // Council-debate transcript (cont.58c) — when the local ensemble cross-examined
         // itself, ship the full propose/rebut/verdict trail so the UI can render the
         // debate card. Entry texts are clipped: the card shows positions, not essays.
-        const debateForUi = routed?.debate ?? strictDebate
-        if (debateForUi) {
-          const d = debateForUi
-          send({
-            type: 'local_debate',
-            debate: {
-              agreement: d.agreement,
-              method: d.method,
-              confidence: d.confidence,
-              winnerId: d.winnerId,
-              winnerLabel: d.winnerLabel,
-              contributors: d.contributors,
-              mindsChanged: d.mindsChanged,
-              totalLatencyMs: d.totalLatencyMs,
-              rounds: d.rounds.map(r => ({
-                kind: r.kind,
-                entries: r.entries.map(e => ({
-                  modelId: e.modelId,
-                  modelLabel: e.modelLabel,
-                  text: e.text.length > 600 ? e.text.slice(0, 600) + '…' : e.text,
-                  latencyMs: e.latencyMs,
-                  errored: e.errored,
-                  changedPosition: e.changedPosition === true,
-                })),
+        const sendDebateCard = (d: NonNullable<typeof strictDebate>) => send({
+          type: 'local_debate',
+          debate: {
+            agreement: d.agreement, method: d.method, confidence: d.confidence,
+            winnerId: d.winnerId, winnerLabel: d.winnerLabel, contributors: d.contributors,
+            mindsChanged: d.mindsChanged, totalLatencyMs: d.totalLatencyMs,
+            rounds: d.rounds.map(r => ({
+              kind: r.kind,
+              entries: r.entries.map(e => ({
+                modelId: e.modelId, modelLabel: e.modelLabel,
+                text: e.text.length > 600 ? e.text.slice(0, 600) + '…' : e.text,
+                latencyMs: e.latencyMs, errored: e.errored, changedPosition: e.changedPosition === true,
               })),
-            },
-          })
-        }
+            })),
+          },
+        })
+        // Routed-path debate is already computed (part of routeLocalModelQuery) — free to send now.
+        if (routed?.debate) sendDebateCard(routed.debate)
         send({ type: 'stage', stage: 1, status: 'done' })
         send({ type: 'synthesis', modelId: provenanceModelId, model: 'Crucible', text: answer, done: true, replace: answerStreamed, ...provenanceExtra })
         send({ type: 'stage', stage: 5, status: 'done' })
@@ -4046,6 +4022,22 @@ app.post('/api/chat', async (req, res) => {
         triggerImprovementPass()
         summariseSession(message, answer, process.cwd(), 'success', callModel).catch(() => {})
         debugBus.emit('pipeline', routed ? 'local_ensemble_conversational' : 'offline_conversational', { query: message.slice(0, 60), latencyMs, mode: _offlineConvMode, ...(routed ? { modelId: routed.modelId, method: routed.method } : {}) }, { severity: 'info', requestId })
+        // Deferred council — the answer's synthesis(done:true) already went out above, so the
+        // round is visually complete; the debate card now streams in without blocking it.
+        if (deferStrictCouncil && !turnSignal?.aborted) {
+          try {
+            const peers = await councilPeers(message)
+            if (peers.length >= 1) {
+              const engineVoice = { modelId: 'answer-engine', modelLabel: 'Crucible Answer Engine', call: async () => answer }
+              const d = await runDebate([engineVoice, ...peers], '', message, {
+                seedProposals: [{ modelId: 'answer-engine', modelLabel: 'Crucible Answer Engine', text: answer }],
+              })
+              if (d) sendDebateCard(d)
+            }
+          } catch (e: any) {
+            debugBus.emit('pipeline', 'council_corroboration_error', { query: message.slice(0, 60), error: String(e?.message ?? e) }, { severity: 'warn', requestId })
+          }
+        }
         if (!res.writableEnded) { res.write('data: [DONE]\n\n'); res.end() }
         return
       }
