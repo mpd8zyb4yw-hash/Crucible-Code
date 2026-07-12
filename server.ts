@@ -3243,11 +3243,27 @@ app.post('/api/chat', async (req, res) => {
         }
 
         // ── Single-FILE solve — when not multi-file, or the multi-file branch didn't ship. ──
-        const vgr = handled ? null : await solveCodingRequest(message ?? '', {
-          maxModelCalls: 8, beamWidth: 2,
-          converge: process.env.CRUCIBLE_CONVERGE === '1',
-          emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
-        })
+        // Retry-until-certified: the on-device proposer is nondeterministic, so a single VGR
+        // invocation certifies an ordinary modify only ~half the time — a fresh attempt often
+        // converges where the last abstained. Since VGR NEVER ships uncertified code (it abstains
+        // honestly), retrying is pure upside: it only ever turns an honest give-up into a certified
+        // solve, never a wrong write. Bounded (default 3) and abort-aware so it can't grind.
+        const VGR_MAX_ATTEMPTS = Math.max(1, Number(process.env.CRUCIBLE_VGR_ATTEMPTS ?? 3))
+        let vgr = null
+        for (let attempt = 1; !handled && attempt <= VGR_MAX_ATTEMPTS; attempt++) {
+          if (ac.signal.aborted) break
+          vgr = await solveCodingRequest(message ?? '', {
+            maxModelCalls: 8, beamWidth: 2,
+            signal: ac.signal,
+            converge: process.env.CRUCIBLE_CONVERGE === '1',
+            emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
+          })
+          if (vgr && vgr.status === 'solved' && vgr.code && vgr.entry) {
+            if (attempt > 1) send({ type: 'thought', text: `VGR · certified on attempt ${attempt}/${VGR_MAX_ATTEMPTS} (the proposer is nondeterministic — a fresh attempt converged)` })
+            break
+          }
+          if (attempt < VGR_MAX_ATTEMPTS) send({ type: 'thought', text: `VGR · attempt ${attempt}/${VGR_MAX_ATTEMPTS} did not certify (${vgr?.status ?? 'no result'}) — retrying the on-device proposer before handing off` })
+        }
         if (vgr) debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls, convergedEpochs: vgr.converged?.epochs ?? null }, { severity: 'info' })
         // The signal that justifies flipping converge default-ON: the loop earned an answer
         // single-shot would have stalled on. epochs===1 means converge was a harmless no-op.
