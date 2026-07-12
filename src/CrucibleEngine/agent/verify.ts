@@ -8,6 +8,9 @@ import path from 'path'
 import crypto from 'crypto'
 import { registry } from '../tools/registry'
 import { parseError } from '../error-intelligence'
+import { harvestExplicitExamples } from '../../CrucibleEngine/reasoning/specExtractor'
+import { verifyMultiFileCode } from '../../CrucibleEngine/reasoning/codeVerifier'
+import type { CandidateFile } from '../../CrucibleEngine/reasoning/multiFile'
 import type { ExecutionResult, ErrorType, Language } from '../sandbox'
 import type { ToolCtx } from '../tools/protocol'
 import type { VerifyResult } from './loop'
@@ -19,7 +22,49 @@ export interface Verifier {
 
 const MAX_HEAL_ATTEMPTS = 5
 
-export function makeVerifier(opts: { command?: string } = {}): Verifier {
+/** Gather the project's source files (bounded) as {path, source} for the example gate. */
+function collectSourceFiles(root: string, cap = 60): CandidateFile[] {
+  const out: CandidateFile[] = []
+  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.crucible', 'out', 'coverage', '.next', '__derived__'])
+  const walk = (dir: string) => {
+    if (out.length >= cap) return
+    let ents: fs.Dirent[]
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of ents) {
+      if (out.length >= cap) return
+      if (e.name.startsWith('.') || SKIP.has(e.name)) continue
+      const abs = path.join(dir, e.name)
+      if (e.isDirectory()) walk(abs)
+      else if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(e.name) && !/\.d\.ts$/.test(e.name)) {
+        try { out.push({ path: path.relative(root, abs), source: fs.readFileSync(abs, 'utf-8') }) } catch { /* skip */ }
+      }
+    }
+  }
+  walk(root)
+  return out
+}
+
+/**
+ * Behavioral gate for projects with NO runnable check (a fresh generated tree has no test
+ * script). When the request states worked examples ("add(2,3) returns 5"), execute them against
+ * the files the agent actually wrote — bundling the import graph via verifyMultiFileCode — instead
+ * of shipping an honest-but-blind `unverified`. Returns null when the request has no examples to
+ * check (→ caller keeps the unverified path) or the project has no source to run.
+ */
+async function exampleGate(goal: string, projectPath: string): Promise<VerifyResult | null> {
+  if (!goal.trim()) return null
+  const h = harvestExplicitExamples(goal)
+  if (!h.cases.length) return null
+  const files = collectSourceFiles(projectPath)
+  if (!files.length) return null
+  const verdict = await verifyMultiFileCode(files, { entry: h.entry, entries: h.entries, cases: h.cases } as any)
+  if (verdict.pass) {
+    return { passed: true, signal: 'test', report: `Behavioral gate: ${h.cases.length} stated example(s) executed against the written files — ${verdict.signals.join('; ')}` }
+  }
+  return { passed: false, signal: 'test', report: `Stated examples do not hold against the written code:\n- ${verdict.signals.join('\n- ')}`, hints: verdict.signals.slice(0, 6) }
+}
+
+export function makeVerifier(opts: { command?: string; goal?: string } = {}): Verifier {
   const fingerprints = new Set<string>()
   let attempts = 0
   let runSeq = 0
@@ -51,7 +96,22 @@ export function makeVerifier(opts: { command?: string } = {}): Verifier {
         }
         if (!plan) return { passed: true, signal: 'lint', report: lint.output.slice(0, 2000) }
       }
-      if (!plan) return { passed: true, signal: 'none', report: 'No runnable check detected.', unverified: true }
+      if (!plan) {
+        // No project check exists — but if the request stated worked examples, execute them
+        // against the written files rather than shipping blind. A failure heals like any other.
+        const gate = opts.goal ? await exampleGate(opts.goal, ctx.projectPath) : null
+        if (gate) {
+          if (!gate.passed) {
+            attempts++
+            const fp = fingerprint(gate.report)
+            const escalate = fingerprints.has(fp) || attempts >= MAX_HEAL_ATTEMPTS
+            fingerprints.add(fp)
+            return { ...gate, escalate }
+          }
+          return gate
+        }
+        return { passed: true, signal: 'none', report: 'No runnable check detected.', unverified: true }
+      }
 
       // For TS projects, ALSO typecheck FIRST — with a generated LENIENT config (the exact
       // options the coding audit uses), NOT the agent's own (often strict tsc --init) one.

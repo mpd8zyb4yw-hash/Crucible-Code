@@ -3460,7 +3460,7 @@ app.post('/api/chat', async (req, res) => {
         planModel: planModelFn,
         emit: send,
         signal: ac.signal,
-        makeVerify: () => makeVerifier({ command: req.body.verifyCommand }).verify,
+        makeVerify: () => makeVerifier({ command: req.body.verifyCommand, goal }).verify,
         memoryDigest: [memoryDigest, codebaseContext].filter(Boolean).join('\n\n'),
         onPersist: persist,
         resume: resumable ? { steps: resumable.steps, completedSummaries: resumable.completedSummaries } : undefined,
@@ -3483,7 +3483,7 @@ app.post('/api/chat', async (req, res) => {
       send({ type: 'final', text: result.summary })
       patchActiveSessionRound(chatUser, chatRoundId, { synthesis: result.summary, synthesisDone: true, synthStreaming: false })
     } else {
-      const verifier = makeVerifier({ command: req.body.verifyCommand })
+      const verifier = makeVerifier({ command: req.body.verifyCommand, goal: agentGoal })
       const result = await runAgentLoop({
         goal: agentGoal,
         projectPath,

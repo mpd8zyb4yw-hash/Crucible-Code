@@ -51,7 +51,8 @@
     "vgr:iterate": "tsx src/CrucibleEngine/reasoning/__iterate_bench.ts",
     "vgr:coderesearch": "tsx src/CrucibleEngine/reasoning/__code_research_bench.ts",
     "convo:coherence": "tsx __convo_coherence_bench.ts",
-    "bench:all": "tsx src/CrucibleEngine/__bench_all.ts"
+    "bench:all": "tsx src/CrucibleEngine/__bench_all.ts",
+    "examplegate:bench": "tsx src/CrucibleEngine/agent/__exampleGate_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",
