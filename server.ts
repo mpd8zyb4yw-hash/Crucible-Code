@@ -3924,7 +3924,12 @@ app.post('/api/chat', async (req, res) => {
       // immediately and the debate card streams in afterward.
       let deferStrictCouncil = false
       if (_offlineConvMode === 'strict') {
-        const strictResult = await answerQuery(message, { history: histSlice, emit: send, signal: turnSignal })
+        // Pass the FULL history — answerQuery's conversation-memory layer bounds it internally
+        // (recent thread verbatim + relevance-retrieved older turns), so pre-slicing to the last 6
+        // here would strip exactly the turn-1 facts that layer exists to recall. histSlice below
+        // still bounds the coarser solveNonCodeTurn fallback.
+        const fullHistory = Array.isArray(history) ? history : undefined
+        const strictResult = await answerQuery(message, { history: fullHistory, emit: send, signal: turnSignal })
         answer = strictResult.text
         answerStreamed = strictResult.streamed === true
         // Council corroboration (cont.58c): the answer engine's verified draft is seated as one

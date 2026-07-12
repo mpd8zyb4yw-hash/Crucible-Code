@@ -25,6 +25,7 @@ interface SuiteResult { suite: string; passed: number; total: number; ok: boolea
 const SUITES = [
   'answer:bench',
   'ground:bench',
+  'memory:bench',
   'vgr:bench',
   'fuzz:bench',
   'harden:bench',

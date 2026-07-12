@@ -26,6 +26,7 @@ import { applyExplainCheck, checkExplanation } from './explainCheck'
 import { matchMeta } from './conversational'
 import { answerWithWebGrounding } from './groundedAnswer'
 import { isCodingQuery } from '../retrieval/retrievalLayer'
+import { buildRecallContext } from './conversationMemory'
 
 export type AnswerIntent = 'lookup' | 'explain' | 'reason' | 'converse'
 
@@ -126,6 +127,13 @@ function systemPromptFor(facets: AnswerFacets, evidence: string): string {
     'Answer the user\'s MOST RECENT message directly. Any earlier messages are context only — ' +
     'do not repeat a previous answer, do not resume a task the user did not just ask for, and ' +
     'never write as if you were the user (you respond TO the user, you are not them). ' +
+    // Recall grounding: when the user asks you to remember something THEY stated earlier (their
+    // name, their project, a preference, a past decision), the answer is in the conversation above
+    // — quote it from there. Never answer such a question with YOUR OWN name/identity ("Crucible")
+    // and never invent a value. If it genuinely is not in the conversation, say you do not have it.
+    'When the user asks you to recall a fact they told you earlier (e.g. their name, their project, ' +
+    'a decision), find it in the conversation above and answer with THAT exact fact — do not give ' +
+    'your own name and do not make one up; if it is not in the conversation, say so. ' +
     'Be accurate above all — if you are not sure, say so plainly rather than guessing.'
   const grounding = evidence
     ? `\n\n## Retrieved evidence (ground your answer in THIS; do not contradict it)\n${evidence}`
@@ -159,10 +167,12 @@ function maxTokensFor(facets: AnswerFacets): number {
 
 function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content: string }> {
   if (!Array.isArray(history)) return []
-  return history.flatMap(h => [
-    { role: 'user', content: h.user },
-    { role: 'assistant', content: h.assistant },
-  ])
+  return history
+    .filter(h => h && (h.user || h.assistant))
+    .flatMap(h => [
+      { role: 'user', content: h.user },
+      { role: 'assistant', content: h.assistant },
+    ])
 }
 
 const ABSTAIN_TEXT =
@@ -206,7 +216,17 @@ function shouldResearch(message: string, facets: AnswerFacets): boolean {
 const VERIFY_TIMEOUT_MS = Number(process.env.CRUCIBLE_VERIFY_TIMEOUT_MS ?? 30_000)
 
 export async function answerQuery(message: string, opts: AnswerOpts = {}): Promise<AnswerResult> {
-  const { history, emit, signal } = opts
+  const { history: rawHistory, emit, signal } = opts
+  // Long-horizon recall inside the FM's finite window, split into two channels the weak FM handles
+  // far better than one giant chat log: the RECENT thread stays verbatim conversation, while the
+  // older turns THIS message needs (first-turn anchor + relevance-retrieved) are surfaced as a
+  // labeled "earlier in this conversation" evidence block in the system prompt — the one place the
+  // model reliably reads facts. This is what lets turn 500 recall turn 1. Deterministic, no summary.
+  const recall = buildRecallContext(rawHistory, message)
+  const history = recall.recentTurns
+  if (recall.recalledCount > 0 || recall.omitted > 0) {
+    debugBus.emit('pipeline', 'memory_window', { total: Array.isArray(rawHistory) ? rawHistory.length : 0, recent: history.length, recalled: recall.recalledCount, omitted: recall.omitted }, { severity: 'info' })
+  }
   const verifyComplete = (msgs: Array<{ role: string; content: string }>, o?: { temperature?: number }) =>
     fmComplete(msgs, { temperature: o?.temperature, timeoutMs: VERIFY_TIMEOUT_MS, priority: 'normal', signal })
   const facets = classifyFacets(message)
@@ -236,7 +256,11 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // FM ReAct → FM direct). Everything else (reasoning, explanation, lookup, chat) gets a
   // single depth-controlled FM call — NOT web-retrieved, because there is no external fact to
   // fetch (a math word problem or a concept explanation is answered from reasoning, not search).
-  const sys = systemPromptFor(facets, '')
+  let sys = systemPromptFor(facets, '')
+  // Fold the older-turn recall into the system prompt as labeled context the FM reads reliably.
+  if (recall.recallBlock) {
+    sys += `\n\n## Earlier in this conversation (facts the user already told you — treat as authoritative)\n${recall.recallBlock}`
+  }
   const draftMaxTokens = maxTokensFor(facets)
   let usedRetrieval = facets.needsExternalFact
   // Multi-step reasoning that the FM must derive (not retrieve) is where a single pass ships a
