@@ -17,7 +17,31 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 68 — LONG-HORIZON CONVERSATION MEMORY: turn 500 recalls turn 1; layered on cont.67's web gap-closing + streaming + canonical-title ranking)
+## CURRENT STATE (last updated 2026-07-12, cont. 68b — DEFINITION SUB-INTENT (latency) + RECALL-INTO-GROUNDING; on top of long-horizon memory + long-output continuation)
+
+**cont.68b (commits 30a1e0b, 13d3308, branch crucible-northstar-sessions) — two TOP-NEXT items closed:**
+
+- **(item 3) Lighter `definition` sub-intent — latency win on simple "what is X".** A bare
+  definition ("what is a hash map", "define recursion", "what does idempotent mean") was classified
+  `explain` by the EXPLAIN regex and decoded the full ~1100-token intuition→detail→example budget
+  (~19s on the weak FM, measured cont.67). NEW `'definition'` `AnswerIntent` in `answer/answerEngine.ts`:
+  `isDefinitionAsk()` fires BEFORE the explain branch on a bare term-definition shape, but is gated
+  OFF by an explanatory expander (`how/why/works/example/difference/…` → the user wants depth → stays
+  `explain`) and by entity-fact lookups (`capital of X`, a mid-sentence proper noun → stays on the
+  web-grounded `lookup` path). Short **384-token** budget + a concise 2-4 sentence prompt (definition
+  first, then one concrete example, stop). Fully contained — `AnswerIntent` is consumed nowhere but
+  `answerEngine.ts` (the agent-side `intent` is unrelated). `answer:bench` +6 (→133), `bench:all`
+  **410/410**, tsc clean. DETERMINISTICALLY verified (classification + budget + prompt wiring); the
+  latency drop follows mechanically from the token cap (Apple FM latency ∝ output tokens) — NOT yet
+  re-measured live under the current 2-server daemon contention.
+- **(item 2a) Long-horizon recall threaded into the web-grounding path.** `answerWithWebGrounding`
+  (`answer/groundedAnswer.ts`) took only the last 4 verbatim turns — a grounded follow-up lost the
+  turn-1 anchor + relevance-retrieved older turns the DIRECT path already folds in. `GroundOpts` gains
+  `recallBlock`; it is appended to `GROUNDING_SYSTEM` as the same authoritative "earlier in this
+  conversation" block; `answerEngine` passes `recall.recallBlock` through. tsc + `bench:all` 410/410.
+  LIVE-UNVERIFIED (string fold on the network+FM path; needs a real grounded follow-up run).
+
+**PRIOR (cont. 68, commit 5b6074b) — LONG-HORIZON CONVERSATION MEMORY: turn 500 recalls turn 1; layered on cont.67's web gap-closing + streaming + canonical-title ranking**
 
 **cont.68 (commit 5b6074b, branch crucible-northstar-sessions) — user asked for two things: (a) long-conversation memory (remember message 1 at message 100/500) and (b) large coherent outputs for complex builds without truncation/hallucination.**
 
@@ -132,17 +156,20 @@ B-tree under 2-server contention) but only paid when truncation is actually dete
       the canonical article (+0.15, below the 0.25 intent bonus). Closes the bare-same-base residual.
     ground:bench 11→13, bench:all **375/375**, tsc clean.
 
-**TOP NEXT ITEMS (cont.68):** (1) **latency is the dominant complaint now** — a normal answer is ~44s
-and a continued build ~4min under 2-server FM-daemon contention. Run a launchd LaunchAgent for the
-backend so two chats don't share one daemon (the 68s-vs-7s root), AND consider making the verification
-lanes (factConsensus/explainCheck/MiniCPM voter/council) opt-in or parallel — they serialize multiple
-FM calls per turn. (2) **conversation-memory + long-output follow-ons:** thread the recall block into
-answerWithWebGrounding (its own prompt, currently no recall); the memory layer is LEXICAL salient-token
-overlap — a purely semantic back-reference ("that thing we discussed") won't retrieve (embedding index
-state/semanticIndex.ts is the upgrade); continuation can still outrun 3 rounds on a huge build (raise
-the cap for code-gen intents, or detect "still growing" and extend). (3) a lighter "definition"
-sub-intent so simple "what is X" doesn't decode the full explain budget. (4) HTML/canvas builds still
-behaviorally unverified (standing #1 capability gap from cont.66h).
+**TOP NEXT ITEMS (cont.68b):** (1) **latency is the dominant complaint** — a normal answer is ~44s
+and a continued build ~4min under 2-server FM-daemon contention. The unstarted big lever: run a launchd
+LaunchAgent for the backend so two chats don't share one FM daemon (the 68s-vs-7s root). Secondary:
+make the verification lanes (factConsensus/explainCheck/MiniCPM voter/council) opt-in or PARALLEL —
+today they serialize extra FM calls per turn (note: they are already intent-gated so usually only ONE
+fires; the `definition` sub-intent from 68b now skips them entirely for basic defs). ALSO: re-measure
+the definition-intent latency live once the daemon is dedicated (68b verified it deterministically,
+not on the wire). (2) **semantic recall:** the memory layer is LEXICAL salient-token overlap — a purely
+semantic back-reference ("that thing we discussed") won't retrieve (embedding index
+`state/semanticIndex.ts` is the upgrade). [68b closed the recall-into-grounding half — LIVE-UNVERIFIED,
+worth a real grounded-follow-up run.] Long-output continuation can still outrun 3 rounds on a huge
+build (raise the cap for code-gen intents, or detect "still growing" and extend). (3) HTML/canvas builds
+still behaviorally unverified (standing #1 capability gap from cont.66h). [former item 3 — the lighter
+"definition" sub-intent — DONE in 68b.]
 
 ---
 
