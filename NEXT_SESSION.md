@@ -17,7 +17,23 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 68b — DEFINITION SUB-INTENT (latency) + RECALL-INTO-GROUNDING; on top of long-horizon memory + long-output continuation)
+## CURRENT STATE (last updated 2026-07-12, cont. 68c — SEMANTIC RECALL + DEFINITION SUB-INTENT + RECALL-INTO-GROUNDING; on top of long-horizon memory + long-output continuation)
+
+**cont.68c (commit 32041c5, branch crucible-northstar-sessions) — SEMANTIC recall closes the lexical gap.**
+Lexical recall (`selectMemory`) matches shared salient TOKENS, so a back-reference sharing no words
+with its target ("that pastry ingredient stock thing" → a turn about "bakery … flour and sugar
+inventory") scored 0 and dropped under budget. NEW `buildRecallContextAsync` (`answer/conversationMemory.ts`)
+adds a bounded, best-effort SEMANTIC supplement: when the lexical pass is THIN (vague/back-reference
+query — few salient tokens, or almost nothing matched), it embeds the query + the older turns lexical
+missed (on-device MiniLM via `masterpiece/corpus/embed`, cached, ≤120 candidates scanned, ≤3 added)
+and pulls in the closest by cosine (floor **0.22** — measured: related 0.24–0.37, unrelated ~0). The
+well-specified-query fast path pays ZERO embedding cost (early-return before any embed); ONNX-
+unavailable degrades to the hash fallback (≈lexical, no regression); `CRUCIBLE_SEMANTIC_RECALL=0`
+disables. `answerEngine` awaits it. **LIVE-VERIFIED with the cached ONNX model:** lexical drops the
+bakery turn, semantic recovers it, an unrelated "champions league" query does NOT false-pull it.
+`memory:bench` +3 (→18), `bench:all` **413/413**, tsc clean. This closes the semantic half of TOP-NEXT
+item (2). NOTE: the misnamed `state/semanticIndex.ts` is a CODE-symbol index, not text embeddings —
+the real embedding stack is `masterpiece/corpus/embed.ts` (ONNX all-MiniLM-L6-v2, cached on this Mac).
 
 **cont.68b (commits 30a1e0b, 13d3308, branch crucible-northstar-sessions) — two TOP-NEXT items closed:**
 
@@ -166,10 +182,11 @@ the definition-intent latency live once the daemon is dedicated (68b verified it
 not on the wire). (2) **semantic recall:** the memory layer is LEXICAL salient-token overlap — a purely
 semantic back-reference ("that thing we discussed") won't retrieve (embedding index
 `state/semanticIndex.ts` is the upgrade). [68b closed the recall-into-grounding half — LIVE-UNVERIFIED,
-worth a real grounded-follow-up run.] Long-output continuation can still outrun 3 rounds on a huge
-build (raise the cap for code-gen intents, or detect "still growing" and extend). (3) HTML/canvas builds
-still behaviorally unverified (standing #1 capability gap from cont.66h). [former item 3 — the lighter
-"definition" sub-intent — DONE in 68b.]
+worth a real grounded-follow-up run.] [68c CLOSED the semantic-recall gap — token-less back-references
+now retrieve via MiniLM embeddings, live-verified.] Long-output continuation can still outrun 3 rounds
+on a huge build (raise the cap for code-gen intents, or detect "still growing" and extend). (3)
+HTML/canvas builds still behaviorally unverified (standing #1 capability gap from cont.66h) — now the
+top structural gap. [former item 3 — lighter "definition" sub-intent — DONE 68b; semantic recall — DONE 68c.]
 
 ---
 
