@@ -38,6 +38,10 @@ interface Probe {
   // scans these for a broken numeric readout (NaN/undefined/Infinity). Undefined on the older
   // harness → the check is skipped (fail-open).
   texts?: string[]
+  // Directional-control probe: horizontal ink centroid after a Left-only burst vs after a
+  // Right-only burst. Correct left/right controls end the player mass further right. Null when
+  // the harness couldn't measure it (no canvas ink) or on the older harness → check skipped.
+  dir?: { left: number; right: number; w: number; inkL: number; inkR: number } | null
 }
 
 // Injected into the VERIFY COPY only (never the shipped artifact): wraps keydown/keyup
@@ -173,6 +177,21 @@ export async function runtimeVerifyHtml(html: string): Promise<string | null> {
     // when the probe actually ran both measurements (older harness → fields undefined).
     if (probe.selfAnimated === false && probe.inputCausedChange === false) {
       return 'the game is frozen — the canvas draws one frame and never changes again, and pressing keys changes nothing. The game loop must call requestAnimationFrame(loop) EVERY frame (not once), clear and redraw the whole canvas each frame, and advance the game state (movement, gravity, obstacles) over time so play actually happens.'
+    }
+    // Directional-control invariant — the second game-STATE behavioral check. After a Left-only
+    // burst then a Right-only burst, a game whose horizontal controls work ends its drawn mass
+    // further RIGHT (the player moved right). Common-mode motion (scrolling obstacles, gravity)
+    // drifts both phases the same way and cancels in the left→right difference, so only the
+    // player's key-driven motion survives. We reject ONLY a strong reversal — the right burst
+    // ending well LEFT of the left burst — which means ArrowRight moved the player left (or the
+    // two keys are swapped). A high threshold (≥18% of canvas width) plus a minimum-ink guard
+    // keeps this fail-open: games that don't use left/right (flappy, vertical shooters) show a
+    // near-zero delta and pass, and centroid noise never trips it. Skipped on the older harness.
+    if (probe.dir && probe.dir.w > 0 && probe.dir.inkL > 20 && probe.dir.inkR > 20) {
+      const { left, right, w } = probe.dir
+      if (right - left < -0.18 * w) {
+        return 'the left/right controls appear inverted — after pressing only ArrowLeft and then only ArrowRight, the player ended up further LEFT, not right. ArrowRight must increase the player\'s x (move it right) and ArrowLeft must decrease it; check that you are not adding to x on Left and subtracting on Right.'
+      }
     }
     return null
   } catch (e: any) {

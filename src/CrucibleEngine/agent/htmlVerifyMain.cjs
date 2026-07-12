@@ -16,7 +16,7 @@ const { app, BrowserWindow } = require('electron')
 const path = require('path')
 
 const target = process.argv[process.argv.length - 1]
-const out = { errors: [], canvas: false, drawn: false, selfAnimated: false, inputCausedChange: false, texts: [] }
+const out = { errors: [], canvas: false, drawn: false, selfAnimated: false, inputCausedChange: false, texts: [], dir: null }
 const done = (code) => { try { process.stdout.write(JSON.stringify(out) + '\n') } catch {} app.exit(code) }
 
 // A cheap two-stride signature of the canvas — a single strided sum can coincidentally
@@ -29,6 +29,27 @@ const SIG = `(() => {
   for (let i = 0; i < d.length; i += 97) a += d[i];
   for (let i = 1; i < d.length; i += 61) b += d[i] * ((i % 7) + 1);
   return a + ':' + b;
+})()`
+
+// Horizontal centroid of the drawn "ink" — the mean x of every pixel that differs from the
+// top-left background color, weighted equally. Used for the directional-control invariant:
+// after a Left-only then a Right-only burst, a game with correct controls ends its player
+// mass further RIGHT. Returns {cx, ink, w} or null.
+const CENTROID = `(() => {
+  const c = document.querySelector('canvas'); if (!c) return null;
+  const ctx = c.getContext('2d'); if (!ctx) return null;
+  const w = c.width, h = c.height;
+  const d = ctx.getImageData(0, 0, w, h).data;
+  const br = d[0], bg = d[1], bb = d[2];
+  let sx = 0, ink = 0;
+  for (let y = 0; y < h; y += 4) {
+    for (let x = 0; x < w; x += 4) {
+      const i = (y * w + x) * 4;
+      const dev = Math.abs(d[i] - br) + Math.abs(d[i + 1] - bg) + Math.abs(d[i + 2] - bb);
+      if (dev > 40) { sx += x; ink += 1; }
+    }
+  }
+  return ink > 0 ? { cx: sx / ink, ink: ink, w: w } : null;
 })()`
 
 app.whenReady().then(async () => {
@@ -65,6 +86,28 @@ app.whenReady().then(async () => {
     await wait(480)
     const after = await sig()
     out.inputCausedChange = !!before && !!after && before !== after
+
+    // (4) Directional-control probe — a BEHAVIORAL invariant beyond "input changed something".
+    // Drive Left-only, sample the ink centroid; then Right-only (more presses, to overshoot
+    // back past the start), sample again. A game whose Left/Right controls work ends its
+    // player mass further RIGHT after the Right burst than after the Left burst. Scrolling
+    // obstacles drift the same way in both phases, so their contribution largely cancels in
+    // the left→right difference; only the player's key-driven motion is directional.
+    const cen = () => win.webContents.executeJavaScript(CENTROID, true).catch(() => null)
+    const pressN = async (key, n) => {
+      for (let k = 0; k < n; k++) {
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: key })
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: key })
+        await wait(35)
+      }
+    }
+    await pressN('Left', 12)
+    await wait(220)
+    const cL = await cen()
+    await pressN('Right', 24)
+    await wait(220)
+    const cR = await cen()
+    out.dir = (cL && cR) ? { left: cL.cx, right: cR.cx, w: cL.w, inkL: cL.ink, inkR: cR.ink } : null
 
     // Instrumentation counter (injected by runtimeVerifyHtml into the verify copy only):
     // registered>0,fired>0 means a real handler received our synthetic presses.

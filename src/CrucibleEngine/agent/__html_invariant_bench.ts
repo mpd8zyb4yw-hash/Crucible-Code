@@ -62,6 +62,39 @@ function loop() {
 requestAnimationFrame(loop);
 </script></body></html>`
 
+// Directional-control cases for the inverted-controls invariant (2026-07-12). A large player
+// block dominates the canvas ink so the horizontal centroid tracks the player, clamped to the
+// canvas so bursts pin it to an edge — giving a clean left-vs-right centroid separation.
+const DIR_HEAD = `${HEAD}
+<body><canvas id="game" width="320" height="320"></canvas>
+<script>
+var c = document.getElementById('game'), ctx = c.getContext('2d');
+var x = 140, t = 0;
+function clamp(v){ return Math.max(0, Math.min(280, v)); }`
+
+// Correct controls: ArrowRight increases x, ArrowLeft decreases it. Must PASS.
+const DIR_OK = `${DIR_HEAD}
+window.addEventListener('keydown', function (e) {
+  if (e.key === 'ArrowRight') x = clamp(x + 20);
+  if (e.key === 'ArrowLeft') x = clamp(x - 20);
+});
+function loop(){ t++; ctx.fillStyle='#101018'; ctx.fillRect(0,0,320,320);
+  ctx.fillStyle="#66ccff"; ctx.fillRect(x, 60 + (t * 2) % 160, 40, 40); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script></body></html>`
+
+// Inverted controls: ArrowRight DECREASES x, ArrowLeft increases it — the exact behavioral bug
+// the aliveness/readout gates are blind to (it draws, animates and responds to input). Must REJECT.
+const DIR_INVERTED = `${DIR_HEAD}
+window.addEventListener('keydown', function (e) {
+  if (e.key === 'ArrowRight') x = clamp(x - 20);
+  if (e.key === 'ArrowLeft') x = clamp(x + 20);
+});
+function loop(){ t++; ctx.fillStyle='#101018'; ctx.fillRect(0,0,320,320);
+  ctx.fillStyle="#66ccff"; ctx.fillRect(x, 60 + (t * 2) % 160, 40, 40); requestAnimationFrame(loop); }
+requestAnimationFrame(loop);
+</script></body></html>`
+
 // Canary — a runtime error on load that ANY working harness rejects, independent of the new
 // check. If the gate returns null here, Electron is not running (fail-open) → SKIP.
 const CANARY = `${HEAD}
@@ -89,7 +122,14 @@ async function main() {
   const rejected = nan !== null && /NaN|undefined|Infinity|score|status|readout/i.test(nan)
   check('NaN-score game is rejected with a readout hint', rejected, `expected a readout rejection, got: ${nan}`)
 
-  console.log(`\nhtml readout invariant: ${pass}/${pass + fail} passed`)
+  const dirOk = await runtimeVerifyHtml(DIR_OK)
+  check('correct left/right controls pass the directional gate', dirOk === null, `expected null, got: ${dirOk}`)
+
+  const dirInv = await runtimeVerifyHtml(DIR_INVERTED)
+  const invRejected = dirInv !== null && /invert|left|right|controls/i.test(dirInv)
+  check('inverted left/right controls are rejected', invRejected, `expected an inverted-controls rejection, got: ${dirInv}`)
+
+  console.log(`\nhtml runtime invariants: ${pass}/${pass + fail} passed`)
   process.exit(fail === 0 ? 0 : 1)
 }
 
