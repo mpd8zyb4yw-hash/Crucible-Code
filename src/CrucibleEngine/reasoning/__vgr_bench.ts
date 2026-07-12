@@ -394,6 +394,22 @@ async function run() {
   ok('importer that also SHADOWS the name → ambiguous → whole edit downgrades to fresh file',
     t5.primary.mode === 'create', t5.notes.join('; '))
 
+  // Aliased import: the importer calls the function under a LOCAL alias (`pad as p`), so its
+  // call sites read `p(…)`. Propagation must reconcile against the alias, not the export name —
+  // otherwise the broken aliased call ships silently.
+  const aliased = "import { pad as p } from './strings'\n\nexport const banner = p('hi', 10, '*')\nexport const tag = p('yo', 6, '.')\n"
+  const t6 = await planEmitTree('change pad in src/strings.ts to always pad with spaces', 'pad', NARROWED, treeTarget,
+    'src/strings.ts', { 'src/app.ts': aliased })
+  ok('aliased importer (`pad as p`) → call sites under the ALIAS are trimmed, not skipped',
+    t6.primary.mode === 'modify' && t6.propagated.length === 1
+    && t6.propagated[0].content.includes("p('hi', 10)") && !t6.propagated[0].content.includes("p('hi', 10, '*')"),
+    t6.notes.join('; '))
+
+  const t7 = await planEmitTree('change pad in src/strings.ts to support right padding', 'pad', WIDENED, treeTarget,
+    'src/strings.ts', { 'src/app.ts': aliased })
+  ok('aliased importer with an unabsorbable REQUIRED param → whole edit downgrades to fresh file',
+    t7.primary.mode === 'create' && t7.propagated.length === 0, t7.notes.join('; '))
+
   // Multi-file merge: certified module source merged into an EXISTING file (splice same-named,
   // append new, union imports) — the modify-inside-multi-file building block.
   const mExisting = "import { helper } from './util'\n\nexport function greet(name: string): string {\n  return 'hi ' + name\n}\n\nexport const KEEP = 1\n"

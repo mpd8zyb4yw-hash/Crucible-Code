@@ -566,17 +566,28 @@ function resolveSpecifier(fromRel: string, spec: string): string | null {
   return stack.join('/').replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
 }
 
-/** True when `content` (a sibling module at `siblingRel`) imports `entry` from `targetRel`. */
-export function importsEntryFrom(content: string, entry: string, siblingRel: string, targetRel: string): boolean {
+/** Local names under which `entry` is imported from `targetRel` in `content` — resolving aliases,
+ *  so `import { pad as p } from './pad'` yields `['p']` (the name the call sites actually use).
+ *  Empty when `entry` is not imported from that module. Named imports only. */
+export function importedLocalNames(content: string, entry: string, siblingRel: string, targetRel: string): string[] {
   const targetNoExt = targetRel.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+  const out: string[] = []
   let m: RegExpExecArray | null
   const rx = new RegExp(NAMED_IMPORT_RX.source, 'gm')
   while ((m = rx.exec(content))) {
-    const names = m[1].split(',').map(s => s.trim().split(/\s+as\s+/)[0].trim())
-    if (!names.includes(entry)) continue
-    if (resolveSpecifier(siblingRel, m[3]) === targetNoExt) return true
+    if (resolveSpecifier(siblingRel, m[3]) !== targetNoExt) continue
+    for (const raw of m[1].split(',')) {
+      const [orig, alias] = raw.trim().split(/\s+as\s+/).map(s => s.trim())
+      const local = alias || orig
+      if (orig === entry && local) out.push(local)
+    }
   }
-  return false
+  return out
+}
+
+/** True when `content` (a sibling module at `siblingRel`) imports `entry` from `targetRel`. */
+export function importsEntryFrom(content: string, entry: string, siblingRel: string, targetRel: string): boolean {
+  return importedLocalNames(content, entry, siblingRel, targetRel).length > 0
 }
 
 export interface TreeEmit {
@@ -621,20 +632,29 @@ export async function planEmitTree(
   const propagated: EmitPlan[] = []
   for (const [rel, content] of Object.entries(siblings)) {
     if (rel === targetPath) continue
-    if (!importsEntryFrom(content, entry, rel, targetPath)) continue
+    const locals = importedLocalNames(content, entry, rel, targetPath)
+    if (!locals.length) continue
     if (alreadyDefines(content, entry)) return { primary: fresh, propagated: [], notes: [`${rel} both imports and shadows ${entry} — too ambiguous to reconcile`] }
 
-    // No local definition → reconcile across the whole file (defStart/defEnd out of range).
-    const rec = reconcileCallSites(content, entry, -1, -1, newSig, oldSig)
-    if (!rec) return { primary: fresh, propagated: [], notes: [`${rel} calls ${entry} in a way the new signature can't absorb → refused the whole edit`] }
-    if (rec.repaired === 0) continue // all call sites already fit
+    // Reconcile the call sites under EACH local (possibly aliased) name the importer uses —
+    // `import { pad as p }` means the calls read `p(…)`, not `pad(…)`. No local definition
+    // exists here, so scan across the whole file (defStart/defEnd out of range).
+    let repairedContent = content
+    let repairedTotal = 0
+    for (const local of locals) {
+      const rec = reconcileCallSites(repairedContent, local, -1, -1, newSig, oldSig)
+      if (!rec) return { primary: fresh, propagated: [], notes: [`${rel} calls ${entry} in a way the new signature can't absorb → refused the whole edit`] }
+      repairedContent = rec.content
+      repairedTotal += rec.repaired
+    }
+    if (repairedTotal === 0) continue // all call sites already fit
     try {
-      await transform(rec.content, { loader: 'ts', format: 'esm', target: 'node18' })
+      await transform(repairedContent, { loader: 'ts', format: 'esm', target: 'node18' })
     } catch {
       return { primary: fresh, propagated: [], notes: [`repairing ${rel}'s calls to ${entry} would not compile → refused the whole edit`] }
     }
-    propagated.push({ rel, content: rec.content, mode: 'modify', detail: `updated ${rec.repaired} call site(s) of ${entry} for its new signature` })
-    notes.push(`${rel}: ${rec.repaired} call site(s) reconciled`)
+    propagated.push({ rel, content: repairedContent, mode: 'modify', detail: `updated ${repairedTotal} call site(s) of ${entry} for its new signature` })
+    notes.push(`${rel}: ${repairedTotal} call site(s) reconciled`)
   }
 
   return { primary, propagated, notes }
