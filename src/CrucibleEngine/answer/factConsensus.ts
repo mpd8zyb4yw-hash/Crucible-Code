@@ -21,6 +21,7 @@ import { fmComplete } from '../agent/fmReact'
 import type { Completer } from './wordProblem'
 import { getRegistry } from '../localModels/registry'
 import { orchestrate } from '../localModels/orchestrator'
+import { miniCpmAnswer, isMiniCpmAvailable } from '../agent/miniCpmHarness'
 
 // Claim-key normalization + agreement live in agent/consensus.ts (the system-wide consensus
 // machinery — debate, local-model corroboration, and fact checks share ONE definition).
@@ -123,6 +124,21 @@ export async function corroborateFact(
       }
     }
   } catch { /* ensemble is best-effort; FM-only consensus still stands */ }
+
+  // MiniCPM voter (GGUF pool) — a genuinely independent architecture from the Apple FM, so it
+  // shares no confabulation bias: the strongest decorrelated voter available on this Mac. It is
+  // NOT in the ONNX `registry` above (different runtime), so it is wired in explicitly here. This
+  // is the agentic consumer for MiniCPM's harness: a second opinion on parametric facts. No-op
+  // (fast) when MiniCPM isn't downloaded or the runtime is missing; gated off with
+  // CRUCIBLE_MINICPM_VOTER=0. Its short answer is normalized to a key just like an FM resample.
+  if (process.env.CRUCIBLE_MINICPM_VOTER !== '0') {
+    try {
+      if (await isMiniCpmAvailable()) {
+        const vote = (await miniCpmAnswer(message, { concise: true, maxTokens: 256, timeoutMs: opts.timeoutMs ?? 15000 })).trim()
+        if (vote) { texts.push(vote); ensembleModels.push('minicpm5-1b') }
+      }
+    } catch { /* best-effort: MiniCPM's vote is a bonus, never a gate */ }
+  }
 
   // List-shaped: EVERY claim the draft asserts must be corroborated by a quorum of resample
   // sets, and the claim count must match an explicitly asked count.

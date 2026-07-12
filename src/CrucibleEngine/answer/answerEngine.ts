@@ -138,7 +138,22 @@ function systemPromptFor(facets: AnswerFacets, evidence: string): string {
     case 'lookup':
       return `${base}\n\nAnswer directly and concisely (1-3 sentences). Do not add unrequested detail.${grounding}`
     default:
-      return `${base}\n\nAnswer helpfully and naturally at a length that fits the question.${grounding}`
+      return `${base}\n\nAnswer helpfully and naturally at a length that fits the question. Keep it tight — a short paragraph for a simple ask; don't pad with restatements, caveats, or a summary the answer already made.${grounding}`
+  }
+}
+
+// ── Output-length cap, scaled to intent ────────────────────────────────────────
+// The system prompt asks for the right length; this is the hard ceiling that keeps the weak FM
+// from running on. Apple FM latency ∝ output tokens, so a lookup that decodes 500 tokens is both
+// verbose AND slow. Lookups/chat get a tight budget; explanations and multi-step reasoning keep
+// the room they actually need (a capped reasoning chain would truncate mid-derivation).
+function maxTokensFor(facets: AnswerFacets): number {
+  switch (facets.intent) {
+    case 'lookup': return 320    // 1-3 sentences + slack for a list
+    case 'converse': return 448  // a tight paragraph or two
+    case 'explain': return 1100  // intuition + detail + an example
+    case 'reason': return 1536   // full step-by-step chain, never truncated
+    default: return 768
   }
 }
 
@@ -222,6 +237,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // single depth-controlled FM call — NOT web-retrieved, because there is no external fact to
   // fetch (a math word problem or a concept explanation is answered from reasoning, not search).
   const sys = systemPromptFor(facets, '')
+  const draftMaxTokens = maxTokensFor(facets)
   let usedRetrieval = facets.needsExternalFact
   // Multi-step reasoning that the FM must derive (not retrieve) is where a single pass ships a
   // confident wrong answer. Route it through verified self-consistency: the SYSTEM samples many
@@ -284,7 +300,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         // Web yielded nothing usable → answer from on-device knowledge (never worse than before).
         emit?.({ type: 'thought', text: 'No usable web sources — answering from on-device knowledge.' })
         const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
-        draft = (await fmComplete(msgs, { signal })).trim()
+        draft = (await fmComplete(msgs, { signal, maxTokens: draftMaxTokens })).trim()
       }
     } else {
       // Direct on-device answer (common knowledge, fast path). STREAM it when an emit sink is
@@ -293,10 +309,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       const msgs = [{ role: 'system', content: sys }, ...historyToMessages(history), { role: 'user', content: message }]
       if (emit) {
         const onToken = (d: string) => emit({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: d, replace: false })
-        draft = (await fmStream(msgs, onToken, { signal })).trim()
+        draft = (await fmStream(msgs, onToken, { signal, maxTokens: draftMaxTokens })).trim()
         streamed = true
       } else {
-        draft = (await fmComplete(msgs, { signal })).trim()
+        draft = (await fmComplete(msgs, { signal, maxTokens: draftMaxTokens })).trim()
       }
     }
   } catch {

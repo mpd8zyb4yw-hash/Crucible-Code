@@ -131,8 +131,14 @@ export function rankResults(results: SearchResult[], query: string): SearchResul
     // Title matches count double; snippet/url matches count once.
     const overlap = sal.reduce((n, t) => n + (title.includes(t) ? 2 : 0) + (body.includes(t) ? 1 : 0), 0)
     // Canonical penalty: title content tokens the query never mentioned = derivative-page signal.
-    const extras = titleContentTokens(r.title ?? '').filter(t => !salSet.has(t)).length
-    const score = overlap - 0.5 * Math.min(extras, 3) + intentBonus(r.title ?? '', queryTokens)
+    const titleTokens = titleContentTokens(r.title ?? '')
+    const extras = titleTokens.filter(t => !salSet.has(t)).length
+    // Exact-base bonus: a title whose content tokens (disambiguator stripped) are EXACTLY the
+    // salient entity is the canonical article for it — the residual tie-break for bare same-base
+    // titles that all share extras=0 ("Mercury" over "Mercury Records" when both clear the tier).
+    // Smaller than the intent bonus so an intent match still wins a three-way tie.
+    const exactBase = titleTokens.length > 0 && titleTokens.every(t => salSet.has(t)) ? 0.15 : 0
+    const score = overlap - 0.5 * Math.min(extras, 3) + intentBonus(r.title ?? '', queryTokens) + exactBase
     return { r, score, overlap }
   }).sort((a, b) => b.score - a.score)
   const top = scored[0]?.overlap ?? 0

@@ -2,6 +2,9 @@
 // the critic pass. NO model calls, NO network (the FM draft is nondeterministic and slow, so
 // live answer quality is verified separately via the JWT curl harness). Run:
 //   npx tsx src/CrucibleEngine/answer/__answer_bench.ts
+// Keep the "NO model calls" contract: the MiniCPM fact voter (GGUF) would otherwise fire on a
+// dev machine where the model is downloaded, turning a <1s unit bench into a ~45s inference run.
+process.env.CRUCIBLE_MINICPM_VOTER = '0'
 import { classifyFacets, ensureTrailingAnswer } from './answerEngine'
 import { critiqueAnswer } from './verify'
 import { normalizeAnswer } from './selfConsistency'

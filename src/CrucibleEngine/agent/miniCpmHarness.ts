@@ -18,9 +18,26 @@
 // errors), so this harness exists to make MiniCPM available for AGENTIC / reasoning-heavy roles
 // where its step-by-step thinking is an asset — not to replace the web+FM answer path.
 
-import { completeLocalModel, warmModel } from './localModelPool'
+import fs from 'fs'
+import { completeLocalModel, warmModel, isGgufRuntimeAvailable } from './localModelPool'
+import { findModelSpec } from './localModelCatalog'
+import { modelFilePath } from './modelDownloadManager'
 
 const MINICPM_ID = 'minicpm5-1b'
+
+/**
+ * Whether MiniCPM can actually run in THIS process right now: the GGUF runtime (node-llama-cpp)
+ * is importable AND the model file is on disk. Cheap (a cached probe + one existsSync), never
+ * throws. Consumers use this to stay a no-op on machines where MiniCPM was never downloaded —
+ * the same "zero voters when uninstalled" contract the ONNX ensemble already follows.
+ */
+export async function isMiniCpmAvailable(): Promise<boolean> {
+  try {
+    if (!(await isGgufRuntimeAvailable())) return false
+    const spec = findModelSpec(MINICPM_ID)
+    return !!spec && fs.existsSync(modelFilePath(spec))
+  } catch { return false }
+}
 
 // Leaked-reasoning openers MiniCPM uses when it narrates instead of answering.
 const REASONING_OPENER = /^\s*(first[,:]?\s|okay[,:]?\s|alright[,:]?\s|let me\b|let's\b|i need to\b|i must\b|i should\b|i'll\b|i will\b|the question\b|to answer\b|so[,:]\s|well[,:]\s|now[,:]\s|thinking\b|step 1\b|step one\b)/i

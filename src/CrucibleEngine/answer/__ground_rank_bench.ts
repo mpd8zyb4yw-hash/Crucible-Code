@@ -101,6 +101,29 @@ console.log('\n== intent tie-break stays inert without a creation verb ==')
   check('order preserved when no intent verb present', ranked[0]?.title === 'Dune (franchise)', ranked[0]?.title)
 }
 
+console.log('\n== bare-title tie: exact-base article beats the qualified same-base page ==')
+{
+  // No disambiguator, equal overlap — the page titled EXACTLY the entity is canonical.
+  const results = [
+    S('Mercury Records', 'Mercury Records is an American record label.'),
+    S('Mercury', 'Mercury is the smallest planet in the Solar System.'),
+  ]
+  const ranked = rankResults(results, 'Mercury')
+  check('exact-base Mercury is top-1', ranked[0]?.title === 'Mercury', ranked[0]?.title)
+}
+
+console.log('\n== intent bonus still outranks a bare exact-base match ==')
+{
+  // "who wrote Dune": (novel) gets the 0.25 intent bonus; bare "Dune" gets only the 0.15
+  // exact-base bonus — the intent-matched work must still win.
+  const results = [
+    S('Dune', 'Dune is a media franchise.'),
+    S('Dune (novel)', 'Dune is a 1965 novel by Frank Herbert.'),
+  ]
+  const ranked = rankResults(results, 'who wrote Dune')
+  check('novel (intent) beats bare Dune (exact-base)', ranked[0]?.title === 'Dune (novel)', ranked[0]?.title)
+}
+
 console.log('\n== no-salient-token query is passed through untouched ==')
 {
   const results = [S('A'), S('B')]
