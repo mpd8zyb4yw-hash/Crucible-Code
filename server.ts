@@ -3178,7 +3178,16 @@ app.post('/api/chat', async (req, res) => {
             }
             if (chunks.length) mfContext = chunks.join('\n\n')
           }
-          const mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext })
+          // Retry-until-certified: same rationale as the single-file path — the on-device
+          // proposer is nondeterministic and multi-file certification abstains honestly, so a
+          // fresh attempt is pure upside (never a wrong write). Bounded + abort-aware.
+          const MF_MAX_ATTEMPTS = Math.max(1, Number(process.env.CRUCIBLE_VGR_ATTEMPTS ?? 3))
+          let mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: ac.signal })
+          for (let attempt = 2; attempt <= MF_MAX_ATTEMPTS && !(mf.status === 'solved' && mf.files?.length) && !ac.signal.aborted; attempt++) {
+            send({ type: 'thought', text: `VGR multi-file · attempt ${attempt - 1}/${MF_MAX_ATTEMPTS} did not certify (${mf.status}) — retrying the on-device proposer` })
+            mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: ac.signal })
+            if (mf.status === 'solved' && mf.files?.length) send({ type: 'thought', text: `VGR multi-file · certified on attempt ${attempt}/${MF_MAX_ATTEMPTS}` })
+          }
           debugBus.emit('agent', 'vgr_multifile_result', { status: mf.status, files: mf.files?.map(f => f.path), calls: mf.search?.modelCalls }, { severity: 'info' })
           if (mf.status === 'solved' && mf.files?.length) {
             const collisions = mf.files.filter(f => fs.existsSync(path.join(projectPath, f.path.replace(/^\.\//, ''))))
