@@ -39,9 +39,21 @@
    ≥60 chars; classifier's 'speed' default had been starving the council). LIVE-VERIFIED:
    local_debate shipped 3 voices (answer-engine, minicpm5-1b, track-s-fm) unanimous 0.97.
 
-Open follow-ups from this pass: real-mic voice-mode session; barge-in (speak to interrupt TTS);
-attachment content should also flow on the AGENT path (only /api/chat folds it today); OCR swift
-first-call latency (~1-2s) could be precompiled.
+**cont.66l (4280397) — user live-test follow-ups (voice mode CONFIRMED WORKING by user):**
+(a) ROUTING POISON fixed — foldAttachmentContext runs at intake, so detectAgentTask matched the
+attached file's CONTENT (any .ts attachment contains '.ts' → agent hijack; user's "what can you
+tell me about this file?" went to the agent loop). detectAgentTask now strips from the attachment
+note/ATTACHED FILE CONTENT marker; live-verified with an agent-baiting .ts file — stays on chat
+path, answer analyzes the file. NOTE the pattern: ANY routing regex that sees the folded message
+is poisonable — classifyIntent/buildTurn/matchMeta not yet audited for the same. (b) Attachment
+chips now render inside the sent user bubble (Round.attachments[] → MessageList), so attachment
+turns are visually distinct; preview-verified chip + content-aware answer + COUNCIL card 3/3 in
+one turn.
+
+Open follow-ups: real-mic voice-mode multi-turn CONFIRMED by user (66k item closed); barge-in
+(speak to interrupt TTS); attachment content should also flow on the AGENT path (only /api/chat
+folds it today); OCR swift first-call latency (~1-2s) could be precompiled; audit remaining
+routing regexes for folded-content poisoning (same class as (a)).
 
 **cont.66i (68eb42a, 60db198, ea409fa) — four shipped items this session:**
 
