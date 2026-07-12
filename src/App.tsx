@@ -76,7 +76,15 @@ export default function App() {
   // ── Voice mode — local whisper.cpp dictation + auto-spoken replies (full voice loop). ──
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
-  const [voiceLoop, setVoiceLoop] = useState(false)   // when on, replies are spoken via /api/tts
+  // Legacy auto-speak flag — superseded by full voice mode below; kept for the speakReply
+  // gating shape (always false now that the right-click toggle became one-shot dictation).
+  const [voiceLoop] = useState(false)
+  // Voice conversation mode — hands-free listen→answer→speak→listen loop with a visible
+  // state overlay (the chat keeps populating behind it).
+  const [voiceMode, setVoiceMode] = useState(false)
+  const [voiceState, setVoiceState] = useState<'idle' | 'listening' | 'transcribing' | 'thinking' | 'speaking'>('idle')
+  const voiceModeRef = useRef(false)     // async closures (VAD timer, tts completion) need the live value
+  const emptyListensRef = useRef(0)      // consecutive silent listens → auto-exit instead of looping the mic
   const [voiceReady, setVoiceReady] = useState<boolean | null>(null)  // null = unknown, false = model not downloaded
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioChunksRef = useRef<Blob[]>([])
@@ -969,16 +977,39 @@ export default function App() {
   }
   const removeAttachment = (p: string) => setAttachments(prev => prev.filter(a => a.path !== p))
 
-  // ── Voice mode — local whisper.cpp STT + /api/tts talkback ───────────────────
+  // ── Voice conversation mode — local whisper.cpp STT + /api/tts talkback ──────
+  // ChatGPT-style hands-free loop: listen (VAD auto-stop on silence) → transcribe → send →
+  // speak the reply (server resolves AFTER playback) → listen again, until the user exits.
+  // The chat keeps populating behind the overlay; everything stays on-device.
   const speakReply = (text: string) => {
-    if (!voiceLoop || !text?.trim()) return
+    const inVoiceMode = voiceModeRef.current
+    if ((!voiceLoop && !inVoiceMode) || !text?.trim()) return
     // Strip code fences/markdown noise so talkback stays natural.
     const clean = text.replace(/```[\s\S]*?```/g, ' code block ').replace(/[#*`_>]/g, '').slice(0, 1200)
-    apiFetch(`${API_BASE}/api/tts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: clean }) }).catch(() => {})
+    if (!inVoiceMode) {
+      apiFetch(`${API_BASE}/api/tts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: clean }) }).catch(() => {})
+      return
+    }
+    setVoiceState('speaking')
+    apiFetch(`${API_BASE}/api/tts`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: clean, wait: true }) })
+      .catch(() => {})
+      .then(() => { if (voiceModeRef.current) void startRecording() })   // reply finished → re-listen
   }
   const stopRecording = () => {
     try { mediaRecorderRef.current?.stop() } catch { /* already stopped */ }
     setRecording(false)
+  }
+  const exitVoiceMode = () => {
+    voiceModeRef.current = false
+    setVoiceMode(false)
+    setVoiceState('idle')
+    stopRecording()
+  }
+  const enterVoiceMode = () => {
+    voiceModeRef.current = true
+    emptyListensRef.current = 0
+    setVoiceMode(true)
+    void startRecording()
   }
   const startRecording = async () => {
     if (recording) { stopRecording(); return }
@@ -987,11 +1018,50 @@ export default function App() {
       const rec = new MediaRecorder(stream)
       audioChunksRef.current = []
       rec.ondataavailable = e => { if (e.data.size) audioChunksRef.current.push(e.data) }
+      // Voice-mode VAD: watch the mic's RMS level; once the user has spoken, 1.5 s of
+      // silence ends the utterance. Never having spoken for 8 s ends the listen (and two
+      // empty listens in a row exit voice mode rather than looping the mic forever).
+      let vadCtx: AudioContext | null = null
+      let vadTimer: ReturnType<typeof setInterval> | null = null
+      if (voiceModeRef.current) {
+        setVoiceState('listening')
+        try {
+          vadCtx = new AudioContext()
+          const src = vadCtx.createMediaStreamSource(stream)
+          const analyser = vadCtx.createAnalyser()
+          analyser.fftSize = 512
+          src.connect(analyser)
+          const buf = new Float32Array(analyser.fftSize)
+          const startedAt = Date.now()
+          let spokeAt = 0
+          vadTimer = setInterval(() => {
+            analyser.getFloatTimeDomainData(buf)
+            let sum = 0; for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
+            const rms = Math.sqrt(sum / buf.length)
+            if (rms > 0.02) spokeAt = Date.now()
+            const now = Date.now()
+            if ((spokeAt && now - spokeAt > 1500) || (!spokeAt && now - startedAt > 8000)) {
+              try { mediaRecorderRef.current?.stop() } catch { /* already stopped */ }
+              setRecording(false)
+            }
+          }, 120)
+        } catch { /* VAD unavailable — manual stop still works */ }
+      }
       rec.onstop = async () => {
+        if (vadTimer) clearInterval(vadTimer)
+        void vadCtx?.close().catch(() => {})
         stream.getTracks().forEach(t => t.stop())
         const blob = new Blob(audioChunksRef.current, { type: rec.mimeType || 'audio/webm' })
-        if (blob.size < 800) return   // nothing captured
+        if (blob.size < 800) {   // nothing captured
+          if (voiceModeRef.current) {
+            if (++emptyListensRef.current >= 2) exitVoiceMode()
+            else void startRecording()
+          }
+          return
+        }
+        emptyListensRef.current = 0
         setTranscribing(true)
+        if (voiceModeRef.current) setVoiceState('transcribing')
         try {
           const data: string = await new Promise((resolve, reject) => {
             const r = new FileReader(); r.onload = () => resolve(String(r.result)); r.onerror = () => reject(r.error); r.readAsDataURL(blob)
@@ -1001,22 +1071,25 @@ export default function App() {
             body: JSON.stringify({ audio: data, mime: blob.type }),
           })
           const j = await resp.json()
-          if (j?.needsModel) { setVoiceReady(false); haptic('heavy'); return }
+          if (j?.needsModel) { setVoiceReady(false); exitVoiceMode(); haptic('heavy'); return }
           const text = (j?.text || '').trim()
           if (text) {
             setVoiceReady(true)
-            // Full voice loop: dictate straight into a send (which will also speak the reply).
-            if (voiceLoop) void send(text)
+            if (voiceModeRef.current) { setVoiceState('thinking'); void send(text) }   // reply will speak, then re-listen
+            else if (voiceLoop) void send(text)
             else setInput(prev => (prev ? prev + ' ' : '') + text)
+          } else if (voiceModeRef.current) {
+            if (++emptyListensRef.current >= 2) exitVoiceMode()
+            else void startRecording()
           }
-        } catch { /* transient — leave composer untouched */ }
+        } catch { if (voiceModeRef.current) exitVoiceMode() }
         finally { setTranscribing(false) }
       }
       mediaRecorderRef.current = rec
       rec.start()
       setRecording(true)
       haptic('medium')
-    } catch { haptic('heavy') }   // mic permission denied / no device
+    } catch { if (voiceModeRef.current) exitVoiceMode(); haptic('heavy') }   // mic permission denied / no device
   }
 
   const send = async (overrideMessage?: string, modeOverride?: string, ensembleConfirmed = false, displayText?: string) => {
@@ -2884,6 +2957,36 @@ export default function App() {
             ref={fileInputRef} type="file" multiple hidden
             onChange={e => { if (e.target.files) void uploadFiles(e.target.files); e.target.value = '' }}
           />
+          {/* ── Voice-mode overlay — persistent conversation state above the composer. The chat
+              stays fully visible and keeps populating behind it; this is the "we're talking"
+              affordance: a breathing orb + state label + exit. ── */}
+          {voiceMode && (
+            <div style={{
+              position: 'fixed', left: '50%', bottom: 96, transform: 'translateX(-50%)', zIndex: 60,
+              display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderRadius: 22,
+              background: 'rgba(18,18,28,0.92)', border: '1px solid rgba(124,124,248,0.35)',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 0 24px rgba(124,124,248,0.12)', backdropFilter: 'blur(12px)',
+            }}>
+              <span style={{
+                width: 14, height: 14, borderRadius: '50%', flexShrink: 0,
+                background: voiceState === 'listening' ? '#4db89e' : voiceState === 'speaking' ? '#9d9dfa' : voiceState === 'thinking' ? '#e0b055' : '#8a8a9e',
+                boxShadow: `0 0 12px ${voiceState === 'listening' ? 'rgba(77,184,158,0.7)' : voiceState === 'speaking' ? 'rgba(157,157,250,0.7)' : 'rgba(224,176,85,0.5)'}`,
+                animation: voiceState === 'listening' || voiceState === 'speaking' ? 'voicePulse 1.4s ease-in-out infinite' : 'none',
+              }} />
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: '#c8c8d4', minWidth: 130 }}>
+                {voiceState === 'listening' ? 'Listening… speak now' :
+                 voiceState === 'transcribing' ? 'Transcribing…' :
+                 voiceState === 'thinking' ? 'Thinking…' :
+                 voiceState === 'speaking' ? 'Speaking…' : 'Voice mode'}
+              </span>
+              <button onClick={exitVoiceMode} title="Exit voice mode" style={{
+                width: 22, height: 22, borderRadius: '50%', border: '1px solid rgba(255,255,255,0.14)',
+                background: 'rgba(255,255,255,0.06)', color: '#b8b8cc', cursor: 'pointer', fontSize: 12, lineHeight: 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>×</button>
+              <style>{`@keyframes voicePulse { 0%,100% { transform: scale(1); opacity: 1 } 50% { transform: scale(1.35); opacity: 0.7 } }`}</style>
+            </div>
+          )}
           {/* ── Single row: (+) expander + attach + mic + textarea + mode chip + send ── */}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <button
@@ -2919,13 +3022,14 @@ export default function App() {
                 <path d="M9.5 4v5.5a2.5 2.5 0 0 1-5 0V3.5a1.5 1.5 0 0 1 3 0v5.5a.5.5 0 0 1-1 0V4.5" stroke="#8a8a9e" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-            {/* Voice — local whisper.cpp dictation; long-press-free toggle. Right-click toggles the
-                full voice loop (auto-speak replies). */}
+            {/* Voice — click enters the hands-free voice CONVERSATION mode (listen→answer→
+                speak→listen, with the state overlay). Right-click = one-shot dictation into
+                the composer (the old behavior). */}
             <button
-              onClick={() => voiceReady === false ? setTab('settings') : void startRecording()}
-              onContextMenu={e => { e.preventDefault(); setVoiceLoop(v => !v) }}
-              disabled={transcribing}
-              title={voiceReady === false ? 'Voice model not installed — open Settings' : recording ? 'Stop & transcribe' : transcribing ? 'Transcribing…' : `Dictate (voice loop ${voiceLoop ? 'ON — replies spoken' : 'off; right-click to enable'})`}
+              onClick={() => voiceReady === false ? setTab('settings') : voiceMode ? exitVoiceMode() : enterVoiceMode()}
+              onContextMenu={e => { e.preventDefault(); if (voiceReady !== false && !voiceMode) void startRecording() }}
+              disabled={transcribing && !voiceMode}
+              title={voiceReady === false ? 'Voice model not installed — open Settings' : voiceMode ? 'Exit voice mode' : recording ? 'Stop & transcribe' : transcribing ? 'Transcribing…' : 'Voice mode (right-click for one-shot dictation)'}
               style={{
                 width: 26, height: 26, borderRadius: '50%', flexShrink: 0, cursor: transcribing ? 'default' : 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',

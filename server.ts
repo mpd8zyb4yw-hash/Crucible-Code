@@ -32,6 +32,7 @@ import { runAgentLoop } from './src/CrucibleEngine/agent/loop'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
 import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages } from './src/CrucibleEngine/agent/taskSession'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
+import { foldAttachmentContext } from './src/CrucibleEngine/agent/attachmentContext'
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
@@ -2103,11 +2104,16 @@ app.post('/api/corpus/learn-routes', async (_req, res) => {
 })
 
 // ── Session L: TTS + Remote Brain cellular tunnel ────────────────────────────
-// POST /api/tts — speak text on the Mac's speakers (Remote Brain agent talkback).
-// Fire-and-forget: returns immediately so the response path is never blocked.
-app.post('/api/tts', (req, res) => {
+// POST /api/tts — speak text on the Mac's speakers (Remote Brain agent talkback + voice mode).
+// `wait: true` (voice conversation mode) resolves AFTER playback finishes so the client knows
+// exactly when to re-open the mic; without it the old fire-and-forget behavior is kept so the
+// Remote Brain response path is never blocked.
+app.post('/api/tts', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text : ''
-  if (text.trim()) speak(text).catch(() => {})
+  const wait = req.body?.wait === true
+  if (!text.trim()) return res.json({ ok: true })
+  if (wait) { await speak(text).catch(() => {}); return res.json({ ok: true, spoken: true }) }
+  speak(text).catch(() => {})
   res.json({ ok: true })
 })
 
@@ -2465,6 +2471,10 @@ app.post('/api/chat', async (req, res) => {
   // external pipeline runs on the USER's keys, never a bundled/shared one (product
   // constraint). Local/synth paths ignore this. No-op when no keys are sent.
   enterByokKeys(byokKeys)
+  // Attachment contextual awareness (cont.66k): if the composer folded an attachment note
+  // into the message, replace it with the actual file CONTENT (text inline, images via
+  // on-device Vision OCR) so the brain can act on what was attached, not just see a path.
+  try { message = await foldAttachmentContext(String(message ?? ''), sandboxResolve) } catch { /* never blocks a send */ }
   // ── v3 product rule: the external multi-model pipeline runs ONLY for an explicit,
   // client-confirmed ensemble request (mode==='quorum', sent together with the user's own
   // byokKeys after the per-query confirm). EVERY other mode is local-only for this request —
@@ -3907,7 +3917,12 @@ app.post('/api/chat', async (req, res) => {
         // honestly in the debate card. Gated to corroboration domains to keep idle-chat cheap.
         try {
           const dom = classifyDomain(message)
-          if (answer && answer.trim() && (dom === 'code' || dom === 'reasoning')) {
+          // Widened gate (cont.66k, user-reported "where's the ensemble?"): the old
+          // code|reasoning-only gate + the classifier's 'speed' default meant most real
+          // questions never seated the council, so the debate card effectively never showed.
+          // Now every substantive turn corroborates; only short smalltalk stays cheap.
+          const councilWorthy = dom === 'code' || dom === 'reasoning' || dom === 'factual' || message.trim().length >= 60
+          if (answer && answer.trim() && councilWorthy) {
             const peers = await councilPeers(message)
             if (peers.length >= 1) {
               const engineVoice = { modelId: 'answer-engine', modelLabel: 'Crucible Answer Engine', call: async () => answer }
@@ -6190,7 +6205,8 @@ app.post('/api/sandbox/write', (req, res) => {
 // small for a real attachment). Binary-safe: content is written from a Buffer, not a string.
 // Names are sanitised and resolved through sandboxResolve, so an upload can never escape the
 // sandbox root. Collisions get a numeric suffix rather than clobbering an existing file.
-app.post('/api/sandbox/upload', express.json({ limit: '25mb' }), (req, res) => {
+// 40mb body: a 25 MB file inflates ~1.37x as base64, so the old 25mb limit 413'd large images.
+app.post('/api/sandbox/upload', express.json({ limit: '40mb' }), (req, res) => {
   ensureSandbox()
   const rawName = String(req.body?.name || '').trim()
   const b64 = String(req.body?.data || '')
