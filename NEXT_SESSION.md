@@ -61,8 +61,15 @@
    .crucible/whisper/). Real end-to-end proof: macOS `say` → opus webm → `transcribeAudio()` returned
    `{ok:true, text:"Crucible runs entirely on device without the cloud."}` (exact match, 0 cloud calls);
    `voiceStatus().ready === true`. The whisper.cpp STT path is no longer just plumbing — it transcribes.
-   STILL OPEN: composer buttons are tsc/vite-clean and the app mounts, but the authed composer view was
-   not screenshotted (OAuth wall in preview) — attach/mic layout unconfirmed visually.
+   **cont.66j (5fda872): both user-reported composer dead-ends FIXED + authed composer screenshotted.**
+   (a) Mic→Settings forever: packaged server cwd = Electron userData, MODEL_PATH missed the repo-
+   installed model → voiceTranscribe resolves env→cwd→code-dir (model also copied to userData);
+   live-verified authed ready:true + real transcription over HTTP. (b) Uploads silently no-oped on any
+   failure: bare relative fetch without apiFetch/API_BASE + swallowed errors → now apiFetch(API_BASE)
+   with a visible dismissible failure note; /api/tts + /api/voice/transcribe aligned. Verified in the
+   authed preview (JWT-cookie trick): simulated file selection → chip renders; composer screenshot
+   confirms (+)/attach/mic/send layout. app/ rebuilt+committed. NOTE: user should re-test in THEIR app
+   (vite HMR picks it up in dev; packaged app needs the new bundle).
 
 ---
 
