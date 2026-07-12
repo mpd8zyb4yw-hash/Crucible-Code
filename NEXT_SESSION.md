@@ -17,9 +17,23 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 66k — VOICE CONVERSATION MODE + ATTACHMENT UNDERSTANDING + COUNCIL VISIBILITY [prior 66j: voice round-trip verified, inverted-controls invariant, composer dead-ends fixed])
+## CURRENT STATE (last updated 2026-07-12, cont. 67 — AGENTIC WEB GAP-CLOSING: real-time web lookup wired into the knowledge path)
 
-**cont.66k (a99e75c) — four user-reported vision gaps closed in one pass:**
+**cont.67 (commits 1a4bf8b→a124a3d, branch crucible-northstar-sessions) — NORTH-STAR REFRAME by the user:** parity closes by **web lookup/understanding/retrieval in real time**, NOT by memorizing or by adding models. The brain's job is metacognition — know what it doesn't know and close the gap the way a person does: look it up. Follow-up-abstain / 0-output / weak-explain are ONE bug: gap → dead-end instead of routing to research.
+
+**Built + live-verified (via direct answerQuery calls + retrieval tests; real FM + real web):**
+1. **Retrieval core rebuilt** (`src/CrucibleEngine/retrieval/retrievalLayer.ts`). SERP scraping is DEAD (confirmed live: DuckDuckGo html+lite → HTTP 202 anti-bot, Bing/Mojeek → JS-shell, SearXNG → 403/429). Replaced with **domain-routed keyless STRUCTURED APIs**: coding → StackExchange (+ npm for packages), factual → Wikipedia REST search. Browser-UA; salient-token relevance gate (drops off-topic backends whole — a React query no longer surfaces "Firefighting"); `encyclopedicQuery()` strips "how does…work" so Wikipedia ranks the right noun; eager-caches SO answer bodies + fuller wiki extracts so `fetch()` returns real content. **7/7 burst queries relevant (was 3/6, all coding broken).**
+2. **Web-grounded answering** (`answer/groundedAnswer.ts`, wired into `answerQuery`). search → parallel fetch (per-fetch cap) → cited evidence → FM synthesizes a grounded answer with inline [S#] citations + a sources footer; emits live "searching/reading/grounding" steps; returns null → parametric fallback when the web is empty. Fixed a real bluff: a React-concept question that used to hallucinate now pulls StackOverflow.
+3. **Metacognitive gap-gate** (`shouldResearch()` in answerEngine). Only specialized/technical/recent/proper-noun-heavy queries hit the web; general/basic answer directly (**~3-4s** fast path). Live 5/5 correct routing.
+4. **`fmComplete` maxTokens** (Apple FM latency ∝ output length); **stateless `completeLocalModel`** + `warmModel` (fixes a latent session-history leak in `callLocalModel`); **MiniCPM harness** (`agent/miniCpmHarness.ts`, `miniCpmAnswer()`) — simple-prompt + reasoning-strip + retry + fallback, 4/4 clean.
+
+**HARD FINDINGS (don't relearn):** weak Apple FM CANNOT introspect its own gaps (LOOKUP-protocol prompt → refusals; 1-5 confidence → noise) → use the deterministic heuristic gate. MiniCPM5-1B stochastically leaks plain-text chain-of-thought and is NOT better/faster than Apple FM for synthesis → keep the answer path on Apple FM + web; the harness makes MiniCPM available for agentic roles (not yet wired to a consumer). Apple FM daemon does NOT honor `stream:true` (one JSON blob) — token streaming needs a native Swift-bridge change; it IS fast for short output (~1.3s).
+
+**TOP NEXT ITEMS:** (1) **research-path latency ~20-35s** — the #1 gap; Apple FM synth over evidence, worsened by fmQueue contention with the parallel session's server. Needs daemon token-streaming (Swift bridge) OR shorter/faster synth. (2) **server-level /api/chat live-verification** of the grounded path (only direct-answerQuery-verified this session; didn't restart the other chat's running server). (3) source-RANKING quality (grounded useEffect answer was muddled by mediocre SO thread selection; "sky blue" picked the color article). (4) wire a real agentic consumer for MiniCPM.
+
+---
+
+**PRIOR — cont.66k (a99e75c) — four user-reported vision gaps closed in one pass:**
 
 1. **Voice CONVERSATION mode (ChatGPT-style):** mic click enters a hands-free loop — listen
    (WebAudio VAD, 1.5s-silence auto-stop) → whisper transcribe → send → reply spoken via
