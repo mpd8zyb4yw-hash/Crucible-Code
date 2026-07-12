@@ -14,7 +14,7 @@
 // only ever makes an answer better or is transparently skipped, never worse.
 
 import { search, fetch as fetchPage, stripBoilerplate, type SearchResult } from '../retrieval/retrievalLayer'
-import { fmComplete, type ConvTurn } from '../agent/fmReact'
+import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { debugBus } from '../debug/bus'
 
 export interface GroundedResult {
@@ -36,6 +36,9 @@ export interface GroundOpts {
   /** Explicit web-search query (e.g. the metacognitive gate's suggested terms). Falls back to
    *  the message when absent. Synthesis always answers the original question. */
   searchQuery?: string
+  /** Token sink — when provided, the grounded answer STREAMS (first fragment ~0.7s instead of
+   *  waiting for the whole answer to decode). Receives raw fragments as they generate. */
+  onToken?: (delta: string) => void
 }
 
 const DEFAULT_BUDGET_MS = Number(process.env.CRUCIBLE_GROUND_BUDGET_MS ?? 14_000)
@@ -184,8 +187,11 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   try {
     // Synthesis gets its own generous timeout (it IS the answer) — NOT derived from the
     // remaining budget, which starved it into timing out. A capped max_tokens keeps the
-    // focused answer fast regardless.
-    text = (await fmComplete(msgs, { priority: 'high', timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal })).trim()
+    // focused answer fast regardless. When a token sink is wired, STREAM (first fragment ~0.7s).
+    const fmOpts = { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal }
+    text = opts.onToken
+      ? (await fmStream(msgs, opts.onToken, fmOpts)).trim()
+      : (await fmComplete(msgs, fmOpts)).trim()
   } catch { text = '' }
   if (!text || text.length < 20) {
     debugBus.emit('pipeline', 'grounding_synth_empty', { message: message.slice(0, 80) }, { severity: 'warn' })

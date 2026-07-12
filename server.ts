@@ -3811,7 +3811,10 @@ app.post('/api/chat', async (req, res) => {
       const result = await answerQuery(message, { history, emit: send, signal: turnSignal })
       send({ type: 'layer1', modelId: 'local/apple-fm', model: 'Crucible (offline)', text: result.text, done: true })
       send({ type: 'stage', stage: 1, status: 'done' })
-      send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: result.text, done: true, replace: false })
+      // When the answer already STREAMED to the client (synthesis deltas), finalize with
+      // replace:true so the polished text (sources footer, any critic fix) REPLACES the streamed
+      // fragments instead of appending a duplicate.
+      send({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: result.text, done: true, replace: result.streamed === true })
       send({ type: 'stage', stage: 5, status: 'done' })
       recordModelOutcome('local/apple-fm', !result.abstained, Date.now() - t0l)
       if (!result.abstained) {
@@ -3913,8 +3916,11 @@ app.post('/api/chat', async (req, res) => {
       let routed: Awaited<ReturnType<typeof routeLocalModelQuery>> = null
       let strictDebate: Awaited<ReturnType<typeof runDebate>> = null
       let answer: string
+      let answerStreamed = false
       if (_offlineConvMode === 'strict') {
-        answer = (await answerQuery(message, { history: histSlice, emit: send, signal: turnSignal })).text
+        const strictResult = await answerQuery(message, { history: histSlice, emit: send, signal: turnSignal })
+        answer = strictResult.text
+        answerStreamed = strictResult.streamed === true
         // Council corroboration (cont.58c): the answer engine's verified draft is seated as
         // one voice and the local council (GGUF pool + Apple FM) cross-examines it. Display
         // layer ONLY — the shipped text is never overruled by a lexical vote (answerQuery's
@@ -4030,7 +4036,7 @@ app.post('/api/chat', async (req, res) => {
           })
         }
         send({ type: 'stage', stage: 1, status: 'done' })
-        send({ type: 'synthesis', modelId: provenanceModelId, model: 'Crucible', text: answer, done: true, replace: false, ...provenanceExtra })
+        send({ type: 'synthesis', modelId: provenanceModelId, model: 'Crucible', text: answer, done: true, replace: answerStreamed, ...provenanceExtra })
         send({ type: 'stage', stage: 5, status: 'done' })
         recordModelOutcome(provenanceModelId, true, latencyMs)
         triggerImprovementPass()

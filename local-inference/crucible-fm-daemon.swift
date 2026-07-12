@@ -102,6 +102,43 @@ actor Engine {
             return ("", "generation_failed: \(error.localizedDescription)")
         }
     }
+
+    // Streaming variant — emits incremental text deltas as they generate. Apple's
+    // streamResponse yields CUMULATIVE snapshots of the answer so far; we diff against what
+    // we've already emitted to produce deltas. This is what makes the felt latency near-instant:
+    // the client renders the first token after ~prefill (~1.2s) instead of waiting for the whole
+    // answer to decode (~24ms/token). onDelta is called on each new fragment; done at the end.
+    func generateStream(
+        instructions: String, prompt: String, maxTokens: Int, temperature: Double,
+        onDelta: @escaping (String) -> Void
+    ) async -> String? {
+        guard case .available = SystemLanguageModel.default.availability else {
+            return "model_unavailable"
+        }
+        let session = instructions.isEmpty
+            ? LanguageModelSession()
+            : LanguageModelSession(instructions: instructions)
+        let options = GenerationOptions(
+            temperature: temperature,
+            maximumResponseTokens: maxTokens > 0 ? maxTokens : nil
+        )
+        do {
+            var sent = ""
+            let stream = session.streamResponse(to: prompt, options: options)
+            for try await partial in stream {
+                // `partial.content` is the cumulative answer text so far.
+                let full = partial.content
+                if full.count > sent.count {
+                    let delta = String(full.dropFirst(sent.count))
+                    sent = full
+                    onDelta(delta)
+                }
+            }
+            return nil
+        } catch {
+            return "generation_failed: \(error.localizedDescription)"
+        }
+    }
 }
 
 let engine = Engine()
@@ -186,6 +223,48 @@ func handleRequest(method: String, path: String, body: Data, completion: @escapi
     completion(jsonResponse(["error": ["message": "not_found"]], status: "404 Not Found"))
 }
 
+// ── Streaming (SSE) chat completion ──────────────────────────
+// OpenAI-compatible chat.completion.chunk stream. Writes an SSE header, then one `data:` frame
+// per text delta, then a final stop frame and `[DONE]`, then closes. NWConnection preserves the
+// order of sequential send() calls, so frames arrive in order.
+func handleStreamingChat(_ conn: NWConnection, _ json: [String: Any]) {
+    let (instructions, prompt, maxTokens, temperature) = parseChat(json)
+    let id = "fm-\(UUID().uuidString)"
+
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+    conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
+
+    func sendFrame(_ obj: [String: Any]) {
+        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
+        var frame = Data("data: ".utf8); frame.append(d); frame.append(Data("\n\n".utf8))
+        conn.send(content: frame, completion: .contentProcessed { _ in })
+    }
+
+    Task {
+        let err = await engine.generateStream(
+            instructions: instructions, prompt: prompt, maxTokens: maxTokens, temperature: temperature
+        ) { delta in
+            sendFrame([
+                "id": id, "object": "chat.completion.chunk", "model": "apple-fm",
+                "choices": [["index": 0, "delta": ["content": delta], "finish_reason": NSNull()]],
+            ])
+        }
+        if let err = err {
+            sendFrame([
+                "id": id, "object": "chat.completion.chunk", "model": "apple-fm",
+                "error": ["message": err],
+                "choices": [["index": 0, "delta": [:], "finish_reason": "error"]],
+            ])
+        } else {
+            sendFrame([
+                "id": id, "object": "chat.completion.chunk", "model": "apple-fm",
+                "choices": [["index": 0, "delta": [:], "finish_reason": "stop"]],
+            ])
+        }
+        conn.send(content: Data("data: [DONE]\n\n".utf8), completion: .contentProcessed { _ in conn.cancel() })
+    }
+}
+
 // ── Connection handling ──────────────────────────────────────
 // Read until we have full headers (\r\n\r\n) plus Content-Length
 // bytes of body, then dispatch. Our only client is Node's fetch,
@@ -220,6 +299,13 @@ func handleConnection(_ conn: NWConnection) {
                 let bodyAvailable = buffer.distance(from: bodyStart, to: buffer.endIndex)
                 if bodyAvailable >= contentLength {
                     let body = buffer.subdata(in: bodyStart..<buffer.index(bodyStart, offsetBy: contentLength))
+                    // Streaming chat completion: hijack the connection for SSE.
+                    if method == "POST" && path.hasPrefix("/v1/chat/completions"),
+                       let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+                       (json["stream"] as? Bool) == true {
+                        handleStreamingChat(conn, json)
+                        return
+                    }
                     handleRequest(method: method, path: path, body: body) { responseData in
                         conn.send(content: responseData, completion: .contentProcessed { _ in
                             conn.cancel()

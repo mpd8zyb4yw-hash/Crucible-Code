@@ -582,6 +582,65 @@ export async function checkFmAvailable(): Promise<boolean> {
  * Used for planning and simple completion calls where no tool use is needed.
  * Falls back to empty string on FM failure (caller handles gracefully).
  */
+/**
+ * Streaming completion — POSTs stream:true to the daemon and calls onDelta(fragment) as tokens
+ * arrive, returning the full text at the end. This is the felt-latency fix: first fragment lands
+ * after ~prefill (~0.7s) instead of after the whole answer decodes (~24ms/token). Serialized on
+ * the same fmQueue as fmComplete so it never overlaps another FM call. On a transient generation
+ * error it throws (no auto-retry — retrying mid-stream would re-emit already-sent fragments); the
+ * caller falls back. Never used for the keepalive/verification lanes — those stay non-streaming.
+ */
+export async function fmStream(
+  messages: Array<{ role: string; content: string }>,
+  onDelta: (delta: string) => void,
+  opts?: FmCallOpts,
+): Promise<string> {
+  const system = messages.find(m => m.role === 'system')?.content ??
+    'You are Crucible, an expert AI assistant. Answer concisely and accurately.'
+  const convo = messages.filter(m => m.role !== 'system')
+  if (!convo.length) return ''
+  const timeoutMs = opts?.timeoutMs ?? FM_TIMEOUT_MS
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
+  const combined = opts?.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal
+  return await enqueueFm(async () => {
+    const res = await fetch(`${FM_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'apple-fm', stream: true,
+        max_tokens: opts?.maxTokens ?? 1536,
+        temperature: opts?.temperature ?? 0.2,
+        messages: [{ role: 'system', content: system }, ...convo],
+      }),
+      signal: combined,
+    })
+    if (!res.ok || !res.body) throw new Error(`FM HTTP ${res.status}`)
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''
+    let full = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const parts = buf.split('\n\n')
+      buf = parts.pop() ?? ''
+      for (const part of parts) {
+        const line = part.split('\n').find(l => l.startsWith('data:'))
+        if (!line) continue
+        const p = line.slice(5).trim()
+        if (p === '[DONE]') continue
+        let ev: any
+        try { ev = JSON.parse(p) } catch { continue }
+        if (ev?.error) throw new FmTransientError(String(ev.error?.message ?? ev.error))
+        const delta = ev?.choices?.[0]?.delta?.content ?? ''
+        if (delta) { full += delta; try { onDelta(delta) } catch { /* sink errors */ } }
+      }
+    }
+    return full.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
+  }, { priority: opts?.priority ?? 'high', label: 'fmStream' })
+}
+
 export async function fmComplete(
   messages: Array<{ role: string; content: string }>,
   opts?: FmCallOpts,

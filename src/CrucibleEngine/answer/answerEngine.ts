@@ -48,6 +48,9 @@ export interface AnswerResult {
   sources: string[]
   corrections: number
   repaired: boolean
+  /** True when the answer text was already STREAMED to the client via emit({type:'synthesis'})
+   *  deltas — the server must then finalize with replace:true instead of appending again. */
+  streamed?: boolean
 }
 
 export interface AnswerOpts {
@@ -245,6 +248,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   let retrievalMeta: NonCodeMeta | null = null
   let grounded = false
   let groundedSources: string[] = []
+  let streamed = false
   try {
     if (usedRetrieval) {
       emit?.({ type: 'thought', text: 'Researching with retrieval + tools…' })
@@ -260,13 +264,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         emit?.({ type: 'verify', passed: c.agreement >= 0.5, report: `Self-consistency: ${Math.round(c.agreement * 100)}% of ${c.samples} independent derivations agreed on the answer.` })
       }
     } else if (researchGap) {
-      // Detected knowledge gap → close it with a web lookup, grounded + cited.
-      const g = await answerWithWebGrounding(message, { history, emit, signal })
+      // Detected knowledge gap → close it with a web lookup, grounded + cited. STREAM the
+      // synthesis to the client (first fragment ~0.7s) when an emit sink is wired.
+      const onToken = emit
+        ? (d: string) => emit({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: d, replace: false })
+        : undefined
+      const g = await answerWithWebGrounding(message, { history, emit, signal, onToken })
       if (g && g.text) {
         draft = g.text
         grounded = true
         usedRetrieval = true          // gates the redundant FM verification lanes below
         groundedSources = g.sources
+        streamed = !!onToken
       } else {
         // Web yielded nothing usable → answer from on-device knowledge (never worse than before).
         emit?.({ type: 'thought', text: 'No usable web sources — answering from on-device knowledge.' })
@@ -471,7 +480,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
 
   return {
     text, verified: !(factChecked && !factChecked.confirmed) && explainFlags === 0, abstained: false, ...base,
-    usedRetrieval, corrections, repaired,
+    usedRetrieval, corrections, repaired, streamed,
     sources: grounded ? groundedSources : base.sources,
   }
 }
