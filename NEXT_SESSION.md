@@ -17,7 +17,48 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-12, cont. 67 — AGENTIC WEB GAP-CLOSING + TOKEN STREAMING + CANONICAL-TITLE RANKING: real-time web lookup wired into the knowledge path, first-token ~0.7s, base articles now outrank derivatives)
+## CURRENT STATE (last updated 2026-07-12, cont. 68 — LONG-HORIZON CONVERSATION MEMORY: turn 500 recalls turn 1; layered on cont.67's web gap-closing + streaming + canonical-title ranking)
+
+**cont.68 (commit 5b6074b, branch crucible-northstar-sessions) — user asked for two things: (a) long-conversation memory (remember message 1 at message 100/500) and (b) large coherent outputs for complex builds without truncation/hallucination.**
+
+**BUILT + LIVE-VERIFIED (a) — long-horizon conversation memory (the primary ask):**
+- `answer/conversationMemory.ts` NEW. The strict answer path was pre-slicing history to the last 6
+  turns (forgets everything older); other callers dumped the whole log (overflows the FM window,
+  silently truncating the middle). Neither recalled an early fact late in a long chat. Fix bounds
+  arbitrary-length history to the model window by SELECTING turns (no summarization → no per-turn FM
+  calls, no hallucinated summary): **recency** (last K verbatim) + **anchor** (turn 1 always kept —
+  sets topic/task/persona) + **relevance** (older turns scored by salient-token overlap, retrieved).
+- **Two channels** the weak FM handles far better than one giant chat log: `buildRecallContext()`
+  returns `recentTurns` (verbatim immediate thread) + a `recallBlock` string of the older selected
+  turns, folded into the SYSTEM PROMPT as a labeled "Earlier in this conversation (facts the user
+  told you — authoritative)" block — the same evidence-block pattern the FM reliably reads for web
+  grounding. Plus a recall-grounding directive in the base prompt so "what's my name" quotes the
+  user's fact instead of answering with the assistant identity.
+- `server.ts` strict call site now passes FULL history to answerQuery (the memory layer bounds it),
+  not a blind `slice(-6)` that stripped turn 1. (`histSlice` still bounds the coarser
+  solveNonCodeTurn fallback — that path was not the recall path.)
+- **LIVE-VERIFIED on real /api/chat:** 120-turn convo → "My name is Sam … app called DoughTrack"
+  (turn-1 recall); 200-turn convo → "Postgres HYENA schema" (turn-42 recall); empty-history 2+2
+  still clean. New `memory:bench` 15/15 in `bench:all` → **390/390 across 10 suites**, tsc clean.
+- DEBUG SEQUENCE (don't relearn): fixed 3 layered bugs live — (1) FM answered with its own identity
+  ("I'm Crucible") → recall-grounding prompt line; (2) FM parroted/refused a raw multi-turn history
+  → switched to the system-prompt evidence-block channel; (3) THE real blocker: server pre-sliced to
+  6 turns so turn 1 never reached the memory layer (debug showed total:6 for a 120-turn payload).
+  Lesson: always check what history the SERVER actually forwards, not just the module in isolation.
+
+**(b) large coherent outputs — PARTIAL / honest state:** for CODE builds the anti-truncation
+mechanism already exists and is live: the multi-file VGR synthesis path decomposes a build into
+per-file, independently compile/behavior-verified units, so a big build never rides on one giant
+generation. For long PROSE, the per-intent length caps (cont.67 item 3) prevent runaway but a clean
+truncation→CONTINUE mechanism is BLOCKED: probed the Swift daemon live — it hardcodes
+`finish_reason:"stop"` and omits `completion_tokens` even when cut at 10 tokens mid-sentence, so
+there is NO reliable truncation signal without a daemon change. Continuation would need either a
+Swift daemon change to surface the real finish reason OR an output-heuristic detector (mid-sentence
+/ unbalanced code-fence). STAGED as a top-next item, not shipped (would be unverifiable today).
+
+---
+
+## PRIOR STATE (cont. 67 — AGENTIC WEB GAP-CLOSING + TOKEN STREAMING + CANONICAL-TITLE RANKING)
 
 **cont.67 (commits 1a4bf8b→a124a3d, branch crucible-northstar-sessions) — NORTH-STAR REFRAME by the user:** parity closes by **web lookup/understanding/retrieval in real time**, NOT by memorizing or by adding models. The brain's job is metacognition — know what it doesn't know and close the gap the way a person does: look it up. Follow-up-abstain / 0-output / weak-explain are ONE bug: gap → dead-end instead of routing to research.
 
@@ -85,12 +126,16 @@
       the canonical article (+0.15, below the 0.25 intent bonus). Closes the bare-same-base residual.
     ground:bench 11→13, bench:all **375/375**, tsc clean.
 
-**TOP NEXT ITEMS:** (1) a lighter "definition" sub-intent so simple "what is X" asks don't decode
-the full explain budget (19s). (2) run a launchd LaunchAgent for the backend so two chats can't
-share one FM daemon and inflate each other's latency (the contention root — see the 68s vs 7s
-finding). (3) grounded-synthesis output isn't capped by maxTokensFor (groundedAnswer has its own
-path) — thread a length target through it too. (4) HTML/canvas builds are still behaviorally
-unverified (the standing #1 capability gap from cont.66h).
+**TOP NEXT ITEMS (cont.68):** (1) **long-output continuation** — surface the real finish reason from
+the Swift FM daemon (or an output-heuristic truncation detector) then CONTINUE-and-stitch so long
+prose builds don't truncate; the (b) ask above is only half-done. (2) **conversation-memory follow-ons:**
+the recall block only feeds the direct/consensus paths, NOT answerWithWebGrounding (its own prompt) —
+thread recall into grounding too; also cont.67 caveat — a launchd LaunchAgent for the backend so two
+chats can't share one FM daemon (the 68s-vs-7s contention root). (3) a lighter "definition" sub-intent
+so simple "what is X" asks don't decode the full 19s explain budget. (4) HTML/canvas builds still
+behaviorally unverified (standing #1 capability gap from cont.66h). NOTE: the memory layer keys on
+lexical salient-token overlap — a purely semantic back-reference ("that thing we discussed") with no
+shared tokens won't retrieve; an embedding index (state/semanticIndex.ts exists) is the eventual upgrade.
 
 ---
 
