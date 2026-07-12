@@ -46,15 +46,21 @@
   6 turns so turn 1 never reached the memory layer (debug showed total:6 for a 120-turn payload).
   Lesson: always check what history the SERVER actually forwards, not just the module in isolation.
 
-**(b) large coherent outputs — PARTIAL / honest state:** for CODE builds the anti-truncation
-mechanism already exists and is live: the multi-file VGR synthesis path decomposes a build into
-per-file, independently compile/behavior-verified units, so a big build never rides on one giant
-generation. For long PROSE, the per-intent length caps (cont.67 item 3) prevent runaway but a clean
-truncation→CONTINUE mechanism is BLOCKED: probed the Swift daemon live — it hardcodes
-`finish_reason:"stop"` and omits `completion_tokens` even when cut at 10 tokens mid-sentence, so
-there is NO reliable truncation signal without a daemon change. Continuation would need either a
-Swift daemon change to surface the real finish reason OR an output-heuristic detector (mid-sentence
-/ unbalanced code-fence). STAGED as a top-next item, not shipped (would be unverifiable today).
+**(b) large coherent outputs — BUILT + LIVE-VERIFIED (commit 00bfb5b):** for CODE builds the
+anti-truncation mechanism already existed (multi-file VGR synthesis: per-file compile/behavior-
+verified units). For long PROSE/single-response builds, `answer/longOutput.ts` NEW adds
+truncation→CONTINUE. The Swift daemon can't signal truncation (hardcodes `finish_reason:"stop"`,
+omits `completion_tokens` even when cut at 10 tokens — probed live), so `detectTruncation()` reads
+the OUTPUT with HIGH-PRECISION signals only: an unbalanced ``` fence, or near-budget output that
+doesn't end on a sentence/structure boundary. answerEngine's direct path runs a bounded
+continuation loop (explain/reason/converse; `CRUCIBLE_LONG_CONT=0` disables, `LONG_CONT_ROUNDS`
+caps at 3): resume "from exactly where it stopped", `stitchContinuation()` de-dupes repeated
+overlap, streams as it goes; a safety net closes any still-open fence when rounds are exhausted.
+LIVE-VERIFIED: a "thorough B-tree index" build fired 2 continuations → 8051 chars (vs ~4400
+single-budget); "what is a hash map" finished in budget → 0 continuations (no false extension).
+`longout:bench` 14/14. HONEST LIMIT: a HUGE build can still outrun 3 rounds (the B-tree one did —
+the fence-close net kept it renderable); latency of a continued answer is high (~4min for the
+B-tree under 2-server contention) but only paid when truncation is actually detected.
 
 ---
 
@@ -126,16 +132,17 @@ Swift daemon change to surface the real finish reason OR an output-heuristic det
       the canonical article (+0.15, below the 0.25 intent bonus). Closes the bare-same-base residual.
     ground:bench 11→13, bench:all **375/375**, tsc clean.
 
-**TOP NEXT ITEMS (cont.68):** (1) **long-output continuation** — surface the real finish reason from
-the Swift FM daemon (or an output-heuristic truncation detector) then CONTINUE-and-stitch so long
-prose builds don't truncate; the (b) ask above is only half-done. (2) **conversation-memory follow-ons:**
-the recall block only feeds the direct/consensus paths, NOT answerWithWebGrounding (its own prompt) —
-thread recall into grounding too; also cont.67 caveat — a launchd LaunchAgent for the backend so two
-chats can't share one FM daemon (the 68s-vs-7s contention root). (3) a lighter "definition" sub-intent
-so simple "what is X" asks don't decode the full 19s explain budget. (4) HTML/canvas builds still
-behaviorally unverified (standing #1 capability gap from cont.66h). NOTE: the memory layer keys on
-lexical salient-token overlap — a purely semantic back-reference ("that thing we discussed") with no
-shared tokens won't retrieve; an embedding index (state/semanticIndex.ts exists) is the eventual upgrade.
+**TOP NEXT ITEMS (cont.68):** (1) **latency is the dominant complaint now** — a normal answer is ~44s
+and a continued build ~4min under 2-server FM-daemon contention. Run a launchd LaunchAgent for the
+backend so two chats don't share one daemon (the 68s-vs-7s root), AND consider making the verification
+lanes (factConsensus/explainCheck/MiniCPM voter/council) opt-in or parallel — they serialize multiple
+FM calls per turn. (2) **conversation-memory + long-output follow-ons:** thread the recall block into
+answerWithWebGrounding (its own prompt, currently no recall); the memory layer is LEXICAL salient-token
+overlap — a purely semantic back-reference ("that thing we discussed") won't retrieve (embedding index
+state/semanticIndex.ts is the upgrade); continuation can still outrun 3 rounds on a huge build (raise
+the cap for code-gen intents, or detect "still growing" and extend). (3) a lighter "definition"
+sub-intent so simple "what is X" doesn't decode the full explain budget. (4) HTML/canvas builds still
+behaviorally unverified (standing #1 capability gap from cont.66h).
 
 ---
 
