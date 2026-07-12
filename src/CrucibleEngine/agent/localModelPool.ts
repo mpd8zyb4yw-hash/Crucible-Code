@@ -10,7 +10,8 @@ import { modelFilePath } from './modelDownloadManager'
 
 interface LoadedModel {
   id: string
-  session: any // LlamaChatSession from node-llama-cpp
+  model: any   // LlamaModel — kept so stateless completions can spin a fresh context per call
+  session: any // LlamaChatSession from node-llama-cpp (legacy callLocalModel path)
 }
 
 const loaded = new Map<string, LoadedModel>()
@@ -59,9 +60,57 @@ async function loadModel(id: string): Promise<LoadedModel> {
   const context = await model.createContext()
   const session = new LlamaChatSession({ contextSequence: context.getSequence() })
 
-  const entry: LoadedModel = { id, session }
+  const entry: LoadedModel = { id, model, session }
   loaded.set(id, entry)
   return entry
+}
+
+// Preload a model so the first real query doesn't pay the (multi-second) load cost. Returns
+// true once resident. Safe to call repeatedly (loadModel is cached) and never throws.
+export async function warmModel(id: string): Promise<boolean> {
+  try { await loadModel(id); return true } catch { return false }
+}
+
+// Per-model serialization: a llama.cpp context runs one generation at a time. Chain calls so
+// concurrent grounding synths on the same model never overlap (which corrupts the session).
+const genLock = new Map<string, Promise<unknown>>()
+function serialize<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = (genLock.get(id) ?? Promise.resolve()).catch(() => {})
+  const run = prev.then(fn)
+  genLock.set(id, run.catch(() => {}))
+  return run
+}
+
+/**
+ * STATELESS single-shot completion — unlike callLocalModel (which reuses one chat session and
+ * therefore leaks conversation history across unrelated queries), this spins a FRESH context per
+ * call so each answer is independent. The MODEL stays resident (cached), so only the lightweight
+ * context is created/disposed per call. Serialized per model; bounded by maxTokens + a timeout.
+ */
+export async function completeLocalModel(
+  id: string,
+  system: string,
+  user: string,
+  opts: { maxTokens?: number; timeoutMs?: number } = {},
+): Promise<string> {
+  const { model } = await loadModel(id)
+  const { LlamaChatSession } = await getLlama()
+  return serialize(id, async () => {
+    let context: any
+    try {
+      context = await model.createContext({ contextSize: 4096 })
+      const session = new LlamaChatSession({ contextSequence: context.getSequence() })
+      const prompt = system ? `${system}\n\n${user}` : user
+      const gen = session.prompt(prompt, { maxTokens: opts.maxTokens ?? 700 })
+      const out = await Promise.race([
+        gen,
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`${id} generation timed out`)), opts.timeoutMs ?? 20_000)),
+      ])
+      return stripThinkBlock(String(out ?? ''))
+    } finally {
+      try { await context?.dispose() } catch { /* best-effort */ }
+    }
+  })
 }
 
 /** Unload a model's context to free RAM — call when the router hasn't used it in a while. */
