@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectMove, detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree, planMoveTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -2367,7 +2367,7 @@ function isCodeImplementationTask(message: string): boolean {
 // emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
-  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename)\b/i.test(m)
+  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
   return editVerb && hasCodePath
 }
@@ -3082,11 +3082,66 @@ app.post('/api/chat', async (req, res) => {
       try {
         send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
 
+        // ── MOVE refactor — a deterministic structural edit, no proposer needed. ──
+        // Runs BEFORE the multi-file branch: "move X from A to B" names two paths and would
+        // otherwise be misrouted into the (slow, model-driven) multi-file solver. This is
+        // deterministic and cheap; if it can't apply safely it abstains, leaving handled=false so
+        // the normal branches still run. "move X from A to B": lift X's definition out of A into B,
+        // carry the PACKAGE imports X uses (relative imports abstain — re-pathing is out of scope),
+        // re-import X back into A if A still uses it, and repoint every sibling importer (splitting
+        // multi-name imports so only X moves). All-or-nothing (planMoveTree abstains — leaving every
+        // file untouched — on a non-self-contained def, a destination collision, or a non-compiling
+        // result). Each rewrite is esbuild-compile-verified before it's returned.
+        if (!handled) {
+          const mov = detectMove(message ?? '')
+          if (mov) {
+            const fromAbs = path.join(projectPath, mov.fromPath)
+            let fromExisting: string | null = null
+            try { if (fs.existsSync(fromAbs)) fromExisting = fs.readFileSync(fromAbs, 'utf-8') } catch { /* absent */ }
+            if (fromExisting != null) {
+              let toExisting: string | null = null
+              try {
+                const toAbs = path.join(projectPath, mov.toPath)
+                if (fs.existsSync(toAbs)) toExisting = fs.readFileSync(toAbs, 'utf-8')
+              } catch { /* create */ }
+              const importers: Record<string, string> = {}
+              try {
+                for (const relSib of collectProjectTsFiles(projectPath)) {
+                  if (relSib === mov.fromPath || relSib === mov.toPath) continue
+                  try { importers[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
+                }
+              } catch { /* best-effort */ }
+              const tree = await planMoveTree(mov.entry, mov.fromPath, mov.toPath, fromExisting, toExisting, importers)
+              if (tree) {
+                const writes = [tree.primary, ...tree.propagated]
+                const mutated: string[] = []
+                writes.forEach((p, i) => {
+                  const pAbs = path.join(projectPath, p.rel)
+                  fs.writeFileSync(pAbs, p.content)
+                  mutated.push(pAbs)
+                  send({ type: 'tool_call', id: `vgr_move_${i}`, tool: 'edit_file', args: { path: p.rel } })
+                  send({ type: 'tool_result', id: `vgr_move_${i}`, tool: 'edit_file', ok: true, output: `Move refactor — ${p.detail}` })
+                })
+                onFileMutated(mutated)
+                send({ type: 'verify', passed: true, signal: 'compile', report: `Move ${mov.entry}: ${mov.fromPath} → ${mov.toPath} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
+                const answer = `Moved ${mov.entry} from ${mov.fromPath} to ${mov.toPath} across ${writes.length} file(s) — definition relocated, imports carried, and every importer repointed; each file recompiles. Zero model calls.`
+                send({ type: 'final', text: answer, meta: { moveRefactor: true, entry: mov.entry, from: mov.fromPath, to: mov.toPath, files: writes.map(w => w.rel), confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move', models: ['crucible-move'], synthesis: answer })
+                handled = true
+              } else {
+                send({ type: 'thought', text: `Move ${mov.entry} (${mov.fromPath} → ${mov.toPath}) could not be applied safely (${mov.entry} isn't self-contained, uses a relative import, a destination name collision, or a non-compiling result) — handing off without a half-applied move.` })
+              }
+            }
+          }
+        }
+
         // ── Multi-FILE branch — a request spanning ≥2 files / cross-file imports ──────
         // The model proposes a FILE SET; the verifier bundles the import graph and runs the
         // cases across it. On certification we write every file; if any target file already
         // exists we do NOT overwrite (never corrupt real files) — we fall through instead.
-        if (isMultiFileRequest(message ?? '')) {
+        if (!handled && isMultiFileRequest(message ?? '')) {
           send({ type: 'thought', text: 'Multi-file request detected — proposing a file set, bundling the import graph, certifying by execution…' })
           // Modify-shaped requests get the CURRENT contents of the named files as grounding —
           // the proposer edits real code instead of re-inventing the files blind.
