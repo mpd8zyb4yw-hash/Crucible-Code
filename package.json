@@ -55,7 +55,8 @@
     "examplegate:bench": "tsx src/CrucibleEngine/agent/__exampleGate_bench.ts",
     "premise:bench": "tsx src/CrucibleEngine/research/__premiseConsensus_bench.ts",
     "jwt:bench": "tsx src/server/__jwt_bench.ts",
-    "textvector:bench": "tsx src/server/__textVector_bench.ts"
+    "textvector:bench": "tsx src/server/__textVector_bench.ts",
+    "latency:bench": "tsx src/server/__latency_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",

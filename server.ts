@@ -43,6 +43,7 @@ import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
+import { LatencyTracker } from './src/server/latency'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -1612,29 +1613,11 @@ async function callModelInstrumented(
 }
 
 // ── Per-model latency stats (rolling, in-memory) ──────────────────────────────
-const latencyStats: Record<string, number[]> = {}  // modelId → last-50 latency samples
-
-function recordLatency(modelId: string, latencyMs: number): void {
-  if (!latencyStats[modelId]) latencyStats[modelId] = []
-  latencyStats[modelId].push(latencyMs)
-  if (latencyStats[modelId].length > 50) latencyStats[modelId].shift()
-}
-
-function percentile(sorted: number[], p: number): number {
-  const idx = Math.floor(sorted.length * p)
-  return sorted[Math.min(idx, sorted.length - 1)] ?? 0
-}
-
-function getLatencyReport(): Record<string, { avg: number; p50: number; p95: number; samples: number }> {
-  const report: Record<string, { avg: number; p50: number; p95: number; samples: number }> = {}
-  for (const [id, samples] of Object.entries(latencyStats)) {
-    if (!samples.length) continue
-    const sorted = [...samples].sort((a, b) => a - b)
-    const avg = Math.round(samples.reduce((s, v) => s + v, 0) / samples.length)
-    report[id] = { avg, p50: percentile(sorted, 0.5), p95: percentile(sorted, 0.95), samples: samples.length }
-  }
-  return report
-}
+// Per-model latency tracking lives in src/server/latency.ts (unit-testable); these wrappers
+// keep the existing call sites while the store + percentile math sit in the LatencyTracker.
+const latencyTracker = new LatencyTracker(50)  // modelId → last-50 latency samples
+function recordLatency(modelId: string, latencyMs: number): void { latencyTracker.record(modelId, latencyMs) }
+function getLatencyReport(): Record<string, { avg: number; p50: number; p95: number; samples: number }> { return latencyTracker.report() }
 
 // Wrap callModel result emission (called after each provider returns)
 function _emitModelResult(model: SelectedModel, t0: number, text: string, requestId?: string) {
