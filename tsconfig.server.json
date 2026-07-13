@@ -11,7 +11,8 @@
   },
   "include": [
     "server.ts",
-    "src/CrucibleEngine/**/*.ts"
+    "src/CrucibleEngine/**/*.ts",
+    "src/server/**/*.ts"
   ],
   "exclude": [
     "src/CrucibleEngine/test.ts"

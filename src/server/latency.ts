@@ -12,7 +12,8 @@ export function percentile(sorted: number[], p: number): number {
 
 export class LatencyTracker {
   private readonly stats: Record<string, number[]> = {}
-  constructor(private readonly window = 50) {}
+  private readonly window: number
+  constructor(window = 50) { this.window = window }
 
   record(modelId: string, latencyMs: number): void {
     const arr = this.stats[modelId] ?? (this.stats[modelId] = [])
