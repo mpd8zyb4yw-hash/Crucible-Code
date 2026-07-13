@@ -485,6 +485,58 @@ function cosine(a: Map<string, number>, b: Map<string, number>): number {
   return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0
 }
 
+/**
+ * Structural-quality score for a code snippet in [0, 1], independent of task relevance.
+ * Pure token-cosine can rank a one-line import or a console-echo fragment above a real
+ * function body (short strings share the query's few tokens densely). This rewards a
+ * snippet that actually looks like a usable implementation: real definition structure,
+ * a body, a sane length; it penalises fragments, prose-in-<pre>, and giant dumps.
+ */
+export function snippetQuality(code: string, lang?: string): number {
+  const c = (code ?? '').trim()
+  if (!c) return 0
+  let q = 0
+  // Definition structure — the strongest signal of a usable reference.
+  if (/\b(function|const|let|var|class|def|async|export|public|private|fn)\b/.test(c)) q += 0.30
+  if (/=>|\bfunction\b|\bdef\b/.test(c)) q += 0.15               // has a callable
+  if (/\breturn\b|\byield\b/.test(c)) q += 0.15                  // produces a value
+  if (/[{}();]/.test(c)) q += 0.10                               // code punctuation, not prose
+  // Length sweet spot: enough to be a real impl, not a page dump. Peak ~40–1200 chars.
+  const n = c.length
+  if (n >= 40 && n <= 1200) q += 0.20
+  else if (n < 40) q += n / 40 * 0.10                            // tiny fragment → partial
+  else q += Math.max(0, 0.20 - (n - 1200) / 6000)               // decay past 1200
+  // Language bonus: the code-editing path wants TS/JS references.
+  if (lang && /^(ts|tsx|js|jsx|javascript|typescript)$/.test(lang)) q += 0.10
+  // Prose-in-<pre> penalty: mostly words with sentence punctuation, little code.
+  const wordish = (c.match(/\b[a-z]{3,}\b/gi) ?? []).length
+  const symbolish = (c.match(/[{}();=<>[\]]/g) ?? []).length
+  if (wordish > 8 && symbolish < wordish / 4) q -= 0.35
+  // Stub penalty: a definition keyword with no body (no call, arrow, or block) is a
+  // declaration/import line, not a usable reference — don't let the keyword bonus carry it.
+  if (/\b(function|const|let|var|class|def)\b/.test(c) && !/[({]|=>/.test(c)) q -= 0.30
+  return Math.max(0, Math.min(1, q))
+}
+
+/**
+ * Pick the single most useful reference snippet for a task: combined task-relevance
+ * (token cosine) and structural quality. Returns null when nothing clears a minimum
+ * usefulness bar (so grounding leads with a real reference or none — never noise).
+ */
+export function selectBestSnippet(blocks: CodeBlock[], task: RouterTask): CodeBlock | null {
+  if (!blocks.length) return null
+  const ranked = rankByRelevance(blocks, task, b => b.code)
+  let best: CodeBlock | null = null
+  let bestScore = 0
+  for (const { item, score } of ranked) {
+    // Relevance and quality both matter; multiply so a snippet must be BOTH on-topic and
+    // well-formed. A relevant fragment (high cosine, low quality) loses to a relevant impl.
+    const combined = (0.35 + 0.65 * score) * snippetQuality(item.code, item.lang)
+    if (combined > bestScore) { bestScore = combined; best = item }
+  }
+  return bestScore >= 0.12 ? best : null
+}
+
 /** Rank candidates by relevance to the task, highest first. Never throws. */
 export function rankByRelevance<T>(
   results: T[],
@@ -542,8 +594,14 @@ export async function retrieveForTask(task: RouterTask, opts: RetrieveOptions = 
     }
   }
 
-  // Rank extracted artifacts against the task; keep the most relevant.
-  codeBlocks = rankByRelevance(codeBlocks, task, c => c.code).map(r => r.item).slice(0, 6)
+  // Rank extracted artifacts against the task by COMBINED relevance × structural quality, so a
+  // real function body leads over a same-token one-line fragment. The single best snippet is
+  // surfaced first (weak proposers do best with one sharp reference, not a top-6 dump).
+  codeBlocks = rankByRelevance(codeBlocks, task, c => c.code)
+    .map(r => ({ item: r.item, score: (0.35 + 0.65 * r.score) * snippetQuality(r.item.code, r.item.lang) }))
+    .sort((a, b) => b.score - a.score)
+    .map(r => r.item)
+    .slice(0, 6)
   typeSignatures = [...new Set(rankByRelevance(typeSignatures.map(s => ({ s })), task, x => x.s).map(r => r.item.s))].slice(0, 12)
 
   if (!codeBlocks.length && !typeSignatures.length) return { ...empty, sources }
@@ -560,11 +618,12 @@ export function buildRetrievalBlock(bundle: Omit<RetrievalBundle, 'block'>): str
     for (const s of bundle.typeSignatures) lines.push(`  ${s}`)
   }
   if (bundle.codeBlocks.length) {
-    lines.push('Reference code:')
-    for (const c of bundle.codeBlocks) {
-      lines.push(`  // ${c.lang ? `[${c.lang}] ` : ''}${c.source ?? ''}`)
+    lines.push('Reference code (most relevant first — adapt the primary reference, do not copy blindly):')
+    bundle.codeBlocks.forEach((c, i) => {
+      const label = i === 0 ? 'PRIMARY REFERENCE' : 'additional'
+      lines.push(`  // [${label}] ${c.lang ? `[${c.lang}] ` : ''}${c.source ?? ''}`)
       lines.push(c.code.split('\n').map(l => `  ${l}`).join('\n'))
-    }
+    })
   }
   if (bundle.sources.length) lines.push(`Sources: ${[...new Set(bundle.sources)].join(', ')}`)
   return lines.join('\n')

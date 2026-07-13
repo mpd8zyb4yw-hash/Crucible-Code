@@ -42,6 +42,7 @@ const SUITES = [
   'util:bench',
   'refactorroutes:bench',
   'vgr:coderesearch',
+  'retrieval:bench',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')
