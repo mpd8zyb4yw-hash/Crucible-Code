@@ -44,7 +44,7 @@ import { detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
-import { withTimeout, estimateMessageTokens } from './src/server/util'
+import { withTimeout, estimateMessageTokens, conversationTitle } from './src/server/util'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -170,13 +170,7 @@ function _conversationsFilePath(userId: string | null): string {
 function loadConversations(userId: string | null): any[] {
   try { return JSON.parse(fs.readFileSync(_conversationsFilePath(userId), 'utf8')) } catch { return [] }
 }
-function conversationTitle(rounds: any[]): string {
-  const first = Array.isArray(rounds) ? rounds.find(r => r && r.userMessage) : null
-  const q = (first?.userMessage ?? '').trim().replace(/\s+/g, ' ')
-  if (!q) return 'New chat'
-  const words = q.split(' ')
-  return words.slice(0, 8).join(' ') + (words.length > 8 ? '…' : '')
-}
+// conversationTitle lives in src/server/util.ts (unit-testable).
 // Upsert a conversation by id. Empty (no rounds) conversations are ignored so a bare
 // refresh never litters the history with blank entries.
 function saveConversationEntry(userId: string | null, conv: { id: string; mode?: string; rounds: any[] }): void {

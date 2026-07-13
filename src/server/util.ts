@@ -17,3 +17,13 @@ export function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pr
 export function estimateMessageTokens(messages: { role: string; content: string }[]): number {
   return Math.ceil(messages.reduce((sum, m) => sum + m.content.length, 0) / 4)
 }
+
+/** Derive a conversation title from its rounds: the first user message's opening 8 words
+ *  (with an ellipsis if truncated), or 'New chat' when there's no user message yet. */
+export function conversationTitle(rounds: Array<{ userMessage?: string } | null | undefined>): string {
+  const first = Array.isArray(rounds) ? rounds.find(r => r && r.userMessage) : null
+  const q = (first?.userMessage ?? '').trim().replace(/\s+/g, ' ')
+  if (!q) return 'New chat'
+  const words = q.split(' ')
+  return words.slice(0, 8).join(' ') + (words.length > 8 ? '…' : '')
+}
