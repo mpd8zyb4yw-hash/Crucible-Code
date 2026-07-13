@@ -42,6 +42,7 @@ import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
+import { vectorize, cosineSim } from './src/server/textVector'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -411,32 +412,7 @@ function cacheKey(message: string): string {
 // key noun ("reverse a string" vs "reverse a list") drops cosine below the bar. The
 // vec/cosine pair is deliberately isolated so a real embedding backend can swap in later.
 const SEMANTIC_THRESHOLD = 0.82
-const STOPWORDS = new Set(['the','a','an','of','to','in','on','for','and','or','is','are','be','do','does','can','you','i','me','my','please','write','give','show','tell','what','how','with','that','this','it','as','at','by','from','will','would','should','could'])
-
-// Minimal stemmer: strip only a trailing plural / 3rd-person 's' so morphological
-// variants collapse ("reverse"≈"reverses", "string"≈"strings") without the over-stemming
-// that 'ing'/'es'/'ed' rules cause on nouns ("string"→"str"). Guarded on length and 'ss'.
-function stem(t: string): string {
-  return t.length > 3 && t.endsWith('s') && !t.endsWith('ss') ? t.slice(0, -1) : t
-}
-
-function vectorize(message: string): Map<string, number> {
-  const vec = new Map<string, number>()
-  const tokens = (message.toLowerCase().match(/[a-z0-9]{2,}/g) ?? [])
-    .filter(t => !STOPWORDS.has(t))
-    .map(stem)
-  for (const t of tokens) vec.set(t, (vec.get(t) ?? 0) + 1)
-  return vec
-}
-
-function cosineSim(a: Map<string, number>, b: Map<string, number>): number {
-  if (!a.size || !b.size) return 0
-  let dot = 0
-  for (const [t, w] of a) { const bw = b.get(t); if (bw) dot += w * bw }
-  let na = 0; for (const w of a.values()) na += w * w
-  let nb = 0; for (const w of b.values()) nb += w * w
-  return dot / (Math.sqrt(na) * Math.sqrt(nb))
-}
+// stem / vectorize / cosineSim live in src/server/textVector.ts (unit-testable, pure).
 
 // Returns the best paraphrase match above threshold, or null.
 function semanticLookup(message: string): { entry: CachedRound; sim: number } | null {
