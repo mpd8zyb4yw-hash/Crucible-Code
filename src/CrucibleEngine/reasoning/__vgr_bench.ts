@@ -545,6 +545,10 @@ async function run() {
     (await planMoveFileTree('src/a.ts', 'src/lib/a.ts', "export default 1\n",
       { 'src/app.ts': "import a from './a'\nimport * as ns from './a'\nimport './a'\nexport const x = a\n" }))
       ?.propagated.find(p => p.rel === 'src/app.ts')?.content.match(/\.\/lib\/a/g)?.length === 3)
+  ok('file move repoints a RE-EXPORT barrel (export * / export { } from) too',
+    (await planMoveFileTree('src/a.ts', 'src/lib/a.ts', "export const a = 1\n",
+      { 'src/index.ts': "export * from './a'\nexport { a as aa } from './a'\n" }))
+      ?.propagated.find(p => p.rel === 'src/index.ts')?.content.match(/\.\/lib\/a/g)?.length === 2)
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',
