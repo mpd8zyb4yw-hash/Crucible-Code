@@ -5740,7 +5740,7 @@ ${worldCtx}`
       recordRoundContributions(process.cwd(), contributionRates, models.map(m => m.id), allLabels)
       const histSize = (() => { try { const hf = chatUser ? path.join(process.cwd(), '.crucible', `history-${chatUser.id}.json`) : path.join(process.cwd(), '.crucible', 'history-default.json'); return JSON.parse(fs.readFileSync(hf, 'utf8')).length } catch { return 0 } })()
       evaluateRoster(process.cwd(), histSize, (id, label, avg) => {
-        debugBus.emit('roster', 'model_benched', { modelId: id, label, avgContribution: avg }, { severity: 'warn', requestId })
+        debugBus.emit('model', 'model_benched', { modelId: id, label, avgContribution: avg }, { severity: 'warn', requestId })
       })
     } catch (e: any) {
       debugBus.emit('pipeline', 'roster_eval_error', { error: e?.message ?? String(e) }, { severity: 'error', requestId })
