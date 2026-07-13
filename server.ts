@@ -3170,9 +3170,20 @@ app.post('/api/chat', async (req, res) => {
           // fresh attempt is pure upside (never a wrong write). Bounded + abort-aware.
           const MF_MAX_ATTEMPTS = Math.max(1, Number(process.env.CRUCIBLE_VGR_ATTEMPTS ?? 3))
           let mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: ac.signal })
+          // Escalation for the multi-file path (mirrors the single-file ladder): once the first
+          // attempt fails, fold a WEB reference approach into the proposer's grounding context on
+          // retries. Fetched once (retrieveForTask caches), best-effort. Certification unchanged —
+          // the multi-file verifier still executes the whole bundled graph against the spec.
+          let mfWebGrounded: string | undefined
           for (let attempt = 2; attempt <= MF_MAX_ATTEMPTS && !(mf.status === 'solved' && mf.files?.length) && !ac.signal.aborted; attempt++) {
-            send({ type: 'thought', text: `VGR multi-file · attempt ${attempt - 1}/${MF_MAX_ATTEMPTS} did not certify (${mf.status}) — retrying the on-device proposer` })
-            mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: ac.signal })
+            if (attempt === 2 && webGroundOrNull && !ac.signal.aborted) {
+              try {
+                const ref = await webGroundOrNull(message ?? '')
+                if (ref) { mfWebGrounded = `${mfContext ? mfContext + '\n\n' : ''}### Web reference (adapt to the spec — NOT trusted; the file graph is executed against hidden cases):\n${ref}`; send({ type: 'thought', text: 'VGR multi-file · folded a web reference approach into the proposer context' }) }
+              } catch { /* best-effort */ }
+            }
+            send({ type: 'thought', text: `VGR multi-file · attempt ${attempt - 1}/${MF_MAX_ATTEMPTS} did not certify (${mf.status}) — escalating${mfWebGrounded ? ' with web grounding' : ''}` })
+            mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfWebGrounded ?? mfContext, signal: ac.signal })
             if (mf.status === 'solved' && mf.files?.length) send({ type: 'thought', text: `VGR multi-file · certified on attempt ${attempt}/${MF_MAX_ATTEMPTS}` })
           }
           debugBus.emit('agent', 'vgr_multifile_result', { status: mf.status, files: mf.files?.map(f => f.path), calls: mf.search?.modelCalls }, { severity: 'info' })
