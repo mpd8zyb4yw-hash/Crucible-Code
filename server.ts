@@ -3175,8 +3175,20 @@ app.post('/api/chat', async (req, res) => {
                 if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
                 historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-delete', models: ['crucible-delete'], synthesis: answer })
                 handled = true
+              } else if (new RegExp(`\\b${del.entry}\\b`).test(delExisting)) {
+                // The file genuinely contains the symbol, so the delete intent is real — the abstain
+                // is a SAFETY refusal (still used / re-exported). End the turn honestly rather than
+                // falling through to the FM agent loop, which could perform the destructive edit
+                // nondeterministically and undo the safety guarantee.
+                const answer = `I won't delete ${del.entry} from ${del.targetPath}: it's still referenced (used elsewhere in the file, imported and used by another module, or re-exported). Removing it would break those call sites. Remove or update the usages first, then delete it.`
+                send({ type: 'verify', passed: false, signal: 'compile', report: `Delete ${del.entry} refused — symbol is still in use.` })
+                send({ type: 'final', text: answer, meta: { deleteRefactor: true, refused: true, entry: del.entry, target: del.targetPath, confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-delete', models: ['crucible-delete'], synthesis: answer })
+                handled = true
               } else {
-                send({ type: 'thought', text: `Delete ${del.entry} from ${del.targetPath} could not be applied safely (${del.entry} is still used somewhere, or is re-exported) — not removing live code; handing off.` })
+                send({ type: 'thought', text: `Delete ${del.entry} from ${del.targetPath} could not be applied (${del.entry} isn't defined there) — handing off.` })
               }
             }
           }
