@@ -41,6 +41,7 @@ import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -680,31 +681,10 @@ async function upsertUser(provider: string, providerId: string, email: string): 
   return user
 }
 
-function signJwt(payload: object): string {
-  const hdr = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url')
-  const bdy = Buffer.from(JSON.stringify(payload)).toString('base64url')
-  const sig = crypto.createHmac('sha256', JWT_SECRET).update(`${hdr}.${bdy}`).digest('base64url')
-  return `${hdr}.${bdy}.${sig}`
-}
-function verifyJwt(token: string): { id: string; email: string; exp: number } | null {
-  try {
-    const [hdr, bdy, sig] = token.split('.')
-    const expected = crypto.createHmac('sha256', JWT_SECRET).update(`${hdr}.${bdy}`).digest('base64url')
-    if (sig !== expected) return null
-    const payload = JSON.parse(Buffer.from(bdy, 'base64url').toString())
-    if (payload.exp < Date.now() / 1000) return null
-    return payload
-  } catch { return null }
-}
-
-function parseCookies(cookieHeader: string): Record<string, string> {
-  return Object.fromEntries(
-    (cookieHeader ?? '').split(';').map(c => c.trim()).filter(Boolean).map(c => {
-      const idx = c.indexOf('=')
-      return [c.slice(0, idx).trim(), decodeURIComponent(c.slice(idx + 1).trim())]
-    })
-  )
-}
+// JWT crypto + cookie parsing live in src/server/jwt.ts (unit-testable); these thin wrappers
+// bind them to the process JWT_SECRET so every call site stays unchanged.
+function signJwt(payload: object): string { return signJwtCore(payload, JWT_SECRET) }
+function verifyJwt(token: string): { id: string; email: string; exp: number } | null { return verifyJwtCore(token, JWT_SECRET) }
 
 function getAuthUser(req: express.Request): { id: string; email: string } | null {
   const cookies = parseCookies(req.headers.cookie ?? '')
