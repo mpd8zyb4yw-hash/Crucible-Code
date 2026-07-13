@@ -30,15 +30,26 @@
 - **Whole-tree RENAME refactor** (e75f0bf, 77b053e): deterministic (0 model calls) `planRenameTree` renames def + importer specifiers + call sites, alias-preserving, all-or-nothing (abstains on bare-value use / collision / re-export barrel), each rewrite compile-verified. `rename` added to isCodeEditTask. Live-confirmed 3-file rename, project tsc-clean.
 - bench:all **441/441** across 13 suites (registered the 2 new suites, 5d35906); prove:all 251/251; tsc clean throughout.
 
-**server.ts decomposition STARTED (3758ffc, cb04397, be826c7)** — pattern: extract a self-contained
+**⚠ TYPECHECK DISCOVERY (cont.66n, 882389d):** `tsc -p tsconfig.json` checks NOTHING (files:[] + unbuilt
+refs). The REAL typechecks are `npx tsc -b` (app project = `npm run build`) and `npx tsc -p
+tsconfig.server.json --noEmit` (server.ts + src/CrucibleEngine/** + src/server/**). server.ts is in NO
+build ref and bundle:server uses esbuild, so it carries ~486 PRE-EXISTING type errors nobody sees; it's
+only validated by tsx-runtime benches. AFTER editing server.ts / src/CrucibleEngine, run the
+server-config check and grep for YOUR files. New src/server/*.ts must be excluded from tsconfig.app.json
+and included in tsconfig.server.json (done). This surfaced a real latent bug: server.ts:4507/4550
+`withStaticPrefix('string')` (needs an array) threw on every multi-part-answer section, swallowed by
+try/catch → empty sections; fixed by passing the plain string (callModel already applies the preamble).
+A future cleanup could get server.ts to zero type errors and add tsconfig.server.json to CI.
+
+**server.ts decomposition STARTED (3758ffc, cb04397, be826c7, 94187c0, d0e6181)** — pattern: extract a self-contained
 cluster into a new `src/server/*.ts` module (pure or encapsulated-state), leave a THIN wrapper in
 server.ts so every call site is unchanged (minimal diff = merge-safe vs the parallel session), and add
-a committed bench. Done so far: `src/server/jwt.ts` (HS256 sign/verify + cookies, now constant-time,
-jwt:bench 9/9), `src/server/textVector.ts` (paraphrase-cache token-cosine, textvector:bench 7/7),
-`src/server/latency.ts` (LatencyTracker + percentile, latency:bench 6/6). server.ts 8413→8352; ~40
-previously-untestable helpers now have 22 checks. Live auth re-verified after the crypto change
-(200/401/401). Continue with more pure/cohesive clusters the same way; leave the hot request-handler
-bodies (the real contention surface) alone.
+a committed bench. Done so far: `src/server/jwt.ts` (HS256 sign/verify + cookies, now constant-time, jwt:bench 9/9),
+`src/server/textVector.ts` (paraphrase-cache token-cosine, textvector:bench 7/7), `src/server/latency.ts`
+(LatencyTracker + percentile, latency:bench 6/6), `src/server/util.ts` (withTimeout +
+estimateMessageTokens + conversationTitle, util:bench 11/11). Live auth re-verified after the crypto
+change (200/401/401). Continue with more pure/cohesive clusters the same way; leave the hot
+request-handler bodies (the real contention surface) alone. bench:all now 477/477 across 17 suites.
 
 **NEXT (open):** continue server.ts extraction (cache cluster state, conversation persistence, token
 estimation) — LOW risk while it stays "extract pure helper + thin wrapper + bench"; broaden
