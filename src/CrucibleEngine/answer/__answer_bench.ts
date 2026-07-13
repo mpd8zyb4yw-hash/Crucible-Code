@@ -377,6 +377,13 @@ console.log('== explain spot checks: checkable-claim extraction (deterministic) 
   check('year + attribution + measure sentences extracted (cap 3)', claims.length === 2 && /Luhn/.test(claims[0]) && /75 percent/.test(claims[1]), JSON.stringify(claims))
   check('fuzzy prose alone → no claims', extractCheckableClaims('It builds intuition first, then adds detail where it helps.').length === 0)
   check('code blocks are never treated as prose claims', extractCheckableClaims('Use this:\n```\nconst x = 1999\n```\nSimple as that, nothing else needed here.').length === 0)
+  // 'definition' intent now routes through the same spot-check: a definition that embeds a
+  // checkable fact yields a claim (verified), while a purely-conceptual definition yields none
+  // (zero FM cost — the latency-safe no-op that makes covering definitions free).
+  check('definition embedding a founding year → checkable claim extracted',
+    extractCheckableClaims('React is a JavaScript library for building user interfaces. It was created by Facebook in 2013.').some(c => /2013/.test(c)))
+  check('purely-conceptual definition → no claims (checkExplanation no-ops, zero FM cost)',
+    extractCheckableClaims('A closure is a function bundled together with references to its surrounding lexical state.').length === 0)
 }
 
 console.log('== explain spot checks: decorrelated verdict quorum ==')

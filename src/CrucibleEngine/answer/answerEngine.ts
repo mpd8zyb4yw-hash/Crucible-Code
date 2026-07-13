@@ -572,7 +572,12 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // decorrelated verdicts; majority-refuted claims ship with an explicit caution. Weakest
   // verifier by design (model-judged), so it only ever FLAGS, never rewrites.
   let explainFlags = 0
-  if (facets.intent === 'explain' && (!usedRetrieval || retrievalUngrounded) && !facets.isCode
+  // Also covers 'definition' ("what is X"): a bare definition was the last unverified intent —
+  // corroborateFact needs a proper-noun/number key that conceptual definitions lack, but a
+  // definition that embeds a checkable fact (a founding year, an attribution, a constant) fails
+  // the same way an explanation does. extractCheckableClaims no-ops with ZERO FM cost when the
+  // definition is purely conceptual, so this stays latency-safe on the light definition path.
+  if ((facets.intent === 'explain' || facets.intent === 'definition') && (!usedRetrieval || retrievalUngrounded) && !facets.isCode
       && process.env.CRUCIBLE_EXPLAIN_CHECK !== '0' && !signal?.aborted) {
     try {
       const chk = await checkExplanation(text, { complete: verifyComplete })
