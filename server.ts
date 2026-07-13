@@ -44,6 +44,7 @@ import { detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
+import { withTimeout, estimateMessageTokens } from './src/server/util'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -1237,18 +1238,7 @@ async function offlineGate(
   return { handled: false }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const timeout = new Promise<T>(resolve => {
-    timer = setTimeout(() => {
-      console.log(`[withTimeout] Timed out after ${ms}ms — using fallback`)
-      resolve(fallback)
-    }, ms)
-  })
-  // clearTimeout once the race settles so the timer doesn't linger for the full
-  // `ms` (which would fire a misleading "timed out" log after a fast success).
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
-}
+// withTimeout / estimateMessageTokens live in src/server/util.ts (unit-testable).
 
 // ── Unified model caller ──────────────────────────────────────────────────────
 // ── Agentic tool-call loop (fence protocol via tool registry) ────────────────
@@ -1300,9 +1290,6 @@ const STATIC_PREAMBLE_SHORT =
   'Respond in plain text. No emojis. Be direct and precise. Lead with substance.'
 
 // Estimate message token cost before dispatch.
-function estimateMessageTokens(messages: { role: string; content: string }[]): number {
-  return Math.ceil(messages.reduce((sum, m) => sum + m.content.length, 0) / 4)
-}
 
 // Prepend the identical static prefix to the system message (or inject one). Idempotent.
 // When a tpmLimit is provided and the existing message payload is already large,

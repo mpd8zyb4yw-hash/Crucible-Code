@@ -39,6 +39,7 @@ const SUITES = [
   'jwt:bench',
   'textvector:bench',
   'latency:bench',
+  'util:bench',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')
