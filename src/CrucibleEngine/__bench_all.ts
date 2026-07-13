@@ -40,6 +40,7 @@ const SUITES = [
   'textvector:bench',
   'latency:bench',
   'util:bench',
+  'refactorroutes:bench',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')
