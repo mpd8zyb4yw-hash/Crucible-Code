@@ -866,20 +866,33 @@ function allImportedNames(content: string): Set<string> {
   return out
 }
 
-/** Import statements from `fromContent` that `defText` actually uses. Returns the statement
- *  texts to CARRY to the destination when they're all PACKAGE (bare-specifier) imports (no path
- *  change needed), or null to ABSTAIN when the def uses a RELATIVE import (re-pathing is out of
- *  scope) — the caller then refuses the move. */
-function importsToCarry(fromContent: string, defText: string): string[] | null {
-  const carried: string[] = []
+/** Import statements from `fromContent` that `defText` actually uses, prepared for a move from
+ *  `fromPath` to `toPath`. For each, returns the `original` source line (so the caller can drop it
+ *  when it becomes dead in the source) and the `carried` line to write at the destination:
+ *   - PACKAGE (bare-specifier) imports are carried verbatim (no path change).
+ *   - RELATIVE imports are RE-PATHED — the module they resolve to (relative to `fromPath`) is
+ *     recomputed as a specifier relative to `toPath`, so the same target module is imported from
+ *     the new location. resolveSpecifier/relativeSpecifier are inverses, so this is deterministic.
+ *  Returns null to ABSTAIN only when a relative import resolves to the destination file itself
+ *  (would become a self-import) — genuinely unsafe. */
+function importsToCarry(
+  fromContent: string, defText: string, fromPath: string, toPath: string,
+): { original: string; carried: string }[] | null {
+  const out: { original: string; carried: string }[] = []
   const rx = /^import\s+([\s\S]+?)\s+from\s*['"]([^'"]+)['"];?/gm
+  const toNoExt = toPath.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
   let m: RegExpExecArray | null
   while ((m = rx.exec(fromContent))) {
     if (!clauseLocals(m[1]).some(l => codeWordIndices(defText, l).length)) continue
-    if (m[2].startsWith('.')) return null // relative import used by the def → can't safely re-path
-    carried.push(m[0].replace(/;?\s*$/, ''))
+    const original = m[0].replace(/;?\s*$/, '')
+    const spec = m[2]
+    if (!spec.startsWith('.')) { out.push({ original, carried: original }); continue }
+    const resolved = resolveSpecifier(fromPath, spec)
+    if (resolved == null || resolved === toNoExt) return null // self-import at the destination
+    const carried = original.replace(/(['"])[^'"]+\1/, `'${relativeSpecifier(toPath, resolved)}'`)
+    out.push({ original, carried })
   }
-  return carried
+  return out
 }
 
 /** Repoint a sibling's import of `entry` from `fromPath`'s module to `newSpec`. When the import
@@ -926,9 +939,9 @@ export async function planMoveTree(
   for (const name of topLevelDeclarations(fromContent).filter(n => n !== entry)) {
     if (codeWordIndices(defText, name).length) return null
   }
-  // Package imports the def uses are CARRIED to the destination; a relative import it uses aborts
-  // the move (re-pathing is out of scope). null → abstain.
-  const carry = importsToCarry(fromContent, defText)
+  // Imports the def uses are carried to the destination: package imports verbatim, relative imports
+  // re-pathed from the new location. null → abstain (a relative import would self-reference the dest).
+  const carry = importsToCarry(fromContent, defText, fromPath, toPath)
   if (carry == null) return null
 
   const compiles = async (src: string) => {
@@ -937,7 +950,7 @@ export async function planMoveTree(
 
   // Destination: prepend the package imports the def needs (skip any already present verbatim), then
   // append (or create) the def.
-  const carryHead = carry.filter(line => toContent == null || !toContent.includes(line)).join('\n')
+  const carryHead = carry.map(c => c.carried).filter(line => toContent == null || !toContent.includes(line)).join('\n')
   const destContent = toContent != null
     ? (carryHead ? carryHead + '\n' : '') + toContent.replace(/\s*$/, '') + '\n\n' + defText + '\n'
     : (carryHead ? carryHead + '\n\n' : '') + defText + '\n'
@@ -948,12 +961,12 @@ export async function planMoveTree(
   // unused) so the source isn't left with a dead import — but keep imports whose other names are
   // still referenced.
   let newFrom = (fromContent.slice(0, span.start) + fromContent.slice(span.end)).replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '')
-  for (const line of carry) {
-    const clause = /^import\s+([\s\S]+?)\s+from/.exec(line)
+  for (const { original } of carry) {
+    const clause = /^import\s+([\s\S]+?)\s+from/.exec(original)
     // Usage must be checked OUTSIDE import statements (the import line itself contains the name).
     const body = newFrom.replace(/^import\s[\s\S]*?from\s*['"][^'"]+['"];?/gm, '')
     if (clause && !clauseLocals(clause[1]).some(l => codeWordIndices(body, l).length)) {
-      newFrom = newFrom.replace(line + '\n', '').replace(line, '')
+      newFrom = newFrom.replace(original + '\n', '').replace(original, '')
     }
   }
   newFrom = newFrom.replace(/^\s*\n/, '')

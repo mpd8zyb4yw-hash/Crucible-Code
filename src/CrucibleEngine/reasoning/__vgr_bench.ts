@@ -479,8 +479,17 @@ async function run() {
   ok('move KEEPS a source import still used by other code after the def leaves',
     (await planMoveTree('schema', 'src/a.ts', 'src/b.ts', "import { z } from 'zod'\nexport function schema(){ return z.string() }\nexport const keep = z.number()\n", null, {}))
       ?.propagated[0].content.includes("import { z } from 'zod'") === true)
-  ok('move still ABSTAINS when the def uses a RELATIVE import (re-pathing out of scope)',
-    (await planMoveTree('f', 'src/a.ts', 'src/b.ts', "import { helper } from './util'\nexport function f(){ return helper() }\n", null, {})) === null)
+  ok('move RE-PATHS a relative import the def uses (same dir → specifier unchanged)',
+    (await planMoveTree('f', 'src/a.ts', 'src/b.ts', "import { helper } from './util'\nexport function f(){ return helper() }\n", null, {}))
+      ?.primary.content.includes("import { helper } from './util'") === true)
+  const mvDeep = await planMoveTree('f', 'src/a.ts', 'src/deep/b.ts', "import { helper } from './util'\nexport function f(){ return helper() }\n", null, {})
+  ok('move RE-PATHS a relative import across directories (./util → ../util from the deeper dest)',
+    !!mvDeep && mvDeep.primary.content.includes("import { helper } from '../util'") && !mvDeep.primary.content.includes("'./util'"))
+  const mvUp = await planMoveTree('f', 'src/deep/a.ts', 'src/b.ts', "import { helper } from '../util'\nexport function f(){ return helper() }\n", null, {})
+  ok('move RE-PATHS a relative import moving UP a directory (../util → ./util at the shallower dest)',
+    !!mvUp && mvUp.primary.content.includes("import { helper } from './util'"))
+  ok('move ABSTAINS when a relative import the def uses resolves to the DESTINATION file (self-import)',
+    (await planMoveTree('f', 'src/a.ts', 'src/util.ts', "import { helper } from './util'\nexport function f(){ return helper() }\n", null, {})) === null)
   ok('move does not duplicate a package import the destination already has',
     (() => true)()) // placeholder replaced below
   const mvDup = await planMoveTree('schema', 'src/a.ts', 'src/b.ts', "import { z } from 'zod'\nexport function schema(){ return z.string() }\n", "import { z } from 'zod'\nexport const y = z.number()\n", {})
