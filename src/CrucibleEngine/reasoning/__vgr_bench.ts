@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectMove, detectRename, detectTargetPath, mergeCertifiedSource, planEmit, planEmitTree, planMoveTree, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
+import { detectDelete, detectMove, detectRename, detectTargetPath, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveTree, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -498,6 +498,28 @@ async function run() {
   const mvDup = await planMoveTree('schema', 'src/a.ts', 'src/b.ts', "import { z } from 'zod'\nexport function schema(){ return z.string() }\n", "import { z } from 'zod'\nexport const y = z.number()\n", {})
   ok('move unions a package import the destination already imports (no duplicate)',
     !!mvDup && (mvDup.primary.content.match(/import \{ z \}/g) || []).length === 1)
+
+  // ── Delete refactor (safe dead-export removal) ───────────────────────────────────
+  ok('detectDelete parses "remove/delete X from A" (verbs + optional unused/function words)',
+    JSON.stringify(detectDelete('remove the unused function dead from src/a.ts')) === '{"entry":"dead","targetPath":"src/a.ts"}'
+    && JSON.stringify(detectDelete('delete helper from src/util.ts')) === '{"entry":"helper","targetPath":"src/util.ts"}'
+    && detectDelete('delete everything') === null)
+  const delSrc = "export function keep(x:number){return x+1}\nexport function dead(y:number){return y*2}\n"
+  const del1 = await planDeleteTree('dead', 'src/a.ts', delSrc, {})
+  ok('delete removes a dead function, leaving the rest of the file intact',
+    !!del1 && !del1.primary.content.includes('dead') && del1.primary.content.includes('keep'))
+  ok('delete ABSTAINS when the target file itself still uses the function elsewhere',
+    (await planDeleteTree('dead', 'src/a.ts', delSrc + "export const twice = dead(3)\n", {})) === null)
+  ok('delete ABSTAINS when a sibling imports AND uses the function (not dead)',
+    (await planDeleteTree('dead', 'src/a.ts', delSrc, { 'src/b.ts': "import { dead } from './a'\nexport const q = dead(2)\n" })) === null)
+  const del2 = await planDeleteTree('dead', 'src/a.ts', delSrc, { 'src/b.ts': "import { keep, dead } from './a'\nexport const q = keep(2)\n" })
+  ok('delete CLEANS UP a sibling that imports-but-never-uses it (drops just that specifier)',
+    !!del2 && del2.propagated.some(p => p.rel === 'src/b.ts' && p.content.includes('import { keep }') && !p.content.includes('dead')))
+  ok('delete ABSTAINS on a re-export barrel (would leave the forward dangling)',
+    (await planDeleteTree('dead', 'src/a.ts', delSrc, { 'src/index.ts': "export { dead } from './a'\n" })) === null)
+  const del3 = await planDeleteTree('dead', 'src/a.ts', "import { z } from 'zod'\nexport function keep(x:number){return x}\nexport function dead(){return z.string()}\n", {})
+  ok('delete drops an import only the removed function used',
+    !!del3 && !del3.primary.content.includes('zod') && del3.primary.content.includes('keep'))
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',

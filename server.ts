@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectMove, detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree, planMoveTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectDelete, detectMove, detectRename, detectTargetPath, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -2367,7 +2367,7 @@ function isCodeImplementationTask(message: string): boolean {
 // emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
-  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract)\b/i.test(m)
+  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract|delete|remove|drop)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
   return editVerb && hasCodePath
 }
@@ -3132,6 +3132,51 @@ app.post('/api/chat', async (req, res) => {
                 handled = true
               } else {
                 send({ type: 'thought', text: `Move ${mov.entry} (${mov.fromPath} → ${mov.toPath}) could not be applied safely (${mov.entry} isn't self-contained, uses a relative import, a destination name collision, or a non-compiling result) — handing off without a half-applied move.` })
+              }
+            }
+          }
+        }
+
+        // ── DELETE refactor — safe dead-export removal, deterministic, no proposer. ──
+        // "delete/remove X from A.ts": only removes X when it's genuinely unused (the target file
+        // doesn't reference it elsewhere and no sibling imports+uses it) — otherwise abstains,
+        // never deleting live code. Cleans up any import-but-never-use sites. All-or-nothing,
+        // compile-verified. Runs before multi-file for the same misroute reason as move.
+        if (!handled) {
+          const del = detectDelete(message ?? '')
+          if (del) {
+            const delAbs = path.join(projectPath, del.targetPath)
+            let delExisting: string | null = null
+            try { if (fs.existsSync(delAbs)) delExisting = fs.readFileSync(delAbs, 'utf-8') } catch { /* absent */ }
+            if (delExisting != null) {
+              const importers: Record<string, string> = {}
+              try {
+                for (const relSib of collectProjectTsFiles(projectPath)) {
+                  if (relSib === del.targetPath) continue
+                  try { importers[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
+                }
+              } catch { /* best-effort */ }
+              const tree = await planDeleteTree(del.entry, del.targetPath, delExisting, importers)
+              if (tree) {
+                const writes = [tree.primary, ...tree.propagated]
+                const mutated: string[] = []
+                writes.forEach((p, i) => {
+                  const pAbs = path.join(projectPath, p.rel)
+                  fs.writeFileSync(pAbs, p.content)
+                  mutated.push(pAbs)
+                  send({ type: 'tool_call', id: `vgr_del_${i}`, tool: 'edit_file', args: { path: p.rel } })
+                  send({ type: 'tool_result', id: `vgr_del_${i}`, tool: 'edit_file', ok: true, output: `Delete refactor — ${p.detail}` })
+                })
+                onFileMutated(mutated)
+                send({ type: 'verify', passed: true, signal: 'compile', report: `Delete ${del.entry} from ${del.targetPath} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
+                const answer = `Deleted ${del.entry} from ${del.targetPath}${writes.length > 1 ? ` and cleaned up ${writes.length - 1} dead import(s)` : ''} — verified unused first (no file references it), each file recompiles. Zero model calls.`
+                send({ type: 'final', text: answer, meta: { deleteRefactor: true, entry: del.entry, target: del.targetPath, files: writes.map(w => w.rel), confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-delete', models: ['crucible-delete'], synthesis: answer })
+                handled = true
+              } else {
+                send({ type: 'thought', text: `Delete ${del.entry} from ${del.targetPath} could not be applied safely (${del.entry} is still used somewhere, or is re-exported) — not removing live code; handing off.` })
               }
             }
           }

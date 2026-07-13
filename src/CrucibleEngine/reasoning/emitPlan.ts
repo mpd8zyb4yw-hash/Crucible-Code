@@ -838,6 +838,17 @@ export function detectMove(nl: string): { entry: string; fromPath: string; toPat
   return { entry, fromPath, toPath }
 }
 
+/** Parse "delete/remove [the] [unused] [function] X from A.ts" → { entry, targetPath }, or null.
+ *  Requires an explicit file so the deterministic dead-export removal knows exactly where to look. */
+export function detectDelete(nl: string): { entry: string; targetPath: string } | null {
+  const m = /\b(?:delete|remove|drop)\s+(?:the\s+)?(?:unused\s+)?(?:function\s+|method\s+|export\s+)?['"`]?([A-Za-z_$][\w$]*)['"`]?\s+from\s+(\S+)/i.exec(nl)
+  if (!m) return null
+  const entry = m[1]
+  const targetPath = m[2].replace(/['"`.,]+$/, '')
+  if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(targetPath)) return null
+  return { entry, targetPath }
+}
+
 /** Every local binding a module's imports introduce — named (`{ a, b as c }`), default
  *  (`import x from …`), and namespace (`import * as ns from …`). Used for the move
  *  self-containment check, so a def that uses ANY imported name (not just named ones) is
@@ -990,4 +1001,80 @@ export async function planMoveTree(
   }
 
   return { primary, propagated, notes }
+}
+
+/**
+ * Delete `entry`'s definition from `targetPath` — a SAFE dead-export removal. Abstains (null) unless
+ * `entry` is genuinely unused: if the target file references it outside its own definition, or ANY
+ * sibling imports AND uses it, or a re-export barrel re-exports it, the delete is refused (never
+ * removes live code). When it is dead, the def is removed, imports only it used are dropped, and any
+ * sibling that imports-but-never-uses it has that import cleaned up. All-or-nothing, compile-verified.
+ */
+export async function planDeleteTree(
+  entry: string, targetPath: string, targetContent: string,
+  siblings: Record<string, string> = {},
+): Promise<{ primary: EmitPlan; propagated: EmitPlan[]; notes: string[] } | null> {
+  if (!alreadyDefines(targetContent, entry)) return null
+  const span = extractFunctionSpan(targetContent, entry)
+  if (!span) return null
+  const defText = targetContent.slice(span.start, span.end).trim()
+
+  const compiles = async (src: string) => {
+    try { await transform(src, { loader: 'ts', format: 'esm', target: 'node18' }); return true } catch { return false }
+  }
+
+  // The target must not use `entry` anywhere outside its own definition (a call elsewhere in the
+  // file, not counting recursion inside the def itself) — else it's still live here.
+  const targetOutsideDef = targetContent.slice(0, span.start) + targetContent.slice(span.end)
+  const targetBody = targetOutsideDef.replace(/^import\s[\s\S]*?from\s*['"][^'"]+['"];?/gm, '')
+  if (codeWordIndices(targetBody, entry).length) return null
+
+  // No sibling may USE it. Abstain on a re-export barrel or any importer whose body references it.
+  const cleanups: EmitPlan[] = []
+  for (const [rel, content] of Object.entries(siblings)) {
+    if (rel === targetPath) continue
+    if (reexportsEntryFrom(content, entry, rel, targetPath)) return null // re-export chain — out of scope
+    const locals = importedLocalNames(content, entry, rel, targetPath)
+    if (!locals.length) continue
+    const body = content.replace(/^import\s[\s\S]*?from\s*['"][^'"]+['"];?/gm, '')
+    if (locals.some(l => codeWordIndices(body, l).length)) return null // sibling still uses it → not dead
+    // Imported but unused → strip the dead import (whole line if entry was its only name, else the specifier).
+    const cleaned = dropImportedName(content, entry, rel, targetPath)
+    if (cleaned == null || !(await compiles(cleaned))) return null
+    cleanups.push({ rel, content: cleaned, mode: 'modify', detail: `removed dead import of ${entry}` })
+  }
+
+  // Remove the def; drop any import only the removed def used.
+  let next = (targetContent.slice(0, span.start) + targetContent.slice(span.end)).replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '')
+  for (const { original } of importsToCarry(targetContent, defText, targetPath, targetPath) ?? []) {
+    const clause = /^import\s+([\s\S]+?)\s+from/.exec(original)
+    const bodyNoImports = next.replace(/^import\s[\s\S]*?from\s*['"][^'"]+['"];?/gm, '')
+    if (clause && !clauseLocals(clause[1]).some(l => codeWordIndices(bodyNoImports, l).length)) {
+      next = next.replace(original + '\n', '').replace(original, '')
+    }
+  }
+  next = next.replace(/^\s*\n/, '')
+  if (!(await compiles(next))) return null
+
+  const primary: EmitPlan = { rel: targetPath, content: next, mode: 'modify', detail: `deleted ${entry} from ${targetPath}` }
+  const notes = [`${targetPath}: ${entry} deleted`, ...cleanups.map(c => `${c.rel}: dead import removed`)]
+  return { primary, propagated: cleanups, notes }
+}
+
+/** Remove `entry` from a named import of `targetRel` in `content`: drops the whole statement when
+ *  `entry` is its only name, else removes just that specifier. Returns null if not found (caller
+ *  filters first via importedLocalNames) or the shape is unhandled. Alias-aware. */
+function dropImportedName(content: string, entry: string, siblingRel: string, targetRel: string): string | null {
+  const targetNoExt = targetRel.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+  const rx = new RegExp(NAMED_IMPORT_RX.source, 'gm')
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(content))) {
+    if (resolveSpecifier(siblingRel, m[3]) !== targetNoExt) continue
+    const specs = m[1].split(',').map(s => s.trim()).filter(Boolean)
+    if (!specs.some(s => s.split(/\s+as\s+/)[0].trim() === entry)) continue
+    const rest = specs.filter(s => s.split(/\s+as\s+/)[0].trim() !== entry)
+    if (!rest.length) return content.replace(m[0] + '\n', '').replace(m[0], '')      // sole name → drop the line
+    return content.replace(m[0], `import { ${rest.join(', ')} } from '${m[3]}'`)      // keep the rest
+  }
+  return null
 }
