@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectDelete, detectMove, detectMoveFile, detectRename, detectTargetPath, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -2373,7 +2373,7 @@ function definesSymbol(content: string, id: string): boolean {
 
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
-  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract|delete|remove|drop)\b/i.test(m)
+  const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract|delete|remove|drop|prune|organi[sz]e|tidy|clean)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
   return editVerb && hasCodePath
 }
@@ -3149,6 +3149,41 @@ app.post('/api/chat', async (req, res) => {
                 handled = true
               } else {
                 send({ type: 'thought', text: `Move ${mov.entry} (${mov.fromPath} → ${mov.toPath}) could not be applied — ${mov.entry} isn't defined in ${mov.fromPath}; handing off.` })
+              }
+            }
+          }
+        }
+
+        // ── PRUNE-IMPORTS refactor — drop unused imports from one file. Deterministic. ──
+        // "remove/clean up unused imports from A.ts": drop named specifiers / default / namespace
+        // imports whose local is never referenced (keep bare side-effect imports). Runs BEFORE
+        // delete so "remove unused imports" isn't misread as deleting a symbol named "imports".
+        if (!handled) {
+          const prune = detectPruneImports(message ?? '')
+          if (prune) {
+            const prAbs = path.join(projectPath, prune.targetPath)
+            let prExisting: string | null = null
+            try { if (fs.existsSync(prAbs)) prExisting = fs.readFileSync(prAbs, 'utf-8') } catch { /* absent */ }
+            if (prExisting != null) {
+              const tree = await planPruneImports(prune.targetPath, prExisting)
+              if (tree) {
+                fs.writeFileSync(prAbs, tree.primary.content)
+                onFileMutated([prAbs])
+                send({ type: 'tool_call', id: 'vgr_prune_0', tool: 'edit_file', args: { path: tree.primary.rel } })
+                send({ type: 'tool_result', id: 'vgr_prune_0', tool: 'edit_file', ok: true, output: `Prune imports — ${tree.primary.detail}` })
+                send({ type: 'verify', passed: true, signal: 'compile', report: `${tree.notes.join('; ')}; file recompiles.` })
+                const answer = `${tree.primary.detail} — the file still compiles. Zero model calls.`
+                send({ type: 'final', text: answer, meta: { pruneImports: true, target: prune.targetPath, confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-prune-imports', models: ['crucible-prune'], synthesis: answer })
+                handled = true
+              } else {
+                const answer = `No unused imports to remove in ${prune.targetPath} — every import is referenced.`
+                send({ type: 'final', text: answer, meta: { pruneImports: true, target: prune.targetPath, noop: true, confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                handled = true
               }
             }
           }

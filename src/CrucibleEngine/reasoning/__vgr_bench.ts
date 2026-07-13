@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectDelete, detectMove, detectMoveFile, detectRename, detectTargetPath, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -549,6 +549,26 @@ async function run() {
     (await planMoveFileTree('src/a.ts', 'src/lib/a.ts', "export const a = 1\n",
       { 'src/index.ts': "export * from './a'\nexport { a as aa } from './a'\n" }))
       ?.propagated.find(p => p.rel === 'src/index.ts')?.content.match(/\.\/lib\/a/g)?.length === 2)
+
+  // ── Prune unused imports (single-file) ───────────────────────────────────────────
+  ok('detectPruneImports parses the common phrasings; rejects unrelated asks',
+    !!detectPruneImports('remove unused imports from src/a.ts')
+    && !!detectPruneImports('clean up imports in src/a.ts')
+    && !!detectPruneImports('organize imports in src/a.ts')
+    && detectPruneImports('remove pad from src/a.ts') === null)
+  const pr1 = await planPruneImports('src/a.ts', "import { used, dead } from './x'\nexport const y = used(1)\n")
+  ok('prune drops an unused NAMED specifier, keeps the used one',
+    !!pr1 && pr1.primary.content.includes('import { used }') && !pr1.primary.content.includes('dead'))
+  const pr2 = await planPruneImports('src/a.ts', "import { a } from './x'\nimport { b } from './y'\nexport const z = b\n")
+  ok('prune removes a fully-unused import statement entirely',
+    !!pr2 && !pr2.primary.content.includes("'./x'") && pr2.primary.content.includes("'./y'"))
+  const pr3 = await planPruneImports('src/a.ts', "import fs from 'fs'\nimport * as p from 'path'\nexport const q = p.join('a','b')\n")
+  ok('prune drops an unused DEFAULT import but keeps a used NAMESPACE import',
+    !!pr3 && !pr3.primary.content.includes("import fs") && pr3.primary.content.includes("import * as p"))
+  ok('prune KEEPS a bare side-effect import (runs for effect)',
+    (await planPruneImports('src/a.ts', "import './styles.css'\nexport const n = 1\n")) === null)
+  ok('prune returns null when nothing is unused (no spurious edit)',
+    (await planPruneImports('src/a.ts', "import { a } from './x'\nexport const y = a\n")) === null)
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',

@@ -850,6 +850,67 @@ export function detectDelete(nl: string): { entry: string; targetPath: string } 
   return { entry, targetPath }
 }
 
+/** Parse "remove/prune/clean [up] unused imports [from/in] A.ts" or "organize imports in A.ts" →
+ *  { targetPath }, or null. Kept distinct from detectDelete so "imports" isn't read as a symbol. */
+export function detectPruneImports(nl: string): { targetPath: string } | null {
+  if (!/\b(?:unused\s+imports|imports?)\b/i.test(nl)) return null
+  const m = /\b(?:remove|prune|clean(?:\s*up)?|delete|drop|organi[sz]e|tidy)\s+(?:the\s+)?(?:all\s+)?(?:unused\s+)?imports?\b[^.]*?\b(?:from|in|of)\s+(\S+\.(?:ts|tsx|js|jsx|mjs|cjs))/i.exec(nl)
+  if (!m) return null
+  return { targetPath: m[1].replace(/['"`.,]+$/, '') }
+}
+
+/**
+ * Remove unused imports from a single file — deterministic, compile-verified. For each import,
+ * named specifiers whose local isn't referenced in the body are dropped (the whole statement goes
+ * when none remain); a default or namespace import is dropped when its local is unused. Bare
+ * side-effect imports (`import './x'`) are always kept (they run for effect). Returns null when
+ * nothing is unused (no change) or the pruned file wouldn't compile.
+ */
+export async function planPruneImports(
+  targetPath: string, content: string,
+): Promise<{ primary: EmitPlan; propagated: EmitPlan[]; notes: string[] } | null> {
+  const importRx = /^import\s+([\s\S]+?)\s+from\s*['"][^'"]+['"];?/gm
+  // Body = everything outside import statements, so a name that only appears in imports counts as unused.
+  const body = content.replace(/^import\s[\s\S]*?from\s*['"][^'"]+['"];?/gm, '').replace(/^import\s*['"][^'"]+['"];?/gm, '')
+  const used = (local: string) => codeWordIndices(body, local).length > 0
+
+  let next = content
+  const removed: string[] = []
+  let m: RegExpExecArray | null
+  while ((m = importRx.exec(content))) {
+    const stmt = m[0]
+    const clause = m[1].trim()
+    const braced = /\{([^}]*)\}/.exec(clause)
+    if (braced) {
+      // Named (possibly with a leading default): keep only specifiers whose local is used.
+      const lead = clause.slice(0, braced.index).replace(/,\s*$/, '').trim() // default name before `{`
+      const specs = braced[1].split(',').map(s => s.trim()).filter(Boolean)
+      const keptSpecs = specs.filter(s => used(s.split(/\s+as\s+/).pop()!.trim()))
+      const keepLead = lead && used(lead.replace(/,/g, '').trim())
+      const droppedHere = specs.filter(s => !keptSpecs.includes(s)).map(s => s.split(/\s+as\s+/).pop()!.trim())
+      if (!keptSpecs.length && !keepLead) { next = next.replace(stmt + '\n', '').replace(stmt, ''); removed.push(...droppedHere); if (lead) removed.push(lead) }
+      else if (keptSpecs.length !== specs.length || (lead && !keepLead)) {
+        const from = /from\s*(['"][^'"]+['"])/.exec(stmt)![1]
+        const head = keepLead ? `${lead.replace(/,/g,'').trim()}, ` : ''
+        next = next.replace(stmt, `import ${head}{ ${keptSpecs.join(', ')} } from ${from}`)
+        removed.push(...droppedHere)
+      }
+    } else {
+      // Default or namespace: single local. Drop the whole statement if unused.
+      const local = clauseLocals(clause)[0]
+      if (local && !used(local)) { next = next.replace(stmt + '\n', '').replace(stmt, ''); removed.push(local) }
+    }
+  }
+  if (!removed.length) return null // nothing unused
+  next = next.replace(/^\s*\n/, '')
+  try { await transform(next, { loader: 'ts', format: 'esm', target: 'node18' }) } catch { return null }
+  return {
+    primary: { rel: targetPath, content: next, mode: 'modify', detail: `removed ${removed.length} unused import(s) from ${targetPath}` },
+    propagated: [],
+    notes: [`${targetPath}: removed unused import(s) — ${removed.join(', ')}`],
+  }
+}
+
 /** Every local binding a module's imports introduce — named (`{ a, b as c }`), default
  *  (`import x from …`), and namespace (`import * as ns from …`). Used for the move
  *  self-containment check, so a def that uses ANY imported name (not just named ones) is
