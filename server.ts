@@ -3248,18 +3248,27 @@ app.post('/api/chat', async (req, res) => {
         let vgr = null
         for (let attempt = 1; !handled && attempt <= VGR_MAX_ATTEMPTS; attempt++) {
           if (ac.signal.aborted) break
+          // Escalate effort per attempt: attempt 1 is the FAST path (deterministic tiers + a
+          // single-shot FM) — most tasks certify here with no network, no extra epochs. Once
+          // attempt 1 fails, the task is demonstrably HARD, so attempts 2+ engage "try hard" mode:
+          // the converge loop (iterate across epochs) + WEB grounding (fetch a reference approach
+          // and seed the proposer). This targets the expensive help exactly where it's needed and
+          // costs nothing on the easy tasks that already succeeded. Web still just informs the
+          // proposer — every candidate is executed, so it can never certify a wrong answer.
+          const tryHard = attempt > 1
+          if (tryHard) send({ type: 'thought', text: `VGR · escalating to convergence${webGroundOrNull ? ' + web reference lookup' : ''} for this harder task…` })
           vgr = await solveCodingRequest(message ?? '', {
             maxModelCalls: 8, beamWidth: 2,
             signal: ac.signal,
-            converge: process.env.CRUCIBLE_CONVERGE === '1',
-            webGround: webGroundOrNull,
+            converge: process.env.CRUCIBLE_CONVERGE === '1' || tryHard,
+            webGround: tryHard ? webGroundOrNull : undefined,
             emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
           })
           if (vgr && vgr.status === 'solved' && vgr.code && vgr.entry) {
-            if (attempt > 1) send({ type: 'thought', text: `VGR · certified on attempt ${attempt}/${VGR_MAX_ATTEMPTS} (the proposer is nondeterministic — a fresh attempt converged)` })
+            if (attempt > 1) send({ type: 'thought', text: `VGR · certified on attempt ${attempt}/${VGR_MAX_ATTEMPTS} (escalated effort converged where the first attempt abstained)` })
             break
           }
-          if (attempt < VGR_MAX_ATTEMPTS) send({ type: 'thought', text: `VGR · attempt ${attempt}/${VGR_MAX_ATTEMPTS} did not certify (${vgr?.status ?? 'no result'}) — retrying the on-device proposer before handing off` })
+          if (attempt < VGR_MAX_ATTEMPTS) send({ type: 'thought', text: `VGR · attempt ${attempt}/${VGR_MAX_ATTEMPTS} did not certify (${vgr?.status ?? 'no result'}) — escalating before handing off` })
         }
         if (vgr) debugBus.emit('agent', 'vgr_result', { status: vgr.status, entry: vgr.entry, calls: vgr.search?.modelCalls, convergedEpochs: vgr.converged?.epochs ?? null }, { severity: 'info' })
         // The signal that justifies flipping converge default-ON: the loop earned an answer
