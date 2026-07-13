@@ -28,6 +28,25 @@ function extractCode(raw: string): string {
   return (fence ? fence[1] : raw).trim()
 }
 
+type Attempt = ProposeContext<string>['history'][number]
+
+/**
+ * Choose which prior attempts to show the model as debugging feedback: the 3 most recent PLUS the
+ * closest-to-passing (highest score) when beam exploration made the recent window worse than an
+ * earlier near-solution. Anchoring the model on the candidate one fix away from correct converges
+ * faster than iterating from whatever ran last. Returns { shown, best } — `best` is the closest
+ * attempt (or null), marked in the prompt so the model knows which to fix. Pure + deterministic.
+ */
+export function pickFeedbackAttempts(history: Attempt[]): { shown: Attempt[]; best: Attempt | null } {
+  const recent = history.slice(-3)
+  if (!recent.length) return { shown: [], best: null }
+  const best = history.reduce((a, b) => (b.verdict.score > a.verdict.score ? b : a))
+  const worstRecent = Math.min(...recent.map(a => a.verdict.score))
+  const addBest = !recent.some(a => a.candidate.fingerprint === best.candidate.fingerprint)
+    && best.verdict.score > worstRecent
+  return { shown: addBest ? [best, ...recent] : recent, best }
+}
+
 export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidate<string> | null> {
   const { spec, history, diversify } = ctx
   const acc = spec.acceptance as { entry: string; entries?: string[] }
@@ -48,11 +67,14 @@ export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidat
   // Thread the most recent failures back in as concrete, actionable debugging signal.
   // This is the sample-efficiency lever: the model sees exactly what went wrong.
   const recent = history.slice(-3)
-  const feedback = recent.length
+  // Surface the closest-to-passing attempt alongside the recent window (see pickFeedbackAttempts).
+  const { shown, best } = pickFeedbackAttempts(history)
+  const feedback = shown.length
     ? '\n\n## Your previous attempts FAILED verification. Fix these specific problems:\n' +
-      recent.map((a, i) => {
+      shown.map((a, i) => {
         const code = a.candidate.value.length > 800 ? a.candidate.value.slice(0, 800) + '\n…(truncated)' : a.candidate.value
-        return `### Attempt ${i + 1} (score ${a.verdict.score})\n\`\`\`\n${code}\n\`\`\`\nFailures:\n` +
+        const closest = a === best ? ' — CLOSEST to correct, fix THIS one' : ''
+        return `### Attempt ${i + 1} (score ${a.verdict.score}${closest})\n\`\`\`\n${code}\n\`\`\`\nFailures:\n` +
           a.verdict.signals.map(s => `- ${s}`).join('\n')
       }).join('\n\n')
     : ''

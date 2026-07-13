@@ -21,6 +21,7 @@
 
 import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode, verifyMultiFileCode } from './codeVerifier'
+import { pickFeedbackAttempts } from './codeProposer'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
@@ -91,6 +92,24 @@ async function run() {
   ok('failure feedback includes the failing INPUT (input → expected vs got)',
     singleShot.signals.some(s => /on input .*\[1,2,3,4\]/.test(s) && /expected 6/.test(s)),
     singleShot.signals[0])
+
+  // Proposer feedback selection: anchor on the CLOSEST-to-passing attempt, not just the latest.
+  const att = (fpv: string, score: number) => ({ candidate: { value: fpv, fingerprint: fpv }, verdict: { pass: false, score, signals: [`s${score}`] } }) as any
+  {
+    // Beam made the 3 most-recent worse (score -3) than an earlier near-solution (-1).
+    const hist = [att('near', -1), att('a', -3), att('b', -3), att('c', -3)]
+    const { shown, best } = pickFeedbackAttempts(hist)
+    ok('feedback surfaces the closest attempt even when it is outside the recent-3 window',
+      best?.candidate.fingerprint === 'near' && shown[0]?.candidate.fingerprint === 'near' && shown.length === 4)
+  }
+  {
+    // The best IS already in the recent window → no duplication.
+    const hist = [att('x', -3), att('y', -2), att('best', -1)]
+    const { shown, best } = pickFeedbackAttempts(hist)
+    ok('no duplicate when the closest attempt is already recent',
+      best?.candidate.fingerprint === 'best' && shown.length === 3)
+  }
+  ok('empty history → no feedback attempts', pickFeedbackAttempts([]).shown.length === 0)
 
   // 2. The LOOP: same weak generator, but wrapped in propose→verify→backtrack.
   const looped = await solveCodeTask(TASK, { maxModelCalls: 6, beamWidth: 2 }, mockProposer())
