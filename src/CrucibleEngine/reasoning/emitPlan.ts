@@ -22,8 +22,9 @@ export interface EmitPlan {
   /** Full new content of that file. */
   content: string
   /** 'create' = new file; 'append' = existing file + the new function; 'modify' = certified
-   * in-place replacement of an existing function's definition. */
-  mode: 'create' | 'append' | 'modify'
+   * in-place replacement of an existing function's definition; 'delete' = remove the file (used
+   * by whole-file moves — `content` is empty and must not be written). */
+  mode: 'create' | 'append' | 'modify' | 'delete'
   detail: string
 }
 
@@ -1077,4 +1078,90 @@ function dropImportedName(content: string, entry: string, siblingRel: string, ta
     return content.replace(m[0], `import { ${rest.join(', ')} } from '${m[3]}'`)      // keep the rest
   }
   return null
+}
+
+/** Parse "move/relocate A.ts to B.ts" (a WHOLE-FILE move — no `from`, no symbol) → {fromPath,toPath},
+ *  or null. Distinct from detectMove ("move X from A to B"), which moves a single function. */
+export function detectMoveFile(nl: string): { fromPath: string; toPath: string } | null {
+  const m = /\b(?:move|relocate|rename)\s+(?:the\s+)?(?:file\s+)?['"`]?(\S+?\.(?:ts|tsx|js|jsx|mjs|cjs))['"`]?\s+(?:to|into)\s+['"`]?(\S+?\.(?:ts|tsx|js|jsx|mjs|cjs))['"`]?/i.exec(nl)
+  if (!m) return null
+  // Reject the single-function form ("move X from A to B") — that's detectMove's job.
+  if (/\bfrom\b/i.test(nl.slice(0, m.index + m[0].length))) return null
+  const fromPath = m[1].replace(/['"`.,]+$/, '')
+  const toPath = m[2].replace(/['"`.,]+$/, '')
+  if (fromPath === toPath) return null
+  return { fromPath, toPath }
+}
+
+/** Rewrite every RELATIVE import specifier in `content` (a file currently at `oldPath`) so it
+ *  resolves to the same module after the file moves to `newPath`. Package imports are untouched.
+ *  Returns null if any relative import would resolve to `newPath` itself (a self-import). */
+function repathOwnImports(content: string, oldPath: string, newPath: string): string | null {
+  const newNoExt = newPath.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+  const rx = /(^|\n)(\s*(?:import|export)\b[^\n]*?\bfrom\s*['"])([^'"]+)(['"])/g
+  let bad = false
+  const out = content.replace(rx, (whole, pre, head, spec, tail) => {
+    if (!spec.startsWith('.')) return whole
+    const resolved = resolveSpecifier(oldPath, spec)
+    if (resolved == null) return whole
+    if (resolved === newNoExt) { bad = true; return whole }
+    return pre + head + relativeSpecifier(newPath, resolved) + tail
+  })
+  // Bare side-effect imports (`import './x'`) too.
+  const rx2 = /(^|\n)(\s*import\s*['"])(\.[^'"]+)(['"])/g
+  const out2 = out.replace(rx2, (whole, pre, head, spec, tail) => {
+    const resolved = resolveSpecifier(oldPath, spec)
+    if (resolved == null) return whole
+    if (resolved === newNoExt) { bad = true; return whole }
+    return pre + head + relativeSpecifier(newPath, resolved) + tail
+  })
+  return bad ? null : out2
+}
+
+/** Repoint every import in `content` (a file at `importerRel`) whose specifier resolves to
+ *  `oldPath` so it points at `newPath` instead — regardless of import shape (named, default,
+ *  namespace, or bare side-effect). Returns the rewritten content (unchanged if it doesn't import
+ *  the moved file). */
+function repointModuleSpecifier(content: string, importerRel: string, oldPath: string, newPath: string): string {
+  const oldNoExt = oldPath.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+  const newSpec = relativeSpecifier(importerRel, newPath)
+  const rewrite = (whole: string, pre: string, head: string, spec: string, tail: string) => {
+    if (!spec.startsWith('.')) return whole
+    return resolveSpecifier(importerRel, spec) === oldNoExt ? pre + head + newSpec + tail : whole
+  }
+  const withFrom = content.replace(/(^|\n)(\s*(?:import|export)\b[^\n]*?\bfrom\s*['"])([^'"]+)(['"])/g, rewrite)
+  return withFrom.replace(/(^|\n)(\s*import\s*['"])(\.[^'"]+)(['"])/g, rewrite)
+}
+
+/**
+ * Move a WHOLE FILE from `oldPath` to `newPath`, re-pathing the file's own relative imports and
+ * repointing every importer across the project. Deterministic, all-or-nothing, compile-verified.
+ * Returns null (abstain) when nothing defines the move safely — a self-import after the move, a
+ * destination that already exists, or any file that wouldn't recompile. The old file is emitted as
+ * a `delete` EmitPlan; the caller removes it.
+ */
+export async function planMoveFileTree(
+  oldPath: string, newPath: string, oldContent: string,
+  siblings: Record<string, string> = {}, newExists = false,
+): Promise<{ primary: EmitPlan; propagated: EmitPlan[]; notes: string[] } | null> {
+  if (oldPath === newPath || newExists) return null
+  const compiles = async (src: string) => {
+    try { await transform(src, { loader: 'ts', format: 'esm', target: 'node18' }); return true } catch { return false }
+  }
+  const moved = repathOwnImports(oldContent, oldPath, newPath)
+  if (moved == null || !(await compiles(moved))) return null
+
+  const primary: EmitPlan = { rel: newPath, content: moved, mode: 'create', detail: `moved file ${oldPath} → ${newPath}` }
+  const propagated: EmitPlan[] = [{ rel: oldPath, content: '', mode: 'delete', detail: `removed ${oldPath} (moved to ${newPath})` }]
+  const notes = [`${oldPath} → ${newPath}`]
+
+  for (const [rel, content] of Object.entries(siblings)) {
+    if (rel === oldPath || rel === newPath) continue
+    const repointed = repointModuleSpecifier(content, rel, oldPath, newPath)
+    if (repointed === content) continue // doesn't import the moved file
+    if (!(await compiles(repointed))) return null
+    propagated.push({ rel, content: repointed, mode: 'modify', detail: `repointed import of ${oldPath} to ${newPath}` })
+    notes.push(`${rel}: import repointed`)
+  }
+  return { primary, propagated, notes }
 }

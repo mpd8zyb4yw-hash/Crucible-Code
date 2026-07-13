@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectDelete, detectMove, detectRename, detectTargetPath, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectRename, detectTargetPath, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -3206,6 +3206,64 @@ app.post('/api/chat', async (req, res) => {
                 handled = true
               } else {
                 send({ type: 'thought', text: `Delete ${del.entry} from ${del.targetPath} could not be applied (${del.entry} isn't defined there) — handing off.` })
+              }
+            }
+          }
+        }
+
+        // ── MOVE-FILE refactor — relocate a whole file, fixing all imports. Deterministic. ──
+        // "move A.ts to B.ts" (no symbol, no `from`): re-path the moved file's own relative imports
+        // and repoint every importer across the project (any import shape), then delete the old
+        // file. All-or-nothing, compile-verified. Runs before multi-file for the same misroute
+        // reason as move. Abstains (handled stays false) on a self-import or a non-compiling result.
+        if (!handled) {
+          const mvf = detectMoveFile(message ?? '')
+          if (mvf) {
+            const mvfAbs = path.join(projectPath, mvf.fromPath)
+            let mvfExisting: string | null = null
+            try { if (fs.existsSync(mvfAbs)) mvfExisting = fs.readFileSync(mvfAbs, 'utf-8') } catch { /* absent */ }
+            const destExists = (() => { try { return fs.existsSync(path.join(projectPath, mvf.toPath)) } catch { return false } })()
+            if (mvfExisting != null) {
+              const importers: Record<string, string> = {}
+              try {
+                for (const relSib of collectProjectTsFiles(projectPath)) {
+                  if (relSib === mvf.fromPath || relSib === mvf.toPath) continue
+                  try { importers[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
+                }
+              } catch { /* best-effort */ }
+              const tree = await planMoveFileTree(mvf.fromPath, mvf.toPath, mvfExisting, importers, destExists)
+              if (tree) {
+                const writes = [tree.primary, ...tree.propagated]
+                const mutated: string[] = []
+                writes.forEach((p, i) => {
+                  const pAbs = path.join(projectPath, p.rel)
+                  if (p.mode === 'delete') {
+                    try { fs.unlinkSync(pAbs) } catch { /* already gone */ }
+                  } else {
+                    fs.mkdirSync(path.dirname(pAbs), { recursive: true })
+                    fs.writeFileSync(pAbs, p.content)
+                  }
+                  mutated.push(pAbs)
+                  send({ type: 'tool_call', id: `vgr_mvf_${i}`, tool: p.mode === 'delete' ? 'delete_file' : 'edit_file', args: { path: p.rel } })
+                  send({ type: 'tool_result', id: `vgr_mvf_${i}`, tool: p.mode === 'delete' ? 'delete_file' : 'edit_file', ok: true, output: `Move-file refactor — ${p.detail}` })
+                })
+                onFileMutated(mutated)
+                send({ type: 'verify', passed: true, signal: 'compile', report: `Move file ${mvf.fromPath} → ${mvf.toPath} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
+                const answer = `Moved ${mvf.fromPath} to ${mvf.toPath} — the file's own relative imports were re-pathed and every importer repointed (${writes.length} file(s) touched); each recompiles. Zero model calls.`
+                send({ type: 'final', text: answer, meta: { moveFileRefactor: true, from: mvf.fromPath, to: mvf.toPath, files: writes.map(w => w.rel), confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move-file', models: ['crucible-move-file'], synthesis: answer })
+                handled = true
+              } else if (destExists) {
+                const answer = `I won't move ${mvf.fromPath} to ${mvf.toPath}: the destination already exists. Choose a path that doesn't, or delete the existing file first.`
+                send({ type: 'verify', passed: false, signal: 'compile', report: `Move file refused — destination exists.` })
+                send({ type: 'final', text: answer, meta: { moveFileRefactor: true, refused: true, from: mvf.fromPath, to: mvf.toPath, confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                handled = true
+              } else {
+                send({ type: 'thought', text: `Move file ${mvf.fromPath} → ${mvf.toPath} could not be applied safely (a self-referential import or a non-compiling result) — handing off.` })
               }
             }
           }

@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectDelete, detectMove, detectRename, detectTargetPath, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveTree, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectRename, detectTargetPath, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -520,6 +520,31 @@ async function run() {
   const del3 = await planDeleteTree('dead', 'src/a.ts', "import { z } from 'zod'\nexport function keep(x:number){return x}\nexport function dead(){return z.string()}\n", {})
   ok('delete drops an import only the removed function used',
     !!del3 && !del3.primary.content.includes('zod') && del3.primary.content.includes('keep'))
+
+  // ── Move a WHOLE FILE (re-path own imports + repoint all importers) ───────────────
+  ok('detectMoveFile parses "move A.ts to B.ts" but NOT the single-function "move X from A to B"',
+    JSON.stringify(detectMoveFile('move src/a.ts to src/lib/a.ts')) === '{"fromPath":"src/a.ts","toPath":"src/lib/a.ts"}'
+    && detectMoveFile('move pad from src/a.ts to src/b.ts') === null)
+  const mf1 = await planMoveFileTree('src/a.ts', 'src/lib/a.ts',
+    "import { z } from 'zod'\nimport { help } from './util'\nexport const a = z.number()\nexport const h = help()\n",
+    { 'src/app.ts': "import { a } from './a'\nexport const x = a\n", 'src/util.ts': "export const help = () => 1\n" })
+  ok('file move re-paths the moved file’s own relative import (./util → ../util from src/lib/)',
+    !!mf1 && mf1.primary.content.includes("from '../util'") && mf1.primary.content.includes("from 'zod'"))
+  ok('file move repoints an importer (./a → ./lib/a) and deletes the old file',
+    !!mf1 && mf1.propagated.some(p => p.rel === 'src/app.ts' && p.content.includes("from './lib/a'"))
+    && mf1.propagated.some(p => p.rel === 'src/a.ts' && p.mode === 'delete'))
+  ok('file move leaves a NON-importer untouched (no spurious edit)',
+    !!mf1 && !mf1.propagated.some(p => p.rel === 'src/util.ts'))
+  ok('file move ABSTAINS when the destination already exists',
+    (await planMoveFileTree('src/a.ts', 'src/b.ts', "export const a = 1\n", {}, true)) === null)
+  const mfUp = await planMoveFileTree('src/deep/a.ts', 'src/a.ts',
+    "import { help } from '../util'\nexport const a = help()\n", { 'src/util.ts': "export const help = () => 1\n" })
+  ok('file move UP re-paths ../util → ./util at the shallower location',
+    !!mfUp && mfUp.primary.content.includes("from './util'"))
+  ok('file move repoints a DEFAULT/namespace/side-effect importer too (shape-agnostic)',
+    (await planMoveFileTree('src/a.ts', 'src/lib/a.ts', "export default 1\n",
+      { 'src/app.ts': "import a from './a'\nimport * as ns from './a'\nimport './a'\nexport const x = a\n" }))
+      ?.propagated.find(p => p.rel === 'src/app.ts')?.content.match(/\.\/lib\/a/g)?.length === 3)
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',
