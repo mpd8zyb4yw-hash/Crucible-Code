@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -3103,7 +3103,24 @@ app.post('/api/chat', async (req, res) => {
         // file untouched — on a non-self-contained def, a destination collision, or a non-compiling
         // result). Each rewrite is esbuild-compile-verified before it's returned.
         if (!handled) {
-          const mov = detectMove(message ?? '')
+          let mov = detectMove(message ?? '')
+          if (!mov) {
+            // Source-less form "move X to B.ts": infer the unique file defining X as the source.
+            const mto = detectMoveToOnly(message ?? '')
+            if (mto) {
+              const files: Record<string, string> = {}
+              try {
+                for (const rel of collectProjectTsFiles(projectPath)) {
+                  try { files[rel] = fs.readFileSync(path.join(projectPath, rel), 'utf-8') } catch { /* skip */ }
+                }
+              } catch { /* best-effort */ }
+              const src = findDefiningFile(mto.entry, files)
+              if (src && src !== mto.toPath) {
+                mov = { entry: mto.entry, fromPath: src, toPath: mto.toPath }
+                send({ type: 'thought', text: `No source named — ${mto.entry} is defined uniquely in ${src}; moving from there.` })
+              }
+            }
+          }
           if (mov) {
             const fromAbs = path.join(projectPath, mov.fromPath)
             let fromExisting: string | null = null

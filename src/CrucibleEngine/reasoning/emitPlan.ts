@@ -847,6 +847,20 @@ export function detectMove(nl: string): { entry: string; fromPath: string; toPat
   return { entry, fromPath, toPath }
 }
 
+/** Parse the SOURCE-LESS move form "move X to src/b.ts" (a function name + a destination file, no
+ *  `from`) → { entry, toPath }, or null. The caller infers the source file via findDefiningFile.
+ *  Rejects the whole-file form ("move a.ts to b.ts") — X must not itself be a path. */
+export function detectMoveToOnly(nl: string): { entry: string; toPath: string } | null {
+  const m = /\b(?:move|relocate|extract)\s+(?:the\s+)?(?:function\s+|method\s+)?['"`]?([A-Za-z_$][\w$]*)['"`]?\s+(?:to|into)\s+(\S+)/i.exec(nl)
+  if (!m) return null
+  if (/\bfrom\b/i.test(nl.slice(0, m.index + m[0].length))) return null // has a source → detectMove's job
+  const entry = m[1]
+  const toPath = m[2].replace(/['"`.,]+$/, '')
+  if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(entry)) return null // X is a path → whole-file move
+  if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(toPath)) return null
+  return { entry, toPath }
+}
+
 /** Parse "delete/remove [the] [unused] [function] X from A.ts" → { entry, targetPath }, or null.
  *  Requires an explicit file so the deterministic dead-export removal knows exactly where to look. */
 export function detectDelete(nl: string): { entry: string; targetPath: string } | null {

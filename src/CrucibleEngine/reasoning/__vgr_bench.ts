@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -571,6 +571,10 @@ async function run() {
     (await planPruneImports('src/a.ts', "import { a } from './x'\nexport const y = a\n")) === null)
 
   // ── findDefiningFile (target inference when the request names no file) ────────────
+  ok('detectMoveToOnly parses the source-less "move X to B.ts"; rejects file-move + from-form',
+    JSON.stringify(detectMoveToOnly('move pad to src/pad.ts')) === '{"entry":"pad","toPath":"src/pad.ts"}'
+    && detectMoveToOnly('move pad from src/a.ts to src/b.ts') === null
+    && detectMoveToOnly('move src/a.ts to src/b.ts') === null)
   ok('findDefiningFile returns the unique definer; null when 0 or >1 files define it',
     findDefiningFile('pad', { 'src/a.ts': 'export function pad(s){return s}\n', 'src/b.ts': 'export const x=1\n' }) === 'src/a.ts'
     && findDefiningFile('pad', { 'src/a.ts': 'export function pad(s){return s}\n', 'src/b.ts': 'export function pad(s){return s}\n' }) === null
