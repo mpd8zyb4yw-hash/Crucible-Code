@@ -56,6 +56,14 @@ function alreadyDefines(content: string, entry: string): boolean {
     new RegExp(`\\bexport\\s*\\{[^}]*\\b${e}\\b`).test(content)
 }
 
+/** The single project file that defines `entry`, or null when zero or MORE THAN ONE do (ambiguous
+ *  → the caller should abstain / ask). Lets the refactor family infer the target when the request
+ *  doesn't name a file. `files` is project-relative-path → content. */
+export function findDefiningFile(entry: string, files: Record<string, string>): string | null {
+  const hits = Object.entries(files).filter(([, content]) => alreadyDefines(content, entry)).map(([rel]) => rel)
+  return hits.length === 1 ? hits[0] : null
+}
+
 // A modify-shaped request: the user asks to CHANGE existing behavior, not add new. Only
 // consulted when the target file already defines `entry`, so bare verbs like "fix" are safe.
 const MODIFY_RX = /\b(modify|change|update|fix|rewrite|refactor|improve|correct|replace|edit|adjust|make)\b/i

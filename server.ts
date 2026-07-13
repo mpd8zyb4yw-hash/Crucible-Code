@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -2228,6 +2228,9 @@ function detectAgentTask(message: string): boolean {
     || /\b(save|write|put)\b[\s\S]{0,20}\b(to|into|as|in)\b[\s\S]{0,20}\.[a-z]/.test(m)
     || /\b(delete|remove|trash|erase|wipe|empty|clean up)\b[\s\S]{0,60}\b(file|folder|directory|image|photo|download|bin|recycling)\b/.test(m)
     || /\b(move|copy|rename|organize|sort)\b[\s\S]{0,40}\b(file|folder|image|photo|download)\b/.test(m)
+    // A code-symbol rename ("rename pad to padLeft") has no "file" noun but is squarely an
+    // agent/refactor task — the VGR rename block infers the defining file and rewrites call sites.
+    || /\brename\s+(?:the\s+)?(?:function\s+|method\s+)?[a-z_$][\w$]*\s+(?:to|as|into)\s+[a-z_$][\w$]*\b/i.test(message)
     || /\b(download|fetch|grab|save)\b[\s\S]{0,40}\b(image|photo|file|url|link)\b/.test(m)
     || /\b(create|make|open|launch)\b[\s\S]{0,30}\b(folder|directory)\b/.test(m)
     || /\b(write|save|create)\b[\s\S]{0,40}\b(file|markdown|document|note|report)\b/.test(m)
@@ -2375,7 +2378,8 @@ function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
   const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract|delete|remove|drop|prune|organi[sz]e|tidy|clean)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
-  return editVerb && hasCodePath
+  // A "rename X to Y" with no file path still routes: the block infers the defining file itself.
+  return (editVerb && hasCodePath) || detectRename(m) != null
 }
 
 // Decide whether a goal warrants the multi-specialist meta-router (decompose →
@@ -3403,19 +3407,23 @@ app.post('/api/chat', async (req, res) => {
         // verified inside planRenameTree before it's returned.
         if (!handled) {
           const ren = detectRename(message ?? '')
-          const renTarget = ren ? detectTargetPath(message ?? '') : null
-          if (ren && renTarget) {
-            const renAbs = path.join(projectPath, renTarget)
-            let renExisting: string | null = null
-            try { if (fs.existsSync(renAbs)) renExisting = fs.readFileSync(renAbs, 'utf-8') } catch { /* absent */ }
-            if (renExisting != null) {
+          if (ren) {
+            // Read the project once, then resolve the target file: prefer a named path that actually
+            // defines the symbol; otherwise INFER the unique file that defines it (null if 0 or >1).
+            const allFiles: Record<string, string> = {}
+            try {
+              for (const relSib of collectProjectTsFiles(projectPath)) {
+                try { allFiles[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
+              }
+            } catch { /* best-effort */ }
+            const named = detectTargetPath(message ?? '')
+            const renTarget = (named && allFiles[named] != null && definesSymbol(allFiles[named], ren.from))
+              ? named : findDefiningFile(ren.from, allFiles)
+            const renExisting = renTarget ? allFiles[renTarget] ?? null : null
+            if (renTarget && renExisting != null) {
+              if (!named) send({ type: 'thought', text: `No file named — ${ren.from} is defined uniquely in ${renTarget}; renaming there.` })
               const siblings: Record<string, string> = {}
-              try {
-                for (const relSib of collectProjectTsFiles(projectPath)) {
-                  if (relSib === renTarget) continue
-                  try { siblings[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
-                }
-              } catch { /* best-effort */ }
+              for (const [rel, c] of Object.entries(allFiles)) if (rel !== renTarget) siblings[rel] = c
               const tree = await planRenameTree(ren.from, ren.to, renTarget, renExisting, siblings)
               if (tree) {
                 const writes = [tree.primary, ...tree.propagated]

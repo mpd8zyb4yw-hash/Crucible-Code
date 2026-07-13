@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -569,6 +569,12 @@ async function run() {
     (await planPruneImports('src/a.ts', "import './styles.css'\nexport const n = 1\n")) === null)
   ok('prune returns null when nothing is unused (no spurious edit)',
     (await planPruneImports('src/a.ts', "import { a } from './x'\nexport const y = a\n")) === null)
+
+  // ── findDefiningFile (target inference when the request names no file) ────────────
+  ok('findDefiningFile returns the unique definer; null when 0 or >1 files define it',
+    findDefiningFile('pad', { 'src/a.ts': 'export function pad(s){return s}\n', 'src/b.ts': 'export const x=1\n' }) === 'src/a.ts'
+    && findDefiningFile('pad', { 'src/a.ts': 'export function pad(s){return s}\n', 'src/b.ts': 'export function pad(s){return s}\n' }) === null
+    && findDefiningFile('pad', { 'src/a.ts': 'export const x=1\n' }) === null)
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',
