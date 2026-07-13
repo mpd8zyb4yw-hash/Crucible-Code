@@ -462,6 +462,12 @@ async function run() {
   const mv2 = await planMoveTree('pad', 'src/strings.ts', 'src/pad.ts', mvUse, null, {})
   ok('move re-imports the function back into the source when the source still uses it',
     !!mv2 && mv2.propagated[0].content.includes("import { pad } from './pad'") && mv2.propagated[0].content.includes('banner = pad('))
+  ok('move ABSTAINS when the def uses a DEFAULT import (would lose it — transform cannot resolve)',
+    (await planMoveTree('readIt', 'src/a.ts', 'src/b.ts', "import fs from 'fs'\nexport function readIt(p:string){return fs.readFileSync(p,'utf8')}\n", null, {})) === null)
+  ok('move ABSTAINS when the def uses a NAMESPACE import',
+    (await planMoveTree('j', 'src/a.ts', 'src/b.ts', "import * as path from 'path'\nexport function j(a:string){return path.join(a,'x')}\n", null, {})) === null)
+  ok('move does NOT falsely abstain on unrelated imports the def never uses',
+    (await planMoveTree('pure', 'src/a.ts', 'src/b.ts', "import fs from 'fs'\nimport { z } from 'zod'\nexport function pure(a:number){return a+1}\n", null, {})) !== null)
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',

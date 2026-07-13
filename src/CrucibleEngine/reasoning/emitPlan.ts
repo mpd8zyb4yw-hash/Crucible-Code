@@ -838,16 +838,28 @@ export function detectMove(nl: string): { entry: string; fromPath: string; toPat
   return { entry, fromPath, toPath }
 }
 
-/** Local names a module imports (any specifier). Used for the self-containment check. */
+/** Every local binding a module's imports introduce — named (`{ a, b as c }`), default
+ *  (`import x from …`), and namespace (`import * as ns from …`). Used for the move
+ *  self-containment check, so a def that uses ANY imported name (not just named ones) is
+ *  correctly detected as non-self-contained. */
 function allImportedNames(content: string): Set<string> {
   const out = new Set<string>()
-  const rx = new RegExp(NAMED_IMPORT_RX.source, 'gm')
+  const importRx = /^import\s+([\s\S]+?)\s+from\s*['"][^'"]+['"]/gm
   let m: RegExpExecArray | null
-  while ((m = rx.exec(content))) {
-    for (const raw of m[1].split(',')) {
-      const local = raw.trim().split(/\s+as\s+/).map(s => s.trim()).pop()
-      if (local) out.add(local)
+  while ((m = importRx.exec(content))) {
+    const clause = m[1].trim()
+    const braced = /\{([^}]*)\}/.exec(clause)
+    if (braced) {
+      for (const raw of braced[1].split(',')) {
+        const local = raw.trim().split(/\s+as\s+/).map(s => s.trim()).pop()
+        if (local) out.add(local)
+      }
     }
+    const ns = /\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(clause)
+    if (ns) out.add(ns[1])
+    // Default import: a leading identifier before any `,` / `{` / `*`.
+    const def = /^([A-Za-z_$][\w$]*)\s*(?:,|$)/.exec(clause)
+    if (def && def[1] !== 'type') out.add(def[1])
   }
   return out
 }
