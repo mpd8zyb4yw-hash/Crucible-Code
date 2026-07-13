@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectPruneImportsAll, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -569,6 +569,11 @@ async function run() {
     (await planPruneImports('src/a.ts', "import './styles.css'\nexport const n = 1\n")) === null)
   ok('prune returns null when nothing is unused (no spurious edit)',
     (await planPruneImports('src/a.ts', "import { a } from './x'\nexport const y = a\n")) === null)
+  ok('detectPruneImportsAll fires for project-wide phrasings, not single-file or unrelated asks',
+    detectPruneImportsAll('remove all unused imports') === true
+    && detectPruneImportsAll('clean up unused imports across the project') === true
+    && detectPruneImportsAll('remove unused imports from src/a.ts') === false
+    && detectPruneImportsAll('add a function') === false)
 
   // ── findDefiningFile (target inference when the request names no file) ────────────
   ok('detectMoveToOnly parses the source-less "move X to B.ts"; rejects file-move + from-form',

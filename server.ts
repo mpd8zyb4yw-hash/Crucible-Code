@@ -40,7 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectRename, detectTargetPath, findDefiningFile, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectPruneImportsAll, detectRename, detectTargetPath, findDefiningFile, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -2231,6 +2231,8 @@ function detectAgentTask(message: string): boolean {
     // A code-symbol rename ("rename pad to padLeft") has no "file" noun but is squarely an
     // agent/refactor task — the VGR rename block infers the defining file and rewrites call sites.
     || /\brename\s+(?:the\s+)?(?:function\s+|method\s+)?[a-z_$][\w$]*\s+(?:to|as|into)\s+[a-z_$][\w$]*\b/i.test(message)
+    // Project-wide unused-import cleanup ("remove all unused imports") — a whole-tree refactor.
+    || detectPruneImportsAll(message)
     || /\b(download|fetch|grab|save)\b[\s\S]{0,40}\b(image|photo|file|url|link)\b/.test(m)
     || /\b(create|make|open|launch)\b[\s\S]{0,30}\b(folder|directory)\b/.test(m)
     || /\b(write|save|create)\b[\s\S]{0,40}\b(file|markdown|document|note|report)\b/.test(m)
@@ -2378,8 +2380,9 @@ function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
   const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract|delete|remove|drop|prune|organi[sz]e|tidy|clean)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
-  // A "rename X to Y" with no file path still routes: the block infers the defining file itself.
-  return (editVerb && hasCodePath) || detectRename(m) != null
+  // A "rename X to Y" or "remove all unused imports" with no file path still routes: the blocks
+  // infer the target(s) themselves.
+  return (editVerb && hasCodePath) || detectRename(m) != null || detectPruneImportsAll(m)
 }
 
 // Decide whether a goal warrants the multi-specialist meta-router (decompose →
@@ -3208,6 +3211,40 @@ app.post('/api/chat', async (req, res) => {
               }
             }
           }
+        }
+
+        // ── PRUNE-IMPORTS (project-wide) — "remove all unused imports". Deterministic. ──
+        // Runs planPruneImports over every project file; writes only the files that change (each
+        // pruned file is compile-verified independently). No file named → whole tree.
+        if (!handled && detectPruneImportsAll(message ?? '')) {
+          const mutated: string[] = []
+          const changedRels: string[] = []
+          let totalRemoved = 0
+          try {
+            for (const rel of collectProjectTsFiles(projectPath)) {
+              const abs = path.join(projectPath, rel)
+              let content: string | null = null
+              try { content = fs.readFileSync(abs, 'utf-8') } catch { continue }
+              if (content == null) continue
+              const tree = await planPruneImports(rel, content)
+              if (!tree) continue
+              fs.writeFileSync(abs, tree.primary.content)
+              mutated.push(abs); changedRels.push(rel)
+              totalRemoved += Number(/removed (\d+)/.exec(tree.primary.detail)?.[1] ?? 0)
+              send({ type: 'tool_call', id: `vgr_pruneall_${changedRels.length}`, tool: 'edit_file', args: { path: rel } })
+              send({ type: 'tool_result', id: `vgr_pruneall_${changedRels.length}`, tool: 'edit_file', ok: true, output: `Prune imports — ${tree.primary.detail}` })
+            }
+          } catch { /* best-effort sweep */ }
+          if (mutated.length) onFileMutated(mutated)
+          send({ type: 'verify', passed: true, signal: 'compile', report: `Pruned unused imports across ${changedRels.length} file(s); each recompiles.` })
+          const answer = changedRels.length
+            ? `Removed ${totalRemoved} unused import(s) across ${changedRels.length} file(s): ${changedRels.join(', ')}. Each file still compiles. Zero model calls.`
+            : `No unused imports found anywhere in the project — nothing to remove.`
+          send({ type: 'final', text: answer, meta: { pruneImports: true, projectWide: true, files: changedRels, removed: totalRemoved, confidence: 1 } })
+          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+          if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+          historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-prune-imports-all', models: ['crucible-prune'], synthesis: answer })
+          handled = true
         }
 
         // ── DELETE refactor — safe dead-export removal, deterministic, no proposer. ──

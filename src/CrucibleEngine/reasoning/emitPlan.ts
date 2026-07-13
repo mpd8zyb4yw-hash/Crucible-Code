@@ -881,6 +881,14 @@ export function detectPruneImports(nl: string): { targetPath: string } | null {
   return { targetPath: m[1].replace(/['"`.,]+$/, '') }
 }
 
+/** True for a PROJECT-WIDE unused-import cleanup ("remove all unused imports", "clean up imports
+ *  across the project") — i.e. a prune verb + "imports" with NO specific file named. */
+export function detectPruneImportsAll(nl: string): boolean {
+  if (detectPruneImports(nl)) return false // a specific file was named → single-file path
+  return /\b(?:remove|prune|clean(?:\s*up)?|delete|drop|organi[sz]e|tidy)\s+(?:the\s+)?(?:all\s+)?(?:unused\s+)?imports?\b/i.test(nl)
+    && /\bunused\b|\ball\b|\bacross\b|\beverywhere\b|\bwhole\b|\bentire\b|\bproject\b|\bcodebase\b/i.test(nl)
+}
+
 /**
  * Remove unused imports from a single file — deterministic, compile-verified. For each import,
  * named specifiers whose local isn't referenced in the body are dropped (the whole statement goes
