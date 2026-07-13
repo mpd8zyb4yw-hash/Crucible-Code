@@ -3130,8 +3130,19 @@ app.post('/api/chat', async (req, res) => {
                 if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
                 historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move', models: ['crucible-move'], synthesis: answer })
                 handled = true
+              } else if (new RegExp(`\\b${mov.entry}\\b`).test(fromExisting)) {
+                // The source genuinely defines the symbol, so the move intent is real — the abstain
+                // is a SAFETY refusal. End the turn honestly rather than letting the FM attempt a
+                // risky move that could corrupt files or leave a half-applied edit.
+                const answer = `I won't move ${mov.entry} from ${mov.fromPath} to ${mov.toPath}: it can't be relocated safely — it depends on a source-local declaration that wouldn't exist at the destination, the destination already defines that name, or the result wouldn't compile. Make ${mov.entry} self-contained (or resolve the collision) first.`
+                send({ type: 'verify', passed: false, signal: 'compile', report: `Move ${mov.entry} refused — not safely relocatable.` })
+                send({ type: 'final', text: answer, meta: { moveRefactor: true, refused: true, entry: mov.entry, from: mov.fromPath, to: mov.toPath, confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move', models: ['crucible-move'], synthesis: answer })
+                handled = true
               } else {
-                send({ type: 'thought', text: `Move ${mov.entry} (${mov.fromPath} → ${mov.toPath}) could not be applied safely (${mov.entry} isn't self-contained, uses a relative import, a destination name collision, or a non-compiling result) — handing off without a half-applied move.` })
+                send({ type: 'thought', text: `Move ${mov.entry} (${mov.fromPath} → ${mov.toPath}) could not be applied — ${mov.entry} isn't defined in ${mov.fromPath}; handing off.` })
               }
             }
           }
@@ -3325,8 +3336,19 @@ app.post('/api/chat', async (req, res) => {
                 if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
                 historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-rename', models: ['crucible-rename'], synthesis: answer })
                 handled = true
+              } else if (new RegExp(`\\b${ren.from}\\b`).test(renExisting)) {
+                // The file genuinely defines the symbol, so the rename intent is real — the abstain
+                // is a SAFETY refusal. End the turn honestly rather than letting the FM attempt a
+                // risky rename that could leave importers or call sites dangling.
+                const answer = `I won't rename ${ren.from} → ${ren.to}: it can't be done safely — ${ren.from} appears in a position I can't rewrite with certainty (a bare value reference, object shorthand, a shadowing binding, a conflicting alias, or ${ren.to} already exists). Renaming would risk leaving call sites or importers dangling.`
+                send({ type: 'verify', passed: false, signal: 'compile', report: `Rename ${ren.from} → ${ren.to} refused — an unsafe use or a name collision.` })
+                send({ type: 'final', text: answer, meta: { renameRefactor: true, refused: true, from: ren.from, to: ren.to, confidence: 1 } })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-rename', models: ['crucible-rename'], synthesis: answer })
+                handled = true
               } else {
-                send({ type: 'thought', text: `Rename ${ren.from} → ${ren.to} could not be applied safely (an unsafe use of ${ren.from}, a name collision, or a non-compiling result) — handing off without a half-applied rename.` })
+                send({ type: 'thought', text: `Rename ${ren.from} → ${ren.to} could not be applied — ${ren.from} isn't defined in ${renTarget}; handing off.` })
               }
             }
           }
