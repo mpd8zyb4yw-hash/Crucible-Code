@@ -829,7 +829,7 @@ export async function planRenameTree(
 
 /** Parse "move X from src/a.ts to src/b.ts". Both paths and the name required. */
 export function detectMove(nl: string): { entry: string; fromPath: string; toPath: string } | null {
-  const m = /\bmove\s+(?:the\s+)?(?:function\s+|method\s+)?['"`]?([A-Za-z_$][\w$]*)['"`]?\s+from\s+(\S+?)\s+(?:to|into)\s+(\S+)/i.exec(nl)
+  const m = /\b(?:move|relocate|extract)\s+(?:the\s+)?(?:function\s+|method\s+)?['"`]?([A-Za-z_$][\w$]*)['"`]?\s+from\s+(\S+?)\s+(?:to|into)\s+(\S+)/i.exec(nl)
   if (!m) return null
   const entry = m[1]
   const fromPath = m[2].replace(/['"`.,]+$/, '')

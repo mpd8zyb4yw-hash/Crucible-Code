@@ -446,6 +446,9 @@ async function run() {
   ok('detectMove parses "move X from A to B"',
     JSON.stringify(detectMove('move pad from src/strings.ts to src/pad.ts')) === '{"entry":"pad","fromPath":"src/strings.ts","toPath":"src/pad.ts"}'
     && detectMove('move pad to src/pad.ts') === null)
+  ok('detectMove also accepts the "extract"/"relocate" verbs and the "into" preposition',
+    JSON.stringify(detectMove('extract pad from src/strings.ts into src/pad.ts')) === '{"entry":"pad","fromPath":"src/strings.ts","toPath":"src/pad.ts"}'
+    && JSON.stringify(detectMove('relocate the function pad from src/strings.ts to src/pad.ts')) === '{"entry":"pad","fromPath":"src/strings.ts","toPath":"src/pad.ts"}')
   const mvSrc = "export function pad(s: string, width: number): string {\n  return s.padStart(width, ' ')\n}\n\nexport function trim(s: string){ return s.trim() }\n"
   const mvImp = "import { pad, trim } from './strings'\nexport const b = pad('hi', 5)\nexport const t = trim(' x ')\n"
   const mv = await planMoveTree('pad', 'src/strings.ts', 'src/pad.ts', mvSrc, null, { 'src/app.ts': mvImp })
