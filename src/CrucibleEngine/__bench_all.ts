@@ -41,6 +41,7 @@ const SUITES = [
   'latency:bench',
   'util:bench',
   'refactorroutes:bench',
+  'vgr:coderesearch',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')

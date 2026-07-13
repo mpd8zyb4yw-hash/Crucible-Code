@@ -18,7 +18,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { CodeCase } from './codeVerifier'
-import { makeCodeResearchFn, mergeCodeAcceptance } from './codeResearch'
+import { makeCodeResearchFn, mergeCodeAcceptance, WEB_GROUND_MARK } from './codeResearch'
 import type { ImplSample } from './differentialSpec'
 import type { ResearchInput } from './iterate'
 import { iterateCodeTask } from './solve'
@@ -98,6 +98,27 @@ async function main() {
       JSON.stringify(newCases))
   }
 
+  // ── 3b. Channel 3: WEB grounding folds a reference snippet into proposer context. ──
+  {
+    let calls = 0
+    const webGround = async () => { calls++; return 'export function double(n){ return n * 2 } // from stackoverflow' }
+    const research = makeCodeResearchFn({ nl: 'double a number', differential: false, webGround })
+    const base: ResearchInput<string> = {
+      spec: { goal: 'double', domain: 'code', acceptance: acc('double', [{ args: [3], expected: 6 }]) },
+      best: null, epoch: 1, priorContext: [],
+    }
+    const out = await research(base)
+    check('3b channel-3 folds a web snippet (marked as a reference) into context',
+      !!out?.context && out.context.startsWith(WEB_GROUND_MARK) && out.context.includes('n * 2'), JSON.stringify(out?.note))
+    // A later stall must NOT re-hit the network — the marker in priorContext blocks the re-fetch.
+    const again = await research({ ...base, priorContext: [out!.context!] })
+    check('3b channel-3 fires at most once (marker blocks a re-fetch)', again === null && calls === 1, `calls=${calls}`)
+    // A throwing retriever is best-effort: the loop is never broken, just no web context.
+    const boom = makeCodeResearchFn({ nl: 'double', differential: false, webGround: async () => { throw new Error('offline') } })
+    const safe = await boom(base)
+    check('3b a throwing web retriever never breaks the loop', safe === null, JSON.stringify(safe))
+  }
+
   // ── 4. END-TO-END: proposer emits WRONG code until channel-1 carries the prior epoch's ──
   //     counterexample into context; then it emits the right code and the REAL verifier
   //     certifies it. A single search() (empty history each try) would never converge here.
@@ -122,7 +143,33 @@ async function main() {
     check('4 it took more than one epoch', r.epochs > 1, `epochs=${r.epochs}`)
   }
 
-  console.log(`\n${pass}/${pass + fail} checks passed\n`)
+  // ── 5. END-TO-END (the point of the feature): the proposer CANNOT solve until WEB grounding ──
+  //     supplies the reference approach; the loop stalls, fetches, then the informed proposal is
+  //     EXECUTED and certified. This is "use the internet to fill the gap", staying doctrine-sound
+  //     (the web only informs the proposer; the verifier still decides).
+  {
+    const proposer: Proposer<string> = async (ctx) => {
+      const informed = (ctx.spec.context ?? '').includes('n % 2')
+      const code = informed
+        ? 'export function evensOnly(a){ return a.filter(n => n % 2 === 0) }'
+        : 'export function evensOnly(a){ return a }'   // wrong until the web reveals the filter
+      return { value: code, fingerprint: informed ? 'right' : 'wrong' } as Candidate<string>
+    }
+    const webGround = async () => 'To keep even numbers: arr.filter(n => n % 2 === 0)  // reference'
+    const research = makeCodeResearchFn({ nl: 'keep only even numbers', differential: false, webGround })
+    const r = await iterateCodeTask(
+      { goal: 'keep only even numbers from an array', nl: 'keep only even numbers', entry: 'evensOnly',
+        cases: [{ args: [[1, 2, 3, 4]], expected: [2, 4] }, { args: [[5, 6]], expected: [6] }] },
+      { research, baseModelCalls: 3, now: fakeClock(1) },
+      proposer,
+    )
+    check('5 WEB grounding unlocks a solve the proposer could not reach alone',
+      r.status === 'solved' && /filter/.test(r.solution?.value ?? ''), JSON.stringify({ s: r.status, e: r.epochs }))
+    check('5 the certified solution still PASSES the real execution verifier (web only informed)',
+      r.status === 'solved', JSON.stringify(r.detail))
+  }
+
+  console.log(`\n${pass}/${pass + fail} passed\n`)
   if (fail > 0) process.exit(1)
 }
 

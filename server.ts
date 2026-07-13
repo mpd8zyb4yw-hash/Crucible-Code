@@ -40,6 +40,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
+import { retrieveForTask as retrieveCodeRefs } from './src/CrucibleEngine/retrieval/retrievalLayer'
 import { detectPruneImportsAll, detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { planRefactor } from './src/server/refactorRoutes'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
@@ -2372,6 +2373,20 @@ function isCodeImplementationTask(message: string): boolean {
 // Conservative: an edit verb AND an explicit code path — the path is required anyway for
 // emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
 
+// WEB grounding for the VGR research loop (channel 3): on a stall, fetch reference
+// implementations/API-usage from the open web (StackOverflow/docs) as PROPOSER grounding — the
+// candidate that adapts it is still EXECUTED against the derived spec, so this can never certify a
+// false answer (doctrine-sound). Only wired when CRUCIBLE_CODE_WEB_GROUND=1 (network + latency, and
+// it only fires on the converge path's stall). Best-effort: any failure → null → the loop proceeds.
+async function codeWebGround(query: string): Promise<string | null> {
+  try {
+    const bundle = await retrieveCodeRefs({ goal: query }, { budget: 1500, maxPages: 2 })
+    const block = bundle.block?.trim()
+    return block ? block : null
+  } catch { return null }
+}
+const webGroundOrNull = process.env.CRUCIBLE_CODE_WEB_GROUND === '1' ? codeWebGround : undefined
+
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
   const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract|delete|remove|drop|prune|organi[sz]e|tidy|clean)\b/i.test(m)
@@ -3237,6 +3252,7 @@ app.post('/api/chat', async (req, res) => {
             maxModelCalls: 8, beamWidth: 2,
             signal: ac.signal,
             converge: process.env.CRUCIBLE_CONVERGE === '1',
+            webGround: webGroundOrNull,
             emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
           })
           if (vgr && vgr.status === 'solved' && vgr.code && vgr.entry) {
@@ -3749,6 +3765,7 @@ app.post('/api/chat', async (req, res) => {
       const vgr = await solveCodingRequest(message ?? '', {
         maxModelCalls: 6, beamWidth: 2, signal: vgrSignal,
         converge: process.env.CRUCIBLE_CONVERGE === '1',
+        webGround: webGroundOrNull,
         // Forward VGR/iterate() reasoning thoughts (per-epoch convergence steps, proposer
         // diagnostics) to the live stream so a convergence run is observable, not silent.
         emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },

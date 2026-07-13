@@ -49,7 +49,21 @@ export interface CodeResearchOpts {
   tightenWhenCasesAtMost?: number
   /** Cap on how many NEW differential cases a single research call may add. Default 8. */
   maxNewCasesPerCall?: number
+  /**
+   * WEB grounding (channel 3): on a stall, fetch reference implementations / API usage from the
+   * open web (StackOverflow, docs) for `nl`, folded into PROPOSER CONTEXT as a hint. DOCTRINE-SOUND
+   * because it only tightens the PROPOSER, never the verifier — the retrieved code is never trusted,
+   * and the candidate that adapts it is still EXECUTED against the spec/oracle. Injected so the
+   * network stays out of the pure loop; returns null when nothing useful is found. Fires at most
+   * once per solve (marked in context so later stalls don't re-fetch). Absent → channel 3 off.
+   */
+  webGround?: (query: string) => Promise<string | null>
 }
+
+/** Sentinel prefixing a web-grounded block — lets the ResearchFn detect (via priorContext) that it
+ *  already fetched, so a later stall doesn't re-hit the network, and cues the model that the snippet
+ *  is a REFERENCE to adapt, not trusted ground truth (only execution certifies). */
+export const WEB_GROUND_MARK = '### Web reference (adapt to the spec — NOT trusted; your code is executed against hidden cases):'
 
 /** Stable identity of a case for union/dedup: which function + which arguments. */
 function caseKey(entry: string, c: CodeCase): string {
@@ -138,6 +152,23 @@ export function makeCodeResearchFn(opts: CodeResearchOpts): ResearchFn<string> {
             out.acceptance = { cases: fresh }
             notes.push(`tightened verifier with ${fresh.length} differential-consensus case(s)`)
           }
+        }
+      } catch { /* a research failure must never break the loop; fall through */ }
+    }
+
+    // ── Channel 3: WEB grounding — reference snippets from the open web, PROPOSER-only. ──────
+    // Sound: retrieved code is a HINT folded into proposer context; the candidate is still executed
+    // against the spec, so a wrong/irrelevant snippet can only waste a proposal, never certify a
+    // false answer. Fires at most once (the marker in priorContext blocks a re-fetch on later
+    // stalls), best-effort, and only when it returns something new.
+    const alreadyWebGrounded = priorContext.some(p => p.startsWith(WEB_GROUND_MARK))
+    if (opts.webGround && !alreadyWebGrounded && !signal?.aborted) {
+      try {
+        const snippet = (await opts.webGround(opts.nl))?.trim()
+        if (snippet) {
+          const block = `${WEB_GROUND_MARK}\n${snippet}`
+          out.context = out.context ? `${out.context}\n\n${block}` : block
+          notes.push('folded web reference snippets into proposer context')
         }
       } catch { /* a research failure must never break the loop; fall through */ }
     }

@@ -73,7 +73,7 @@ export async function solveCodeTask(
  * proposerOverride/research for deterministic tests (see __code_research_bench.ts).
  */
 export async function iterateCodeTask(
-  input: SolveCodeInput & { nl?: string },
+  input: SolveCodeInput & { nl?: string; webGround?: (query: string) => Promise<string | null> },
   opts: IterateOpts<string> = {},
   proposerOverride?: Proposer<string>,
 ): Promise<IterateResult<string>> {
@@ -89,7 +89,7 @@ export async function iterateCodeTask(
     } satisfies CodeAcceptance as unknown as Record<string, unknown>,
   }
   const proposer: Proposer<string> = proposerOverride ?? proposeCode
-  const research = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal })
+  const research = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal, webGround: input.webGround })
   return iterate(spec, proposer, verifyCode, {
     mergeAcceptance: mergeCodeAcceptance,
     ...opts,
@@ -139,6 +139,14 @@ export async function solveCodingRequest(
      */
     converge?: boolean
     iterate?: Partial<IterateOpts<string>>
+    /**
+     * Injected WEB retriever for the research loop's channel 3: on a stall, fetch reference
+     * implementations/snippets from the open web for `nl`, folded into PROPOSER grounding (never
+     * a verifier value — the candidate is still executed against the spec). Kept out of this pure
+     * module; the server provides the network-backed implementation. Only active on the converge
+     * path (that's where research runs). Absent → no web grounding.
+     */
+    webGround?: (query: string) => Promise<string | null>
   } = {},
 ): Promise<CodingRequestResult> {
   // Shared converging attempt for the case-based tiers. Returns a solved CodingRequestResult
@@ -147,7 +155,7 @@ export async function solveCodingRequest(
     entry: string, cases: CodeAcceptance['cases'], detailPrefix: string,
   ): Promise<CodingRequestResult | null> => {
     if (!opts.converge) return null
-    const it = await iterateCodeTask({ goal: nl, nl, entry, cases }, {
+    const it = await iterateCodeTask({ goal: nl, nl, entry, cases, webGround: opts.webGround }, {
       signal: opts.signal, emit: opts.emit, ...opts.iterate,
     })
     if (it.status === 'solved' && it.solution && await metaGate(it.solution.value)) {
