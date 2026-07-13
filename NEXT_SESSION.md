@@ -30,7 +30,21 @@
 - **Whole-tree RENAME refactor** (e75f0bf, 77b053e): deterministic (0 model calls) `planRenameTree` renames def + importer specifiers + call sites, alias-preserving, all-or-nothing (abstains on bare-value use / collision / re-export barrel), each rewrite compile-verified. `rename` added to isCodeEditTask. Live-confirmed 3-file rename, project tsc-clean.
 - bench:all **441/441** across 13 suites (registered the 2 new suites, 5d35906); prove:all 251/251; tsc clean throughout.
 
-**NEXT (open):** decompose server.ts (monolith + parallel-session merge-contention file — HIGH conflict risk, coordinate); broaden answer-engine consensus beyond premise checks; behavioral verification for non-example creative/interactive code (the class still outside any gate). RENAME limits: only named function exports, bare-value uses abstain, transitive re-export chains abstain (not chased).
+**server.ts decomposition STARTED (3758ffc, cb04397, be826c7)** — pattern: extract a self-contained
+cluster into a new `src/server/*.ts` module (pure or encapsulated-state), leave a THIN wrapper in
+server.ts so every call site is unchanged (minimal diff = merge-safe vs the parallel session), and add
+a committed bench. Done so far: `src/server/jwt.ts` (HS256 sign/verify + cookies, now constant-time,
+jwt:bench 9/9), `src/server/textVector.ts` (paraphrase-cache token-cosine, textvector:bench 7/7),
+`src/server/latency.ts` (LatencyTracker + percentile, latency:bench 6/6). server.ts 8413→8352; ~40
+previously-untestable helpers now have 22 checks. Live auth re-verified after the crypto change
+(200/401/401). Continue with more pure/cohesive clusters the same way; leave the hot request-handler
+bodies (the real contention surface) alone.
+
+**NEXT (open):** continue server.ts extraction (cache cluster state, conversation persistence, token
+estimation) — LOW risk while it stays "extract pure helper + thin wrapper + bench"; broaden
+answer-engine consensus beyond premise checks; behavioral verification for non-example
+creative/interactive code (still outside any gate). RENAME limits: only named function exports,
+bare-value uses abstain, transitive re-export chains abstain (not chased).
 
 ---
 
