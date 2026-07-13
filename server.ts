@@ -4206,7 +4206,7 @@ app.post('/api/chat', async (req, res) => {
     console.log(`[CircuitBreaker] Probing ${probingModels.length} model(s): ${probingModels.map(m => m.label).join(', ')}`)
     await Promise.all(probingModels.map(async (m) => {
       try {
-        await callModel(m as SelectedModel, [{ role: 'user', content: 'ping' }])
+        await callModel(m as unknown as SelectedModel, [{ role: 'user', content: 'ping' }])
         resetCircuitBreaker(m.id); saveCircuitState()
         console.log(`[CircuitBreaker] Probe success — ${m.label} restored`)
       } catch (e: any) {
@@ -8143,7 +8143,7 @@ function startListening(port: number, attempt = 0) {
           if (!reg.length) return
           const model = reg[0]
           const runQuery = (question: string, promptType: string) =>
-            callModel(model as SelectedModel, [
+            callModel(model as unknown as SelectedModel, [
               { role: 'system', content: `You are a helpful assistant. Answer concisely. Prompt type: ${promptType}.` },
               { role: 'user', content: question },
             ], { timeoutMs: 12000 })
@@ -8285,7 +8285,7 @@ function startListening(port: number, attempt = 0) {
         for (const entry of ready) {
           const model = MODEL_REGISTRY.find(m => m.id === entry.modelId)
           if (!model) continue
-          callModel(model as SelectedModel, [{ role: 'user', content: 'Reply with one word: ready' }], { timeoutMs: 8000 })
+          callModel(model as unknown as SelectedModel, [{ role: 'user', content: 'Reply with one word: ready' }], { timeoutMs: 8000 })
             .then(() => {
               promoteFromBench(process.cwd(), entry.modelId)
               console.log(`[Roster] Re-probe passed: ${entry.label} restored to active`)

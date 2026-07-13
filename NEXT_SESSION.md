@@ -51,7 +51,15 @@ estimateMessageTokens + conversationTitle, util:bench 11/11). Live auth re-verif
 change (200/401/401). Continue with more pure/cohesive clusters the same way; leave the hot
 request-handler bodies (the real contention surface) alone. bench:all now 477/477 across 17 suites.
 
-**NEXT (open):** continue server.ts extraction (cache cluster state, conversation persistence, token
+**MOVE-function refactor primitive built but NOT wired (357fece)** — `planMoveTree` in emitPlan.ts moves
+a self-contained function between files (repoints/splits importers, re-imports into source if still
+used, all-or-nothing, compile-verified; abstains on non-self-contained defs / collision / re-export).
+Left unwired on purpose while the parallel type-debt session owns server.ts. TO WIRE: add a ~20-line
+pre-VGR block mirroring the rename short-circuit (detectMove + gather siblings via collectProjectTsFiles
++ write primary+propagated + emit tool_call/verify/final), and add 'move' to isCodeEditTask's editVerb
+regex. vgr:bench 160/160.
+
+**NEXT (open):** wire planMoveTree (above) once server.ts is free; continue server.ts extraction (cache cluster state, conversation persistence, token
 estimation) — LOW risk while it stays "extract pure helper + thin wrapper + bench"; broaden
 answer-engine consensus beyond premise checks; behavioral verification for non-example
 creative/interactive code (still outside any gate). RENAME limits: only named function exports,
