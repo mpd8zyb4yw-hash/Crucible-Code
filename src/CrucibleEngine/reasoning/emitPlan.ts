@@ -842,26 +842,44 @@ export function detectMove(nl: string): { entry: string; fromPath: string; toPat
  *  (`import x from …`), and namespace (`import * as ns from …`). Used for the move
  *  self-containment check, so a def that uses ANY imported name (not just named ones) is
  *  correctly detected as non-self-contained. */
+/** Local bindings an import clause introduces — named (`{ a, b as c }`), namespace
+ *  (`* as ns`), and default (leading identifier). */
+function clauseLocals(clause: string): string[] {
+  const out: string[] = []
+  const braced = /\{([^}]*)\}/.exec(clause)
+  if (braced) for (const raw of braced[1].split(',')) {
+    const local = raw.trim().split(/\s+as\s+/).map(s => s.trim()).pop()
+    if (local) out.push(local)
+  }
+  const ns = /\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(clause)
+  if (ns) out.push(ns[1])
+  const def = /^([A-Za-z_$][\w$]*)\s*(?:,|$)/.exec(clause.trim())
+  if (def && def[1] !== 'type') out.push(def[1])
+  return out
+}
+
 function allImportedNames(content: string): Set<string> {
   const out = new Set<string>()
   const importRx = /^import\s+([\s\S]+?)\s+from\s*['"][^'"]+['"]/gm
   let m: RegExpExecArray | null
-  while ((m = importRx.exec(content))) {
-    const clause = m[1].trim()
-    const braced = /\{([^}]*)\}/.exec(clause)
-    if (braced) {
-      for (const raw of braced[1].split(',')) {
-        const local = raw.trim().split(/\s+as\s+/).map(s => s.trim()).pop()
-        if (local) out.add(local)
-      }
-    }
-    const ns = /\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(clause)
-    if (ns) out.add(ns[1])
-    // Default import: a leading identifier before any `,` / `{` / `*`.
-    const def = /^([A-Za-z_$][\w$]*)\s*(?:,|$)/.exec(clause)
-    if (def && def[1] !== 'type') out.add(def[1])
-  }
+  while ((m = importRx.exec(content))) for (const l of clauseLocals(m[1])) out.add(l)
   return out
+}
+
+/** Import statements from `fromContent` that `defText` actually uses. Returns the statement
+ *  texts to CARRY to the destination when they're all PACKAGE (bare-specifier) imports (no path
+ *  change needed), or null to ABSTAIN when the def uses a RELATIVE import (re-pathing is out of
+ *  scope) — the caller then refuses the move. */
+function importsToCarry(fromContent: string, defText: string): string[] | null {
+  const carried: string[] = []
+  const rx = /^import\s+([\s\S]+?)\s+from\s*['"]([^'"]+)['"];?/gm
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(fromContent))) {
+    if (!clauseLocals(m[1]).some(l => codeWordIndices(defText, l).length)) continue
+    if (m[2].startsWith('.')) return null // relative import used by the def → can't safely re-path
+    carried.push(m[0].replace(/;?\s*$/, ''))
+  }
+  return carried
 }
 
 /** Repoint a sibling's import of `entry` from `fromPath`'s module to `newSpec`. When the import
@@ -903,23 +921,43 @@ export async function planMoveTree(
   if (!span) return null
   const defText = fromContent.slice(span.start, span.end).trim()
 
-  // Self-containment: the def must reference no other top-level decl or import of the source file.
-  const foreign = new Set<string>([...topLevelDeclarations(fromContent).filter(n => n !== entry), ...allImportedNames(fromContent)])
-  for (const name of foreign) {
-    if (codeWordIndices(defText, name).length) return null // depends on source-local context → unsafe to move
+  // Self-containment: the def must not reference another TOP-LEVEL declaration of the source file
+  // (a local dependency that wouldn't exist in the destination → unsafe to move).
+  for (const name of topLevelDeclarations(fromContent).filter(n => n !== entry)) {
+    if (codeWordIndices(defText, name).length) return null
   }
+  // Package imports the def uses are CARRIED to the destination; a relative import it uses aborts
+  // the move (re-pathing is out of scope). null → abstain.
+  const carry = importsToCarry(fromContent, defText)
+  if (carry == null) return null
 
   const compiles = async (src: string) => {
     try { await transform(src, { loader: 'ts', format: 'esm', target: 'node18' }); return true } catch { return false }
   }
 
-  // Destination: append (or create) the def.
-  const destContent = toContent != null ? toContent.replace(/\s*$/, '') + '\n\n' + defText + '\n' : defText + '\n'
+  // Destination: prepend the package imports the def needs (skip any already present verbatim), then
+  // append (or create) the def.
+  const carryHead = carry.filter(line => toContent == null || !toContent.includes(line)).join('\n')
+  const destContent = toContent != null
+    ? (carryHead ? carryHead + '\n' : '') + toContent.replace(/\s*$/, '') + '\n\n' + defText + '\n'
+    : (carryHead ? carryHead + '\n\n' : '') + defText + '\n'
   if (!(await compiles(destContent))) return null
   const primary: EmitPlan = { rel: toPath, content: destContent, mode: toContent != null ? 'modify' : 'create', detail: `moved ${entry} into ${toPath}` }
 
-  // Source: remove the def; if the file still uses entry, import it back from the destination.
+  // Source: remove the def, then drop any import that ONLY the moved def used (all its locals now
+  // unused) so the source isn't left with a dead import — but keep imports whose other names are
+  // still referenced.
   let newFrom = (fromContent.slice(0, span.start) + fromContent.slice(span.end)).replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '')
+  for (const line of carry) {
+    const clause = /^import\s+([\s\S]+?)\s+from/.exec(line)
+    // Usage must be checked OUTSIDE import statements (the import line itself contains the name).
+    const body = newFrom.replace(/^import\s[\s\S]*?from\s*['"][^'"]+['"];?/gm, '')
+    if (clause && !clauseLocals(clause[1]).some(l => codeWordIndices(body, l).length)) {
+      newFrom = newFrom.replace(line + '\n', '').replace(line, '')
+    }
+  }
+  newFrom = newFrom.replace(/^\s*\n/, '')
+  // If the file still uses entry, import it back from the destination.
   if (codeWordIndices(newFrom, entry).length) {
     newFrom = `import { ${entry} } from '${relativeSpecifier(fromPath, toPath)}'\n` + newFrom
   }

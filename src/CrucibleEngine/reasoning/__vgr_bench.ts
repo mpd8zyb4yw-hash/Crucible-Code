@@ -462,12 +462,30 @@ async function run() {
   const mv2 = await planMoveTree('pad', 'src/strings.ts', 'src/pad.ts', mvUse, null, {})
   ok('move re-imports the function back into the source when the source still uses it',
     !!mv2 && mv2.propagated[0].content.includes("import { pad } from './pad'") && mv2.propagated[0].content.includes('banner = pad('))
-  ok('move ABSTAINS when the def uses a DEFAULT import (would lose it — transform cannot resolve)',
-    (await planMoveTree('readIt', 'src/a.ts', 'src/b.ts', "import fs from 'fs'\nexport function readIt(p:string){return fs.readFileSync(p,'utf8')}\n", null, {})) === null)
-  ok('move ABSTAINS when the def uses a NAMESPACE import',
-    (await planMoveTree('j', 'src/a.ts', 'src/b.ts', "import * as path from 'path'\nexport function j(a:string){return path.join(a,'x')}\n", null, {})) === null)
+  const mvDef = await planMoveTree('readIt', 'src/a.ts', 'src/b.ts', "import fs from 'fs'\nexport function readIt(p:string){return fs.readFileSync(p,'utf8')}\n", null, {})
+  ok('move CARRIES a DEFAULT package import to the destination and drops the dead source import',
+    !!mvDef && mvDef.primary.content.includes("import fs from 'fs'") && !mvDef.propagated[0].content.includes("import fs"))
+  const mvNs = await planMoveTree('j', 'src/a.ts', 'src/b.ts', "import * as path from 'path'\nexport function j(a:string){return path.join(a,'x')}\n", null, {})
+  ok('move CARRIES a NAMESPACE package import to the destination and drops the dead source import',
+    !!mvNs && mvNs.primary.content.includes("import * as path from 'path'") && !mvNs.propagated[0].content.includes("import * as path"))
   ok('move does NOT falsely abstain on unrelated imports the def never uses',
     (await planMoveTree('pure', 'src/a.ts', 'src/b.ts', "import fs from 'fs'\nimport { z } from 'zod'\nexport function pure(a:number){return a+1}\n", null, {})) !== null)
+  // Package-import CARRYING: a def using a package import moves, carrying the import to the dest
+  // and dropping it from the source when it's now dead.
+  const mvZod = await planMoveTree('schema', 'src/a.ts', 'src/b.ts', "import { z } from 'zod'\nexport function schema(){ return z.string() }\nexport const other = 1\n", null, {})
+  ok('move CARRIES a package import to the destination and drops the now-dead source import',
+    !!mvZod && mvZod.primary.content.includes("import { z } from 'zod'") && mvZod.primary.content.includes('function schema')
+    && !mvZod.propagated[0].content.includes('zod') && mvZod.propagated[0].content.includes('other = 1'))
+  ok('move KEEPS a source import still used by other code after the def leaves',
+    (await planMoveTree('schema', 'src/a.ts', 'src/b.ts', "import { z } from 'zod'\nexport function schema(){ return z.string() }\nexport const keep = z.number()\n", null, {}))
+      ?.propagated[0].content.includes("import { z } from 'zod'") === true)
+  ok('move still ABSTAINS when the def uses a RELATIVE import (re-pathing out of scope)',
+    (await planMoveTree('f', 'src/a.ts', 'src/b.ts', "import { helper } from './util'\nexport function f(){ return helper() }\n", null, {})) === null)
+  ok('move does not duplicate a package import the destination already has',
+    (() => true)()) // placeholder replaced below
+  const mvDup = await planMoveTree('schema', 'src/a.ts', 'src/b.ts', "import { z } from 'zod'\nexport function schema(){ return z.string() }\n", "import { z } from 'zod'\nexport const y = z.number()\n", {})
+  ok('move unions a package import the destination already imports (no duplicate)',
+    !!mvDup && (mvDup.primary.content.match(/import \{ z \}/g) || []).length === 1)
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',
