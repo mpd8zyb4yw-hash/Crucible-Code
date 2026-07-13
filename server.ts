@@ -4504,7 +4504,7 @@ ${worldCtx}`
           try {
             const raw = await withTimeout(
               callModel(sm, [
-                { role: 'system', content: withStaticPrefix('You are answering one section of a multi-part question. Answer ONLY the specific section given. Be concise and direct. Plain text only.') },
+                { role: 'system', content: 'You are answering one section of a multi-part question. Answer ONLY the specific section given. Be concise and direct. Plain text only.' },
                 { role: 'user', content: intent },
               ]),
               SECTION_TIMEOUT,
@@ -4547,7 +4547,7 @@ ${worldCtx}`
             const { models: synthModels } = selectModels(promptType, SIMPLE_PIPELINE_CONFIG, 'simple', 'quorum')
             const polished = await withTimeout(
               callModel(synthModels[0], [
-                { role: 'system', content: withStaticPrefix('You are the final synthesis layer. The user asked a multi-part question. You have answers to each part. Polish and unify them into a cohesive response. Preserve all content and section structure. Plain text only, no emojis.') },
+                { role: 'system', content: 'You are the final synthesis layer. The user asked a multi-part question. You have answers to each part. Polish and unify them into a cohesive response. Preserve all content and section structure. Plain text only, no emojis.' },
                 { role: 'user', content: `Original question: ${message}\n\nSection answers:\n${joinedSections}` },
               ]),
               20000,
