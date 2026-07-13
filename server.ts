@@ -3821,7 +3821,10 @@ app.post('/api/chat', async (req, res) => {
     // Non-strict (default / '0'): unchanged — prefer local FM entry if registered, else
     // a fast/free external model with a key.
     const fastModelEntry = MODEL_REGISTRY.find(m =>
-      m.provider === 'apple-foundation-models' && getCircuitState(m.id) === 'active'
+      // The local Apple FM is registered under provider 'local' (see callModel / PROXY_SKIP_PROVIDERS);
+      // the old 'apple-foundation-models' literal isn't a valid provider, so this preference was DEAD —
+      // it silently never fired, defeating the local-first intent whenever a local entry is registered.
+      m.provider === 'local' && getCircuitState(m.id) === 'active'
     ) || (MODEL_REGISTRY as any[]).find(m =>
       m.speed === 'fast' && getCircuitState(m.id) === 'active' && providerHasKey(m.provider)
     ) || (MODEL_REGISTRY as any[]).find(m =>
