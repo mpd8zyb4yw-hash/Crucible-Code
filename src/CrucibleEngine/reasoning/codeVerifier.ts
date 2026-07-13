@@ -47,9 +47,22 @@ export interface CodeAcceptance {
 interface CaseOutcome {
   ok: boolean
   name: string
+  /** The positional input the case ran with — threaded into failure feedback so the proposer sees
+   *  the COMPLETE counterexample (input → expected vs got), not just a wrong output it can't trace. */
+  args?: unknown[]
   actual?: unknown
   error?: string
   expected: unknown
+}
+
+/** Render a failing outcome as a complete counterexample line for the proposer. Including the INPUT
+ *  is the single highest-leverage feedback improvement for a weak model: it can map the wrong value
+ *  back to the exact code path instead of guessing which case broke. */
+function signalFor(o: CaseOutcome): string {
+  const input = o.args && o.args.length ? ` on input ${o.args.map(fmt).join(', ')}` : ''
+  return o.error
+    ? `case ${o.name}${input} threw: ${o.error}`
+    : `case ${o.name}${input} → got ${fmt(o.actual)}, expected ${fmt(o.expected)}`
 }
 
 /**
@@ -102,11 +115,8 @@ export async function verifyCode(candidate: Candidate<string>, spec: TaskSpec): 
       return { pass: true, score: 0, signals: [`all ${outcomes.length} case(s) passed`] }
     }
 
-    // Rich per-case feedback — the actual value vs expected, or the thrown error.
-    const signals = failing.slice(0, 6).map(o =>
-      o.error
-        ? `case ${o.name} threw: ${o.error}`
-        : `case ${o.name} → got ${fmt(o.actual)}, expected ${fmt(o.expected)}`)
+    // Rich per-case feedback — the input, the actual value vs expected, or the thrown error.
+    const signals = failing.slice(0, 6).map(signalFor)
     if (failing.length > 6) signals.push(`…and ${failing.length - 6} more failing case(s)`)
 
     return { pass: false, score: -failing.length, signals }
@@ -190,8 +200,7 @@ export async function verifyMultiFileCode(
     if (failing.length === 0) {
       return { pass: true, score: 0, signals: [`all ${parsed.outcomes.length} case(s) passed across ${files.length} file(s)`] }
     }
-    const signals = failing.slice(0, 6).map(o =>
-      o.error ? `case ${o.name} threw: ${o.error}` : `case ${o.name} → got ${fmt(o.actual)}, expected ${fmt(o.expected)}`)
+    const signals = failing.slice(0, 6).map(signalFor)
     if (failing.length > 6) signals.push(`…and ${failing.length - 6} more failing case(s)`)
     return { pass: false, score: -failing.length, signals }
   } finally {
@@ -285,15 +294,15 @@ for (let i = 0; i < CASES.length; i++) {
   const fn = mod[target] ?? (target === DEFAULT_ENTRY ? mod.default : undefined);
   const name = c.name ?? (target + ' #' + i);
   if (typeof fn !== 'function') {
-    outcomes.push({ ok: false, name, error: 'no exported function ' + target, expected: 'function' });
+    outcomes.push({ ok: false, name, args: c.args, error: 'no exported function ' + target, expected: 'function' });
     continue;
   }
   try {
     const actual = fn(...(c.args ?? []));
     const resolved = actual && typeof actual.then === 'function' ? await actual : actual;
-    outcomes.push({ ok: eq(resolved, c.expected), name, actual: resolved, expected: c.expected });
+    outcomes.push({ ok: eq(resolved, c.expected), name, args: c.args, actual: resolved, expected: c.expected });
   } catch (e) {
-    outcomes.push({ ok: false, name, error: String(e && e.message ? e.message : e), expected: c.expected });
+    outcomes.push({ ok: false, name, args: c.args, error: String(e && e.message ? e.message : e), expected: c.expected });
   }
 }
 process.stdout.write('\\n' + JSON.stringify({ outcomes }) + '\\n');
@@ -326,15 +335,15 @@ for (let i = 0; i < CASES.length; i++) {
   const fn = mod[target] ?? (target === DEFAULT_ENTRY ? mod.default : undefined);
   const name = c.name ?? (target + ' #' + i);
   if (typeof fn !== 'function') {
-    outcomes.push({ ok: false, name, error: 'no exported function ' + target, expected: 'function' });
+    outcomes.push({ ok: false, name, args: c.args, error: 'no exported function ' + target, expected: 'function' });
     continue;
   }
   try {
     const actual = fn(...(c.args ?? []));
     const resolved = actual && typeof actual.then === 'function' ? await actual : actual;
-    outcomes.push({ ok: eq(resolved, c.expected), name, actual: resolved, expected: c.expected });
+    outcomes.push({ ok: eq(resolved, c.expected), name, args: c.args, actual: resolved, expected: c.expected });
   } catch (e) {
-    outcomes.push({ ok: false, name, error: String(e && e.message ? e.message : e), expected: c.expected });
+    outcomes.push({ ok: false, name, args: c.args, error: String(e && e.message ? e.message : e), expected: c.expected });
   }
 }
 process.stdout.write('\\n' + JSON.stringify({ outcomes }) + '\\n');

@@ -86,6 +86,11 @@ async function run() {
   )
   ok('single-shot ships an answer that FAILS ground-truth execution', !singleShot.pass,
     `score ${singleShot.score}: ${singleShot.signals[0]}`)
+  // The failure signal carries the INPUT (complete counterexample), so the proposer can trace the
+  // wrong output to a code path instead of guessing which case broke.
+  ok('failure feedback includes the failing INPUT (input → expected vs got)',
+    singleShot.signals.some(s => /on input .*\[1,2,3,4\]/.test(s) && /expected 6/.test(s)),
+    singleShot.signals[0])
 
   // 2. The LOOP: same weak generator, but wrapped in propose→verify→backtrack.
   const looped = await solveCodeTask(TASK, { maxModelCalls: 6, beamWidth: 2 }, mockProposer())
