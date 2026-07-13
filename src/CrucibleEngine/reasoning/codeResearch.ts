@@ -65,6 +65,17 @@ export interface CodeResearchOpts {
  *  is a REFERENCE to adapt, not trusted ground truth (only execution certifies). */
 export const WEB_GROUND_MARK = '### Web reference (adapt to the spec — NOT trusted; your code is executed against hidden cases):'
 
+/** Build a CODE-optimized web-search query from the request: keep the goal, append the target
+ *  function name and a language hint so the retrieval layer ranks real implementations (a raw
+ *  chat sentence like "can you write me something that…" retrieves poorly). Bounded length. */
+export function buildCodeSearchQuery(nl: string, entry?: string): string {
+  const goal = (nl ?? '').replace(/\b(can|could|would|please|you|write|me|a|an|the|function|that|which|to)\b/gi, ' ')
+    .replace(/[^\w\s+#.-]/g, ' ').replace(/\s+/g, ' ').trim()
+  const lang = /\b(typescript|\.ts|tsx)\b/i.test(nl) ? 'typescript' : 'javascript'
+  const fn = entry ? ` ${entry}` : ''
+  return `${goal}${fn} ${lang}`.replace(/\s+/g, ' ').trim().slice(0, 200)
+}
+
 /** Stable identity of a case for union/dedup: which function + which arguments. */
 function caseKey(entry: string, c: CodeCase): string {
   try { return `${c.entry ?? entry}::${JSON.stringify(c.args ?? [])}` }
@@ -164,7 +175,8 @@ export function makeCodeResearchFn(opts: CodeResearchOpts): ResearchFn<string> {
     const alreadyWebGrounded = priorContext.some(p => p.startsWith(WEB_GROUND_MARK))
     if (opts.webGround && !alreadyWebGrounded && !signal?.aborted) {
       try {
-        const snippet = (await opts.webGround(opts.nl))?.trim()
+        const query = buildCodeSearchQuery(opts.nl, (spec.acceptance as { entry?: string })?.entry)
+        const snippet = (await opts.webGround(query))?.trim()
         if (snippet) {
           const block = `${WEB_GROUND_MARK}\n${snippet}`
           out.context = out.context ? `${out.context}\n\n${block}` : block

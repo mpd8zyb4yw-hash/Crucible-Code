@@ -18,7 +18,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { CodeCase } from './codeVerifier'
-import { makeCodeResearchFn, mergeCodeAcceptance, WEB_GROUND_MARK } from './codeResearch'
+import { makeCodeResearchFn, mergeCodeAcceptance, WEB_GROUND_MARK, buildCodeSearchQuery } from './codeResearch'
 import type { ImplSample } from './differentialSpec'
 import type { ResearchInput } from './iterate'
 import { iterateCodeTask } from './solve'
@@ -167,6 +167,41 @@ async function main() {
       r.status === 'solved' && /filter/.test(r.solution?.value ?? ''), JSON.stringify({ s: r.status, e: r.epochs }))
     check('5 the certified solution still PASSES the real execution verifier (web only informed)',
       r.status === 'solved', JSON.stringify(r.detail))
+  }
+
+  // ── 6. Code-optimized search query: strip chat filler, add the entry name + a language hint. ──
+  {
+    const q = buildCodeSearchQuery('can you please write me a function that parses an ISO 8601 duration', 'parseDuration')
+    check('6 query strips filler words ("can/you/please/write/me/function/that")',
+      !/\b(can|you|please|write|me|function|that)\b/i.test(q), q)
+    check('6 query keeps the salient nouns + appends the entry name + language',
+      /iso/i.test(q) && /8601/.test(q) && /duration/i.test(q) && /parseDuration/.test(q) && /javascript/.test(q), q)
+    check('6 typescript requests get a ts language hint',
+      /typescript/.test(buildCodeSearchQuery('write a typescript slugify', 'slugify')), buildCodeSearchQuery('write a typescript slugify', 'slugify'))
+  }
+
+  // ── 7. PROACTIVE grounding: seed the FIRST proposal from the web — no stall required. ──
+  //     A strong coder looks up the approach BEFORE writing; here the proposer solves on epoch 1
+  //     purely because the reference was fetched up front (trace shows it never needed stall-research).
+  {
+    let calls = 0
+    const webGround = async (q: string) => { calls++; return `keep evens: arr.filter(n => n % 2 === 0)  [q=${q.slice(0, 20)}]` }
+    const proposer: Proposer<string> = async (ctx) => {
+      const informed = (ctx.spec.context ?? '').includes('n % 2')
+      return { value: informed ? 'export function evensOnly(a){ return a.filter(n => n % 2 === 0) }' : 'export function evensOnly(a){ return a }',
+        fingerprint: informed ? 'r' : 'w' } as Candidate<string>
+    }
+    const r = await iterateCodeTask(
+      { goal: 'keep only even numbers', nl: 'keep only even numbers', entry: 'evensOnly', webGround,
+        cases: [{ args: [[1, 2, 3, 4]], expected: [2, 4] }, { args: [[5, 6]], expected: [6] }] },
+      { baseModelCalls: 3, now: fakeClock(1) },
+      proposer,
+    )
+    check('7 proactive web grounding solves on the FIRST attempt (no stall needed)',
+      r.status === 'solved' && r.epochs === 1, JSON.stringify({ s: r.status, e: r.epochs }))
+    check('7 the proactive fetch ran exactly once up front', calls === 1, `calls=${calls}`)
+    check('7 it did NOT need stall-research (proactive, not reactive)',
+      !r.trace.some(t => t.researched), JSON.stringify(r.trace.map(t => t.researched)))
   }
 
   console.log(`\n${pass}/${pass + fail} passed\n`)

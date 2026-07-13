@@ -15,7 +15,7 @@
 
 import { proposeCode } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
-import { makeCodeResearchFn, mergeCodeAcceptance } from './codeResearch'
+import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROUND_MARK } from './codeResearch'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
@@ -77,10 +77,26 @@ export async function iterateCodeTask(
   opts: IterateOpts<string> = {},
   proposerOverride?: Proposer<string>,
 ): Promise<IterateResult<string>> {
+  // PROACTIVE web grounding: don't wait for the model to fail — like a strong coder who looks up
+  // the approach BEFORE writing, fetch a reference up front (best-effort) and seed the FIRST
+  // proposal's context. The stall channel (makeCodeResearchFn channel 3) still runs as a fallback,
+  // but the WEB_GROUND_MARK sentinel we prepend here prevents it from re-fetching. Certification is
+  // unchanged: the seeded reference only informs the proposer; every candidate is still executed.
+  let seededContext = input.context
+  if (input.webGround && !opts.research && !opts.signal?.aborted) {
+    try {
+      const q = buildCodeSearchQuery(input.nl ?? input.goal, input.entry)
+      const ref = (await input.webGround(q))?.trim()
+      if (ref) {
+        const block = `${WEB_GROUND_MARK}\n${ref}`
+        seededContext = seededContext ? `${seededContext}\n\n${block}` : block
+      }
+    } catch { /* best-effort: a retrieval failure never blocks synthesis */ }
+  }
   const spec: TaskSpec = {
     goal: input.goal,
     domain: 'code',
-    context: input.context,
+    context: seededContext,
     acceptance: {
       entry: input.entry,
       entries: input.entries && input.entries.length > 1 ? input.entries : undefined,
