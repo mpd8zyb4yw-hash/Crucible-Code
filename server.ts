@@ -778,7 +778,7 @@ app.get('/api/task/stream', (req: express.Request, res: express.Response) => {
 
 // Lightweight status check — used by the client on load to decide whether to reconnect.
 app.get('/api/task/:taskId/status', (req: express.Request, res: express.Response) => {
-  const rec = taskRegistry.get(req.params.taskId)
+  const rec = taskRegistry.get(String(req.params.taskId))
   if (!rec) return res.json({ exists: false })
   res.json({ exists: true, done: rec.done, total: rec.events.length })
 })
@@ -1072,13 +1072,13 @@ app.get('/api/conversations', (req: express.Request, res: express.Response) => {
 // Full conversation (all rounds) to reopen and continue.
 app.get('/api/conversations/:id', (req: express.Request, res: express.Response) => {
   const user = getAuthUser(req)
-  const conv = getConversationById(user?.id ?? null, req.params.id)
+  const conv = getConversationById(user?.id ?? null, String(req.params.id))
   if (!conv) return res.status(404).json({ error: 'not found' })
   res.json({ conversation: conv })
 })
 app.delete('/api/conversations/:id', (req: express.Request, res: express.Response) => {
   const user = getAuthUser(req)
-  deleteConversationById(user?.id ?? null, req.params.id)
+  deleteConversationById(user?.id ?? null, String(req.params.id))
   res.json({ ok: true })
 })
 
@@ -1656,7 +1656,7 @@ async function callModelStreaming(
     const stream = await groq.chat.completions.create({
       model: modelId, messages, stream: true,
       ...(isQwen ? { reasoning_effort: 'none' } : {}),
-    } as any)
+    } as any) as any
     for await (const chunk of stream) {
       const text = chunk.choices[0]?.delta?.content || ''
       if (text) { buf += text; if (!isQwen) onChunk(text) }
@@ -1669,9 +1669,9 @@ async function callModelStreaming(
   if (provider === 'mistral') {
     const modelId = id.replace(/^mistral\//, '')
     let buf = ''
-    const stream = await mistral.chat.stream({ model: modelId, messages })
+    const stream = await mistral.chat.stream({ model: modelId, messages } as any)
     for await (const chunk of stream) {
-      const text = chunk.data.choices[0]?.delta?.content || ''
+      const text = (chunk.data.choices[0]?.delta?.content as string) || ''
       if (text) { buf += text; onChunk(text) }
     }
     return buf
@@ -1862,7 +1862,7 @@ app.post('/api/integrations', async (req, res) => {
       description: typeof req.body?.description === 'string' ? req.body.description : undefined,
       keywords: Array.isArray(req.body?.keywords) ? req.body.keywords.map(String) : undefined,
     })
-    if (!r.ok) return res.status(400).json({ error: r.error })
+    if (!r.ok) return res.status(400).json({ error: (r as { error: string }).error })
     // Register its agent tool immediately — no restart needed. (Still hidden from
     // the model until the user flips the enable toggle.)
     if (!registry.get(r.entry.id.replace(/-/g, '_'))) registry.register(cliToolForEntry(r.entry))
@@ -2051,7 +2051,10 @@ app.post('/api/voice/transcribe', express.json({ limit: '25mb' }), async (req, r
   const audio = String(req.body?.audio || '')
   if (!audio) return res.status(400).json({ error: 'missing audio' })
   try {
-    const r = await transcribeAudio(audio, String(req.body?.mime || 'audio/webm'))
+    // strict:false weakens discriminated-union narrowing on this multi-branch result,
+    // so read through a permissive view (runtime shape is the TranscribeResult union).
+    const r = await transcribeAudio(audio, String(req.body?.mime || 'audio/webm')) as
+      { ok: boolean; text?: string; needsModel?: boolean; status?: unknown; error?: string }
     if (r.ok) return res.json({ ok: true, text: r.text })
     if (r.needsModel) return res.json({ ok: false, needsModel: true, status: r.status })
     return res.status(500).json({ ok: false, error: r.error })
@@ -4203,7 +4206,7 @@ app.post('/api/chat', async (req, res) => {
     console.log(`[CircuitBreaker] Probing ${probingModels.length} model(s): ${probingModels.map(m => m.label).join(', ')}`)
     await Promise.all(probingModels.map(async (m) => {
       try {
-        await callModel(m, [{ role: 'user', content: 'ping' }])
+        await callModel(m as SelectedModel, [{ role: 'user', content: 'ping' }])
         resetCircuitBreaker(m.id); saveCircuitState()
         console.log(`[CircuitBreaker] Probe success — ${m.label} restored`)
       } catch (e: any) {
@@ -4323,9 +4326,9 @@ ${worldCtx}`
   // so the score bar fills live and the adaptive early-exit can drop models that
   // are already clearly losing — without waiting for the full response to finish.
   const STUB_RX = /\b(TODO|FIXME|your code here|implement this|as an ai|i cannot|i can't help|placeholder)\b/i
-  const promptKeywords = Array.from(new Set(
+  const promptKeywords = (Array.from(new Set(
     message.toLowerCase().match(/[a-z]{4,}/g) ?? []
-  )).slice(0, 40)
+  )).slice(0, 40)) as string[]
   function provisionalScore(partial: string): number {
     if (!partial) return 0
     const t = partial.trim()
@@ -8140,10 +8143,10 @@ function startListening(port: number, attempt = 0) {
           if (!reg.length) return
           const model = reg[0]
           const runQuery = (question: string, promptType: string) =>
-            callModel(model, [
+            callModel(model as SelectedModel, [
               { role: 'system', content: `You are a helpful assistant. Answer concisely. Prompt type: ${promptType}.` },
               { role: 'user', content: question },
-            ], { timeout: 12000 })
+            ], { timeoutMs: 12000 })
           await runBenchmarkSuite(process.cwd(), runQuery)
           await publishBenchmarks()   // Session N: feed the public dashboard
         },
@@ -8198,9 +8201,9 @@ function startListening(port: number, attempt = 0) {
           // Three independent judge calls — majority rules
           const judges = await Promise.allSettled(
             [0, 1, 2].map(() => callModel(
-              { id: 'mistralai/mistral-7b-instruct:free', label: 'judge', provider: 'openrouter', isWildcard: false, color: '#7c7cf8', rgb: '124,124,248' },
+              { id: 'mistralai/mistral-7b-instruct:free', label: 'judge', provider: 'openrouter', isWildcard: false },
               [{ role: 'user', content: `You are a conservative pipeline safety judge. Evaluate this proposed pipeline change. Reply with JSON only: {"approved": true/false, "reason": "..."}\n\n${proposal}` }],
-              { timeout: 8000 }
+              { timeoutMs: 8000 }
             ))
           )
           const votes = judges.map(r => {
@@ -8282,7 +8285,7 @@ function startListening(port: number, attempt = 0) {
         for (const entry of ready) {
           const model = MODEL_REGISTRY.find(m => m.id === entry.modelId)
           if (!model) continue
-          callModel(model, [{ role: 'user', content: 'Reply with one word: ready' }], { timeout: 8000 })
+          callModel(model as SelectedModel, [{ role: 'user', content: 'Reply with one word: ready' }], { timeoutMs: 8000 })
             .then(() => {
               promoteFromBench(process.cwd(), entry.modelId)
               console.log(`[Roster] Re-probe passed: ${entry.label} restored to active`)

@@ -566,6 +566,20 @@ function resolveSpecifier(fromRel: string, spec: string): string | null {
   return stack.join('/').replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
 }
 
+/** The relative import specifier a file at `fromRel` uses to import the module at `toRel`
+ *  (both project-relative). Inverse of resolveSpecifier: `src/app.ts` → `src/utils/pad.ts`
+ *  yields `./utils/pad`; `src/a/x.ts` → `src/b/y.ts` yields `../b/y`. Extension dropped. */
+export function relativeSpecifier(fromRel: string, toRel: string): string {
+  const fromDir = (fromRel.includes('/') ? fromRel.slice(0, fromRel.lastIndexOf('/')) : '').split('/').filter(Boolean)
+  const toParts = toRel.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '').split('/').filter(Boolean)
+  let i = 0
+  while (i < fromDir.length && i < toParts.length - 1 && fromDir[i] === toParts[i]) i++
+  const ups = fromDir.length - i
+  const down = toParts.slice(i)
+  const prefix = ups > 0 ? '../'.repeat(ups) : './'
+  return prefix + down.join('/')
+}
+
 /** Local names under which `entry` is imported from `targetRel` in `content` — resolving aliases,
  *  so `import { pad as p } from './pad'` yields `['p']` (the name the call sites actually use).
  *  Empty when `entry` is not imported from that module. Named imports only. */
@@ -802,5 +816,115 @@ export async function planRenameTree(
     propagated.push({ rel, content: renamed, mode: 'modify', detail: `renamed import + call sites of ${from} → ${to}` })
     notes.push(`${rel}: import ${locals.includes(from) ? '+ call sites ' : ''}renamed`)
   }
+  return { primary, propagated, notes }
+}
+
+// ─── Move refactor (move a self-contained function to another file) ─────────────
+//
+// SCOPE: only a SELF-CONTAINED function moves safely with local (non-bundling) tools — one whose
+// body references no other top-level declaration or import of its source file (a moved function
+// that called a source-local helper would silently break in the destination, and `transform`
+// can't catch cross-file resolution). So planMoveTree ABSTAINS unless the def is self-contained,
+// and abstains on any importer it can't cleanly repoint. Everything is compile-checked.
+
+/** Parse "move X from src/a.ts to src/b.ts". Both paths and the name required. */
+export function detectMove(nl: string): { entry: string; fromPath: string; toPath: string } | null {
+  const m = /\bmove\s+(?:the\s+)?(?:function\s+|method\s+)?['"`]?([A-Za-z_$][\w$]*)['"`]?\s+from\s+(\S+?)\s+(?:to|into)\s+(\S+)/i.exec(nl)
+  if (!m) return null
+  const entry = m[1]
+  const fromPath = m[2].replace(/['"`.,]+$/, '')
+  const toPath = m[3].replace(/['"`.,]+$/, '')
+  if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(fromPath) || !/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(toPath) || fromPath === toPath) return null
+  return { entry, fromPath, toPath }
+}
+
+/** Local names a module imports (any specifier). Used for the self-containment check. */
+function allImportedNames(content: string): Set<string> {
+  const out = new Set<string>()
+  const rx = new RegExp(NAMED_IMPORT_RX.source, 'gm')
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(content))) {
+    for (const raw of m[1].split(',')) {
+      const local = raw.trim().split(/\s+as\s+/).map(s => s.trim()).pop()
+      if (local) out.add(local)
+    }
+  }
+  return out
+}
+
+/** Repoint a sibling's import of `entry` from `fromPath`'s module to `newSpec`. When the import
+ *  brings ONLY `entry`, its specifier is rewritten in place; when it brings other names too, the
+ *  statement is split — `entry` moves to a new import line, the rest stay. Returns null if the
+ *  entry isn't imported here (caller filters first) or the shape is unhandled. */
+function repointImport(content: string, entry: string, siblingRel: string, fromPath: string, newSpec: string): string | null {
+  const targetNoExt = fromPath.replace(/\.(ts|tsx|js|jsx|mjs|cjs)$/, '')
+  const rx = new RegExp(NAMED_IMPORT_RX.source, 'gm')
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(content))) {
+    if (resolveSpecifier(siblingRel, m[3]) !== targetNoExt) continue
+    const specs = m[1].split(',').map(s => s.trim()).filter(Boolean)
+    const mine = specs.filter(s => s.split(/\s+as\s+/)[0].trim() === entry)
+    if (!mine.length) continue
+    const rest = specs.filter(s => s.split(/\s+as\s+/)[0].trim() !== entry)
+    const newImport = `import { ${mine.join(', ')} } from '${newSpec}'`
+    if (!rest.length) return content.replace(m[0], newImport)               // sole import → repoint in place
+    const keep = `import { ${rest.join(', ')} } from '${m[3]}'`
+    return content.replace(m[0], `${keep}\n${newImport}`)                    // split
+  }
+  return null
+}
+
+/**
+ * Move `entry`'s definition from `fromPath` to `toPath`, repointing the source file's own remaining
+ * uses (a re-import) and every sibling importer, all-or-nothing and compile-verified. Returns null
+ * (abstain) when the function isn't self-contained, the destination already defines it, or any file
+ * can't be cleanly rewritten. `toContent` is the destination's current content, or null to create it.
+ */
+export async function planMoveTree(
+  entry: string, fromPath: string, toPath: string,
+  fromContent: string, toContent: string | null,
+  siblings: Record<string, string> = {},
+): Promise<{ primary: EmitPlan; propagated: EmitPlan[]; notes: string[] } | null> {
+  if (!alreadyDefines(fromContent, entry)) return null
+  if (toContent != null && alreadyDefines(toContent, entry)) return null // destination collision
+  const span = extractFunctionSpan(fromContent, entry)
+  if (!span) return null
+  const defText = fromContent.slice(span.start, span.end).trim()
+
+  // Self-containment: the def must reference no other top-level decl or import of the source file.
+  const foreign = new Set<string>([...topLevelDeclarations(fromContent).filter(n => n !== entry), ...allImportedNames(fromContent)])
+  for (const name of foreign) {
+    if (codeWordIndices(defText, name).length) return null // depends on source-local context → unsafe to move
+  }
+
+  const compiles = async (src: string) => {
+    try { await transform(src, { loader: 'ts', format: 'esm', target: 'node18' }); return true } catch { return false }
+  }
+
+  // Destination: append (or create) the def.
+  const destContent = toContent != null ? toContent.replace(/\s*$/, '') + '\n\n' + defText + '\n' : defText + '\n'
+  if (!(await compiles(destContent))) return null
+  const primary: EmitPlan = { rel: toPath, content: destContent, mode: toContent != null ? 'modify' : 'create', detail: `moved ${entry} into ${toPath}` }
+
+  // Source: remove the def; if the file still uses entry, import it back from the destination.
+  let newFrom = (fromContent.slice(0, span.start) + fromContent.slice(span.end)).replace(/\n{3,}/g, '\n\n').replace(/^\s*\n/, '')
+  if (codeWordIndices(newFrom, entry).length) {
+    newFrom = `import { ${entry} } from '${relativeSpecifier(fromPath, toPath)}'\n` + newFrom
+  }
+  if (!(await compiles(newFrom))) return null
+  const propagated: EmitPlan[] = [{ rel: fromPath, content: newFrom, mode: 'modify', detail: `removed ${entry} from ${fromPath}${codeWordIndices(newFrom, entry).length ? ' (re-imported from destination)' : ''}` }]
+  const notes: string[] = [`${fromPath}: ${entry} removed`, `${toPath}: ${entry} added`]
+
+  // Siblings importing entry from the source → repoint to the destination.
+  for (const [rel, content] of Object.entries(siblings)) {
+    if (rel === fromPath || rel === toPath) continue
+    if (reexportsEntryFrom(content, entry, rel, fromPath)) return null // re-export chain — out of scope
+    if (!importedLocalNames(content, entry, rel, fromPath).length) continue
+    const repointed = repointImport(content, entry, rel, fromPath, relativeSpecifier(rel, toPath))
+    if (repointed == null || !(await compiles(repointed))) return null
+    propagated.push({ rel, content: repointed, mode: 'modify', detail: `repointed import of ${entry} to ${toPath}` })
+    notes.push(`${rel}: import repointed`)
+  }
+
   return { primary, propagated, notes }
 }

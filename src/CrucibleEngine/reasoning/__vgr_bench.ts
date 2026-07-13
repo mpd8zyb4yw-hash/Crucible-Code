@@ -25,7 +25,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { detectRename, detectTargetPath, mergeCertifiedSource, planEmit, planEmitTree, planRenameTree, renameInModule } from './emitPlan'
+import { detectMove, detectRename, detectTargetPath, mergeCertifiedSource, planEmit, planEmitTree, planMoveTree, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
@@ -438,6 +438,30 @@ async function run() {
     rMember === "export function padLeft(){ return 1 }\nconst z = obj.pad\nconst s = 'pad'\n")
   ok('renameInModule REFUSES when the name is used as a bare value (const alias = pad)',
     renameInModule("export function pad(){ return 1 }\nconst alias = pad\n", 'pad', 'padLeft', 'define') === null)
+
+  // ── Move refactor (move a self-contained function to another file) ───────────────
+  ok('relativeSpecifier computes the import path between two files',
+    relativeSpecifier('src/app.ts', 'src/utils/pad.ts') === './utils/pad'
+    && relativeSpecifier('src/a/x.ts', 'src/b/y.ts') === '../b/y')
+  ok('detectMove parses "move X from A to B"',
+    JSON.stringify(detectMove('move pad from src/strings.ts to src/pad.ts')) === '{"entry":"pad","fromPath":"src/strings.ts","toPath":"src/pad.ts"}'
+    && detectMove('move pad to src/pad.ts') === null)
+  const mvSrc = "export function pad(s: string, width: number): string {\n  return s.padStart(width, ' ')\n}\n\nexport function trim(s: string){ return s.trim() }\n"
+  const mvImp = "import { pad, trim } from './strings'\nexport const b = pad('hi', 5)\nexport const t = trim(' x ')\n"
+  const mv = await planMoveTree('pad', 'src/strings.ts', 'src/pad.ts', mvSrc, null, { 'src/app.ts': mvImp })
+  ok('move: def lands in the new file, leaves source, SPLITS a multi-name importer to the new module',
+    !!mv && mv.primary.rel === 'src/pad.ts' && mv.primary.content.includes('function pad(')
+    && !mv.propagated[0].content.includes('function pad(') && mv.propagated[0].content.includes('function trim')
+    && mv.propagated.some(p => p.rel === 'src/app.ts' && p.content.includes("import { trim } from './strings'")
+      && p.content.includes("import { pad } from './pad'")), mv?.notes.join('; '))
+  ok('move ABSTAINS when the function is NOT self-contained (calls a source-local helper)',
+    (await planMoveTree('pad', 'src/a.ts', 'src/b.ts', "function fill(w:number){return ' '.repeat(w)}\nexport function pad(s:string,w:number){return fill(w)+s}\n", null, {})) === null)
+  ok('move ABSTAINS on a destination collision (dest already defines the name)',
+    (await planMoveTree('pad', 'src/a.ts', 'src/b.ts', "export function pad(s:string){return s}\n", "export function pad(x:string){return x}\n", {})) === null)
+  const mvUse = "export function pad(s:string){return s.trim()}\nexport const banner = pad('hi')\n"
+  const mv2 = await planMoveTree('pad', 'src/strings.ts', 'src/pad.ts', mvUse, null, {})
+  ok('move re-imports the function back into the source when the source still uses it',
+    !!mv2 && mv2.propagated[0].content.includes("import { pad } from './pad'") && mv2.propagated[0].content.includes('banner = pad('))
   const rReexport = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef, { 'src/index.ts': "export { pad } from './strings'\n" })
   ok('rename ABSTAINS on a re-export barrel (would leave the forward dangling)', rReexport === null)
   const rReexportOther = await planRenameTree('pad', 'padLeft', 'src/strings.ts', renDef + 'export function trim(s:string){return s}\n',
