@@ -2365,6 +2365,12 @@ function isCodeImplementationTask(message: string): boolean {
 // APPENDS certified code to the named file (recompile-checked, never corrupts it).
 // Conservative: an edit verb AND an explicit code path — the path is required anyway for
 // emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
+/** Word-boundary presence test for an identifier that may contain regex metacharacters (e.g. `$`,
+ *  valid in JS identifiers) — escapes before building the regex so `$` isn't read as an anchor. */
+function definesSymbol(content: string, id: string): boolean {
+  return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(content)
+}
+
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
   const editVerb = /\b(add|append|insert|modify|change|update|extend|patch|edit|include|rewrite|fix|correct|repair|improve|adjust|replace|refactor|rename|move|relocate|extract|delete|remove|drop)\b/i.test(m)
@@ -3130,7 +3136,7 @@ app.post('/api/chat', async (req, res) => {
                 if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
                 historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move', models: ['crucible-move'], synthesis: answer })
                 handled = true
-              } else if (new RegExp(`\\b${mov.entry}\\b`).test(fromExisting)) {
+              } else if (definesSymbol(fromExisting, mov.entry)) {
                 // The source genuinely defines the symbol, so the move intent is real — the abstain
                 // is a SAFETY refusal. End the turn honestly rather than letting the FM attempt a
                 // risky move that could corrupt files or leave a half-applied edit.
@@ -3186,7 +3192,7 @@ app.post('/api/chat', async (req, res) => {
                 if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
                 historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-delete', models: ['crucible-delete'], synthesis: answer })
                 handled = true
-              } else if (new RegExp(`\\b${del.entry}\\b`).test(delExisting)) {
+              } else if (definesSymbol(delExisting, del.entry)) {
                 // The file genuinely contains the symbol, so the delete intent is real — the abstain
                 // is a SAFETY refusal (still used / re-exported). End the turn honestly rather than
                 // falling through to the FM agent loop, which could perform the destructive edit
@@ -3336,7 +3342,7 @@ app.post('/api/chat', async (req, res) => {
                 if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
                 historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-rename', models: ['crucible-rename'], synthesis: answer })
                 handled = true
-              } else if (new RegExp(`\\b${ren.from}\\b`).test(renExisting)) {
+              } else if (definesSymbol(renExisting, ren.from)) {
                 // The file genuinely defines the symbol, so the rename intent is real — the abstain
                 // is a SAFETY refusal. End the turn honestly rather than letting the FM attempt a
                 // risky rename that could leave importers or call sites dangling.
