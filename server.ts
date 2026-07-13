@@ -40,7 +40,8 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
-import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectPruneImportsAll, detectRename, detectTargetPath, findDefiningFile, isModifyRequest, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectPruneImportsAll, detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { planRefactor } from './src/server/refactorRoutes'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
@@ -2370,11 +2371,6 @@ function isCodeImplementationTask(message: string): boolean {
 // APPENDS certified code to the named file (recompile-checked, never corrupts it).
 // Conservative: an edit verb AND an explicit code path — the path is required anyway for
 // emitPlan's append target, and demanding it keeps prose ("add two numbers") from matching.
-/** Word-boundary presence test for an identifier that may contain regex metacharacters (e.g. `$`,
- *  valid in JS identifiers) — escapes before building the regex so `$` isn't read as an anchor. */
-function definesSymbol(content: string, id: string): boolean {
-  return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(content)
-}
 
 function isCodeEditTask(message: string): boolean {
   const m = message ?? ''
@@ -3095,269 +3091,42 @@ app.post('/api/chat', async (req, res) => {
       try {
         send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
 
-        // ── MOVE refactor — a deterministic structural edit, no proposer needed. ──
-        // Runs BEFORE the multi-file branch: "move X from A to B" names two paths and would
-        // otherwise be misrouted into the (slow, model-driven) multi-file solver. This is
-        // deterministic and cheap; if it can't apply safely it abstains, leaving handled=false so
-        // the normal branches still run. "move X from A to B": lift X's definition out of A into B,
-        // carry the PACKAGE imports X uses (relative imports abstain — re-pathing is out of scope),
-        // re-import X back into A if A still uses it, and repoint every sibling importer (splitting
-        // multi-name imports so only X moves). All-or-nothing (planMoveTree abstains — leaving every
-        // file untouched — on a non-self-contained def, a destination collision, or a non-compiling
-        // result). Each rewrite is esbuild-compile-verified before it's returned.
+        // ── Deterministic refactors (move / prune / delete / move-file / rename) ──
+        // Detection + planning + refusal-messaging live in src/server/refactorRoutes.ts (pure,
+        // testable). All run BEFORE the multi-file branch: several name two paths and would else be
+        // misrouted into the slow model-driven solver. Each is deterministic (0 model calls),
+        // all-or-nothing, esbuild-compile-verified; a SAFETY abstain ends the turn honestly (refused)
+        // rather than risking a destructive FM edit; a parse-miss falls through unchanged.
         if (!handled) {
-          let mov = detectMove(message ?? '')
-          if (!mov) {
-            // Source-less form "move X to B.ts": infer the unique file defining X as the source.
-            const mto = detectMoveToOnly(message ?? '')
-            if (mto) {
-              const files: Record<string, string> = {}
-              try {
-                for (const rel of collectProjectTsFiles(projectPath)) {
-                  try { files[rel] = fs.readFileSync(path.join(projectPath, rel), 'utf-8') } catch { /* skip */ }
-                }
-              } catch { /* best-effort */ }
-              const src = findDefiningFile(mto.entry, files)
-              if (src && src !== mto.toPath) {
-                mov = { entry: mto.entry, fromPath: src, toPath: mto.toPath }
-                send({ type: 'thought', text: `No source named — ${mto.entry} is defined uniquely in ${src}; moving from there.` })
-              }
-            }
-          }
-          if (mov) {
-            const fromAbs = path.join(projectPath, mov.fromPath)
-            let fromExisting: string | null = null
-            try { if (fs.existsSync(fromAbs)) fromExisting = fs.readFileSync(fromAbs, 'utf-8') } catch { /* absent */ }
-            if (fromExisting != null) {
-              let toExisting: string | null = null
-              try {
-                const toAbs = path.join(projectPath, mov.toPath)
-                if (fs.existsSync(toAbs)) toExisting = fs.readFileSync(toAbs, 'utf-8')
-              } catch { /* create */ }
-              const importers: Record<string, string> = {}
-              try {
-                for (const relSib of collectProjectTsFiles(projectPath)) {
-                  if (relSib === mov.fromPath || relSib === mov.toPath) continue
-                  try { importers[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
-                }
-              } catch { /* best-effort */ }
-              const tree = await planMoveTree(mov.entry, mov.fromPath, mov.toPath, fromExisting, toExisting, importers)
-              if (tree) {
-                const writes = [tree.primary, ...tree.propagated]
-                const mutated: string[] = []
-                writes.forEach((p, i) => {
-                  const pAbs = path.join(projectPath, p.rel)
-                  fs.writeFileSync(pAbs, p.content)
-                  mutated.push(pAbs)
-                  send({ type: 'tool_call', id: `vgr_move_${i}`, tool: 'edit_file', args: { path: p.rel } })
-                  send({ type: 'tool_result', id: `vgr_move_${i}`, tool: 'edit_file', ok: true, output: `Move refactor — ${p.detail}` })
-                })
-                onFileMutated(mutated)
-                send({ type: 'verify', passed: true, signal: 'compile', report: `Move ${mov.entry}: ${mov.fromPath} → ${mov.toPath} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
-                const answer = `Moved ${mov.entry} from ${mov.fromPath} to ${mov.toPath} across ${writes.length} file(s) — definition relocated, imports carried, and every importer repointed; each file recompiles. Zero model calls.`
-                send({ type: 'final', text: answer, meta: { moveRefactor: true, entry: mov.entry, from: mov.fromPath, to: mov.toPath, files: writes.map(w => w.rel), confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move', models: ['crucible-move'], synthesis: answer })
-                handled = true
-              } else if (definesSymbol(fromExisting, mov.entry)) {
-                // The source genuinely defines the symbol, so the move intent is real — the abstain
-                // is a SAFETY refusal. End the turn honestly rather than letting the FM attempt a
-                // risky move that could corrupt files or leave a half-applied edit.
-                const answer = `I won't move ${mov.entry} from ${mov.fromPath} to ${mov.toPath}: it can't be relocated safely — it depends on a source-local declaration that wouldn't exist at the destination, the destination already defines that name, or the result wouldn't compile. Make ${mov.entry} self-contained (or resolve the collision) first.`
-                send({ type: 'verify', passed: false, signal: 'compile', report: `Move ${mov.entry} refused — not safely relocatable.` })
-                send({ type: 'final', text: answer, meta: { moveRefactor: true, refused: true, entry: mov.entry, from: mov.fromPath, to: mov.toPath, confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move', models: ['crucible-move'], synthesis: answer })
-                handled = true
-              } else {
-                send({ type: 'thought', text: `Move ${mov.entry} (${mov.fromPath} → ${mov.toPath}) could not be applied — ${mov.entry} isn't defined in ${mov.fromPath}; handing off.` })
-              }
-            }
-          }
-        }
-
-        // ── PRUNE-IMPORTS refactor — drop unused imports from one file. Deterministic. ──
-        // "remove/clean up unused imports from A.ts": drop named specifiers / default / namespace
-        // imports whose local is never referenced (keep bare side-effect imports). Runs BEFORE
-        // delete so "remove unused imports" isn't misread as deleting a symbol named "imports".
-        if (!handled) {
-          const prune = detectPruneImports(message ?? '')
-          if (prune) {
-            const prAbs = path.join(projectPath, prune.targetPath)
-            let prExisting: string | null = null
-            try { if (fs.existsSync(prAbs)) prExisting = fs.readFileSync(prAbs, 'utf-8') } catch { /* absent */ }
-            if (prExisting != null) {
-              const tree = await planPruneImports(prune.targetPath, prExisting)
-              if (tree) {
-                fs.writeFileSync(prAbs, tree.primary.content)
-                onFileMutated([prAbs])
-                send({ type: 'tool_call', id: 'vgr_prune_0', tool: 'edit_file', args: { path: tree.primary.rel } })
-                send({ type: 'tool_result', id: 'vgr_prune_0', tool: 'edit_file', ok: true, output: `Prune imports — ${tree.primary.detail}` })
-                send({ type: 'verify', passed: true, signal: 'compile', report: `${tree.notes.join('; ')}; file recompiles.` })
-                const answer = `${tree.primary.detail} — the file still compiles. Zero model calls.`
-                send({ type: 'final', text: answer, meta: { pruneImports: true, target: prune.targetPath, confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-prune-imports', models: ['crucible-prune'], synthesis: answer })
-                handled = true
-              } else {
-                const answer = `No unused imports to remove in ${prune.targetPath} — every import is referenced.`
-                send({ type: 'final', text: answer, meta: { pruneImports: true, target: prune.targetPath, noop: true, confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                handled = true
-              }
-            }
-          }
-        }
-
-        // ── PRUNE-IMPORTS (project-wide) — "remove all unused imports". Deterministic. ──
-        // Runs planPruneImports over every project file; writes only the files that change (each
-        // pruned file is compile-verified independently). No file named → whole tree.
-        if (!handled && detectPruneImportsAll(message ?? '')) {
-          const mutated: string[] = []
-          const changedRels: string[] = []
-          let totalRemoved = 0
+          const snapshot: Record<string, string> = {}
           try {
             for (const rel of collectProjectTsFiles(projectPath)) {
-              const abs = path.join(projectPath, rel)
-              let content: string | null = null
-              try { content = fs.readFileSync(abs, 'utf-8') } catch { continue }
-              if (content == null) continue
-              const tree = await planPruneImports(rel, content)
-              if (!tree) continue
-              fs.writeFileSync(abs, tree.primary.content)
-              mutated.push(abs); changedRels.push(rel)
-              totalRemoved += Number(/removed (\d+)/.exec(tree.primary.detail)?.[1] ?? 0)
-              send({ type: 'tool_call', id: `vgr_pruneall_${changedRels.length}`, tool: 'edit_file', args: { path: rel } })
-              send({ type: 'tool_result', id: `vgr_pruneall_${changedRels.length}`, tool: 'edit_file', ok: true, output: `Prune imports — ${tree.primary.detail}` })
+              try { snapshot[rel] = fs.readFileSync(path.join(projectPath, rel), 'utf-8') } catch { /* skip */ }
             }
-          } catch { /* best-effort sweep */ }
-          if (mutated.length) onFileMutated(mutated)
-          send({ type: 'verify', passed: true, signal: 'compile', report: `Pruned unused imports across ${changedRels.length} file(s); each recompiles.` })
-          const answer = changedRels.length
-            ? `Removed ${totalRemoved} unused import(s) across ${changedRels.length} file(s): ${changedRels.join(', ')}. Each file still compiles. Zero model calls.`
-            : `No unused imports found anywhere in the project — nothing to remove.`
-          send({ type: 'final', text: answer, meta: { pruneImports: true, projectWide: true, files: changedRels, removed: totalRemoved, confidence: 1 } })
-          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-          if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-          historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-prune-imports-all', models: ['crucible-prune'], synthesis: answer })
-          handled = true
-        }
-
-        // ── DELETE refactor — safe dead-export removal, deterministic, no proposer. ──
-        // "delete/remove X from A.ts": only removes X when it's genuinely unused (the target file
-        // doesn't reference it elsewhere and no sibling imports+uses it) — otherwise abstains,
-        // never deleting live code. Cleans up any import-but-never-use sites. All-or-nothing,
-        // compile-verified. Runs before multi-file for the same misroute reason as move.
-        if (!handled) {
-          const del = detectDelete(message ?? '')
-          if (del) {
-            const delAbs = path.join(projectPath, del.targetPath)
-            let delExisting: string | null = null
-            try { if (fs.existsSync(delAbs)) delExisting = fs.readFileSync(delAbs, 'utf-8') } catch { /* absent */ }
-            if (delExisting != null) {
-              const importers: Record<string, string> = {}
-              try {
-                for (const relSib of collectProjectTsFiles(projectPath)) {
-                  if (relSib === del.targetPath) continue
-                  try { importers[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
-                }
-              } catch { /* best-effort */ }
-              const tree = await planDeleteTree(del.entry, del.targetPath, delExisting, importers)
-              if (tree) {
-                const writes = [tree.primary, ...tree.propagated]
-                const mutated: string[] = []
-                writes.forEach((p, i) => {
-                  const pAbs = path.join(projectPath, p.rel)
-                  fs.writeFileSync(pAbs, p.content)
-                  mutated.push(pAbs)
-                  send({ type: 'tool_call', id: `vgr_del_${i}`, tool: 'edit_file', args: { path: p.rel } })
-                  send({ type: 'tool_result', id: `vgr_del_${i}`, tool: 'edit_file', ok: true, output: `Delete refactor — ${p.detail}` })
-                })
-                onFileMutated(mutated)
-                send({ type: 'verify', passed: true, signal: 'compile', report: `Delete ${del.entry} from ${del.targetPath} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
-                const answer = `Deleted ${del.entry} from ${del.targetPath}${writes.length > 1 ? ` and cleaned up ${writes.length - 1} dead import(s)` : ''} — verified unused first (no file references it), each file recompiles. Zero model calls.`
-                send({ type: 'final', text: answer, meta: { deleteRefactor: true, entry: del.entry, target: del.targetPath, files: writes.map(w => w.rel), confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-delete', models: ['crucible-delete'], synthesis: answer })
-                handled = true
-              } else if (definesSymbol(delExisting, del.entry)) {
-                // The file genuinely contains the symbol, so the delete intent is real — the abstain
-                // is a SAFETY refusal (still used / re-exported). End the turn honestly rather than
-                // falling through to the FM agent loop, which could perform the destructive edit
-                // nondeterministically and undo the safety guarantee.
-                const answer = `I won't delete ${del.entry} from ${del.targetPath}: it's still referenced (used elsewhere in the file, imported and used by another module, or re-exported). Removing it would break those call sites. Remove or update the usages first, then delete it.`
-                send({ type: 'verify', passed: false, signal: 'compile', report: `Delete ${del.entry} refused — symbol is still in use.` })
-                send({ type: 'final', text: answer, meta: { deleteRefactor: true, refused: true, entry: del.entry, target: del.targetPath, confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-delete', models: ['crucible-delete'], synthesis: answer })
-                handled = true
-              } else {
-                send({ type: 'thought', text: `Delete ${del.entry} from ${del.targetPath} could not be applied (${del.entry} isn't defined there) — handing off.` })
+          } catch { /* best-effort */ }
+          const outcome = await planRefactor(message ?? '', snapshot)
+          if (outcome) {
+            for (const t of outcome.thoughts) send({ type: 'thought', text: t })
+            if (outcome.terminal) {
+              const mutated: string[] = []
+              outcome.writes.forEach((w, i) => {
+                const abs = path.join(projectPath, w.rel)
+                if (w.mode === 'delete') { try { fs.unlinkSync(abs) } catch { /* already gone */ } }
+                else { fs.mkdirSync(path.dirname(abs), { recursive: true }); fs.writeFileSync(abs, w.content) }
+                mutated.push(abs)
+                const tool = w.mode === 'delete' ? 'delete_file' : 'edit_file'
+                send({ type: 'tool_call', id: `${outcome.toolIdPrefix}_${i}`, tool, args: { path: w.rel } })
+                send({ type: 'tool_result', id: `${outcome.toolIdPrefix}_${i}`, tool, ok: true, output: `${outcome.outputLabel} — ${w.detail}` })
+              })
+              if (mutated.length) onFileMutated(mutated)
+              if (outcome.verify) send({ type: 'verify', passed: outcome.verify.passed, signal: 'compile', report: outcome.verify.report })
+              if (outcome.answer) {
+                send({ type: 'final', text: outcome.answer, meta: outcome.meta })
+                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: outcome.answer, synthesisDone: true, synthStreaming: false })
+                if (chatSessionId) completeTask(chatSessionId, outcome.answer.slice(0, 200), [])
+                if (outcome.historyType) historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: outcome.historyType, models: [`crucible-${outcome.kind}`], synthesis: outcome.answer })
               }
-            }
-          }
-        }
-
-        // ── MOVE-FILE refactor — relocate a whole file, fixing all imports. Deterministic. ──
-        // "move A.ts to B.ts" (no symbol, no `from`): re-path the moved file's own relative imports
-        // and repoint every importer across the project (any import shape), then delete the old
-        // file. All-or-nothing, compile-verified. Runs before multi-file for the same misroute
-        // reason as move. Abstains (handled stays false) on a self-import or a non-compiling result.
-        if (!handled) {
-          const mvf = detectMoveFile(message ?? '')
-          if (mvf) {
-            const mvfAbs = path.join(projectPath, mvf.fromPath)
-            let mvfExisting: string | null = null
-            try { if (fs.existsSync(mvfAbs)) mvfExisting = fs.readFileSync(mvfAbs, 'utf-8') } catch { /* absent */ }
-            const destExists = (() => { try { return fs.existsSync(path.join(projectPath, mvf.toPath)) } catch { return false } })()
-            if (mvfExisting != null) {
-              const importers: Record<string, string> = {}
-              try {
-                for (const relSib of collectProjectTsFiles(projectPath)) {
-                  if (relSib === mvf.fromPath || relSib === mvf.toPath) continue
-                  try { importers[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
-                }
-              } catch { /* best-effort */ }
-              const tree = await planMoveFileTree(mvf.fromPath, mvf.toPath, mvfExisting, importers, destExists)
-              if (tree) {
-                const writes = [tree.primary, ...tree.propagated]
-                const mutated: string[] = []
-                writes.forEach((p, i) => {
-                  const pAbs = path.join(projectPath, p.rel)
-                  if (p.mode === 'delete') {
-                    try { fs.unlinkSync(pAbs) } catch { /* already gone */ }
-                  } else {
-                    fs.mkdirSync(path.dirname(pAbs), { recursive: true })
-                    fs.writeFileSync(pAbs, p.content)
-                  }
-                  mutated.push(pAbs)
-                  send({ type: 'tool_call', id: `vgr_mvf_${i}`, tool: p.mode === 'delete' ? 'delete_file' : 'edit_file', args: { path: p.rel } })
-                  send({ type: 'tool_result', id: `vgr_mvf_${i}`, tool: p.mode === 'delete' ? 'delete_file' : 'edit_file', ok: true, output: `Move-file refactor — ${p.detail}` })
-                })
-                onFileMutated(mutated)
-                send({ type: 'verify', passed: true, signal: 'compile', report: `Move file ${mvf.fromPath} → ${mvf.toPath} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
-                const answer = `Moved ${mvf.fromPath} to ${mvf.toPath} — the file's own relative imports were re-pathed and every importer repointed (${writes.length} file(s) touched); each recompiles. Zero model calls.`
-                send({ type: 'final', text: answer, meta: { moveFileRefactor: true, from: mvf.fromPath, to: mvf.toPath, files: writes.map(w => w.rel), confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-move-file', models: ['crucible-move-file'], synthesis: answer })
-                handled = true
-              } else if (destExists) {
-                const answer = `I won't move ${mvf.fromPath} to ${mvf.toPath}: the destination already exists. Choose a path that doesn't, or delete the existing file first.`
-                send({ type: 'verify', passed: false, signal: 'compile', report: `Move file refused — destination exists.` })
-                send({ type: 'final', text: answer, meta: { moveFileRefactor: true, refused: true, from: mvf.fromPath, to: mvf.toPath, confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                handled = true
-              } else {
-                send({ type: 'thought', text: `Move file ${mvf.fromPath} → ${mvf.toPath} could not be applied safely (a self-referential import or a non-compiling result) — handing off.` })
-              }
+              handled = true
             }
           }
         }
@@ -3451,67 +3220,6 @@ app.post('/api/chat', async (req, res) => {
             }
           } else {
             send({ type: 'thought', text: `VGR multi-file could not certify (${mf.status}) — trying single-file, then handing off.` })
-          }
-        }
-
-        // ── RENAME refactor — a deterministic structural edit, no proposer needed. ──
-        // "rename X to Y" against a file that defines X: rewrite the definition + every importer's
-        // specifier and call sites (alias-preserving), all-or-nothing (planRenameTree refuses the
-        // whole edit on any unsafe use, leaving every file untouched). Each rewrite is compile-
-        // verified inside planRenameTree before it's returned.
-        if (!handled) {
-          const ren = detectRename(message ?? '')
-          if (ren) {
-            // Read the project once, then resolve the target file: prefer a named path that actually
-            // defines the symbol; otherwise INFER the unique file that defines it (null if 0 or >1).
-            const allFiles: Record<string, string> = {}
-            try {
-              for (const relSib of collectProjectTsFiles(projectPath)) {
-                try { allFiles[relSib] = fs.readFileSync(path.join(projectPath, relSib), 'utf-8') } catch { /* skip */ }
-              }
-            } catch { /* best-effort */ }
-            const named = detectTargetPath(message ?? '')
-            const renTarget = (named && allFiles[named] != null && definesSymbol(allFiles[named], ren.from))
-              ? named : findDefiningFile(ren.from, allFiles)
-            const renExisting = renTarget ? allFiles[renTarget] ?? null : null
-            if (renTarget && renExisting != null) {
-              if (!named) send({ type: 'thought', text: `No file named — ${ren.from} is defined uniquely in ${renTarget}; renaming there.` })
-              const siblings: Record<string, string> = {}
-              for (const [rel, c] of Object.entries(allFiles)) if (rel !== renTarget) siblings[rel] = c
-              const tree = await planRenameTree(ren.from, ren.to, renTarget, renExisting, siblings)
-              if (tree) {
-                const writes = [tree.primary, ...tree.propagated]
-                const mutated: string[] = []
-                writes.forEach((p, i) => {
-                  const pAbs = path.join(projectPath, p.rel)
-                  fs.writeFileSync(pAbs, p.content)
-                  mutated.push(pAbs)
-                  send({ type: 'tool_call', id: `vgr_rename_${i}`, tool: 'edit_file', args: { path: p.rel } })
-                  send({ type: 'tool_result', id: `vgr_rename_${i}`, tool: 'edit_file', ok: true, output: `Rename refactor — ${p.detail}` })
-                })
-                onFileMutated(mutated)
-                send({ type: 'verify', passed: true, signal: 'compile', report: `Rename ${ren.from} → ${ren.to} across ${writes.length} file(s), each recompiles — ${tree.notes.join('; ')}` })
-                const answer = `Renamed ${ren.from} → ${ren.to} across ${writes.length} file(s) — definition, imports, and call sites updated (alias-preserving); every file recompiles. Zero model calls.`
-                send({ type: 'final', text: answer, meta: { renameRefactor: true, from: ren.from, to: ren.to, files: writes.map(w => w.rel), confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-rename', models: ['crucible-rename'], synthesis: answer })
-                handled = true
-              } else if (definesSymbol(renExisting, ren.from)) {
-                // The file genuinely defines the symbol, so the rename intent is real — the abstain
-                // is a SAFETY refusal. End the turn honestly rather than letting the FM attempt a
-                // risky rename that could leave importers or call sites dangling.
-                const answer = `I won't rename ${ren.from} → ${ren.to}: it can't be done safely — ${ren.from} appears in a position I can't rewrite with certainty (a bare value reference, object shorthand, a shadowing binding, a conflicting alias, or ${ren.to} already exists). Renaming would risk leaving call sites or importers dangling.`
-                send({ type: 'verify', passed: false, signal: 'compile', report: `Rename ${ren.from} → ${ren.to} refused — an unsafe use or a name collision.` })
-                send({ type: 'final', text: answer, meta: { renameRefactor: true, refused: true, from: ren.from, to: ren.to, confidence: 1 } })
-                patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
-                if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
-                historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-rename', models: ['crucible-rename'], synthesis: answer })
-                handled = true
-              } else {
-                send({ type: 'thought', text: `Rename ${ren.from} → ${ren.to} could not be applied — ${ren.from} isn't defined in ${renTarget}; handing off.` })
-              }
-            }
           }
         }
 

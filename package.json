@@ -57,7 +57,8 @@
     "jwt:bench": "tsx src/server/__jwt_bench.ts",
     "textvector:bench": "tsx src/server/__textVector_bench.ts",
     "latency:bench": "tsx src/server/__latency_bench.ts",
-    "util:bench": "tsx src/server/__util_bench.ts"
+    "util:bench": "tsx src/server/__util_bench.ts",
+    "refactorroutes:bench": "tsx src/server/__refactorRoutes_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",
