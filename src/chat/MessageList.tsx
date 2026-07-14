@@ -2,7 +2,7 @@
 import { useRef, memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import MoltenPour, { type MoltenPhase } from '../MoltenPour'
-import { CopyButton, FeedbackButtons, type DynamicModel, type Round, type LocalDebateSummary } from './core'
+import { CopyButton, FeedbackButtons, type DynamicModel, type Round, type LocalDebateSummary, type LiveSource } from './core'
 import { PipelineTheater, CritiqueGrid, narrateProcess } from './panels'
 import { AgentPanel, CollapsibleCode } from './AgentPanel'
 
@@ -23,6 +23,77 @@ import { AgentPanel, CollapsibleCode } from './AgentPanel'
 // examination, deterministic verdict. Winner and revised positions are marked;
 // dissent is shown, not hidden. Used inside the ensemble process trail AND as a
 // standalone collapsible on local replies (the strict-path corroboration).
+// ── Live sources strip — the tiny-favicon row shown while a grounded answer is being
+// researched. 'reading' sources pulse; once the answer cites them they flip to a check.
+// Favicons come from Google's keyless favicon service (any domain: wikipedia, npm, SO…),
+// with a graceful first-letter fallback if the image 404s. Pure presentational.
+function faviconUrl(host: string): string {
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`
+}
+
+function SourceChip({ s }: { s: LiveSource }) {
+  const grounded = s.phase === 'grounded'
+  return (
+    <a
+      href={s.url} target="_blank" rel="noopener noreferrer"
+      title={s.url}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '3px 8px 3px 5px', borderRadius: 999,
+        background: grounded ? 'rgba(77,220,160,0.10)' : 'rgba(255,255,255,0.05)',
+        border: `1px solid ${grounded ? 'rgba(77,220,160,0.28)' : 'rgba(255,255,255,0.10)'}`,
+        textDecoration: 'none', maxWidth: 190,
+        animation: 'fadeIn 0.35s ease',
+        transition: 'background 0.3s ease, border-color 0.3s ease',
+        opacity: grounded ? 1 : 0.85,
+      }}
+    >
+      <span style={{
+        position: 'relative', width: 15, height: 15, borderRadius: 4, flexShrink: 0,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
+        background: 'rgba(255,255,255,0.08)',
+        animation: grounded ? 'none' : 'sourcePulse 1.4s ease-in-out infinite',
+      }}>
+        <img
+          src={faviconUrl(s.host)} alt="" width={15} height={15}
+          style={{ display: 'block', borderRadius: 4 }}
+          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
+        />
+      </span>
+      <span style={{
+        fontSize: 10.5, color: 'rgba(255,255,255,0.72)', whiteSpace: 'nowrap',
+        overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 500,
+      }}>{s.host.replace(/^www\./, '')}</span>
+      {grounded && (
+        <span style={{ fontSize: 9, color: 'rgba(77,220,160,0.85)', fontFamily: 'monospace', flexShrink: 0 }}>✓</span>
+      )}
+    </a>
+  )
+}
+
+export function SourceStrip({ sources, done }: { sources: LiveSource[]; done: boolean }) {
+  if (!sources || sources.length === 0) return null
+  const anyGrounded = sources.some(s => s.phase === 'grounded')
+  const label = done || anyGrounded ? 'Sources' : 'Looking up sources'
+  return (
+    <div style={{ marginBottom: 10, animation: 'fadeIn 0.3s ease' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6,
+      }}>
+        {!done && !anyGrounded && (
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'rgba(157,157,250,0.8)', animation: 'sourcePulse 1.2s ease-in-out infinite', flexShrink: 0 }} />
+        )}
+        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(157,157,250,0.7)', textTransform: 'uppercase' as const }}>
+          {label}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6 }}>
+        {sources.map(s => <SourceChip key={s.host} s={s} />)}
+      </div>
+    </div>
+  )
+}
+
 export function CouncilDebateSection({ debate: d }: { debate: LocalDebateSummary }) {
   const agreeCol = d.agreement === 'unanimous' ? 'rgba(77,220,160,0.9)'
     : d.agreement === 'majority' ? 'rgba(255,200,80,0.9)'
@@ -267,6 +338,11 @@ export const MessageList = memo(function MessageList({
                       exchange" button in addition to the "Copy answer" button that sits next to
                       the feedback controls below — two copy affordances for the same message.
                       Removed; the bottom one (paired with rating) is the single copy action now. */}
+                  {/* Live web-source strip — favicons of the pages being consulted for a
+                      grounded answer, check-marked once the answer cites them. */}
+                  {round.liveSources && round.liveSources.length > 0 && (
+                    <SourceStrip sources={round.liveSources} done={round.synthesisDone} />
+                  )}
                   {/* Ensemble chrome (model chips + attribution) renders ONLY on ensemble
                       runs — a local reply is a clean card (v3). */}
                   {models.length > 0 && (

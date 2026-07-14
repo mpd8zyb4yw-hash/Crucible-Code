@@ -234,6 +234,17 @@ export interface Round {
   // other, and a deterministic verdict picks the answer. Set from the 'local_debate' SSE
   // event; absent when the answer came from a single model or a non-ensemble path.
   localDebate?: LocalDebateSummary
+  /** Web sources being consulted in real time during a grounded answer (favicon strip). */
+  liveSources?: LiveSource[]
+}
+
+export interface LiveSource {
+  /** Hostname shown as the label, e.g. "en.wikipedia.org". */
+  host: string
+  /** Full URL (for the favicon lookup + click-through). */
+  url: string
+  /** 'reading' while fetching; 'grounded' once the answer cites it. Drives the check/spinner. */
+  phase: 'reading' | 'grounded'
 }
 
 export interface LocalDebateEntry {

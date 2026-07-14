@@ -166,6 +166,8 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
 
   const ranked = rankResults(results, query).slice(0, MAX_SOURCES)
   emit?.({ type: 'thought', text: `Found ${results.length} sources — reading the top ${ranked.length}: ${ranked.map(r => safeHost(r.url)).join(', ')}…` })
+  // Structured event for the live favicon strip in the UI (thought text stays for the log).
+  emit?.({ type: 'sources', phase: 'reading', items: ranked.map(r => ({ url: r.url, host: safeHost(r.url) })) })
 
   const perSource = opts.perSourceChars ?? PER_SOURCE_CHARS
   // Fetch pages in PARALLEL with a hard per-fetch cap — sequential full-page fetches were
@@ -293,6 +295,8 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
 
   const cites = (text.match(/\[S\d+\]/g) ?? []).length
   emit?.({ type: 'verify', passed: true, report: `Answer grounded in ${ev.sources.length} web source${ev.sources.length > 1 ? 's' : ''}${cites ? ` with ${cites} inline citation${cites > 1 ? 's' : ''}` : ''}.` })
+  // Flip the live strip's sources to 'grounded' (check-marked) now the answer actually cites them.
+  emit?.({ type: 'sources', phase: 'grounded', items: ev.sources.map(u => ({ url: u, host: safeHost(u) })) })
   debugBus.emit('pipeline', 'grounding_hit', { message: message.slice(0, 80), sources: ev.sources.length, cites, ms: Date.now() - started }, { severity: 'info' })
 
   return { text: withSourcesFooter(text, ev), sources: ev.sources, sourceCount: ev.sources.length }

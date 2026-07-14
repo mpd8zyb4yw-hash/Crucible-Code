@@ -84,6 +84,7 @@ pre code {
 @keyframes panelUp  { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes dotpulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.5); } }
 @keyframes fadeIn   { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sourcePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 @keyframes spin     { to { transform: rotate(360deg); } }
 @keyframes prism        { 0% { filter: hue-rotate(0deg) brightness(1.3) saturate(1.8); } 100% { filter: hue-rotate(360deg) brightness(1.3) saturate(1.8); } }
 @keyframes arrowToRing  { 0% { transform: rotate(0deg) scale(1); opacity: 1; } 60% { transform: rotate(140deg) scale(0.5); opacity: 0.5; } 100% { transform: rotate(180deg) scale(1); opacity: 1; } }

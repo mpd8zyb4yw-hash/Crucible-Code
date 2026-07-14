@@ -1459,6 +1459,29 @@ export default function App() {
             continue
           }
 
+          // ── Live web sources (favicon strip) ──────────────────────────────
+          // Emitted while a grounded answer is being researched: phase 'reading'
+          // seeds the strip as pages are fetched; phase 'grounded' check-marks the
+          // ones the final answer actually cites. Deduped by host, order preserved.
+          if (parsed.type === 'sources') {
+            const incoming: Array<{ url: string; host: string }> = Array.isArray(parsed.items) ? parsed.items : []
+            const phase: 'reading' | 'grounded' = parsed.phase === 'grounded' ? 'grounded' : 'reading'
+            if (incoming.length) {
+              setRounds(prev => prev.map(r => {
+                if (r.id !== roundId) return r
+                const byHost = new Map((r.liveSources ?? []).map(s => [s.host, s]))
+                for (const it of incoming) {
+                  if (!it?.host) continue
+                  const existing = byHost.get(it.host)
+                  // 'grounded' always wins; never downgrade a grounded source back to reading.
+                  byHost.set(it.host, { url: it.url, host: it.host, phase: existing?.phase === 'grounded' ? 'grounded' : phase })
+                }
+                return { ...r, liveSources: Array.from(byHost.values()) }
+              }))
+            }
+            continue
+          }
+
           // ── Streaming synthesis tokens ─────────────────────────────────────
           if (parsed.type === 'synthesis_token') {
             const { text } = parsed
