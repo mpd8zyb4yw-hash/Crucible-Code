@@ -184,6 +184,14 @@ export async function search(query: string): Promise<SearchResult[]> {
     if (isPackageQuery(query)) {
       try { results = dedupeByUrl([...results, ...await searchNpm(query)]) } catch { /* keep SE */ }
     }
+    // Implementation-shaped queries ("build/clone/game/example X") want a WORKING codebase, not a
+    // Q&A snippet. GitHub's repo-search API is a keyless, star-ranked, deterministic code corpus —
+    // far more reliable than SERP scraping (which returns 202/JS-shells to a server IP) and the
+    // only source that consistently surfaces full reference implementations. Repos lead so that
+    // fetchGithubCode (raw file bodies) grounds the proposer with real code. See fetchGithubCode.
+    if (wantsImplementation(query)) {
+      try { results = dedupeByUrl([...await searchGithubRepos(query), ...results]) } catch { /* keep SE */ }
+    }
   }
   // Wikipedia REST — the general/factual catch-all (huge index, structured, keyless).
   if (results.length === 0) {
@@ -208,6 +216,26 @@ export async function search(query: string): Promise<SearchResult[]> {
 function dedupeByUrl(results: SearchResult[]): SearchResult[] {
   const seen = new Set<string>()
   return results.filter(r => (seen.has(r.url) ? false : (seen.add(r.url), true)))
+}
+
+/** Whether a coding query wants a full working codebase (a repo) rather than a Q&A answer. */
+function wantsImplementation(query: string): boolean {
+  return /\b(build|make|create|implement|clone|game|full|example|project|app|boilerplate|starter|from scratch|demo)\b/i.test(query)
+}
+
+// GitHub repository-search API — a keyless, star-ranked, deterministic code corpus. For
+// implementation-shaped queries this reliably surfaces real reference codebases that SERP
+// scraping misses; fetchGithubCode then pulls their raw file bodies for grounding.
+async function searchGithubRepos(query: string): Promise<SearchResult[]> {
+  const api = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=6`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const data = JSON.parse(raw) as any
+  const items: any[] = data?.items ?? []
+  return items.slice(0, 6).map(r => ({
+    url: r.html_url,
+    title: r.full_name ?? '',
+    snippet: stripTags(r.description ?? '').slice(0, 300),
+  }))
 }
 
 // StackExchange (StackOverflow) API — the right corpus for programming questions.
@@ -419,6 +447,61 @@ export function extractCodeBlocks(html: string, source?: string): CodeBlock[] {
   return blocks
 }
 
+const EXT_LANG: Record<string, string> = { js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript', html: 'html', css: 'css', py: 'python' }
+
+/**
+ * GitHub-aware code extraction. A github.com repo/blob URL renders its code in a JS-built file
+ * tree, so extractCodeBlocks (which only sees <pre>) gets NOTHING from the fetched shell — the
+ * exact reason reference-implementation grounding was silently inert for "space invaders" (a repo)
+ * and every other query whose best source is a repo. This resolves the URL to RAW file content
+ * instead: a /blob/ URL maps directly to raw.githubusercontent.com; a repo root goes through the
+ * keyless contents API, picks the largest real source files (skipping min/config/vendor noise),
+ * and fetches their raw bodies. Best-effort — any failure returns []. Keyless GitHub API is
+ * rate-limited (~60/hr/IP); results ride the same pageCache so repeats are free.
+ */
+export async function fetchGithubCode(url: string, maxFiles = 2): Promise<CodeBlock[]> {
+  const langOf = (name: string) => EXT_LANG[(name.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase()]
+  const blob = url.match(/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+?)(?:[?#].*)?$/i)
+  if (blob) {
+    const raw = `https://raw.githubusercontent.com/${blob[1]}/${blob[2]}/${blob[3]}/${blob[4]}`
+    const code = await fetch(raw)
+    return code && code.length >= 40 ? [{ code, lang: langOf(blob[4]), source: url }] : []
+  }
+  const repo = url.match(/github\.com\/([^/]+)\/([^/?#]+)/i)
+  if (!repo) return []
+  const owner = repo[1], name = repo[2].replace(/\.git$/i, '')
+
+  type Entry = { type: string; name: string; size?: number; download_url?: string; url?: string }
+  const listDir = async (apiUrl: string): Promise<Entry[]> => {
+    try { const p = JSON.parse(await fetch(apiUrl)); return Array.isArray(p) ? p : [] } catch { return [] }
+  }
+  const sourceFiles = (items: Entry[]) => items
+    .filter(f => f.type === 'file' && /\.(js|ts|jsx|tsx|html|py)$/i.test(f.name) && !/\.min\.|webpack|rollup|\.config\.|package(-lock)?\.json|vite/i.test(f.name))
+    .sort((a, b) => (b.size ?? 0) - (a.size ?? 0))
+
+  const root = await listDir(`https://api.github.com/repos/${owner}/${name}/contents/`)
+  let files = sourceFiles(root)
+  // Many repos keep the real game in a source subdir (src/js/game/…), so a root listing yields
+  // only a tiny loader or nothing. When root is thin, descend ONE level into the first common
+  // source directory (one extra API call, best-effort) rather than grounding on a stub.
+  const rootBest = files[0]?.size ?? 0
+  if (rootBest < 1200) {
+    const dir = root.find(f => f.type === 'dir' && /^(src|js|scripts|game|public|app|assets)$/i.test(f.name) && f.url)
+    if (dir?.url) {
+      const sub = sourceFiles(await listDir(dir.url))
+      if ((sub[0]?.size ?? 0) > rootBest) files = sub
+    }
+  }
+
+  const out: CodeBlock[] = []
+  for (const f of files.slice(0, maxFiles)) {
+    if (!f.download_url) continue
+    const code = await fetch(f.download_url)
+    if (code && code.length >= 40) out.push({ code, lang: langOf(f.name), source: `${url}/${f.name}` })
+  }
+  return out
+}
+
 /**
  * Extract TypeScript-style type signatures from text/d.ts content. These are the
  * highest-value grounding for fixing wrong API signatures — interfaces, type
@@ -575,9 +658,24 @@ export async function retrieveForTask(task: RouterTask, opts: RetrieveOptions = 
   let codeBlocks: CodeBlock[] = []
   let typeSignatures: string[] = []
 
-  // Fetch + parse the top pages (ranked by snippet relevance to the task).
-  const ranked = rankByRelevance(hits, task, h => `${h.title} ${h.snippet}`).slice(0, maxPages)
+  // Fetch + parse the top pages (ranked by snippet relevance to the task), but FETCH-PRIORITIZE
+  // hosts we can reliably extract code from. Relevance ranking alone floats JS-gated tutorial
+  // hosts (codepen, dev.to) whose fetched HTML is an empty shell to the top — so with a small
+  // maxPages the GitHub repos that DO yield raw code never get fetched. A stable partition keeps
+  // relevance order within each group while pulling extractable sources forward.
+  const EXTRACTABLE_HOST = /github\.com\/|githubusercontent\.com\/|gist\.github\.com\/|stackoverflow\.com\/|api\.stackexchange/i
+  const relevanceRanked = rankByRelevance(hits, task, h => `${h.title} ${h.snippet}`).map(r => r.item)
+  const ranked = [
+    ...relevanceRanked.filter(u => EXTRACTABLE_HOST.test(u.url)),
+    ...relevanceRanked.filter(u => !EXTRACTABLE_HOST.test(u.url)),
+  ].slice(0, maxPages).map(item => ({ item }))
   for (const { item } of ranked) {
+    // GitHub repo/blob URLs render their code in a JS file tree, invisible to <pre> extraction —
+    // resolve them to raw file bodies instead (the highest-signal reference source for "build X").
+    if (/github\.com\//i.test(item.url)) {
+      const gh = await fetchGithubCode(item.url)
+      if (gh.length) { sources.push(item.url); codeBlocks.push(...gh); continue }
+    }
     const html = await fetch(item.url)
     if (!html) continue
     sources.push(item.url)
