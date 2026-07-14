@@ -21,6 +21,22 @@ for (const q of ['who are you', 'who are you?', 'what are you', "what's your nam
   check(`"${q}" → identity`, r?.kind === 'identity', r ? r.kind : 'null')
 }
 
+console.log('\n== creator/origin questions are caught (the AC/DC "who made you" bug) ==')
+for (const q of ['who made you', 'who made you?', 'who created you', 'who built you', 'who designed you', 'who developed you', 'who programmed you', 'who trained you', 'who is your creator', "who's your maker", 'who owns you', 'where do you come from', 'who made u', 'are you made by openai', 'who developed crucible']) {
+  const r = matchMeta(q)
+  check(`"${q}" → identity`, r?.kind === 'identity', r ? r.kind : 'null (fell through to web search!)')
+}
+{
+  const c = matchMeta('who made you')!
+  check('creator answer names Crucible + on-device, no AC/DC', /Crucible/.test(c.text) && /device/i.test(c.text) && !/AC\/?DC/i.test(c.text))
+}
+
+console.log('\n== real "who made X" questions are NOT swallowed (must return null) ==')
+for (const q of ['who made the iphone', 'who created bitcoin', 'who built the pyramids', 'who designed the eiffel tower', 'who invented the telephone']) {
+  const r = matchMeta(q)
+  check(`"${q}" → null`, r === null, r ? r.kind : 'null')
+}
+
 console.log('\n== capability questions are caught ==')
 for (const q of ['what can you do', 'what can you do?', 'what do you do', 'how can you help', 'what are you capable of', 'help']) {
   const r = matchMeta(q)

@@ -28,6 +28,13 @@ const GREETING = /^\s*(?:hi+|hey+|hello+|hiya|howdy|heya|yo|sup|wassup|what'?s u
 // yourself". Anchored to the whole message so it never swallows "who are you voting for".
 const IDENTITY = /^\s*(?:who\s+(?:are|r)\s+(?:you|u)|what\s+are\s+you|what'?s\s+your\s+name|what\s+is\s+your\s+name|introduce\s+yourself|tell\s+me\s+about\s+yourself|are\s+you\s+(?:an?\s+)?(?:ai|bot|robot|human|chatgpt|gpt|claude|llm|language\s+model))\b[\s?.!]*$/i
 
+// "who made you", "who created/built/designed/developed/programmed you", "who's your
+// maker/creator/developer", "who's behind you", "who owns you", "where do you come from".
+// This was the AC/DC bug: without it, "who made you" fell through to WEB SEARCH, which
+// returned the AC/DC song "Who Made Who" and cited a lyric as Crucible's origin. Identity
+// and origin are FIXED FACTS the system owns — never a thing to look up.
+const CREATOR = /^\s*(?:(?:so\s+|hey\s+)?who(?:'?s|\s+is|\s+are)?\s+(?:the\s+one\s+that\s+|the\s+people\s+that\s+)?(?:made|created|built|designed|developed|programmed|coded|invented|trained|(?:is\s+)?behind|owns?|runs?|made\s+up)\s+(?:you|u|this|crucible)|who(?:'?s|\s+is)\s+your\s+(?:maker|creator|developer|author|owner|inventor|founder|boss)|where\s+(?:do|did)\s+you\s+come\s+from|who\s+do\s+you\s+belong\s+to|are\s+you\s+made\s+by\s+\w+)\b[\s?.!]*$/i
+
 // "what can you do", "what do you do", "how can you help", "what are you capable of".
 const CAPABILITY = /^\s*(?:what\s+can\s+you\s+(?:do|help(?:\s+with)?)|what\s+do\s+you\s+do|what\s+are\s+you\s+(?:capable\s+of|able\s+to\s+do)|how\s+(?:can|do)\s+you\s+help|what\s+(?:can|could)\s+you\s+help\s+(?:me\s+)?with|help)\b[\s?.!]*$/i
 
@@ -41,6 +48,13 @@ const IDENTITY_TEXT =
   'locally: no cloud, no account, nothing leaves your machine. I can answer questions and ' +
   'explain things, reason through problems step by step and check my own work, and write, ' +
   'build, and run code. What can I help you with?'
+
+const CREATOR_TEXT =
+  "I'm Crucible — a private AI assistant that runs entirely on your own device. I'm built " +
+  'around on-device language models (Apple\'s on-device Foundation model plus a small local ' +
+  'model) coordinated by a verification-first reasoning system that checks its own work before ' +
+  "answering. I'm not made by any big cloud provider, and nothing you say leaves your machine. " +
+  'What can I help you with?'
 
 const CAPABILITY_TEXT =
   'A few things, all on-device:\n\n' +
@@ -60,6 +74,7 @@ const CAPABILITY_TEXT =
 export function matchMeta(message: string): MetaMatch | null {
   const m = (message ?? '').trim()
   if (!m || m.length > 60) return null // long messages are never bare meta-openers
+  if (CREATOR.test(m)) return { kind: 'identity', text: CREATOR_TEXT }
   if (IDENTITY.test(m)) return { kind: 'identity', text: IDENTITY_TEXT }
   if (CAPABILITY.test(m)) return { kind: 'capability', text: CAPABILITY_TEXT }
   if (GREETING.test(m)) return { kind: 'greeting', text: GREETING_TEXT }

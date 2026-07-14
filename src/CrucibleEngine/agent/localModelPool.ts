@@ -87,6 +87,16 @@ function serialize<T>(id: string, fn: () => Promise<T>): Promise<T> {
  * call so each answer is independent. The MODEL stays resident (cached), so only the lightweight
  * context is created/disposed per call. Serialized per model; bounded by maxTokens + a timeout.
  */
+// Anti-repetition sampling. Small local models (esp. MiniCPM5-1B) fall into degenerate
+// token loops that repeat a phrase until they hit maxTokens — to a user that reads as the
+// model "never stopping". The DRY (Don't-Repeat-Yourself) sampler penalizes repeating any
+// recent token SEQUENCE (the loop's signature), and the classic repeat/frequency penalties
+// discourage single-token spam. These are applied to every local generation.
+const ANTI_REPEAT = {
+  repeatPenalty: { penalty: 1.18, frequencyPenalty: 0.4, presencePenalty: 0.3, lastTokens: 128 },
+  dryRepeatPenalty: { strength: 0.8, base: 1.75, allowedLength: 2 },
+} as const
+
 export async function completeLocalModel(
   id: string,
   system: string,
@@ -101,12 +111,12 @@ export async function completeLocalModel(
       context = await model.createContext({ contextSize: 4096 })
       const session = new LlamaChatSession({ contextSequence: context.getSequence() })
       const prompt = system ? `${system}\n\n${user}` : user
-      const gen = session.prompt(prompt, { maxTokens: opts.maxTokens ?? 700 })
+      const gen = session.prompt(prompt, { maxTokens: opts.maxTokens ?? 700, ...ANTI_REPEAT })
       const out = await Promise.race([
         gen,
         new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`${id} generation timed out`)), opts.timeoutMs ?? 20_000)),
       ])
-      return stripThinkBlock(String(out ?? ''))
+      return truncateRepetition(stripThinkBlock(String(out ?? '')))
     } finally {
       try { await context?.dispose() } catch { /* best-effort */ }
     }
@@ -134,6 +144,35 @@ function stripThinkBlock(raw: string): string {
 export async function callLocalModel(id: string, system: string, user: string): Promise<string> {
   const { session } = await loadModel(id)
   const prompt = system ? `${system}\n\n${user}` : user
-  const response = await session.prompt(prompt)
-  return stripThinkBlock(String(response ?? ''))
+  // maxTokens cap + anti-repeat: without a cap a degenerate loop runs until the context fills
+  // (the "repeats indefinitely" bug). 800 is plenty for a chat/agent turn.
+  const response = await session.prompt(prompt, { maxTokens: 800, ...ANTI_REPEAT })
+  return truncateRepetition(stripThinkBlock(String(response ?? '')))
+}
+
+/**
+ * Cut a degenerate repeated tail. Even with anti-repeat sampling a small model can still land
+ * in a loop; if it does, the output ends in the SAME line or sentence repeated many times. We
+ * detect a short unit (line or sentence) that repeats ≥3× consecutively at the end and keep just
+ * one copy, so the user never sees a wall of duplication. Conservative: only collapses ≥3 exact
+ * consecutive repeats, so legitimate repetition (a list, a refrain) is untouched. Never throws.
+ */
+export function truncateRepetition(text: string): string {
+  const s = (text ?? '').trim()
+  if (s.length < 40) return s
+  // 1) Line-level: collapse a run of ≥3 identical trailing lines to one.
+  const lines = s.split('\n')
+  let end = lines.length
+  const lastLine = lines[end - 1]?.trim()
+  if (lastLine && lastLine.length >= 3) {
+    let count = 0
+    for (let i = end - 1; i >= 0 && lines[i].trim() === lastLine; i--) count++
+    if (count >= 3) {
+      const head = lines.slice(0, end - count)
+      return [...head, lastLine].join('\n').trim()
+    }
+  }
+  // 2) Sentence-level: a single sentence/phrase repeated ≥3× consecutively anywhere.
+  const collapsed = s.replace(/(?:\s*([^.!?\n]{6,120}[.!?])\s*)(?:\1\s*){2,}/g, '$1 ')
+  return collapsed.trim()
 }
