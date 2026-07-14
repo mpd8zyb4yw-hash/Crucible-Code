@@ -233,7 +233,14 @@ function shouldResearch(message: string, facets: AnswerFacets): boolean {
   // Proper-noun-heavy: specific products/tools/people/places beyond a single common entity.
   const caps = (message.match(/(?<=\S\s)[A-Z][a-zA-Z0-9.+#-]{2,}/g) ?? []).length
   if (caps >= 2) return true
-  return false                                              // general/basic → fast direct answer
+  // NORTH-STAR (cont.69): grounding is the DEFAULT spine, not an opt-in subset. The weak FM is
+  // the PLANNER/synthesizer, never the source of truth — so a "general/basic" question is NOT a
+  // license to answer from parametric memory. There is no physical-world question the internet
+  // can't answer; if retrieval comes back empty, that is a research-QUALITY failure to fix (or a
+  // genuinely ambiguous ask to clarify), never a reason to let the dumb model bluff. Ground it.
+  // (Only the dedicated VERIFIED non-web paths opt out upstream: arithmetic/consensus and code
+  // GENERATION — those are checked, not memorized. Everything else researches.)
+  return true
 }
 
 /**

@@ -43,6 +43,7 @@ import { retrieveForTask } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
 import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
 import { matchMeta } from '../answer/conversational'
+import { answerWithWebGrounding } from '../answer/groundedAnswer'
 import { runtimeVerifyHtml } from './htmlRuntimeVerify'
 import { callLocalModel, isGgufRuntimeAvailable } from './localModelPool'
 
@@ -118,8 +119,13 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   // veto. Split-brain bug this fixes: "who won the 2018 World Cup" fired EXTERNAL_FACT
   // upstream but "who won" was missing from the regex below, so the DAG was skipped and
   // a wrong parametric answer ("Brazil") shipped through the react/direct fallthrough.
-  const isResearchShaped = opts?.forceResearch === true ||
-    /\b(what is|how does|explain|describe|tell me|find|search|look up|latest|documentation|docs?|api|tutorial|example|compare|difference between|vs\.?|why is|why are|why was|why did|why does|when did|when was|when is|when will|who is|who was|who won|who wins|where is|where was)\b/i.test(goal)
+  // NORTH-STAR (cont.69): grounding is the DEFAULT, not an opt-in shape. The old regex made the
+  // research DAG opt-IN — anything it didn't recognize fell through to the raw FM (parametric
+  // memory), which is exactly the "dumb model as the brain" failure. Ground every non-code,
+  // non-back-reference goal; the FM only PLANS the decomposition and SYNTHESIZES the retrieved
+  // evidence. forceResearch is now redundant (kept for callers) — the default is already research.
+  const isResearchShaped = true
+  void opts?.forceResearch
 
   // Context-dependent follow-up detection: a research-shaped query that leans on
   // prior turns ("what is ITS population?", "and THAT one?") must NOT go to the
@@ -157,6 +163,27 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   // there is just a retrieval gap, and the FM tiers below answer them fine. Only the
   // premise-bearing subset should PRESERVE the abstain; everything else falls through.
   const isPremiseBearing = /^\s*(why (is|are|was|were|do|does|did|can|could|would|will)|when (did|was|were|do|does|will|had|has)|how (did|does|do) [^?]*\b(only|never|always|impossible|fail|failed|cause[ds]?)\b)\b/i.test(goal)
+
+  // ── PRIMARY grounding: the SAME web-grounding engine the chat path uses ───────
+  // NORTH-STAR (cont.69): the agent path was wired to the legacy runResearchDag, which
+  // yields empty on this box and fell SILENTLY through to fmDirectAnswer (parametric memory)
+  // — the exact "dumb model as the brain" failure. answerWithWebGrounding is the reliable
+  // engine (search → read → synthesize → cite) that already grounds the chat path. Try it
+  // FIRST; it returns a cited answer or null (web genuinely empty → a research-quality gap to
+  // fix, per north-star, not a license to memorize). Non-code, non-back-reference goals only.
+  if (!contextDependent && !isCodeShaped) {
+    try {
+      const g = await answerWithWebGrounding(goal, { history })
+      if (g && g.text.trim()) {
+        debugBus.emit('agent', 'offline_webground_hit', { goal: goal.slice(0, 80), sources: g.sources.length }, { severity: 'info' })
+        meta?.({ via: 'dag', confidence: 0.85, sources: g.sources.length })
+        return g.text
+      }
+      debugBus.emit('agent', 'offline_webground_empty', { goal: goal.slice(0, 80) }, { severity: 'warn' })
+    } catch (e: any) {
+      debugBus.emit('agent', 'offline_webground_fail', { reason: String(e?.message ?? e).slice(0, 80) }, { severity: 'warn' })
+    }
+  }
 
   if (isResearchShaped && !contextDependent && !isCodeShaped) {
     let dagAnswer = ''
