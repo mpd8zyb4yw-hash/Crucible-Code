@@ -236,6 +236,9 @@ export interface Round {
   localDebate?: LocalDebateSummary
   /** Web sources being consulted in real time during a grounded answer (favicon strip). */
   liveSources?: LiveSource[]
+  /** Latest streamed 'thought' — what the brain is doing right now (searching, grounding, …).
+   *  Drives the live status line in the working bubble so it doesn't feel static. */
+  liveStatus?: string
 }
 
 export interface LiveSource {

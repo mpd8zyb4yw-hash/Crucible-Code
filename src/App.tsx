@@ -557,7 +557,19 @@ export default function App() {
     const maxScroll = el.scrollHeight - el.clientHeight
     if (!last) { el.scrollTop = maxScroll; return }
     const lastTop = last.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
+    // Does the latest exchange (from its top to the end of content) fit in the viewport?
+    const outgrew = (el.scrollHeight - lastTop) > el.clientHeight
+    if (!outgrew) {
+      // Fits: follow the bottom as tokens stream in.
+      el.scrollTop = maxScroll
+      return
+    }
+    // Outgrew the viewport: anchor its TOP in view ONCE, then LOCK so subsequent reflows
+    // (code-block highlight, image load, more streamed tokens) don't re-yank the reader back
+    // to the top every frame — that repeated re-pin was the "scrolling down jumps back up" bug.
+    // The reader now scrolls freely; reaching the bottom (handleScroll) or sending re-engages follow.
     el.scrollTop = Math.min(maxScroll, Math.max(0, lastTop - 16))
+    lockAutoScroll()
   }, [])
 
   useEffect(() => {
@@ -1456,6 +1468,16 @@ export default function App() {
               iter: parsed.iter ?? 1,
               maxIters: parsed.maxIters ?? 32,
             })
+            continue
+          }
+
+          // ── Live status thought — what the brain is doing right now ───────
+          // These narrate the behind-the-scenes work (searching, reading a source,
+          // grounding, verifying). Surface the latest one in the working bubble so it
+          // reads as active, not static. Cleared once synthesis text starts arriving.
+          if (parsed.type === 'thought') {
+            const text = typeof parsed.text === 'string' ? parsed.text.trim() : ''
+            if (text) setRounds(prev => prev.map(r => r.id === roundId && !r.synthesisDone ? { ...r, liveStatus: text } : r))
             continue
           }
 

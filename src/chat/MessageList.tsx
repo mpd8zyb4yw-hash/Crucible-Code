@@ -94,6 +94,28 @@ export function SourceStrip({ sources, done }: { sources: LiveSource[]; done: bo
   )
 }
 
+// Cited-source bubbles shown at the BOTTOM of a finished, web-grounded message — the
+// clickable, persistent version of the live strip. Shows the sources the answer actually
+// used (grounded), deduped by host.
+export function SourceBubbles({ sources }: { sources: LiveSource[] }) {
+  const cited = sources.filter(s => s.phase === 'grounded')
+  const list = cited.length ? cited : sources   // fall back to all if none were marked grounded
+  if (!list.length) return null
+  return (
+    <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.12em', color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase' as const }}>
+          Sources
+        </span>
+        <span style={{ fontSize: 9, color: 'rgba(255,255,255,0.25)' }}>{list.length}</span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap' as const, gap: 6 }}>
+        {list.map(s => <SourceChip key={s.host + s.url} s={{ ...s, phase: 'grounded' }} />)}
+      </div>
+    </div>
+  )
+}
+
 export function CouncilDebateSection({ debate: d }: { debate: LocalDebateSummary }) {
   const agreeCol = d.agreement === 'unanimous' ? 'rgba(77,220,160,0.9)'
     : d.agreement === 'majority' ? 'rgba(255,200,80,0.9)'
@@ -338,10 +360,24 @@ export const MessageList = memo(function MessageList({
                       exchange" button in addition to the "Copy answer" button that sits next to
                       the feedback controls below — two copy affordances for the same message.
                       Removed; the bottom one (paired with rating) is the single copy action now. */}
-                  {/* Live web-source strip — favicons of the pages being consulted for a
-                      grounded answer, check-marked once the answer cites them. */}
-                  {round.liveSources && round.liveSources.length > 0 && (
-                    <SourceStrip sources={round.liveSources} done={round.synthesisDone} />
+                  {/* Live web-source strip — favicons of the pages being consulted, shown only
+                      WHILE researching. Once the answer is done, the cited sources render as
+                      clickable bubbles at the BOTTOM of the message instead (see SourceBubbles). */}
+                  {!round.synthesisDone && round.liveSources && round.liveSources.length > 0 && (
+                    <SourceStrip sources={round.liveSources} done={false} />
+                  )}
+                  {/* Live status line — narrates what the brain is doing (searching, reading,
+                      grounding, verifying) while the answer hasn't started streaming yet, so the
+                      working bubble feels active instead of a static spinner. */}
+                  {round.id === liveRoundId && !round.synthesisDone && round.synthesis.length === 0 && round.liveStatus && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0 4px' }}>
+                      <span style={{ display: 'inline-flex', gap: 3 }}>
+                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out infinite' }} />
+                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.2s infinite' }} />
+                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.4s infinite' }} />
+                      </span>
+                      <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', animation: 'fadeIn 0.3s ease' }}>{round.liveStatus}</span>
+                    </div>
                   )}
                   {/* Ensemble chrome (model chips + attribution) renders ONLY on ensemble
                       runs — a local reply is a clean card (v3). */}
@@ -436,6 +472,10 @@ export const MessageList = memo(function MessageList({
                      }} />
                    )}
                  </div>
+                  {/* Cited-source bubbles at the bottom of a finished grounded answer. */}
+                  {round.synthesisDone && round.liveSources && round.liveSources.length > 0 && (
+                    <SourceBubbles sources={round.liveSources} />
+                  )}
                   {/* Local replies: clean card + copy/feedback + on-device footer (v3). The
                       full process trail below is ensemble-run chrome only. */}
                   {round.synthesisDone && models.length === 0 && (
