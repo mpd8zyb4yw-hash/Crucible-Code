@@ -44,6 +44,7 @@ const SUITES = [
   'vgr:coderesearch',
   'retrieval:bench',
   'localpool:bench',
+  'answer:iterate',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')

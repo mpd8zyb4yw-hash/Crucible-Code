@@ -3,7 +3,7 @@
 // we control per call, so we can force splits, dominant-cluster emergence, genuine ambiguity,
 // and budget exhaustion, and assert the loop's contract (pure add, sound quorum, honest abstain).
 //   npx tsx src/CrucibleEngine/answer/__wordproblem_iterate_bench.ts
-import { iterateWordProblem, recomputeWordProblem, type Completer } from './wordProblem'
+import { iterateWordProblem, recomputeWordProblem, directArithmetic, type Completer } from './wordProblem'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -101,7 +101,25 @@ async function main() {
     check('aborted before any draw → abstain, 0 samples', conv.recomputation === null && conv.samples === 0, JSON.stringify(conv))
   }
 
-  console.log(`\n${pass}/${pass + fail} checks passed`)
+  console.log('== directArithmetic fast-path (ZERO inference, exact) ==')
+  {
+    const pos: Array<[string, number]> = [
+      ['what is 17 times 23', 391], ['17 times 23', 391], ['whats 100 divided by 4', 25],
+      ['calculate (5+3)*2', 16], ['2+2', 4], ['what is 5 * (3+2)?', 25], ['how much is 12 minus 7', 5],
+      ['3 x 4', 12], ['what is 2 to the power of 10', 1024], ['what is 9 squared', 81], ["what's 8*8", 64],
+    ]
+    for (const [q, v] of pos) {
+      const r = directArithmetic(q)
+      check(`"${q}" → ${v}`, r?.value === v, r ? `got ${r.value}` : 'null')
+    }
+    // Must NOT fire — falls through to the real reasoning/lookup path.
+    for (const q of ['what is the capital of Japan', 'who made you', 'what is 10% of 50',
+      'if I have 3 apples and buy 2 more', 'the meaning of life is 42', 'explain 2+2 to me']) {
+      check(`"${q}" → null (not arithmetic)`, directArithmetic(q) === null, JSON.stringify(directArithmetic(q)))
+    }
+  }
+
+  console.log(`\n${pass}/${pass + fail} passed`)
   if (fail) process.exit(1)
 }
 main().catch(e => { console.error(e); process.exit(1) })

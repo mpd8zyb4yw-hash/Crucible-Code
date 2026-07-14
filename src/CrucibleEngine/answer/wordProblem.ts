@@ -64,6 +64,46 @@ export function evalArithmeticExpr(raw: string): number | null {
   } catch { return null }
 }
 
+/**
+ * Direct-arithmetic fast path: if the WHOLE message is a plain calculation ("what is 17 times 23",
+ * "5 * (3+2)", "100 divided by 4"), evaluate it with the safe whitelist evaluator and return the
+ * symbolic form + exact value — ZERO inference, always correct, instant. Returns null for anything
+ * that isn't pure arithmetic (word problems, "10% of 50", questions with real words), which then
+ * flows to the normal reasoning/consensus path. Conservative by construction: after word→symbol
+ * normalization, ANY leftover letter makes evalArithmeticExpr refuse.
+ */
+export function directArithmetic(message: string): { expression: string; value: number } | null {
+  if (typeof message !== 'string') return null
+  let s = message.trim().toLowerCase()
+  if (!s) return null
+  // Strip a leading ask and a trailing question mark / "equals".
+  s = s.replace(/^\s*(?:hey\s+|so\s+|ok(?:ay)?\s+)?(?:what(?:'?s| is| are)|whats|how much is|how many is|calculate|compute|work out|evaluate|solve|tell me)\s+/i, '')
+       .replace(/\s*(?:=|equals?)\s*(?:\?|what|to)?\s*$/i, '')
+       .replace(/[?.!]+\s*$/, '')
+       .trim()
+  if (!s) return null
+  // Word / symbol operators → arithmetic symbols. Order matters (multi-word first).
+  s = s
+    .replace(/\b(?:multiplied|mult)\s+by\b/g, '*')
+    .replace(/\b(?:divided|div)\s+by\b/g, '/')
+    .replace(/\bto\s+the\s+power\s+of\b/g, '**')
+    .replace(/\b(?:times|multiply)\b/g, '*')
+    .replace(/\b(?:divide|over)\b/g, '/')
+    .replace(/\b(?:plus|add(?:ed to)?)\b/g, '+')
+    .replace(/\b(?:minus|subtract(?:ed from)?|less)\b/g, '-')
+    .replace(/\bsquared\b/g, '**2')
+    .replace(/\bcubed\b/g, '**3')
+    .replace(/\b(\d)\s*x\s*(\d)/g, '$1*$2')   // "3 x 4" (x as multiply BETWEEN digits only)
+  const value = evalArithmeticExpr(s)
+  if (value === null) return null
+  // Rebuild a clean display form from the normalized symbolic expression.
+  const expression = s.replace(/\s+/g, ' ').trim()
+    .replace(/\*\*/g, '^').replace(/\s*\^\s*/g, '^').replace(/\*/g, ' × ').replace(/\//g, ' ÷ ')
+    .replace(/\s*\+\s*/g, ' + ').replace(/(?<=\d|\))\s*-\s*(?=\d|\()/g, ' − ')
+    .replace(/\s+/g, ' ').trim()
+  return { expression, value }
+}
+
 // Evaluate an expression that may reference PREVIOUSLY-computed variables. Every identifier must
 // resolve from `env` (a numeric value); an unknown identifier → null (the setup is not evaluable,
 // so that sample contributes no vote). Substitution is word-boundary safe and parenthesized so

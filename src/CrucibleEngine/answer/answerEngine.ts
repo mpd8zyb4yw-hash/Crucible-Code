@@ -17,7 +17,7 @@ import { solveNonCodeTurn, type NonCodeMeta } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
-import { applyRecomputation, recomputeMultiStep, recomputeWordProblem } from './wordProblem'
+import { applyRecomputation, recomputeMultiStep, recomputeWordProblem, directArithmetic } from './wordProblem'
 import { applyDateRecomputation, isDateQuestion, recomputeDate } from './dateTime'
 import { isConversionQuestion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
@@ -276,6 +276,19 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   if (meta) {
     debugBus.emit('pipeline', 'meta_response', { kind: meta.kind, message: message.slice(0, 60) }, { severity: 'info' })
     return { text: meta.text, verified: true, abstained: false, ...base, facets: { ...facets, intent: 'converse' } }
+  }
+
+  // Direct arithmetic ("what is 17 times 23", "5 * (3+2)") — a machine computes it EXACTLY and
+  // instantly. Never spend K serialized FM consensus samples (observed ~16s) on a calculation.
+  // Zero inference, always correct, works even with the FM daemon down. Word problems and
+  // anything with real words fall through (evalArithmeticExpr refuses on any leftover letter).
+  const arith = directArithmetic(message)
+  if (arith) {
+    const val = Number.isInteger(arith.value) ? arith.value.toString() : String(arith.value)
+    const text = `${arith.expression} = **${val}**`
+    emit?.({ type: 'verify', passed: true, report: 'Computed deterministically (exact arithmetic, no model).' })
+    debugBus.emit('pipeline', 'direct_arithmetic', { message: message.slice(0, 60), value: arith.value }, { severity: 'info' })
+    return { text, verified: true, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
   }
 
   if (!(await checkFmAvailable())) {
