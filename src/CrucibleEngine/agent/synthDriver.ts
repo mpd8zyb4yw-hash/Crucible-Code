@@ -47,6 +47,37 @@ import { answerWithWebGrounding } from '../answer/groundedAnswer'
 import { runtimeVerifyHtml } from './htmlRuntimeVerify'
 // (MiniCPM/GGUF proposer removed from the game hot path — see solveHtmlWrite; h2h cont.70.)
 
+// ── UNIVERSAL synthesis grounding (cont.71) ───────────────────────────────────
+// NORTH-STAR: the FM is the planner/synthesizer; the WEB is the knowledge. Every
+// generation path — answer, code, game — must retrieve reference material FIRST and
+// synthesize against it, never propose from the ~3B model's parametric memory. The
+// answer path already grounds by default (solveNonCodeTurn isResearchShaped=true).
+// This is the SAME spine for the SYNTHESIS paths: one helper, wired into BOTH
+// solveCodeWrite (via synthesizeUniversal.retrievalBlock) and solveHtmlWrite (via
+// the proposer prompt prefix). retrieveForTask was imported-but-never-called before
+// this — the plumbing existed, nothing fed it, so builds memorized. Best-effort:
+// never throws, returns '' on empty/failure so a grounding miss degrades to the
+// prior parametric behavior rather than failing the build.
+const _GROUND_CACHE = new Map<string, string>()
+async function synthesisGroundingBlock(goal: string): Promise<string> {
+  const key = goal.trim().slice(0, 200)
+  const cached = _GROUND_CACHE.get(key)
+  if (cached !== undefined) return cached
+  let block = ''
+  try {
+    const bundle = await retrieveForTask({ goal }, { budget: 2600, maxPages: 3 })
+    block = bundle.block ?? ''
+    debugBus.emit('agent', block ? 'synth_grounding_hit' : 'synth_grounding_empty',
+      { goal: goal.slice(0, 80), sources: bundle.sources.length, bytes: block.length },
+      { severity: block ? 'info' : 'warn' })
+  } catch (e: any) {
+    debugBus.emit('agent', 'synth_grounding_fail',
+      { goal: goal.slice(0, 80), reason: String(e?.message ?? e).slice(0, 80) }, { severity: 'warn' })
+  }
+  _GROUND_CACHE.set(key, block)
+  return block
+}
+
 // ── Local FM helper (research turns only) ───────────────────────────────────
 // Mirrors callLocalModel in server.ts but lives here so synthDriver stays
 // self-contained and never imports from server.ts (circular dep risk).
@@ -795,6 +826,45 @@ requestAnimationFrame(loop);
 `,
 }]
 
+// ── Web grounding for the game path ("Crucible IS the model" — but not from memory). ──
+// The on-device FM writes classics it has never seen well (Space Invaders failed 6× straight,
+// pure parametric recall) because it is guessing the mechanics rather than adapting a real,
+// working implementation. So for any named game NOT covered by a deterministic template, fetch
+// a reference JS implementation from the open web ONCE and fold it into the first proposer prompt.
+//
+// DOCTRINE-SOUND, exactly like codeResearch channel 3: the retrieved code is an UNTRUSTED hint.
+// Every candidate — grounded or not — still passes through the same static + RUNTIME gate
+// (validateHtmlGame → runtimeVerifyHtml, which loads it in a real browser and drives input). A
+// wrong or irrelevant snippet can only waste a proposal; it can never ship a broken game. Best-
+// effort and bounded: any failure returns null and the loop proceeds ungrounded as before.
+const WEB_GAME_MARK = 'REFERENCE IMPLEMENTATION (fetched from the web — adapt its mechanics to the prepared page; do NOT copy its HTML/canvas setup, and your code is still run and verified):'
+
+function buildGameSearchQuery(goal: string): string {
+  // Extract the game's name ("build me a space invaders game" → "space invaders") and pin the
+  // retrieval to a self-contained canvas implementation, which ranks real playable code first.
+  const name = (goal.match(/\b([\w][\w '-]{2,40}?)\s+game\b/i)?.[1] ?? goal)
+    // Strip request filler from either branch so only the game's own name reaches retrieval
+    // ("build me a space invaders game" → "space invaders").
+    .replace(/\b(build|make|create|write|me|a|an|the|please|can|could|you|would|like|want|game|in|using|with|js|javascript|html5?|canvas)\b/gi, ' ')
+    .replace(/\s+/g, ' ').trim()
+  return `${name} javascript canvas game implementation`.slice(0, 120)
+}
+
+async function retrieveGameReference(goal: string): Promise<string | null> {
+  try {
+    const bundle = await retrieveForTask(
+      { goal: buildGameSearchQuery(goal) },
+      { maxPages: 2, budget: 2200 },
+    )
+    const snippet = bundle.codeBlocks[0]?.code?.trim()
+    // Require a substantive block — a one-liner is noise, not a reference to adapt.
+    if (!snippet || snippet.length < 120) return null
+    return `${WEB_GAME_MARK}\n${snippet.slice(0, 2000)}`
+  } catch {
+    return null
+  }
+}
+
 async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<string> {
   // Template hit → deterministic, verified game. Still runtime-gated below like FM output.
   const tpl = GAME_TEMPLATES.find(t => t.match.test(state.goal))
@@ -822,6 +892,12 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   // history and telling the model "these were ALL already rejected, don't bring any back"
   // measurably reduces that thrash without changing the gate.
   const seenProblems: string[] = []
+  // Web reference fetched ONCE up front (see retrieveGameReference): grounds the FIRST attempt so
+  // it adapts a real implementation instead of guessing mechanics from memory. Dropped on later
+  // attempts — by then the model is repairing its OWN prevJs, which already reflects the reference,
+  // and the diagnostic feedback is the higher-signal context. null when the web returned nothing.
+  const webReference = await retrieveGameReference(state.goal)
+  if (webReference) debugBus.emit('agent', 'offline_html_web_ground', { path: targetPath, bytes: webReference.length }, { severity: 'info' })
   // MiniCPM5 was previously seated as an even-attempt "diverse proposer" here on the theory that
   // ≥2 distinct impls beat one model iterated N times. A head-to-head on the fault-injection
   // harness (cont.70) DISPROVED that for this workload: MiniCPM recovered 8% (2/25) vs Apple FM's
@@ -830,7 +906,8 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   // proposer, seeing its own diagnostic rejection feedback each attempt. (Diversity that measurably
   // helps is re-added only if a future h2h proves a peer wins — not on the ≥2-impls prior alone.)
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const userMsg = `Build this game: ${state.goal}${feedback}\n\nOutput the JavaScript game logic now.`
+    const grounding = (attempt === 1 && webReference) ? `\n\n${webReference}` : ''
+    const userMsg = `Build this game: ${state.goal}${grounding}${feedback}\n\nOutput the JavaScript game logic now.`
     let raw = ''
     const proposer = 'apple-fm'
     raw = await fmComplete([
@@ -1065,6 +1142,13 @@ async function solveCodeWrite(
         `\n\nTarget file: ${targetPath}`,
       ].filter(Boolean).join('\n')
 
+  // UNIVERSAL grounding (cont.71): retrieve reference material and synthesize against it —
+  // the SAME spine as the answer path and the game path, now for general code. synthesizeUniversal
+  // already accepts retrievalBlock but nothing fed it, so code was written from parametric memory.
+  // Only the primary implementation file is grounded: secondary/test files write against the
+  // already-written primary API, where a web reference is noise, not signal.
+  const retrievalBlock = isSecondary ? '' : await synthesisGroundingBlock(state.goal)
+
   let result
   try {
     result = await synthesizeUniversal(spec, {
@@ -1073,6 +1157,7 @@ async function solveCodeWrite(
       maxFmRounds: MAX_FM_ROUNDS,
       modulePath: targetPath,
       acceptGateAOnly: true,
+      retrievalBlock: retrievalBlock || undefined,
     })
   } catch (e: any) {
     throw new OfflineEscalateError(`synthesizeUniversal threw: ${String(e?.message ?? e).slice(0, 200)}`)
