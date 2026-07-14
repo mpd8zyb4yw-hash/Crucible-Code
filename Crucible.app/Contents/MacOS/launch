@@ -3,7 +3,7 @@
 # Double-click → Electron starts from the source repo and handles everything itself
 # (build-if-changed → self-heal → server → window) via electron.cjs in CRUCIBLE_APP_MODE.
 # No Terminal window, no manual steps. Logs go to ~/Library/Logs for diagnostics.
-REPO="/Users/justin/Desktop/crucible-local"
+REPO="/Users/justin/crucible-local/crucible-local"
 LOG="$HOME/Library/Logs/Crucible-launch.log"
 
 cd "$REPO" 2>/dev/null || { osascript -e "display alert \"Crucible\" message \"Repo not found at $REPO\"" 2>/dev/null; exit 1; }
