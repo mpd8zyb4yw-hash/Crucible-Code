@@ -824,6 +824,147 @@ function loop() {
 reset();
 requestAnimationFrame(loop);
 `,
+}, {
+  // Space Invaders — the canonical named game the on-device FM failed 6× straight to write
+  // (parametric recall → ctx-undefined / unbalanced-paren syntax errors / frozen loop; web
+  // grounding returned no usable snippet). Deterministic, reviewed, and run-gated like the
+  // others. Implements the full requested design: a grid of aliens that MARCH side to side
+  // and STEP DOWN at the edges, a player cannon moving left/right (arrows or A/D) that SHOOTS
+  // with Space, bullets that destroy aliens and raise the SCORE, alien return fire, and GAME
+  // OVER when the aliens reach the cannon's row.
+  match: /\b(space[\s-]?invaders|alien[\s-]?invaders|galaga|galaxian)\b/i,
+  title: 'Space Invaders',
+  js: `
+let W = 480, H = 480;
+let cv = document.getElementById('game'); cv.width = W; cv.height = H;
+let ctx = cv.getContext('2d');
+let hud = document.getElementById('hud');
+let COLS = 8, ROWS = 4, AW = 32, AH = 22, GAPX = 16, GAPY = 16, MARGIN = 40;
+let PW = 40, PH = 14, PY = H - 30, BULLET_W = 4, BULLET_H = 12;
+let px, left, right, shootHeld;
+let aliens, dir, alienStep, dropDist, alienBullets, bullets;
+let score, lives, dead, won, moveTimer, moveEvery, fireTimer;
+
+function reset() {
+  px = W / 2 - PW / 2; left = right = shootHeld = false;
+  dir = 1; alienStep = 10; dropDist = 18;
+  bullets = []; alienBullets = [];
+  score = 0; lives = 3; dead = false; won = false;
+  moveTimer = 0; moveEvery = 24; fireTimer = 0;
+  aliens = [];
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+    aliens.push({ x: MARGIN + c * (AW + GAPX), y: 40 + r * (AH + GAPY), alive: true, row: r });
+  }
+  updateHud();
+}
+function updateHud() { hud.textContent = 'Score: ' + score + '   Lives: ' + lives; }
+
+window.addEventListener('keydown', e => {
+  let k = e.key.toLowerCase();
+  if (dead || won) { reset(); return; }
+  if (k === 'arrowleft' || k === 'a') left = true;
+  if (k === 'arrowright' || k === 'd') right = true;
+  if (k === ' ' || k === 'spacebar' || k === 'arrowup' || k === 'w') { shootHeld = true; e.preventDefault && e.preventDefault(); }
+});
+window.addEventListener('keyup', e => {
+  let k = e.key.toLowerCase();
+  if (k === 'arrowleft' || k === 'a') left = false;
+  if (k === 'arrowright' || k === 'd') right = false;
+  if (k === ' ' || k === 'spacebar' || k === 'arrowup' || k === 'w') shootHeld = false;
+});
+
+function fire() {
+  // one player bullet at a time keeps it arcade-authentic and cheap
+  if (bullets.length === 0) bullets.push({ x: px + PW / 2 - BULLET_W / 2, y: PY - BULLET_H });
+}
+function livingAliens() { return aliens.filter(a => a.alive); }
+
+function step() {
+  if (left) px -= 5;
+  if (right) px += 5;
+  px = Math.max(0, Math.min(W - PW, px));
+  if (shootHeld) fire();
+
+  // Player bullets rise; a hit kills the alien and scores (back rows worth more).
+  for (let b of bullets) b.y -= 8;
+  bullets = bullets.filter(b => b.y + BULLET_H > 0);
+  for (let b of bullets) {
+    for (let a of aliens) {
+      if (!a.alive) continue;
+      if (b.x < a.x + AW && b.x + BULLET_W > a.x && b.y < a.y + AH && b.y + BULLET_H > a.y) {
+        a.alive = false; b.y = -100; score += (ROWS - a.row) * 10; updateHud();
+        break;
+      }
+    }
+  }
+  bullets = bullets.filter(b => b.y > -50);
+
+  // The swarm advances on a timer (speeds up as fewer remain), marching sideways and
+  // dropping a row when any alien touches an edge.
+  let alive = livingAliens();
+  if (alive.length === 0) { won = true; return; }
+  moveEvery = Math.max(4, 4 + Math.floor(alive.length * 1.2));
+  if (++moveTimer >= moveEvery) {
+    moveTimer = 0;
+    let minX = Math.min(...alive.map(a => a.x));
+    let maxX = Math.max(...alive.map(a => a.x)) + AW;
+    if ((dir > 0 && maxX + alienStep >= W) || (dir < 0 && minX - alienStep <= 0)) {
+      dir = -dir;
+      for (let a of alive) a.y += dropDist;
+    } else {
+      for (let a of alive) a.x += dir * alienStep;
+    }
+  }
+
+  // Alien return fire from random front-line shooters.
+  if (++fireTimer >= 45 && alive.length) {
+    fireTimer = 0;
+    let shooter = alive[Math.floor(Math.random() * alive.length)];
+    alienBullets.push({ x: shooter.x + AW / 2 - BULLET_W / 2, y: shooter.y + AH });
+  }
+  for (let b of alienBullets) b.y += 5;
+  alienBullets = alienBullets.filter(b => b.y < H);
+  for (let b of alienBullets) {
+    if (b.x < px + PW && b.x + BULLET_W > px && b.y + BULLET_H > PY && b.y < PY + PH) {
+      b.y = H + 100; lives--; updateHud();
+      if (lives <= 0) { dead = true; return; }
+    }
+  }
+  alienBullets = alienBullets.filter(b => b.y < H + 50);
+
+  // Game over if the swarm reaches the cannon's row.
+  if (livingAliens().some(a => a.y + AH >= PY)) { dead = true; }
+}
+
+function drawAlien(a) {
+  ctx.fillStyle = a.row === 0 ? '#e05555' : a.row === 1 ? '#e0a955' : a.row === 2 ? '#7cf8a8' : '#55b9e0';
+  ctx.fillRect(a.x, a.y, AW, AH);
+  ctx.fillStyle = '#16161e';
+  ctx.fillRect(a.x + 6, a.y + 7, 5, 5);
+  ctx.fillRect(a.x + AW - 11, a.y + 7, 5, 5);
+}
+function draw() {
+  ctx.fillStyle = '#0c0c12'; ctx.fillRect(0, 0, W, H);
+  for (let a of aliens) if (a.alive) drawAlien(a);
+  ctx.fillStyle = '#e4e4ee'; for (let b of bullets) ctx.fillRect(b.x, b.y, BULLET_W, BULLET_H);
+  ctx.fillStyle = '#e0d855'; for (let b of alienBullets) ctx.fillRect(b.x, b.y, BULLET_W, BULLET_H);
+  ctx.fillStyle = '#7cf8a8'; ctx.fillRect(px, PY, PW, PH); ctx.fillRect(px + PW / 2 - 3, PY - 8, 6, 8);
+  if (dead || won) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(won ? 'Earth is safe — score ' + score : 'Game over — score ' + score, W / 2, H / 2 - 10);
+    ctx.font = '15px sans-serif';
+    ctx.fillText('Press any key to restart', W / 2, H / 2 + 20);
+  }
+}
+function loop() {
+  if (!dead && !won) step();
+  draw();
+  requestAnimationFrame(loop);
+}
+reset();
+requestAnimationFrame(loop);
+`,
 }]
 
 // ── Web grounding for the game path ("Crucible IS the model" — but not from memory). ──
