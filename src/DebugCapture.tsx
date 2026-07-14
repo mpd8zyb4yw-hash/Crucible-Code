@@ -10,6 +10,20 @@ import type { Round } from './chat/core'
 
 type DebugEvent = { ts: number; category: string; event: string; severity?: string; data?: unknown; requestId?: string }
 
+// clipboard.writeText needs a secure context + transient user activation; fall back to a
+// hidden-textarea execCommand copy so the button still works where the async API is blocked.
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return }
+  } catch { /* fall through to legacy path */ }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'; ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.focus(); ta.select()
+  try { document.execCommand('copy') } finally { document.body.removeChild(ta) }
+}
+
 function summariseRound(r: Round): string {
   const lines: string[] = []
   lines.push(`### Turn: ${JSON.stringify(r.userMessage?.slice(0, 300) ?? '')}`)
@@ -68,7 +82,7 @@ export default function DebugCapture({ rounds, conversationId, compact }: {
           `${e.requestId ? ` req=${e.requestId.slice(0, 8)}` : ''} ${e.data ? JSON.stringify(e.data).slice(0, 300) : ''}`)
       }
       const text = report.join('\n')
-      await navigator.clipboard.writeText(text)
+      await copyToClipboard(text)
       setState('done')
       setTimeout(() => setState('idle'), 2600)
     } catch {
