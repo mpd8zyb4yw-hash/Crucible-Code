@@ -15,7 +15,7 @@ import { fmComplete } from '../agent/fmReact'
 import type { Candidate, ProposeContext } from './types'
 
 /** Deterministic fingerprint for anti-thrash dedup (normalizes whitespace). */
-function fingerprint(code: string): string {
+export function fingerprintCode(code: string): string {
   const norm = code.replace(/\s+/g, ' ').trim()
   let h = 5381
   for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) | 0
@@ -23,7 +23,7 @@ function fingerprint(code: string): string {
 }
 
 /** Pull the first fenced code block, else the whole trimmed body. */
-function extractCode(raw: string): string {
+export function extractCode(raw: string): string {
   const fence = /```(?:[a-zA-Z]+)?\n([\s\S]*?)```/.exec(raw)
   return (fence ? fence[1] : raw).trim()
 }
@@ -47,7 +47,12 @@ export function pickFeedbackAttempts(history: Attempt[]): { shown: Attempt[]; be
   return { shown: addBest ? [best, ...recent] : recent, best }
 }
 
-export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidate<string> | null> {
+/**
+ * The full proposal prompt for a given search state — extracted so ANY local engine
+ * (Apple FM, MiniCPM, a future GGUF) can be benched as a proposer with IDENTICAL
+ * prompting (see __fault_headtohead.ts). Pure + deterministic.
+ */
+export function buildProposalPrompt(ctx: ProposeContext<string>): { system: string; user: string; temperature: number } {
   const { spec, history, diversify } = ctx
   const acc = spec.acceptance as { entry: string; entries?: string[] }
   const multi = acc.entries && acc.entries.length > 1 ? acc.entries : null
@@ -95,13 +100,17 @@ export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidat
     : ''
 
   const user = `## Task\n${spec.goal}${feedback}${stuckNote}${diversifyNote}\n\nReturn the corrected full module now.`
+  return { system, user, temperature: (diversify || repeats) ? 0.8 : 0.3 }
+}
 
+export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidate<string> | null> {
+  const { system, user, temperature } = buildProposalPrompt(ctx)
   const raw = await fmComplete(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
-    { temperature: (diversify || repeats) ? 0.8 : 0.3 },
+    { temperature },
   )
   if (!raw || !raw.trim()) return null
   const code = extractCode(raw)
   if (!code) return null
-  return { value: code, fingerprint: fingerprint(code) }
+  return { value: code, fingerprint: fingerprintCode(code) }
 }

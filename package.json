@@ -44,6 +44,7 @@
     "vgr:bench": "tsx src/CrucibleEngine/reasoning/__vgr_bench.ts",
     "fault:bench": "tsx src/CrucibleEngine/reasoning/__fault_bench.ts",
     "fault:live": "tsx src/CrucibleEngine/reasoning/__fault_live.ts",
+    "fault:h2h": "tsx src/CrucibleEngine/reasoning/__fault_headtohead.ts",
     "keepk:bench": "tsx src/CrucibleEngine/reasoning/__keepK_bench.ts",
     "debate:bench": "tsx src/CrucibleEngine/agent/__debate_bench.ts",
     "conversational:bench": "tsx src/CrucibleEngine/answer/__conversational_bench.ts",
