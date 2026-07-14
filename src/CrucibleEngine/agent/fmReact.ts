@@ -436,7 +436,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
 
     if (parsed.type === 'final') {
       return {
-        answer: parsed.answer ?? '',
+        answer: stripAgentScaffold(parsed.answer ?? ''),
         rounds,
         toolsUsed,
         abstained: !parsed.answer,
@@ -479,7 +479,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     const lastResponse = await callFm(system, messages, FM_TIMEOUT_MS)
     const parsed = parseResponse(lastResponse)
     return {
-      answer: parsed.answer ?? lastResponse,
+      answer: stripAgentScaffold(parsed.answer ?? lastResponse),
       rounds,
       toolsUsed,
       abstained: false,
@@ -523,6 +523,32 @@ export function historyToMessages(history?: ConvTurn[]): FmMessage[] {
  * appears 3+ times (so legitimately-repeated short structure survives), and never
  * returns empty (falls back to the original if the trim would gut the answer).
  */
+/**
+ * Strip agent-scaffold that a weak model leaks into a user-facing answer. Two failures the
+ * mantis-shrimp report showed: (1) a literal "FINAL_ANSWER:" marker printed in the reply, and
+ * (2) the model narrating the answer, printing "FINAL_ANSWER:", then repeating the SAME answer —
+ * so both copies shipped. Fix: when a FINAL_ANSWER marker is present, the real answer is what
+ * follows the LAST one (the preamble before it is scratch reasoning, often an exact duplicate);
+ * keep only that. Then drop any other leading scaffold label and collapse a whole-answer
+ * duplication. Idempotent; safe on clean text (returns it unchanged).
+ */
+export function stripAgentScaffold(text: string): string {
+  let t = (text ?? '').trim()
+  if (!t) return t
+  const marker = /FINAL[_\s]?ANSWER\s*:/gi
+  let lastIdx = -1, m: RegExpExecArray | null
+  while ((m = marker.exec(t)) !== null) lastIdx = m.index + m[0].length
+  if (lastIdx !== -1) t = t.slice(lastIdx).trim()
+  // Strip a single leading scaffold label ("THOUGHT:", "ANSWER:", "RESPONSE:", …).
+  t = t.replace(/^(?:THOUGHT|ACTION|OBSERVATION|ANSWER|RESPONSE|REASONING|OUTPUT)\s*:\s*/i, '').trim()
+  // Collapse a whole-answer duplication: the model printed the same answer twice back-to-back.
+  const half = Math.floor(t.length / 2)
+  const a = t.slice(0, half).trim(), b = t.slice(half).trim()
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
+  if (a.length > 60 && norm(a) === norm(b)) t = a
+  return t
+}
+
 export function stripRunawayRepetition(text: string): string {
   if (!text || text.length < 400) return text
   // Split on markdown headings or blank-line paragraph breaks, keeping delimiters.
@@ -560,7 +586,7 @@ Use the prior conversation turns ONLY to resolve what the user is referring to (
 - Do not invent extra sub-questions or keep computing past what was asked.`
 
   const raw = await callFm(system, [...historyToMessages(history), { role: 'user', content: goal }], FM_TIMEOUT_MS)
-  return stripRunawayRepetition(raw)
+  return stripAgentScaffold(stripRunawayRepetition(raw))
 }
 
 /**

@@ -12,7 +12,7 @@
 // draft, arithmetic + sanity critics, one bounded repair round, else abstain. Stages 2-4 add
 // multi-step decomposition, grounding entailment, and the capabilityRouter facet classifier.
 
-import { checkFmAvailable, fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
+import { checkFmAvailable, fmComplete, fmStream, stripAgentScaffold, type ConvTurn } from '../agent/fmReact'
 import { solveNonCodeTurn, type NonCodeMeta } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
@@ -418,6 +418,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   } catch {
     draft = ''
   }
+
+  // Catch-all: strip any leaked agent scaffold ("FINAL_ANSWER:" + a duplicated body) before the
+  // answer is shown — a weak model occasionally leaks it and each producing path is also guarded.
+  draft = stripAgentScaffold(draft)
 
   if (!draft) {
     return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }

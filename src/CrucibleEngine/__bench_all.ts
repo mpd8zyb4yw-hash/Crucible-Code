@@ -45,6 +45,7 @@ const SUITES = [
   'retrieval:bench',
   'localpool:bench',
   'answer:iterate',
+  'fmreact:bench',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')
