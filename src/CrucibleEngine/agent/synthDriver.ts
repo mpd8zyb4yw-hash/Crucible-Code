@@ -92,6 +92,20 @@ export interface NonCodeMeta {
 }
 
 export async function solveNonCodeTurn(goal: string, projectPath?: string, history?: ConvTurn[], meta?: (m: NonCodeMeta) => void, opts?: { forceResearch?: boolean }): Promise<string> {
+  // ── Identity / greeting / capability are FIXED FACTS the system owns ──────────
+  // Whatever routed us here (agent loop, offline driver), a bare "who made you?",
+  // "who are you?", etc. must NEVER reach the raw FM — the weak on-device model
+  // answers with its own TRAINED identity ("…created by a team of engineers at
+  // OpenAI"), which is both wrong and a north-star violation. matchMeta only guarded
+  // the non-agent answer path; guarding it here closes the leak for the agent path
+  // too, for any phrasing. (This is the backstop; the primary fix is that build
+  // requests no longer misroute a stale identity turn into this function at all.)
+  const metaMatch = matchMeta(goal)
+  if (metaMatch) {
+    meta?.({ via: 'direct' })
+    return metaMatch.text
+  }
+
   // Check FM availability first
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — escalating')
@@ -861,8 +875,18 @@ interface CurrentState {
   selfTestRan: boolean
 }
 
-function parseCurrentState(messages: Array<Record<string, unknown>>): CurrentState {
-  const goal = (messages.find(m => m.role === 'user')?.content as string | undefined) ?? ''
+function parseCurrentState(messages: Array<Record<string, unknown>>, explicitGoal?: string): CurrentState {
+  // The goal MUST be the current turn's request. Deriving it from the FIRST user message
+  // in the array is only correct when the array starts with the goal — but the server
+  // prepends prior conversation history (user/assistant pairs) ahead of the goal for
+  // multi-turn continuity. In that case `find(first user)` returns a STALE earlier turn
+  // (e.g. a previous "who made you?"), so the state machine ends up building/answering the
+  // wrong request — the FM then free-associates its trained identity ("…OpenAI") instead
+  // of the actual task. When the caller knows the real goal (single-loop path), it passes
+  // it explicitly; only fall back to message-sniffing when it doesn't.
+  const goal = (explicitGoal && explicitGoal.trim())
+    ? explicitGoal
+    : ((messages.find(m => m.role === 'user')?.content as string | undefined) ?? '')
   const goalPaths = extractGoalPaths(goal)
   const selfTestCmd = extractSelfTestCmd(goal)
 
@@ -1075,7 +1099,7 @@ async function solveCodeWrite(
  * Self-test: runs the goal's specified run command after tsc clean.
  * Retry: replays primary file synthesis with error feedback up to MAX_WRITE_CYCLES.
  */
-export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
+export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string): DriveTurn {
   return async function offlineDriveTurn(
     messages,
     _tools,
@@ -1117,7 +1141,7 @@ export function makeOfflineDriveTurn(projectPath: string): DriveTurn {
       return { text, toolCalls: [] }
     }
 
-    const state = parseCurrentState(messages)
+    const state = parseCurrentState(messages, explicitGoal)
     const { goal, writtenPaths, selfTestCmd } = state
     // Pathless game/interactive builds get a default HTML target so they run through
     // the code state machine (write → verify → done) instead of the prose Q&A path.

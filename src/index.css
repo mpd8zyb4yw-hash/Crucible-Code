@@ -91,6 +91,32 @@ pre code {
 @keyframes studioIn { from { transform: translateX(-100%); } to { transform: translateX(0); } }
 @keyframes fanIn    { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: translateX(0); } }
 
+/* ── Sidebar rail primitives (desktop persistent left rail) ──
+   The Sliver is the reference component for the app's visual language:
+   quiet at rest, bg lift on hover, filled + accent-edged when active. */
+.rail-sliver {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 8px; border-radius: 9px; cursor: pointer;
+  border-left: 2px solid transparent;
+  transition: background 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.rail-sliver:hover { background: rgba(255, 255, 255, 0.05); }
+.rail-sliver-active {
+  background: rgba(124, 124, 248, 0.10);
+  border-left-color: var(--c-accent);
+}
+.rail-sliver-active:hover { background: rgba(124, 124, 248, 0.14); }
+
+.rail-nav-row {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 8px; border-radius: 9px; border: none; cursor: pointer;
+  background: transparent; color: #b8b8cc; font-family: inherit; text-align: left;
+  transition: background 0.16s cubic-bezier(0.22, 1, 0.36, 1), color 0.16s;
+}
+.rail-nav-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--c-text); }
+.rail-nav-row-active { background: rgba(124, 124, 248, 0.13); color: #9d9dfa; }
+.rail-nav-row-active:hover { background: rgba(124, 124, 248, 0.16); color: #9d9dfa; }
+
 /* "Shows its work" disclosure */
 .crucible-shows-work > summary::-webkit-details-marker { display: none; }
 .crucible-shows-work > summary::marker { content: ''; }

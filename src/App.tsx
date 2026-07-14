@@ -7,6 +7,7 @@ import { LibraryBinder } from './LibraryBinder'
 import { SelfRepairBinder } from './SelfRepairBinder'
 import { SelfPatcherBinder } from './SelfPatcherBinder'
 import NavRail from './NavRail'
+import SidebarRail from './SidebarRail'
 import AgentsTabView, { AGENT_WORKFLOWS } from './AgentsTabView'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView from './SettingsTabView'
@@ -211,10 +212,15 @@ export default function App() {
   // Width alone is unreliable — a resized desktop window can be 400px wide.
   // We combine touch support + coarse pointer (finger, not mouse) so a narrow
   // desktop window never triggers Remote Brain mode.
+  // ?forceMobile=1 — test hook: desktop previews can't produce coarse+touch, so the
+  // mobile branch is otherwise unreachable in a preview browser.
+  const forceMobile = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('forceMobile')
   const [isMobile, setIsMobile] = useState(() =>
+    forceMobile || (
     typeof window !== 'undefined' &&
     window.matchMedia('(pointer: coarse)').matches &&
     ('ontouchstart' in window || navigator.maxTouchPoints > 0)
+    )
   )
   const [isLandscape, setIsLandscape] = useState(() =>
     typeof window !== 'undefined' && window.matchMedia('(orientation: landscape)').matches
@@ -222,7 +228,7 @@ export default function App() {
   useEffect(() => {
     const mqW = window.matchMedia('(pointer: coarse)')
     const mqL = window.matchMedia('(orientation: landscape)')
-    const hW = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    const hW = (e: MediaQueryListEvent) => setIsMobile(forceMobile || e.matches)
     const hL = (e: MediaQueryListEvent) => setIsLandscape(e.matches)
     mqW.addEventListener('change', hW)
     mqL.addEventListener('change', hL)
@@ -408,6 +414,28 @@ export default function App() {
   )
   const conversationIdRef = useRef(conversationId)
   useEffect(() => { conversationIdRef.current = conversationId }, [conversationId])
+
+  // Bumped after each conversation-store save so the sidebar history list refreshes.
+  const [histRefresh, setHistRefresh] = useState(0)
+
+  // Shared restore: adopt the stored conversation's id and merge its rounds into the
+  // in-memory pool. Used by the sidebar slivers, the mobile history drawer, and the
+  // Settings HistoryBinder. Deliberately does NOT adopt conversation.mode — restoring
+  // an old ensemble ('quorum') thread must never silently re-arm the external pipeline.
+  const restoreConversation = useCallback((summary: { id: string }) => {
+    apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
+      .then(r => r.json())
+      .then(({ conversation }) => {
+        if (!conversation?.rounds) return
+        setConversationId(conversation.id)
+        setAllRounds(prev => [
+          ...prev.filter(r => r.convId !== conversation.id),
+          ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
+        ])
+        setTab('chat')
+      })
+      .catch(() => {})
+  }, [])
 
   // ── Active-conversation view (F panels: parallel chats) ────────────────────
   // Everything below App's render path reads these names exactly as before the
@@ -701,7 +729,7 @@ export default function App() {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: conversationIdRef.current, mode: currentMode, rounds: currentRounds }),
-      }).catch(() => {})
+      }).then(() => setHistRefresh(n => n + 1)).catch(() => {})
     }, 1000)
   }, [])
 
@@ -2014,11 +2042,20 @@ export default function App() {
         {/* Mobile gets edge-to-edge chat: the vertical rail is hidden and these same
             nav actions render as a horizontal row in the top bar (below). */}
         {!isMobile && (
-          <NavRail
+          <SidebarRail
             tab={tab}
             setTab={t => { if (t !== 'chat') setAgentsOpen(false); setTab(t) }}
             agentsOpen={agentsOpen}
             onToggleAgents={() => setAgentsOpen(o => { if (!o) setTab('chat'); return !o })}
+            conversationId={conversationId}
+            onNewChat={() => {
+              // F panels: a new chat is a new PANEL — the previous conversation stays
+              // open (and keeps streaming if mid-run); switch back via the chats strip.
+              setConversationId('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))
+              setTab('chat')
+            }}
+            onRestore={restoreConversation}
+            refreshKey={histRefresh}
           />
         )}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
@@ -2055,20 +2092,7 @@ export default function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
               {/* System drawers relocated from the old chat topbar — each renders its own
                   trigger icon + anchored panel. */}
-              <HistoryBinder onRestore={summary => {
-                apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
-                  .then(r => r.json())
-                  .then(({ conversation }) => {
-                    if (!conversation?.rounds) return
-                    setConversationId(conversation.id)
-                    setAllRounds(prev => [
-                      ...prev.filter(r => r.convId !== conversation.id),
-                      ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
-                    ])
-                    setTab('chat')
-                  })
-                  .catch(() => {})
-              }} />
+              <HistoryBinder onRestore={restoreConversation} />
               <TasksBinder onResume={goal => { setTab('chat'); void send(goal) }} />
               <IntegrationsBinder draft={input} />
               <LibraryBinder onBuild={text => { setTab('chat'); void send(text) }} />
@@ -2106,7 +2130,8 @@ export default function App() {
       {/* History — slide-out-in-place (F): a left-strip drawer over the live chat, same
           pattern as the Agents pane below. Restoring a conversation merges it into the
           open pool without touching other chats; the chat behind never unmounts. */}
-      {tab === 'history' && (
+      {/* Mobile-only now: desktop history lives in the persistent sidebar rail. */}
+      {isMobile && tab === 'history' && (
         <>
           <div onClick={() => setTab('chat')} style={{
             position: 'absolute', inset: 0, zIndex: 28,
@@ -2134,24 +2159,7 @@ export default function App() {
                 <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
               </svg>
             </button>
-            <HistoryTabView onRestore={summary => {
-              apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
-                .then(r => r.json())
-                .then(({ conversation }) => {
-                  if (!conversation?.rounds) return
-                  setConversationId(conversation.id)
-                  // Deliberately do NOT adopt the stored conversation.mode — restoring an old
-                  // ensemble ('quorum') thread must never silently re-arm the external pipeline.
-                  // Merge into the global round pool (tagged with this conv) — other open
-                  // chats and their live streams are untouched.
-                  setAllRounds(prev => [
-                    ...prev.filter(r => r.convId !== conversation.id),
-                    ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
-                  ])
-                  setTab('chat')
-                })
-                .catch(() => {})
-            }} />
+            <HistoryTabView onRestore={restoreConversation} />
           </div>
         </>
       )}
@@ -2400,7 +2408,8 @@ export default function App() {
         padding: `0 18px 0 ${window.electronIPC ? 44 : 18}px`, gap: 12, zIndex: 10, position: 'relative',
         WebkitAppRegion: 'drag',
       } as any}>
-        <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee', flexShrink: 0 }}>Crucible</span>
+        {/* Wordmark lives in the sidebar rail on desktop — only mobile shows it here. */}
+        {isMobile && <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee', flexShrink: 0 }}>Crucible</span>}
         {/* Mobile navigation — the desktop left rail is hidden on phones, so its tabs
             live here as a compact icon row (same handlers, edge-to-edge chat below). */}
         {isMobile && (
@@ -2527,7 +2536,8 @@ export default function App() {
               animation: 'pulse 1.4s ease infinite',
             }}>resuming task…</span>
           )}
-          <button
+          {/* Desktop's New chat lives at the top of the sidebar rail; mobile keeps this one. */}
+          {isMobile && <button
             onClick={() => {
               // F panels: a new chat is a new PANEL — the previous conversation stays
               // open (and keeps streaming if mid-run); switch back via the chats strip.
@@ -2544,8 +2554,7 @@ export default function App() {
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
               <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
             </svg>
-            {!isMobile && 'New chat'}
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -2721,7 +2730,7 @@ export default function App() {
           solid background, so it never reads as a dark bar; the blobs stay visible. */}
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 272),
         right: 0,
         height: inputBarHeight - 4, pointerEvents: 'none', zIndex: 8, background: remoteBrain && isMobile ? 'rgba(13,13,21,0.55)' : 'transparent',
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -2730,7 +2739,7 @@ export default function App() {
       }} />
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 272),
         right: 0,
         height: inputBarHeight - 28, pointerEvents: 'none', zIndex: 9,
         backdropFilter: 'blur(44px)', WebkitBackdropFilter: 'blur(44px)',
@@ -2774,7 +2783,7 @@ export default function App() {
         // In landscape Remote Brain: anchor to the right 38% panel so it sits below chat.
         // In portrait Remote Brain: full width, above the canvas (zIndex 60).
         // Normal: full width, normal stacking.
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 56),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 272),
         right: 0,
         zIndex: remoteBrain && isMobile ? 60 : 10,
         // Remote Brain portrait: frosted glass so the stream bleeds through.
