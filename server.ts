@@ -1412,6 +1412,17 @@ async function callModel(
   opts: { requestId?: string; timeoutMs?: number } = {},
 ): Promise<string> {
   const { id, provider } = model
+  // ── NORTH-STAR TRIPWIRE (permanent, lowest-level guarantee): on-device models ONLY.
+  // No external / token-limited model is ever dispatched with a BUNDLED key. The only way
+  // an external provider is allowed is when the USER has explicitly supplied their OWN key
+  // for it this request (BYOK) — a deliberate, per-request opt-in that cannot fire by
+  // accident. Everything else (Apple FM, synth) is provider 'local'. This is what stops the
+  // "answered by Groq / a leading technology company / AC-DC" class at the source, even if a
+  // future routing change forgets to pin strict. Retrieval tools (web, knowledge-graph) do
+  // NOT go through callModel, so this never blocks the north-star-allowed external DATA.
+  if (provider !== 'local' && provider !== 'synth' && !currentByokKeys()[provider]) {
+    throw new OfflineStrictError(provider)
+  }
   // Offline-first gate (see offlineGate): local FM first under offline modes;
   // 'strict' throws rather than escalate. Runs before token guards so an oversized
   // external payload never blocks a request the local FM can serve.
@@ -1628,6 +1639,11 @@ async function callModelStreaming(
   const _forceFail = process.env.CRUCIBLE_FORCE_FAIL
   if (_forceFail && (_forceFail === '*' || _forceFail.split(',').map(s => s.trim()).includes(id))) {
     throw new Error(`[forced-fail] simulated 503 for ${id} (CRUCIBLE_FORCE_FAIL)`)
+  }
+  // NORTH-STAR TRIPWIRE (see callModel): on-device only; a bundled-key external dispatch
+  // is structurally impossible. External providers are allowed ONLY with an explicit BYOK key.
+  if (provider !== 'local' && provider !== 'synth' && !currentByokKeys()[provider]) {
+    throw new OfflineStrictError(provider)
   }
   // Offline-first gate (see offlineGate). On a local hit the full text is emitted as
   // a single chunk — token-by-token streaming is the documented tradeoff of offline mode.
@@ -2427,13 +2443,14 @@ app.post('/api/chat', async (req, res) => {
   // into the message, replace it with the actual file CONTENT (text inline, images via
   // on-device Vision OCR) so the brain can act on what was attached, not just see a path.
   try { message = await foldAttachmentContext(String(message ?? ''), sandboxResolve) } catch { /* never blocks a send */ }
-  // ── v3 product rule: the external multi-model pipeline runs ONLY for an explicit,
-  // client-confirmed ensemble request (mode==='quorum', sent together with the user's own
-  // byokKeys after the per-query confirm). EVERY other mode is local-only for this request —
-  // exactly the CRUCIBLE_OFFLINE=strict behavior — regardless of the server-wide env
-  // default. This is the server-side half of "Crucible-local is the default, zero external
-  // calls"; the client-side mode default alone cannot prevent server-side fan-out.
-  const requestOffline: string = mode === 'quorum' ? (process.env.CRUCIBLE_OFFLINE ?? '1') : 'strict'
+  // ── NORTH STAR (non-negotiable): on-device models ONLY. No external / token-limited
+  // provider is ever called from a model dispatch — not as a default, not as a fallback, and
+  // not for the 'quorum' ensemble. Earlier this was `mode==='quorum' ? env : 'strict'`, which
+  // left a hole: a quorum request escalated to Groq/Gemini/Mistral using the BUNDLED keys in
+  // .env.local (the "I was made by AC/DC / by a leading technology company" cloud answers).
+  // requestOffline is now HARD-PINNED to 'strict' for every request, so offlineGate throws on
+  // any external escalation and the answer engine (answerQuery) serves it fully on-device.
+  const requestOffline: string = 'strict'
   const chatSessionId = typeof reqSessionId === 'string' ? reqSessionId : ''
   const chatRoundId = typeof reqRoundId === 'string' ? reqRoundId : ''
   // Register roundId → conversationId so the completion patch can update the grouped
