@@ -17,7 +17,22 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-13 — MODIFY/CREATE + RENAME path hardened end-to-end; answer engine gains consensus premise verifier; 441/441)
+## CURRENT STATE (last updated 2026-07-14 — sidebar-rail UI shell + fault-injection recovery harness + keep-K; recovery baseline 48-52%)
+
+**cont.69b (2026-07-14, this session — executing FABLE_HANDOFF_REDESIGN.md, Opus's critical read of the "8GB blueprint"):**
+
+- **UI: persistent left sidebar rail (desktop)** — `src/SidebarRail.tsx` (272px) replaces the pop-out history drawer: New chat, Chat/Agents rows, time-bucketed history slivers (`.rail-sliver` / `.rail-nav-row` primitives added to the index.css token sheet), Settings pinned at bottom. History drawer + top-bar wordmark/New-chat are now MOBILE-ONLY; mobile stays edge-to-edge and untouched. `?forceMobile=1` URL hook makes the mobile branch reproducible in desktop previews. Restore logic unified in `restoreConversation`. Preview-verified both branches; `app/` rebuilt + committed. NOTE: the three input-bar `left: isMobile ? 0 : 272` offsets in App.tsx must track rail width.
+- **Fault-injection recovery harness** — `reasoning/faultInject.ts`: deterministic mutation operators (flip-lt/gt, swap-plus-minus, shift-zero, negate-if, drop-guard, void-return) injected into known-good code; measures DETECTION (can the case set see the fault → spec coverage; equivalent mutants reported as coverage gaps, not loop failures) and RECOVERY (loop reads failing cases, patches, re-certifies). `fault:bench` 7/7 deterministic; `fault:live` is the metric: **81% detection, 48-52% recovery @6-call budget** — the first real measurement of the repair loop (clean-synthesis benches never measured this). This number is now the one to move.
+- **Keep-K candidate selection** — `reasoning/keepK.ts` (`solveWithKeptCandidates`): sequential retry-until-certified that KEEPS every distinct candidate across attempts; when none certify, the deterministic verifier's ranking picks the best, returned as an explicit `best-effort` with score + case coverage exposed, floored (default score ≥ -2) so garbage abstains. `keepk:bench` 7/7. **NOT yet wired into server.ts** (the parallel-session contention file) — wiring into the live retry loop is a deliberate follow-up.
+- **AFM-vs-MiniCPM head-to-head** — `fault:h2h` (`__fault_headtohead.ts`): both engines get IDENTICAL prompts via `buildProposalPrompt` (extracted from codeProposer; `extractCode`/`fingerprintCode` exported), MiniCPM through raw `completeLocalModel` + `stripReasoning` (the prose-tuned miniCpmAnswer wrapper sabotages code output). Agreed policy: MiniCPM earns a dedicated repair role ONLY if it beats AFM by >10 pts recovery; otherwise AFM stays the single brain. AFM side measured 52% (13/25).
+- **Blueprint verdict recorded** (FABLE_HANDOFF_REDESIGN.md): ~70% already built, often more rigorously; parallel-MCTS / KV-hibernation / Python-refactor rejected as wrong-for-stack; the two extracted ideas are exactly the harness + keep-K above.
+- vgr:bench 200/200 unchanged; fault:bench 7/7; keepk:bench 7/7; `npx tsc -b` clean; tsconfig.server.json check clean for the new files.
+
+**Next (in order):** (1) wire keep-K's best-effort tier into the live single-file retry loop in server.ts (coordinate with the parallel session — contention file), surfacing score/coverage in the UI verify card; (2) use fault:live as the regression gate when touching proposer/feedback/search; (3) grow the fault-target set toward realistic multi-function/multi-file mutants; (4) act on the fault:h2h verdict (drop or seat MiniCPM).
+
+---
+
+## PREVIOUS STATE (2026-07-13 — MODIFY/CREATE + RENAME path hardened end-to-end; answer engine gains consensus premise verifier; 441/441)
 
 **This session (10 commits cfede63→5d35906, branch crucible-northstar-sessions) — the offline modify/create/refactor loop and the answer engine each closed their remaining verification holes, most surfaced by LIVE /api/chat testing that the deterministic benches structurally can't (they feed clean f(x)===y lines).**
 
