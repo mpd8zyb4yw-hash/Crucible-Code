@@ -42,6 +42,7 @@ import type { DriveTurn, DriveTurnResult } from './loop'
 import { retrieveForTask } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
 import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
+import { matchMeta } from '../answer/conversational'
 import { runtimeVerifyHtml } from './htmlRuntimeVerify'
 import { callLocalModel, isGgufRuntimeAvailable } from './localModelPool'
 

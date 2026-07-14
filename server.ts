@@ -3454,7 +3454,10 @@ app.post('/api/chat', async (req, res) => {
     if (!handled) {
     // Same model-cost-independent driver selection as the meta-router path above —
     // this block runs when shouldUseMetaRouter() is false, so it needs its own copy.
-    const _offlineDriveSingle = makeOfflineDriveTurn(projectPath)
+    // Pass the current turn's goal explicitly: this single-loop path prepends prior
+    // conversation history ahead of the goal, so the offline driver must NOT re-derive
+    // the goal from the first user message (that returns a stale earlier turn).
+    const _offlineDriveSingle = makeOfflineDriveTurn(projectPath, agentGoal)
     const _offlineModeSingle = requestOffline
     const activeDriveTurn = _offlineModeSingle === 'strict'
       ? _offlineDriveSingle
