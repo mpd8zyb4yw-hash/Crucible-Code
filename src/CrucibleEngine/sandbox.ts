@@ -170,6 +170,17 @@ while True:
   }
 }
 
+/**
+ * Kill the persistent Python worker. MUST be called from the server's shutdown path —
+ * otherwise a SIGKILL of the parent orphans this REPL child (observed: many stray
+ * `python -u -c` processes surviving dead servers). Idempotent, never throws.
+ */
+export function shutdownSandbox(): void {
+  try { pythonWorker?.kill('SIGKILL') } catch {}
+  pythonWorker = null
+  pythonReady = false
+}
+
 // ── Execution Functions ───────────────────────────────────────────────────
 
 function executeJS(code: string, timeoutMs: number): Promise<ExecutionResult> {

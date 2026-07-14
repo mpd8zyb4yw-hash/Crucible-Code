@@ -313,7 +313,7 @@ export function saveCircuitState() {
 
 loadCircuitState()
 import { exec, execFile, spawn } from 'child_process'
-import { prewarmPython } from './src/CrucibleEngine/sandbox'
+import { prewarmPython, shutdownSandbox } from './src/CrucibleEngine/sandbox'
 import { debugBus } from './src/CrucibleEngine/debug/bus'
 import { debugAnalyzer } from './src/CrucibleEngine/debug/analyzer'
 import { qualityPredictor } from './src/CrucibleEngine/qualityPredictor'
@@ -2080,7 +2080,7 @@ app.post('/api/voice/transcribe', express.json({ limit: '25mb' }), async (req, r
 })
 
 // A single quick tunnel reused across calls so we don't spawn one per request.
-let _remoteTunnel: { url: string } | null = null
+let _remoteTunnel: { url: string; cp?: import('child_process').ChildProcess } | null = null
 // POST /api/remote-brain/tunnel/start — spin up a Cloudflare quick tunnel that points
 // DIRECTLY at this Mac (origin localhost:3001), giving the phone an https/wss path to
 // the screen stream from cellular / a different network. Returns the trycloudflare URL.
@@ -2093,7 +2093,7 @@ app.post('/api/remote-brain/tunnel/start', (_req, res) => {
     const cp = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', `http://localhost:${Number(process.env.PORT) || 3001}`], { stdio: ['ignore', 'pipe', 'pipe'] })
     const onData = (buf: Buffer) => {
       const m = buf.toString().match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)
-      if (m) { _remoteTunnel = { url: m[0] }; finish(200, { ok: true, url: m[0] }) }
+      if (m) { _remoteTunnel = { url: m[0], cp }; finish(200, { ok: true, url: m[0] }) }
     }
     cp.stdout.on('data', onData)
     cp.stderr.on('data', onData)   // cloudflared prints the assigned URL to stderr
@@ -8394,6 +8394,30 @@ function startListening(port: number, attempt = 0) {
 }
 
 startListening(Number(process.env.PORT) || 3001)
-process.on('SIGTERM', () => httpServer.close())
-process.on('SIGINT',  () => httpServer.close())
-setInterval(() => {}, 1 << 30)
+
+// Shutdown MUST terminate the process. The previous handlers called httpServer.close()
+// (which only releases the port) but never exited, and the `setInterval(()=>{},1<<30)`
+// below kept the event loop alive forever — so every preview/app stop or relaunch
+// stranded a fully-live server (RSI, self-patch, hunter, corpus, keepalive loops + a
+// resident Python REPL child) running for hours. On an 8GB machine a handful of these
+// orphans is swap-death. Close the socket, reap child processes, then hard-exit — with
+// a bounded fallback so a hung close() can't wedge shutdown again.
+// Reap every long-lived child this process owns, so shutdown doesn't orphan them
+// (the persistent Python REPL worker and any cloudflared tunnel were the observed strays).
+function killManagedChildren() {
+  try { shutdownSandbox() } catch {}
+  try { _remoteTunnel?.cp?.kill('SIGKILL') } catch {}
+}
+
+let shuttingDown = false
+function gracefulShutdown(signal: string) {
+  if (shuttingDown) { process.exit(0); return }
+  shuttingDown = true
+  console.log(`[Shutdown] ${signal} — closing server and reaping children`)
+  try { killManagedChildren() } catch {}
+  try { httpServer.close(() => process.exit(0)) } catch { process.exit(0) }
+  // Fallback: never let a lingering connection or timer keep us alive.
+  setTimeout(() => process.exit(0), 2000).unref()
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'))
