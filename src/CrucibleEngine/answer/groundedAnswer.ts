@@ -97,6 +97,36 @@ function titleDisambig(title: string): string {
   return (title.toLowerCase().match(/\(([^)]*)\)/)?.[1] ?? '').trim()
 }
 
+// Specific-work disambiguator classes. A Wikipedia parenthetical like "(2023 TV series)",
+// "(1999 film)" or "(album)" marks a NAMED creative work — not a general concept. A plain-
+// language question ("what causes the northern lights") almost never means the show that merely
+// shares a word, yet such pages win on raw lexical overlap ("Blue Lights" literally contains
+// "lights"; a "Northern Irish" snippet supplies "northern"). So: when the query carries NO signal
+// that the user wants a specific work, demote work-disambiguated pages hard.
+const WORK_DISAMBIG_TOKENS = [
+  'film', 'movie', 'tv', 'television', 'series', 'miniseries', 'season', 'episode', 'sitcom',
+  'album', 'song', 'single', 'band', 'soundtrack', 'video game', 'game', 'novel', 'novella',
+  'book', 'play', 'musical', 'opera', 'anime', 'manga', 'comic', 'comics',
+]
+const YEAR_RE = /\b(?:19|20)\d{2}\b/
+// Query tokens that DO invite a specific work — the intent verbs plus common media nouns. If any
+// appears, the off-topic penalty is disabled (intentBonus then handles which work-type wins).
+const MEDIA_INTENT_TOKENS = new Set<string>([
+  ...INTENT_DISAMBIG.flatMap(e => e.verbs),
+  'film', 'movie', 'show', 'series', 'tv', 'television', 'episode', 'season', 'sitcom',
+  'album', 'song', 'single', 'band', 'soundtrack', 'video', 'game', 'videogame',
+  'novel', 'novella', 'book', 'play', 'musical', 'opera', 'anime', 'manga', 'comic', 'comics',
+  'franchise', 'cast', 'starring', 'actor', 'actress', 'watch', 'trailer', 'sequel', 'prequel',
+])
+
+/** Does this title's disambiguator mark a specific creative work (media type or a release year)? */
+function isWorkDisambig(title: string): boolean {
+  const d = titleDisambig(title)
+  if (!d) return false
+  if (YEAR_RE.test(d)) return true
+  return WORK_DISAMBIG_TOKENS.some(w => d.includes(w))
+}
+
 /** Tiny tie-break bonus (< the 0.5 penalty step, so it only reorders exact ties): give a small
  *  edge to the disambiguator page whose work-type matches a creation verb in the query. */
 function intentBonus(title: string, queryTokens: Set<string>): number {
@@ -130,6 +160,9 @@ export function rankResults(results: SearchResult[], query: string): SearchResul
   const salSet = new Set(sal)
   // Full query tokens (verbs included, unfiltered) drive the intent tie-break.
   const queryTokens = new Set((query.toLowerCase().match(/[a-z0-9]+/g) ?? []))
+  // Does the query itself invite a specific creative work? If not, work-disambiguated pages
+  // ("(2023 TV series)", "(1999 film)") are almost certainly not what the asker means.
+  const wantsWork = [...queryTokens].some(t => MEDIA_INTENT_TOKENS.has(t))
   const scored = results.map(r => {
     const title = (r.title ?? '').toLowerCase()
     const body = `${r.snippet ?? ''} ${r.url ?? ''}`.toLowerCase()
@@ -143,8 +176,12 @@ export function rankResults(results: SearchResult[], query: string): SearchResul
     // titles that all share extras=0 ("Mercury" over "Mercury Records" when both clear the tier).
     // Smaller than the intent bonus so an intent match still wins a three-way tie.
     const exactBase = titleTokens.length > 0 && titleTokens.every(t => salSet.has(t)) ? 0.15 : 0
-    const score = overlap - 0.5 * Math.min(extras, 3) + intentBonus(r.title ?? '', queryTokens) + exactBase
-    return { r, score, overlap }
+    // Off-topic-work penalty: a specific-work page the query never invited is demoted below any
+    // genuine concept/entity page. Large (3) so it clears a full title-overlap match, but applied
+    // only when the query carries no media intent — so "who directed Dune" is untouched.
+    const offTopic = !wantsWork && isWorkDisambig(r.title ?? '')
+    const score = overlap - 0.5 * Math.min(extras, 3) + intentBonus(r.title ?? '', queryTokens) + exactBase - (offTopic ? 3 : 0)
+    return { r, score, overlap, offTopic }
   }).sort((a, b) => b.score - a.score)
   const top = scored[0]?.overlap ?? 0
   if (top === 0) return scored.map(s => s.r)
@@ -153,7 +190,11 @@ export function rankResults(results: SearchResult[], query: string): SearchResul
   // sources. Threshold is on overlap (not the penalized score) so a verbose-but-on-topic
   // corroborator isn't dropped for its title length.
   const threshold = Math.max(1, top * 0.4)
-  return scored.filter((s, i) => i === 0 || s.overlap >= threshold).map(s => s.r)
+  const kept = scored.filter((s, i) => (i === 0 || s.overlap >= threshold) && !s.offTopic)
+  // Off-topic secondary-work pages are dropped outright (not just demoted) so they never leak in
+  // as a cited source — but only while a genuine page survives; if EVERYTHING was work-shaped
+  // (the query really was about a work after all), fall back to the score-ranked set.
+  return (kept.length ? kept : scored).map(s => s.r)
 }
 
 /** Search → fetch top sources → assemble a budget-fit, citation-numbered evidence block. */

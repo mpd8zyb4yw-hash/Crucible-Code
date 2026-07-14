@@ -145,5 +145,35 @@ console.log('\n== off-topic tail is still dropped (relative threshold intact) ==
     ranked.findIndex(r => r.title === 'Rock cycle') > 0)
 }
 
+console.log('\n== off-topic media pages are demoted below the real phenomenon (northern lights) ==')
+{
+  // The exact live failure: a TV series and a film outrank the aurora because "Blue Lights"
+  // contains "lights" and a "Northern Irish" snippet supplies "northern". No media verb/noun in
+  // the query → the specific-work pages must lose to the concept article.
+  const results = [
+    S('Blue Lights (2023 TV series)', 'Blue Lights is a Northern Irish police procedural television drama series.'),
+    S('Aurora', 'polar lights; in the Arctic they are called the northern lights, caused by solar wind.'),
+    S('Genius (1999 film)', 'a film; the Northern Lights arrive with Charlie.'),
+    S('Min Min light', 'an atmospheric light phenomenon.'),
+  ]
+  const ranked = rankResults(results, 'what causes the northern lights')
+  const below = (t: string) => { const i = ranked.findIndex(r => r.title === t); return i === -1 || i > 0 }
+  check('top-1 is the Aurora concept page', ranked[0]?.title === 'Aurora', ranked[0]?.title)
+  check('the TV series is dropped or below Aurora', below('Blue Lights (2023 TV series)'))
+  check('the film is dropped or below Aurora', below('Genius (1999 film)'))
+}
+
+console.log('\n== media-intent query still keeps the work page (penalty is inert) ==')
+{
+  // "who directed the Dune film" DOES want a work — the off-topic penalty must NOT fire, and the
+  // film still wins via the intent tie-break.
+  const results = [
+    S('Dune (novel)', 'Dune is a 1965 epic science fiction novel by Frank Herbert.'),
+    S('Dune (film)', 'Dune is a 2021 epic science fiction film directed by Denis Villeneuve.'),
+  ]
+  const ranked = rankResults(results, 'who directed the Dune film')
+  check('film still top-1 when the query names a media type', ranked[0]?.title === 'Dune (film)', ranked[0]?.title)
+}
+
 console.log(`\n${pass}/${pass + fail} passed`)
 if (fail > 0) process.exit(1)

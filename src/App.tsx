@@ -8,6 +8,7 @@ import { SelfRepairBinder } from './SelfRepairBinder'
 import { SelfPatcherBinder } from './SelfPatcherBinder'
 import NavRail from './NavRail'
 import SidebarRail from './SidebarRail'
+import DebugCapture from './DebugCapture'
 import AgentsTabView, { AGENT_WORKFLOWS } from './AgentsTabView'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView from './SettingsTabView'
@@ -2529,6 +2530,9 @@ export default function App() {
               </div>
             )
           })()}
+          {/* Debug-capture — one click copies this conversation + recent warn/error debug
+              events as a markdown report to paste to Claude when Crucible misbehaves. */}
+          {rounds.length > 0 && <DebugCapture rounds={rounds} conversationId={conversationId} compact={isMobile} />}
           {reconnecting && (
             <span style={{
               fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
