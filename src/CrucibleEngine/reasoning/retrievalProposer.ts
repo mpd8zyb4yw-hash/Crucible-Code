@@ -166,7 +166,12 @@ export function extractFunctions(rawCode: string): ExtractedFn[] {
     const arrowFn = /=>\s*$/.test(m[0]) || /=>/.test(m[3])
     const parenIdx = code.indexOf('(', m.index + m[0].indexOf('='))
     let arity = 0
-    if (parenIdx >= 0 && parenIdx < m.index + m[0].length + 2) {
+    // Bare-identifier arrow (`= str =>` / `= async x =>`, no parens) is a single param —
+    // the paren-based count below would miss it and mis-report arity 0, the most common
+    // shape for single-arg helpers on SO/blogs. Detect it off the captured head (m[3]).
+    if (/^(?:async[ \t]+)?[A-Za-z_$][\w$]*[ \t]*=>/.test(m[3])) {
+      arity = 1
+    } else if (parenIdx >= 0 && parenIdx < m.index + m[0].length + 2) {
       const afterParams = matchDelimiter(code, parenIdx)
       if (afterParams > 0) arity = arityOf(code.slice(parenIdx, afterParams))
     }
