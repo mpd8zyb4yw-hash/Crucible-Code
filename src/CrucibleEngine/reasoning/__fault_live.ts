@@ -65,6 +65,41 @@ const TARGETS: FaultTarget[] = [
       { args: [[-2, -5]], expected: [-2, -2] },
     ],
   },
+  // ── Multi-function targets: the entry delegates to an internal helper, so a mutation can land
+  //    in the CALLED function, not just the entry. This is the realistic "bug is one layer down"
+  //    shape — repair must localize into a helper it didn't directly get a failing case for. ──
+  {
+    id: 'medianOf',
+    code: `function sortAsc(xs) {\n  const a = xs.slice();\n  for (let i = 0; i < a.length; i++) {\n    for (let j = i + 1; j < a.length; j++) {\n      if (a[j] < a[i]) { const t = a[i]; a[i] = a[j]; a[j] = t; }\n    }\n  }\n  return a;\n}\nexport function medianOf(xs) {\n  if (xs.length < 1) return 0;\n  const a = sortAsc(xs);\n  const mid = Math.floor(a.length / 2);\n  if (a.length % 2 === 1) return a[mid];\n  return (a[mid - 1] + a[mid]) / 2;\n}\n`,
+    entry: 'medianOf',
+    cases: [
+      { args: [[3, 1, 2]], expected: 2 },
+      { args: [[4, 1, 3, 2]], expected: 2.5 },
+      { args: [[5]], expected: 5 },
+      { args: [[]], expected: 0 },
+    ],
+  },
+  {
+    id: 'minMaxNorm',
+    code: `function minOf(xs) {\n  let m = xs[0];\n  for (let i = 1; i < xs.length; i++) if (xs[i] < m) m = xs[i];\n  return m;\n}\nfunction maxOf(xs) {\n  let m = xs[0];\n  for (let i = 1; i < xs.length; i++) if (xs[i] > m) m = xs[i];\n  return m;\n}\nexport function minMaxNorm(xs) {\n  if (xs.length < 1) return [];\n  const lo = minOf(xs);\n  const hi = maxOf(xs);\n  if (hi === lo) return xs.map(() => 0);\n  return xs.map(v => (v - lo) / (hi - lo));\n}\n`,
+    entry: 'minMaxNorm',
+    cases: [
+      { args: [[0, 5, 10]], expected: [0, 0.5, 1] },
+      { args: [[2, 2, 2]], expected: [0, 0, 0] },
+      { args: [[]], expected: [] },
+    ],
+  },
+  {
+    id: 'isBalanced',
+    code: `function isPair(open, close) {\n  return (open === '(' && close === ')') || (open === '[' && close === ']') || (open === '{' && close === '}');\n}\nexport function isBalanced(s) {\n  const stack = [];\n  for (let i = 0; i < s.length; i++) {\n    const c = s[i];\n    if (c === '(' || c === '[' || c === '{') { stack.push(c); continue; }\n    if (c === ')' || c === ']' || c === '}') {\n      if (stack.length < 1) return false;\n      const top = stack.pop();\n      if (!isPair(top, c)) return false;\n    }\n  }\n  return stack.length === 0;\n}\n`,
+    entry: 'isBalanced',
+    cases: [
+      { args: ['(a[b]{c})'], expected: true },
+      { args: ['(]'], expected: false },
+      { args: ['(('], expected: false },
+      { args: ['abc'], expected: true },
+    ],
+  },
 ]
 
 async function main() {
