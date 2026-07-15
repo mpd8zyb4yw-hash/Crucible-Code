@@ -25,6 +25,7 @@ import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
+import { makeMutationRepairProposer } from './mutationRepair'
 import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 /**
@@ -103,7 +104,17 @@ export async function solveCodeTask(
     const evidence = await repairEvidenceBlock(input.buggyCode, spec)
     if (evidence) spec.context = [input.context, evidence].filter(Boolean).join('\n\n')
   }
-  const proposer: Proposer<string> = proposerOverride ?? proposeCode
+  // Repair fast-path: when we hold the buggy source, try the bounded space of single-token
+  // inversions (operator/arithmetic/boundary edits) BEFORE the model. Injected operator faults
+  // and real off-by-one regressions are one deterministic edit from correct; the verifier
+  // certifies the fix in zero model calls. Composed AHEAD of the FM so it only ever saves calls —
+  // it cedes (returns null) the instant no single edit fixes the bug.
+  // Gate the fast-path on the LIVE proposer only: the deterministic benches inject a
+  // proposerOverride precisely to prove the harness accounting for an arbitrary proposer,
+  // and must not have this mechanical repair fire ahead of their controlled one.
+  const proposer: Proposer<string> = input.buggyCode && !proposerOverride
+    ? composeProposers(makeMutationRepairProposer(input.buggyCode), proposeCode)
+    : (proposerOverride ?? proposeCode)
   const verifier: Verifier<string> = verifyCode
   return search(spec, proposer, verifier, opts)
 }

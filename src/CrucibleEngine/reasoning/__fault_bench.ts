@@ -23,7 +23,9 @@
 
 import { MUTATIONS, runFaultSuite, runFaultTrial, type FaultTarget } from './faultInject'
 import { extractPastedCode } from './emitPlan'
-import type { Proposer } from './types'
+import { verifyCode } from './codeVerifier'
+import { makeMutationRepairProposer } from './mutationRepair'
+import type { Proposer, TaskSpec } from './types'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -176,6 +178,57 @@ async function main() {
     check('8e data-tagged fence skipped in favor of code fence',
       extractPastedCode(`fix this:\n\`\`\`js\n${fn}\n\`\`\`\nlog:\n\`\`\`log\n${log}\n\`\`\``) === fn)
     check('8f a lone data fence → null', extractPastedCode(`\`\`\`json\n{"a":1,"b":2,"c":3}\n\`\`\``) === null)
+  }
+
+  // ── 9. DETERMINISTIC SINGLE-EDIT REPAIR: the mutation-repair proposer certifies every
+  //       operator/boundary fault it can reach with ZERO model calls — the free-win fast-path
+  //       the live repair path composes ahead of the FM. Sound: each variant is EXECUTED. ──
+  {
+    // Every applicable, DETECTED operator/boundary mutation of the reference targets must be
+    // repaired by a single deterministic edit — proving the fast-path covers the harness's own
+    // fault classes without a model.
+    const editClasses = MUTATIONS.filter(m => ['flip-lt', 'flip-gt', 'swap-plus-minus', 'shift-zero'].includes(m.name))
+    let covered = 0, reachable = 0
+    for (const t of TARGETS) {
+      const s: TaskSpec = { goal: '', domain: 'code', acceptance: { entry: t.entry, cases: t.cases } as unknown as Record<string, unknown> }
+      for (const m of editClasses) {
+        const mutated = m.apply(t.code)
+        if (mutated === null || mutated === t.code) continue                  // pattern absent
+        const det = await verifyCode({ value: mutated, fingerprint: 'm' }, s)
+        if (det.pass) continue                                               // equivalent mutant — nothing to fix
+        reachable++
+        const proposer = makeMutationRepairProposer(mutated)
+        const cand = await proposer({ spec: s, history: [], diversify: false })
+        if (cand) {
+          const fixed = await verifyCode(cand, s)
+          if (fixed.pass) covered++
+        }
+      }
+    }
+    check(`9a every detected operator/boundary fault repaired by one deterministic edit (${covered}/${reachable})`,
+      reachable > 0 && covered === reachable, `covered=${covered} reachable=${reachable}`)
+    // Fires exactly once: a second call on the same proposer instance cedes to the FM (null).
+    {
+      const t = TARGETS[0]
+      const s: TaskSpec = { goal: '', domain: 'code', acceptance: { entry: t.entry, cases: t.cases } as unknown as Record<string, unknown> }
+      const mutated = MUTATIONS[0].apply(t.code)!
+      const p = makeMutationRepairProposer(mutated)
+      const first = await p({ spec: s, history: [], diversify: false })
+      const second = await p({ spec: s, history: [], diversify: false })
+      check('9b repair proposer fires once then cedes to FM', first !== null && second === null)
+    }
+    // Non-single-edit fault (void-return) is NOT falsely "repaired" — the proposer cedes honestly.
+    {
+      const t = TARGETS[0]
+      const s: TaskSpec = { goal: '', domain: 'code', acceptance: { entry: t.entry, cases: t.cases } as unknown as Record<string, unknown> }
+      const mutated = MUTATIONS.find(m => m.name === 'void-return')!.apply(t.code)
+      if (mutated && mutated !== t.code) {
+        const det = await verifyCode({ value: mutated, fingerprint: 'm' }, s)
+        const cand = det.pass ? null : await makeMutationRepairProposer(mutated)({ spec: s, history: [], diversify: false })
+        check('9c non-single-edit fault not falsely repaired (cedes to FM)', det.pass || cand === null,
+          `cand=${cand ? 'returned' : 'null'}`)
+      }
+    }
   }
 
   console.log(`\n${pass}/${pass + fail} checks passed\n`)
