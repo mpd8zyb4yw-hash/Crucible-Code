@@ -46,6 +46,10 @@ interface Probe {
   // Right-only burst. Correct left/right controls end the player mass further right. Null when
   // the harness couldn't measure it (no canvas ink) or on the older harness → check skipped.
   dir?: { left: number; right: number; w: number; inkL: number; inkR: number } | null
+  // Fire-control probe (shooter goals only): the per-frame object-draw MAX during a no-input
+  // window vs a firing window. A working trigger spawns projectiles → fireMax > ambientMax; a
+  // dead trigger adds nothing → fireMax ≈ ambientMax. Null when not a shooter or unmeasurable.
+  fire?: { ambientMax: number; fireMax: number } | null
 }
 
 // Injected into the VERIFY COPY only (never the shipped artifact): wraps keydown/keyup
@@ -115,9 +119,45 @@ const TEXT_INSTRUMENTATION = `<script>
 })();
 </script>`
 
+// Injected into the VERIFY COPY only: counts discrete OBJECT-draw operations per frame so the
+// harness can tell whether firing actually spawns projectiles. Ink AREA is useless here — a
+// bullet is a handful of pixels against a whole alien formation — but each bullet is its own
+// draw CALL (fillRect/arc/drawImage/…), so counting calls is size-independent. We tally per
+// frame (reset at each requestAnimationFrame boundary) and keep a running MAX; the harness reads
+// and resets that max around a no-input window vs a firing window. A working trigger adds ≥1
+// sustained object → fireMax > ambientMax; a dead trigger (the classic e.key==='Space' bug) adds
+// zero → fireMax ≈ ambientMax. Counting is size- and position-blind, so it can't be fooled by a
+// large static formation the way ink area was.
+const DRAW_INSTRUMENTATION = `<script>
+(function () {
+  window.__crucibleDraw = { cur: 0, max: 0 };
+  var proto = window.CanvasRenderingContext2D && window.CanvasRenderingContext2D.prototype;
+  if (proto) {
+    ['fillRect', 'strokeRect', 'fill', 'stroke', 'fillText', 'strokeText', 'drawImage', 'arc', 'ellipse', 'rect'].forEach(function (m) {
+      var orig = proto[m];
+      if (typeof orig !== 'function') return;
+      proto[m] = function () { try { window.__crucibleDraw.cur++; } catch (e) {} return orig.apply(this, arguments); };
+    });
+  }
+  // Frame boundary: the ops counted since the previous boundary belong to the frame that just
+  // finished drawing. Finalize the per-frame max, then reset for the next frame.
+  if (typeof window.requestAnimationFrame === 'function') {
+    var raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = function (cb) {
+      return raf(function (t) {
+        var d = window.__crucibleDraw;
+        if (d.cur > d.max) d.max = d.cur;
+        d.cur = 0;
+        return cb(t);
+      });
+    };
+  }
+})();
+</script>`
+
 function injectInstrumentation(html: string): string {
   // As early as possible so it wraps before any game script registers listeners or draws.
-  const probes = `${KEY_INSTRUMENTATION}\n${TEXT_INSTRUMENTATION}`
+  const probes = `${KEY_INSTRUMENTATION}\n${TEXT_INSTRUMENTATION}\n${DRAW_INSTRUMENTATION}`
   const m = html.match(/<head[^>]*>/i)
   if (m) return html.replace(m[0], `${m[0]}\n${probes}`)
   return probes + html
@@ -210,6 +250,17 @@ export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string
       if (right - left < -0.18 * w) {
         return 'the left/right controls appear inverted — after pressing only ArrowLeft and then only ArrowRight, the player ended up further LEFT, not right. ArrowRight must increase the player\'s x (move it right) and ArrowLeft must decrease it; check that you are not adding to x on Left and subtracting on Right.'
       }
+    }
+    // Fire-control invariant — the core mechanic of a shooting game, and the one every earlier
+    // check is blind to. The harness compared per-frame object-draw counts with no input vs while
+    // firing a burst of Space. A working trigger spawns projectiles → at least one more object is
+    // drawn per frame → fireMax exceeds ambientMax. If firing a shooter draws NO new objects, the
+    // trigger is dead and the game is unplayable. Floor of 3 on ambientMax skips games we couldn't
+    // meaningfully measure (no per-frame object draws) → fail-open.
+    if (probe.fire && probe.fire.ambientMax >= 3 && probe.fire.fireMax <= probe.fire.ambientMax) {
+      return 'pressing the fire key (Space) spawns no projectile — firing draws nothing new, so the game cannot actually be played. ' +
+        'The space bar\'s KeyboardEvent.key is \' \' (a single space), NOT \'Space\' (that is event.code) — listen for `e.key === \' \'`. ' +
+        'On each shot push a bullet onto your bullets array at the player\'s position, move every bullet toward the enemies each frame, and draw it.'
     }
     return null
   } catch (e: any) {

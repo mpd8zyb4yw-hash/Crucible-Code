@@ -122,6 +122,34 @@ app.whenReady().then(async () => {
     const cR = await cen()
     out.dir = (cL && cR) ? { left: cL.cx, right: cR.cx, w: cL.w, inkL: cL.ink, inkR: cR.ink } : null
 
+    // (5) Fire-control probe — a BEHAVIORAL invariant for shooting games (goal-gated via
+    // CRUCIBLE_GAME_GOAL). A shooter whose trigger is dead (the classic `e.key === 'Space'` bug —
+    // .key is ' ', not 'Space') draws, animates and steers, so every earlier check passes, yet you
+    // can never fire: unplayable. Firing spawns a projectile = one more OBJECT drawn per frame.
+    // We compare the per-frame draw-op MAX during a no-input window vs a firing window; the
+    // injected DRAW_INSTRUMENTATION counts object-draw CALLS (size-blind, unlike ink area). The
+    // ambient window absorbs timed-spawn growth, so only fire-caused objects lift fireMax above it.
+    const drawMaxReset = () => win.webContents.executeJavaScript(
+      `(() => { const d = window.__crucibleDraw; if (!d) return null; const m = d.max; d.max = d.cur; return m; })()`, true).catch(() => null)
+    if (/\b(shoot|shooter|fire|bullet|laser|blast|missile|invader|gal(?:aga|axian)|asteroid|space\s*invad|gun|cannon|turret)\b/i.test(process.env.CRUCIBLE_GAME_GOAL || '')) {
+      // Three windows: ambient-PRE, FIRE, ambient-POST. A projectile is TRANSIENT — it exists only
+      // while firing, so a working trigger lifts fireMax above BOTH ambient windows. Timed-spawn
+      // growth is PERSISTENT — it also raises ambient-POST, so it can't be mistaken for fire.
+      await drawMaxReset()                 // clear max accumulated during earlier probes
+      await wait(850)
+      const preMax = await drawMaxReset()  // AMBIENT-PRE — no input
+      for (let k = 0; k < 14; k++) {       // FIRE — repeat the trigger
+        win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Space' })
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Space' })
+        await wait(60)
+      }
+      const fireMax = await drawMaxReset()
+      await wait(850)                      // AMBIENT-POST — no input, bullets have cleared
+      const postMax = await drawMaxReset()
+      out.fire = ([preMax, fireMax, postMax].every(v => typeof v === 'number'))
+        ? { ambientMax: Math.max(preMax, postMax), fireMax: fireMax } : null
+    }
+
     // Instrumentation counter (injected by runtimeVerifyHtml into the verify copy only):
     // registered>0,fired>0 means a real handler received our synthetic presses.
     out.keys = await win.webContents.executeJavaScript(
