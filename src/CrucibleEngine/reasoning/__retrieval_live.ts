@@ -30,14 +30,16 @@ const spec = (entry: string, cases: CodeCase[]): TaskSpec =>
  * We join (not just take the top block) so a helper split across the primary + an adjacent
  * snippet is still reachable by extractFunctions. Returns null when nothing came back.
  */
-function liveWebGround(report: (msg: string) => void): (query: string) => Promise<string | null> {
+function liveWebGround(report: (msg: string) => void): (query: string) => Promise<string[] | null> {
   return async (query: string) => {
     const bundle = await retrieveForTask({ goal: query }, { maxPages: 4, budget: 8000 })
-    const blob = bundle.codeBlocks.map(c => c.code).join('\n\n')
-    const nFns = blob ? extractFunctions(blob).length : 0
+    // Keep each code block as its OWN blob (don't join): the proposer builds one candidate
+    // pool across files so same-named alternate impls stay distinct → certify-rate lever.
+    const blobs = bundle.codeBlocks.map(c => c.code).filter(b => b && b.trim())
+    const nFns = blobs.reduce((n, b) => n + extractFunctions(b).length, 0)
     report(`      retrieval: ${bundle.codeBlocks.length} block(s) from ${bundle.sources.length} source(s) → ${nFns} fn(s) extracted`)
     if (bundle.sources.length) report(`      sources: ${bundle.sources.slice(0, 3).join(', ')}`)
-    return blob || null
+    return blobs.length ? blobs : null
   }
 }
 
@@ -94,9 +96,9 @@ async function main() {
     // whether it certified (certify-rate) — the delta is the extraction coverage gap.
     let sawFns = false
     const wrapped = async (query: string) => {
-      const blob = await webGround(query)
-      if (blob && extractFunctions(blob).length) sawFns = true
-      return blob
+      const blobs = await webGround(query)
+      if (blobs && blobs.some(b => extractFunctions(b).length)) sawFns = true
+      return blobs
     }
     // A control FM that always fails: if the run certifies, it was retrieval, not the FM.
     let fmCalls = 0

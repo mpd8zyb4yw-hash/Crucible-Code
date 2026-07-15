@@ -219,6 +219,62 @@ module.exports = { timeToMinutes }
     check('6 the final module contains the adapted web helper', /timeToMinutes/.test(r.code ?? ''), (r.code ?? '').slice(0, 120))
   }
 
+  // ── 7. CROSS-FILE DIVERSITY — same-named alternate impls survive as DISTINCT candidates. ──
+  //     The regression this guards: extractFunctions dedups by name (first-wins). When two
+  //     files each define `slugify` and the SPEC-BREAKING one (transliterates `&`→`and`) is
+  //     seen first, joining them into one blob would discard the plain, spec-matching impl and
+  //     retrieval could never certify. Returning per-file blobs keeps both — the verifier picks
+  //     the one that passes. File order is adversarial: the wrong impl is first.
+  {
+    const optionHeavy = `
+// library slugify: transliterates ampersand to the word "and" — FAILS "Rock & Roll" → "rock-roll"
+export function slugify(str, options = {}) {
+  return String(str).trim().toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+`
+    const plain = `
+// plain slugify: drops non-alphanumerics — matches the spec's "Rock & Roll" → "rock-roll"
+export function slugify(input) {
+  return String(input).trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+`
+    const cases: CodeCase[] = [
+      { args: ['Hello World'], expected: 'hello-world' },
+      { args: ['  Foo   Bar!  '], expected: 'foo-bar' },
+      { args: ['Rock & Roll'], expected: 'rock-roll' },
+    ]
+
+    // Control: JOINING the two files collapses to the first-seen (broken) slugify → NOT solved.
+    let fmA = 0
+    const joined = makeRetrievalProposer({
+      entry: 'slugify', goal: 'slugify string to url slug', wantArity: 1,
+      webGround: async () => `${optionHeavy}\n\n${plain}`,   // one blob → first-wins dedup
+    })
+    const rJoined = await search(spec('slugify', cases),
+      composeProposers(joined, async () => { fmA++; return { value: 'export function slugify(){ return "" }', fingerprint: `fmA${fmA}` } }),
+      verifyCode, { maxModelCalls: 6 })
+    check('7 CONTROL: joining files collapses same-named impls → broken one wins, not solved by retrieval',
+      !(rJoined.status === 'solved' && fmA === 0), JSON.stringify({ s: rJoined.status, fmA }))
+
+    // Fix: per-file blobs keep BOTH slugify defs → the plain one certifies, 0 FM calls.
+    let fmB = 0
+    const perFile = makeRetrievalProposer({
+      entry: 'slugify', goal: 'slugify string to url slug', wantArity: 1,
+      webGround: async () => [optionHeavy, plain],           // array → distinct candidates
+    })
+    const rPerFile = await search(spec('slugify', cases),
+      composeProposers(perFile, async () => { fmB++; return { value: 'export function slugify(){ return "" }', fingerprint: `fmB${fmB}` } }),
+      verifyCode, { maxModelCalls: 6 })
+    check('7 per-file blobs certify the spec-matching alternate impl', rPerFile.status === 'solved', JSON.stringify({ s: rPerFile.status, d: rPerFile.detail }))
+    check('7 the certified impl is the PLAIN slugify (not the &→and library one), 0 FM calls',
+      fmB === 0 && !/ and /.test(rPerFile.solution?.value ?? ''), JSON.stringify({ fmB, v: (rPerFile.solution?.value ?? '').slice(0, 80) }))
+  }
+
   console.log(`\n${pass}/${pass + fail} passed\n`)
   if (fail > 0) process.exit(1)
 }

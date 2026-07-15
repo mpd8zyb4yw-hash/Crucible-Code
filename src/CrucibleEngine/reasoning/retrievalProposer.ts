@@ -264,8 +264,14 @@ export interface RetrievalProposerOpts {
   /**
    * The retriever: given a query, return raw source text (or null). Injected so the pure
    * loop never touches the network. Called AT MOST ONCE (result cached for the search).
+   *
+   * MAY return a `string[]` of per-file blobs instead of one joined string. Doing so is
+   * strictly better for certify-rate: same-named alternate impls (e.g. a plain `slugify`
+   * and an option-taking library `slugify`) are kept as DISTINCT candidates instead of
+   * being collapsed by extractFunctions' first-wins name dedup — so the one that actually
+   * matches the spec reaches the verifier. Prefer one entry per retrieved source file.
    */
-  webGround: (query: string) => Promise<string | null>
+  webGround: (query: string) => Promise<string | string[] | null>
   /** The search query to retrieve with. Defaults to `goal`. */
   query?: string
   /** Expected positional arity of the target, when known (from acceptance cases). */
@@ -296,16 +302,28 @@ export function makeRetrievalProposer(opts: RetrievalProposerOpts): Proposer<str
     if (fetched) return
     fetched = true
     if (ctx.signal?.aborted) return
-    let raw: string | null = null
+    let raw: string | string[] | null = null
     try { raw = await opts.webGround(opts.query ?? opts.goal) }
     catch (e: any) { emit({ type: 'thought', text: `retrieval: fetch error ${String(e?.message ?? e)}` }); return }
-    if (!raw || !raw.trim()) { emit({ type: 'thought', text: 'retrieval: no source returned (dry)' }); return }
-    const fns = extractFunctions(raw)
-    if (!fns.length) { emit({ type: 'thought', text: 'retrieval: source found but no function definitions extracted' }); return }
-    const ranked = [...fns].sort((a, b) =>
-      fitScore(b, opts.entry, opts.goal, opts.wantArity ?? null) - fitScore(a, opts.entry, opts.goal, opts.wantArity ?? null))
-    queue = ranked.slice(0, max).map(fn => aliasToEntry(raw!, fn.name, opts.entry))
-    emit({ type: 'thought', text: `retrieval: ${fns.length} fn(s) extracted, queued ${queue.length} candidate(s) aliased to \`${opts.entry}\`` })
+    // Normalize to per-file blobs. Keeping files SEPARATE (vs one joined string) preserves
+    // same-named alternate impls as distinct candidates — the certify-rate lever (see opts).
+    const blobs = (Array.isArray(raw) ? raw : [raw]).filter((b): b is string => !!b && !!b.trim())
+    if (!blobs.length) { emit({ type: 'thought', text: 'retrieval: no source returned (dry)' }); return }
+    // Each candidate carries the fn AND the blob it came from, so aliasToEntry only ever
+    // sees ONE file's declarations — no duplicate-const collisions across files.
+    const candidates: Array<{ fn: ExtractedFn; blob: string; score: number }> = []
+    let totalFns = 0
+    for (const blob of blobs) {
+      const fns = extractFunctions(blob)
+      totalFns += fns.length
+      for (const fn of fns) {
+        candidates.push({ fn, blob, score: fitScore(fn, opts.entry, opts.goal, opts.wantArity ?? null) })
+      }
+    }
+    if (!candidates.length) { emit({ type: 'thought', text: 'retrieval: source found but no function definitions extracted' }); return }
+    candidates.sort((a, b) => b.score - a.score)
+    queue = candidates.slice(0, max).map(c => aliasToEntry(c.blob, c.fn.name, opts.entry))
+    emit({ type: 'thought', text: `retrieval: ${totalFns} fn(s) across ${blobs.length} file(s), queued ${queue.length} candidate(s) aliased to \`${opts.entry}\`` })
   }
 
   return async (ctx: ProposeContext<string>): Promise<Candidate<string> | null> => {
