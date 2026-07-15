@@ -187,7 +187,7 @@ async function main() {
     // Every applicable, DETECTED operator/boundary mutation of the reference targets must be
     // repaired by a single deterministic edit — proving the fast-path covers the harness's own
     // fault classes without a model.
-    const editClasses = MUTATIONS.filter(m => ['flip-lt', 'flip-gt', 'swap-plus-minus', 'shift-zero'].includes(m.name))
+    const editClasses = MUTATIONS.filter(m => ['flip-lt', 'flip-gt', 'swap-plus-minus', 'shift-zero', 'negate-if'].includes(m.name))
     let covered = 0, reachable = 0
     for (const t of TARGETS) {
       const s: TaskSpec = { goal: '', domain: 'code', acceptance: { entry: t.entry, cases: t.cases } as unknown as Record<string, unknown> }

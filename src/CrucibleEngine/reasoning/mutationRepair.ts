@@ -110,14 +110,43 @@ function boundaryVariants(src: string): string[] {
 }
 
 /**
+ * Condition-negation variants: for each `if (…)` / `while (…)`, produce a variant with
+ * that condition wrapped in `!(…)`. A negated guard (the `negate-if` fault class) is
+ * fixed by re-negating it — double negation executes as the original — so this reaches a
+ * whole structural fault the token-level swaps cannot, while staying a single invertible
+ * edit. Walks to the matching close paren so nested parens survive (mirrors faultInject).
+ */
+function conditionNegationVariants(src: string): string[] {
+  const out: string[] = []
+  const re = /\b(?:if|while)\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) {
+    let depth = 0
+    let i = m.index + m[0].length - 1
+    for (; i < src.length; i++) {
+      if (src[i] === '(') depth++
+      else if (src[i] === ')' && --depth === 0) break
+    }
+    if (depth !== 0) continue // unbalanced — skip
+    const open = m.index + m[0].length
+    const cond = src.slice(open, i)
+    if (!cond.trim()) continue
+    out.push(src.slice(0, open) + `!(${cond})` + src.slice(i))
+  }
+  return out
+}
+
+/**
  * All single-edit repair candidates for `buggyCode`, de-duplicated and excluding
- * the original. Bounded — operator/arithmetic/boundary edits only, one token each.
+ * the original. Bounded, one invertible edit each — operator/arithmetic/boundary
+ * token swaps plus condition negation (reaches the `negate-if` fault class).
  */
 export function singleEditVariants(buggyCode: string): string[] {
   const all = [
     ...operatorVariants(buggyCode),
     ...arithmeticVariants(buggyCode),
     ...boundaryVariants(buggyCode),
+    ...conditionNegationVariants(buggyCode),
   ]
   const seen = new Set<string>([buggyCode])
   const out: string[] = []
