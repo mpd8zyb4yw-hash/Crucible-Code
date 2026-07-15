@@ -24,8 +24,8 @@
 
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
-import { parsePlan } from './fmPlanner'
-import { decomposeCodeTask, growingCasePrefixes, iterateCodeTask } from './solve'
+import { parsePlan, parseSubFunctionPlan } from './fmPlanner'
+import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, type SubFunctionPlanner } from './solve'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
 let pass = 0, fail = 0
@@ -208,6 +208,69 @@ async function main() {
   check('8c certified code passes ALL four real executed cases',
     decCode.rungs.length >= 3 && decCode.rungs.every((r) => r.certified) && decCode.rungs.slice(-1)[0].goal !== undefined,
     decCode.rungs.map((r) => `${r.index}:${r.certified}`).join(' '))
+
+  // ── 9. SUB-FUNCTION (logic) DECOMPOSITION — the axis for STRUCTURALLY-hard functions.
+  //       Target f(x) = g(x) + h(x) with g(x)=2x, h(x)=x+1  → f(x)=3x+1. The weak proposer
+  //       can write g or h alone, and can write f ONLY when BOTH helper sources are visible
+  //       in context — modeling a model that can't structure the whole but can wire parts. ──
+  const F_CASES = [{ args: [1], expected: 4 }, { args: [2], expected: 7 }, { args: [3], expected: 10 }]
+  const subWeak: Proposer<string> = async (ctx) => {
+    const acc = ctx.spec.acceptance as { entry: string }
+    const ctxt = ctx.spec.context ?? ''
+    if (acc.entry === 'g') return { value: 'export function g(x) { return x * 2; }', fingerprint: 'g' }
+    if (acc.entry === 'h') return { value: 'export function h(x) { return x + 1; }', fingerprint: 'h' }
+    if (acc.entry === 'f') {
+      const wired = ctxt.includes('function g') && ctxt.includes('function h')
+      return wired
+        ? { value: 'export function f(x) { return g(x) + h(x); }', fingerprint: 'f-ok' }
+        : { value: 'export function f(x) { return x; }', fingerprint: 'f-bad' } // structurally wrong from cold
+    }
+    return { value: 'export function f(x){return x}', fingerprint: 'na' }
+  }
+  const fInput = { goal: 'compute f(x) = double(x) plus increment(x)', entry: 'f', cases: F_CASES }
+
+  // Flat can't: from cold context it can only emit the wrong f and thrashes.
+  const flatF = await iterateCodeTask(fInput, { maxEpochs: 3, stallLimit: 2, baseModelCalls: 4, globalModelCalls: 16 }, subWeak)
+  check('9 flat iterate cannot one-shot a structurally-composed function', flatF.status !== 'solved', `status=${flatF.status}`)
+
+  const plan: SubFunctionPlanner = async () => [
+    { name: 'g', goal: 'double x', cases: [{ args: [2], expected: 4 }, { args: [5], expected: 10 }] },
+    { name: 'h', goal: 'increment x', cases: [{ args: [2], expected: 3 }, { args: [0], expected: 1 }] },
+  ]
+  const decF = await decomposeCodeBySubFunction(fInput, { planner: plan, iterate: { maxEpochs: 2, baseModelCalls: 3, globalModelCalls: 8 } }, subWeak)
+  check('9b sub-function decomposition SOLVES the structural task flat could not',
+    decF.status === 'solved' && !!decF.code, decF.detail)
+  check('9c both helpers certified + composition rung certified',
+    decF.rungs.length === 3 && decF.rungs.every((r) => r.certified), decF.rungs.map((r) => `${r.name}:${r.certified}`).join(' '))
+  check('9d certified module contains helpers AND the composed top-level fn',
+    !!decF.code && decF.code.includes('function g') && decF.code.includes('function h') && /f\(x\)\s*{\s*return g\(x\)/.test(decF.code!))
+
+  // 9e SOUNDNESS: an UNTRUSTED plan with a WRONG helper example (h should be x+1, claim x+5)
+  //    lets h "certify" a wrong helper, but the composition then fails the ORIGINAL f cases. ──
+  const wrongPlan: SubFunctionPlanner = async () => [
+    { name: 'g', goal: 'double x', cases: [{ args: [2], expected: 4 }] },
+    { name: 'h', goal: 'increment x', cases: [{ args: [2], expected: 7 }] }, // WRONG: weak proposer emits x+1 → h can't even certify this
+  ]
+  const badF = await decomposeCodeBySubFunction(fInput, { planner: wrongPlan, iterate: { maxEpochs: 2, baseModelCalls: 3, globalModelCalls: 8 } }, subWeak)
+  check('9e a wrong helper example collapses honestly, never a false solve',
+    badF.status === 'decompose-failed' && badF.code === null, badF.detail)
+
+  // 9f DECLINES when the planner offers nothing / only the top-level name.
+  const noPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => null }, subWeak)
+  check('9f planner with no helpers → declined', noPlan.status === 'declined', noPlan.detail)
+  const selfPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => [{ name: 'f', goal: 'self', cases: F_CASES }] }, subWeak)
+  check('9g a helper colliding with the top-level name is dropped → declined', selfPlan.status === 'declined', selfPlan.detail)
+
+  // ── 10. SUB-FUNCTION PLAN PARSING — tolerate fences, prose, bad identifiers, missing examples. ──
+  check('10 parses a clean JSON helper array',
+    parseSubFunctionPlan('[{"name":"parseSuffix","purpose":"get am/pm","examples":[{"args":["1:00pm"],"expected":"pm"}]}]').length === 1)
+  check('10b strips ```json fences and leading prose',
+    parseSubFunctionPlan('Here you go:\n```json\n[{"name":"a","examples":[{"args":[1],"expected":2}]}]\n```').length === 1)
+  check('10c drops helpers with no checkable examples',
+    parseSubFunctionPlan('[{"name":"a","purpose":"x"},{"name":"b","examples":[{"args":[1],"expected":2}]}]').length === 1)
+  check('10d rejects invalid identifiers',
+    parseSubFunctionPlan('[{"name":"2bad","examples":[{"args":[1],"expected":2}]}]').length === 0)
+  check('10e non-JSON prose yields nothing', parseSubFunctionPlan('just try harder').length === 0)
 
   console.log(`\n${fail === 0 ? '✅' : '❌'} decompose bench: ${pass} passed, ${fail} failed\n`)
   if (fail > 0) process.exit(1)

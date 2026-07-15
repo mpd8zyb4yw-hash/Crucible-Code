@@ -76,6 +76,100 @@ export interface FmPlannerOpts {
   timeoutMs?: number
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SUB-FUNCTION PLANNER — logic decomposition for STRUCTURALLY-hard functions
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// Live verification (cont.72b) found the case-subset curriculum useless for a tight
+// function like parseClock: EVERY case needs the correct parse first, so splitting the
+// acceptance set gives no easier rung. The difficulty there is STRUCTURAL, not additive.
+// The right axis is to split the IMPLEMENTATION into smaller pure helper functions —
+// each with its own tiny spec the weak model CAN certify — then a final rung that wires
+// the certified helpers and is verified against the ORIGINAL cases.
+//
+// This planner is UNTRUSTED like every other: it proposes helper names + example I/O.
+// Those examples seed each helper's Verifier, so a WRONG example only means a helper
+// certifies the wrong thing and the composition then fails the original cases → honest
+// collapse. It can never make a wrong whole look right (composition re-verify owns truth).
+
+/** One planned helper function: a name, a one-line goal, and example I/O that seed its Verifier. */
+export interface PlannedSubFunction {
+  name: string
+  goal: string
+  cases: { args: unknown[]; expected: unknown }[]
+}
+
+const SUBFN_SYSTEM =
+  'You are a decomposition planner. Given ONE hard function to implement, you propose 2–4 SMALLER, ' +
+  'PURE helper functions it can be built from — each doing one simple, self-contained job that a weak ' +
+  'model can get right on its own. For each helper give a name, a one-line purpose, and 2–3 concrete ' +
+  'input/output examples. You never write the code. Prefer helpers that carve off the tricky parsing / ' +
+  'edge-case logic into isolated, independently-testable pieces.'
+
+function buildSubFnUser(goal: string, entry: string, sampleCases: unknown[]): string {
+  return [
+    `TOP-LEVEL FUNCTION: ${entry}`,
+    `GOAL:\n${goal}`,
+    sampleCases.length ? `Example top-level behavior:\n${JSON.stringify(sampleCases.slice(0, 4))}` : '',
+    'Output ONLY a JSON array of 2–4 helpers, each: ' +
+      '{"name":"<camelCaseHelper>","purpose":"<one line>","examples":[{"args":[...],"expected":<value>}]}. ' +
+      'No prose, no code, no markdown fences — just the JSON array.',
+  ].filter(Boolean).join('\n\n')
+}
+
+/** Parse an FM reply into planned helper functions. Tolerates ```json fences and stray prose. */
+export function parseSubFunctionPlan(raw: string): PlannedSubFunction[] {
+  let text = (raw ?? '').trim()
+  if (!text) return []
+  // strip a ```json … ``` fence if present
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (fence) text = fence[1].trim()
+  // grab the first bracketed array if there's leading/trailing prose
+  const arrStart = text.indexOf('[')
+  const arrEnd = text.lastIndexOf(']')
+  if (arrStart > 0 || arrEnd < text.length - 1) {
+    if (arrStart >= 0 && arrEnd > arrStart) text = text.slice(arrStart, arrEnd + 1)
+  }
+  let arr: unknown
+  try { arr = JSON.parse(text) } catch { return [] }
+  if (!Array.isArray(arr)) return []
+
+  const out: PlannedSubFunction[] = []
+  for (const item of arr) {
+    if (!item || typeof item !== 'object') continue
+    const o = item as Record<string, unknown>
+    const name = typeof o.name === 'string' ? o.name.trim() : ''
+    if (!/^[A-Za-z_$][\w$]*$/.test(name)) continue // must be a valid identifier
+    const rawEx = Array.isArray(o.examples) ? o.examples : Array.isArray(o.cases) ? o.cases : []
+    const cases = rawEx
+      .map((e) => (e && typeof e === 'object' ? e as Record<string, unknown> : null))
+      .filter((e): e is Record<string, unknown> => !!e && Array.isArray(e.args) && 'expected' in e)
+      .map((e) => ({ args: e.args as unknown[], expected: e.expected }))
+    if (!cases.length) continue // a helper with no checkable examples can't be a rung
+    const goal = typeof o.purpose === 'string' && o.purpose.trim() ? o.purpose.trim()
+      : typeof o.goal === 'string' && o.goal.trim() ? o.goal.trim() : name
+    out.push({ name, goal, cases })
+  }
+  return out
+}
+
+/** Build a sub-function planner. Returns null when it can't propose ≥1 checkable helper. */
+export function makeFmSubFunctionPlanner(opts: FmPlannerOpts = {}): (
+  goal: string, entry: string, sampleCases: unknown[], signal?: AbortSignal,
+) => Promise<PlannedSubFunction[] | null> {
+  return async (goal, entry, sampleCases, signal) => {
+    const raw = await fmComplete(
+      [
+        { role: 'system', content: SUBFN_SYSTEM },
+        { role: 'user', content: buildSubFnUser(goal, entry, sampleCases) },
+      ],
+      { temperature: opts.temperature ?? 0.4, maxTokens: opts.maxTokens ?? 600, timeoutMs: opts.timeoutMs, signal },
+    )
+    const plan = parseSubFunctionPlan(raw)
+    return plan.length >= 1 ? plan : null
+  }
+}
+
 /** Build a Planner that asks the on-device FM for an incremental decomposition. */
 export function makeFmPlanner(opts: FmPlannerOpts = {}): Planner {
   return async (spec: TaskSpec, best: Attempt | null, signal?: AbortSignal) => {

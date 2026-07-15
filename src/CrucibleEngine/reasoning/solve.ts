@@ -19,7 +19,7 @@ import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROU
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
-import { makeFmPlanner } from './fmPlanner'
+import { makeFmPlanner, makeFmSubFunctionPlanner } from './fmPlanner'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -188,6 +188,143 @@ export async function decomposeCodeTask(
     iterateOpts: { mergeAcceptance: mergeCodeAcceptance, ...opts.iterate },
     signal: opts.signal, emit: opts.emit,
   })
+}
+
+// ── SUB-FUNCTION (logic) DECOMPOSITION for STRUCTURALLY-hard functions ───────────
+// The axis the live parseClock run proved we needed: don't split the acceptance CASES
+// (every case needs the whole parse first) — split the IMPLEMENTATION into smaller pure
+// helpers, certify each against its own tiny spec, then a final COMPOSITION rung wires the
+// certified helpers and is verified against the ORIGINAL cases. Each helper is within the
+// weak model's one-shot reach; the certified helper SOURCE is sound grounding for the next.
+//
+// SubFunctionPlan is UNTRUSTED (helper names + example I/O from the FM). A bad plan only
+// wastes budget: a wrong helper example certifies the wrong helper, and the composition then
+// fails the original cases → honest collapse. The composition rung's verifier runs the FULL
+// module (helpers + top) against the original cases, so the whole is proven as a whole.
+
+/** A helper the top-level function is built from; `cases` seed its (untrusted) Verifier. */
+export interface SubFunctionSpec {
+  name: string
+  goal: string
+  cases: CodeAcceptance['cases']
+}
+
+/** Ask the FM for a helper decomposition of a code goal. Reads entry/cases off the input. */
+export type SubFunctionPlanner = (
+  input: { goal: string; entry: string; cases: CodeAcceptance['cases'] },
+  signal?: AbortSignal,
+) => Promise<SubFunctionSpec[] | null>
+
+export interface SubFunctionRung {
+  name: string
+  status: IterateResult<string>['status']
+  bestScore: number
+  modelCalls: number
+  certified: boolean
+}
+
+export interface SubFunctionResult {
+  status: 'solved' | 'decompose-failed' | 'declined' | 'aborted'
+  /** Full certified module (helpers + top), when solved. */
+  code: string | null
+  helpers: { name: string; source: string }[]
+  rungs: SubFunctionRung[]
+  modelCalls: number
+  detail: string
+}
+
+/**
+ * Solve a code task by SUB-FUNCTION decomposition. Certify each planned helper on its own,
+ * then wire them in a composition rung verified against the ORIGINAL cases. Never ships an
+ * unverified guess: the returned code is exactly what passed verifyCode over the full module.
+ */
+export async function decomposeCodeBySubFunction(
+  input: SolveCodeInput & { nl?: string },
+  opts: { planner?: SubFunctionPlanner; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] } = {},
+  proposerOverride?: Proposer<string>,
+): Promise<SubFunctionResult> {
+  const emit = opts.emit ?? (() => {})
+  const proposer = proposerOverride ?? proposeCode
+  const rungs: SubFunctionRung[] = []
+  let modelCalls = 0
+
+  if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers: [], rungs, modelCalls, detail: 'aborted before planning' }
+
+  // 1) Untrusted helper plan.
+  const planner: SubFunctionPlanner = opts.planner ?? (async (inp, signal) => {
+    const fn = makeFmSubFunctionPlanner()
+    const plan = await fn(inp.goal, inp.entry, inp.cases.map((c) => ({ args: c.args, expected: c.expected })), signal)
+    return plan // PlannedSubFunction[] is structurally a SubFunctionSpec[]
+  })
+  let plan: SubFunctionSpec[] | null = null
+  try { plan = await planner({ goal: input.goal, entry: input.entry, cases: input.cases }, opts.signal) }
+  catch (e: any) { emit({ type: 'thought', text: `subfn: planner error ${String(e?.message ?? e)}` }) }
+  if (!plan || plan.length < 1) {
+    return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'planner proposed no checkable helpers' }
+  }
+  // guard against a helper colliding with the top-level name
+  const helperPlan = plan.filter((h) => h.name !== input.entry).slice(0, 5)
+  emit({ type: 'thought', text: `subfn: ${helperPlan.length} helper(s) — ${helperPlan.map((h) => h.name).join(', ')}` })
+  if (!helperPlan.length) {
+    return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'no helper distinct from the top-level function' }
+  }
+
+  // 2) Certify each helper independently. A helper that can't certify collapses the plan.
+  const helpers: { name: string; source: string }[] = []
+  for (const h of helperPlan) {
+    if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers, rungs, modelCalls, detail: `aborted at helper ${h.name}` }
+    const priorBlock = helpers.map((x) => x.source).join('\n\n')
+    const spec: TaskSpec = {
+      goal: `${h.goal}\n\nImplement helper \`${h.name}\`.`,
+      domain: 'code',
+      context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined,
+      acceptance: { entry: h.name, cases: h.cases, timeoutMs: input.timeoutMs } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+    }
+    const res = await iterate<string>(spec, proposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, ...opts.iterate, signal: opts.signal, emit: opts.emit })
+    modelCalls += res.modelCalls
+    const certified = res.status === 'solved' && !!res.solution
+    rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
+    if (!certified) {
+      return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `helper \`${h.name}\` did not certify — ${res.detail}` }
+    }
+    helpers.push({ name: h.name, source: res.solution!.value })
+    emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified (${modelCalls} calls so far)` })
+  }
+
+  // 3) COMPOSITION rung: write the top-level function calling the certified helpers. The
+  //    verifier prepends the helper sources and runs the FULL module against the ORIGINAL
+  //    cases, so what we certify is the whole, not just the top function in isolation.
+  const helperBlock = helpers.map((h) => h.source).join('\n\n')
+  const composeSpec: TaskSpec = {
+    goal: `${input.goal}\n\nYou may CALL these already-implemented and tested helpers (they are defined in the same module — do NOT redefine them): ${helpers.map((h) => '`' + h.name + '`').join(', ')}.`,
+    domain: 'code',
+    context: [input.context, `${WEB_GROUND_MARK}\n${helperBlock}`].filter(Boolean).join('\n\n'),
+    acceptance: {
+      entry: input.entry,
+      entries: input.entries && input.entries.length > 1 ? input.entries : undefined,
+      cases: input.cases, timeoutMs: input.timeoutMs,
+    } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+  }
+  // Verify (helpers + candidate) as one module. The proposer only writes the top function.
+  const composingVerifier: Verifier<string> = (cand, spec) =>
+    verifyCode({ value: `${helperBlock}\n\n${cand.value}`, fingerprint: cand.fingerprint }, spec)
+
+  const composed = await iterate<string>(composeSpec, proposer, composingVerifier, { mergeAcceptance: mergeCodeAcceptance, ...opts.iterate, signal: opts.signal, emit: opts.emit })
+  modelCalls += composed.modelCalls
+  const composedCert = composed.status === 'solved' && !!composed.solution
+  rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert })
+  if (!composedCert) {
+    return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `composition of ${input.entry} did not certify — ${composed.detail}` }
+  }
+
+  // 4) Final artifact = helpers + top. Re-verify with the PLAIN original verifier as a guard
+  //    (identical check to the composing verifier, made explicit for soundness).
+  const fullModule = `${helperBlock}\n\n${composed.solution!.value}`
+  const guard = await verifyCode({ value: fullModule, fingerprint: 'subfn-composed' }, composeSpec)
+  if (!guard.pass) {
+    return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `composed module failed final re-verify: ${guard.signals.slice(0, 3).join('; ')}` }
+  }
+  return { status: 'solved', code: fullModule, helpers, rungs, modelCalls, detail: `sub-function decomposition solved ${input.entry} via ${helpers.length} helper(s), ${modelCalls} model call(s)` }
 }
 
 export interface CodingRequestResult {
