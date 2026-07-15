@@ -22,6 +22,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { MUTATIONS, runFaultSuite, runFaultTrial, type FaultTarget } from './faultInject'
+import { extractPastedCode } from './emitPlan'
 import type { Proposer } from './types'
 
 let pass = 0, fail = 0
@@ -155,6 +156,21 @@ async function main() {
     check('7 first proposal is seeded with executed failure evidence',
       trial.recovered && (firstContext ?? '').includes('Observed failures of the current implementation'),
       `ctxHasEvidence=${(firstContext ?? '').includes('Observed failures')}`)
+  }
+
+  // ── 8. PASTED-CODE SEED: when the request names no target file, the repair seed comes from a
+  //       fenced code block pasted inline. Largest block wins; tiny/oversized blocks are skipped. ──
+  {
+    const fn = 'function add(a, b) {\n  return a - b // bug: should be +\n}'
+    const msg = `fix this bug:\n\`\`\`js\n${fn}\n\`\`\``
+    check('8a fenced block extracted as repair seed', extractPastedCode(msg) === fn,
+      JSON.stringify(extractPastedCode(msg)))
+    check('8b no fence → null', extractPastedCode('fix the adder') === null)
+    check('8c tiny block skipped', extractPastedCode('```\nx=1\n```') === null)
+    const two = 'small snippet here'
+    const big = 'function reallyLongOne() {\n  return computeSomethingComplicated() + 1\n}'
+    check('8d largest of multiple blocks wins',
+      extractPastedCode(`\`\`\`\n${two}\n\`\`\`\nand\n\`\`\`\n${big}\n\`\`\``) === big)
   }
 
   console.log(`\n${pass}/${pass + fail} checks passed\n`)

@@ -73,6 +73,28 @@ export function isModifyRequest(nl: string): boolean {
   return MODIFY_RX.test(nl)
 }
 
+// A fenced code block: ```lang\n … \n``` (lang optional). Non-greedy body, DOTALL via [\s\S].
+const FENCE_RX = /```[a-zA-Z0-9_+-]*\n([\s\S]*?)\n?```/g
+
+/**
+ * Pull the largest fenced code block out of a chat message — the "fix this bug" seed when the
+ * user pastes broken code inline instead of naming a target file. Returns the block body (fence
+ * markers + language tag stripped), or null when the message carries none or only trivial ones.
+ * Largest-wins so a short illustrative snippet loses to the actual pasted function. Mirrors the
+ * repairSeed size bound used server-side (skip blocks over ~4KB — those are whole files, handled
+ * by the target-path path, not an inline paste).
+ */
+export function extractPastedCode(nl: string): string | null {
+  let best: string | null = null
+  for (const m of nl.matchAll(FENCE_RX)) {
+    const body = m[1]
+    if (body.trim().length < 12) continue // too small to be a real function to repair
+    if (body.length > 4000) continue
+    if (best == null || body.length > best.length) best = body
+  }
+  return best
+}
+
 /**
  * Find the [start, end) span of `entry`'s definition in `content`, or null when it can't be
  * located unambiguously. Handles `function entry(...)  { … }` (with optional export/async)

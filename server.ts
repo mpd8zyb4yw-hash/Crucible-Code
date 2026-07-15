@@ -41,7 +41,7 @@ import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { retrieveForTask as retrieveCodeRefs } from './src/CrucibleEngine/retrieval/retrievalLayer'
-import { detectPruneImportsAll, detectRename, detectTargetPath, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
+import { detectPruneImportsAll, detectRename, detectTargetPath, extractPastedCode, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { planRefactor } from './src/server/refactorRoutes'
 import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from './src/server/jwt'
 import { vectorize, cosineSim } from './src/server/textVector'
@@ -3287,6 +3287,10 @@ app.post('/api/chat', async (req, res) => {
               if (src.length <= 4000) repairSeed = src
             } catch { /* no such file — nothing to seed */ }
           }
+          // No named target file — fall back to a fenced code block pasted inline in the message.
+          // Same failing-case-evidence seed, for the "fix this bug: ```…```" shape that doesn't
+          // reference the project tree at all.
+          if (!repairSeed) repairSeed = extractPastedCode(message ?? '') ?? undefined
         }
         let vgr = null
         for (let attempt = 1; !handled && attempt <= VGR_MAX_ATTEMPTS; attempt++) {
