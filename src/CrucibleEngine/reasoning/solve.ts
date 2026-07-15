@@ -240,7 +240,44 @@ export interface SubFunctionResult {
  */
 export async function decomposeCodeBySubFunction(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] } = {},
+  opts: {
+    planner?: SubFunctionPlanner
+    /**
+     * PLAN-LEVEL RETRY. Live data (cont.72b) shows the weak FM's decomposition QUALITY is
+     * high-variance — one sample carves clean trivial helpers (parseHour("12")→12), the next
+     * re-bakes the whole difficulty into a helper that can't certify. Since a single good plan
+     * makes the rest easy, resample the plan on an honest collapse. Default 3. This is "the
+     * loop, not the oracle" applied to the planner itself — every attempt is still fully
+     * verifier-gated, so more attempts can only find a real solution, never fabricate one.
+     */
+    planAttempts?: number
+    iterate?: Partial<IterateOpts<string>>
+    signal?: AbortSignal
+    emit?: IterateOpts<string>['emit']
+  } = {},
+  proposerOverride?: Proposer<string>,
+): Promise<SubFunctionResult> {
+  const emit = opts.emit ?? (() => {})
+  const planAttempts = Math.max(1, opts.planAttempts ?? 3)
+  // Retry the WHOLE decomposition on an honest collapse — a fresh (stochastic) plan each time.
+  // Stop early on solve, decline (planner has nothing), or abort (reality budget/cancel).
+  let last: SubFunctionResult | null = null
+  let spentCalls = 0
+  for (let attempt = 0; attempt < planAttempts; attempt++) {
+    if (opts.signal?.aborted) break
+    if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
+    const r = await runSubFunctionOnce(input, opts, proposerOverride)
+    spentCalls += r.modelCalls
+    last = { ...r, modelCalls: spentCalls }
+    if (r.status === 'solved' || r.status === 'declined' || r.status === 'aborted') return last
+    // else decompose-failed → resample the plan and try again
+  }
+  return last ?? { status: 'declined', code: null, helpers: [], rungs: [], modelCalls: spentCalls, detail: 'no plan attempts run' }
+}
+
+async function runSubFunctionOnce(
+  input: SolveCodeInput & { nl?: string },
+  opts: { planner?: SubFunctionPlanner; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] },
   proposerOverride?: Proposer<string>,
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})

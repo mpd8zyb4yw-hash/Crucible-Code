@@ -261,6 +261,23 @@ async function main() {
   const selfPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => [{ name: 'f', goal: 'self', cases: F_CASES }] }, subWeak)
   check('9g a helper colliding with the top-level name is dropped → declined', selfPlan.status === 'declined', selfPlan.detail)
 
+  // 9h PLAN-RETRY: the first plan is bad (a helper the weak proposer can't certify), the
+  //    second plan is good. decomposeCodeBySubFunction must resample and solve. Mirrors the
+  //    live finding that decomposition QUALITY is high-variance but one good sample suffices. ──
+  let planCall = 0
+  const flakyPlan: SubFunctionPlanner = async () => {
+    planCall++
+    return planCall === 1
+      ? [{ name: 'g', goal: 'double', cases: [{ args: [2], expected: 4 }] },
+         { name: 'z', goal: 'impossible', cases: [{ args: [1], expected: 999 }] }] // weak proposer can't make z
+      : [{ name: 'g', goal: 'double', cases: [{ args: [2], expected: 4 }] },
+         { name: 'h', goal: 'increment', cases: [{ args: [2], expected: 3 }] }]
+  }
+  const retried = await decomposeCodeBySubFunction(fInput,
+    { planner: flakyPlan, planAttempts: 3, iterate: { maxEpochs: 2, baseModelCalls: 3, globalModelCalls: 8 } }, subWeak)
+  check('9h plan-retry resamples a bad plan and solves on a good one',
+    retried.status === 'solved' && planCall >= 2, `status=${retried.status} plans=${planCall}`)
+
   // ── 10. SUB-FUNCTION PLAN PARSING — tolerate fences, prose, bad identifiers, missing examples. ──
   check('10 parses a clean JSON helper array',
     parseSubFunctionPlan('[{"name":"parseSuffix","purpose":"get am/pm","examples":[{"args":["1:00pm"],"expected":"pm"}]}]').length === 1)
