@@ -202,7 +202,9 @@ export async function search(query: string): Promise<SearchResult[]> {
     // only source that consistently surfaces full reference implementations. Repos lead so that
     // fetchGithubCode (raw file bodies) grounds the proposer with real code. See fetchGithubCode.
     if (wantsImplementation(query) || wantsFunctionImpl(query)) {
-      try { results = dedupeByUrl([...await searchGithubRepos(query), ...results]) } catch { /* keep SE */ }
+      // Code search (token-gated) leads: it returns individual files that CONTAIN the kernel def
+      // — the highest-yield source — ahead of repo search and the SE Q&A snippets.
+      try { results = dedupeByUrl([...await searchGithubCode(query), ...await searchGithubRepos(query), ...results]) } catch { /* keep SE */ }
     }
   }
   // Wikipedia REST — the general/factual catch-all (huge index, structured, keyless).
@@ -256,7 +258,9 @@ function wantsFunctionImpl(query: string): boolean {
 // implementation-shaped queries this reliably surfaces real reference codebases that SERP
 // scraping misses; fetchGithubCode then pulls their raw file bodies for grounding.
 async function searchGithubRepos(query: string): Promise<SearchResult[]> {
-  const api = `https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&sort=stars&order=desc&per_page=6`
+  // Distill first — a verbose NL sentence matches no repo name/description (cont.76: total 0).
+  const q = distillCodeQuery(query) || query
+  const api = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=6`
   const raw = await rawGet(api, 8000, 4, BROWSER_UA)
   const data = JSON.parse(raw) as any
   const items: any[] = data?.items ?? []
@@ -265,6 +269,45 @@ async function searchGithubRepos(query: string): Promise<SearchResult[]> {
     title: r.full_name ?? '',
     snippet: stripTags(r.description ?? '').slice(0, 300),
   }))
+}
+
+// Distill a verbose natural-language kernel query ("javascript convert hex color code to rgb
+// array") down to the salient, identifier-ish keywords GitHub's code/repo search actually
+// matches on. The full sentence matches ZERO repos (measured cont.76: repo search on the raw
+// NL query → total_count 0) because repo search scores name/description/readme, not prose.
+// Drop language names and generic programming filler; keep the distinctive kernel tokens.
+const QUERY_STOP = new Set([
+  'javascript', 'js', 'typescript', 'ts', 'python', 'py', 'code', 'function', 'method',
+  'implementation', 'implement', 'example', 'snippet', 'how', 'to', 'a', 'an', 'the', 'in',
+  'of', 'and', 'or', 'with', 'for', 'using', 'use', 'from', 'into', 'string', 'value', 'given',
+  'return', 'returns', 'array', 'number', 'object', 'that', 'get', 'set', 'is', 'my', 'this',
+])
+function distillCodeQuery(query: string): string {
+  const toks = query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t && !QUERY_STOP.has(t))
+  // Keep the first ~5 distinctive tokens — enough to pin the kernel, short enough that GitHub
+  // search treats them as an AND over meaningful terms rather than diluting into noise.
+  return toks.slice(0, 5).join(' ')
+}
+
+// GitHub CODE-search API — token-gated (search/code requires auth), but the single strongest
+// source for a self-contained function kernel: it returns individual FILES whose body contains
+// the target term, which fetchGithubCode pulls raw and extractFunctions lifts the def from. A
+// valid GITHUB_TOKEN unlocks it; without one we skip (returns []) and fall back to repo search.
+// Measured cont.76: `slugify language:javascript` → 61k files incl. real slug impls, vs repo
+// search on the raw NL query → 0. Results are blob URLs (html_url) — fetchGithubCode's blob
+// branch fetches them directly, no directory walk.
+async function searchGithubCode(query: string): Promise<SearchResult[]> {
+  if (!(process.env.GITHUB_TOKEN || process.env.GH_TOKEN)) return []   // code search needs auth
+  const distilled = distillCodeQuery(query)
+  if (!distilled) return []
+  const api = `https://api.github.com/search/code?q=${encodeURIComponent(distilled + ' language:javascript')}&per_page=6`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const items: any[] = (JSON.parse(raw) as any)?.items ?? []
+  return items.slice(0, 6).map(r => ({
+    url: r.html_url ?? '',
+    title: `${r.repository?.full_name ?? ''}/${r.name ?? ''}`,
+    snippet: '',
+  })).filter(r => r.url)
 }
 
 // StackExchange (StackOverflow) API — the right corpus for programming questions.
