@@ -240,8 +240,8 @@ export function aliasToEntry(allSource: string, chosen: string, entry: string): 
   return `${body}\n\nconst ${entry} = ${chosen};\nexport { ${entry} };\n`
 }
 
-/** Score a candidate fn for how well it fits the target: name overlap + arity match. */
-function fitScore(fn: ExtractedFn, entry: string, goal: string, wantArity: number | null): number {
+/** Score a candidate fn for how well it fits the target: name overlap + arity match. Exported for ranking tests. */
+export function fitScore(fn: ExtractedFn, entry: string, goal: string, wantArity: number | null): number {
   const e = entry.toLowerCase()
   const n = fn.name.toLowerCase()
   let s = 0
@@ -253,6 +253,12 @@ function fitScore(fn: ExtractedFn, entry: string, goal: string, wantArity: numbe
   if (wantArity != null && fn.arity === wantArity) s += 15
   // prefer earlier (usually the primary export sits first) and non-trivial bodies
   if (fn.source.length > 40) s += 3
+  // Minimality tie-breaker: when two candidates share a name/arity, a plain spec-matching
+  // impl should rank ahead of an option-heavy library one (e.g. a slugify that transliterates
+  // `&`→`and` behind a config object and breaks the spec). This is RANKING ONLY — every queued
+  // candidate still executes; it just decides which lands first when the try-budget is tight.
+  if (/\b(options|opts|config|settings)\b/.test(fn.source)) s -= 6
+  if (fn.source.length > 600) s -= 4   // sprawling bodies are usually the kitchen-sink variant
   return s
 }
 

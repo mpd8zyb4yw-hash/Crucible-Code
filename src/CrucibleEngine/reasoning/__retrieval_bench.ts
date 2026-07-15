@@ -22,7 +22,7 @@
 import { verifyCode, type CodeCase } from './codeVerifier'
 import {
   extractFunctions, sanitizeRetrievedSource, aliasToEntry, matchDelimiter,
-  makeRetrievalProposer, composeProposers,
+  makeRetrievalProposer, composeProposers, fitScore,
 } from './retrievalProposer'
 import { search } from './search'
 import { solveCodeTask, decomposeCodeBySubFunction, type SubFunctionSpec } from './solve'
@@ -273,6 +273,28 @@ export function slugify(input) {
     check('7 per-file blobs certify the spec-matching alternate impl', rPerFile.status === 'solved', JSON.stringify({ s: rPerFile.status, d: rPerFile.detail }))
     check('7 the certified impl is the PLAIN slugify (not the &→and library one), 0 FM calls',
       fmB === 0 && !/ and /.test(rPerFile.solution?.value ?? ''), JSON.stringify({ fmB, v: (rPerFile.solution?.value ?? '').slice(0, 80) }))
+  }
+
+  // 8) MINIMALITY RANKING — the fit-ranker's tie-breaker. When two candidates share a name
+  //    and both fit the target, the plain one (no options object, shorter body) must outscore
+  //    the option-heavy library variant, so it lands FIRST in the try-queue. Tested at the
+  //    fitScore unit (deterministic; the certify-path is already locked by §7).
+  {
+    const plain = extractFunctions(`export function slugify(input) {
+  return String(input).trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }`)[0]
+    const optionHeavy = extractFunctions(`export function slugify(str) {
+  const options = arguments[1] || {}; const sep = options.separator || '-'
+  ${'// padding to exceed the 600-char sprawl threshold '.repeat(12)}
+  return String(str).trim().toLowerCase().replace(/[^a-z0-9]+/g, sep).replace(/^-+|-+$/g, '') }`)[0]
+    check('8 both candidates extracted for ranking', !!plain && !!optionHeavy, JSON.stringify({ p: plain?.name, o: optionHeavy?.name }))
+    const sPlain = fitScore(plain, 'slugify', 'slugify string to url slug', 1)
+    const sHeavy = fitScore(optionHeavy, 'slugify', 'slugify string to url slug', 1)
+    check('8 minimality tie-breaker ranks the plain impl above the option-heavy one',
+      sPlain > sHeavy, JSON.stringify({ sPlain, sHeavy }))
+    // and the penalties are the mechanism: an option-object body + >600-char sprawl both dock points.
+    check('8 the option-heavy impl is penalized for options-object + sprawl',
+      /options/.test(optionHeavy.source) && optionHeavy.source.length > 600 && sHeavy < sPlain,
+      JSON.stringify({ len: optionHeavy.source.length, sHeavy, sPlain }))
   }
 
   console.log(`\n${pass}/${pass + fail} passed\n`)
