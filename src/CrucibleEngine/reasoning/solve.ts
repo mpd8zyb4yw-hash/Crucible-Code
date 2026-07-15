@@ -298,8 +298,11 @@ async function runSubFunctionOnce(
   // channel off — the helper cases are FM-proposed (untrusted), so we don't tighten them further;
   // channel-1 signal grounding + channel-3 web retrieval are what corner-then-solve the kernel.
   const webGround = opts.webGround
+  // Search the rung's NATURAL-LANGUAGE goal, NOT the invented helper identifier. Live probe:
+  // "convert 12h am/pm to minutes" retrieved 2460 chars, but "…parseAMPM javascript" (the
+  // invented name appended) hit a page that yielded no code. So strip the name from the query.
   const researchFor = webGround
-    ? (nl: string) => makeCodeResearchFn({ nl, webGround, differential: false })
+    ? (nl: string) => makeCodeResearchFn({ nl, webGround: (_q: string) => webGround(buildCodeSearchQuery(nl)), differential: false })
     : (_nl: string) => undefined
 
   if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers: [], rungs, modelCalls, detail: 'aborted before planning' }
