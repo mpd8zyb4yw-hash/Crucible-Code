@@ -100,6 +100,34 @@ const TARGETS: FaultTarget[] = [
       { args: ['abc'], expected: true },
     ],
   },
+  // Boundary-sensitive helper: `firstK`'s loop bound `i < k` is off-by-one-observable
+  // (flip-lt reads one past → NaN/extra element), so an operator fault injected into the
+  // called helper propagates to the entry output instead of being an equivalent mutant.
+  {
+    id: 'sumFirstK',
+    code: `function firstK(xs, k) {\n  const out = [];\n  for (let i = 0; i < k; i++) out.push(xs[i]);\n  return out;\n}\nexport function sumFirstK(xs, k) {\n  if (k < 0) return -1;\n  const head = firstK(xs, k);\n  let s = 0;\n  for (let i = 0; i < head.length; i++) s = s + head[i];\n  return s;\n}\n`,
+    entry: 'sumFirstK',
+    cases: [
+      { args: [[10, 20, 30], 2], expected: 30 },
+      { args: [[5, 5, 5, 5], 4], expected: 20 },
+      { args: [[1, 2, 3], 0], expected: 0 },
+      { args: [[1, 2, 3], -1], expected: -1 },
+    ],
+  },
+  // Boundary-sensitive helper: `overThreshold`'s strict `xs[i] > t` is off-by-one-observable
+  // at an element exactly equal to t (flip-gt `>`→`>=` counts it), forcing the fault down
+  // into the helper to show up in the entry's fraction.
+  {
+    id: 'fracOver',
+    code: `function overThreshold(xs, t) {\n  let n = 0;\n  for (let i = 0; i < xs.length; i++) if (xs[i] > t) n = n + 1;\n  return n;\n}\nexport function fracOver(xs, t) {\n  if (xs.length < 1) return 0;\n  return overThreshold(xs, t) / xs.length;\n}\n`,
+    entry: 'fracOver',
+    cases: [
+      { args: [[1, 2, 3], 2], expected: 1 / 3 },
+      { args: [[5, 5, 5], 5], expected: 0 },
+      { args: [[10, 20, 30], 0], expected: 1 },
+      { args: [[], 0], expected: 0 },
+    ],
+  },
 ]
 
 async function main() {
