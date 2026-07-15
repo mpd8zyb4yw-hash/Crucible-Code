@@ -71,6 +71,10 @@ const UA = 'Crucible/1.0 (+offline-first grounding)'
 const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
 const MAX_BODY = 1_500_000  // 1.5 MB cap per page — defends against pathological dumps
 
+function hostOf(url: string): string {
+  try { return new URL(url).hostname } catch { return '' }
+}
+
 function rawGet(url: string, timeout = 6000, redirectsLeft = 4, ua = UA): Promise<string> {
   return new Promise((resolve, reject) => {
     let mod: typeof https | typeof http
@@ -79,6 +83,14 @@ function rawGet(url: string, timeout = 6000, redirectsLeft = 4, ua = UA): Promis
       'User-Agent': ua,
       'Accept': 'text/html,application/xhtml+xml,application/json,*/*',
       'Accept-Language': 'en-US,en;q=0.9',
+    }
+    // GitHub's unauthenticated limits (10 search req/min, 60 core req/hr) are the live
+    // bottleneck for the RetrievalProposer. A GITHUB_TOKEN lifts search→30/min and
+    // core→5000/hr. Scope the header to GitHub hosts so we never leak the token elsewhere.
+    const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+    if (ghToken && /(^|\.)github(usercontent)?\.com$/i.test(hostOf(url))) {
+      headers['Authorization'] = `Bearer ${ghToken}`
+      headers['X-GitHub-Api-Version'] = '2022-11-28'
     }
     const req = mod.get(url, { headers }, res => {
       const status = res.statusCode ?? 0
