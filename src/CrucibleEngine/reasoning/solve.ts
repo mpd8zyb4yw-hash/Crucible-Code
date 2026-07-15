@@ -494,6 +494,14 @@ export async function solveCodingRequest(
      * path (that's where research runs). Absent → no web grounding.
      */
     webGround?: (query: string) => Promise<string | null>
+    /**
+     * For repair/edit requests: the current broken implementation (e.g. the target file's
+     * existing source). Threaded into every solveCodeTask call so the first proposal is seeded
+     * with the buggy code's executed failure evidence — the loop localizes the bug on call #1
+     * instead of burning a model call rediscovering which cases fail. Pure sample-efficiency;
+     * certification is unchanged (every candidate is still executed against the spec).
+     */
+    buggyCode?: string
   } = {},
 ): Promise<CodingRequestResult> {
   // Shared converging attempt for the case-based tiers. Returns a solved CodingRequestResult
@@ -529,7 +537,7 @@ export async function solveCodingRequest(
   // 1) USER-stated examples — gold, trusted without consensus.
   const harvested = harvestExplicitExamples(nl)
   if (harvested.cases.length >= 1) {
-    const result = await solveCodeTask({ goal: nl, entry: harvested.entry, entries: harvested.entries, cases: harvested.cases }, opts)
+    const result = await solveCodeTask({ goal: nl, entry: harvested.entry, entries: harvested.entries, cases: harvested.cases, buggyCode: opts.buggyCode }, opts)
     const nFns = harvested.entries.length
     return {
       status: result.status,
@@ -613,7 +621,7 @@ export async function solveCodingRequest(
       const { entry, cases } = diff.spec
       const conv = await tryConverge(entry, cases, diff.detail)
       if (conv) return conv
-      const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
+      const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
       if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
         return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
           detail: `${diff.detail}${meta ? ` (also passed the ${meta.family} invariant)` : ''}; ${result.detail}` }
@@ -635,7 +643,7 @@ export async function solveCodingRequest(
     const { entry, cases } = extraction.spec
     const conv = await tryConverge(entry, cases, extraction.detail)
     if (conv) return conv
-    const result = await solveCodeTask({ goal: nl, entry, cases }, opts)
+    const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
     if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
       return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
         detail: `${extraction.detail}; ${result.detail}` }
