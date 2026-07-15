@@ -503,11 +503,19 @@ ${js}
 </html>`
 }
 
-// Deterministic sanitizer for the FM's most common runtime bug: game state declared
-// with const then reassigned every frame. Rewriting declaration-position const to let
-// is semantics-preserving for generated game code and removes the whole failure class.
+// Deterministic sanitizers for the FM's most common, mechanically-fixable bugs — each is
+// semantics-preserving on generated game code and removes a whole failure class before the
+// runtime gate even runs (cheaper than a repair round-trip). NOT prebaked logic: these fix
+// how the model expresses an intent it already has, they don't supply the game.
 function sanitizeGameJs(js: string): string {
-  return js.replace(/\bconst\b/g, 'let')
+  let out = js.replace(/\bconst\b/g, 'let')
+  // Dead fire control: the model writes `e.key === 'Space'`, but the space bar's KeyboardEvent
+  // .key value is ' ' (a space) — 'Space' is the .code, not the .key. So the shoot handler never
+  // fires and the game is unplayable while still passing an aliveness-only gate. Rewrite ONLY the
+  // .key comparison (e.code === 'Space' is correct and left untouched). Covers == and ===.
+  out = out.replace(/(\.key\s*===?\s*)(['"])Space\2/g, "$1$2 $2")
+  out = out.replace(/(\bkey\s*===?\s*)(['"])Spacebar\2/gi, "$1$2 $2")
+  return out
 }
 
 // A concrete worked example is worth more than rules to a small model — it anchors the
@@ -837,7 +845,7 @@ requestAnimationFrame(loop);
 // (validateHtmlGame → runtimeVerifyHtml, which loads it in a real browser and drives input). A
 // wrong or irrelevant snippet can only waste a proposal; it can never ship a broken game. Best-
 // effort and bounded: any failure returns null and the loop proceeds ungrounded as before.
-const WEB_GAME_MARK = 'REFERENCE IMPLEMENTATION (fetched from the web — adapt its mechanics to the prepared page; do NOT copy its HTML/canvas setup, and your code is still run and verified):'
+const WEB_GAME_MARK = 'WORKING REFERENCE IMPLEMENTATION (fetched live from the open web — this game already runs). PORT IT FAITHFULLY: keep its exact mechanics, constants, and loop structure; change ONLY the canvas lookup to document.getElementById(\'game\') and delete any HTML/DOM/canvas-creation it does. Do NOT simplify or reinvent — reproduce its logic. Your output is run in a real browser and verified:'
 
 function buildGameSearchQuery(goal: string): string {
   // Extract the game's name ("build me a space invaders game" → "space invaders") and pin the
@@ -856,10 +864,14 @@ async function retrieveGameReference(goal: string): Promise<string | null> {
       { goal: buildGameSearchQuery(goal) },
       { maxPages: 2, budget: 2200 },
     )
-    const snippet = bundle.codeBlocks[0]?.code?.trim()
+    // Prefer the LARGEST retrieved block — a complete game to port beats a ranked snippet
+    // that may be a fragment. The weak FM compresses anyway; give it the whole thing to anchor on.
+    const snippet = bundle.codeBlocks
+      .map(c => c.code?.trim() ?? '')
+      .sort((a, b) => b.length - a.length)[0]
     // Require a substantive block — a one-liner is noise, not a reference to adapt.
     if (!snippet || snippet.length < 120) return null
-    return `${WEB_GAME_MARK}\n${snippet.slice(0, 2000)}`
+    return `${WEB_GAME_MARK}\n${snippet.slice(0, 6000)}`
   } catch {
     return null
   }
@@ -870,7 +882,7 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   const tpl = GAME_TEMPLATES.find(t => t.match.test(state.goal))
   if (tpl) {
     const html = buildGameShell(tpl.js, `${tpl.title} — Crucible`)
-    const problem = validateHtmlGame(html) ?? await runtimeVerifyHtml(html)
+    const problem = validateHtmlGame(html) ?? await runtimeVerifyHtml(html, state.goal)
     if (!problem) {
       debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt: 0, template: tpl.title, bytes: html.length }, { severity: 'info' })
       return html
@@ -913,7 +925,7 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
     raw = await fmComplete([
       { role: 'system', content: HTML_GAME_SYSTEM },
       { role: 'user', content: userMsg },
-    ])
+    ], { maxTokens: 4096 })
     debugBus.emit('agent', 'offline_html_proposer', { path: targetPath, attempt, model: proposer }, { severity: 'info' })
     const fence = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i)
     const js = sanitizeGameJs((fence ? fence[1] : raw).trim())
@@ -923,7 +935,7 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
     // ALIVE (self-animates or responds to input), and throws no errors. The static gate
     // alone shipped parse-clean games that were dead on frame 1.
     const problem = html
-      ? (validateHtmlGame(html) ?? await runtimeVerifyHtml(html))
+      ? (validateHtmlGame(html) ?? await runtimeVerifyHtml(html, state.goal))
       : 'empty completion'
     if (!problem) {
       debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt, model: proposer, bytes: html.length }, { severity: 'info' })

@@ -1,17 +1,5 @@
 [
   {
-    "hash": "0330c8e",
-    "message": "pre-write_file",
-    "timestamp": 1783368462040,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/summaryModule"
-  },
-  {
-    "hash": "ca4db8e",
-    "message": "pre-write_file",
-    "timestamp": 1783368620648,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/leaderboardModule"
-  },
-  {
     "hash": "9066e29",
     "message": "pre-write_file",
     "timestamp": 1783368695879,
@@ -298,5 +286,17 @@
     "message": "pre-write_file",
     "timestamp": 1783893521885,
     "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/13993b11-1ddf-458f-adcc-4b1111e36047/scratchpad/vgr-mf-proj"
+  },
+  {
+    "hash": "0111f95",
+    "message": "pre-write_file",
+    "timestamp": 1784102422224,
+    "projectPath": "/tmp/game-e2e-1784101964823"
+  },
+  {
+    "hash": "c91096a",
+    "message": "pre-write_file",
+    "timestamp": 1784103137044,
+    "projectPath": "/tmp/game-e2e-1784103038768"
   }
 ]

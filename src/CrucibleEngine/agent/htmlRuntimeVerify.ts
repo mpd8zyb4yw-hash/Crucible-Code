@@ -123,12 +123,12 @@ function injectInstrumentation(html: string): string {
   return probes + html
 }
 
-export async function runtimeVerifyHtml(html: string): Promise<string | null> {
+export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string | null> {
   const tmp = path.join(os.tmpdir(), `crucible-html-verify-${Date.now()}-${process.pid}.html`)
   try {
     await writeFile(tmp, injectInstrumentation(html), 'utf8')
     const probe = await new Promise<Probe>((resolve, reject) => {
-      execFile(electronBin(), [HARNESS, tmp], { timeout: 20000, env: { ...process.env, ELECTRON_ENABLE_LOGGING: '0' } },
+      execFile(electronBin(), [HARNESS, tmp], { timeout: 20000, env: { ...process.env, ELECTRON_ENABLE_LOGGING: '0', CRUCIBLE_GAME_GOAL: goal.slice(0, 300) } },
         (err, stdout) => {
           const line = String(stdout ?? '').split('\n').find(l => l.trim().startsWith('{'))
           if (line) { try { return resolve(JSON.parse(line)) } catch { /* fall through */ } }
