@@ -171,6 +171,11 @@ async function main() {
     const big = 'function reallyLongOne() {\n  return computeSomethingComplicated() + 1\n}'
     check('8d largest of multiple blocks wins',
       extractPastedCode(`\`\`\`\n${two}\n\`\`\`\nand\n\`\`\`\n${big}\n\`\`\``) === big)
+    // Data/prose fences don't seed: a bigger quoted log loses to a smaller real code block.
+    const log = '[2026-07-16] ERROR at line 3: undefined is not a function, retrying forever…'
+    check('8e data-tagged fence skipped in favor of code fence',
+      extractPastedCode(`fix this:\n\`\`\`js\n${fn}\n\`\`\`\nlog:\n\`\`\`log\n${log}\n\`\`\``) === fn)
+    check('8f a lone data fence → null', extractPastedCode(`\`\`\`json\n{"a":1,"b":2,"c":3}\n\`\`\``) === null)
   }
 
   console.log(`\n${pass}/${pass + fail} checks passed\n`)
