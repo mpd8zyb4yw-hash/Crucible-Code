@@ -42,6 +42,8 @@ const SUITES = [
   'util:bench',
   'refactorroutes:bench',
   'vgr:coderesearch',
+  'vgr:decompose',
+  'vgr:retrieval',
   'retrieval:bench',
   'localpool:bench',
   'answer:iterate',

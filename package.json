@@ -66,7 +66,8 @@
     "latency:bench": "tsx src/server/__latency_bench.ts",
     "util:bench": "tsx src/server/__util_bench.ts",
     "refactorroutes:bench": "tsx src/server/__refactorRoutes_bench.ts",
-    "vgr:decompose": "tsx src/CrucibleEngine/reasoning/__decompose_bench.ts"
+    "vgr:decompose": "tsx src/CrucibleEngine/reasoning/__decompose_bench.ts",
+    "vgr:retrieval": "tsx src/CrucibleEngine/reasoning/__retrieval_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",

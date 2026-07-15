@@ -24,7 +24,33 @@ import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
+import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
 import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
+
+/**
+ * Compose the RETRIEVAL proposer in front of a base (FM) proposer for one rung/solve. The
+ * retrieval proposer yields executable candidates extracted from web source — aliased to
+ * `entry` and run STRAIGHT through the verifier — until exhausted, then the base FM takes
+ * over (with the reference still folded into its context by codeResearch channel 3). This
+ * is the "internet solves the kernel" data path: on a cornered sub-problem the certified
+ * answer can come from retrieved code with ZERO model calls. `webGround` absent → returns
+ * the base proposer unchanged (no behavioural change on the no-network path). `wantArity`
+ * is read from the first case's argument count for signature-fit ranking.
+ */
+function withRetrieval(
+  base: Proposer<string>,
+  entry: string,
+  goal: string,
+  cases: CodeAcceptance['cases'],
+  webGround?: (query: string) => Promise<string | null>,
+  query?: string,
+  emit?: (e: Record<string, unknown>) => void,
+): Proposer<string> {
+  if (!webGround) return base
+  const wantArity = cases?.[0]?.args?.length ?? null
+  const retrieval = makeRetrievalProposer({ entry, goal, webGround, query, wantArity, emit })
+  return composeProposers(retrieval, base)
+}
 
 export interface SolveCodeInput {
   goal: string
@@ -85,11 +111,13 @@ export async function iterateCodeTask(
   // but the WEB_GROUND_MARK sentinel we prepend here prevents it from re-fetching. Certification is
   // unchanged: the seeded reference only informs the proposer; every candidate is still executed.
   let seededContext = input.context
+  let proactiveRef: string | null = null   // reused by the retrieval-candidate proposer — no 2nd fetch
   if (input.webGround && !opts.research && !opts.signal?.aborted) {
     try {
       const q = buildCodeSearchQuery(input.nl ?? input.goal, input.entry)
       const ref = (await input.webGround(q))?.trim()
       if (ref) {
+        proactiveRef = ref
         const block = `${WEB_GROUND_MARK}\n${ref}`
         seededContext = seededContext ? `${seededContext}\n\n${block}` : block
       }
@@ -106,7 +134,17 @@ export async function iterateCodeTask(
       timeoutMs: input.timeoutMs,
     } satisfies CodeAcceptance as unknown as Record<string, unknown>,
   }
-  const proposer: Proposer<string> = proposerOverride ?? proposeCode
+  // Retrieval-candidate path: alongside proactive context-grounding (above) and stall research
+  // (channel 3), also offer executable candidates extracted from web source, aliased to the entry
+  // and run straight through the verifier — so the kernel can certify with ZERO FM calls instead of
+  // relying on the weak FM to adapt the reference (which the live parseClock runs proved it can't).
+  // Reuse the already-fetched reference (no second network hit) as the retrieval proposer's source;
+  // only fetch inside withRetrieval when the proactive path was skipped (opts.research set).
+  const base: Proposer<string> = proposerOverride ?? proposeCode
+  const retrievalSource = proactiveRef != null
+    ? (async () => proactiveRef) as (query: string) => Promise<string | null>
+    : input.webGround
+  const proposer = withRetrieval(base, input.entry, input.nl ?? input.goal, input.cases, retrievalSource, buildCodeSearchQuery(input.nl ?? input.goal, input.entry), opts.emit)
   const research = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal, webGround: input.webGround })
   return iterate(spec, proposer, verifyCode, {
     mergeAcceptance: mergeCodeAcceptance,
@@ -337,7 +375,11 @@ async function runSubFunctionOnce(
       context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined,
       acceptance: { entry: h.name, cases: h.cases, timeoutMs: input.timeoutMs } satisfies CodeAcceptance as unknown as Record<string, unknown>,
     }
-    const res = await iterate<string>(spec, proposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
+    // Retrieval-candidate path FIRST: the cornered helper is a precise search query, so try
+    // executable candidates straight from web source before the FM guesses (which it provably
+    // can't for the kernel). Same webGround the research fn uses, queried on the helper's goal.
+    const rungProposer = withRetrieval(proposer, h.name, h.goal, h.cases, webGround, buildCodeSearchQuery(h.goal), opts.emit)
+    const res = await iterate<string>(spec, rungProposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
     modelCalls += res.modelCalls
     const certified = res.status === 'solved' && !!res.solution
     rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
@@ -366,7 +408,8 @@ async function runSubFunctionOnce(
   const composingVerifier: Verifier<string> = (cand, spec) =>
     verifyCode({ value: `${helperBlock}\n\n${cand.value}`, fingerprint: cand.fingerprint }, spec)
 
-  const composed = await iterate<string>(composeSpec, proposer, composingVerifier, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
+  const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
+  const composed = await iterate<string>(composeSpec, composeProposer, composingVerifier, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
   modelCalls += composed.modelCalls
   const composedCert = composed.status === 'solved' && !!composed.solution
   rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert })
