@@ -18,6 +18,8 @@ import { type CodeAcceptance, verifyCode } from './codeVerifier'
 import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROUND_MARK } from './codeResearch'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
+import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
+import { makeFmPlanner } from './fmPlanner'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -110,6 +112,81 @@ export async function iterateCodeTask(
     mergeAcceptance: mergeCodeAcceptance,
     ...opts,
     research,
+  })
+}
+
+// ── VERIFIED DECOMPOSITION for the code domain ──────────────────────────────────
+// The fallback for when a flat iterate() cannot converge because the weak proposer can't
+// one-shot the whole function/module (the logged game-build bottleneck). Splits the
+// acceptance CASES into a growing curriculum: rung i must pass cases[0..k_i], built on the
+// frozen prior certified artifact. Each rung is a real executed check (verifyCode), and the
+// composed final artifact is re-verified against the FULL case set by solveByDecomposition.
+// Sound: no rung — and not the whole — is ever accepted on the model's say-so.
+
+/** Split n cases into `rungs` growing prefixes (last prefix == all cases). */
+export function growingCasePrefixes(total: number, rungs: number): number[] {
+  const r = Math.max(1, Math.min(rungs, total))
+  const out: number[] = []
+  for (let i = 1; i <= r; i++) out.push(Math.max(1, Math.round((i / r) * total)))
+  out[out.length - 1] = total // final rung always covers everything
+  // de-dup while preserving order (avoids zero-width rungs when total < rungs)
+  return out.filter((v, i) => i === 0 || v !== out[i - 1])
+}
+
+/** Build a code-domain incremental sub-acceptance factory over a growing case curriculum. */
+export function makeCodeSubSpec(
+  allCases: CodeAcceptance['cases'],
+  acc: { entry: string; entries?: string[]; timeoutMs?: number },
+  proposer: Proposer<string>,
+  prefixes: number[],
+): SubSpecFactory<string> {
+  return (_sub, index, priorSolutions, parent) => {
+    const k = prefixes[Math.min(index, prefixes.length - 1)]
+    const cases = allCases.slice(0, k)
+    const prior = priorSolutions[priorSolutions.length - 1]
+    const context = [parent.context, prior ? `${WEB_GROUND_MARK}\n${prior}` : '']
+      .filter(Boolean).join('\n\n') || undefined
+    const spec: TaskSpec = {
+      goal: `${parent.goal}\n\n(incremental rung ${index + 1}: satisfy the first ${k} case(s))`,
+      domain: 'code',
+      context,
+      acceptance: {
+        entry: acc.entry,
+        entries: acc.entries && acc.entries.length > 1 ? acc.entries : undefined,
+        cases, timeoutMs: acc.timeoutMs,
+      } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+    }
+    return { spec, proposer, verifier: verifyCode }
+  }
+}
+
+/**
+ * Solve a code task by verified decomposition. Call this after iterateCodeTask() returns a
+ * non-'solved' status. Returns the certified code + rung trace, or an honest failure — it
+ * NEVER ships an unverified guess (the composition is re-run against ALL cases).
+ */
+export async function decomposeCodeTask(
+  input: SolveCodeInput & { nl?: string; webGround?: (query: string) => Promise<string | null> },
+  opts: { planner?: Planner; rungs?: number; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] } = {},
+  proposerOverride?: Proposer<string>,
+): Promise<DecomposeResult<string>> {
+  const spec: TaskSpec = {
+    goal: input.goal,
+    domain: 'code',
+    context: input.context,
+    acceptance: {
+      entry: input.entry,
+      entries: input.entries && input.entries.length > 1 ? input.entries : undefined,
+      cases: input.cases, timeoutMs: input.timeoutMs,
+    } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+  }
+  const proposer = proposerOverride ?? proposeCode
+  const prefixes = growingCasePrefixes(input.cases.length, opts.rungs ?? Math.min(4, input.cases.length))
+  return solveByDecomposition<string>(spec, proposer, verifyCode, {
+    planner: opts.planner ?? makeFmPlanner(),
+    subSpecFor: makeCodeSubSpec(input.cases, { entry: input.entry, entries: input.entries, timeoutMs: input.timeoutMs }, proposer, prefixes),
+    iterateOpts: { mergeAcceptance: mergeCodeAcceptance, ...opts.iterate },
+    signal: opts.signal, emit: opts.emit,
   })
 }
 
