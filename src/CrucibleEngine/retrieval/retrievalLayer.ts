@@ -189,7 +189,7 @@ export async function search(query: string): Promise<SearchResult[]> {
     // far more reliable than SERP scraping (which returns 202/JS-shells to a server IP) and the
     // only source that consistently surfaces full reference implementations. Repos lead so that
     // fetchGithubCode (raw file bodies) grounds the proposer with real code. See fetchGithubCode.
-    if (wantsImplementation(query)) {
+    if (wantsImplementation(query) || wantsFunctionImpl(query)) {
       try { results = dedupeByUrl([...await searchGithubRepos(query), ...results]) } catch { /* keep SE */ }
     }
   }
@@ -221,6 +221,23 @@ function dedupeByUrl(results: SearchResult[]): SearchResult[] {
 /** Whether a coding query wants a full working codebase (a repo) rather than a Q&A answer. */
 function wantsImplementation(query: string): boolean {
   return /\b(build|make|create|implement|clone|game|full|example|project|app|boilerplate|starter|from scratch|demo)\b/i.test(query)
+}
+
+/**
+ * Whether a coding query is a self-contained FUNCTION KERNEL ("convert hex to rgb",
+ * "slugify a string", "parse a 12-hour clock") — the RetrievalProposer's target class.
+ * These want a real function BODY, not a Q&A prose answer, so they should also route to
+ * GitHub repo search → fetchGithubCode (raw file bodies), the only source that reliably
+ * yields complete, extractable function definitions. The `wantsImplementation` gate misses
+ * them because they name no build/clone/game keyword — yet a bare "convert X to Y" needs an
+ * executable impl just as much. Measured cont.75b: these queries returned tutorial-host
+ * <pre> fragments (extractFunctions=0) precisely because repo search never fired.
+ */
+function wantsFunctionImpl(query: string): boolean {
+  // Utility verbs that name a single-function transform, plus the "X to Y" conversion shape.
+  const KERNEL_VERB = /\b(convert|parse|format|encode|decode|transform|compute|calculate|generate|validate|normalize|serialize|deserialize|slugify|escape|unescape|tokenize|sanitize|round|clamp|interpolate|flatten|chunk|debounce|throttle)\b/i
+  const CONVERSION_SHAPE = /\b\w+\s+to\s+\w+\b/i
+  return KERNEL_VERB.test(query) || CONVERSION_SHAPE.test(query)
 }
 
 // GitHub repository-search API — a keyless, star-ranked, deterministic code corpus. For
@@ -494,12 +511,35 @@ export async function fetchGithubCode(url: string, maxFiles = 2): Promise<CodeBl
   }
 
   const out: CodeBlock[] = []
-  for (const f of files.slice(0, maxFiles)) {
+  // Scan down the ranked list (not just the top maxFiles) SKIPPING minified/bundled blobs.
+  // Size-desc ranking floats a repo's built `dist/index.js` UMD bundle to the top; that code is
+  // a single mangled line extractFunctions can lift nothing from (measured cont.75b: 6 blocks →
+  // 0 fns, all bundles). Reject by CONTENT shape so non-`.min`-named bundles are caught too, and
+  // keep reading until we have maxFiles of genuine, readable source.
+  for (const f of files) {
+    if (out.length >= maxFiles) break
     if (!f.download_url) continue
     const code = await fetch(f.download_url)
-    if (code && code.length >= 40) out.push({ code, lang: langOf(f.name), source: `${url}/${f.name}` })
+    if (code && code.length >= 40 && !looksMinified(code)) out.push({ code, lang: langOf(f.name), source: `${url}/${f.name}` })
   }
   return out
+}
+
+/**
+ * Whether a source blob is minified/bundled — a built artifact (webpack/rollup/browserify UMD)
+ * rather than hand-written source. Such code is a wall of mangled single lines that yields no
+ * extractable `function name(...)` definitions, so it is worse than useless as reference: it
+ * crowds out real source in the ranked list. Detected by mean line length and telltale bundle
+ * bootstraps, not by filename (many bundles aren't named `*.min.js`).
+ */
+export function looksMinified(code: string): boolean {
+  const lines = code.split('\n')
+  const meanLen = code.length / Math.max(1, lines.length)
+  if (meanLen > 200) return true                                  // few, enormous lines
+  if (/typeof exports==="object"|typeof define==="function"|\bwebpackJsonp\b|__webpack_require__|!function\(/.test(code.slice(0, 400))) return true
+  // a very long single physical line anywhere is a reliable minification tell
+  if (lines.some(l => l.length > 2000)) return true
+  return false
 }
 
 /**
