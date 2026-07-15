@@ -144,7 +144,7 @@ export async function runFaultTrial(
 
   // Recovery: the standard repair framing — buggy code as context, same cases as ground truth.
   const result = await solveCodeTask(
-    { goal: repairGoal(t), entry: t.entry, cases: t.cases, context: `Buggy current implementation:\n\`\`\`\n${mutated}\n\`\`\`` },
+    { goal: repairGoal(t), entry: t.entry, cases: t.cases, context: `Buggy current implementation:\n\`\`\`\n${mutated}\n\`\`\``, buggyCode: mutated },
     { maxModelCalls: opts.maxModelCalls ?? 6, ...opts },
     opts.proposer,
   )

@@ -60,6 +60,23 @@ export interface SolveCodeInput {
   cases: CodeAcceptance['cases']
   context?: string
   timeoutMs?: number
+  /**
+   * For repair tasks: the current broken implementation. When present, solveCodeTask runs
+   * ONE deterministic verify pass over it (no model call) and folds the concrete failing-case
+   * evidence into the first proposal's context — so the loop localizes the bug on call #1
+   * instead of spending a model call rediscovering which cases fail. Pure sample-efficiency.
+   */
+  buggyCode?: string
+}
+
+/** Render the buggy code's observed failures as a localization block for the first proposal. */
+async function repairEvidenceBlock(
+  buggyCode: string,
+  spec: TaskSpec,
+): Promise<string | null> {
+  const v = await verifyCode({ value: buggyCode, fingerprint: 'repair-seed' }, spec)
+  if (v.pass || v.signals.length === 0) return null
+  return `Observed failures of the current implementation (from executing it against the spec):\n${v.signals.slice(0, 6).map(s => `  - ${s}`).join('\n')}`
 }
 
 /**
@@ -75,16 +92,16 @@ export async function solveCodeTask(
   opts: SearchOpts = {},
   proposerOverride?: Proposer<string>,
 ): Promise<SearchResult<string>> {
-  const spec: TaskSpec = {
-    goal: input.goal,
-    domain: 'code',
-    context: input.context,
-    acceptance: {
-      entry: input.entry,
-      entries: input.entries && input.entries.length > 1 ? input.entries : undefined,
-      cases: input.cases,
-      timeoutMs: input.timeoutMs,
-    } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+  const acceptance = {
+    entry: input.entry,
+    entries: input.entries && input.entries.length > 1 ? input.entries : undefined,
+    cases: input.cases,
+    timeoutMs: input.timeoutMs,
+  } satisfies CodeAcceptance as unknown as Record<string, unknown>
+  const spec: TaskSpec = { goal: input.goal, domain: 'code', context: input.context, acceptance }
+  if (input.buggyCode) {
+    const evidence = await repairEvidenceBlock(input.buggyCode, spec)
+    if (evidence) spec.context = [input.context, evidence].filter(Boolean).join('\n\n')
   }
   const proposer: Proposer<string> = proposerOverride ?? proposeCode
   const verifier: Verifier<string> = verifyCode

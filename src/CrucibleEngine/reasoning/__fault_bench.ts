@@ -141,6 +141,22 @@ async function main() {
     check('6 broken target skipped', !trial.applicable && trial.status === 'skipped', JSON.stringify(trial))
   }
 
+  // ── 7. REPAIR-EVIDENCE-SEED: the first proposal sees concrete failing-case evidence
+  //       (from executing the buggy code), not just a generic "some cases fail" goal —
+  //       so the loop localizes on call #1 instead of burning a model call rediscovering it. ──
+  {
+    const t = TARGETS[0]
+    let firstContext: string | null = null
+    const capturing: Proposer<string> = async ctx => {
+      if (firstContext === null) firstContext = ctx.spec.context ?? ''
+      return { value: t.code, fingerprint: 'good' }  // repair on call #1
+    }
+    const trial = await runFaultTrial(t, MUTATIONS[0], { proposer: capturing, maxModelCalls: 6 })
+    check('7 first proposal is seeded with executed failure evidence',
+      trial.recovered && (firstContext ?? '').includes('Observed failures of the current implementation'),
+      `ctxHasEvidence=${(firstContext ?? '').includes('Observed failures')}`)
+  }
+
   console.log(`\n${pass}/${pass + fail} checks passed\n`)
   if (fail > 0) process.exit(1)
 }
