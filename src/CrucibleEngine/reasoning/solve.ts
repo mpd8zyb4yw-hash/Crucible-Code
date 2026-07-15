@@ -251,6 +251,16 @@ export async function decomposeCodeBySubFunction(
      * verifier-gated, so more attempts can only find a real solution, never fabricate one.
      */
     planAttempts?: number
+    /**
+     * WEB RETRIEVAL for the cornered kernel. Decomposition's real payoff: it corners the
+     * FM's capability gap into ONE small, precisely-named helper ("convert 12h am/pm time to
+     * minutes") — which is a great SEARCH QUERY. When such a helper stalls, the FM shouldn't
+     * keep guessing (it provably can't invent it); the loop should RETRIEVE a real reference
+     * implementation of exactly that sub-problem and adapt it. Injected (network stays out of
+     * the pure loop); each rung searches for ITS OWN goal. Sound: retrieved code only grounds
+     * the PROPOSER; the candidate is still executed against the rung's spec. Absent → no web.
+     */
+    webGround?: (query: string) => Promise<string | null>
     iterate?: Partial<IterateOpts<string>>
     signal?: AbortSignal
     emit?: IterateOpts<string>['emit']
@@ -277,13 +287,20 @@ export async function decomposeCodeBySubFunction(
 
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] },
+  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] },
   proposerOverride?: Proposer<string>,
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})
   const proposer = proposerOverride ?? proposeCode
   const rungs: SubFunctionRung[] = []
   let modelCalls = 0
+  // Per-rung web retrieval: on a stall, fetch a reference impl for THAT rung's goal. Differential
+  // channel off — the helper cases are FM-proposed (untrusted), so we don't tighten them further;
+  // channel-1 signal grounding + channel-3 web retrieval are what corner-then-solve the kernel.
+  const webGround = opts.webGround
+  const researchFor = webGround
+    ? (nl: string) => makeCodeResearchFn({ nl, webGround, differential: false })
+    : (_nl: string) => undefined
 
   if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers: [], rungs, modelCalls, detail: 'aborted before planning' }
 
@@ -317,7 +334,7 @@ async function runSubFunctionOnce(
       context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined,
       acceptance: { entry: h.name, cases: h.cases, timeoutMs: input.timeoutMs } satisfies CodeAcceptance as unknown as Record<string, unknown>,
     }
-    const res = await iterate<string>(spec, proposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, ...opts.iterate, signal: opts.signal, emit: opts.emit })
+    const res = await iterate<string>(spec, proposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
     modelCalls += res.modelCalls
     const certified = res.status === 'solved' && !!res.solution
     rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
@@ -346,7 +363,7 @@ async function runSubFunctionOnce(
   const composingVerifier: Verifier<string> = (cand, spec) =>
     verifyCode({ value: `${helperBlock}\n\n${cand.value}`, fingerprint: cand.fingerprint }, spec)
 
-  const composed = await iterate<string>(composeSpec, proposer, composingVerifier, { mergeAcceptance: mergeCodeAcceptance, ...opts.iterate, signal: opts.signal, emit: opts.emit })
+  const composed = await iterate<string>(composeSpec, proposer, composingVerifier, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
   modelCalls += composed.modelCalls
   const composedCert = composed.status === 'solved' && !!composed.solution
   rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert })
