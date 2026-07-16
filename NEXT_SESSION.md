@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 — zero-FM repair fast-path LIVE-PROVEN in prod; gold-example harvest + model-call accounting fixed; fault:live now reports median+range, 83-91% is a NOISE BAND not a level; 695/695)
+## CURRENT STATE (last updated 2026-07-16 — zero-FM repair fast-path LIVE-PROVEN in prod; gold-example harvest + model-call accounting fixed; fault:live now reports median+range, 83-91% is a NOISE BAND not a level; keep-K best-effort LIVE; 727/727 across 27 suites)
 
 **cont.79 (2026-07-16, this session — a2c1083):**
 
@@ -77,10 +77,35 @@
 - vgr:bench 200→**208** (new PART G2 harvest fidelity, PART G3 model-free accounting);
   bench:all 687→**695**; tsc unchanged at the pre-existing 457 project-wide errors (0 in touched files).
 
+**cont.79c (2026-07-16, this session — 662c55d) — KEEP-K IS LIVE:**
+
+- **The live retry loop now retains candidates and ships a scored best-effort.** It used to
+  restart `search()` per attempt, discard every non-certified candidate, and fall through to the
+  model-driven handoff. The key realisation: that fallback ships code with **no execution evidence
+  at all**, so "abstain" was never the safe option it looked like — a draft measured at 3/4 is
+  strictly more honest than an unmeasured guess.
+- **Three invariants keep it from being a silent unverified ship:** (1) never written to a file —
+  certified code writes, drafts only display; (2) labelled NOT CERTIFIED with the real verifier
+  score + failing signals; (3) tight floor (default **-1** = at most one failing case), so anything
+  short of a near-miss falls through exactly as before. Override `CRUCIBLE_VGR_BEST_EFFORT_FLOOR`.
+- `selectBestEffort()` extracted from `keepK.ts` (pure/deterministic) so the live path reuses the
+  exact selection + coverage maths the bench pins. The existing per-attempt escalation (`tryHard`
+  + web grounding) is **untouched** — keep-K's own loop lacks it, so this retains candidates across
+  the EXISTING loop rather than swapping in `solveWithKeptCandidates`.
+- **LIVE-VERIFIED, both paths, via real `/api/chat`** (`mode:code`, scratch `projectPath`).
+  Probe trick worth reusing: **one contradictory case** (`double(4) should return 9`) makes
+  certification impossible while guaranteeing a near-miss, so the best-effort tier can be tested
+  deterministically against a stochastic FM. Result: kept 6 candidates across 3 attempts, reported
+  "3/4 cases pass", named the exact failure (`double(4) → got 8, expected 9`), wrote **no file**.
+  Certifiable control (poison case removed) still writes + certifies — no regression.
+- **`keepk:bench` and `fault:bench` were in NO aggregate gate** — a regression in the repair
+  fast-path or keep-K selection could not fail CI. Both now registered. They only *looked*
+  unregisterable because `parseCounts` accepted `"N/N passed"` but not `"N/N checks passed"`,
+  silently scoring them **0/0**; parser now reads both. `fault:live` stays out deliberately (real
+  FM, 300s, ±4pt noise — a tracked metric, not a gate).
+- **bench:all 695/695 → 727/727 across 27 suites**; keepk:bench 7→15.
+
 **Next priorities (in order):**
-1. **Wire keep-K into the live single-file retry loop** (`server.ts` — parallel-session contention
-   file, coordinate before editing). Highest remaining distribution-coverage mover: today a
-   real repair that doesn't certify abstains entirely instead of returning a scored best-effort.
 2. ~~Re-baseline `fault:live`~~ **DONE (cont.79b)** — the premise was wrong (accounting is inert)
    and the real finding was that the metric had no error bar. Recovery is a **38–42/46 (83–91%)
    band**, not a level. Use `npm run fault:live -- --runs=3` and cite median+range.
