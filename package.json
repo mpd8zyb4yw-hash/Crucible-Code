@@ -71,7 +71,8 @@
     "vgr:decompose": "tsx src/CrucibleEngine/reasoning/__decompose_bench.ts",
     "vgr:retrieval": "tsx src/CrucibleEngine/reasoning/__retrieval_bench.ts",
     "vgr:retrieval:live": "tsx src/CrucibleEngine/reasoning/__retrieval_live.ts",
-    "vgr:apifaith": "tsx src/CrucibleEngine/reasoning/__apifaith_bench.ts"
+    "vgr:apifaith": "tsx src/CrucibleEngine/reasoning/__apifaith_bench.ts",
+    "vgr:faithrepair": "tsx src/CrucibleEngine/reasoning/__faithrepair_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",

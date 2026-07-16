@@ -29,6 +29,7 @@ const SUITES = [
   'longout:bench',
   'vgr:bench',
   'vgr:apifaith',
+  'vgr:faithrepair',
   'fuzz:bench',
   'harden:bench',
   'stakes:bench',

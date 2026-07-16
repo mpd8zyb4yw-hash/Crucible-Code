@@ -379,6 +379,43 @@ export function describeViolations(v: FaithfulnessVerdict): string {
 }
 
 /**
+ * Every identifier a set of verdicts has ALREADY proven absent from the evidence. The
+ * placeholder used by `ignored-evidence` is not a real identifier and never leaks out.
+ */
+export function rejectedIdentifiers(verdicts: FaithfulnessVerdict[]): string[] {
+  const out = new Set<string>()
+  for (const v of verdicts)
+    for (const x of v.violations)
+      if (x.kind !== 'ignored-evidence') out.add(x.identifier)
+  return [...out].sort()
+}
+
+/**
+ * The repair hint for attempt N>1: `repairHint` plus everything earlier attempts already
+ * disproved. One retry with a hint is not search — the measured FM re-proposes a *different*
+ * fabrication rather than copying the evidence, so each attempt must carry the accumulated
+ * negative information or the loop just samples the same wrong distribution K times.
+ *
+ * `prior` is the attempts that FAILED before this one; `latest` is the verdict being repaired.
+ * Both are verdicts of the same shape, so this composes with any future faithfulness check.
+ */
+export function escalatedRepairHint(latest: FaithfulnessVerdict, prior: FaithfulnessVerdict[]): string {
+  const base = repairHint(latest)
+  if (!base) return ''
+  // Only names this attempt is not already being told about — repeating them wastes the hint.
+  const already = rejectedIdentifiers(prior).filter(id => !latest.violations.some(v => v.identifier === id))
+  if (!already.length && !prior.length) return base
+  const lines = [base, '', `This is attempt ${prior.length + 2}. Previous attempts were rejected for the same reason.`]
+  if (already.length)
+    lines.push(
+      `You have ALREADY tried these names and the evidence does not contain any of them: ${already.map(i => `\`${i}\``).join(', ')}.`,
+      'Do not use them again, and do not invent another new name.',
+    )
+  lines.push('Copy the identifiers VERBATIM from the EVIDENCE block above. Do not rely on memory.')
+  return lines.join('\n')
+}
+
+/**
  * Turn a rejection into a corrective instruction for the next proposal. Per types.ts, every
  * rejected candidate must return feedback rich enough to converge in a handful of calls —
  * so we name the fabricated identifier AND show the documented surface to choose from.

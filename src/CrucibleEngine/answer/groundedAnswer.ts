@@ -16,7 +16,8 @@
 import { search, fetch as fetchPage, stripBoilerplate, type SearchResult } from '../retrieval/retrievalLayer'
 import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { debugBus } from '../debug/bus'
-import { verifyApiFaithfulness, repairHint, describeViolations } from '../reasoning/apiFaithfulness'
+import { verifyApiFaithfulness, describeViolations } from '../reasoning/apiFaithfulness'
+import { repairUntilFaithful } from '../reasoning/faithfulRepair'
 
 export interface GroundedResult {
   text: string
@@ -53,6 +54,13 @@ const PER_SOURCE_CHARS = 1200
 const EVIDENCE_BUDGET = 3600
 const PER_FETCH_MS = 4500   // hard cap per page so one slow site can't blow the whole budget
 const SYNTH_TIMEOUT_MS = Number(process.env.CRUCIBLE_GROUND_SYNTH_MS ?? 30_000)
+/**
+ * K — model-backed repair attempts when the faithfulness verifier rejects the draft. Each is a
+ * full re-synthesis, so this trades wall-clock for a certified answer; the wall-clock budget
+ * (`canPropose`) cuts the search short before it can overrun. Only ever spent on a REAL
+ * violation — the common `abstain` path never enters the loop and costs nothing.
+ */
+const REPAIR_ATTEMPTS = Number(process.env.CRUCIBLE_FAITH_ATTEMPTS ?? 3)
 
 interface Evidence {
   block: string
@@ -435,29 +443,47 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
 
     if (remaining() > 4000 && !signal?.aborted) {
       emit?.({ type: 'thought', text: `Checked the code against the docs — ${describeViolations(faith)}. Repairing…` })
-      let repaired = ''
-      try {
-        repaired = (await fmComplete([
-          ...msgs,
-          { role: 'assistant', content: text },
-          { role: 'user', content: repairHint(faith) },
-        ], { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal })).trim()
-      } catch { repaired = '' }
 
-      // Only accept a repair the verifier actually certifies. A retry that fabricates a DIFFERENT
-      // API is not progress — keep the original rather than swap one defect for another.
-      const recheck = repaired.length > 20 ? verifyApiFaithfulness(repaired, ev.block) : null
-      if (recheck && recheck.status === 'certified') {
-        text = repaired
-        opts.onToken?.(`\n\n${repaired}`)
-        debugBus.emit('pipeline', 'api_faithfulness_repaired', { library: faith.library }, { severity: 'info' })
+      // REPAIR IS A SEARCH (cont.84), not a retry. One hinted retry was measured live to
+      // re-sample the same distribution and fabricate a DIFFERENT API; the VGR answer is to
+      // propose K candidates, keep any the verifier certifies, and carry every rejection
+      // forward. The draft enters as candidate 0 for free, so it can only be replaced on a
+      // verifier-measured improvement — never on the model's say-so.
+      const rep = await repairUntilFaithful(
+        { draft: text, evidence: ev.block, goal: message, baseMsgs: msgs, complete: (m, sig) =>
+          fmComplete(m as typeof msgs, { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal: sig }) },
+        {
+          attempts: REPAIR_ATTEMPTS,
+          signal,
+          // Re-checked before EVERY attempt: grounding runs under a wall-clock budget, and a
+          // repair that overruns it is worse than an honest UNVERIFIED ship.
+          canPropose: () => remaining() > 4000,
+          onAttempt: (n, v) => {
+            if (n > 1 && v.status === 'violations')
+              emit?.({ type: 'thought', text: `Repair ${n - 1} still doesn't match the docs — ${describeViolations(v)}. Trying again…` })
+          },
+        },
+      )
+
+      if (rep.status === 'certified') {
+        text = rep.text
+        opts.onToken?.(`\n\n${rep.text}`)
+        debugBus.emit('pipeline', 'api_faithfulness_repaired', {
+          library: faith.library, modelCalls: rep.modelCalls, detail: rep.detail,
+        }, { severity: 'info' })
       } else {
         // Honest failure. We do NOT return null: the caller's fallback is a PARAMETRIC answer,
         // which is strictly more fabrication-prone and loses the citations. Ship the grounded
-        // draft, but say it is unverified rather than badging it green.
-        unfaithful = describeViolations(faith)
+        // best candidate, but say it is unverified rather than badging it green. 'best-effort'
+        // means the search measurably improved the draft yet still could not certify it — a
+        // better artifact with the same honest badge, never a green one.
+        if (rep.status === 'best-effort') {
+          text = rep.text
+          opts.onToken?.(`\n\n${rep.text}`)
+        }
+        unfaithful = describeViolations(rep.verdict)
         debugBus.emit('pipeline', 'api_faithfulness_repair_failed', {
-          library: faith.library, after: recheck?.status ?? 'empty',
+          library: faith.library, status: rep.status, modelCalls: rep.modelCalls, detail: rep.detail,
         }, { severity: 'warn' })
       }
     } else {
