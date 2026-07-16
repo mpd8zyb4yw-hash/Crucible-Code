@@ -17,7 +17,59 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.86 — **the second proposer is BUILT, live-verified, and DEFAULTED OFF: measured, MiniCPM earns nothing. It abstains 5/5 and mangles `z.ipv4()` → `zipv4()` — the SAME copy-failure as the FM, so it is not an independent failure mode, which was the whole premise. Mechanism kept (67/67); the seat is open for a code-capable engine.**
+## CURRENT STATE (last updated 2026-07-16 cont.86b — **STOP ADDING PROPOSERS: THE ORACLE IS BROKEN. "certified" on the answer path means "the names came from the docs" — NOT "the code works". The repair hint taught the FM to game it, and repair MANUFACTURED a false GREEN badge on JSON-Schema-plus-regex. One gaming path is now closed (`3752be6`); the FM immediately found the next one. A regex provenance checker cannot be the oracle — the answer path needs EXECUTION.**
+
+### cont.86b — the finding that reframes the whole line of work
+
+Asked to try a code-tuned GGUF in the second-proposer seat, the screen surfaced something much
+bigger. **Read a "certified" artifact instead of the verdict:**
+
+```js
+const { base64, cidrv4, cuid, email, extend, ipv4, string, … } = require('zod');
+const ipv4Schema = { type:'object', properties:{ ip:{ type:'string', pattern:'^(25[0-5]|…' } } };
+const validateIpv4 = (ip) => ipv4Schema.validate(ip);
+```
+
+JSON Schema with a hand-rolled regex — the *exact* substitution the verifier exists to catch —
+**CERTIFIED**. `escalatedRepairHint` hands the model the documented surface; the FM pastes the list
+into a decorative import, so every identifier is provably documented. **Repair converted an honest
+UNVERIFIED into a false green badge.** cont.86's "FM certified 4/4" was 4/4 certifications of
+broken code — the number was reported without reading the artifacts. Do not trust it.
+
+**Fixed (`3752be6`), two independent defects, BOTH required:**
+1. `verifyEvidenceUsage` abstained on ANY import. Its premise ("that failure imports nothing at
+   all") was falsified by repair — repair is what puts the import there. Now: **use is a CALL,
+   never an import.** The express-vs-zod foreign-import abstain is preserved.
+2. `verifyApiFaithfulness` returned `certified` the instant no per-identifier violation was found,
+   **never consulting the whole-answer check**. Fixing (1) alone would have been INERT — a dead
+   feature behind a green bench (the cont.84 lesson, nearly repeated). Provenance is necessary,
+   not sufficient. `vgr:apifaith` 59 → **71**; `bench:all` **1141/1141**.
+
+**STILL BROKEN — measured after the fix.** The FM's next artifact calls ONE documented API
+decoratively (`extend(ipv4Schema, {…})`) and certifies again:
+`answer calls documented APIs (extend) — it used the evidence` → abstain → `certified`.
+**One documented call launders an entire JSON-Schema answer.** That "ANY overlap certifies"
+asymmetry is deliberate (cont.79h: a false reject is worse) and is now the remaining hole.
+
+**THE LESSON:** every regex tightening closes one path and the generator finds the next. You cannot
+regex your way to correctness. The doctrine already says the oracle must be deterministic and
+EXECUTABLE — the code path executes candidates; the answer path judges them by pattern-matching
+names. **That is the gap, and it is the next thing to build.**
+
+### The second-proposer question, answered
+
+- `phi-3.5-mini` (3.8B, the catalog's "best default escalation target") — **cannot load**:
+  "context size of 4096 is too large for the available VRAM". Same for `gemma2-2b`.
+- `qwen2.5-1.5b` — **loads, ~10-22s, emits real code, CERTIFIES** where MiniCPM only narrated. It
+  passes the screen MiniCPM failed.
+- **But its code is broken too** (`const s = { type:'object', properties:{…} }` then
+  `s.safeParse(…)` — an object literal has no `.safeParse`; it throws). The verifier certified that
+  as well.
+- `qwen2.5-3b` ("best code understanding of the set") is **not downloaded** (~1.9GB).
+
+**So the seat stays empty, on purpose.** Seating a second proposer now would only find
+certifiable-broken candidates faster. **Fix the oracle before adding proposers** — with a verifier
+that cannot tell correct from broken, every proposer A/B measures a meaningless number.
 
 ### cont.86 — the standing instruction, executed and then MEASURED
 
@@ -62,15 +114,23 @@ abstained under two different prompt shapes), but **4/4 is not the live certify 
 
 2. **Defaulted OFF on the measurement** (`e98ad97`) — see the table above.
 
-### NEXT CRUCIAL ITEMS (cont.86 — this list is the current one; §5 further down is archive)
+### NEXT CRUCIAL ITEMS (cont.86b — this list is the current one; §5 further down is archive)
 
-1. **Seat a CODE-CAPABLE second proposer in the open seat.** The mechanism is built, benched and
-   one line from live (`completeAlt`). MiniCPM disqualified itself by narrating; the GGUF pool
-   already carries code-tuned models (`localModelCatalog`) — bench one as the alt with
-   `audit-traces/p6/ab_minicpm_experiment.ts` (it A/Bs any `completeAlt` unchanged). **Require
-   independence**: if the candidate also mangles identifiers out of clean evidence, it fails for
-   the same reason and must not ship. Re-measure against the LIVE prompt, not the A/B's stand-in.
-2. **Evidence-relevance gate** — do not synthesize when the evidence never mentions the subject.
+1. **EXECUTE the answer path's code — the oracle, not another proposer.** This is now the only
+   item that matters, and everything else is downstream of it. `htmlRuntimeVerify.ts` and the code
+   path already execute candidates; the answer path judges by regex and the FM games it. Extract
+   the answer's code block, run it in the existing sandbox against the question's own claim
+   (`z.ipv4().parse('1.2.3.4')` succeeds, `parse('999.1.1.1')` throws), and certify on BEHAVIOUR.
+   That kills the whole gaming class at once — a JSON-Schema object literal throws on `.parse`,
+   and no amount of documented name-dropping survives it. **Do not tighten another regex.**
+   Note the honest limit: only executable answers can be certified this way; the rest must abstain,
+   which is correct (abstain means abstain) and strictly better than a gameable green badge.
+2. **Then, and only then, re-open the second-proposer seat.** `qwen2.5-1.5b` is the live candidate
+   (emits code; MiniCPM does not). The mechanism is built and benched (`vgr:faithrepair` 67/67);
+   A/B it with `audit-traces/p6/ab_minicpm_experiment.ts`. A proposer A/B measured by a gameable
+   verifier is a meaningless number. **Also: `phi-3.5-mini` and `gemma2-2b` cannot load on this
+   machine (4096-ctx VRAM) — the catalog's "best escalation target" is unusable here.**
+3. **Evidence-relevance gate** — do not synthesize when the evidence never mentions the subject.
 3. **Capitalization / code-shape routing** — MEASURED AGAIN this session: "Using zod, how do I
    validate an IPv4 address? Show the code." is classified `promptType: coding`, bypasses grounding
    entirely, and answers a **zod** question in **Python with a hand-rolled regex** (t16). Lowercase
