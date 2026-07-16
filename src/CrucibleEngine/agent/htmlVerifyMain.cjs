@@ -58,7 +58,7 @@ const DOM_CONTROLS = `(() => {
 // We use el.click() / synthetic input events rather than coordinate clicks: offscreen hit-testing by
 // pixel is unreliable, and .click() still runs the app's real listeners.
 const DOM_INTERACT = `(() => {
-  const out = { filled: 0, clicked: 0, control: null };
+  const out = { filled: 0, sentinelFilled: 0, clicked: 0, control: null };
   const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   [...document.querySelectorAll('input, textarea')].filter(vis).forEach(el => {
     const t = String(el.type || 'text').toLowerCase();
@@ -66,7 +66,10 @@ const DOM_INTERACT = `(() => {
     if (t === 'checkbox' || t === 'radio') el.checked = true;
     else if (t === 'number' || t === 'range') el.value = '7';
     else if (t === 'date') el.value = '2026-07-16';
-    else el.value = 'Crucible check';
+    // sentinelFilled counts ONLY the free-text fields that received the sentinel — the field-clear
+    // invariant compares this against how many still hold it, so a number/date field (which the
+    // sentinel never enters) must not inflate the denominator.
+    else { el.value = 'Crucible check'; out.sentinelFilled++; }
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     out.filled++;
@@ -75,6 +78,31 @@ const DOM_INTERACT = `(() => {
   if (btns.length) {
     out.control = String(btns[0].textContent || btns[0].value || '').trim().slice(0, 40);
     try { btns[0].click(); out.clicked++; } catch (e) { /* a throwing handler surfaces as a console error */ }
+  }
+  // Enter-to-commit fallback. A data-entry app whose only commit path is pressing Enter in the
+  // field (no Add button at all) is a legitimate, common design — but a click-only harness can
+  // never exercise it, reports "nothing changed", and the verifier then blames a re-render bug the
+  // app doesn't have. Pressing Enter is what a real user would do, so the harness must try it
+  // before concluding the app is dead. Only when there was no button to click, so a working
+  // click-driven app is never double-committed.
+  if (!out.clicked) {
+    const first = [...document.querySelectorAll('input, textarea')].filter(vis).filter(el => {
+      const t = String(el.type || 'text').toLowerCase();
+      return t !== 'submit' && t !== 'button' && t !== 'hidden' && t !== 'checkbox' && t !== 'radio' && t !== 'file';
+    })[0];
+    if (first) {
+      for (const type of ['keydown', 'keypress', 'keyup']) {
+        try { first.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })); } catch (e) {}
+      }
+      // Enter inside a <form> natively submits; synthetic KeyboardEvents do NOT trigger that, so
+      // ask the form directly (requestSubmit runs validation + the submit listener, like a user).
+      const form = first.form;
+      if (form) {
+        try { if (form.requestSubmit) form.requestSubmit(); else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); } catch (e) {}
+      }
+      out.submitted = 1;
+      out.control = 'Enter';
+    }
   }
   return out;
 })()`
@@ -99,7 +127,10 @@ const DOM_FIELD_VALUES = `(() => {
   });
   return {
     nonEmpty: fields.filter(el => String(el.value || '').trim().length > 0).length,
-    sentinel: fields.some(el => String(el.value || '').indexOf(${JSON.stringify(SENTINEL)}) !== -1),
+    // COUNT, not "some": the harness types the sentinel into EVERY field, so an app with a second
+    // field it doesn't commit from (a filter, a due-date) legitimately still holds one. Only the
+    // count lets the verifier ask whether ANY field cleared. See the invariant in htmlRuntimeVerify.
+    sentinelCount: fields.filter(el => String(el.value || '').indexOf(${JSON.stringify(SENTINEL)}) !== -1).length,
   };
 })()`
 
@@ -205,7 +236,12 @@ app.whenReady().then(async () => {
       // false reject. We measure the shape here and let the verifier judge it.
       out.addShaped = textAfter.length > textBefore.length && textAfter.indexOf(SENTINEL) !== -1
       const fv = await ex(DOM_FIELD_VALUES, null)
-      out.fieldSentinelAfter = fv ? fv.sentinel : null
+      // How many sentinel-bearing fields we typed into vs how many STILL hold it. The verifier
+      // needs both to distinguish "cleared the field it committed from" (fine) from "cleared
+      // nothing" (the bug). Reporting a bare boolean here is what made the check false-reject any
+      // app with a second, uncommitted field.
+      out.sentinelFilled = out.interact ? (out.interact.sentinelFilled ?? 0) : 0
+      out.sentinelAfter = fv ? fv.sentinelCount : null
 
       // Empty-commit probe: clear every field and press commit again. No app should record an
       // empty entry — the guard (`if (!value.trim()) return`) is the single most-omitted line in a

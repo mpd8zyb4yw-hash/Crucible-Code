@@ -18,7 +18,7 @@
 
 import { runtimeVerifyHtml, runtimeVerifyApp } from './htmlRuntimeVerify'
 import { classifyHtmlGoal } from './htmlGoalKind'
-import { buildAppShell } from './synthDriver'
+import { buildAppShell, isWebArtifactGoal, defaultWebArtifactPath } from './synthDriver'
 
 const HEAD = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title></head>'
 
@@ -117,6 +117,97 @@ const NO_CLEAR = delTodo(`
   var el = document.getElementById('t');
   var v = el.value.trim(); if (!v) return;
   items.push(v); render();`)
+
+// A CORRECT add+filter todo — the false-reject class the field-clear invariant shipped with
+// (cont.79h). The harness types its sentinel into EVERY visible field, so the filter box still
+// holds it after the commit even though the app correctly cleared the field it actually committed
+// from. Keying "did the field clear" on ANY field still holding the sentinel therefore rejects a
+// correct app, and the repair feedback tells the model to clear an input it already clears — a loop
+// that can never converge. This is add-shaped (unlike FILTER_HTML), so it does NOT skip the check:
+// it is the fixture that forces the invariant to ask "did the COMMITTED field clear" instead.
+// Must PASS.
+const ADD_PLUS_FILTER = `${HEAD}<body><h1>My Todos</h1>
+<form id="f"><input id="t" placeholder="new todo"><button type="submit">Add</button></form>
+<input id="q" placeholder="filter todos">
+<ul id="list"></ul>
+<script>
+var items = [];
+function render() {
+  var q = document.getElementById('q').value.trim().toLowerCase();
+  var ul = document.getElementById('list'); ul.innerHTML = '';
+  items.filter(function (it) { return it.toLowerCase().indexOf(q) !== -1; })
+    .forEach(function (it, i) {
+      var li = document.createElement('li');
+      var span = document.createElement('span'); span.textContent = it; li.appendChild(span);
+      var del = document.createElement('button'); del.textContent = 'Delete';
+      del.addEventListener('click', function () { items.splice(i, 1); render(); });
+      li.appendChild(del); ul.appendChild(li);
+    });
+}
+document.getElementById('f').addEventListener('submit', function (e) {
+  e.preventDefault();
+  var el = document.getElementById('t');
+  var v = el.value.trim(); if (!v) return;
+  items.push(v); el.value = ''; render();
+});
+document.getElementById('q').addEventListener('input', render);
+render();
+</script></body></html>`
+
+// The state-driven ORDERING bug, verbatim in shape from what the on-device FM actually shipped on
+// 3 of 5 live runs (cont.79h). render() re-creates the field with `input.value = draft`, and the
+// handler clears `draft` AFTER calling render() — so the field is redrawn with the stale text and
+// the user's next keystroke lands on the end of it. Every earlier check passes: it adds, it
+// re-renders, it guards empties. Must REJECT (and the message must name the ordering remedy, not
+// just `input.value = ''`, which this architecture never writes).
+const STATE_CLEAR_TOO_LATE = `${HEAD}<body><div id="app"></div>
+<script>
+var items = [], draft = '';
+function render() {
+  var app = document.getElementById('app'); app.innerHTML = '';
+  var ul = document.createElement('ul');
+  items.forEach(function (it) { var li = document.createElement('li'); li.textContent = it; ul.appendChild(li); });
+  app.appendChild(ul);
+  var form = document.createElement('form');
+  var input = document.createElement('input');
+  input.value = draft;
+  input.addEventListener('input', function (e) { draft = e.target.value; });
+  var add = document.createElement('button'); add.type = 'submit'; add.textContent = 'Add';
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!draft.trim()) return;
+    items.push(draft);
+    render();
+    draft = '';        // TOO LATE — render() already redrew the field with the old text
+  });
+  form.appendChild(input); form.appendChild(add); app.appendChild(form);
+}
+render();
+</script></body></html>`
+
+// A CORRECT todo whose ONLY commit path is pressing Enter — no Add button anywhere. A legitimate,
+// common minimal design. The click-only harness could never commit it, so it reported "nothing
+// changed" and the verifier blamed a missing re-render the app doesn't have (cont.79h). The Enter/
+// requestSubmit fallback is what makes the gate exercise the app's real path. Must PASS.
+const ENTER_ONLY = `${HEAD}<body><h1>My Todos</h1>
+<form id="f"><input id="t" placeholder="new todo (press Enter)"></form>
+<ul id="list"></ul>
+<script>
+var items = [];
+function render() {
+  var ul = document.getElementById('list'); ul.innerHTML = '';
+  items.forEach(function (it) {
+    var li = document.createElement('li'); li.textContent = it; ul.appendChild(li);
+  });
+}
+document.getElementById('f').addEventListener('submit', function (e) {
+  e.preventDefault();
+  var el = document.getElementById('t');
+  var v = el.value.trim(); if (!v) return;
+  items.push(v); el.value = ''; render();
+});
+render();
+</script></body></html>`
 
 // A FILTER box — the false-reject both commit invariants must not produce. It legitimately KEEPS
 // its text (that's the query) and legitimately makes the list SHRINK rather than grow, so the
@@ -226,6 +317,32 @@ async function main() {
   check('unknown goal defaults to app', classifyHtmlGoal('build something nice') === 'app', 'expected app')
   check('empty goal defaults to app', classifyHtmlGoal('') === 'app', 'expected app')
 
+  // ── Routing: does the goal reach the verified build path at all? (cont.79h) ──
+  // isWebArtifactGoal is the ENTRANCE to write → gate → repair. A pathless goal it rejects comes
+  // back as PROSE. It previously keyed on named arcade titles, so every non-game app below was
+  // locked out of the gate entirely and answered with a tutorial. Live-confirmed this session.
+  for (const g of [
+    // games (the pre-existing coverage — must not regress)
+    'build a snake game', 'make a playable tetris', 'create an arcade shooter',
+    // non-game apps: the class that silently returned prose before this fix
+    'build a todo list app', 'build an expense tracker', 'make a pomodoro timer',
+    'create a unit converter', 'build a markdown notes app', 'make a calculator app',
+    'build a habit tracker dashboard', 'create a landing page for my startup',
+    'write me a single HTML file that shows a countdown',
+  ]) check(`routes to the verified build path: "${g}"`, isWebArtifactGoal(g) === true, 'expected true')
+
+  // Must NOT route: these are real requests that a single vanilla-JS file would answer WRONGLY.
+  for (const g of [
+    'build a CLI tool in python', 'implement a REST API', 'make a react dashboard',
+    'write a function that sorts an array', 'implement a graph traversal',
+    'build an express server', 'create a python library for parsing logs',
+    'what is the best todo app?',                    // no creation verb — a question
+  ]) check(`does NOT route to the web path: "${g}"`, isWebArtifactGoal(g) === false, 'expected false')
+
+  // The injected default target must match the kind — a todo app landing at game.html is confusing.
+  check('pathless game goal defaults to game.html', defaultWebArtifactPath('build a snake game') === 'game.html', 'expected game.html')
+  check('pathless app goal defaults to app.html', defaultWebArtifactPath('build a todo list app') === 'app.html', 'expected app.html')
+
   // ── Runtime (real Electron, canary-gated) ──────────────────────────────────
   const canary = await runtimeVerifyApp(CANARY)
   if (canary === null) {
@@ -278,6 +395,24 @@ async function main() {
   const filter = await runtimeVerifyApp(FILTER_HTML, 'fruit filter')
   check('a filter box that keeps its text and shrinks the list passes (not add-shaped → skipped)',
     filter === null, `expected null, got: ${filter}`)
+
+  // The add-shaped false-reject guard: a CORRECT app that clears the field it committed from, but
+  // has a second (filter) field the harness also typed into and that nothing clears.
+  const addFilter = await runtimeVerifyApp(ADD_PLUS_FILTER, 'todo app')
+  check('a correct todo with a separate filter box passes (only the COMMITTED field must clear)',
+    addFilter === null, `expected null, got: ${addFilter}`)
+
+  // The harness must exercise the app's REAL commit path, not just the one it prefers.
+  const enterOnly = await runtimeVerifyApp(ENTER_ONLY, 'todo app')
+  check('a correct Enter-to-commit todo with no Add button passes (Enter/submit fallback)',
+    enterOnly === null, `expected null, got: ${enterOnly}`)
+
+  // The dominant live failure shape — clearing the state AFTER render() instead of before.
+  const tooLate = await runtimeVerifyApp(STATE_CLEAR_TOO_LATE, 'todo app')
+  check('a state-driven app that clears its draft AFTER render() is rejected (ordering bug)',
+    tooLate !== null && /does not clear the input/i.test(tooLate), `expected a field-clear rejection, got: ${tooLate}`)
+  check('the field-clear rejection names the state-ordering remedy, not just input.value',
+    !!tooLate && /BEFORE you call/i.test(tooLate), `message must cover the state-driven shape, got: ${tooLate}`)
 
   // The correct todo must satisfy the new invariants too — with the Delete-button shape the
   // empty-commit probe actually reads, so this is a real positive control for it, not a vacuous one.

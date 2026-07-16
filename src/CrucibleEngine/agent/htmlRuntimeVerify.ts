@@ -65,13 +65,18 @@ interface Probe {
   textChanged?: boolean | null
   // What the probe actually did — which control it clicked, how many fields it filled. Reported
   // in the rejection text so the repair feedback names the exact control that did nothing.
-  interact?: { filled: number; clicked: number; control: string | null } | null
+  /** `sentinelFilled` = free-text fields that got the sentinel; `submitted` = the Enter/requestSubmit
+   *  fallback ran because the app rendered no button to click. */
+  interact?: { filled: number; sentinelFilled?: number; clicked: number; submitted?: number; control: string | null } | null
   // Was the commit ADD-shaped — did the visible text grow and take up the value we typed? Gates
   // both commit invariants below, so that a search/filter box (text persists, list shrinks) is
   // never held to an add-list app's rules.
   addShaped?: boolean
   // Does a text field STILL hold the sentinel we typed, after the app committed it?
-  fieldSentinelAfter?: boolean | null
+  /** How many free-text fields the harness typed its sentinel into. */
+  sentinelFilled?: number | null
+  /** How many of those still hold it after the commit. Equal to sentinelFilled ⇒ nothing cleared. */
+  sentinelAfter?: number | null
   // Visible control count around a second commit performed with every field EMPTY. A grown count
   // means the app recorded a blank entry (a new row brings its own Delete button).
   emptyCommit?: { controlsBefore: number; controlsAfter: number } | null
@@ -397,8 +402,18 @@ export async function runtimeVerifyApp(html: string, goal = ''): Promise<string 
     const nothingVisible = probe.textChanged === false && !controlCountChanged
     if (filledData && probe.textChanged != null && nothingVisible) {
       const ctl = probe.interact?.control
-      const which = ctl ? `the "${ctl}" control` : 'the primary control'
-      return `the app does nothing visible: after typing into the field and clicking ${which}, nothing the user can see changed — the value you entered never appears. ` +
+      const clicked = (probe.interact?.clicked ?? 0) > 0
+      // Describe what the harness ACTUALLY did. When the app renders no button, the harness falls
+      // back to Enter/submit, and the old message still claimed it "clicked the primary control"
+      // and blamed a missing re-render — a confidently wrong diagnosis for an app whose real bug is
+      // that it has nothing to commit with. The model then spent every remaining attempt fixing a
+      // bug it did not have: a live 6/6 non-convergence (cont.79h). Name the real shape instead.
+      const which = clicked ? `clicking ${ctl ? `the "${ctl}" control` : 'the primary control'}` : 'pressing Enter in the field'
+      const noControlHint = clicked ? '' :
+        ' NOTE: your app rendered NO clickable control at all — no Add/submit button was present to click, ' +
+        'so the only commit path was Enter. Render an explicit button (e.g. <button>Add</button>) next to the field and ' +
+        'commit on BOTH its click and the form submit.'
+      return `the app does nothing visible: after typing into the field and ${which}, nothing the user can see changed — the value you entered never appears.${noControlHint} ` +
         'The handler likely updates a state variable (or re-appends the form) but never re-renders the list/output. ' +
         'At the END of every handler, call render() so the view is rebuilt from the updated state — and make render() actually draw the current data (e.g. one <li> per item), not just re-add the input.'
     }
@@ -422,10 +437,32 @@ export async function runtimeVerifyApp(html: string, goal = ''): Promise<string 
       // (b) field-clears-after-commit. The handler adds the item but leaves the text sitting in the
       // field, so the user's next entry types onto the end of the previous one. Only meaningful
       // while the field still exists (the self-erasing check above owns the field-is-gone case).
-      if (probe.fieldSentinelAfter === true && (probe.fieldsAfter ?? 0) > 0) {
+      //
+      // Fires only when NOTHING cleared. The harness types its sentinel into EVERY visible text
+      // field, but only ONE of them is the field the app committed from — an add+filter todo that
+      // correctly empties its add box still holds the sentinel in the filter box. Keying this on
+      // "any field still holds it" therefore rejected a CORRECT app, and (worse) the repair
+      // feedback then told the model to clear an input it already cleared, so the loop could never
+      // converge: a live 6-attempt run failed 6/6 on this single false reject (cont.79h).
+      // "At least one sentinel field emptied" is the universal read of "the app clears what it
+      // commits". The known cost is a false NEGATIVE on a multi-field app that clears some OTHER
+      // field but not the committed one — deliberate: a false reject poisons the repair loop and
+      // burns the whole attempt budget, while a missed check only forfeits one signal.
+      const filledSentinel = probe.sentinelFilled ?? 0
+      const stillHolding = probe.sentinelAfter ?? 0
+      if (filledSentinel > 0 && stillHolding >= filledSentinel && (probe.fieldsAfter ?? 0) > 0) {
+        // State the OBSERVATION, then give the remedy for BOTH architectures. The previous wording
+        // prescribed only `input.value = ''`, which is the fix for an imperative DOM app — but the
+        // model frequently builds a state-driven app that re-creates the field inside render() with
+        // `input.value = draft`. There, the real bug is ORDERING (`render(); draft = ''` clears the
+        // state too late, so the field re-renders with the stale text), and advice naming a line
+        // its code doesn't contain cannot be acted on: measured 3 of 5 live runs failing 6/6 here
+        // (cont.79h). Feedback must describe what was seen and cover the shapes the model writes.
         return 'the app does not clear the input after committing: the text that was just added to the list is still sitting in the field, ' +
-          'so the next thing the user types is appended to it. After you add the value to your state and re-render, reset the field to an ' +
-          'empty string (input.value = \'\') so it is ready for the next entry.'
+          'so the next thing the user types is appended to it. Fix whichever applies to your code: ' +
+          '(1) if you set the field directly, reset it after committing (input.value = \'\'); ' +
+          '(2) if render() re-creates the field from a state variable (e.g. input.value = draft), clear THAT variable BEFORE you call ' +
+          'render() — clearing it afterwards is too late, because render() has already redrawn the field with the old text.'
       }
     }
     // Fallback for pure-button apps (no field filled) that are entirely inert — nothing changed at

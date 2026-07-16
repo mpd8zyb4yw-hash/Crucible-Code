@@ -3060,8 +3060,10 @@ app.post('/api/chat', async (req, res) => {
     // indistinguishable from a hang. Forward the synth driver's own debugBus progress
     // events into this task's SSE as human-readable 'thought' lines.
     const PROGRESS_EVENTS: Record<string, (d: any) => string> = {
-      offline_game_goal: () => 'Recognized a game build — targeting a single-file HTML/canvas app',
-      offline_html_synth: d => `Generated ${d?.path ?? 'game.html'} (attempt ${d?.attempt ?? 1}) — verified in a real headless browser`,
+      // The event fires for every pathless web artifact, not just games (cont.79h widened the
+      // routing), so read the injected target rather than asserting "game".
+      offline_game_goal: d => `Recognized a single-file web build — targeting ${d?.path ?? 'a self-contained HTML file'}`,
+      offline_html_synth: d => `Generated ${d?.path ?? 'the HTML file'} (attempt ${d?.attempt ?? 1}) — verified in a real headless browser`,
       offline_html_retry: d => `Attempt ${d?.attempt ?? '?'} rejected by the run-and-verify gate (${String(d?.problem ?? '').slice(0, 100)}) — regenerating`,
       offline_synth: d => `Synthesized ${d?.path ?? 'file'} (oracle-verified)`,
       offline_noncode_attempt: () => 'Answering via the offline research/reasoning stack',

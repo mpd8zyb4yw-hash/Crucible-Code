@@ -31,6 +31,7 @@
 // the whole project. Self-test is run if the goal specifies a run command.
 // ============================================================================
 
+import fs from 'fs'
 import path from 'path'
 import vm from 'vm'
 import { synthesizeUniversal } from '../synth/universal'
@@ -423,13 +424,51 @@ function extractGoalPaths(goal: string): string[] {
 // Games are ALWAYS emitted as self-contained HTML (never pygame): the sandbox is
 // stdlib-only and the in-app Preview button is the only runtime we can guarantee.
 const DEFAULT_GAME_PATH = 'game.html'
+const DEFAULT_APP_PATH = 'app.html'
+
+/** Where a pathless web-artifact goal gets written. Kind-aware: a todo app landing at `game.html`
+ *  is merely confusing, and the name is what the user sees in their project. */
+export function defaultWebArtifactPath(goal: string): string {
+  return classifyHtmlGoal(goal) === 'game' ? DEFAULT_GAME_PATH : DEFAULT_APP_PATH
+}
+
+// ── What counts as a single-file web artifact ────────────────────────────────
+// This predicate is the ENTRANCE to the whole verified build path (write → static gate → runtime
+// gate → repair). A goal it rejects and that names no file falls through to solveNonCodeTurn and
+// comes back as PROSE — the user asks for an app and gets a tutorial about writing one.
+//
+// Until cont.79h the artifact list was mostly NAMED ARCADE TITLES (snake|tetris|pong|flappy…), so
+// only games could reach the gate. "build a todo list app", "build an expense tracker", "build a
+// unit converter" — every non-game app — silently returned prose unless the user happened to name a
+// .html file. That is the same bug the comment above describes for games, still live for apps, and
+// it made the app gate's invariants unreachable for the requests they were written for.
+//
+// The fix is to gate on the SHAPE of the request rather than on an enumeration of instances: a
+// creation verb + a word naming a browser-shaped artifact. ARTIFACT_RX is a category vocabulary
+// ("app", "tracker", "dashboard"), not an answer key — it encodes what KIND of thing is being asked
+// for, never how to build any of it, so it stays inside the no-templates doctrine (cont.79f).
+// Correctness still comes only from retrieval + synthesis + the runtime gate.
+const CREATION_RX = /\b(build|create|make|write|code|program|implement|generate)\b/
+
+// Generic artifact categories. Deliberately EXCLUDES ambiguous nouns that routinely mean non-UI
+// things: "tool" ("a tool to parse logs" is a script), "graph"/"board" (data structure, chess
+// board), "interface" (a TypeScript interface). Those must keep falling through to the code path.
+const ARTIFACT_RX = /\b(games?|arcade|playable|interactive|apps?|application|tracker|dashboard|widget|calculator|timer|stopwatch|clock|converter|editor|quiz|to-?do list|landing page|web ?page|webpage|website|visuali[sz]ation|animation|simulation|simulator)\b/
+
+// An explicit browser signal routes here regardless of the noun ("write me a single HTML file that…").
+const WEB_RX = /\b(html|browser|single[- ]file|front[- ]?end|canvas)\b/
+
+// A named non-browser runtime disqualifies, and wins over both signals above: "build a CLI tool in
+// python", "implement a REST API", "make a react dashboard" are all real requests that must NOT be
+// answered with a single vanilla-JS file. Framework names count as non-browser here because this
+// path emits ONE self-contained file with no build step and no imports.
+const NON_BROWSER_RX = /\b(cli|command[- ]line|terminal|python|node(?:\.?js)?|deno|express|server|backend|api|rest|graphql|cron|daemon|bash|shell|library|package|npm|module|sdk|react|vue|angular|svelte|next\.?js|django|flask|rails|swift|kotlin|java|rust|go(?:lang)?)\b/
 
 export function isWebArtifactGoal(goal: string): boolean {
-  const m = goal.toLowerCase()
-  const creation = /\b(build|create|make|write|code|program|implement|generate)\b/.test(m)
-  const artifact = /\b(game|arcade|snake|tetris|pong|breakout|asteroids|platformer|flappy|minesweeper|sudoku|maze|clicker|interactive (?:app|demo|toy|visuali[sz]ation)|animation|simulation|simulator)\b/.test(m)
-  const playable = /\b(playable|interactive)\b/.test(m)
-  return creation && (artifact || playable)
+  const m = (goal || '').toLowerCase()
+  if (!CREATION_RX.test(m)) return false
+  if (NON_BROWSER_RX.test(m)) return false
+  return ARTIFACT_RX.test(m) || WEB_RX.test(m)
 }
 
 function extractHtmlDoc(raw: string): string {
@@ -910,6 +949,17 @@ async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promi
       return html
     }
     debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, model: 'apple-fm', kind: 'app', problem }, { severity: 'info' })
+    // Opt-in forensics (CRUCIBLE_DUMP_REJECTS=<dir>). A rejection tells you WHAT the gate saw but
+    // not what the model wrote, and without the candidate you cannot tell a real FM bug from a gate
+    // false-reject — cont.79h burned a whole 5-run measurement on exactly that ambiguity. Off by
+    // default, never on a hot path.
+    if (process.env.CRUCIBLE_DUMP_REJECTS) {
+      try {
+        const dir = process.env.CRUCIBLE_DUMP_REJECTS
+        fs.mkdirSync(dir, { recursive: true })
+        fs.writeFileSync(`${dir}/reject-${Date.now()}-a${attempt}.html`, `<!-- ${problem} -->\n${html}`)
+      } catch { /* forensics must never break a build */ }
+    }
     prevJs = js
     if (!seenProblems.includes(problem)) seenProblems.push(problem)
     const priorFaults = seenProblems.length > 1
@@ -1229,8 +1279,8 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     // Pathless game/interactive builds get a default HTML target so they run through
     // the code state machine (write → verify → done) instead of the prose Q&A path.
     if (state.goalPaths.length === 0 && isWebArtifactGoal(goal)) {
-      state.goalPaths = [DEFAULT_GAME_PATH]
-      debugBus.emit('agent', 'offline_game_goal', { goal: goal.slice(0, 80) }, { severity: 'info' })
+      state.goalPaths = [defaultWebArtifactPath(goal)]
+      debugBus.emit('agent', 'offline_game_goal', { goal: goal.slice(0, 80), path: state.goalPaths[0] }, { severity: 'info' })
     }
     const goalPaths = state.goalPaths
 
