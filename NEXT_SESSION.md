@@ -17,7 +17,98 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.83 — **WEB GROUNDING WAS 100% DEAD ON COMMITTED CODE for 3 sessions. Fixed (1c8bc46). API-faithfulness verifier built and LIVE (2ec8b3a): it DETECTS the fabrication; repair does not yet recover the answer.**
+## CURRENT STATE (last updated 2026-07-16 cont.84 — **REPAIR IS NOW A SEARCH (K candidates, keep any that certifies) AND IT RUNS LIVE — because the old repair gate was UNREACHABLE and had never executed once. The search still does not recover the answer: the FM re-proposes identifiers it was just told are absent. NEW: the verifier FALSE-CERTIFIES a total fabrication (`import { Zod }`) because the judging vocabulary harvests prose.**
+
+### What shipped (all committed, benches green, tsc delta 0)
+
+1. **Repair is a search** — `reasoning/faithfulRepair.ts` (`4f0883c`). Reuses the existing VGR
+   `search()` rather than adding a second loop; the mapping is just: candidate = an answer,
+   verifier = `verifyApiFaithfulness`, spec.context = the evidence.
+   - The draft enters as candidate 0 marked `modelFree` → costs no budget, and competes with its
+     own repairs under one verifier.
+   - A repair replaces the draft ONLY on a strict verifier-measured improvement. Ties → draft
+     (violation count is a PROXY, not ground truth).
+   - An abstaining "repair" can never win (deleting the code escapes judgement ≠ certification).
+   - K exhausted → ship the draft UNVERIFIED and report the ceiling.
+   - `escalatedRepairHint` accumulates identifiers already proven absent.
+   - `npm run vgr:faithrepair` 41/41, scripted model, ZERO model calls. In `bench:all`.
+
+2. **The repair gate was dead code** (`c27c015`) — the find that matters most this session.
+   The gate was `remaining() > 4000` where `remaining()` is the RETRIEVAL budget:
+   `DEFAULT_BUDGET_MS` = 14s, but `SYNTH_TIMEOUT_MS` = 30s and a real run takes 32–71s. So
+   `remaining()` is tens of seconds NEGATIVE when the verifier rules → **the branch could never
+   open**. Measured at `4f0883c` on a clean tree: gate fired, badged UNVERIFIED, emitted ZERO
+   `api_faithfulness` events. **cont.83's "repair attempted, failed to certify" was only ever
+   true because that server had `CRUCIBLE_GROUND_BUDGET_MS=90000` in its env.** On defaults it
+   had never run once. Fix: repair gets its OWN clock (`CRUCIBLE_FAITH_BUDGET_MS`, default 60s,
+   0 disables) — the same precedent `SYNTH_TIMEOUT_MS` already sets in that file.
+   **This is the grounding-dead class again: wired code, green benches, a gate that never opens.**
+
+3. **`CRUCIBLE_DUMP_FAITH`** (`c0455a5`) — env-gated dump of (evidence, answer, verdict) at the
+   gate. Point it OUTSIDE the repo (e.g. the scratchpad) or the dump dirties the tree and your
+   next boot banner reads `+dirty`. Not optional: a hand-reconstructed evidence block gave 306
+   chars vs the real path's 2984 and a different verdict.
+
+### LIVE, on a clean tree (banner `db5073c`, no `+dirty`, default env)
+
+Identical prompt ("Write a Zod schema that validates an IPv4 address"), same commit, **different
+outcomes run to run** — retrieval ranking varies, and it decides which failure you see:
+
+- **t11 — the search works.** Gate fires on the JSON-Schema substitution (`ignored-evidence`) →
+  repair 1 ignores the docs → repair 2 fabricates `toTypedSchema` **again, despite the escalated
+  hint naming it as already-rejected** → ships UNVERIFIED honestly, K spent.
+  **Detection→recovery is now MEASURED, not assumed: escalating negative feedback does not stop
+  this model re-proposing a name it was just told is absent.**
+- **t12 — the verifier FALSE-CERTIFIES.** Answer: `import { Zod } from 'zod'` +
+  `Zod.Schema<IPv4Address> = {...}` object literal + hand-rolled regex — a total fabrication
+  (zod exports no `Zod`; the real API is `z.ipv4()`). Verdict: **`certified`, green badge.**
+
+### §1 THE BLOCKER — the judging vocabulary harvests PROSE (why t12 ships green)
+
+`documentedIdentifiers` is deliberately over-inclusive ("over-inclusion costs a missed
+fabrication; under-inclusion costs a false reject, which is strictly worse"). PROVEN mechanism:
+`Zod` is in the vocabulary **only because the page title reads "Defining schemas | Zod"**. It is
+NOT in `callSurface`. So a fabricated named import certifies whenever its identifier collides
+with any prose word — and the repair search never runs, because nothing was rejected.
+
+The sound fix (NOT yet made — it changes the judging vocabulary and needs its own bench + live
+run; a false reject is worse than a missed check): judge **named imports** against a stricter
+vocabulary — identifiers the evidence shows in an **import/export or call position** — instead
+of the prose-inclusive vocab. To claim `import { X } from 'pkg'`, the evidence must show X as an
+importable/callable name, not merely mention the word. Keep the permissive vocab for the
+whole-answer check. **Verify against BOTH: t12 (must reject) and the express false-reject guard
+in `vgr:apifaith` (must still not fire).**
+
+### §2 Retrieval fetched evidence that cannot answer the question
+
+t12's evidence block contains **zero** occurrences of `ipv4` (`grep -c ipv4` = 0) — the fetched
+zod pages were the general schema docs, not the IP-address section, even though `search()`
+ranks `zod.dev/api?id=ip-addresses` **first**. So on that run no model could have written
+`z.ipv4()` faithfully. Grounding proceeded and badged green anyway. **A grounded answer whose
+evidence lacks the asked-about API is not grounded — it is decorated.** Consider gating on
+"evidence mentions the subject of the question" before synthesizing.
+
+### §3 Capitalization routing (unchanged from cont.83, still open)
+
+`"zod schema"` → no grounding; `"Zod schema"` → grounds. Lowercase package names are what users
+type, so the verifier is inert for most real prompts. Universal fix only (ground-by-default vs a
+case-insensitive structural signal) — a package-name table is BANNED.
+
+### Bench state
+`vgr:faithrepair` 41/41 (new) · `vgr:apifaith` 48/48 · `vgr:bench` 208/208 · `ground:bench` 41/41
+· `keepk:bench` 15/15 · `retrieval` 18/18 · `vgr:retrieval` 28/28 · `conversational` 108/108 ·
+tsc delta 0 (443 pre-existing under `tsconfig.server.json`; measure the baseline with
+`git stash -u` — a plain `git stash` leaves new untracked files orphaned and inflates it).
+
+### METHOD (cost this session real time — read before citing any live run)
+- **Boot banner `+dirty` is the tell.** It fires on untracked files too — trace dumps you just
+  wrote count. Point dumps outside the repo.
+- **Verify the exit code, not the tail.** `npm run <bench> | tail -1` prints nothing for benches
+  whose summary is `N/N passed`; three different summary formats are in use.
+- **Never diagnose from a reconstructed evidence block.** Dump from the real path.
+- **A green badge means "nothing I check is broken."** t12 is the proof: certified ≠ correct.
+
+## PRIOR STATE (last updated 2026-07-16 cont.83 — **WEB GROUNDING WAS 100% DEAD ON COMMITTED CODE for 3 sessions. Fixed (1c8bc46). API-faithfulness verifier built and LIVE (2ec8b3a): it DETECTS the fabrication; repair does not yet recover the answer.**
 
 ### 1. The headline: every faithfulness diagnosis since cont.82 was made against code that never ran
 
