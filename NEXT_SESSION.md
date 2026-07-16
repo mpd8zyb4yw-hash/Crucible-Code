@@ -17,6 +17,54 @@
 
 ---
 
+## CURRENT STATE — last updated cont.88, 2026-07-17, commit `3f59fb8` (REPLACE THIS EVERY SESSION)
+
+**cont.88 ran the A/B the cont.87 pause asked for. Result: the cont.82 extraction failure is
+MODEL-bound, not prompt-bound — and Bonsai fixes it.**
+
+Fixture = the frozen cont.82 evidence (`audit-traces/p4/t9.evidence.txt`, contains `z.ipv4();`
+verbatim at line 20) + "Write a Zod schema that validates an IPv4 address" + the verbatim
+`GROUNDING_SYSTEM`. **Only the model differs.** Harness: `audit-traces/p7/ab_evidence_copy.mjs`.
+
+| arm | copies z.ipv4 (code) | EXECUTES | latency |
+|---|---|---|---|
+| Apple FM | **0/3** | **0/3** (jsonSchema 2/3, handRegex 3/3) | 38.5s |
+| Bonsai-27B no-think | **3/3** | **3/3** | **45.5s** |
+| Bonsai-27B think | **3/3** | **3/3** | 413.6s (9x cost, **zero gain**) |
+
+The FM latches onto the `@vee-validate/zod` **distractor [S3]** over the primary zod docs [S1] and
+writes JSON-Schema + a hand-rolled octet regex. Three sessions of prompt work never fixed this
+because prompting cannot.
+
+**Latency verdict is BETTER than cont.87c implied:** no-think Bonsai answers in **45.5s**, inside
+the FM answer path's existing 25–60s range. The 4.3 tok/s / 15–19s-per-tool-call figure still
+stands for *agentic loops*, but the *answer* path is not latency-blocked. **Always run no-think**
+(`chat_template_kwargs:{enable_thinking:false}`).
+
+### THE NEXT DECISION (in priority order)
+
+1. **Blocker #1 is now the ONLY thing between this and a real % move — and Bonsai does NOT fix it.**
+   Retrieval fetches the WRONG docs (`executed:false` 4/4 live, [[crucible-execution-verifier]]);
+   code-shaped + lowercase-library prompts bypass grounding entirely. A 27B handed ip-num docs for
+   a zod question still fails. **Fix retrieval/routing next, not the engine.**
+2. **Then wire the sidecar** behind the FM's seam (`llama-server` HTTP, `--jinja`, no-think) and
+   re-run the *live* answer path — the A/B used a frozen fixture, so it proves extraction, NOT the
+   end-to-end pipeline.
+3. Open: tool-calling ACCURACY (BFCL 66.03) is still unmeasured; running Bonsai alongside the
+   Crucible server is unproven (6% system memory free during generation).
+
+**Build preserved at `.crucible/prismml-bin/` (24MB, gitignored) — do NOT rebuild** (`/tmp`
+scratchpads get cleaned; the first build was lost that way). Start:
+`.crucible/prismml-bin/llama-server -m .crucible/models/Bonsai-27B-Q1_0.gguf --jinja -ngl 99 -c 4096 --port 8080`
+
+**Gotchas that each faked a result this session** (all fixed in the harness): Bonsai is a REASONING
+model (`content` empty until thinking completes → text is in `reasoning_content`); undici's 300s
+`headersTimeout` kills non-streaming calls >5min; and the verdict metric must be scored on CODE
+only (prose said `z.ipv4()` while the code said `z.string().ipv4()` — which, verified, genuinely
+works in zod 4.4.3).
+
+---
+
 ## ⏸ PAUSED 2026-07-16 (cont.87 end) — DIRECTION CHANGE: Apple FM → Bonsai 27B
 
 **User paused the Apple FM path** — more debugging overhead than value. Next engine: **Bonsai 27B**
