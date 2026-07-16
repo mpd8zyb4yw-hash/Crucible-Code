@@ -1,0 +1,1 @@
+{"object":"chat.completion","model":"apple-fm","choices":[{"message":{"content":"BANANA","role":"assistant"},"finish_reason":"stop","index":0}],"usage":{"output_tokens_est":1,"latency_ms":2536},"id":"fm-1215AA1B-E8BF-4F64-9F8B-F12327FAE3F4"}

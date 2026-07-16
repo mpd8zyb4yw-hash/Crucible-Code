@@ -1,0 +1,442 @@
+```typescript
+import { EventEmitter } from 'events';
+
+class SlidingWindowRateLimiter extends EventEmitter {
+  private window: number;
+  private currentWindow: number;
+  private maxRequests: number;
+  private requestCount: number;
+  private keys: Set<string>;
+
+  constructor(maxRequests: number, window: number) {
+    this.maxRequests = maxRequests;
+    this.window = window;
+    this.currentWindow = 0;
+    this.requestCount = 0;
+    this.keys = new Set();
+  }
+
+  tryAcquire(key: string): boolean {
+    if (this.keys.has(key)) {
+      this.currentWindow += 1;
+      if (this.currentWindow > this.window) {
+        this.currentWindow = 0;
+        this.requestCount++;
+      }
+      return false;
+    } else {
+      this.keys.add(key);
+      this.currentWindow = 0;
+      this.requestCount++;
+      return true;
+    }
+  }
+
+  addKey(key: string): void {
+    this.keys.add(key);
+  }
+
+  removeKey(key: string): void {
+    this.keys.delete(key);
+  }
+
+  getCurrentWindow(): number {
+    return this.currentWindow;
+  }
+
+  getRequestCount(): number {
+    return this.requestCount;
+  }
+
+  getKeys(): Set<string> {
+    return this.keys;
+  }
+}
+
+// Test cases
+const limiter = new SlidingWindowRateLimiter(maxRequests: 3, window: 1000);
+
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // false
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // false
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // false
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // false
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // false
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // false
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // false
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // false
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // false
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // false
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // false
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // false
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // false
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // false
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // false
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAc```typescript
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // false
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // false
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // false
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // false
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // false
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // false
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // false
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // false
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // false
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // false
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // false
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // false
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // false
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // false
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // false
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAcquire('key16')); // false
+console.log(limiter.tryAcquire('key17')); // true
+console.log(limiter.tryAcquire('key17')); // true
+console.log(limiter.tryAcquire('key17')); // true
+console.log(limiter.tryAcquire('key17')); // false
+console.log(limiter.tryAcquire('key18')); // true
+console.log(limiter.tryAcquire('key18')); // true
+console.log(limiter.tryAcquire('key18')); // true
+console.log(limiter.tryAcquire('key18')); // false
+console.log(limiter.tryAcquire('key19')); // true
+console.log(limiter.tryAcquire('key19')); // true
+console.log(limiter.tryAcquire('key19')); // true
+console.log(limiter.tryAcquire('key19')); // false
+console.log(limiter.tryAcquire('key20')); // true
+console.log(limiter.tryAcquire('key20')); // true
+console.log(limiter.tryAcquire('key20')); // true
+console.log(limiter.tryAcquire('key20')); // false
+console.log(limiter.tryAcquire('key21')); // true
+console.log(limiter.tryAcquire('key21')); // true
+console.log(limiter.tryAc```typescript
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // false
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // false
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // false
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // false
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // false
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // false
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // false
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // false
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // false
+console.log(limiter.tryAcquire('key1```typescript
+import { EventEmitter } from 'events';
+
+class SlidingWindowRateLimiter extends EventEmitter {
+  private window: number;
+  private currentWindow: number;
+  private maxRequests: number;
+  private requestCount: number;
+  private keys: Set<string>;
+
+  constructor(maxRequests: number, window: number) {
+    this.maxRequests = maxRequests;
+    this.window = window;
+    this.currentWindow = 0;
+    this.requestCount = 0;
+    this.keys = new Set();
+  }
+
+  tryAcquire(key: string): boolean {
+    if (this.keys.has(key)) {
+      this.currentWindow += 1;
+      if (this.currentWindow > this.window) {
+        this.currentWindow = 0;
+        this.requestCount++;
+      }
+      return false;
+    } else {
+      this.keys.add(key);
+      this.currentWindow = 0;
+      this.requestCount++;
+      return true;
+    }
+  }
+
+  addKey(key: string): void {
+    this.keys.add(key);
+  }
+
+  removeKey(key: string): void {
+    this.keys.delete(key);
+  }
+
+  getCurrentWindow(): number {
+    return this.currentWindow;
+  }
+
+  getRequestCount(): number {
+    return this.requestCount;
+  }
+
+  getKeys(): Set<string> {
+    return this.keys;
+  }
+}
+
+// Test cases
+const limiter = new SlidingWindowRateLimiter(maxRequests: 3, window: 1000);
+
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // false
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // false
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // false
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // false
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // false
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // false
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // false
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // false
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // false
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // false
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // false
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // false
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // false
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // false
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // false
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAc```typescript
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // true
+console.log(limiter.tryAcquire('key1')); // false
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // true
+console.log(limiter.tryAcquire('key2')); // false
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // true
+console.log(limiter.tryAcquire('key3')); // false
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // true
+console.log(limiter.tryAcquire('key4')); // false
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // true
+console.log(limiter.tryAcquire('key5')); // false
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // true
+console.log(limiter.tryAcquire('key6')); // false
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // true
+console.log(limiter.tryAcquire('key7')); // false
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // true
+console.log(limiter.tryAcquire('key8')); // false
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // true
+console.log(limiter.tryAcquire('key9')); // false
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // true
+console.log(limiter.tryAcquire('key10')); // false
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // true
+console.log(limiter.tryAcquire('key11')); // false
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // true
+console.log(limiter.tryAcquire('key12')); // false
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // true
+console.log(limiter.tryAcquire('key13')); // false
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // true
+console.log(limiter.tryAcquire('key14')); // false
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // true
+console.log(limiter.tryAcquire('key15')); // false
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAcquire('key16')); // true
+console.log(limiter.tryAcquire('key16')); // false
+console.log(limiter.tryAcquire('key17')); // true
+console.log(limiter.tryAcquire('key17')); // true
+console.log(limiter.tryAcquire('key17')); // true
+console.log(limiter.tryAcquire('key17')); // false
+console.log(limiter.tryAcquire('key18')); // true
+console.log(limiter.tryAcquire('key18')); // true
+console.log(limiter.tryAcquire('key18')); // true
+console.log(limiter.tryAcquire('key18')); // false
+console.log(limiter.tryAcquire('key19')); // true
+console.log(limiter.tryAcquire('key19')); // true
+console.log(limiter.tryAcquire('key19')); // true
+console.log(limiter.tryAcquire('key19')); // false
+console.log(limiter.tryAcquire('key20')); // true
+console.log(limiter.tryAcquire('key20')); // true
+console.log(limiter.tryAcquire('key20')); // true
+console.log(limiter.tryAcquire('key20')); // false
+console.log(limiter.tryAcquire('key21')); // true
+console.log(limiter.tryAcquire('key21')); // true
+console.log(limiter.tryAc

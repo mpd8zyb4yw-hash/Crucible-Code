@@ -26,3 +26,6 @@ Crucible UI redesign.zip
 Crucible UI redesign/
 Crucible UI v3.zip
 .bench-history.jsonl
+
+# Audit session artifacts — traces contain a minted session token in fire.sh usage
+audit-traces/.token

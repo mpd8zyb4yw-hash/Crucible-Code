@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Markdown Notes</title>
+<style>
+  :root { color-scheme: light dark; --bg:#101016; --fg:#e4e4ee; --mut:#9aa; --line:rgba(255,255,255,.10); --accent:#6ea8fe; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; line-height:1.5; }
+  #app { display:grid; grid-template-columns:260px 1fr; height:100vh; }
+  aside { border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  .side-head { padding:14px; border-bottom:1px solid var(--line); display:flex; gap:8px; }
+  .side-head button { flex:1; }
+  #list { list-style:none; margin:0; padding:0; overflow-y:auto; flex:1; }
+  #list li { padding:11px 14px; border-bottom:1px solid var(--line); cursor:pointer;
+    display:flex; align-items:center; gap:8px; }
+  #list li:hover { background:rgba(255,255,255,.05); }
+  #list li.active { background:rgba(110,168,254,.14); box-shadow:inset 2px 0 0 var(--accent); }
+  #list li .t { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #list li .del { opacity:0; border:0; background:none; color:var(--mut); cursor:pointer; font-size:15px; }
+  #list li:hover .del { opacity:1; }
+  main { display:grid; grid-template-rows:1fr 1fr; min-height:0; }
+  textarea { resize:none; border:0; border-bottom:1px solid var(--line); padding:16px;
+    background:transparent; color:inherit; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:13.5px; outline:none; }
+  .preview { padding:16px; overflow-y:auto; }
+  .preview h1 { font-size:22px; margin:.4em 0; }
+  .preview h2 { font-size:18px; margin:.4em 0; }
+  .preview h3 { font-size:15px; margin:.4em 0; }
+  .preview code { background:rgba(255,255,255,.09); padding:1px 5px; border-radius:4px;
+    font-family:ui-monospace,Menlo,monospace; font-size:.9em; }
+  .preview pre { background:rgba(255,255,255,.06); padding:12px; border-radius:8px; overflow-x:auto; }
+  .preview pre code { background:none; padding:0; }
+  .preview a { color:var(--accent); }
+  .preview blockquote { border-left:3px solid var(--line); margin:.5em 0; padding-left:12px; color:var(--mut); }
+  .empty { color:var(--mut); display:grid; place-items:center; height:100%; }
+  button { font:inherit; padding:7px 12px; border-radius:8px; cursor:pointer;
+    border:1px solid var(--line); background:rgba(255,255,255,.08); color:inherit; }
+  button:hover { background:rgba(255,255,255,.14); }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside>
+    <div class="side-head"><button id="new">+ New note</button></div>
+    <ul id="list"></ul>
+  </aside>
+  <main id="main"></main>
+</div>
+<script>
+'use strict';
+
+// ── state ────────────────────────────────────────────────────────────────────
+var KEY = 'md-notes-v1';
+var notes = load();
+var activeId = notes.length ? notes[0].id : null;
+
+function load() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(KEY));
+    return Array.isArray(raw) ? raw : [];
+  } catch (e) { return []; }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(notes)); } catch (e) {}
+}
+function titleOf(n) {
+  var first = (n.text || '').split('\n').find(function (l) { return l.trim(); }) || '';
+  return first.replace(/^#+\s*/, '').trim() || 'Untitled';
+}
+
+// ── markdown → html (small, escaped-first, no dependencies) ──────────────────
+function esc(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function inline(s) {
+  return s
+    .replace(/`([^`]+)`/g, function (_, c) { return '<code>' + c + '</code>'; })
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" rel="noopener noreferrer">$1</a>');
+}
+function mdToHtml(src) {
+  // Split the RAW source into lines and escape each line as it is consumed. Escaping the
+  // whole document up front turns '>' into '&gt;', which silently kills blockquote
+  // detection — found by rendering the page and reading it, not by the code looking right.
+  var lines = (src || '').split('\n');
+  var out = [], i = 0;
+  while (i < lines.length) {
+    var line = esc(lines[i]);
+    var fence = line.match(/^```(\w*)/);
+    if (fence) {                                   // fenced code block
+      var body = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) { body.push(esc(lines[i])); i++; }
+      i++;
+      out.push('<pre><code>' + body.join('\n') + '</code></pre>');
+      continue;
+    }
+    var h = line.match(/^(#{1,3})\s+(.*)$/);
+    if (h) { var lv = h[1].length; out.push('<h' + lv + '>' + inline(h[2]) + '</h' + lv + '>'); i++; continue; }
+    if (/^>\s?/.test(lines[i])) {
+      var q = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { q.push(inline(esc(lines[i]).replace(/^&gt;\s?/, ''))); i++; }
+      out.push('<blockquote>' + q.join('<br>') + '</blockquote>');
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(lines[i])) {
+      var items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        items.push('<li>' + inline(esc(lines[i]).replace(/^\s*[-*]\s+/, '')) + '</li>'); i++;
+      }
+      out.push('<ul style="list-style:disc;padding-left:22px">' + items.join('') + '</ul>');
+      continue;
+    }
+    if (!lines[i].trim()) { i++; continue; }
+    var para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|>|\s*[-*]\s|```)/.test(lines[i])) {
+      para.push(inline(esc(lines[i]))); i++;
+    }
+    out.push('<p>' + para.join('<br>') + '</p>');
+  }
+  return out.join('\n');
+}
+
+// ── render ───────────────────────────────────────────────────────────────────
+var listEl = document.getElementById('list');
+var mainEl = document.getElementById('main');
+
+function renderList() {
+  listEl.innerHTML = '';
+  notes.forEach(function (n) {
+    var li = document.createElement('li');
+    if (n.id === activeId) li.className = 'active';
+    var t = document.createElement('span');
+    t.className = 't';
+    t.textContent = titleOf(n);
+    li.appendChild(t);
+    var del = document.createElement('button');
+    del.className = 'del';
+    del.textContent = '×';
+    del.title = 'Delete note';
+    del.addEventListener('click', function (e) {
+      e.stopPropagation();
+      notes = notes.filter(function (x) { return x.id !== n.id; });
+      if (activeId === n.id) activeId = notes.length ? notes[0].id : null;
+      save(); render();
+    });
+    li.appendChild(del);
+    li.addEventListener('click', function () { activeId = n.id; render(); });
+    listEl.appendChild(li);
+  });
+}
+
+function renderMain() {
+  mainEl.innerHTML = '';
+  var note = notes.find(function (n) { return n.id === activeId; });
+  if (!note) {
+    var e = document.createElement('div');
+    e.className = 'empty';
+    e.textContent = 'No note selected — press “+ New note”.';
+    mainEl.appendChild(e);
+    return;
+  }
+  var ta = document.createElement('textarea');
+  ta.value = note.text;
+  ta.placeholder = '# Write markdown here…';
+  ta.addEventListener('input', function () {
+    note.text = ta.value;
+    save();
+    prev.innerHTML = mdToHtml(note.text);
+    renderList();                     // title tracks the first line
+    ta.focus();
+  });
+  var prev = document.createElement('div');
+  prev.className = 'preview';
+  prev.innerHTML = mdToHtml(note.text);
+  mainEl.appendChild(ta);
+  mainEl.appendChild(prev);
+}
+
+function render() { renderList(); renderMain(); }
+
+document.getElementById('new').addEventListener('click', function () {
+  var n = { id: String(Date.now()) + Math.random().toString(16).slice(2), text: '# New note\n\n' };
+  notes.unshift(n);
+  activeId = n.id;
+  save(); render();
+  var ta = mainEl.querySelector('textarea');
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+});
+
+if (!notes.length) {
+  notes.push({ id: 'welcome', text: '# Welcome\n\nA **markdown** note-taking app.\n\n- Click `+ New note` to add one\n- Edit on the left, preview below\n- Notes persist in `localStorage`\n\n> Try editing this text.\n\n```js\nconsole.log("fenced code works");\n```' });
+  activeId = 'welcome';
+  save();
+}
+render();
+</script>
+</body>
+</html>
