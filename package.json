@@ -52,6 +52,7 @@
     "memory:bench": "tsx src/CrucibleEngine/answer/__memory_bench.ts",
     "longout:bench": "tsx src/CrucibleEngine/answer/__longoutput_bench.ts",
     "html:bench": "tsx src/CrucibleEngine/agent/__html_invariant_bench.ts",
+    "html:app:bench": "tsx src/CrucibleEngine/agent/__html_app_bench.ts",
     "vgr:iterate": "tsx src/CrucibleEngine/reasoning/__iterate_bench.ts",
     "vgr:coderesearch": "tsx src/CrucibleEngine/reasoning/__code_research_bench.ts",
     "retrieval:bench": "tsx src/CrucibleEngine/retrieval/__retrieval_bench.ts",

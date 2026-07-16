@@ -44,7 +44,8 @@ import { runResearchDag } from '../research/researchDag'
 import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
 import { matchMeta } from '../answer/conversational'
 import { answerWithWebGrounding } from '../answer/groundedAnswer'
-import { runtimeVerifyHtml } from './htmlRuntimeVerify'
+import { runtimeVerifyHtml, runtimeVerifyApp } from './htmlRuntimeVerify'
+import { classifyHtmlGoal, type HtmlGoalKind } from './htmlGoalKind'
 // (MiniCPM/GGUF proposer removed from the game hot path — see solveHtmlWrite; h2h cont.70.)
 
 // ── UNIVERSAL synthesis grounding (cont.71) ───────────────────────────────────
@@ -441,12 +442,14 @@ function extractHtmlDoc(raw: string): string {
 
 /** Returns null if the document passes, else a human-readable rejection reason.
  *  The inline-script vm.Script compile is the run-to-verify gate that keeps
- *  syntactically broken code from shipping as "done". */
-function validateHtmlGame(html: string): string | null {
+ *  syntactically broken code from shipping as "done".
+ *  Every check here is kind-agnostic EXCEPT the interactivity one — an app has no canvas, so
+ *  requiring one is the static half of the same false-reject the app runtime gate exists to fix. */
+function validateHtmlDoc(html: string, kind: HtmlGoalKind = 'game'): string | null {
   if (!/<!doctype html|<html[\s>]/i.test(html)) return 'output is not a complete HTML document'
   if (!/<\/html>/i.test(html)) return 'HTML document is truncated (missing </html>)'
   if (!/<script[\s>]/i.test(html)) return 'no inline <script> found'
-  if (!/<canvas[\s>]/i.test(html) && !/addEventListener/i.test(html)) return 'no canvas element or event handling — not interactive'
+  if (kind === 'game' && !/<canvas[\s>]/i.test(html) && !/addEventListener/i.test(html)) return 'no canvas element or event handling — not interactive'
   if (/\b(?:src|href)=["']https?:/i.test(html)) return 'references external network resources — must be fully self-contained'
   for (const m of html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)) {
     try { new vm.Script(m[1]) } catch (e: any) {
@@ -592,6 +595,127 @@ Copy that LOOP SHAPE exactly (reschedule every frame, clear then draw, state adv
 time) but implement the requested game's OWN mechanics — the example is a different game, so
 do not reuse its controls. Keep it simple and correct: a smaller game that runs beats an
 ambitious one that freezes or throws.`
+
+// ── Non-game interactive HTML ("app" kind) ───────────────────────────────────
+// Same architecture as the game path and for the same measured reason: Crucible owns the HTML
+// shell, the FM writes ONLY JS. Asking the on-device FM for a whole document fails on truncation
+// (missing </html>) regardless of what the document contains. The app shell differs from the game
+// shell in exactly the ways the KIND differs: a plain #app mount instead of a canvas, no HUD, and
+// no touch D-pad (there are no arrow keys to fake).
+export function buildAppShell(js: string, title: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${title}</title>
+<style>
+  :root { color-scheme: light dark; }
+  html, body { margin: 0; min-height: 100%; background: #101016; color: #e4e4ee;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.5; }
+  #app { max-width: 640px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 22px; letter-spacing: -0.01em; margin: 0 0 20px; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.08); color: inherit; }
+  button:hover { background: rgba(255,255,255,0.14); }
+  input, select, textarea { font: inherit; padding: 8px 10px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.05); color: inherit; }
+  ul, ol { padding-left: 0; list-style: none; }
+  li { display: flex; align-items: center; gap: 10px; padding: 9px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.09); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+${js}
+</script>
+</body>
+</html>`
+}
+
+// Worked example for the app path. Deliberately NOT a todo list or a calculator — the two things
+// users actually ask for — so it reads as a PATTERN to copy rather than an answer to paste. It
+// exists to anchor the one shape the runtime gate enforces: state → render() → listeners attached
+// to freshly rendered nodes → every handler ends by calling render().
+const HTML_APP_EXAMPLE = `Worked example — a small "vote tally" app, showing the required render shape:
+
+let app = document.getElementById('app');
+let options = ['Cats', 'Dogs'];
+let votes = { Cats: 0, Dogs: 0 };     // every counter initialized to 0 BEFORE any arithmetic
+let entered = '';
+function render() {
+  app.innerHTML = '';                  // rebuild from state every time — never patch by hand
+  let h = document.createElement('h1'); h.textContent = 'Vote tally'; app.appendChild(h);
+  let ul = document.createElement('ul');
+  options.forEach(function (name) {
+    let li = document.createElement('li');
+    let label = document.createElement('span');
+    label.textContent = name + ' — ' + votes[name];
+    let b = document.createElement('button');
+    b.textContent = 'Vote';
+    b.addEventListener('click', function () { votes[name] += 1; render(); });  // mutate, then RE-RENDER
+    li.appendChild(label); li.appendChild(b); ul.appendChild(li);
+  });
+  app.appendChild(ul);
+  let row = document.createElement('form');
+  let input = document.createElement('input');
+  input.placeholder = 'add an option';
+  input.value = entered;
+  input.addEventListener('input', function (e) { entered = e.target.value; });
+  let add = document.createElement('button');
+  add.type = 'submit'; add.textContent = 'Add';
+  row.addEventListener('submit', function (e) {
+    e.preventDefault();                // a form submit RELOADS the page unless you prevent it
+    let v = entered.trim(); if (!v) return;
+    if (!votes[v]) { options.push(v); votes[v] = 0; }
+    entered = ''; render();
+  });
+  row.appendChild(input); row.appendChild(add); app.appendChild(row);
+}
+render();                              // render once on load so the page is never blank`
+
+const HTML_APP_SYSTEM = `You write the JavaScript for a small self-contained web app that runs inside a prepared HTML page.
+The page already provides:
+- <div id="app"> — build the ENTIRE user interface inside this element from JavaScript
+- sensible base styling for headings, buttons, inputs and lists — do not write CSS
+
+THE RENDER SHAPE — get this exactly right, it is the most common failure:
+- Keep the app's data in top-level state variables. Define ONE render() function that rebuilds the
+  UI inside #app from that state, and call render() once at the end so the page is never blank.
+- render() must build the ENTIRE interface — the input fields, the buttons AND the list/output.
+  Because render() starts by clearing its container, anything you create OUTSIDE render() is
+  DESTROYED the first time you re-render, and the app becomes unusable. Everything lives inside
+  render(). Never append controls to #app outside of it.
+- Attach every listener to the elements you just created inside render(). A listener attached to an
+  element that does not exist yet silently does nothing.
+- Commit changes on the BUTTON click or the form submit — never in an 'input' listener. An 'input'
+  listener fires on EVERY KEYSTROKE, so adding an item there turns typing "milk" into four separate
+  items ("m", "mi", "mil", "milk"). If you track the field's value as the user types, only ASSIGN
+  it to a state variable there; do the add/commit in the click or submit handler.
+- EVERY event handler must end by calling render(). Updating a state variable alone changes nothing
+  on screen — the page is verified by clicking your controls and checking that the page actually
+  changes, and a button that does not change anything is an automatic failure.
+- For a <form>, always call e.preventDefault() in the submit handler — otherwise the page reloads
+  and the app resets.
+
+CORRECTNESS:
+- Initialize every counter/total to 0 BEFORE any arithmetic. Convert text input with Number(...)
+  and ignore empty or invalid input. Never divide by zero. A value displayed as "NaN" or
+  "undefined" is an automatic failure.
+- Guard empty input: if the field is blank, return without changing state.
+
+OUTPUT & CONSTRAINTS:
+- Output ONLY JavaScript — no HTML, no markdown fences, no commentary.
+- Declare all state with let (never const). Plain ES6, no frameworks, no external resources,
+  no fetch, no network, no localStorage.
+
+${HTML_APP_EXAMPLE}
+
+Copy that RENDER SHAPE exactly (state → render() rebuilds #app → handlers mutate then re-render)
+but implement the requested app's OWN features — the example is a different app, so do not reuse
+its data or controls. Keep it simple and correct: a smaller app that works beats an ambitious one
+that throws or does nothing when clicked.`
 
 // ── Verified game templates — ZERO model inference ("Crucible IS the model") ──
 // The on-device FM writes passable novel game logic but botches classics (snake with
@@ -878,11 +1002,18 @@ async function retrieveGameReference(goal: string): Promise<string | null> {
 }
 
 async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<string> {
+  // WHICH KIND of artifact is this? Before cont.79e every .html goal took the game path — canvas
+  // shell, game prompt, game gate — so a correct todo app was rejected with "no <canvas> element
+  // present at runtime" and that string was fed back as repair feedback for 6 attempts, pushing
+  // the model to bolt a canvas onto a todo list. Each kind now carries invariants true for it.
+  const kind = classifyHtmlGoal(state.goal)
+  debugBus.emit('agent', 'offline_html_kind', { path: targetPath, kind, goal: state.goal.slice(0, 80) }, { severity: 'info' })
+  if (kind === 'app') return solveAppHtmlWrite(targetPath, state)
   // Template hit → deterministic, verified game. Still runtime-gated below like FM output.
   const tpl = GAME_TEMPLATES.find(t => t.match.test(state.goal))
   if (tpl) {
     const html = buildGameShell(tpl.js, `${tpl.title} — Crucible`)
-    const problem = validateHtmlGame(html) ?? await runtimeVerifyHtml(html, state.goal)
+    const problem = validateHtmlDoc(html, 'game') ?? await runtimeVerifyHtml(html, state.goal)
     if (!problem) {
       debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt: 0, template: tpl.title, bytes: html.length }, { severity: 'info' })
       return html
@@ -935,7 +1066,7 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
     // ALIVE (self-animates or responds to input), and throws no errors. The static gate
     // alone shipped parse-clean games that were dead on frame 1.
     const problem = html
-      ? (validateHtmlGame(html) ?? await runtimeVerifyHtml(html, state.goal))
+      ? (validateHtmlDoc(html, 'game') ?? await runtimeVerifyHtml(html, state.goal))
       : 'empty completion'
     if (!problem) {
       debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt, model: proposer, bytes: html.length }, { severity: 'info' })
@@ -953,6 +1084,130 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   }
   throw new OfflineEscalateError(
     `FM could not produce a working game after ${MAX_ATTEMPTS} run-verified attempts`)
+}
+
+// ── Verified app templates — ZERO model inference (mirrors GAME_TEMPLATES) ──
+// A todo list is to apps what snake is to games: the single most common request, and one the
+// on-device FM measurably CANNOT get right — across 6 run-verified attempts it kept appending the
+// input outside render() (self-erasing UI) or never appending it at all (blank page), so the gate
+// correctly refused to ship and escalated (cont.79e). For the canonical asks, ship a deterministic,
+// gate-passing implementation: correct by construction, still runtime-verified below like FM output.
+// Each `js` mounts into <div id="app"> (buildAppShell) and obeys every app invariant: the WHOLE UI
+// is (re)built inside render(); commit happens on the button/submit, never per-keystroke.
+export const APP_TEMPLATES: Array<{ match: RegExp; title: string; js: string }> = [{
+  match: /\b(to-?do|task)\b.*\b(list|app|manager)\b|\b(to-?do|task)\s*(list|app)?\b/i,
+  title: 'Todo',
+  js: `let app = document.getElementById('app');
+let todos = [];   // { text, done }
+let draft = '';
+function render() {
+  app.innerHTML = '';
+  let h = document.createElement('h1'); h.textContent = 'Todo'; app.appendChild(h);
+  let form = document.createElement('form');
+  let input = document.createElement('input');
+  input.placeholder = 'Add a task'; input.value = draft;
+  input.addEventListener('input', function (e) { draft = e.target.value; });  // track only — no commit
+  let add = document.createElement('button'); add.type = 'submit'; add.textContent = 'Add';
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    let v = draft.trim(); if (!v) return;   // ignore empty
+    todos.push({ text: v, done: false });
+    draft = ''; render();
+  });
+  form.appendChild(input); form.appendChild(add); app.appendChild(form);
+  let ul = document.createElement('ul');
+  todos.forEach(function (t, i) {
+    let li = document.createElement('li');
+    let cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = t.done;
+    cb.addEventListener('change', function () { todos[i].done = cb.checked; render(); });
+    let span = document.createElement('span'); span.textContent = t.text;
+    if (t.done) span.style.textDecoration = 'line-through';
+    let del = document.createElement('button'); del.textContent = 'Delete';
+    del.addEventListener('click', function () { todos.splice(i, 1); render(); });
+    li.appendChild(cb); li.appendChild(span); li.appendChild(del); ul.appendChild(li);
+  });
+  app.appendChild(ul);
+  let count = document.createElement('p');
+  count.textContent = todos.filter(function (t) { return !t.done; }).length + ' remaining';
+  app.appendChild(count);
+}
+render();`,
+}, {
+  match: /\bcounter\b/i,
+  title: 'Counter',
+  js: `let app = document.getElementById('app');
+let count = 0;
+function render() {
+  app.innerHTML = '';
+  let h = document.createElement('h1'); h.textContent = 'Counter'; app.appendChild(h);
+  let out = document.createElement('p'); out.style.fontSize = '40px'; out.textContent = String(count);
+  app.appendChild(out);
+  [['−', -1], ['+', 1], ['Reset', null]].forEach(function (pair) {
+    let b = document.createElement('button'); b.textContent = pair[0];
+    b.addEventListener('click', function () { count = pair[1] === null ? 0 : count + pair[1]; render(); });
+    app.appendChild(b);
+  });
+}
+render();`,
+}]
+
+// Non-game interactive HTML. Same loop shape as the game path — propose JS → build a shell →
+// static gate → RUNTIME gate → feed the diagnostic back and repair the model's OWN code — with
+// the app kind's shell, prompt and invariants substituted. Deliberately NOT merged with the game
+// loop: the two share a skeleton but differ in every payload, and a single flag-threaded function
+// would make both harder to read than the duplicated 30 lines.
+async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promise<string> {
+  // Template hit → deterministic, correct-by-construction app. Still runtime-gated like FM output,
+  // so a template that ever regressed would be caught rather than trusted blindly.
+  const tpl = APP_TEMPLATES.find(t => t.match.test(state.goal))
+  if (tpl) {
+    const html = buildAppShell(tpl.js, `${tpl.title} — Crucible`)
+    const problem = validateHtmlDoc(html, 'app') ?? await runtimeVerifyApp(html, state.goal)
+    if (!problem) {
+      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt: 0, template: tpl.title, kind: 'app', bytes: html.length }, { severity: 'info' })
+      return html
+    }
+    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt: 0, kind: 'app', problem: `template ${tpl.title}: ${problem}` }, { severity: 'warn' })
+    // fall through to FM generation
+  }
+  const fmUp = await checkFmAvailable()
+  if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — html app write escalating')
+  const title = (state.goal.match(/\b(\w[\w\s-]{2,30}?)\s+(?:app|page|tool|tracker|dashboard)\b/i)?.[1] ?? 'Crucible').trim() + ' — Crucible'
+  const MAX_ATTEMPTS = 6
+  let prevJs = ''
+  let feedback = ''
+  const seenProblems: string[] = []
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const userMsg = `Build this app: ${state.goal}${feedback}\n\nOutput the JavaScript now.`
+    const raw = await fmComplete([
+      { role: 'system', content: HTML_APP_SYSTEM },
+      { role: 'user', content: userMsg },
+    ], { maxTokens: 4096 })
+    debugBus.emit('agent', 'offline_html_proposer', { path: targetPath, attempt, model: 'apple-fm', kind: 'app' }, { severity: 'info' })
+    const fence = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i)
+    // const→let only: the app path has no fire-control key bug to rewrite, and the rest of
+    // sanitizeGameJs is game-specific. Reassigning a const is the same crash here as there.
+    const js = (fence ? fence[1] : raw).trim().replace(/\bconst\b/g, 'let')
+    const html = js ? buildAppShell(js, title) : ''
+    const problem = html
+      ? (validateHtmlDoc(html, 'app') ?? await runtimeVerifyApp(html, state.goal))
+      : 'empty completion'
+    if (!problem) {
+      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt, model: 'apple-fm', kind: 'app', bytes: html.length }, { severity: 'info' })
+      return html
+    }
+    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, model: 'apple-fm', kind: 'app', problem }, { severity: 'info' })
+    prevJs = js
+    if (!seenProblems.includes(problem)) seenProblems.push(problem)
+    const priorFaults = seenProblems.length > 1
+      ? `\n\nEVERY fault below has already caused a rejection in this session — do NOT reintroduce any of them while fixing the current one:\n` +
+        seenProblems.map(p => `  • ${p}`).join('\n')
+      : ''
+    feedback = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}${priorFaults}\n\n` +
+      `Here is your previous code — FIX the specific problem above, keep what works, and output the FULL corrected JavaScript (nothing else):\n\n${prevJs.slice(0, 1800)}`
+  }
+  throw new OfflineEscalateError(
+    `FM could not produce a working app after ${MAX_ATTEMPTS} run-verified attempts`)
 }
 
 function extractSelfTestCmd(goal: string): string | null {

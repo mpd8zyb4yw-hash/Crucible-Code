@@ -19,6 +19,70 @@ const target = process.argv[process.argv.length - 1]
 const out = { errors: [], canvas: false, drawn: false, selfAnimated: false, inputCausedChange: false, texts: [], loadText: [], dir: null }
 const done = (code) => { try { process.stdout.write(JSON.stringify(out) + '\n') } catch {} app.exit(code) }
 
+// KIND — 'app' runs the DOM probe path instead of the canvas/keyboard game probes. The game path
+// below is left byte-identical when this is unset, so game results stay comparable across this
+// change (the same discipline the fault harness needed).
+const KIND = process.env.CRUCIBLE_HTML_KIND === 'app' ? 'app' : 'game'
+
+// Structural signature of the rendered DOM: length + a cheap rolling hash of body.innerHTML. The
+// app analogue of the canvas pixel signature — it answers "did anything actually change?" without
+// knowing what the app is supposed to do. Length alone is too weak (an edit can preserve it).
+const DOM_SIG = `(() => {
+  const b = document.body; if (!b) return null;
+  const s = b.innerHTML;
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return s.length + ':' + h;
+})()`
+
+// Count the interactive controls the document actually RENDERS (visible only — a hidden template
+// node isn't a control a user can reach). `fields` counts text-entry controls specifically: an app
+// that renders a text field and then ERASES it on first interaction has destroyed its own UI, and
+// that is invisible to a plain did-the-DOM-change check (the DOM changed — by deleting the form).
+const DOM_CONTROLS = `(() => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const all = [...document.querySelectorAll('button, input, select, textarea, [onclick], [role=button]')].filter(vis);
+  const fields = all.filter(el => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'textarea' || tag === 'select') return true;
+    if (tag !== 'input') return false;
+    const t = String(el.type || 'text').toLowerCase();
+    return t !== 'submit' && t !== 'button' && t !== 'reset' && t !== 'image' && t !== 'hidden';
+  });
+  return { controls: all.length, fields: fields.length };
+})()`
+
+// Drive the app the way a user would: fill every visible text field with a sentinel, THEN click the
+// primary control. Filling first is essential — the dominant real handler shape is guarded
+// (`if (!value) return`), so clicking an empty form is a no-op and would look like a dead button.
+// We use el.click() / synthetic input events rather than coordinate clicks: offscreen hit-testing by
+// pixel is unreliable, and .click() still runs the app's real listeners.
+const DOM_INTERACT = `(() => {
+  const out = { filled: 0, clicked: 0, control: null };
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  [...document.querySelectorAll('input, textarea')].filter(vis).forEach(el => {
+    const t = String(el.type || 'text').toLowerCase();
+    if (t === 'submit' || t === 'button' || t === 'file' || t === 'hidden' || t === 'image') return;
+    if (t === 'checkbox' || t === 'radio') el.checked = true;
+    else if (t === 'number' || t === 'range') el.value = '7';
+    else if (t === 'date') el.value = '2026-07-16';
+    else el.value = 'Crucible check';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    out.filled++;
+  });
+  const btns = [...document.querySelectorAll('button, input[type=submit], input[type=button], [onclick], [role=button]')].filter(vis);
+  if (btns.length) {
+    out.control = String(btns[0].textContent || btns[0].value || '').trim().slice(0, 40);
+    try { btns[0].click(); out.clicked++; } catch (e) { /* a throwing handler surfaces as a console error */ }
+  }
+  return out;
+})()`
+
+// Visible text a user would actually read — used for the NaN/undefined readout check. innerText
+// (not textContent) so hidden nodes don't produce phantom readouts.
+const DOM_TEXT = `(() => (document.body ? String(document.body.innerText || '').slice(0, 4000) : ''))()`
+
 // A cheap two-stride signature of the canvas — a single strided sum can coincidentally
 // match across frames; two independent strides make a false "unchanged" far less likely.
 const SIG = `(() => {
@@ -62,6 +126,27 @@ app.whenReady().then(async () => {
   try {
     await win.loadFile(path.resolve(target))
     await wait(650)
+
+    // ── APP path: DOM behavior, not canvas aliveness ─────────────────────────
+    // Returns before any game probe: an app has no canvas to sample and no arrow keys to press,
+    // and the game probes would report meaningless nulls for it.
+    if (KIND === 'app') {
+      const ex = (js, fb) => win.webContents.executeJavaScript(js, true).catch(() => fb)
+      const c0 = await ex(DOM_CONTROLS, null)
+      out.controls = c0 ? c0.controls : 0
+      out.fields = c0 ? c0.fields : 0
+      out.loadText = [await ex(DOM_TEXT, '')]
+      const before = await ex(DOM_SIG, null)
+      out.interact = await ex(DOM_INTERACT, null)
+      await wait(420)                       // let async handlers (render, fetch-free timers) settle
+      const after = await ex(DOM_SIG, null)
+      out.domChanged = (before !== null && after !== null) ? before !== after : null
+      const c1 = await ex(DOM_CONTROLS, null)
+      out.controlsAfter = c1 ? c1.controls : null
+      out.fieldsAfter = c1 ? c1.fields : null
+      out.texts = [await ex(DOM_TEXT, '')]
+      return done(0)
+    }
 
     out.drawnAtLoad = await win.webContents.executeJavaScript(
       `(() => { const s = ${SIG}; return !!s && s !== '0:0'; })()`, true

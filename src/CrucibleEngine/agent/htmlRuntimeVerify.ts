@@ -50,6 +50,19 @@ interface Probe {
   // window vs a firing window. A working trigger spawns projectiles → fireMax > ambientMax; a
   // dead trigger adds nothing → fireMax ≈ ambientMax. Null when not a shooter or unmeasurable.
   fire?: { ambientMax: number; fireMax: number } | null
+  // ── APP-kind probes (CRUCIBLE_HTML_KIND=app; undefined on the game path) ──
+  // Number of VISIBLE interactive controls rendered (button/input/select/textarea/[onclick]),
+  // and of text-ENTRY controls specifically, measured before and after the interaction.
+  controls?: number
+  fields?: number
+  controlsAfter?: number | null
+  fieldsAfter?: number | null
+  // Did the DOM structurally change after filling the fields and clicking the primary control?
+  // null when unmeasurable → check skipped (fail-open).
+  domChanged?: boolean | null
+  // What the probe actually did — which control it clicked, how many fields it filled. Reported
+  // in the rejection text so the repair feedback names the exact control that did nothing.
+  interact?: { filled: number; clicked: number; control: string | null } | null
 }
 
 // Injected into the VERIFY COPY only (never the shipped artifact): wraps keydown/keyup
@@ -163,32 +176,55 @@ function injectInstrumentation(html: string): string {
   return probes + html
 }
 
-export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string | null> {
+/** Load the document in the bundled Electron offscreen and return the raw probe.
+ *  `kind` selects the harness probe set; the game path is unchanged when kind === 'game'.
+ *  Throws on any infrastructure failure — callers fail OPEN on that. */
+async function runProbe(html: string, goal: string, kind: 'game' | 'app'): Promise<Probe> {
   const tmp = path.join(os.tmpdir(), `crucible-html-verify-${Date.now()}-${process.pid}.html`)
   try {
-    await writeFile(tmp, injectInstrumentation(html), 'utf8')
-    const probe = await new Promise<Probe>((resolve, reject) => {
-      execFile(electronBin(), [HARNESS, tmp], { timeout: 20000, env: { ...process.env, ELECTRON_ENABLE_LOGGING: '0', CRUCIBLE_GAME_GOAL: goal.slice(0, 300) } },
-        (err, stdout) => {
-          const line = String(stdout ?? '').split('\n').find(l => l.trim().startsWith('{'))
-          if (line) { try { return resolve(JSON.parse(line)) } catch { /* fall through */ } }
-          reject(err ?? new Error('no probe output from harness'))
-        })
+    // Instrumentation wraps canvas/key APIs — meaningful only to the game probes, so the app
+    // path ships the document unmodified (nothing injected that could perturb what we measure).
+    await writeFile(tmp, kind === 'game' ? injectInstrumentation(html) : html, 'utf8')
+    return await new Promise<Probe>((resolve, reject) => {
+      execFile(electronBin(), [HARNESS, tmp], {
+        timeout: 20000,
+        env: { ...process.env, ELECTRON_ENABLE_LOGGING: '0', CRUCIBLE_GAME_GOAL: goal.slice(0, 300), CRUCIBLE_HTML_KIND: kind },
+      }, (err, stdout) => {
+        const line = String(stdout ?? '').split('\n').find(l => l.trim().startsWith('{'))
+        if (line) { try { return resolve(JSON.parse(line)) } catch { /* fall through */ } }
+        reject(err ?? new Error('no probe output from harness'))
+      })
     })
-    if (probe.errors.length) {
-      const uniq = [...new Set(probe.errors)].slice(0, 3)
-      let hint = ''
-      // The dominant runtime-error class from the on-device FM is using the event
-      // parameter (`e`) outside its handler, or referencing an undeclared name. A raw
-      // "ReferenceError: e is not defined" doesn't tell a small model where to look —
-      // name the likely cause so the repair is targeted, not another blind regenerate.
-      if (uniq.some(m => /ReferenceError:\s*e\b|\be is not defined/.test(m))) {
-        hint = ' — you referenced the event variable `e` outside a keydown/keyup handler. `e` only exists INSIDE those handlers; in the loop/step/draw functions read your own state variables instead.'
-      } else if (uniq.some(m => /is not defined/.test(m))) {
-        hint = ' — you used a variable before declaring it. Declare EVERY variable with `let` at the top before the loop starts.'
-      }
-      return `runtime JavaScript errors when the page runs: ${uniq.join(' | ')}${hint}`
-    }
+  } finally {
+    unlink(tmp).catch(() => {})
+  }
+}
+
+/** Shared runtime-error check — identical for both kinds; a page that throws is broken either way. */
+function runtimeErrorProblem(probe: Probe): string | null {
+  if (!probe.errors.length) return null
+  const uniq = [...new Set(probe.errors)].slice(0, 3)
+  let hint = ''
+  if (uniq.some(m => /ReferenceError:\s*e\b|\be is not defined/.test(m))) {
+    hint = ' — you referenced the event variable `e` outside a keydown/keyup handler. `e` only exists INSIDE those handlers; in the loop/step/draw functions read your own state variables instead.'
+  } else if (uniq.some(m => /is not defined/.test(m))) {
+    hint = ' — you used a variable before declaring it. Declare EVERY variable with `let` at the top before the loop starts.'
+  }
+  return `runtime JavaScript errors when the page runs: ${uniq.join(' | ')}${hint}`
+}
+
+// A readout is broken when it literally shows NaN/undefined/Infinity — true of a game's score and
+// an app's total alike. `\b` around undefined avoids matching prose like "undefined behavior".
+const BAD_READOUT_RX = /\b(?:NaN|Infinity)\b|\bundefined\b/
+
+export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string | null> {
+  try {
+    const probe = await runProbe(html, goal, 'game')
+    // The dominant runtime-error class from the on-device FM is using the event parameter (`e`)
+    // outside its handler, or referencing an undeclared name — runtimeErrorProblem names the
+    // likely cause so the repair is targeted, not another blind regenerate.
+    const errProblem = runtimeErrorProblem(probe)
+    if (errProblem) return errProblem
     if (!probe.canvas) return 'no <canvas> element present at runtime'
     if (!probe.drawn) return 'the canvas is completely blank — nothing is ever drawn; make sure the game loop starts on load and requestAnimationFrame re-schedules itself every frame'
     if (probe.drawnAtLoad === false) return 'the canvas stays blank until the first keypress — the game must draw its initial frame immediately on load'
@@ -214,7 +250,7 @@ export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string
     // knowing the game's rules: what it prints must be well-formed. Only enforced when the
     // probe actually collected drawn text (older harness → texts undefined → skip, fail-open).
     if (probe.texts && probe.texts.length) {
-      const bad = probe.texts.find(t => /\b(?:NaN|Infinity)\b/.test(t) || /\bundefined\b/.test(t))
+      const bad = probe.texts.find(t => BAD_READOUT_RX.test(t))
       if (bad) {
         return `the on-screen score/status reads "${bad.trim().slice(0, 60)}" — a counter or score became NaN/undefined/Infinity while the game ran. ` +
           'Initialize every score/counter to 0 (e.g. `let score = 0`) BEFORE the game loop starts, never do arithmetic with a variable you have not assigned, and guard any division so you never divide by zero.'
@@ -268,7 +304,88 @@ export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string
       error: String(e?.message ?? e).slice(0, 120),
     }, { severity: 'warn' })
     return null
-  } finally {
-    unlink(tmp).catch(() => {})
+  }
+}
+
+// ── Non-game interactive HTML ────────────────────────────────────────────────
+// The app analogue of runtimeVerifyHtml. A todo list, calculator or dashboard has no canvas, no
+// game loop and no arrow keys, so every game invariant above is either meaningless or actively
+// WRONG for it (the game gate rejects a correct todo app with "no <canvas> element present").
+//
+// What IS universally true of a generated app, without knowing its rules:
+//   1. It must not throw at runtime.                       (same as a game)
+//   2. Its readout must be well-formed — never "Total: NaN". (same as a game)
+//   3. IF it renders interactive controls, they must DO something: filling the fields and clicking
+//      the primary control must change the DOM.
+//
+// (3) is the behavioral core, and it is deliberately conditioned on controls EXISTING rather than
+// required outright. "You built a button, so it must work" is true of every app; "an .html file
+// must be interactive" is NOT (a landing page is legitimately static), and enforcing the latter
+// would re-create in miniature the exact false-reject this module was written to kill. Every check
+// is skipped when its probe field is absent (older harness → fail-open), same as the game path.
+export async function runtimeVerifyApp(html: string, goal = ''): Promise<string | null> {
+  try {
+    const probe = await runProbe(html, goal, 'app')
+    const errProblem = runtimeErrorProblem(probe)
+    if (errProblem) return errProblem
+
+    // Readout sanity — a calculator that shows "Total: NaN" runs and responds, so nothing else
+    // here catches it. Same invariant as the game score, different surface (rendered body text).
+    if (probe.texts && probe.texts.length) {
+      const bad = probe.texts.find(t => BAD_READOUT_RX.test(t))
+      if (bad) {
+        const snippet = (bad.match(/[^\n]*\b(?:NaN|Infinity|undefined)\b[^\n]*/) ?? [bad])[0]
+        return `the page displays "${snippet.trim().slice(0, 60)}" — a value became NaN/undefined/Infinity while the app ran. ` +
+          'Initialize every counter/total to 0 before use, never do arithmetic on a variable you have not assigned, ' +
+          'parse text input with Number(...) and guard against empty/invalid input, and never divide by zero.'
+      }
+    }
+
+    // Blank-render invariant — the app analogue of the game's blank-canvas check, and the third
+    // distinct bug the first live runs produced (cont.79e): the FM created its input and button but
+    // never appended them to the page, so index.html rendered an empty <body> with zero controls.
+    // Every check below is conditioned on controls existing, so a blank page passed them all
+    // vacuously. A page that shows NOTHING — no text a user can read and no control they can touch —
+    // is never a correct app. This does NOT hit a legitimate static page: that has real content
+    // (headings, copy), so its loadText is non-empty. Guarded on loadText being measured.
+    if (probe.loadText && probe.loadText.length) {
+      const visibleText = probe.loadText.join(' ').replace(/\s+/g, ' ').trim()
+      if (visibleText.length < 2 && (probe.controls ?? 0) === 0) {
+        return 'the page renders nothing — its <body> is empty at load: no text to read and no button or input to interact with. ' +
+          'Make sure you actually attach what you build to the page: every element you create must be added to the document ' +
+          '(append it to #app or to something already inside #app), and render() must run on load. A control you create but never ' +
+          'append to the DOM does not exist for the user.'
+      }
+    }
+    // Self-erasing-UI invariant. Found by READING what a passing live run actually produced
+    // (cont.79e): the FM built a todo app whose render() does `app.innerHTML = ''` and re-appends
+    // only the list — the input and Add button were appended OUTSIDE render(), so the first
+    // interaction deleted them. It throws nothing and the DOM certainly "changed", so the
+    // dead-control check below passes it; the app is nonetheless unusable after one click.
+    // "If you rendered a way to type, it must still be there after I use it" is true of every app
+    // that has one. Guarded on fieldsAfter being measured (older harness → undefined → skip).
+    if (probe.fields && probe.fields > 0 && probe.fieldsAfter === 0) {
+      return 'the app erases its own interface: it rendered a text field, but after one interaction the field is gone — the app cannot be used a second time. ' +
+        'This happens when render() clears its container (app.innerHTML = \'\') but only re-creates PART of the UI. ' +
+        'Build the ENTIRE interface inside render() — the input, the buttons AND the list — so that everything is re-created every time you re-render.'
+    }
+    // Dead-control invariant — the dominant broken-app shape from a small model: the UI renders
+    // perfectly, but the button is wired to the wrong id, the listener is registered before the
+    // element exists, or the handler updates state without re-rendering. Nothing is thrown, so
+    // the page looks finished and is completely unusable.
+    if (probe.controls && probe.controls > 0 && probe.domChanged === false) {
+      const ctl = probe.interact?.control
+      const which = ctl ? `the "${ctl}" control` : 'the primary control'
+      return `the app does not respond: after filling in every field and clicking ${which}, the page did not change at all. ` +
+        'The controls render but nothing is wired to them. Make sure you (a) attach the listener AFTER the element exists ' +
+        '(the script runs at the end of the body, or inside DOMContentLoaded), (b) look the element up by the id it actually has, ' +
+        'and (c) RE-RENDER the view at the end of the handler — updating a state variable alone changes nothing on screen.'
+    }
+    return null
+  } catch (e: any) {
+    debugBus.emit('agent', 'html_runtime_verify_unavailable', {
+      error: String(e?.message ?? e).slice(0, 120), kind: 'app',
+    }, { severity: 'warn' })
+    return null
   }
 }

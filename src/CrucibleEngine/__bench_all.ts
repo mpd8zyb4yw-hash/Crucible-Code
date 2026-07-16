@@ -64,6 +64,9 @@ const SUITES = [
   // is missing this fails loudly, which is the honest outcome — a behavioral gate that silently
   // does not run is worse than one that tells you it cannot.
   'html:bench',
+  // Non-game interactive HTML (cont.79e): the classifier half is pure; the runtime half drives the
+  // same real Electron gate as html:bench and skips green if Electron is absent.
+  'html:app:bench',
 ]
 // DELIBERATELY NOT REGISTERED (each for a stated reason — do not "fix" without reading):
 //   fault:live, smoke*, synth:fm-bench, research:bench, convo:coherence — drive the real
