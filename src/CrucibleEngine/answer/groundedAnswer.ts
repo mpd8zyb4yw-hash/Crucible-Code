@@ -79,17 +79,30 @@ const REPAIR_ATTEMPTS = Number(process.env.CRUCIBLE_FAITH_ATTEMPTS ?? 3)
  */
 const REPAIR_BUDGET_MS = Number(process.env.CRUCIBLE_FAITH_BUDGET_MS ?? 60_000)
 /**
- * Per-call ceiling for the SECOND repair proposer (MiniCPM5-1B). MiniCPM is materially slower than
- * the FM here (cont.79c benched it ~14× slower as a code proposer, which is why it is out of every
- * other hot path), and its first call additionally pays GGUF model-load — nothing warms it at boot.
+ * Per-call ceiling for the SECOND repair proposer (MiniCPM5-1B). >0 seats it; 0 disables it and
+ * restores the single-FM search.
  *
- * That cost is bounded, not ignored: this caps one call, the caller further clamps it to the repair
- * budget actually remaining, and a MiniCPM call that times out returns '' → a null proposal, which
- * `search()` treats as a transient infra failure that charges NO budget and rotates the slot back
- * to the FM. So the worst case for the second proposer is "wasted wall-clock, same answer", never a
- * lost attempt. Set to 0 to disable the second proposer and restore the single-FM search.
+ * DEFAULT 0 — MEASURED, cont.86. The second proposer is the doctrinally-right answer to the cont.84/85
+ * ceiling (one model re-sampled K times re-samples ONE distribution), and the rotation mechanism below
+ * is live, benched and safe. But MiniCPM specifically does not deliver it, measured on the real captured
+ * draft+evidence pair:
+ *
+ *   FM only     certified 4/4, avg 11.9s
+ *   FM+MiniCPM  certified 4/4, avg 29.7s  — MiniCPM earned 0, abstaining on EVERY call
+ *
+ * Across 5 calls (both the prose-shaped repair hint AND a code-shaped positive prompt built to this
+ * harness's own documented convention) MiniCPM narrated instead of emitting code — 5/5 abstain — and
+ * mangled `z.ipv4()` into `zipv4()`: the same cont.82 "won't copy the identifier out of clean evidence"
+ * failure as the FM, so it is not an INDEPENDENT failure mode, which is the entire premise of seating it.
+ * Enabling it therefore buys +18s per repair for zero measured recovery. That is a latency regression
+ * dressed as doctrine, so it ships OFF until a second engine that actually emits code is seated (the
+ * GGUF pool's code-tuned models are the obvious candidate — see localModelCatalog).
+ *
+ * Set CRUCIBLE_FAITH_ALT_MS=25000 to re-enable. When on, the cost is bounded: this caps one call, the
+ * caller clamps it to the repair budget remaining, and a timeout returns '' → a null proposal, which
+ * search() treats as transient infra failure — charging NO budget and rotating the slot back to the FM.
  */
-const MINICPM_REPAIR_MS = Number(process.env.CRUCIBLE_FAITH_ALT_MS ?? 25_000)
+const MINICPM_REPAIR_MS = Number(process.env.CRUCIBLE_FAITH_ALT_MS ?? 0)
 
 interface Evidence {
   block: string
