@@ -104,6 +104,38 @@
   silently scoring them **0/0**; parser now reads both. `fault:live` stays out deliberately (real
   FM, 300s, ±4pt noise — a tracked metric, not a gate).
 - **bench:all 695/695 → 727/727 across 27 suites**; keepk:bench 7→15.
+- **Then audited the WHOLE registry (29a972b): 5 more deterministic suites were gating nothing** —
+  `vgr:iterate` 12, `conversational:bench` 108, `ambiguity:bench` 14, `debate:bench` 34,
+  `html:bench` 5. conversational:bench alone covers the greeting-recycling / build-negotiation
+  regressions from cont.65b-66h — the bugs most likely to silently return. **bench:all → 900/900
+  across 32 suites** (+205 checks that previously could not fail CI). The 9 still excluded each
+  have a documented in-file reason; read it before "fixing" them.
+
+**cont.79d (2026-07-16, this session — e5fdafb) — "keep going" is REAL (found by testing my own copy):**
+
+- The draft from cont.79c told the user *"tell me to keep going and I'll iterate on the failing
+  case."* **The server could not keep that promise** — three independent blockers, all needed:
+  1. `repairSeed` only reads the named target file or code pasted in the CURRENT message. A draft
+     is deliberately neither (never written) → lost at end of turn.
+  2. "keep going" has no edit verb and no file path → `isCodeImplementationTask`/`isCodeEditTask`
+     both false → **the VGR block was skipped entirely**, and the follow-up the draft INVITES fell
+     to the tool-less quorum pipeline, which answered *"I'm sorry, but I can't continue."*
+     (live-reproduced before the fix).
+  3. A bare "keep going" carries no spec/cases → even reaching VGR would abstain instantly. **The
+     GOAL must travel with the draft.**
+- Fix: `lastVgrDraft` stashes `{code, goal}` per user+project (single-use, 30-min TTL, bounded 200,
+  oldest-eviction); the VGR gate re-opens for a continuation phrase **only while an un-consumed
+  draft exists**; on resume `solveCodingRequest` re-runs the ORIGINAL goal with the draft as
+  `buggyCode`, and `detectTargetPath` reads the goal (the path lives there, not in "keep going").
+- **This closes the loop cont.78 was building toward:** the near-miss becomes the next turn's
+  failing-case evidence — the exact mechanism that lifted recovery. Only ever a SEED: every
+  candidate is still executed, so a stale draft can waste evidence, never certify a wrong answer.
+- **LIVE-VERIFIED end-to-end:** turn 1 → draft 3/4, NO file; turn 2 `"keep going"` → resumes from
+  the 61-char draft → **CERTIFIED 4/4** → writes `src/double.ts`. Turn 2 previously refused.
+- **Probe caveat for future sessions:** a lone odd case (`double(4) should return 9`) is NOT
+  contradictory — special-casing satisfies it (`x === 4 ? 9 : x * 2`). That is what makes it a good
+  near-miss fixture, and why a file appearing after a resume is a CERTIFIED write, not a
+  best-effort leak. Verify the no-write invariant on turn 1, where nothing can have certified.
 
 **Next priorities (in order):**
 2. ~~Re-baseline `fault:live`~~ **DONE (cont.79b)** — the premise was wrong (accounting is inert)
