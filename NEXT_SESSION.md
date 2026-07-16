@@ -17,7 +17,70 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.86b — **STOP ADDING PROPOSERS: THE ORACLE IS BROKEN. "certified" on the answer path means "the names came from the docs" — NOT "the code works". The repair hint taught the FM to game it, and repair MANUFACTURED a false GREEN badge on JSON-Schema-plus-regex. One gaming path is now closed (`3752be6`); the FM immediately found the next one. A regex provenance checker cannot be the oracle — the answer path needs EXECUTION.**
+## CURRENT STATE (last updated 2026-07-16 cont.87 — **THE ORACLE NOW EXECUTES (`da813cb`). It killed the gaming class regex could not reach. But its MEASURED LIVE REACH IS ZERO: `executed:false` on 4/4 live runs. The blocker is no longer the oracle — it is RETRIEVAL. Do not extend the verifier; make it reachable.**
+
+### cont.87 — built the execution verifier, then measured that it never runs
+
+`src/CrucibleEngine/reasoning/executionVerify.ts` (`npm run vgr:execverify`, 23/23). The answer
+path's first oracle that RUNS the code instead of pattern-matching names.
+
+**Principle — a STRUCTURAL error is INPUT-INDEPENDENT:**
+- `ipv4Schema.validate is not a function` → throws for EVERY input → the code is broken.
+- `ZodError: invalid ip` → throws for SOME inputs → the code is WORKING.
+
+So reject only when EVERY generic probe dies structurally. No input synthesis, no per-question test
+data, no library knowledge — universal, not a per-request band-aid.
+
+**Differential on the REAL captured artifacts (name-match → EXECUTION):**
+
+| artifact | name-match | EXECUTION |
+|---|---|---|
+| FM laundered `extend(ipv4Schema,{...})` | CERTIFIED | **VIOLATIONS** (`extend is not a function`) |
+| qwen object-literal `.safeParse` | CERTIFIED | **VIOLATIONS** (`safeParse is not a function`) |
+| correct canonical zod | CERTIFIED | CERTIFIED |
+
+`extend` is not a real zod export — execution kills the exact laundering hole cont.86b left open,
+and the catch is not bought with false rejects.
+
+`certifyAnswer()` is now the SINGLE oracle for BOTH the shipped badge (groundedAnswer) and the
+repair search (faithfulRepair) — they must agree, or repair optimizes against a weaker gate than
+the one that ships. It MERGES exec+name verdicts (exec-only shadowed the fabricated identifier →
+the search stopped accumulating negative info; vgr:faithrepair caught it with 7 FAILs). The exec
+repair hint quotes the verbatim runtime error — un-gameable by name-dropping, since the next
+candidate is re-executed.
+
+Gate: vgr:execverify 23/23 (both directions pinned), vgr:apifaith 71/71, vgr:faithrepair 67/67,
+bench:all 1164/1164 (+23), tsc delta 0. Live-verified on clean tree `d7e29aa` (no `+dirty`).
+
+### THE FINDING — the gate has never opened
+
+**4/4 live runs: `executed: false`.** The oracle is correct and wired, and has never actually
+executed on live traffic. Measured blockers, in priority order:
+
+1. **Code-shaped prompts bypass grounding entirely.** "Using zod, show the code to validate an
+   IPv4 address" → answered in **PYTHON regex**; groundedAnswer never ran.
+2. **Retrieval fetches the WRONG library.** Live hosts across runs: `ip-num`, `ip-address@npmjs`,
+   `deepwiki`, `docs.astro.build`. **Never zod.dev.** An evidence-relevance gate is the blocker.
+3. Evidence-documented library not installed → honest abstain (cannot execute).
+
+Read it, do not assume: `CRUCIBLE_DUMP_FAITH=<path>` in the **server** env writes
+`.verdict.json` carrying `executed`; the `answer_certify` debugBus event reports it per request.
+
+**So the % did NOT move.** Same trap as cont.84's unreachable gate: benches green, gate never opens.
+
+### NEXT CRUCIAL ITEMS
+
+1. **Evidence-relevance gate + retrieval routing** — the top blocker for BOTH correctness and the
+   new verifier's reach. A zod question must retrieve zod.dev, not ip-num. Abstain (do not
+   synthesize) when the evidence never mentions the asked-about subject.
+2. **Route code-shaped prompts through grounding** — "show the code" currently skips the grounded
+   answer path entirely, which is how a zod ask gets answered in Python.
+3. **Then re-measure execution reach** (`executed:true` rate). Only after it is non-zero does
+   extending the oracle mean anything.
+4. **Then** re-open the second-proposer seat with `qwen2.5-1.5b` (loads, ~10-22s, emits real code;
+   `phi-3.5-mini` and `gemma2-2b` CANNOT LOAD on this 8GB machine — VRAM).
+
+---
 
 ### cont.86b — the finding that reframes the whole line of work
 
