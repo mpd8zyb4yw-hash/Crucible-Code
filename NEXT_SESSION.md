@@ -17,395 +17,132 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.82 — **Phase 2b: `stripBoilerplate` FIXED, and it was NOT the blocker. The blocker is evidence FAITHFULNESS — stage 4.**
+## CURRENT STATE (last updated 2026-07-16 cont.83 — **WEB GROUNDING WAS 100% DEAD ON COMMITTED CODE for 3 sessions. Fixed (1c8bc46). API-faithfulness verifier built and LIVE (2ec8b3a): it DETECTS the fabrication; repair does not yet recover the answer.**
 
-`stripBoilerplate` welded block-level content: `stripTags` deleted every tag with no separator, so
-`<td>ipv4()</td><td>regexes.ipv4</td>` collapsed to `ipv4()regexes.ipv4`. REAL, reproduced live on
-deepwiki's zod page, and FIXED (`markBlockBoundaries` + `stripTagsKeepLines`; tables now read
-`ipv4() | regexes.ipv4`). Prose-path only — `extractCodeBlocks` shares `stripTags` and must stay
-byte-clean (guard 5h). retrieval:bench 10→18, ground:bench 41/41, vgr:bench 208/208, tsc 0.
+### 1. The headline: every faithfulness diagnosis since cont.82 was made against code that never ran
 
-**But cont.81b's premise did not survive contact with the evidence.** Search ranking SHIFTED between
-sessions: S1 is now the CLEAN `zod.dev/api?id=ip-addresses`, not mangled deepwiki (see the
-`audit-traces/p2/evidence-routefix.txt` diff in c12363e — it regenerates on every live run). Its
-selected passage carries a literal `z.ipv4();`. So cont.81b's "table wreckage is the last stage
-between correct retrieval and a correct answer" was true for the evidence it had and is now FALSE
-as a general claim.
+`d6d02d1` ("Phase 2a: fix the grounding routing gate", cont.81b) deleted
+`return { block, sources, titles }` from `gatherEvidence` in `answer/groundedAnswer.ts` and added
+nothing back. The function is typed `Promise<Evidence | null>` and fell off the end → `undefined` →
+`answerWithWebGrounding`'s `if (!ev)` bailed → **grounding returned null on EVERY query**. Search
+ran, pages were fetched, evidence was assembled, then discarded one line before the return.
 
-**MEASURED on current code (server restarted — the 16:46 process predated the 16:50 fix, so any
-earlier live claim was testing stale code):** the code-shaped prompt grounds, cites
-`zod.dev/api?id=ip-addresses`, and STILL emits JSON Schema (with a regex that is now outright
-broken: `{3}` matches three octets and no dots). **The model receives the correct answer, cites the
-page it came from, and contradicts it.**
+Why nobody noticed for three sessions:
+- The sessions that "verified grounding" ran a **dirty working tree** that still had the line
+  (`c1f04e5+dirty` grounded fine at 16:45). The 16:50 commit dropped it and **was never live-run**.
+  All of `audit-traces/p2` — the traces that produced the evidence-faithfulness diagnosis — came
+  from that dirty tree.
+- `tsc` is silent: `strict:false`, no `noImplicitReturns`. A missing return on a non-void function
+  is not an error here. **Do not trust tsc to catch this class.**
+- cont.82's own handoff claimed "confirmed on current code" — its last trace (`t4-rf2`, 16:47)
+  **predates the 16:50 commit**. The claim was never true.
 
-**The A/B that settles the prompt hypothesis** (identical evidence, same FM, only the system prompt
-differs — `GROUNDING_SYSTEM` is a PROSE prompt: "write a clear answer", "120-250 words", "do NOT
-append an Example section" — it is tuned to fight code output):
-- PROSE (current): JSON Schema, no `z.ipv4()`.
-- CODE-AWARE ("use ONLY names that literally appear in the evidence"): stops the JSON-Schema
-  substitution (real gain) but then INVENTS `require('zod').validate({...})` and hand-rolls the
-  regex anyway.
-**So a code-aware prompt is necessary and NOT sufficient. The ~3B FM will not faithfully copy an
-identifier out of clean, correct, in-context evidence.**
+Measured, same prompt/server/daemon: before → `"No usable web sources"` (0 sources); after →
+grounded in 3 sources, cites `zod.dev/api?id=ip-addresses`. Traces in `audit-traces/p3`.
 
-**NEXT — the doctrine-consistent move, and DO NOT read this as "needs a bigger model":** VGR's own
-answer applies. Don't trust the model, CHECK it. Build a deterministic **API-faithfulness verifier**
-on the grounded code path: extract identifiers from the evidence, reject emitted code that calls
-library APIs absent from it (`validate`, `$schema`), and repair/retry. That is a checker, not an
-oracle — the same shape as the arithmetic recomputation verifier (cont.58). This is the first
-answer-side verifier for LIBRARY code, and it is the real Task-4 blocker.
+**METHOD (this is the recurring killer — it has now bitten three sessions running):** the boot log
+prints `running commit <sha>+dirty`. **Read it, and compare the server's start time to your edit
+mtime, before citing ANY live run.** cont.82 recorded this rule and still shipped a false claim.
+`+dirty` means the tree ≠ the commit: a green live run proves nothing about what you committed.
 
-Then: code path fetches source not READMEs → ungate code path → app-build path (Task 3's class,
-still untouched) → re-run Phase 1's five tasks (still the only thing that moves the number).
-See CRUCIBLE_AUDIT_PHASE2.md "Phase 2a/2b" + OPEN QUESTIONS 7-9.)
+### 2. API-faithfulness verifier — BUILT, LIVE, and honest about its limit
 
+`reasoning/apiFaithfulness.ts` (`npm run vgr:apifaith`, 48/48, in `bench:all`). Pure, model-free.
+The VGR thesis applied to the answer path: stop asking the model to be faithful, CHECK it.
 
-**cont.80 (2026-07-16) — Phase 0: the agentic path measured for the first time.**
+Two checks:
+- **per-identifier** — named imports / namespace members bound to a package the evidence documents,
+  rejected when the identifier appears nowhere in it. Catches the live `import { Schema } from 'zod'`
+  and `require('zod').validate()`.
+- **whole-answer** (`verifyEvidenceUsage`) — code that neither imports nor calls ANY documented API.
+  This is the **dominant live failure** (JSON Schema substituted for the library). It has no bad
+  identifier to point at, so the per-identifier check alone reported `abstain` and did nothing. The
+  live run is what surfaced this; the bench alone would not have.
 
-Method: `npm run agentic:live` (`src/CrucibleEngine/agent/__agentic_{live,corpus}.ts`). 12 hermetic
-TS repos that START GREEN, each with a HIDDEN SPEC authored from the goal text alone and written in
-only AFTER the run — the agent can neither read nor satisfy it by construction. Rubric (user-set):
-a pass requires the change to be PRESENT + EXERCISED + SUITE-GREEN + OBJECTIVELY CORRECT. Passing
-the visible test and having the capability are not the same thing; we measure the latter.
+**Soundness rules — do not loosen these without a live false-reject measurement.** Only provable
+library references are judged. Bare `foo()` and members of locals (`schema.parse()`) need type
+inference we don't have → never judged. Everything ambiguous → `abstain`: thin evidence,
+undocumented package, shell fence, trivial snippet. The whole-answer check fires ONLY on
+import-free code — the bench caught a real false reject during development (express code judged
+against zod docs read as "ignored the evidence"). cont.79h stands: a false reject is worse than a
+missed check, because it teaches the repair loop to "fix" correct code.
 
-- **NO-OP CONTROL (no model, deterministic): the gate accepted a provable no-op on 11/12 tasks.**
-  Materialize the repo, append a comment, ask the real verifier → `passed:true`. The gate cannot
-  tell work from no work. Every live number below is therefore an upper bound.
-- **`unverified` is set honestly and read by NOBODY.** verify.ts:112 returns
-  `{passed:true, unverified:true}`; loop.ts:583 emits it to telemetry; loop.ts:584/589 branch only
-  on `!v.passed`. It is accepted as success.
-- **server.ts:3550 drops `goal`** — the multi-step/meta-router wiring builds `makeVerifier({command})`
-  with no goal, so `exampleGate` returns null on its FIRST LINE and the path falls to the unverified
-  branch. The ONE task the gate catches on the single-step wiring becomes a blind pass here: no-op
-  control goes 11/12 → **12/12**. The example gate is dead on the path most real repo work runs under.
-- **THE REAL REPO IS WEDGED.** On ~/crucible-local/crucible-local, `detectCheck` →
-  `npx tsc --noEmit` (clean) and `detectStaticAnalysis` → `npm run lint --silent`, which **exits 2**:
-  ESLint 10 needs `eslint.config.js`, the repo has only legacy `.eslintrc`. verify.ts:78 runs the
-  static plan FIRST → `passed:false` → same fingerprint twice → `escalate` → `verify_failed`.
-  Every agentic task on our own repo dies on a lint config error, with the hint `Error type: RUNTIME`,
-  before the code is ever considered. **Verified with the real verifier: attempt 1 fail, attempt 2
-  escalate=true.** Also note: the repo has NO `test` script, so all 33 bench suites (959/959) are
-  invisible to `detectCheck` — on a real tree "verification-guided" means *it compiles and lints*.
-- **JS repos are 100% unservable.** oracle.ts:101 writes `include: [**/*.ts, **/*.tsx]` — no `.js`.
-  A JavaScript project gives tsc zero inputs → TS18003 every round → out-of-depth tripwire → abstain,
-  reported as "no oracle-passing code" (reads like a proposer failure; it is a config bug).
-- **The WRONG class is not "close but buggy" — it is "did something else entirely, gate said yes":**
-  · `average-empty-array`: replaced the whole file with a synthesized sum/average/median/mode module,
-    invented median+mode nobody asked for, and `average([])` **still returns NaN** — the opposite of
-    the request. Reported pass.
-  · `dedupe-preserve-order`: still sorts, just with the comparator spelled out longhand. No change made.
-  · `add-titlecase`: **DATA LOSS.** titleCase never added; the existing `slugify` was overwritten with
-    a canned "User-built skill" slugify. Differential: **behaviour changed on 3/5 inputs**
-    (`'Hello, World!'` → `hello-world` not `hello,-world!`; `'x_y'` → `x-y`). The visible suite probed
-    the one input that still matched, so it stayed green. Working code destroyed, reported as success.
-  Three of these carry a `// Synthesized by Crucible` header: **the synth path replaces the target file
-  with a synthesized module for a guessed topic instead of making the requested in-place edit.**
-- **A mechanical oracle is only as strong as its worst probe.** `validate-email-domain` shipped
-  `includes('@') && includes('.')` and my first hidden spec CERTIFIED it (it only probed `'a@b'`,
-  which has no dot anywhere, so it passed by luck). A read caught it: `isValidEmail('a.b@c') === true`.
-  Spec strengthened; mechanical now agrees with the read. This is why the rubric is mechanical AND
-  judged — 6/12 mechanical became **5/12 read-confirmed**.
-- **NOT MEASURED — do not claim it:** EXERCISED is inert. The suite runs through `tsx`, whose
-  transpiled output does not map back to the `.ts` source in V8's coverage URLs, so `cov=not-run` on
-  every task and UNEXERCISED is currently undetectable. TRUE here means present + green + hidden-spec
-  correct ONLY. The harness prints this warning rather than let `not-run` read as fine.
-- **Harness honesty note:** the first cut scored 12/12 HONEST_FAIL because it read a nonexistent
-  `result.status` (the real shape is `{ok, stopped}`). Caught only by reading an artifact whose hidden
-  spec was GREEN behind a reported fail. A false reject poisons repair — read the artifact, both ways.
+Q10 from the last handoff is **closed**: prose `ipv4()` and code `z.ipv4()` normalize to the same
+bare name, so a docs table certifies a namespaced call (benched).
 
-**Next (Phase 1+), in order:** (1) fix the two infra wedges — the ESLint config and the oracle's
-`.js` glob — since they gate everything else and are not proposer problems; (2) make `unverified`
-non-accepting and thread `goal` at server.ts:3550; (3) the change-exercising invariant (needs a
-coverage path that survives tsx); (4) stop the synth path clobbering files it was asked to EDIT.
+Wiring in `groundedAnswer`: verification is free → runs on every grounded answer; only a real
+violation spends a model call. A repair is accepted **only if the verifier certifies it** (swapping
+one fabrication for another is not progress). On failure we deliberately do NOT return null — the
+caller's fallback is a *parametric* answer (more fabrication, no citations) — we ship the grounded
+draft badged **UNVERIFIED**. The previously unconditional `verify: passed: true` would have stamped
+a green badge on an answer just proven fabricated (the cont.79h failure); it is now conditional.
 
-**cont.79h (2026-07-16 — c90d041, 8baac15) — the 5-run measurement, and what it exposed:**
+### 3. What is STILL broken — the number does not move yet
 
-- **THE HEADLINE: the gate was SHIPPING UNUSABLE APPS AS PASSES.** 3 of 5 "passing" todo builds
-  had ZERO input fields. Verbatim live shape: `form = createElement('form')` + handlers wired +
-  `app.appendChild(form)` — **the input and button never go INSIDE the form**. It renders a heading
-  and a list (real visible text → blank-render passes) with zero controls/fields, so every
-  interaction check skipped it as *"no controls → legitimately static page, fail open"*. That
-  fail-open is right for a landing page and catastrophic for an app. **Measured 3/5 → true 0/5.**
-  Fixed with the goal-independent **empty-form invariant**: a `<form>` with nothing to type into and
-  nothing to press is dead UI in every context, so no legitimate page renders one. It is the model's
-  own declaration of intent, left unfulfilled.
-  - **This also retroactively voids cont.79f's "passed on attempt 1" claim** — that run almost
-    certainly shipped the same junk. Treat every pre-cont.79h app "pass" as unverified.
-- **My cont.79g field-clear invariant had a FALSE POSITIVE that made repair unconvergeable.** The
-  harness types its sentinel into EVERY field; the check fired if ANY field still held it. So a
-  correct todo with a filter box (**the shape the FM actually writes**) was rejected, and the repair
-  feedback told the model to clear an input it already cleared. 2 of 5 runs failed 6/6 on it. Now
-  keyed on *"did NO sentinel field clear"* (counts, not a boolean).
-- **`isWebArtifactGoal` locked EVERY non-game app out of the verified path.** It keyed on named
-  arcade titles (snake|tetris|pong…), so a pathless "build a todo list app" / "expense tracker" /
-  "unit converter" never reached write→gate→repair and came back as **PROSE**. Regated on request
-  SHAPE (creation verb + artifact category + non-browser-runtime veto); pathless app goals now land
-  at `app.html`. **LIVE-VERIFIED** (pathless todo now builds; it returned a tutorial before).
-- **Repair feedback was architecture-specific and misdiagnosed two real shapes** — this is why 6/6
-  loops never converged:
-  - *no button rendered* → the harness never committed, yet the message claimed it "clicked the
-    primary control" and blamed a missing re-render. Harness now falls back to **Enter/requestSubmit**
-    (a legitimate design it could never exercise) and the message names the no-control case.
-  - *field-clear* advice prescribed `input.value = ''` — a line a **state-driven render app never
-    contains**; its real bug is ORDERING (`render(); draft = ''` clears too late). Message now covers
-    both shapes. 3 of 5 runs failed 6/6 on exactly this, unable to act on the advice.
-- **`CRUCIBLE_DUMP_REJECTS=<dir>`** (opt-in, off by default) dumps every rejected candidate. This is
-  what made all of the above findable — a rejection tells you what the gate saw, never what the model
-  wrote, and without the candidate you **cannot** tell an FM bug from a gate false-reject.
-- **Measured pass rates** (N=5 each, same goal, sequential — the FM queue is concurrency-1):
-  buggy gate 2/5 → field-fix 2/5 → +routing/Enter 1/5 → +msg 3/5 → **hole closed: 1/5**. Every number
-  before the last is inflated by the empty-form hole. **N=5 cannot separate these** — the honest read
-  is ~20%, and any claim that a fix moved the rate needs N≥20.
-- The single genuine pass was **read and confirmed correct** (input appended to form, `entered=''`
-  BEFORE `render()`, guard, preventDefault) — the gate now discriminates correct ordering from the
-  ordering bug.
+**LIVE, on working grounding:** "Write a Zod schema that validates an IPv4 address" → grounds 3
+sources → **cites zod.dev** → **emits JSON Schema anyway** → gate fires → repair attempted → **repair
+does NOT certify** → ships UNVERIFIED. Detection works. **Recovery does not.** The user-visible
+answer is still wrong; it is now *labelled* wrong instead of badged green. That is strictly better
+and still not a correct answer.
 
-**METHODOLOGICAL LESSON (keep — it has now paid out twice):** a green gate proves only that nothing
-it checks is broken. Both the empty-form and the self-erasing (cont.79e) invariants were found by
-**READING what a PASS actually produced**, never by watching the bench go green. Read the artifact,
-not the verdict.
+So cont.82's core finding SURVIVES, and is now measured on genuinely-working code rather than a
+dirty tree: **the ~3B FM will not copy an identifier out of clean in-context evidence.** One
+repair retry does not fix it.
 
-**cont.79g (2026-07-16 — 404c743) — two universal app-gate invariants + a live variance finding:**
+### 4. SECOND live bug found, NOT fixed — grounding routing is capitalization-dependent
 
-- **Added the two invariants cont.79f left open**, as GENERAL checks driven by a second
-  empty-field interaction (not todo-specific logic):
-  - **empty-commit-adds-nothing** — clear every field, press commit again; recording a blank entry
-    is a bug (the missing `if (!v.trim()) return`). Keys on the visible **control count** growing,
-    NOT text: a blank row brings its own Delete button, while a correct guard that renders "please
-    enter something" adds text but no control — so a guarded app passes on either signal.
-  - **field-clears-after-commit** — the value was added but the field still holds it, so the next
-    entry types onto the end of the last one.
-- **The add-shape gate is what makes them universal.** Both fire ONLY when the commit was
-  ADD-shaped (visible text grew AND took up the typed sentinel). A search box, a filter, a
-  calculator and a static page are all add-shaped=false and skip them. `FILTER_HTML` in the bench
-  is the false-reject guard for exactly this — it legitimately keeps its text and shrinks its list.
-- Harness (`htmlVerifyMain.cjs`, app path only — **game path untouched, html:bench 5/5 unchanged**):
-  `DOM_FIELD_VALUES`, `DOM_CLEAR_FIELDS`, `DOM_CLICK_PRIMARY`; reports `addShaped` /
-  `fieldSentinelAfter` / `emptyCommit` raw. Harness OBSERVES, verifier JUDGES — keep that split.
-- html:app:bench 28→**32/32** (+2 must-reject bugs, +1 filter false-reject guard, +1 correct
-  Delete-button todo as a real positive control for the empty-commit probe). bench:all **932/932**.
-- **LIVE (honest, and the important finding): the new invariants did NOT fire — they are
-  bench-verified only.** A fresh 6-attempt no-template todo run had ALL 6 attempts rejected by the
-  PRE-EXISTING dead-control check and escalated with no file shipped. cont.79f's run on the SAME
-  goal passed on attempt 1. So the proposer is high-variance and that — not the gate — is now the
-  bottleneck; the gate correctly abstained rather than shipping broken (doctrine-correct). Ruled
-  out a false-reject from the new probes: they run strictly AFTER the textChanged measurement, and
-  all 4 positive controls still pass.
-- Verified `offline_html_retry`'s 100-char truncation is **display-only** (`server.ts:3065`); the
-  full `problem` string does reach the repair prompt.
+`namesExternalLibrary` (`retrieval/retrievalLayer.ts:170`) detects libraries via **capitalized**
+proper nouns and skips any token containing a digit (the IPv4 carve-out). Measured:
 
-**cont.79f (2026-07-16 — ea67f91) — BINDING DOCTRINE: NO TEMPLATES, universal fixes only:**
+    namesExternalLibrary("Write a zod schema that validates an IPv4 address") === false   → NO grounding
+    namesExternalLibrary("Write a Zod schema that validates an IPv4 address") === true    → grounds
+    namesExternalLibrary("Use zod to validate an email")                      === false
+    namesExternalLibrary("Use Zod to validate an email")                      === true
 
-- **User-forced hard rule, applies to EVERY future iteration:** memorized templates / hardcoded
-  lookup tables are NOT allowed anywhere in the pipeline. Correctness comes SOLELY from web lookup +
-  retrieval + planning + the verification loop — never a baked-in answer keyed to a request shape.
-  A template makes ONE request shape pass while the next un-templated shape still fails; it masks
-  the real capability gap instead of closing it. Every fix must improve the GENERAL mechanism (the
-  proposer / retriever / verifier / planner), never special-case the request in front of you. See
-  memory `crucible-no-templates-universal-fix` (also indexed at top of MEMORY.md).
-- **Removed GAME_TEMPLATES (snake/pong/breakout) AND APP_TEMPLATES (todo/counter, cont.79e).** Both
-  HTML paths now: retrieve a real working reference from the open web → FM ports it → runtime
-  behavioral gate → repair loop. No memorized fallback.
-- **`retrieveAppReference` + `WEB_APP_MARK`** — the app-path analogue of `retrieveGameReference`,
-  onto the SAME `retrieveForTask` spine. That shared spine IS the universal mechanism; the two
-  callers just distil different queries.
-- **Stronger universal gate signal (the important part):** the first no-template live run defeated
-  the innerHTML-keyed dead-control check — the FM shipped a todo doing `tasks.push(x);
-  app.appendChild(row)` with no `render()`, so innerHTML churned while the visible list stayed empty
-  and it PASSED. The gate now keys on VISIBLE text change (innerText) + control-count change: an
-  interaction that fills a field and commits must produce something the user can SEE. Scoped to
-  data-entry apps so a style-only toggle isn't false-hit.
-- **LIVE-VERIFIED (no template in the path):** "build a todo list app" retrieves a reference, the FM
-  produces a genuinely WORKING todo (type → Add → item appears + Delete → input persists),
-  gate-verified + browser-driven + screenshot. **Honest residuals the gate does NOT yet catch:**
-  the FM's impl doesn't guard empty input and doesn't clear the field after add (minor — a visible
-  effect still occurs, so the visible-effect check passes). These are the next universal-check
-  candidates (empty-commit-adds-nothing; field-clears-after-commit) — add them as GENERAL invariants
-  driven by a second empty-field interaction, NOT as todo-specific logic.
-- bench:all 929→**928/928 across 33 suites** (2 template checks replaced by 1 positive control + the
-  new visible-effect check); game path byte-identical (html:bench 5/5); html:app:bench 28/28.
+Users type lowercase package names constantly (`zod`, `express`, `numpy`, `react`). For them the
+grounding lane is **silently closed**. This is why the first live run of this session didn't ground
+and briefly looked like a verifier bug.
 
-**cont.79e (2026-07-16 — 446fc6b) — NON-GAME HTML now has a behavioral verifier (templates REMOVED in 79f):**
+**Do NOT fix this with a library-name lookup table** — that is a memorized template and is banned
+(see `crucible-no-templates-universal-fix`). The honest options are (a) let retrieval decide rather
+than a lexical guess (the ground-by-default north star, which cont.81 measured as NOT actually
+implemented for code-shaped prompts), or (b) a case-insensitive structural signal. This is a real
+design decision, not a patch — it was left alone deliberately rather than scope-crept.
 
-- **The bug was mis-verification, not missing verification.** The HTML write path was game-shaped
-  end to end — every `.html` goal got a canvas game shell, the game system prompt, and the GAME
-  runtime gate. LIVE-MEASURED: `runtimeVerifyHtml(<a correct todo app>)` returns `'no <canvas>
-  element present at runtime'`, and that string is fed back as REPAIR FEEDBACK for 6 attempts,
-  pushing the model to bolt a canvas onto a todo list. Non-game HTML wasn't unverified — it was
-  corrupted by a gate that didn't apply to it.
-- **`classifyHtmlGoal` (new `htmlGoalKind.ts`)** — deterministic, zero-model, DEFAULTS TO 'app'.
-  The misclassifications are asymmetric: app-read-as-game corrupts; game-read-as-app only weakens.
-  Only an affirmative game signal (the word, a genre, or a named arcade title) selects 'game'.
-- **`runtimeVerifyApp` + an 'app' kind in `htmlVerifyMain.cjs`** — DOM-behavior probes instead of
-  canvas aliveness. Every invariant was found by READING what real live runs produced (three
-  distinct broken shapes, all shipped as "verified" before, all now caught):
-  (1) **dead-control** — fill fields + click primary control → DOM must change;
-  (2) **self-erasing** — a rendered text field must survive one interaction (FM appended the input
-      OUTSIDE render(), so the first click deleted it); (3) **blank-render** — a body with no text
-  and no controls is never a valid app (FM created controls, never appended them). Plus the shared
-  no-errors / no-NaN-readout checks. All conditioned on their probe field → a static landing page
-  still passes (fail-open, same discipline as the game path).
-- **`buildAppShell` + `HTML_APP_SYSTEM`/`_EXAMPLE`** — FM writes only JS into `#app`; shell owns the
-  document (same split that fixed the game path's truncation failures).
-- **`APP_TEMPLATES` (todo, counter)** — the FM CANNOT produce a working todo across 6 run-verified
-  attempts (it kept re-introducing self-erasing/blank-render), so the gate correctly REFUSED to
-  ship and escalated. Exactly as `GAME_TEMPLATES` does for snake, ship a deterministic
-  correct-by-construction impl for the canonical asks. Still runtime-gated, never trusted blindly.
-- **LIVE-VERIFIED end to end** (real `/api/chat`, `mode:code`, scratch `projectPath`): "build a todo
-  list app" ships the template in ~6s with **zero FM inference**, drives correctly in a real browser
-  (one item per Add — not one per keystroke; input survives; checkbox strike-through; live "N
-  remaining" counter). Screenshot-confirmed. Before this session: attempt 1 shipped a self-erasing
-  app labelled "verified in a real headless browser".
-- `runtimeVerifyHtml` refactored to share `runProbe`/`runtimeErrorProblem`; **game path byte-identical**
-  (`html:bench` 5/5 unchanged). New `html:app:bench` 29/29 (classifier is pure + always runs; runtime
-  half is canary-gated like html:bench). **bench:all 900/900 → 929/929 across 33 suites.**
-- **STILL OPEN (the honest edge):** the FM's OWN app path (non-canonical requests with no template —
-  e.g. "build a markdown notes app") still can't reliably satisfy the hardened gate, so it escalates
-  rather than ships. That's the correct behavior (escalate > ship-broken) but it's a refusal, not a
-  solve. Closing it means either more/broader APP_TEMPLATES or a stronger app proposer — same
-  weak-proposer-vs-correct-verifier tension as the structural-recovery item. Do NOT count the
-  template win as "the app path works"; it's "the canonical app requests work."
+### 5. Next crucial items
 
-**cont.79 (2026-07-16, this session — a2c1083):**
+1. **Make repair actually recover the answer.** Detection is done; the loop still fails. The VGR
+   answer is not "one retry with a hint" — it is **search**: K candidates, keep any that certifies
+   (`keepK.ts` already exists), and escalate the hint each round. If K attempts still fail, that is
+   the honest measured ceiling of the FM on this task and belongs in the report.
+2. **Capitalization-dependent routing (§4)** — the verifier is inert for lowercase library asks,
+   which is most real prompts. Universal fix only.
+3. **Code-aware system prompt** on the grounded path. `GROUNDING_SYSTEM` is still a PROSE prompt
+   ("120-250 words", "do NOT append an Example section") that code-shaped prompts get routed into.
+   Proven necessary-but-insufficient in cont.82's A/B; pairs with #1 and is cheap.
+4. **A live regression bench for grounding itself.** A one-line deletion killed the entire feature
+   and 968-check `bench:all` stayed green, because no check asserts "grounding returns evidence"
+   (cont.80b: the suite is model-independent BY DESIGN). One live check that asserts sources > 0
+   would have caught this in seconds.
+5. Code path fetches source, not READMEs. App-build path (Task 3's class, untouched, biggest lift).
+6. Re-run Phase 1's five tasks — still the only thing that moves the number.
 
-- **The zero-FM deterministic repair fast-path is PROVEN in prod, end-to-end.** A real `/api/chat`
-  modify request (`mode:code`, `projectPath` = scratch dir, JWT recipe in the memory note
-  `crucible-local-auth-testing`) against `isAdult` with `return age > 18` now certifies with
-  **modelCalls === 0**, splices the correct `>= 18` into the real file, in ~11s. This was the
-  highest-value UNVERIFIED claim from cont.78 — the whole 48%→83-91% recovery gain does reach users.
-  The wiring it exercises: `server.ts` reads the named target file → `repairSeed` →
-  `solveCodingRequest({buggyCode})` → `solveCodeTask` → `composeProposers(makeMutationRepairProposer, proposeCode)`.
-- **Three bugs found BEHIND the passing test** — all found by reading what the run *reported*,
-  not whether it passed. A passing run is not a verified run; the report is the evidence.
-  1. **Silently-wrong GOLD examples (real correctness bug, pre-existing).** `EXAMPLE_RX`'s value
-     group excluded `.` (to avoid eating the sentence period), so `half(3) returns 1.5` harvested
-     **expected = 1**, and `-0.25` harvested `-0`. Those EVALUATE CLEANLY, so they were trusted as
-     gold — the one tier deliberately exempt from consensus — and would certify a wrong impl
-     against the user's own stated fact. Structured literals/numbers now match explicitly, ahead
-     of the fallback. **Lesson: the trusted tier needs the MOST coverage, not the least.**
-  2. **Modal phrasings dropped.** The connector had to sit directly after `)`, so
-     `isAdult(18) should return true` — the most natural repair phrasing — harvested nothing and
-     fell through to model-invented consensus (a wasted call AND weaker truth than the user's own
-     fact). Now allows `should|must|will|needs to|…` + `be|equals|outputs|…`. Safe by construction:
-     `addExample` discards non-literal pairs, so `run(x) should be fast` still yields 0 cases.
-     Also `=>` was unreachable (ordered after its `=` prefix) — multi-char operators now come first.
-  3. **Free work billed as model work.** `search()` incremented `modelCalls` on ANY accepted
-     candidate, so mechanical single-edit repairs and retrieved web source — neither of which
-     invokes a model — were each charged a call. This understated the deterministic tiers in every
-     report and starved the FM of its granted budget. `Candidate.modelFree` now gates the
-     increment, with a `maxFree` runaway backstop (that counter also bounds the outer loop).
-     `server.ts` no longer claims "the model proposed" on a zero-model solve.
-**cont.79b (2026-07-16, this session) — the "re-baseline" found the METRIC was broken, not the code:**
+### 6. Percent to goal — **~38%, unchanged**
 
-- **RETRACTED from cont.79:** I warned that model-free accounting "changes budget semantics, so
-  `fault:live` is not comparable across a2c1083". **That is false**, re-derived from the code:
-  `makeMutationRepairProposer` fires ONCE per search and returns a candidate ONLY when it already
-  certifies — so at most one free candidate exists per search and it is the *solving* one.
-  Charging it or not cannot change control flow; it only relabels a solved run 1→0 calls. The MISS
-  paths (drop-guard/void-return) yield no free candidate at all (proposer returns null and cedes),
-  so they are byte-identical. The change is **inert** for this bench. Comparability is intact.
-- **`fault:live` is a SAMPLE, not a baseline — it had no error bar.** Re-baselining scored 83%
-  (38/46) vs the cited 91%, which *looks* like an 8-point regression and is not: a second
-  back-to-back run of **identical code scored 87% (40/46)**. Detection is pinned at 75% every run
-  (deterministic), but **recovery carries a measured ±4pt+ spread**, entirely in the FM-territory
-  drop-guard/void-return faults the deterministic layer honestly cedes. Pooling all runs to date
-  the band is **38–42/46 (83–91%)** — the celebrated **91% was the TOP of the band, not a level**,
-  and no single-run comparison across this harness (including several cont.78 movement claims) can
-  separate a real change from noise. cont.78i's "honest null result" was the one past read that
-  got this right.
-- **Fix:** `__fault_live.ts` now takes **`--runs=N`** and reports **median + range + per-run list**;
-  the 1-run path prints an explicit single-sample warning, and the multi-run path deliberately does
-  *not* headline any one run's number. Default stays 1 (~300s/run) — **pass `--runs=3` before
-  citing a baseline or claiming a lever moved recovery.**
-- **Doc/measurement corrections:** `__fault_live.ts` is in **no tsconfig program** (tsc cannot
-  validate it — verify by running it). The real project error count is **442 under
-  `tsconfig.server.json`**; the "457" cited in cont.79 was a mis-measure (root `tsconfig.json` is
-  solution-style and checks nothing, reporting a meaningless 0).
-- vgr:bench 200→**208** (new PART G2 harvest fidelity, PART G3 model-free accounting);
-  bench:all 687→**695**; tsc unchanged at the pre-existing 457 project-wide errors (0 in touched files).
+The grounding fix is large (it restores a whole feature that was dead), but it restores capability
+that the last three sessions' reports *already assumed was working*, so it corrects the books rather
+than adding to them. The verifier detects the dominant fabrication and refuses to certify it, which
+removes a false-green badge — real, but the answer the user reads is still wrong. Nothing here
+changes how a session feels yet. **Do not inflate on "verifier shipped".**
 
-**cont.79c (2026-07-16, this session — 662c55d) — KEEP-K IS LIVE:**
+Run: `npm run vgr:apifaith` (48/48) · `vgr:bench` 208/208 · `ground:bench` 41/41 ·
+`retrieval:bench` 18/18 · `vgr:retrieval` 28/28 · `conversational:bench` 108/108 · tsc delta 0
+(443 pre-existing project-wide, unchanged by this session — note cont.82's "tsc 0" claim was
+scoped to server.ts only and reads as stale).
 
-- **The live retry loop now retains candidates and ships a scored best-effort.** It used to
-  restart `search()` per attempt, discard every non-certified candidate, and fall through to the
-  model-driven handoff. The key realisation: that fallback ships code with **no execution evidence
-  at all**, so "abstain" was never the safe option it looked like — a draft measured at 3/4 is
-  strictly more honest than an unmeasured guess.
-- **Three invariants keep it from being a silent unverified ship:** (1) never written to a file —
-  certified code writes, drafts only display; (2) labelled NOT CERTIFIED with the real verifier
-  score + failing signals; (3) tight floor (default **-1** = at most one failing case), so anything
-  short of a near-miss falls through exactly as before. Override `CRUCIBLE_VGR_BEST_EFFORT_FLOOR`.
-- `selectBestEffort()` extracted from `keepK.ts` (pure/deterministic) so the live path reuses the
-  exact selection + coverage maths the bench pins. The existing per-attempt escalation (`tryHard`
-  + web grounding) is **untouched** — keep-K's own loop lacks it, so this retains candidates across
-  the EXISTING loop rather than swapping in `solveWithKeptCandidates`.
-- **LIVE-VERIFIED, both paths, via real `/api/chat`** (`mode:code`, scratch `projectPath`).
-  Probe trick worth reusing: **one contradictory case** (`double(4) should return 9`) makes
-  certification impossible while guaranteeing a near-miss, so the best-effort tier can be tested
-  deterministically against a stochastic FM. Result: kept 6 candidates across 3 attempts, reported
-  "3/4 cases pass", named the exact failure (`double(4) → got 8, expected 9`), wrote **no file**.
-  Certifiable control (poison case removed) still writes + certifies — no regression.
-- **`keepk:bench` and `fault:bench` were in NO aggregate gate** — a regression in the repair
-  fast-path or keep-K selection could not fail CI. Both now registered. They only *looked*
-  unregisterable because `parseCounts` accepted `"N/N passed"` but not `"N/N checks passed"`,
-  silently scoring them **0/0**; parser now reads both. `fault:live` stays out deliberately (real
-  FM, 300s, ±4pt noise — a tracked metric, not a gate).
-- **bench:all 695/695 → 727/727 across 27 suites**; keepk:bench 7→15.
-- **Then audited the WHOLE registry (29a972b): 5 more deterministic suites were gating nothing** —
-  `vgr:iterate` 12, `conversational:bench` 108, `ambiguity:bench` 14, `debate:bench` 34,
-  `html:bench` 5. conversational:bench alone covers the greeting-recycling / build-negotiation
-  regressions from cont.65b-66h — the bugs most likely to silently return. **bench:all → 900/900
-  across 32 suites** (+205 checks that previously could not fail CI). The 9 still excluded each
-  have a documented in-file reason; read it before "fixing" them.
-
-**cont.79d (2026-07-16, this session — e5fdafb) — "keep going" is REAL (found by testing my own copy):**
-
-- The draft from cont.79c told the user *"tell me to keep going and I'll iterate on the failing
-  case."* **The server could not keep that promise** — three independent blockers, all needed:
-  1. `repairSeed` only reads the named target file or code pasted in the CURRENT message. A draft
-     is deliberately neither (never written) → lost at end of turn.
-  2. "keep going" has no edit verb and no file path → `isCodeImplementationTask`/`isCodeEditTask`
-     both false → **the VGR block was skipped entirely**, and the follow-up the draft INVITES fell
-     to the tool-less quorum pipeline, which answered *"I'm sorry, but I can't continue."*
-     (live-reproduced before the fix).
-  3. A bare "keep going" carries no spec/cases → even reaching VGR would abstain instantly. **The
-     GOAL must travel with the draft.**
-- Fix: `lastVgrDraft` stashes `{code, goal}` per user+project (single-use, 30-min TTL, bounded 200,
-  oldest-eviction); the VGR gate re-opens for a continuation phrase **only while an un-consumed
-  draft exists**; on resume `solveCodingRequest` re-runs the ORIGINAL goal with the draft as
-  `buggyCode`, and `detectTargetPath` reads the goal (the path lives there, not in "keep going").
-- **This closes the loop cont.78 was building toward:** the near-miss becomes the next turn's
-  failing-case evidence — the exact mechanism that lifted recovery. Only ever a SEED: every
-  candidate is still executed, so a stale draft can waste evidence, never certify a wrong answer.
-- **LIVE-VERIFIED end-to-end:** turn 1 → draft 3/4, NO file; turn 2 `"keep going"` → resumes from
-  the 61-char draft → **CERTIFIED 4/4** → writes `src/double.ts`. Turn 2 previously refused.
-- **Probe caveat for future sessions:** a lone odd case (`double(4) should return 9`) is NOT
-  contradictory — special-casing satisfies it (`x === 4 ? 9 : x * 2`). That is what makes it a good
-  near-miss fixture, and why a file appearing after a resume is a CERTIFIED write, not a
-  best-effort leak. Verify the no-write invariant on turn 1, where nothing can have certified.
-
-**Next priorities (in order):**
-2. ~~Re-baseline `fault:live`~~ **DONE (cont.79b)** — the premise was wrong (accounting is inert)
-   and the real finding was that the metric had no error bar. Recovery is a **38–42/46 (83–91%)
-   band**, not a level. Use `npm run fault:live -- --runs=3` and cite median+range.
-3. **Structural recovery (drop-guard / void-return) needs a stronger proposer, not more
-   scaffolding** — cont.78i proved prompt-steering does not move it (two runs inside FM variance).
-   Honest ceiling for the weak-FM lane; do not spend more turns on scaffolding here. **cont.79b
-   reinforces this: the residual MISSes are exactly where ALL the run-to-run variance lives, so
-   any future lever aimed here MUST be measured with `--runs=3+` — a single run will show a ±4pt
-   swing that looks like a win or a regression at random.**
-4. **Do NOT add a best-effort tier to the MULTI-FILE path** (investigated cont.79d, rejected).
-   When multi-file fails to certify it already FALLS THROUGH to the single-file path, which runs
-   its own solve and can produce its own best-effort draft. A multi-file draft would preempt that
-   legitimate escalation and likely make results worse. Folding mf's kept candidates into the
-   single-file selection is possible (`selectBestEffort` would need to go generic over
-   `CandidateFile[]`) but the payoff is narrow — a generic refactor was written, judged
-   speculative with no consumer, and reverted. Revisit only with evidence that multi-file
-   near-misses are common in real sessions.
-5. **Consider re-validating past single-run claims.** Several cont.78 numbers (78e/78f/78g/78h)
-   were single samples treated as levels. 78g/78h's jumps (65→87→91) are large enough to survive
-   the ±4pt band, so those levers are almost certainly real — but the exact figures are not, and
-   any *small* claimed movement in that history should be treated as unproven.
+Live repro recipe: `audit-traces/p3/fire.sh <name> "<prompt>"` (needs a JWT cookie — see
+`crucible-local-auth-testing`), or drive `answerWithWebGrounding` directly, which is faster and
+bypasses server routing entirely (the probe that isolated all of this).
 
 ---
 
