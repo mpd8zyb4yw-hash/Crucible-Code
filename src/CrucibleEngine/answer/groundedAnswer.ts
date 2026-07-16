@@ -59,6 +59,84 @@ interface Evidence {
   titles: string[]
 }
 
+// ── Query-relevance windowing ────────────────────────────────────────────────
+// A page's answer is rarely in its first N chars — on a docs page those chars are
+// nav chrome. Blind `text.slice(0, perSource)` therefore fetched the right page and
+// then discarded the answer (audit cont.81: zod's `ipv4` sat at offset 6370 of 7955;
+// the 1200-char head held only the DeepWiki sidebar, so the model had NO ipv4 mention
+// in evidence and grafted an unrelated zipCode regex it DID find).
+//
+// Universal fix: score fixed-size windows of the page by query-term coverage and keep
+// the best-scoring ones in document order. Falls back to the head slice when nothing
+// matches, so a query whose terms are absent behaves exactly as before.
+
+const STOPWORDS = new Set(['the','a','an','is','are','was','were','to','of','in','on','for','and','or','what','which','how','do','does','did','that','this','it','with','as','at','by','from','be','can','i','you','use','using','used','exact','method','way','string','valid'])
+
+/** Content words from a query, lowercased, de-duped, stopwords removed. */
+export function queryTerms(query: string): string[] {
+  const raw = (query.toLowerCase().match(/[a-z0-9_.]+/g) ?? [])
+    .filter(t => t.length > 1 && !STOPWORDS.has(t))
+  return [...new Set(raw)]
+}
+
+/**
+ * Select up to `budget` chars of `text` most relevant to `query`.
+ * Splits into overlapping windows, scores each by distinct query-term hits (rare terms
+ * weighted higher via inverse document frequency within the page), and stitches the
+ * top windows back together in document order.
+ */
+export function selectRelevantPassages(text: string, query: string, budget: number): string {
+  if (text.length <= budget) return text
+  const terms = queryTerms(query)
+  if (!terms.length) return text.slice(0, budget)
+
+  const WIN = 400
+  const lower = text.toLowerCase()
+  const nWin = Math.ceil(text.length / WIN)
+
+  // Per-term page frequency → rare terms (e.g. "ipv4") outweigh common ones (e.g. "zod").
+  const freq = new Map<string, number>()
+  for (const t of terms) {
+    const m = lower.split(t).length - 1
+    freq.set(t, m)
+  }
+  const weight = (t: string) => {
+    const f = freq.get(t) ?? 0
+    return f === 0 ? 0 : 1 / Math.log2(2 + f)
+  }
+
+  const scored: Array<{ i: number; score: number }> = []
+  for (let i = 0; i < nWin; i++) {
+    const w = lower.slice(i * WIN, i * WIN + WIN)
+    let score = 0
+    for (const t of terms) if (w.includes(t)) score += weight(t)
+    scored.push({ i, score })
+  }
+  if (scored.every(s => s.score === 0)) return text.slice(0, budget)
+
+  // Take best windows until the budget is spent, then re-order by position so the
+  // stitched passage still reads in document order.
+  scored.sort((a, b) => b.score - a.score || a.i - b.i)
+  const keep: number[] = []
+  let used = 0
+  for (const s of scored) {
+    if (s.score === 0) break
+    if (used + WIN > budget) break
+    keep.push(s.i); used += WIN
+  }
+  if (!keep.length) return text.slice(0, budget)
+  keep.sort((a, b) => a - b)
+
+  const out: string[] = []
+  let prev = -2
+  for (const i of keep) {
+    if (i !== prev + 1 && out.length) out.push(' … ')
+    out.push(text.slice(i * WIN, i * WIN + WIN))
+    prev = i
+  }
+  return out.join('')
+}
+
 // Query stopwords so scoring keys on topical tokens, not "what/how/the/…".
 const RANK_STOP = new Set('what is are how does do did why who when where the of for a an in and or to with explain describe tell me about which that this it its'.split(/\s+/))
 // Title-side stopwords: query verbs/fillers that legitimately appear in a query but are NOT
@@ -236,7 +314,7 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
     if (text.length < 40) continue
     const n = sources.length + 1
     const host = safeHost(item.url)
-    parts.push(`[S${n}] ${item.title || host} — ${item.url}\n${text.slice(0, perSource)}`)
+    parts.push(`[S${n}] ${item.title || host} — ${item.url}\n${selectRelevantPassages(text, opts.searchQuery || query, perSource)}`)
     sources.push(item.url)
     titles.push(item.title || host)
   }

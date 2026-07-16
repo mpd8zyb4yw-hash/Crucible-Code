@@ -3,7 +3,7 @@
 //
 // Guards the canonical-title preference (cont.67): within one salient-overlap tier the base
 // entity article must outrank its derivatives/sequels, and the top-1 must be the correct page.
-import { rankResults } from './groundedAnswer'
+import { rankResults, selectRelevantPassages, queryTerms } from './groundedAnswer'
 import type { SearchResult } from '../retrieval/retrievalLayer'
 
 let pass = 0, fail = 0
@@ -173,6 +173,43 @@ console.log('\n== media-intent query still keeps the work page (penalty is inert
   ]
   const ranked = rankResults(results, 'who directed the Dune film')
   check('film still top-1 when the query names a media type', ranked[0]?.title === 'Dune (film)', ranked[0]?.title)
+}
+
+
+// ── Query-relevance windowing (audit cont.81 regression guard) ────────────────
+// The live bug: a 1200-char HEAD slice of the zod DeepWiki page held only the nav
+// sidebar, so `ipv4` (at offset 6370 of 7955) never reached the model — which then
+// grafted an unrelated zipCode regex it DID find. These lock the windowing fix.
+console.log('\n== query-relevance windowing ==')
+{
+  const NAV = 'Index your code with Devin DeepWiki Overview Installation and Setup Basic Usage Examples Core Architecture Package Structure. '.repeat(40)
+  const ANSWER = 'Network Address Formats: use z.ipv4() to validate an IPv4 address string. '
+  const TAIL = 'Unrelated trailing prose about error handling and pipelines. '.repeat(40)
+  const page = NAV + ANSWER + TAIL
+
+  check('head-slice baseline would MISS the answer (bug reproduced)',
+    !page.slice(0, 1200).includes('ipv4'))
+
+  const sel = selectRelevantPassages(page, 'what is the exact method to validate an IPv4 address in zod', 1200)
+  check('windowing SURFACES the answer within budget', sel.includes('ipv4'), sel.slice(0, 90))
+  check('windowing respects the char budget', sel.length <= 1200 + 8, String(sel.length))
+
+  // Universality: no query-term hits anywhere → must behave exactly like the old head slice.
+  const noHit = selectRelevantPassages(page, 'kubernetes helm chart rollout', 1200)
+  check('no-match query falls back to head slice (no behaviour change)',
+    noHit === page.slice(0, 1200))
+
+  // Short pages are returned intact.
+  check('page under budget returned whole', selectRelevantPassages('tiny page', 'anything', 1200) === 'tiny page')
+
+  // Rare terms must outweigh common ones: 'ipv4' is rarer than 'zod' on this page.
+  const zodHeavy = 'zod zod zod zod zod. '.repeat(120) + 'the ipv4 validator lives here. ' + 'zod zod. '.repeat(120)
+  const selRare = selectRelevantPassages(zodHeavy, 'zod ipv4 validator', 600)
+  check('rare term (ipv4) beats frequent term (zod) for window selection', selRare.includes('ipv4'))
+
+  check('queryTerms drops stopwords, keeps content tokens',
+    queryTerms('what is the exact method to validate an IPv4 address').includes('ipv4') &&
+    !queryTerms('what is the exact method to validate an IPv4 address').includes('the'))
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)

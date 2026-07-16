@@ -920,3 +920,21 @@ maybe 1–2 hard problems away.
     time-to-first-token). Throughput on long generations may be materially better; I did not
     benchmark tokens/sec on a sustained generation, and §5's speed argument would soften if TTFT
     is the dominant term.
+
+---
+
+## → Phase 2 follow-up: [`CRUCIBLE_AUDIT_PHASE2.md`](CRUCIBLE_AUDIT_PHASE2.md)
+
+Phase 2 audited whether retrieval-as-brain is actually wired to the live path, and **partially
+revises this document**:
+
+- **This report's Task 4 verdict ("zero grounding fired") STANDS** — and is now root-caused to a
+  **prompt-shape routing gate**: code-shaped prompts ("Write a Zod schema that…") bypass web
+  grounding entirely, while question-shaped ones ("what is the Zod method…") do not. **Still open.**
+- **A second, independent bug was found and FIXED**: on the grounded path, `PER_SOURCE_CHARS=1200`
+  blind-truncated evidence and discarded the answer (zod's `ipv4` sat at offset 6370). Replaced
+  with query-relevance windowing. **Task 4 now returns the correct `ipv4()` API end-to-end.**
+- **This report's framing of the failure as a model/reasoning ceiling is superseded.** In both
+  cases the model was never given the evidence. The code path's retrieval is triple-gated off by
+  env flags set nowhere.
+- **Task 3's verdict is untouched** and stands as written.

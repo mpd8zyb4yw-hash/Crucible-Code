@@ -1,179 +1,5 @@
 [
   {
-    "hash": "eba4c2a",
-    "message": "pre-write_file",
-    "timestamp": 1783369278221,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/multiFileLedger"
-  },
-  {
-    "hash": "a21f248",
-    "message": "pre-write_file",
-    "timestamp": 1783369367967,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/multiFileLedger"
-  },
-  {
-    "hash": "01b0b89",
-    "message": "pre-write_file",
-    "timestamp": 1783370647372,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/filterModule"
-  },
-  {
-    "hash": "8e382d4",
-    "message": "pre-write_file",
-    "timestamp": 1783370897143,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/summaryModule"
-  },
-  {
-    "hash": "7ded520",
-    "message": "pre-write_file",
-    "timestamp": 1783371016822,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/clampModule"
-  },
-  {
-    "hash": "b49e199",
-    "message": "pre-write_file",
-    "timestamp": 1783371096193,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/leaderboardModule"
-  },
-  {
-    "hash": "7694c5d",
-    "message": "pre-write_file",
-    "timestamp": 1783371156737,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/leaderboardModule"
-  },
-  {
-    "hash": "4594c8f",
-    "message": "pre-write_file",
-    "timestamp": 1783371237852,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/usernameModule"
-  },
-  {
-    "hash": "3454f84",
-    "message": "pre-write_file",
-    "timestamp": 1783371403909,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/tagSetModule"
-  },
-  {
-    "hash": "26e7ec3",
-    "message": "pre-write_file",
-    "timestamp": 1783371486384,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/caseCompareModule"
-  },
-  {
-    "hash": "d5ceb34",
-    "message": "pre-write_file",
-    "timestamp": 1783371746538,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/multiFileLedger"
-  },
-  {
-    "hash": "fd79d95",
-    "message": "pre-write_file",
-    "timestamp": 1783371821819,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/multiFileLedger"
-  },
-  {
-    "hash": "c14c400",
-    "message": "pre-write_file",
-    "timestamp": 1783400573620,
-    "projectPath": "/Users/justin/Desktop/Crucible/verge-boreal-norm-tuft"
-  },
-  {
-    "hash": "6bd5ee4",
-    "message": "pre-write_file",
-    "timestamp": 1783403257083,
-    "projectPath": "/Users/justin/Desktop/Crucible/horn-mild-ward-gust"
-  },
-  {
-    "hash": "745d308",
-    "message": "pre-write_file",
-    "timestamp": 1783403302272,
-    "projectPath": "/Users/justin/Desktop/Crucible/seep-aria-trunk-deep"
-  },
-  {
-    "hash": "feeed3d",
-    "message": "pre-write_file",
-    "timestamp": 1783435007621,
-    "projectPath": "/Users/justin/Desktop/Crucible/reef-lend-range-fold"
-  },
-  {
-    "hash": "005a268",
-    "message": "pre-write_file",
-    "timestamp": 1783435508457,
-    "projectPath": "/Users/justin/Desktop/Crucible/moss-dust-grand-crop"
-  },
-  {
-    "hash": "34af7e5",
-    "message": "pre-write_file",
-    "timestamp": 1783436980223,
-    "projectPath": "/Users/justin/Desktop/Crucible/slope-oval-crop-span"
-  },
-  {
-    "hash": "388fbf1",
-    "message": "pre-write_file",
-    "timestamp": 1783437181711,
-    "projectPath": "/Users/justin/Desktop/Crucible/slope-oval-crop-span"
-  },
-  {
-    "hash": "e738c78",
-    "message": "pre-write_file",
-    "timestamp": 1783437310262,
-    "projectPath": "/Users/justin/Desktop/Crucible/shore-rock-mark-fold"
-  },
-  {
-    "hash": "6ae581f",
-    "message": "pre-write_file",
-    "timestamp": 1783443365476,
-    "projectPath": "/Users/justin/Desktop/Crucible/seep-sage-trait-staff"
-  },
-  {
-    "hash": "5fefd70",
-    "message": "pre-write_file",
-    "timestamp": 1783443417511,
-    "projectPath": "/Users/justin/Desktop/Crucible/strict-tip-clan-strand"
-  },
-  {
-    "hash": "bc88379",
-    "message": "pre-write_file",
-    "timestamp": 1783443841796,
-    "projectPath": "/Users/justin/Desktop/Crucible/pine-fold-lance-bay"
-  },
-  {
-    "hash": "dcbff4e",
-    "message": "pre-write_file",
-    "timestamp": 1783443853908,
-    "projectPath": "/Users/justin/Desktop/Crucible/strand-blaze-brook-colt"
-  },
-  {
-    "hash": "ddc30d1",
-    "message": "pre-write_file",
-    "timestamp": 1783443895191,
-    "projectPath": "/Users/justin/Desktop/Crucible/tide-rock-soil-void"
-  },
-  {
-    "hash": "a841786",
-    "message": "pre-write_file",
-    "timestamp": 1783444736950,
-    "projectPath": "/Users/justin/Desktop/Crucible/tang-flora-glow-tame"
-  },
-  {
-    "hash": "61b94d5",
-    "message": "pre-write_file",
-    "timestamp": 1783453727349,
-    "projectPath": "/Users/justin/Desktop/Crucible/snow-rime-spire-grain"
-  },
-  {
-    "hash": "506297f",
-    "message": "pre-write_file",
-    "timestamp": 1783454285498,
-    "projectPath": "/Users/justin/Desktop/Crucible/colt-wade-axle-roan"
-  },
-  {
-    "hash": "051a85b",
-    "message": "pre-write_file",
-    "timestamp": 1783455195762,
-    "projectPath": "/Users/justin/Desktop/Crucible/stark-wind-ramp-split"
-  },
-  {
     "hash": "2386ec5",
     "message": "pre-write_file",
     "timestamp": 1783455413959,
@@ -298,5 +124,179 @@
     "message": "pre-write_file",
     "timestamp": 1784190021010,
     "projectPath": "/tmp/s79f4"
+  },
+  {
+    "hash": "7c324fd",
+    "message": "pre-write_file",
+    "timestamp": 1784191953934,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run4"
+  },
+  {
+    "hash": "c1285fb",
+    "message": "pre-write_file",
+    "timestamp": 1784191975338,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run5"
+  },
+  {
+    "hash": "90f0cfc",
+    "message": "pre-write_file",
+    "timestamp": 1784192177786,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run2"
+  },
+  {
+    "hash": "69e78e3",
+    "message": "pre-write_file",
+    "timestamp": 1784192378815,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run5"
+  },
+  {
+    "hash": "b2af005",
+    "message": "pre-write_file",
+    "timestamp": 1784194240512,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run5"
+  },
+  {
+    "hash": "b2309fe",
+    "message": "pre-write_file",
+    "timestamp": 1784194416615,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run1"
+  },
+  {
+    "hash": "d90a87d",
+    "message": "pre-write_file",
+    "timestamp": 1784194615479,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run4"
+  },
+  {
+    "hash": "90b4a61",
+    "message": "pre-write_file",
+    "timestamp": 1784194637636,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run5"
+  },
+  {
+    "hash": "e525007",
+    "message": "pre-write_file",
+    "timestamp": 1784195426280,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run4"
+  },
+  {
+    "hash": "2531d2f",
+    "message": "pre-write_file",
+    "timestamp": 1784196691134,
+    "projectPath": "/tmp/pr1"
+  },
+  {
+    "hash": "b0ff0ab",
+    "message": "pre-write_file",
+    "timestamp": 1784197200132,
+    "projectPath": "/tmp/run20/proj1"
+  },
+  {
+    "hash": "b7e4634",
+    "message": "pre-write_file",
+    "timestamp": 1784197570085,
+    "projectPath": "/tmp/run20/proj5"
+  },
+  {
+    "hash": "e21cf6e",
+    "message": "pre-write_file",
+    "timestamp": 1784197591359,
+    "projectPath": "/tmp/run20/proj6"
+  },
+  {
+    "hash": "2789383",
+    "message": "pre-write_file",
+    "timestamp": 1784200942607,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-65318/live/add-titlecase"
+  },
+  {
+    "hash": "7a92d7c",
+    "message": "pre-write_file",
+    "timestamp": 1784201448739,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68549/live/clamp-upper-bound"
+  },
+  {
+    "hash": "25bb212",
+    "message": "pre-write_file",
+    "timestamp": 1784201561608,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/clamp-upper-bound"
+  },
+  {
+    "hash": "d27a09b",
+    "message": "pre-write_file",
+    "timestamp": 1784201568317,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/average-empty-array"
+  },
+  {
+    "hash": "8c77c54",
+    "message": "pre-write_file",
+    "timestamp": 1784201573390,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/add-titlecase"
+  },
+  {
+    "hash": "2c61682",
+    "message": "pre-write_file",
+    "timestamp": 1784201590767,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/cross-file-currency"
+  },
+  {
+    "hash": "b354818",
+    "message": "pre-write_file",
+    "timestamp": 1784201602653,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/unreached-negative-branch"
+  },
+  {
+    "hash": "98229c9",
+    "message": "pre-write_file",
+    "timestamp": 1784201616257,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/cart-remove"
+  },
+  {
+    "hash": "8b6e4f8",
+    "message": "pre-write_file",
+    "timestamp": 1784201620574,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/chunk-off-by-one"
+  },
+  {
+    "hash": "d12909e",
+    "message": "pre-write_file",
+    "timestamp": 1784201632381,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/validate-email-domain"
+  },
+  {
+    "hash": "fa075e5",
+    "message": "pre-write_file",
+    "timestamp": 1784201659427,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/async-retry"
+  },
+  {
+    "hash": "db18abc",
+    "message": "pre-write_file",
+    "timestamp": 1784201665116,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/dedupe-preserve-order"
+  },
+  {
+    "hash": "705c9ca",
+    "message": "pre-write_file",
+    "timestamp": 1784201674985,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/no-suite-wordcount"
+  },
+  {
+    "hash": "c3ca8ac",
+    "message": "pre-write_file",
+    "timestamp": 1784201853821,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-72099/live/validate-email-domain"
+  },
+  {
+    "hash": "b02a831",
+    "message": "pre-write_file",
+    "timestamp": 1784202605910,
+    "projectPath": "/Users/justin/Desktop/Crucible/ward-fern-wren-form"
+  },
+  {
+    "hash": "177088f",
+    "message": "pre-write_file",
+    "timestamp": 1784210516486,
+    "projectPath": "/Users/justin/Desktop/Crucible/swift-mist-tarn-code"
   }
 ]
