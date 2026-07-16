@@ -17,7 +17,48 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 — zero-FM repair fast-path LIVE-PROVEN in prod; gold-example harvest + model-call accounting fixed; fault:live now reports median+range, 83-91% is a NOISE BAND not a level; keep-K best-effort LIVE; 727/727 across 27 suites)
+## CURRENT STATE (last updated 2026-07-16 cont.79e — NON-GAME HTML now behaviorally verified: classifyHtmlGoal splits app/game, runtimeVerifyApp catches dead-control/self-erasing/blank-render, APP_TEMPLATES ships a working todo with 0 FM calls, LIVE-VERIFIED in browser; game path byte-identical; bench:all 929/929 across 33 suites)
+
+**cont.79e (2026-07-16 — 446fc6b) — NON-GAME HTML now has a behavioral verifier + a working template:**
+
+- **The bug was mis-verification, not missing verification.** The HTML write path was game-shaped
+  end to end — every `.html` goal got a canvas game shell, the game system prompt, and the GAME
+  runtime gate. LIVE-MEASURED: `runtimeVerifyHtml(<a correct todo app>)` returns `'no <canvas>
+  element present at runtime'`, and that string is fed back as REPAIR FEEDBACK for 6 attempts,
+  pushing the model to bolt a canvas onto a todo list. Non-game HTML wasn't unverified — it was
+  corrupted by a gate that didn't apply to it.
+- **`classifyHtmlGoal` (new `htmlGoalKind.ts`)** — deterministic, zero-model, DEFAULTS TO 'app'.
+  The misclassifications are asymmetric: app-read-as-game corrupts; game-read-as-app only weakens.
+  Only an affirmative game signal (the word, a genre, or a named arcade title) selects 'game'.
+- **`runtimeVerifyApp` + an 'app' kind in `htmlVerifyMain.cjs`** — DOM-behavior probes instead of
+  canvas aliveness. Every invariant was found by READING what real live runs produced (three
+  distinct broken shapes, all shipped as "verified" before, all now caught):
+  (1) **dead-control** — fill fields + click primary control → DOM must change;
+  (2) **self-erasing** — a rendered text field must survive one interaction (FM appended the input
+      OUTSIDE render(), so the first click deleted it); (3) **blank-render** — a body with no text
+  and no controls is never a valid app (FM created controls, never appended them). Plus the shared
+  no-errors / no-NaN-readout checks. All conditioned on their probe field → a static landing page
+  still passes (fail-open, same discipline as the game path).
+- **`buildAppShell` + `HTML_APP_SYSTEM`/`_EXAMPLE`** — FM writes only JS into `#app`; shell owns the
+  document (same split that fixed the game path's truncation failures).
+- **`APP_TEMPLATES` (todo, counter)** — the FM CANNOT produce a working todo across 6 run-verified
+  attempts (it kept re-introducing self-erasing/blank-render), so the gate correctly REFUSED to
+  ship and escalated. Exactly as `GAME_TEMPLATES` does for snake, ship a deterministic
+  correct-by-construction impl for the canonical asks. Still runtime-gated, never trusted blindly.
+- **LIVE-VERIFIED end to end** (real `/api/chat`, `mode:code`, scratch `projectPath`): "build a todo
+  list app" ships the template in ~6s with **zero FM inference**, drives correctly in a real browser
+  (one item per Add — not one per keystroke; input survives; checkbox strike-through; live "N
+  remaining" counter). Screenshot-confirmed. Before this session: attempt 1 shipped a self-erasing
+  app labelled "verified in a real headless browser".
+- `runtimeVerifyHtml` refactored to share `runProbe`/`runtimeErrorProblem`; **game path byte-identical**
+  (`html:bench` 5/5 unchanged). New `html:app:bench` 29/29 (classifier is pure + always runs; runtime
+  half is canary-gated like html:bench). **bench:all 900/900 → 929/929 across 33 suites.**
+- **STILL OPEN (the honest edge):** the FM's OWN app path (non-canonical requests with no template —
+  e.g. "build a markdown notes app") still can't reliably satisfy the hardened gate, so it escalates
+  rather than ships. That's the correct behavior (escalate > ship-broken) but it's a refusal, not a
+  solve. Closing it means either more/broader APP_TEMPLATES or a stronger app proposer — same
+  weak-proposer-vs-correct-verifier tension as the structural-recovery item. Do NOT count the
+  template win as "the app path works"; it's "the canonical app requests work."
 
 **cont.79 (2026-07-16, this session — a2c1083):**
 
