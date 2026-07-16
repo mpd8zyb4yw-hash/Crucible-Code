@@ -452,6 +452,12 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   let unfaithful: string | null = null
 
   const faith = verifyApiFaithfulness(text, ev.block)
+  if (process.env.CRUCIBLE_DUMP_FAITH) {
+    const fsx = await import('fs')
+    fsx.writeFileSync(process.env.CRUCIBLE_DUMP_FAITH + '.evidence.txt', ev.block)
+    fsx.writeFileSync(process.env.CRUCIBLE_DUMP_FAITH + '.answer.txt', text)
+    fsx.writeFileSync(process.env.CRUCIBLE_DUMP_FAITH + '.verdict.json', JSON.stringify(faith, null, 2))
+  }
   if (faith.status === 'violations') {
     debugBus.emit('pipeline', 'api_faithfulness_violation', {
       library: faith.library, identifiers: faith.violations.map(v => v.identifier), reason: faith.reason,

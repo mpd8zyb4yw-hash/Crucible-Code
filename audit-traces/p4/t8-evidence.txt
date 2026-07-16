@@ -1,0 +1,9 @@
+[S1] Defining schemas | Zod — https://zod.dev/api?id=ip-addresses
+
+
+[S2] Zod101 - Interactive Zod Schema Playground & Validator — https://zod101.smol-apps.de/
+
+
+[S3] Refinements and Custom Validation | colinhacks/zod | DeepWiki — https://deepwiki.com/colinhacks/zod/4.1-refinements-and-custom-validation
+
+

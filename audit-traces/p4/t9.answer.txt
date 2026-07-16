@@ -1,0 +1,62 @@
+## Zod Schema for IPv4 Address Validation
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "IPv4 Address",
+  "type": "object",
+  "properties": {
+    "address": {
+      "type": "string",
+      "pattern": "^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9])$",
+      "description": "A valid IPv4 address must consist of four octets separated by dots."
+    }
+  },
+  "required": ["address"],
+  "additionalProperties": false
+}
+```
+
+## Explanation
+
+This Zod schema defines an object with a single property, `address`, which must be a valid IPv4 address. The `address` property is required and must match the pattern `^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9])$`. This pattern ensures that the address is in the correct format, with each octet being a number between 0 and 255, and the octets separated by dots.
+
+## Usage
+
+To use this Zod schema, you can pass it to a validation function or component that expects an object with an `address` property. For example, in a Vue.js component, you can use the `toTypedSchema` function from the `@vee-validate/zod` package to convert the Zod schema into a format that can be used with Vue.js validation:
+
+```javascript
+import { toTypedSchema } from '@vee-validate/zod';
+
+const formSchema = toTypedSchema({
+  name: 'email',
+  type: 'email',
+  rules: {
+    fieldSchema: {
+      address: {
+        type: 'string',
+        pattern: '^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$',
+        description: 'A valid IPv4 address must consist of four octets separated by dots.'
+      }
+    }
+  }
+});
+
+const form = new Vue({
+  data: {
+    email: '192.168.1.1'
+  },
+  methods: {
+    validateEmail: function() {
+      const { email } = this;
+      if (!formSchema.validate(email)) {
+        console.error('Invalid email address');
+      } else {
+        console.log('Valid email address');
+      }
+    }
+  }
+});
+```
+
+In this example, the `validateEmail` method uses the `validate` method of the `formSchema` to check if the input email address is valid. If the address is valid, it logs a success message; otherwise, it logs an error message.

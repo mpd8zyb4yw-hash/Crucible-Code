@@ -1,0 +1,47 @@
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "IPv4 Address",
+  "type": "object",
+  "properties": {
+    "ip": {
+      "type": "string",
+      "pattern": "^(25[0-5]|2[0-4][0-9]|[01]?[0-9]{2}){3}$"
+    }
+  },
+  "required": ["ip"]
+}
+```
+
+```javascript
+const { custom, parse } = require("zod");
+
+const ipSchema = custom({
+  title: "IPv4 Address",
+  type: "object",
+  properties: {
+    ip: {
+      type: "string",
+      pattern: "^(25[0-5]|2[0-4][0-9]|[01]?[0-9]{2}){3}$"
+    }
+  },
+  required: ["ip"]
+});
+
+const ipValidator = (data) => {
+  const result = parse(ipSchema, data);
+  return result.isValid;
+};
+
+// Example usage
+console.log(ipValidator({ ip: "192.168.1.1" })); // true
+console.log(ipValidator({ ip: "255.255.255.255" })); // true
+console.log(ipValidator({ ip: "192.168.1.100" })); // false
+console.log(ipValidator({ ip: "invalid-ip" })); // false
+```
+
+---
+Sources:
+[S1] Defining schemas | Zod — https://zod.dev/api?id=ip-addresses
+[S2] Zod101 - Interactive Zod Schema Playground & Validator — https://zod101.smol-apps.de/
+[S3] Validating Zod Schemas (Exercises) - Steve Kinney — https://stevekinney.com/courses/full-stack-typescript/validating-zod-schema-exercises
