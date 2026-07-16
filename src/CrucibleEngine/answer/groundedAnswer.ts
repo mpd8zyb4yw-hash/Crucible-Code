@@ -16,7 +16,10 @@
 import { search, fetch as fetchPage, stripBoilerplate, type SearchResult } from '../retrieval/retrievalLayer'
 import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { debugBus } from '../debug/bus'
-import { verifyApiFaithfulness, describeViolations } from '../reasoning/apiFaithfulness'
+import { describeViolations } from '../reasoning/apiFaithfulness'
+// EXECUTES the answer's code against the real library. The name-matching check alone certified
+// JSON-Schema-with-a-regex wearing a decorative import (cont.86b) — provenance is not correctness.
+import { certifyAnswer } from '../reasoning/executionVerify'
 import { repairUntilFaithful } from '../reasoning/faithfulRepair'
 import { isMiniCpmAvailable, miniCpmComplete } from '../agent/miniCpmHarness'
 
@@ -477,7 +480,11 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   // event this function emits must tell the truth.
   let unfaithful: string | null = null
 
-  const faith = verifyApiFaithfulness(text, ev.block)
+  const faith = certifyAnswer(text, ev.block)
+  // Did the shipped code actually RUN against the real library, or did it merely name documented
+  // identifiers? Both certify, but they are not the same claim, and the badge must not blur them:
+  // a name-matched certify is the weak one that shipped JSON Schema as green (cont.86b).
+  let executed = faith.status === 'certified' && faith.executed
   if (process.env.CRUCIBLE_DUMP_FAITH) {
     const fsx = await import('fs')
     fsx.writeFileSync(process.env.CRUCIBLE_DUMP_FAITH + '.evidence.txt', ev.block)
@@ -535,6 +542,7 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
 
       if (rep.status === 'certified') {
         text = rep.text
+        executed = (rep.verdict as { executed?: boolean }).executed === true
         opts.onToken?.(`\n\n${rep.text}`)
         debugBus.emit('pipeline', 'api_faithfulness_repaired', {
           library: faith.library, modelCalls: rep.modelCalls, detail: rep.detail,
@@ -566,7 +574,7 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   const cites = (text.match(/\[S\d+\]/g) ?? []).length
   emit?.(unfaithful
     ? { type: 'verify', passed: false, report: `Grounded in ${ev.sources.length} source${ev.sources.length > 1 ? 's' : ''}, but UNVERIFIED — ${unfaithful}. Treat this code with suspicion.` }
-    : { type: 'verify', passed: true, report: `Answer grounded in ${ev.sources.length} web source${ev.sources.length > 1 ? 's' : ''}${cites ? ` with ${cites} inline citation${cites > 1 ? 's' : ''}` : ''}.` })
+    : { type: 'verify', passed: true, report: `Answer grounded in ${ev.sources.length} web source${ev.sources.length > 1 ? 's' : ''}${cites ? ` with ${cites} inline citation${cites > 1 ? 's' : ''}` : ''}${executed ? `, and the code was EXECUTED against the real ${faith.library ?? 'library'} without failing.` : '.'}` })
   // Flip the live strip's sources to 'grounded' (check-marked) now the answer actually cites them.
   emit?.({ type: 'sources', phase: 'grounded', items: ev.sources.map(u => ({ url: u, host: safeHost(u) })) })
   debugBus.emit('pipeline', 'grounding_hit', { message: message.slice(0, 80), sources: ev.sources.length, cites, ms: Date.now() - started }, { severity: 'info' })

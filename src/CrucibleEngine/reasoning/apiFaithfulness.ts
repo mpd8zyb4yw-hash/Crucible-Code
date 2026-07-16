@@ -33,8 +33,10 @@ export interface ApiViolation {
    * How it was bound — determines the repair hint.
    * `ignored-evidence` is the whole-answer case: code that touches the retrieved API surface
    * NOWHERE (see verifyEvidenceUsage), rather than one bad identifier.
+   * `execution-failure` is the only kind produced by RUNNING the code (see executionVerify):
+   * ground truth from the runtime, not a claim about names.
    */
-  kind: 'named-import' | 'namespace-member' | 'ignored-evidence'
+  kind: 'named-import' | 'namespace-member' | 'ignored-evidence' | 'execution-failure'
   /** Verbatim source line, for the repair prompt. */
   line: string
 }
@@ -228,7 +230,7 @@ export function documentedCallSurface(evidence: string): string[] {
 }
 
 /** Does the evidence actually talk about this package at all? */
-function evidenceCovers(evidence: string, library: string): boolean {
+export function evidenceCovers(evidence: string, library: string): boolean {
   const esc = library.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   return new RegExp(`(^|[^\\w@/-])${esc}([^\\w-]|$)`, 'i').test(evidence)
 }
@@ -457,6 +459,10 @@ export function verifyApiFaithfulness(answer: string, evidence: string): Faithfu
  */
 export function describeViolations(v: FaithfulnessVerdict): string {
   if (v.status !== 'violations') return ''
+  // Execution beats every claim about names: we RAN it and it broke.
+  const exec = v.violations.filter(x => x.kind === 'execution-failure')
+  if (exec.length)
+    return `the code fails when actually run (${exec.map(x => x.line).join('; ')})`
   if (v.violations.some(x => x.kind === 'ignored-evidence'))
     return "the code doesn't use the documented API from the sources at all"
   const names = v.violations.map(x => `\`${x.identifier}\``).join(', ')
@@ -471,7 +477,10 @@ export function rejectedIdentifiers(verdicts: FaithfulnessVerdict[]): string[] {
   const out = new Set<string>()
   for (const v of verdicts)
     for (const x of v.violations)
-      if (x.kind !== 'ignored-evidence') out.add(x.identifier)
+      // `ignored-evidence` uses a placeholder; `execution-failure` names the answer's OWN symbol
+      // (`validateIpv4`), not a fabricated library API — telling the model "never use validateIpv4
+      // again" would be nonsense. Neither is a rejected identifier.
+      if (x.kind !== 'ignored-evidence' && x.kind !== 'execution-failure') out.add(x.identifier)
   return [...out].sort()
 }
 
@@ -507,6 +516,33 @@ export function escalatedRepairHint(latest: FaithfulnessVerdict, prior: Faithful
  */
 export function repairHint(v: FaithfulnessVerdict): string {
   if (v.status !== 'violations') return ''
+
+  // EXECUTION FAILURE — the strongest hint we can give, because it is not a claim about names:
+  // we ran the code and the runtime rejected it. The old name-list hint is exactly what taught
+  // the FM to game the verifier (cont.86b) — it could satisfy "use documented names" by pasting
+  // them into a decorative import. A runtime error cannot be satisfied that way: the next
+  // candidate is re-executed, so the only way through the gate is code that actually works.
+  const exec = v.violations.filter(x => x.kind === 'execution-failure')
+  if (exec.length) {
+    const lines = exec.map(x => `  - ${x.identifier}: ${x.line}`)
+    // Execution and the name check find DIFFERENT defects; when both fired, the hint must carry
+    // both or it is less informative than the one it replaced.
+    const fabricated = v.violations.filter(x => x.kind === 'named-import' || x.kind === 'namespace-member')
+    return [
+      'Your code was EXECUTED against the real library and it failed:',
+      ...lines,
+      ...(fabricated.length
+        ? ['', `These identifiers do not exist in ${v.library ?? 'the library'} and are not in the evidence: ${fabricated.map(x => `\`${x.identifier}\``).join(', ')}`]
+        : []),
+      '',
+      'This is a real error from actually running your code, not a style note. It means you built a',
+      'plain object or a hand-rolled substitute and then called a method that does not exist on it.',
+      '',
+      `Use the real ${v.library ?? 'library'} API from the evidence, which the runtime does provide: ${(v.callSurface.length ? v.callSurface : v.documented).slice(0, 60).join(', ')}`,
+      'Importing those names is NOT enough — the code must actually CALL them and use what they return.',
+      'Your code will be executed again, so it must genuinely work.',
+    ].join('\n')
+  }
 
   // Whole-answer miss: the fix is not "rename an identifier", it is "use the documented library".
   if (v.violations.some(x => x.kind === 'ignored-evidence')) {

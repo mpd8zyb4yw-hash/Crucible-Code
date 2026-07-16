@@ -30,6 +30,7 @@ const SUITES = [
   'vgr:bench',
   'vgr:apifaith',
   'vgr:faithrepair',
+  'vgr:execverify',
   'fuzz:bench',
   'harden:bench',
   'stakes:bench',

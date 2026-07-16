@@ -56,9 +56,13 @@
 import { fingerprintCode } from './codeProposer'
 import { search } from './search'
 import {
-  escalatedRepairHint, verifyApiFaithfulness,
+  escalatedRepairHint,
   type FaithfulnessVerdict,
 } from './apiFaithfulness'
+// THE ORACLE. Must be the SAME certify condition groundedAnswer ships behind, or this search
+// optimizes against a weaker gate and hands the badge a candidate the badge would have rejected
+// (cont.86b: repair manufactured a false GREEN out of an honest UNVERIFIED). certifyAnswer EXECUTES.
+import { certifyAnswer } from './executionVerify'
 import type { Attempt, Candidate, Proposer, TaskSpec, Verdict, Verifier } from './types'
 
 /** A chat message, structurally compatible with the FM client's message type. */
@@ -146,11 +150,11 @@ export function faithfulnessVerdict(v: FaithfulnessVerdict): Verdict {
 
 /** Verifier<string> over an evidence block. Deterministic, no model — the source of truth. */
 export function makeFaithfulnessVerifier(evidence: string): Verifier<string> {
-  return (c: Candidate<string>) => faithfulnessVerdict(verifyApiFaithfulness(c.value, evidence))
+  return (c: Candidate<string>) => faithfulnessVerdict(certifyAnswer(c.value, evidence))
 }
 
 /** The faithfulness verdict behind a recorded attempt, recomputed from ground truth. */
-const verdictOf = (a: Attempt<string>, evidence: string) => verifyApiFaithfulness(a.candidate.value, evidence)
+const verdictOf = (a: Attempt<string>, evidence: string) => certifyAnswer(a.candidate.value, evidence)
 
 /**
  * Proposer: candidate 0 is the draft (free), thereafter re-synthesis carrying every prior
@@ -217,7 +221,7 @@ export async function repairUntilFaithful(
 ): Promise<FaithfulRepairResult> {
   const K = Math.max(1, opts.attempts ?? 3)
   const spec: TaskSpec = { goal: input.goal, domain: 'answer', acceptance: {}, context: input.evidence }
-  const draftVerdict = verifyApiFaithfulness(input.draft, input.evidence)
+  const draftVerdict = certifyAnswer(input.draft, input.evidence)
 
   let seen = 0
   const result = await search<string>(
@@ -242,7 +246,7 @@ export async function repairUntilFaithful(
     return {
       status: 'certified',
       text: result.solution.value,
-      verdict: verifyApiFaithfulness(result.solution.value, input.evidence),
+      verdict: certifyAnswer(result.solution.value, input.evidence),
       modelCalls: result.modelCalls,
       attemptsRun: result.attempts.length,
       proposedBy: by,
