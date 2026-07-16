@@ -757,6 +757,59 @@ its data or controls. Keep it simple and correct: a smaller app that works beats
 that throws or does nothing when clicked.`
 
 
+// ── Repair-move selection (shared by the game and app write loops) ────────────────────────────
+// Handed its own previous code and told to "fix it", the weak on-device FM frequently returns that
+// code VERBATIM. Echoing is not repair: an unchanged candidate is re-run, fails the SAME check, and
+// produces the same feedback — a fixpoint that spends the entire remaining attempt budget on one
+// proposal. Measured (cont.79i, live): 3 of 3 escalating todo builds emitted exactly ONE unique
+// candidate across 5-6 attempts, so ~83% of the repair budget bought literally nothing. This was
+// invisible for two sessions because a rejection records what the GATE saw, never what the model
+// wrote — the identical-candidate pattern only showed up once CRUCIBLE_DUMP_REJECTS existed.
+//
+// Detecting it needs no model call and cannot false-fire: byte-identical code provably re-earns the
+// same verdict, so repeating it is useless by construction. When it happens the local repair
+// trajectory is exhausted, so change the MOVE rather than repeat it — drop the previous-code echo
+// that anchors the model to its own text, restore the web reference (the highest-signal input we
+// have), and resample hotter to break the tie. This is the north-star search step: when a move stops
+// producing new candidates, take a different one.
+export interface RepairMove {
+  /** Appended to the next proposer prompt. */
+  feedback: string
+  /** Re-attach the web reference next attempt — the model's own trajectory is spent. */
+  reground: boolean
+  /** Sampling temperature for the next attempt (0.2 = the daemon's default). */
+  temperature: number
+}
+
+const PRIOR_FAULTS_HEAD =
+  '\n\nEVERY fault below has already caused a rejection in this session — do NOT reintroduce any of them while fixing the current one:\n'
+
+export function nextRepairMove(problem: string, seenProblems: string[], prevJs: string, echoed: boolean): RepairMove {
+  const priorFaults = seenProblems.length > 1
+    ? PRIOR_FAULTS_HEAD + seenProblems.map(p => `  • ${p}`).join('\n')
+    : ''
+  const head = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}${priorFaults}\n\n`
+  if (echoed) {
+    // Quoting the model's own text back is what anchors it, so withhold the previous code entirely
+    // and ask for a materially different implementation.
+    return {
+      feedback: head +
+        'You have now submitted that SAME code more than once and it fails identically every time. ' +
+        'Do NOT output it again. Discard that approach and write a DIFFERENT implementation from ' +
+        'scratch that avoids the fault above.',
+      reground: true,
+      temperature: 0.8,
+    }
+  }
+  return {
+    feedback: head +
+      'Here is your previous code — FIX the specific problem above, keep what works, and output the ' +
+      `FULL corrected JavaScript (nothing else):\n\n${prevJs.slice(0, 1800)}`,
+    reground: false,
+    temperature: 0.2,
+  }
+}
+
 // ── Web grounding for the game path ("Crucible IS the model" — but not from memory). ──
 // The on-device FM writes classics it has never seen well (Space Invaders failed 6× straight,
 // pure parametric recall) because it is guessing the mechanics rather than adapting a real,
@@ -818,8 +871,9 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   // Feedback is now DIAGNOSTIC (the runtime gate names the exact fault: frozen loop, blank
   // canvas, dead input), so repairing the model's OWN previous code beats asking it to
   // rewrite from scratch — a small model regresses less when editing than when regenerating.
+  // That holds only while it actually edits: see nextRepairMove for the echo fixpoint.
   let prevJs = ''
-  let feedback = ''
+  let move: RepairMove = { feedback: '', reground: false, temperature: 0.2 }
   // Distinct faults seen across attempts. Small models oscillate — they fix the newly
   // reported bug while silently reintroducing one they already fixed. Carrying the full
   // history and telling the model "these were ALL already rejected, don't bring any back"
@@ -839,14 +893,14 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   // proposer, seeing its own diagnostic rejection feedback each attempt. (Diversity that measurably
   // helps is re-added only if a future h2h proves a peer wins — not on the ≥2-impls prior alone.)
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const grounding = (attempt === 1 && webReference) ? `\n\n${webReference}` : ''
-    const userMsg = `Build this game: ${state.goal}${grounding}${feedback}\n\nOutput the JavaScript game logic now.`
+    const grounding = ((attempt === 1 || move.reground) && webReference) ? `\n\n${webReference}` : ''
+    const userMsg = `Build this game: ${state.goal}${grounding}${move.feedback}\n\nOutput the JavaScript game logic now.`
     let raw = ''
     const proposer = 'apple-fm'
     raw = await fmComplete([
       { role: 'system', content: HTML_GAME_SYSTEM },
       { role: 'user', content: userMsg },
-    ], { maxTokens: 4096 })
+    ], { maxTokens: 4096, temperature: move.temperature })
     debugBus.emit('agent', 'offline_html_proposer', { path: targetPath, attempt, model: proposer }, { severity: 'info' })
     const fence = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i)
     const js = sanitizeGameJs((fence ? fence[1] : raw).trim())
@@ -863,14 +917,12 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
       return html
     }
     debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt, model: proposer, problem }, { severity: 'info' })
+    // See nextRepairMove: an unchanged candidate is a fixpoint, not a repair.
+    const echoed = attempt > 1 && js !== '' && js === prevJs
+    if (echoed) debugBus.emit('agent', 'offline_html_echo_stall', { path: targetPath, attempt, kind: 'game' }, { severity: 'warn' })
     prevJs = js
     if (!seenProblems.includes(problem)) seenProblems.push(problem)
-    const priorFaults = seenProblems.length > 1
-      ? `\n\nEVERY fault below has already caused a rejection in this session — do NOT reintroduce any of them while fixing the current one:\n` +
-        seenProblems.map(p => `  • ${p}`).join('\n')
-      : ''
-    feedback = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}${priorFaults}\n\n` +
-      `Here is your previous code — FIX the specific problem above, keep what works, and output the FULL corrected JavaScript (nothing else):\n\n${prevJs.slice(0, 1800)}`
+    move = nextRepairMove(problem, seenProblems, prevJs, echoed)
   }
   throw new OfflineEscalateError(
     `FM could not produce a working game after ${MAX_ATTEMPTS} run-verified attempts`)
@@ -921,20 +973,21 @@ async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promi
   const title = (state.goal.match(/\b(\w[\w\s-]{2,30}?)\s+(?:app|page|tool|tracker|dashboard)\b/i)?.[1] ?? 'Crucible').trim() + ' — Crucible'
   const MAX_ATTEMPTS = 6
   let prevJs = ''
-  let feedback = ''
+  let move: RepairMove = { feedback: '', reground: false, temperature: 0.2 }
   const seenProblems: string[] = []
   // Web reference fetched ONCE up front — grounds the FIRST attempt so the FM adapts a real working
   // app instead of guessing from memory. Dropped on later attempts (by then it repairs its own code
-  // against the higher-signal runtime diagnostic). null when the web returned nothing usable.
+  // against the higher-signal runtime diagnostic), and restored by nextRepairMove if the model
+  // stalls on its own text. null when the web returned nothing usable.
   const webReference = await retrieveAppReference(state.goal)
   if (webReference) debugBus.emit('agent', 'offline_html_web_ground', { path: targetPath, kind: 'app', bytes: webReference.length }, { severity: 'info' })
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const grounding = (attempt === 1 && webReference) ? `\n\n${webReference}` : ''
-    const userMsg = `Build this app: ${state.goal}${grounding}${feedback}\n\nOutput the JavaScript now.`
+    const grounding = ((attempt === 1 || move.reground) && webReference) ? `\n\n${webReference}` : ''
+    const userMsg = `Build this app: ${state.goal}${grounding}${move.feedback}\n\nOutput the JavaScript now.`
     const raw = await fmComplete([
       { role: 'system', content: HTML_APP_SYSTEM },
       { role: 'user', content: userMsg },
-    ], { maxTokens: 4096 })
+    ], { maxTokens: 4096, temperature: move.temperature })
     debugBus.emit('agent', 'offline_html_proposer', { path: targetPath, attempt, model: 'apple-fm', kind: 'app' }, { severity: 'info' })
     const fence = raw.match(/```(?:javascript|js)?\s*([\s\S]*?)```/i)
     // const→let only: the app path has no fire-control key bug to rewrite, and the rest of
@@ -960,14 +1013,13 @@ async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promi
         fs.writeFileSync(`${dir}/reject-${Date.now()}-a${attempt}.html`, `<!-- ${problem} -->\n${html}`)
       } catch { /* forensics must never break a build */ }
     }
+    // Compare BEFORE prevJs is overwritten: an unchanged candidate means the model echoed its own
+    // previous answer rather than repairing it, so the next attempt must change strategy.
+    const echoed = attempt > 1 && js !== '' && js === prevJs
+    if (echoed) debugBus.emit('agent', 'offline_html_echo_stall', { path: targetPath, attempt, kind: 'app' }, { severity: 'warn' })
     prevJs = js
     if (!seenProblems.includes(problem)) seenProblems.push(problem)
-    const priorFaults = seenProblems.length > 1
-      ? `\n\nEVERY fault below has already caused a rejection in this session — do NOT reintroduce any of them while fixing the current one:\n` +
-        seenProblems.map(p => `  • ${p}`).join('\n')
-      : ''
-    feedback = `\n\nYour previous attempt was RUN in a real browser and rejected: ${problem}${priorFaults}\n\n` +
-      `Here is your previous code — FIX the specific problem above, keep what works, and output the FULL corrected JavaScript (nothing else):\n\n${prevJs.slice(0, 1800)}`
+    move = nextRepairMove(problem, seenProblems, prevJs, echoed)
   }
   throw new OfflineEscalateError(
     `FM could not produce a working app after ${MAX_ATTEMPTS} run-verified attempts`)

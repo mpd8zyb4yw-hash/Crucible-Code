@@ -18,7 +18,7 @@
 
 import { runtimeVerifyHtml, runtimeVerifyApp } from './htmlRuntimeVerify'
 import { classifyHtmlGoal } from './htmlGoalKind'
-import { buildAppShell, isWebArtifactGoal, defaultWebArtifactPath } from './synthDriver'
+import { buildAppShell, isWebArtifactGoal, defaultWebArtifactPath, nextRepairMove } from './synthDriver'
 
 const HEAD = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title></head>'
 
@@ -484,6 +484,36 @@ render();`
   const goodShell = await runtimeVerifyApp(buildAppShell(CORRECT_APP_JS, 'Todo — Crucible'), 'todo app')
   check('buildAppShell + a correct render() passes the app gate (positive control)',
     goodShell === null, `got: ${goodShell}`)
+
+  // ── Repair-move selection: the echo fixpoint (cont.79i) ──────────────────────────────────────
+  // LIVE-MEASURED: 3 of 3 escalating todo builds emitted ONE unique candidate across 5-6 attempts —
+  // the FM kept handing back the previous code verbatim, so ~83% of the repair budget was spent
+  // re-running an already-rejected candidate. An unchanged candidate provably re-earns the same
+  // verdict, so the loop must change its move rather than repeat it.
+  const PREV = 'let x = 1; render();'
+
+  const normal = nextRepairMove('the button does nothing', ['the button does nothing'], PREV, false)
+  check('normal repair quotes the previous code back (editing beats regenerating)',
+    normal.feedback.includes(PREV), 'previous code missing from repair feedback')
+  check('normal repair keeps the default temperature and does not re-ground',
+    normal.temperature === 0.2 && !normal.reground, JSON.stringify(normal))
+
+  const stalled = nextRepairMove('the button does nothing', ['the button does nothing'], PREV, true)
+  check('echo fixpoint WITHHOLDS the previous code (quoting it back is what anchors the model)',
+    !stalled.feedback.includes(PREV), 'echoed move still quotes prevJs — the anchor remains')
+  check('echo fixpoint asks for a DIFFERENT implementation',
+    /different implementation/i.test(stalled.feedback), stalled.feedback.slice(0, 120))
+  check('echo fixpoint re-grounds on the web reference (local trajectory is spent)',
+    stalled.reground === true, 'reground not set')
+  check('echo fixpoint resamples hotter to break the tie',
+    stalled.temperature > 0.2, `temperature=${stalled.temperature}`)
+  check('echo fixpoint still names the fault that caused the rejection',
+    stalled.feedback.includes('the button does nothing'), 'problem text dropped')
+
+  // The fault ledger must survive both moves — small models fix the new bug and reintroduce an old.
+  const multi = nextRepairMove('B', ['A', 'B'], PREV, true)
+  check('prior-fault ledger is carried into the echo-fixpoint move too',
+    multi.feedback.includes('• A') && multi.feedback.includes('• B'), multi.feedback.slice(0, 160))
 
   console.log(`\nhtml app invariants: ${pass}/${pass + fail} passed`)
   process.exit(fail === 0 ? 0 : 1)
