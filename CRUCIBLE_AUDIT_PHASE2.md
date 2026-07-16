@@ -668,3 +668,75 @@ Benches: `ground:bench` **41/41** (17 pre-existing + 7 windowing + 17 routing in
    are a package-registry lookup at gate time (latency) or accepting the miss.
 9. **Is the false-positive/miss asymmetry calibrated right?** I chose it by argument, not
    measurement. If VGR's certify rate on algorithmic asks is low, the asymmetry inverts.
+
+---
+
+## Phase 2b — stripBoilerplate fixed; the blocker is stage 4 (faithfulness)
+
+**Method: evidence-first. Every claim below is a dump, not an inference.**
+
+### The defect was real
+`stripTags` strips `<[^>]+>` with NO separator → block content welds. Reproduced live on
+`deepwiki.com/colinhacks/zod/3.2-string-format-validators`:
+
+```
+Network validators handle IP addresses... ValidatorRegexipv4()regexes.ipv4ipv6()regexes.ipv6mac()...
+```
+
+Fixed (`markBlockBoundaries` + `stripTagsKeepLines`). Same page, after:
+
+```
+Validator | Regex
+ipv4() | regexes.ipv4
+ipv6() | regexes.ipv6
+```
+
+Prose path only — `extractCodeBlocks` shares `stripTags`; injecting delimiters would corrupt
+lifted code (bench 5h asserts byte-identical output). retrieval:bench 10→18.
+
+### It was not the blocker
+Search ranking shifted between sessions. For the actual code-shaped query, S1 is now the CLEAN
+`zod.dev/api?id=ip-addresses`; `selectRelevantPassages` selects a window containing a literal
+`z.ipv4();` (verified: `z.ipv4() in SELECTED? true`). cont.81b's claim that table wreckage was
+"the last stage between correct retrieval and a correct answer" was accurate for its evidence
+and is false as a general claim. The `audit-traces/p2/evidence-routefix.txt` diff in c12363e
+shows the shift directly (that file regenerates on every live run).
+
+**Stale-process caveat, worth institutionalizing:** the server under test had started at 16:46,
+four minutes BEFORE the 16:50 routing-fix commit. Any live claim made against it was measuring
+old code. Restarted, re-measured. *Check process start time against commit time before citing a
+live run.*
+
+### The measurement that redirects the roadmap
+Live, current code: grounds → cites `zod.dev/api?id=ip-addresses` → emits JSON Schema, with a
+regex that is now flatly broken (`{3}` = three octets, no dots). The model gets the right answer,
+cites its source, and contradicts it.
+
+A/B, identical evidence, same FM, only the system prompt varies:
+
+| system prompt | result |
+|---|---|
+| PROSE (`GROUNDING_SYSTEM`, current) | JSON Schema; no `z.ipv4()` |
+| CODE-AWARE ("use ONLY names literally in the evidence") | no JSON Schema (real gain), but invents `require('zod').validate({...})` + hand-rolled regex |
+
+`GROUNDING_SYSTEM` is a prose-answer prompt ("write a clear answer", "roughly 120-250 words",
+"do NOT append an Example section") — it actively fights code output, and Phase 2a routed code
+into it. So it is a genuine defect. But the A/B proves it is **necessary and not sufficient**:
+told explicitly to copy only evidence identifiers, with `z.ipv4()` in context, the model still
+fabricated. A second, independent instance: "what string format validators does zod provide?"
+grounded on three thin npmjs.com pages and invented `MinLength`/`IsAlphanumeric`.
+
+**Stage 4 = evidence faithfulness. Retrieval finds it, formatting now preserves it, the prompt
+can aim it — and the model still won't copy it.**
+
+### Next: the doctrine-consistent answer (NOT "bigger model")
+VGR already answers this: don't trust the proposer, CHECK it. A deterministic
+**API-faithfulness verifier** on the grounded code path — extract candidate identifiers from the
+evidence, reject emitted library calls absent from it, repair/retry. Un-foolable and
+model-independent, the same shape as the cont.58 arithmetic recomputation verifier. Note this
+also catches the broken-regex failure only if paired with execution; the faithfulness check
+alone would accept `z.ipv4()`.
+
+**OPEN QUESTION 10:** faithfulness rejection needs an identifier inventory from evidence. Prose
+mentions (`ipv4()`) and real call syntax (`z.ipv4()`) differ; the check must not reject valid
+code that merely differs in namespace binding. Risk: a false reject poisons repair (cont.79h).

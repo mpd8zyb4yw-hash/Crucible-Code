@@ -17,7 +17,48 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.81b — **Phase 2a: routing gate FOUND + FIXED, and NOT SUFFICIENT.** The gate was TWO gates: `answerEngine.ts:337` requires `isQuestionShaped && !isGenRequest` for grounding eligibility — and `shouldResearch()` sitting BEHIND it already had `if (isCodingQuery(message)) return true // FM bluffs; SO/docs strong`, i.e. **the codebase already knew the rule and had made it dead code**; plus `synthDriver.ts:207` reused `isCodeShaped`, a guard written for the research DAG (abstain-preserved, cont.53) whose "safe failure direction" logic never applied to null-safe grounding. **The principle:** "code gen is checked not memorized" is sound for ALGORITHMIC work (VGR executes it) but collapses for an external LIBRARY — no spec exists, an API surface is an arbitrary fact. **`z.ipv4()` cannot be derived; reversing a linked list can.** Fixed via `namesExternalLibrary()` (structural only — package nouns/imports/namespaced calls/non-language proper nouns; NO package-name list; digit rule keeps IPv4/UTF8 = standards, since a false positive diverts verifiable work away from VGR = costlier than a miss). **RESULT: gate opens (0→2 sources on the exact failing prompt) and the answer is STILL WRONG.** Evidence `containsIpv4=true` — but as flattened table wreckage (`ValidatorRegexipv4()regexes.ipv4ipv6()...`), so the model ignored it and emitted JSON Schema from memory. **Phase 1's Task 4 verdict NOT overturned for code-shaped prompts — it now fails for a THIRD characterized reason (table-mangling) instead of an unknown one.** ground:bench 41/41, vgr:bench 208/208. **NEXT: `stripBoilerplate` table/structure preservation — PROVEN load-bearing, no longer cosmetic; it is the last stage between correct retrieval and a correct answer. Milestone: the code-shaped Zod prompt returns `z.ipv4()`.** Then: code path fetches source not READMEs → ungate code path → app-build path (Task 3's class, still untouched). See CRUCIBLE_AUDIT_PHASE2.md "Phase 2a" + OPEN QUESTIONS 7-9.)
+## CURRENT STATE (last updated 2026-07-16 cont.82 — **Phase 2b: `stripBoilerplate` FIXED, and it was NOT the blocker. The blocker is evidence FAITHFULNESS — stage 4.**
+
+`stripBoilerplate` welded block-level content: `stripTags` deleted every tag with no separator, so
+`<td>ipv4()</td><td>regexes.ipv4</td>` collapsed to `ipv4()regexes.ipv4`. REAL, reproduced live on
+deepwiki's zod page, and FIXED (`markBlockBoundaries` + `stripTagsKeepLines`; tables now read
+`ipv4() | regexes.ipv4`). Prose-path only — `extractCodeBlocks` shares `stripTags` and must stay
+byte-clean (guard 5h). retrieval:bench 10→18, ground:bench 41/41, vgr:bench 208/208, tsc 0.
+
+**But cont.81b's premise did not survive contact with the evidence.** Search ranking SHIFTED between
+sessions: S1 is now the CLEAN `zod.dev/api?id=ip-addresses`, not mangled deepwiki (see the
+`audit-traces/p2/evidence-routefix.txt` diff in c12363e — it regenerates on every live run). Its
+selected passage carries a literal `z.ipv4();`. So cont.81b's "table wreckage is the last stage
+between correct retrieval and a correct answer" was true for the evidence it had and is now FALSE
+as a general claim.
+
+**MEASURED on current code (server restarted — the 16:46 process predated the 16:50 fix, so any
+earlier live claim was testing stale code):** the code-shaped prompt grounds, cites
+`zod.dev/api?id=ip-addresses`, and STILL emits JSON Schema (with a regex that is now outright
+broken: `{3}` matches three octets and no dots). **The model receives the correct answer, cites the
+page it came from, and contradicts it.**
+
+**The A/B that settles the prompt hypothesis** (identical evidence, same FM, only the system prompt
+differs — `GROUNDING_SYSTEM` is a PROSE prompt: "write a clear answer", "120-250 words", "do NOT
+append an Example section" — it is tuned to fight code output):
+- PROSE (current): JSON Schema, no `z.ipv4()`.
+- CODE-AWARE ("use ONLY names that literally appear in the evidence"): stops the JSON-Schema
+  substitution (real gain) but then INVENTS `require('zod').validate({...})` and hand-rolls the
+  regex anyway.
+**So a code-aware prompt is necessary and NOT sufficient. The ~3B FM will not faithfully copy an
+identifier out of clean, correct, in-context evidence.**
+
+**NEXT — the doctrine-consistent move, and DO NOT read this as "needs a bigger model":** VGR's own
+answer applies. Don't trust the model, CHECK it. Build a deterministic **API-faithfulness verifier**
+on the grounded code path: extract identifiers from the evidence, reject emitted code that calls
+library APIs absent from it (`validate`, `$schema`), and repair/retry. That is a checker, not an
+oracle — the same shape as the arithmetic recomputation verifier (cont.58). This is the first
+answer-side verifier for LIBRARY code, and it is the real Task-4 blocker.
+
+Then: code path fetches source not READMEs → ungate code path → app-build path (Task 3's class,
+still untouched) → re-run Phase 1's five tasks (still the only thing that moves the number).
+See CRUCIBLE_AUDIT_PHASE2.md "Phase 2a/2b" + OPEN QUESTIONS 7-9.)
+
 
 **cont.80 (2026-07-16) — Phase 0: the agentic path measured for the first time.**
 
