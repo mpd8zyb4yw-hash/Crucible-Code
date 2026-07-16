@@ -54,7 +54,23 @@ const SUITES = [
   // drives the real stochastic FM (300s, ±4pt noise); it is a tracked metric, not a gate.
   'keepk:bench',
   'fault:bench',
+  // cont.79c audit: these were deterministic and passing but registered NOWHERE, so nothing
+  // failed CI when they broke. Verified individually before adding (all <2s except html:bench).
+  'vgr:iterate',
+  'conversational:bench',
+  'ambiguity:bench',
+  'debate:bench',
+  // Real headless-Electron HTML runtime verification (~30s). Kept IN deliberately: if Electron
+  // is missing this fails loudly, which is the honest outcome — a behavioral gate that silently
+  // does not run is worse than one that tells you it cannot.
+  'html:bench',
 ]
+// DELIBERATELY NOT REGISTERED (each for a stated reason — do not "fix" without reading):
+//   fault:live, smoke*, synth:fm-bench, research:bench, convo:coherence — drive the real
+//     stochastic FM or an LLM judge. Metrics, not gates: they cannot fail deterministically.
+//   synth:prove, bench:ocb — covered by prove:all; synth:prove also prints "passed: 4/4"
+//     (noun BEFORE the count), which parseCounts cannot read without loosening the regex
+//     enough to misparse other suites. Run via `npm run prove:all`.
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')
 
