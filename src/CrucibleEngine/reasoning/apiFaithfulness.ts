@@ -165,15 +165,39 @@ export function extractLibraryUsage(code: string): LibBinding[] {
  *
  * Normalizes namespace-qualified prose to bare names, so a docs table listing `ipv4()` and a
  * code sample writing `z.ipv4()` both certify the same call (the cont.82 Q10 hazard).
+ *
+ * TWO DEFECTS FIXED (cont.85) — the same vocabulary bug fired in BOTH directions:
+ *
+ *   • FALSE CERTIFY. The member rule was `\.\s*(\w+)`, and `\s*` spans a SENTENCE BOUNDARY:
+ *     `...email addresses.\nZod v4` parses as a member access and enters `Zod` into the
+ *     vocabulary, so the fabricated `import { Zod } from 'zod'` certified green (t12). Same
+ *     path admitted `Perfect` from `instantly. Perfect for learning`. A period followed by
+ *     whitespace is prose; real member access — including chained `\n  .min()` — never puts
+ *     whitespace between the dot and the name. So the dot now binds tight.
+ *
+ *   • FALSE REJECT (worse — cont.79h). The old `length > 1` floor could never admit `z`, so
+ *     `import { z } from 'zod'` — the canonical zod import, with `const ipv4 = z.ipv4();`
+ *     sitting in the evidence — was reported as a fabricated identifier. Single-character
+ *     identifiers are the NORM for namespace imports (`z`, `_`, `$`), so the floor is gone and
+ *     the dotted rule below harvests the namespace ROOT (`z` in `z.ipv4()`), not just members.
+ *
+ * Both fixes stay on the safe side of the asymmetry: dropping the floor and harvesting roots
+ * only ADD to the vocabulary (fewer rejects), and the dot tightening removes only matches that
+ * are provably prose. Prose noise that survives (`foo (v4)` still reads as a call) is left
+ * alone deliberately — over-inclusion costs a missed check, under-inclusion costs a false
+ * reject, and this file resolves every ambiguity toward abstain.
  */
 export function documentedIdentifiers(evidence: string): Set<string> {
   const vocab = new Set<string>()
-  const add = (s: string | undefined) => { if (s && s.length > 1) vocab.add(s) }
+  const add = (s: string | undefined) => { if (s) vocab.add(s) }
 
   // called: `foo(` and `z.foo(`  → records `foo`
   for (const m of evidence.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) add(m[1])
-  // member access: `.foo` → records `foo`
-  for (const m of evidence.matchAll(/\.\s*([A-Za-z_$][\w$]*)/g)) add(m[1])
+  // dotted access `z.ipv4` → records BOTH the namespace root `z` and the member `ipv4`.
+  // Whitespace-free on both sides of the dot, so a prose sentence boundary cannot match.
+  for (const m of evidence.matchAll(/\b([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)/g)) { add(m[1]); add(m[2]) }
+  // chained member on its own line: `\n  .min(` → records `min` (no LHS to root).
+  for (const m of evidence.matchAll(/\.([A-Za-z_$][\w$]*)/g)) add(m[1])
   // named imports/exports in evidence code samples
   for (const m of evidence.matchAll(/(?:import|export)\s*\{([^}]*)\}/g))
     for (const raw of m[1].split(',')) add(raw.trim().split(/\s+as\s+/).pop()?.trim())

@@ -160,6 +160,55 @@ console.log('\n== FALSE-REJECT GUARDS for the whole-answer check ==')
   check('prose-only answer → abstain', v.status === 'abstain', v.reason)
 }
 
+// ── cont.85: the vocabulary bug that fired in BOTH directions ────────────────────────────────
+// Evidence is VERBATIM from audit-traces/p4/t11.evidence.txt — the prose that broke it:
+//   • `...email addresses.\nZod v4` — a sentence boundary the old `\.\s*(\w+)` member rule read
+//     as a member access, entering `Zod` into the vocabulary.
+//   • `const ipv4 = z.ipv4();`      — the namespace root `z`, which the old `length > 1` floor
+//     could never admit, so the canonical zod import was reported as fabricated.
+console.log('\n== [REAL] prose-vocabulary false certify + the false reject it hid (cont.85) ==')
+{
+  const PROSE_EV = `[S1] Defining schemas | Zod — https://zod.dev/api?id=ip-addresses
+String formats: z.email(); z.uuid(); z.ipv4(); z.ipv6(); z.cidrv4(); z.base64();
+IP addresses const ipv4 = z.ipv4();
+Test and validate your Zod schemas instantly. Perfect for learning Zod or debugging complex schemas.
+Stop mixing up user IDs with email addresses.
+Zod v4
+In Zod v4, z.string() is unchanged.`
+
+  // ── The false CERTIFY (t12 shipped this green).
+  const fabricated = code("import { Zod } from 'zod';\nconst schema = new Zod.Schema({ pattern: /^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$/ });\nexport default schema;")
+  const v = verifyApiFaithfulness(fabricated, PROSE_EV)
+  check('[REAL] fabricated `import { Zod }` → violations (was CERTIFIED)', v.status === 'violations', v.reason)
+  check('[REAL] names Zod as the offender', v.violations[0]?.identifier === 'Zod')
+
+  // ── The false REJECT the same defect hid — the worse error (cont.79h).
+  const canonical = code("import { z } from 'zod';\nconst ipv4Schema = z.ipv4();\nexport default ipv4Schema;")
+  const c = verifyApiFaithfulness(canonical, PROSE_EV)
+  check('[REAL] canonical `import { z } from zod` certifies (was REJECTED)', c.status === 'certified', c.reason)
+
+  // ── The harvester rules, directly.
+  const vocab = documentedIdentifiers(PROSE_EV)
+  check('sentence boundary `addresses.\\nZod` does not document Zod', !vocab.has('Zod'))
+  check('sentence boundary `instantly. Perfect` does not document Perfect', !vocab.has('Perfect'))
+  check('namespace root `z` in `z.ipv4()` IS documented', vocab.has('z'))
+  check('member `ipv4` in `z.ipv4()` IS documented', vocab.has('ipv4'))
+}
+{
+  // Chained calls put the dot at the START of a line — the tightened rule must still see them.
+  const chainEv = "const s = z.string()\n  .min(5)\n  .trim();\nconst t = z.number().positive();"
+  const vocab = documentedIdentifiers(chainEv)
+  check('chained `\\n  .min(` still documents min', vocab.has('min'))
+  check('chained `.trim()` still documents trim', vocab.has('trim'))
+  check('chained evidence still documents the root z', vocab.has('z'))
+}
+{
+  // Single-char namespace imports are the NORM, not an edge case — none may false-reject.
+  const lodashEv = "Import lodash: const _ = require('lodash');\n_.chunk([1,2,3], 2);\n_.debounce(fn, 100);\n_.merge(a, b);\n_.pick(o, ['a']);"
+  const v = verifyApiFaithfulness(code("const _ = require('lodash');\nconst out = _.chunk([1, 2, 3, 4], 2);\nconsole.log(out);"), lodashEv)
+  check('single-char namespace `_` (lodash) certifies', v.status === 'certified', v.reason)
+}
+
 console.log('\n== extraction unit checks ==')
 {
   const u = extractLibraryUsage("import * as z from 'zod'\nimport { toTypedSchema } from '@vee-validate/zod'")
