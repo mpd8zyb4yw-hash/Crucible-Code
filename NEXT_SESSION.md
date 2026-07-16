@@ -17,9 +17,40 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.79e — NON-GAME HTML now behaviorally verified: classifyHtmlGoal splits app/game, runtimeVerifyApp catches dead-control/self-erasing/blank-render, APP_TEMPLATES ships a working todo with 0 FM calls, LIVE-VERIFIED in browser; game path byte-identical; bench:all 929/929 across 33 suites)
+## CURRENT STATE (last updated 2026-07-16 cont.79f — BINDING DOCTRINE: NO TEMPLATES anywhere, universal fixes only. Removed GAME_TEMPLATES + APP_TEMPLATES; both HTML paths = web-retrieval + FM + behavioral gate. classifyHtmlGoal splits app/game; runtimeVerifyApp catches dead-control/self-erasing/blank-render/no-visible-effect(innerText)/NaN. LIVE: no-template todo retrieves+synthesizes a WORKING app, browser-verified. Residuals: empty-guard + field-clear uncaught. bench:all 928/928 across 33 suites)
 
-**cont.79e (2026-07-16 — 446fc6b) — NON-GAME HTML now has a behavioral verifier + a working template:**
+**cont.79f (2026-07-16 — ea67f91) — BINDING DOCTRINE: NO TEMPLATES, universal fixes only:**
+
+- **User-forced hard rule, applies to EVERY future iteration:** memorized templates / hardcoded
+  lookup tables are NOT allowed anywhere in the pipeline. Correctness comes SOLELY from web lookup +
+  retrieval + planning + the verification loop — never a baked-in answer keyed to a request shape.
+  A template makes ONE request shape pass while the next un-templated shape still fails; it masks
+  the real capability gap instead of closing it. Every fix must improve the GENERAL mechanism (the
+  proposer / retriever / verifier / planner), never special-case the request in front of you. See
+  memory `crucible-no-templates-universal-fix` (also indexed at top of MEMORY.md).
+- **Removed GAME_TEMPLATES (snake/pong/breakout) AND APP_TEMPLATES (todo/counter, cont.79e).** Both
+  HTML paths now: retrieve a real working reference from the open web → FM ports it → runtime
+  behavioral gate → repair loop. No memorized fallback.
+- **`retrieveAppReference` + `WEB_APP_MARK`** — the app-path analogue of `retrieveGameReference`,
+  onto the SAME `retrieveForTask` spine. That shared spine IS the universal mechanism; the two
+  callers just distil different queries.
+- **Stronger universal gate signal (the important part):** the first no-template live run defeated
+  the innerHTML-keyed dead-control check — the FM shipped a todo doing `tasks.push(x);
+  app.appendChild(row)` with no `render()`, so innerHTML churned while the visible list stayed empty
+  and it PASSED. The gate now keys on VISIBLE text change (innerText) + control-count change: an
+  interaction that fills a field and commits must produce something the user can SEE. Scoped to
+  data-entry apps so a style-only toggle isn't false-hit.
+- **LIVE-VERIFIED (no template in the path):** "build a todo list app" retrieves a reference, the FM
+  produces a genuinely WORKING todo (type → Add → item appears + Delete → input persists),
+  gate-verified + browser-driven + screenshot. **Honest residuals the gate does NOT yet catch:**
+  the FM's impl doesn't guard empty input and doesn't clear the field after add (minor — a visible
+  effect still occurs, so the visible-effect check passes). These are the next universal-check
+  candidates (empty-commit-adds-nothing; field-clears-after-commit) — add them as GENERAL invariants
+  driven by a second empty-field interaction, NOT as todo-specific logic.
+- bench:all 929→**928/928 across 33 suites** (2 template checks replaced by 1 positive control + the
+  new visible-effect check); game path byte-identical (html:bench 5/5); html:app:bench 28/28.
+
+**cont.79e (2026-07-16 — 446fc6b) — NON-GAME HTML now has a behavioral verifier (templates REMOVED in 79f):**
 
 - **The bug was mis-verification, not missing verification.** The HTML write path was game-shaped
   end to end — every `.html` goal got a canvas game shell, the game system prompt, and the GAME
