@@ -26,6 +26,15 @@ export interface Candidate<T = unknown> {
   value: T
   /** Stable fingerprint used for anti-thrash dedup (identical proposal ⇒ stuck). */
   fingerprint: string
+  /**
+   * True when this candidate was produced WITHOUT invoking a model — a mechanical
+   * single-edit repair, or executable code lifted from a retrieved source. The search
+   * loop must not charge it against the model-call budget: that budget exists to bound
+   * MODEL work, and billing free work against it both understates the deterministic
+   * tiers in every report and starves the FM of the calls it was actually granted.
+   * Proposers that do call a model leave this unset.
+   */
+  modelFree?: boolean
 }
 
 /**

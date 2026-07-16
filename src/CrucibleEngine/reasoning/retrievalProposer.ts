@@ -340,7 +340,8 @@ export function makeRetrievalProposer(opts: RetrievalProposerOpts): Proposer<str
       if (usedFingerprints.has(fingerprint)) continue
       usedFingerprints.add(fingerprint)
       emit({ type: 'thought', text: 'retrieval: proposing an executable candidate straight from web source' })
-      return { value, fingerprint }
+      // Lifted verbatim from retrieved source — no model wrote it, so it costs no model call.
+      return { value, fingerprint, modelFree: true }
     }
     return null // exhausted → composite falls through to the next proposer (the FM)
   }

@@ -176,7 +176,7 @@ export function makeMutationRepairProposer(buggyCode: string): Proposer<string> 
     const variants = singleEditVariants(buggyCode).slice(0, MAX_VARIANTS)
     for (let i = 0; i < variants.length; i++) {
       if (ctx.signal?.aborted) return null
-      const candidate: Candidate<string> = { value: variants[i], fingerprint: `single-edit-${i}` }
+      const candidate: Candidate<string> = { value: variants[i], fingerprint: `single-edit-${i}`, modelFree: true }
       const verdict = await verifyCode(candidate, ctx.spec)
       if (verdict.pass) return candidate
     }

@@ -64,8 +64,24 @@ const SYSTEM = [
 // consensus. This is strictly better ground truth than anything the model invents, and
 // it's exactly what the deterministic synth path keys on too (f(x)===y worked examples).
 
+// The connector may be preceded by a MODAL ("isAdult(18) should return true") — the most natural
+// way a repair request states its examples, and the shape a bare `returns?` misses entirely. A
+// missed example is not a neutral loss: the case falls through to model-invented consensus, which
+// costs a call AND is weaker ground truth than the user's own stated fact. Widening is safe by
+// construction — addExample discards any pair that isn't a clean literal, so a sentence that only
+// looks example-shaped ("run(x) should be fast") evaluates to nothing and is skipped, never guessed.
+// Multi-char operators MUST precede their prefixes (`=>` before `=`), or `=` matches first and
+// leaves ">" in the value, which then fails to evaluate.
+//
+// The VALUE alternation is ordered longest-form-first, and that order is load-bearing. The final
+// `[^\n,;.]+` fallback stops at `.` to avoid swallowing the sentence's terminating period — but on
+// its own it also truncates "1.5" to "1" and "-0.25" to "-0", which EVALUATE CLEANLY and are
+// therefore harvested as TRUSTED ground truth that is silently WRONG. A wrong gold case is the
+// worst failure this module has: it is exempt from consensus by design, so it would certify a
+// wrong implementation (or reject a correct one). Matching structured literals and numbers
+// EXPLICITLY, ahead of the fallback, is what keeps the trusted path honest.
 const EXAMPLE_RX =
-  /([A-Za-z_$][\w$]*)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*(?:===|==|=|→|->|returns?|gives?|yields?|=>)\s*([^\n,;.]+)/gi
+  /([A-Za-z_$][\w$]*)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*(?:(?:should|must|shall|will|would|ought\s+to|has\s+to|needs?\s+to)\s+)?(?:===|==|=>|=|→|->|returns?|gives?|yields?|evaluates?\s+to|equals?|outputs?|produces?|be)\s*(\[[^\]\n]*\]|\{[^}\n]*\}|"[^"\n]*"|'[^'\n]*'|-?\d+(?:\.\d+)?|true|false|null|undefined|[^\n,;.]+)/gi
 
 /** Evaluate a JS/JSON literal (from the user's own prompt) to a value, or throw. */
 function evalLiteral(src: string): unknown {

@@ -3371,7 +3371,12 @@ app.post('/api/chat', async (req, res) => {
             : 'general invariants held — property/metamorphic certification'
           send({ type: 'tool_result', id: 'vgr_0', tool: plan.mode !== 'create' ? 'edit_file' : 'write_file', ok: true, output: `VGR-certified ${rel} — ${plan.detail} (${certBasis}, no external model)` })
           send({ type: 'verify', passed: true, signal: 'test', report: `Execution-certified — ${certBasis} in ${vgr.search?.modelCalls ?? 0} model call(s) — ${vgr.detail}` })
-          const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — the model proposed, execution verified the result (${certBasis}). Zero external model calls.`
+          // "the model proposed" is FALSE on a zero-model solve (a mechanical single-edit repair
+          // or retrieved source certified outright), so say what actually happened instead.
+          const provenance = vgr.search?.modelCalls === 0
+            ? 'no model was involved — the fix was derived mechanically and certified by execution'
+            : 'the model proposed, execution verified the result'
+          const answer = `Wrote and CERTIFIED ${rel} via verification-guided reasoning — ${provenance} (${certBasis}). Zero external model calls.`
           send({ type: 'final', text: answer, meta: { vgrCertified: true, entry: vgr.entry, modelCalls: vgr.search?.modelCalls, confidence: 1 } })
           patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
           if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])

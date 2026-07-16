@@ -276,6 +276,46 @@ async function run() {
   ok('one wrong function fails on ITS cases (per-function ground truth)',
     !oneWrong.pass && oneWrong.signals.some(s => /sub/.test(s)), oneWrong.signals[0])
 
+  // ── PART G2 — harvest fidelity: the GOLD tier must never be silently wrong ────────
+  // User examples are trusted WITHOUT consensus, so a mis-parsed one is the worst failure this
+  // module has — it would certify a wrong implementation against the user's own stated fact.
+  console.log('\nPART G2 — user-example harvest fidelity (gold tier)')
+  const dec = harvestExplicitExamples('half(3) returns 1.5')
+  ok('a DECIMAL expected value harvests exactly (not truncated at the decimal point)',
+    dec.cases.length === 1 && dec.cases[0].expected === 1.5, `expected ${JSON.stringify(dec.cases[0]?.expected)}`)
+  const negDec = harvestExplicitExamples('f(1) returns -0.25')
+  ok('a NEGATIVE decimal harvests exactly', negDec.cases.length === 1 && negDec.cases[0].expected === -0.25,
+    `expected ${JSON.stringify(negDec.cases[0]?.expected)}`)
+  // The most natural phrasing of a repair request — a modal between the call and the connector.
+  const modal = harvestExplicitExamples('Fix isAdult — isAdult(18) should return true, isAdult(17) should return false.')
+  ok('MODAL phrasing ("should return") harvests as gold, not dropped to model consensus',
+    modal.cases.length === 2 && modal.cases[0].expected === true && modal.cases[1].expected === false,
+    `${modal.cases.length} case(s)`)
+  ok('"should be" / "must equal" phrasings harvest too',
+    harvestExplicitExamples('add(2,3) should be 5').cases[0]?.expected === 5 &&
+    harvestExplicitExamples('add(2,3) must equal 5').cases[0]?.expected === 5)
+  ok('`=>` connector is reachable (multi-char operator ordered before its `=` prefix)',
+    harvestExplicitExamples('add(2,3) => 5').cases[0]?.expected === 5)
+  // Widening the connector must NOT start guessing: an example-SHAPED sentence whose value is not
+  // a literal has no determined expected output, so it must yield nothing rather than a guess.
+  ok('example-shaped prose with a non-literal value is REJECTED (never guess)',
+    harvestExplicitExamples('processData(x) should be fast and run(y) will be slow').cases.length === 0 &&
+    harvestExplicitExamples('The function isAdult(age) should handle edge cases carefully').cases.length === 0)
+
+  // ── PART G3 — model-call accounting: free work must not be billed as model work ────
+  console.log('\nPART G3 — model-free proposal accounting')
+  {
+    const buggy = 'export function isAdult(age){\n  return age > 18\n}'
+    const gold = harvestExplicitExamples('isAdult(18) should return true, isAdult(17) should return false')
+    const r = await solveCodeTask({ goal: 'fix isAdult', entry: 'isAdult', cases: gold.cases, buggyCode: buggy }, { maxModelCalls: 6 })
+    // The deterministic single-edit repair fixes `>` → `>=` with no model involved: the budget
+    // must show that honestly, or every report understates the deterministic tier.
+    ok('a mechanical single-edit repair certifies with modelCalls === 0',
+      r.status === 'solved' && r.modelCalls === 0, `${r.status}, ${r.modelCalls} model call(s)`)
+    ok('the zero-model solve reports its provenance honestly',
+      /no model involved/.test(r.detail ?? ''), r.detail)
+  }
+
   // ── PART F — poisoned-case recovery (cross-derivation drops a bad model case) ──────
   console.log('\nPART F — poisoned model-case recovery')
   // square spec with a POISONED case at index 2: square(4) should be 16, model said 99.

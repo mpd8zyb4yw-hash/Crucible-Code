@@ -84,9 +84,17 @@ export async function search<T>(
   let nullProposals = 0
   const maxNulls = Math.max(6, o.maxModelCalls)
 
+  // Model-FREE proposals (mechanical single-edit repairs, retrieved executable code) cost no
+  // model call, so they must not draw down the model-call budget — but that budget is also the
+  // outer loop's bound, so a proposer emitting free candidates forever would never hit it.
+  // Patience/dedup would almost certainly stop that; this is the explicit backstop so it does
+  // not depend on "almost certainly". Generous — real free proposers cede after a bounded pool.
+  let freeProposals = 0
+  const maxFree = Math.max(32, o.maxModelCalls * 4)
+
   // Round 0 has no beam to expand from — seed it from the bare spec.
   // Each subsequent round expands every beam member, threading its failure feedback.
-  for (let round = 0; modelCalls < o.maxModelCalls; round++) {
+  for (let round = 0; modelCalls < o.maxModelCalls && freeProposals < maxFree; round++) {
     if (opts.signal?.aborted) {
       return finish('aborted', 'search aborted')
     }
@@ -97,7 +105,7 @@ export async function search<T>(
     const fresh: Attempt<T>[] = []
 
     for (const parent of parents) {
-      for (let k = 0; k < o.proposalsPerNode && modelCalls < o.maxModelCalls; k++) {
+      for (let k = 0; k < o.proposalsPerNode && modelCalls < o.maxModelCalls && freeProposals < maxFree; k++) {
         // The proposer sees the parent's line PLUS all global attempts — maximal
         // information per call. `diversify` fires when we're stuck so it changes tack.
         const history = parent ? [...attempts.filter(a => a !== parent), parent] : attempts.slice()
@@ -119,7 +127,9 @@ export async function search<T>(
           k--  // retry the same slot with a fresh call
           continue
         }
-        modelCalls++
+        // Charge the budget ONLY for real model work (see Candidate.modelFree).
+        if (candidate.modelFree) freeProposals++
+        else modelCalls++
 
         // Anti-thrash: an identical proposal we've already verified is wasted budget.
         // Record the collision as signal (so the next diversify is stronger) and skip.
@@ -145,7 +155,12 @@ export async function search<T>(
         // Ground truth says correct → done. Correctness certified by the verifier,
         // not by the model's confidence. This is the accept condition, and the only one.
         if (verdict.pass) {
-          return { status: 'solved', solution: candidate, best: attempt, attempts, modelCalls, detail: `solved in ${modelCalls} model call(s)` }
+          return {
+            status: 'solved', solution: candidate, best: attempt, attempts, modelCalls,
+            detail: modelCalls === 0
+              ? `solved in 0 model call(s) — certified from ${freeProposals} mechanical proposal(s), no model involved`
+              : `solved in ${modelCalls} model call(s)`,
+          }
         }
       }
     }
