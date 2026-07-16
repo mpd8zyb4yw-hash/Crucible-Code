@@ -17,7 +17,54 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.79g — app gate now carries 6 universal invariants: dead-control(innerText)/self-erasing/blank-render/NaN + empty-commit-adds-nothing + field-clears-after-commit, all add-shape-gated. NO-TEMPLATES doctrine (cont.79f) still binding. **NEW TOP PRIORITY: the FM+retrieval PROPOSER, not the gate** — a 6-attempt live todo run went 0/6 (all rejected by dead-control, escalated) where cont.79f's went 1-for-1 on the same goal. bench:all 932/932 across 33 suites)
+## CURRENT STATE (last updated 2026-07-16 cont.79h — MEASURED the app path: 4 rounds × 5 live todo builds. **True pass rate is 1/5 (20%)**, and every earlier "pass" this path ever reported was JUNK — the gate was shipping todo apps with no input field. Fixed 5 universal defects (1 gate false-reject, 1 gate hole, 1 routing lockout, 2 misdiagnosing repair messages). App gate now carries 7 invariants (+empty-form). NO-TEMPLATES doctrine (cont.79f) still binding. **TOP PRIORITY unchanged and now quantified: the FM+retrieval PROPOSER.** bench:all 959/959 across 33 suites)
+
+**cont.79h (2026-07-16 — c90d041, 8baac15) — the 5-run measurement, and what it exposed:**
+
+- **THE HEADLINE: the gate was SHIPPING UNUSABLE APPS AS PASSES.** 3 of 5 "passing" todo builds
+  had ZERO input fields. Verbatim live shape: `form = createElement('form')` + handlers wired +
+  `app.appendChild(form)` — **the input and button never go INSIDE the form**. It renders a heading
+  and a list (real visible text → blank-render passes) with zero controls/fields, so every
+  interaction check skipped it as *"no controls → legitimately static page, fail open"*. That
+  fail-open is right for a landing page and catastrophic for an app. **Measured 3/5 → true 0/5.**
+  Fixed with the goal-independent **empty-form invariant**: a `<form>` with nothing to type into and
+  nothing to press is dead UI in every context, so no legitimate page renders one. It is the model's
+  own declaration of intent, left unfulfilled.
+  - **This also retroactively voids cont.79f's "passed on attempt 1" claim** — that run almost
+    certainly shipped the same junk. Treat every pre-cont.79h app "pass" as unverified.
+- **My cont.79g field-clear invariant had a FALSE POSITIVE that made repair unconvergeable.** The
+  harness types its sentinel into EVERY field; the check fired if ANY field still held it. So a
+  correct todo with a filter box (**the shape the FM actually writes**) was rejected, and the repair
+  feedback told the model to clear an input it already cleared. 2 of 5 runs failed 6/6 on it. Now
+  keyed on *"did NO sentinel field clear"* (counts, not a boolean).
+- **`isWebArtifactGoal` locked EVERY non-game app out of the verified path.** It keyed on named
+  arcade titles (snake|tetris|pong…), so a pathless "build a todo list app" / "expense tracker" /
+  "unit converter" never reached write→gate→repair and came back as **PROSE**. Regated on request
+  SHAPE (creation verb + artifact category + non-browser-runtime veto); pathless app goals now land
+  at `app.html`. **LIVE-VERIFIED** (pathless todo now builds; it returned a tutorial before).
+- **Repair feedback was architecture-specific and misdiagnosed two real shapes** — this is why 6/6
+  loops never converged:
+  - *no button rendered* → the harness never committed, yet the message claimed it "clicked the
+    primary control" and blamed a missing re-render. Harness now falls back to **Enter/requestSubmit**
+    (a legitimate design it could never exercise) and the message names the no-control case.
+  - *field-clear* advice prescribed `input.value = ''` — a line a **state-driven render app never
+    contains**; its real bug is ORDERING (`render(); draft = ''` clears too late). Message now covers
+    both shapes. 3 of 5 runs failed 6/6 on exactly this, unable to act on the advice.
+- **`CRUCIBLE_DUMP_REJECTS=<dir>`** (opt-in, off by default) dumps every rejected candidate. This is
+  what made all of the above findable — a rejection tells you what the gate saw, never what the model
+  wrote, and without the candidate you **cannot** tell an FM bug from a gate false-reject.
+- **Measured pass rates** (N=5 each, same goal, sequential — the FM queue is concurrency-1):
+  buggy gate 2/5 → field-fix 2/5 → +routing/Enter 1/5 → +msg 3/5 → **hole closed: 1/5**. Every number
+  before the last is inflated by the empty-form hole. **N=5 cannot separate these** — the honest read
+  is ~20%, and any claim that a fix moved the rate needs N≥20.
+- The single genuine pass was **read and confirmed correct** (input appended to form, `entered=''`
+  BEFORE `render()`, guard, preventDefault) — the gate now discriminates correct ordering from the
+  ordering bug.
+
+**METHODOLOGICAL LESSON (keep — it has now paid out twice):** a green gate proves only that nothing
+it checks is broken. Both the empty-form and the self-erasing (cont.79e) invariants were found by
+**READING what a PASS actually produced**, never by watching the bench go green. Read the artifact,
+not the verdict.
 
 **cont.79g (2026-07-16 — 404c743) — two universal app-gate invariants + a live variance finding:**
 
