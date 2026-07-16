@@ -55,6 +55,8 @@ interface Probe {
   // and of text-ENTRY controls specifically, measured before and after the interaction.
   controls?: number
   fields?: number
+  /** <form> elements containing no field and no button — dead UI in any context. */
+  emptyForms?: number | null
   controlsAfter?: number | null
   fieldsAfter?: number | null
   // Did the DOM structurally change after filling the fields and clicking the primary control?
@@ -373,6 +375,32 @@ export async function runtimeVerifyApp(html: string, goal = ''): Promise<string 
           '(append it to #app or to something already inside #app), and render() must run on load. A control you create but never ' +
           'append to the DOM does not exist for the user.'
       }
+    }
+    // Empty-form invariant. Found by READING what a PASSING live run actually shipped (cont.79h) —
+    // the same way the self-erasing check below was found, and the reason both exist: a green gate
+    // proves only that nothing it checks is broken.
+    //
+    // The FM built its add-UI like this, and the gate waved it through on 3 of 5 runs:
+    //
+    //     let form = document.createElement('form');
+    //     form.addEventListener('submit', ...);   // handlers wired
+    //     app.appendChild(form);                  // ...but no input and no button ever go INSIDE it
+    //
+    // The result renders a heading and an empty list, so it has real visible text (blank-render
+    // passes) and ZERO controls and ZERO fields — which made every interaction check skip as
+    // "no controls → legitimately static page, fail open". A todo app with no way to add a todo
+    // shipped, three times, reported as a pass. That fail-open is correct for a landing page and
+    // catastrophic here, and the goal string can't be trusted to tell them apart.
+    //
+    // An EMPTY <form> settles it without knowing the goal: a form with nothing to type into and
+    // nothing to press is dead UI in every context, so no legitimate page renders one. It is the
+    // model's own declaration of intent — it built a form, so it meant to collect input — left
+    // unfulfilled. Skipped when unmeasured (older harness → fail-open).
+    if ((probe.emptyForms ?? 0) > 0) {
+      return 'the app renders an EMPTY <form>: you created a form element and wired up its handlers, but never put the input or the ' +
+        'submit button INSIDE it, so the user has nothing to type into and nothing to press — the app cannot be used at all. ' +
+        'Create the field and the button, append them TO THE FORM (form.appendChild(input); form.appendChild(button)), and only ' +
+        'then append the form to the page. Every element you create must be attached to something the user can see.'
     }
     // Self-erasing-UI invariant. Found by READING what a passing live run actually produced
     // (cont.79e): the FM built a todo app whose render() does `app.innerHTML = ''` and re-appends

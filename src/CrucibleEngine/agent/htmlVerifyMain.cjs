@@ -49,7 +49,12 @@ const DOM_CONTROLS = `(() => {
     const t = String(el.type || 'text').toLowerCase();
     return t !== 'submit' && t !== 'button' && t !== 'reset' && t !== 'image' && t !== 'hidden';
   });
-  return { controls: all.length, fields: fields.length };
+  // A <form> containing nothing to type into and nothing to press is dead UI. No real page renders
+  // one on purpose, so this needs no goal knowledge to judge — see the invariant in
+  // htmlRuntimeVerify for why it is the check that catches the shape the model actually ships.
+  const emptyForms = [...document.querySelectorAll('form')].filter(f =>
+    !f.querySelector('input:not([type=hidden]), textarea, select, button, [role=button]')).length;
+  return { controls: all.length, fields: fields.length, emptyForms: emptyForms };
 })()`
 
 // Drive the app the way a user would: fill every visible text field with a sentinel, THEN click the
@@ -210,6 +215,7 @@ app.whenReady().then(async () => {
       const c0 = await ex(DOM_CONTROLS, null)
       out.controls = c0 ? c0.controls : 0
       out.fields = c0 ? c0.fields : 0
+      out.emptyForms = c0 ? c0.emptyForms : null
       out.loadText = [await ex(DOM_TEXT, '')]
       const before = await ex(DOM_SIG, null)
       const textBefore = await ex(DOM_TEXT, '')       // VISIBLE text before the interaction

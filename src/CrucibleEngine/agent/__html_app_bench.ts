@@ -154,6 +154,32 @@ document.getElementById('q').addEventListener('input', render);
 render();
 </script></body></html>`
 
+// The EMPTY-FORM bug — verbatim in shape from what the gate actually SHIPPED as a pass on 3 of 5
+// live runs (cont.79h). The model creates a form, wires its handlers, and never appends the input
+// or the button into it. It renders a heading and a list, so it has visible text (blank-render
+// passes) and zero controls/fields, so every interaction check skipped it as a "static page".
+// A todo app with no way to add a todo. Must REJECT.
+const EMPTY_FORM = `${HEAD}<body><div id="app"></div>
+<script>
+var tasks = [], entered = '';
+function render() {
+  var app = document.getElementById('app'); app.innerHTML = '';
+  var h = document.createElement('h1'); h.textContent = 'Todo List'; app.appendChild(h);
+  var ul = document.createElement('ul');
+  tasks.forEach(function (t) { var li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+  app.appendChild(ul);
+  var form = document.createElement('form');
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!entered.trim()) return;
+    tasks.push(entered); render(); entered = '';
+  });
+  form.addEventListener('input', function (e) { entered = e.target.value; });
+  app.appendChild(form);          // no input, no button ever go INSIDE the form
+}
+render();
+</script></body></html>`
+
 // The state-driven ORDERING bug, verbatim in shape from what the on-device FM actually shipped on
 // 3 of 5 live runs (cont.79h). render() re-creates the field with `input.value = draft`, and the
 // handler clears `draft` AFTER calling render() — so the field is redrawn with the stale text and
@@ -406,6 +432,11 @@ async function main() {
   const enterOnly = await runtimeVerifyApp(ENTER_ONLY, 'todo app')
   check('a correct Enter-to-commit todo with no Add button passes (Enter/submit fallback)',
     enterOnly === null, `expected null, got: ${enterOnly}`)
+
+  // The bug the gate SHIPPED as a pass — an app with no way to add anything.
+  const emptyForm = await runtimeVerifyApp(EMPTY_FORM, 'todo app')
+  check('an app that renders an EMPTY form (no input/button inside) is rejected',
+    emptyForm !== null && /EMPTY <form>|empty form/i.test(emptyForm), `expected an empty-form rejection, got: ${emptyForm}`)
 
   // The dominant live failure shape — clearing the state AFTER render() instead of before.
   const tooLate = await runtimeVerifyApp(STATE_CLEAR_TOO_LATE, 'todo app')
