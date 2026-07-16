@@ -66,6 +66,15 @@ interface Probe {
   // What the probe actually did — which control it clicked, how many fields it filled. Reported
   // in the rejection text so the repair feedback names the exact control that did nothing.
   interact?: { filled: number; clicked: number; control: string | null } | null
+  // Was the commit ADD-shaped — did the visible text grow and take up the value we typed? Gates
+  // both commit invariants below, so that a search/filter box (text persists, list shrinks) is
+  // never held to an add-list app's rules.
+  addShaped?: boolean
+  // Does a text field STILL hold the sentinel we typed, after the app committed it?
+  fieldSentinelAfter?: boolean | null
+  // Visible control count around a second commit performed with every field EMPTY. A grown count
+  // means the app recorded a blank entry (a new row brings its own Delete button).
+  emptyCommit?: { controlsBefore: number; controlsAfter: number } | null
 }
 
 // Injected into the VERIFY COPY only (never the shipped artifact): wraps keydown/keyup
@@ -392,6 +401,32 @@ export async function runtimeVerifyApp(html: string, goal = ''): Promise<string 
       return `the app does nothing visible: after typing into the field and clicking ${which}, nothing the user can see changed — the value you entered never appears. ` +
         'The handler likely updates a state variable (or re-appends the form) but never re-renders the list/output. ' +
         'At the END of every handler, call render() so the view is rebuilt from the updated state — and make render() actually draw the current data (e.g. one <li> per item), not just re-add the input.'
+    }
+    // ── Commit-shape invariants ──────────────────────────────────────────────
+    // Both fire only on an ADD-shaped commit (the app took our typed value and appended it to the
+    // page). That gate is what keeps them universal rather than todo-specific: a search box, a
+    // filter, a calculator and a static page are all add-shaped=false and skip these entirely.
+    // Both come from bugs the first template-free live run actually shipped (cont.79f) — it passed
+    // every check above and was still subtly wrong to use.
+    if (probe.addShaped) {
+      // (a) empty-commit-adds-nothing. The missing `if (!value.trim()) return` guard: pressing Add
+      // on an empty field records a blank entry. Keyed on the control count growing, because a
+      // blank row brings its own Delete button, while a correct guard that renders a "please enter
+      // something" message adds text but no control — so a guarded app passes either way.
+      const ec = probe.emptyCommit
+      if (ec && ec.controlsAfter > ec.controlsBefore) {
+        return 'the app records empty entries: clearing the text field and pressing the commit control anyway added a blank item to the list. ' +
+          'Guard the handler before it records anything — read the field, trim it, and if the result is an empty string, return immediately ' +
+          'without adding to the list or re-rendering.'
+      }
+      // (b) field-clears-after-commit. The handler adds the item but leaves the text sitting in the
+      // field, so the user's next entry types onto the end of the previous one. Only meaningful
+      // while the field still exists (the self-erasing check above owns the field-is-gone case).
+      if (probe.fieldSentinelAfter === true && (probe.fieldsAfter ?? 0) > 0) {
+        return 'the app does not clear the input after committing: the text that was just added to the list is still sitting in the field, ' +
+          'so the next thing the user types is appended to it. After you add the value to your state and re-render, reset the field to an ' +
+          'empty string (input.value = \'\') so it is ready for the next entry.'
+      }
     }
     // Fallback for pure-button apps (no field filled) that are entirely inert — nothing changed at
     // all, visible or otherwise. Keeps the original dead-wiring coverage for e.g. a broken counter.

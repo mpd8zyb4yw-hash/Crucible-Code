@@ -81,6 +81,61 @@ function render() {
 render();
 </script></body></html>`
 
+// A todo that renders each item with its own Delete button — the shape the FM actually produces,
+// and the one the empty-commit probe reads (a blank row brings a control with it). Parameterized
+// by its submit handler so the two commit-shape bugs below differ ONLY in that handler.
+const delTodo = (submit: string) => `${HEAD}<body>
+<h1>My Todos</h1>
+<form id="f"><input id="t" placeholder="new todo"><button type="submit">Add</button></form>
+<ul id="list"></ul>
+<script>
+var items = [];
+function render() {
+  var ul = document.getElementById('list'); ul.innerHTML = '';
+  items.forEach(function (it, i) {
+    var li = document.createElement('li');
+    var span = document.createElement('span'); span.textContent = it; li.appendChild(span);
+    var del = document.createElement('button'); del.textContent = 'Delete';
+    del.addEventListener('click', function () { items.splice(i, 1); render(); });
+    li.appendChild(del); ul.appendChild(li);
+  });
+}
+document.getElementById('f').addEventListener('submit', function (e) { e.preventDefault(); ${submit} });
+render();
+</script></body></html>`
+
+// Bug (a) — the missing empty-input guard, shipped by the first template-free live run (cont.79f).
+// Adds, clears, re-renders: every earlier check passes. But pressing Add on an empty field records
+// a blank entry. Must REJECT.
+const UNGUARDED_EMPTY = delTodo(`
+  var el = document.getElementById('t');
+  items.push(el.value); el.value = ''; render();`)
+
+// Bug (b) — the value is added but the field is never cleared, so the user's next entry types onto
+// the end of the last one. Guarded, renders correctly, passes every earlier check. Must REJECT.
+const NO_CLEAR = delTodo(`
+  var el = document.getElementById('t');
+  var v = el.value.trim(); if (!v) return;
+  items.push(v); render();`)
+
+// A FILTER box — the false-reject both commit invariants must not produce. It legitimately KEEPS
+// its text (that's the query) and legitimately makes the list SHRINK rather than grow, so the
+// commit is not add-shaped and both checks skip. Must PASS.
+const FILTER_HTML = `${HEAD}<body><h1>Fruit</h1>
+<input id="q" placeholder="filter"><button id="go">Search</button><ul id="list"></ul>
+<script>
+var all = ['apple', 'banana', 'cherry'];
+function render() {
+  var q = document.getElementById('q').value.trim().toLowerCase();
+  var ul = document.getElementById('list'); ul.innerHTML = '';
+  all.filter(function (f) { return f.indexOf(q) !== -1; })
+     .forEach(function (f) { var li = document.createElement('li'); li.textContent = f; ul.appendChild(li); });
+}
+document.getElementById('q').addEventListener('input', render);
+document.getElementById('go').addEventListener('click', render);
+render();
+</script></body></html>`
+
 // A calculator whose total is never initialized → "Total: NaN". Runs, responds, renders — every
 // other check passes. Must REJECT.
 const NAN_HTML = `${HEAD}<body><div id="out">Total: </div>
@@ -207,6 +262,31 @@ async function main() {
   check('an app that records input but never re-renders it is rejected (visible-effect check)',
     noRerender !== null && /nothing visible|never appears|re-render/i.test(noRerender),
     `expected a no-visible-effect rejection, got: ${noRerender}`)
+
+  // ── Commit-shape invariants (cont.79g) ─────────────────────────────────────
+  const unguarded = await runtimeVerifyApp(UNGUARDED_EMPTY, 'todo app')
+  check('an app that records an EMPTY entry is rejected (empty-commit-adds-nothing)',
+    unguarded !== null && /empty entries|blank item|Guard the handler/i.test(unguarded),
+    `expected an empty-commit rejection, got: ${unguarded}`)
+
+  const noClear = await runtimeVerifyApp(NO_CLEAR, 'todo app')
+  check('an app that never clears the field after committing is rejected (field-clears-after-commit)',
+    noClear !== null && /does not clear the input|still sitting in the field/i.test(noClear),
+    `expected a field-clear rejection, got: ${noClear}`)
+
+  // The false-reject guard for BOTH new checks — the add-shaped gate is what makes them universal.
+  const filter = await runtimeVerifyApp(FILTER_HTML, 'fruit filter')
+  check('a filter box that keeps its text and shrinks the list passes (not add-shaped → skipped)',
+    filter === null, `expected null, got: ${filter}`)
+
+  // The correct todo must satisfy the new invariants too — with the Delete-button shape the
+  // empty-commit probe actually reads, so this is a real positive control for it, not a vacuous one.
+  const goodDel = await runtimeVerifyApp(delTodo(`
+    var el = document.getElementById('t');
+    var v = el.value.trim(); if (!v) return;
+    items.push(v); el.value = ''; render();`), 'todo app')
+  check('a correct guarded, field-clearing todo with Delete buttons passes (positive control)',
+    goodDel === null, `expected null, got: ${goodDel}`)
 
   const nan = await runtimeVerifyApp(NAN_HTML, 'calculator')
   check('an app displaying NaN is rejected with a readout hint',

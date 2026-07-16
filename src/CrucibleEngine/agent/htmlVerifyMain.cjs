@@ -83,6 +83,50 @@ const DOM_INTERACT = `(() => {
 // (not textContent) so hidden nodes don't produce phantom readouts.
 const DOM_TEXT = `(() => (document.body ? String(document.body.innerText || '').slice(0, 4000) : ''))()`
 
+// The sentinel DOM_INTERACT types into text fields. Kept as a shared constant because two probes
+// below have to recognize it: one asks whether the field still holds it, the other whether the
+// committed value reached the page.
+const SENTINEL = 'Crucible check'
+
+// State of the visible text fields — how many still hold text, and whether any still holds the
+// sentinel we typed. Feeds the field-clears-after-commit invariant: an app that ADDS the typed
+// value to a list must empty the field, or the user's next entry is appended to the previous one.
+const DOM_FIELD_VALUES = `(() => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const fields = [...document.querySelectorAll('input, textarea')].filter(vis).filter(el => {
+    const t = String(el.type || 'text').toLowerCase();
+    return t !== 'submit' && t !== 'button' && t !== 'reset' && t !== 'image' && t !== 'hidden' && t !== 'checkbox' && t !== 'radio' && t !== 'file';
+  });
+  return {
+    nonEmpty: fields.filter(el => String(el.value || '').trim().length > 0).length,
+    sentinel: fields.some(el => String(el.value || '').indexOf(${JSON.stringify(SENTINEL)}) !== -1),
+  };
+})()`
+
+// Empty every visible text field, exactly as a user clearing the form would — then the caller
+// clicks commit again to test the empty-input guard.
+const DOM_CLEAR_FIELDS = `(() => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  [...document.querySelectorAll('input, textarea')].filter(vis).forEach(el => {
+    const t = String(el.type || 'text').toLowerCase();
+    if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image' || t === 'hidden' || t === 'file' || t === 'checkbox' || t === 'radio') return;
+    el.value = '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  return true;
+})()`
+
+// Click the primary control WITHOUT filling anything first — same control DOM_INTERACT chose, so
+// the two probes exercise the same handler.
+const DOM_CLICK_PRIMARY = `(() => {
+  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+  const btns = [...document.querySelectorAll('button, input[type=submit], input[type=button], [onclick], [role=button]')].filter(vis);
+  if (!btns.length) return false;
+  try { btns[0].click(); } catch (e) { /* a throwing handler surfaces as a console error */ }
+  return true;
+})()`
+
 // A cheap two-stride signature of the canvas — a single strided sum can coincidentally
 // match across frames; two independent strides make a false "unchanged" far less likely.
 const SIG = `(() => {
@@ -151,7 +195,33 @@ app.whenReady().then(async () => {
       const c1 = await ex(DOM_CONTROLS, null)
       out.controlsAfter = c1 ? c1.controls : null
       out.fieldsAfter = c1 ? c1.fields : null
-      out.texts = [await ex(DOM_TEXT, '')]
+      out.texts = [textAfter]
+
+      // ── Commit-shape probes ────────────────────────────────────────────────
+      // Both invariants below only mean anything for an ADD-shaped commit: the app took the text
+      // we typed and appended it to the page (visible text GREW and now contains the sentinel).
+      // That discrimination matters — a search/filter box legitimately keeps its text and
+      // legitimately shrinks the list, and demanding "the field must clear" of it would be a
+      // false reject. We measure the shape here and let the verifier judge it.
+      out.addShaped = textAfter.length > textBefore.length && textAfter.indexOf(SENTINEL) !== -1
+      const fv = await ex(DOM_FIELD_VALUES, null)
+      out.fieldSentinelAfter = fv ? fv.sentinel : null
+
+      // Empty-commit probe: clear every field and press commit again. No app should record an
+      // empty entry — the guard (`if (!value.trim()) return`) is the single most-omitted line in a
+      // small model's handler, and the first template-free live run shipped without it. A blank row
+      // brings its own controls (a Delete button) with it, so a GROWN control count is the signal;
+      // a legitimate guard that renders "Please enter a task" changes text but adds no control,
+      // which is why control count — not text — is what we key on.
+      await ex(DOM_CLEAR_FIELDS, null)
+      const cB = await ex(DOM_CONTROLS, null)
+      await ex(DOM_CLICK_PRIMARY, null)
+      await wait(420)
+      const cC = await ex(DOM_CONTROLS, null)
+      out.emptyCommit = (cB && cC) ? { controlsBefore: cB.controls, controlsAfter: cC.controls } : null
+      // Final text appended so the NaN/undefined readout check also sees anything the empty
+      // commit produced (an unguarded handler often renders "undefined" for the blank entry).
+      out.texts.push(await ex(DOM_TEXT, ''))
       return done(0)
     }
 
