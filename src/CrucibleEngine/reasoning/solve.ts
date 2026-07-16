@@ -77,7 +77,19 @@ async function repairEvidenceBlock(
 ): Promise<string | null> {
   const v = await verifyCode({ value: buggyCode, fingerprint: 'repair-seed' }, spec)
   if (v.pass || v.signals.length === 0) return null
-  return `Observed failures of the current implementation (from executing it against the spec):\n${v.signals.slice(0, 6).map(s => `  - ${s}`).join('\n')}`
+  const failures = `Observed failures of the current implementation (from executing it against the spec):\n${v.signals.slice(0, 6).map(s => `  - ${s}`).join('\n')}`
+  // Structural-fault steer: every token-level regression (wrong operator, off-by-one
+  // boundary, negated condition) is repaired mechanically BEFORE the model is ever asked
+  // (see makeMutationRepairProposer). So when the model IS asked, the bug is — by
+  // construction — not a single-token edit: the residual fault classes are a missing
+  // statement (a dropped guard / early-return) or a wrong-or-absent return value. Point
+  // the first proposal there instead of re-searching the token space the fast-path owns.
+  const steer =
+    'Note: single-token fixes (operator swaps, off-by-one boundaries, negated conditions) ' +
+    'have already been tried mechanically and did not fix this. Look instead for a missing ' +
+    'statement — a dropped guard or early-return whose absence lets a bad case through — or ' +
+    'a return that yields the wrong value (or returns nothing where a value is required).'
+  return `${failures}\n\n${steer}`
 }
 
 /**
