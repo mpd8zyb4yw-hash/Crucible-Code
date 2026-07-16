@@ -936,7 +936,15 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
 // RUNTIME app gate (dead-control / self-erasing / blank-render / NaN), so a wrong snippet can only
 // waste a proposal, never ship a broken app. Best-effort and bounded — any failure returns null and
 // the loop proceeds ungrounded.
-const WEB_APP_MARK = 'WORKING REFERENCE IMPLEMENTATION (fetched live from the open web — this app already works). PORT ITS LOGIC FAITHFULLY into a single render() that rebuilds everything inside document.getElementById(\'app\'): keep its state model and event handling, but delete any framework imports, external resources, and its own HTML shell/markup. Do NOT simplify or reinvent. Your output is run in a real browser and verified:'
+// The porting instruction is load-bearing and was actively CAUSING a failure (cont.79i). Real
+// vanilla-JS apps on the web keep their controls in an HTML file and only WIRE them in script
+// (`document.querySelector('#task-form')`). This mark used to say "delete its own HTML shell/markup"
+// and stop there — so the model dutifully deleted the markup, kept the wiring, and shipped a form
+// with no input and no button inside it (the exact live empty-<form> shape). Deleting the markup is
+// only half the port: every element the reference LOOKS UP has to be CREATED here, because in the
+// reference it came from the HTML the model was just told to throw away. Say that explicitly.
+const WEB_APP_MARK = 'WORKING REFERENCE IMPLEMENTATION (fetched live from the open web — this app already works). PORT ITS LOGIC FAITHFULLY into a single render() that rebuilds everything inside document.getElementById(\'app\'): keep its state model and event handling, but drop any framework imports and external resources.\n' +
+  'CRITICAL — this reference came with an HTML file that YOU DO NOT HAVE. Every element it looks up with querySelector/getElementById (its inputs, its buttons, its list container) lived in that HTML. You are deleting that markup, so you must CREATE each of those elements yourself with document.createElement inside render() and append it, BEFORE you attach the reference\'s listener to it. Porting the reference\'s wiring without creating the elements it wires leaves an empty, unusable page — that is an automatic failure. Do NOT simplify or reinvent the logic. Your output is run in a real browser and verified:'
 
 function buildAppSearchQuery(goal: string): string {
   // Distil the app's name from the request ("build me a markdown notes app" → "markdown notes")
@@ -948,6 +956,30 @@ function buildAppSearchQuery(goal: string): string {
   return `${name} vanilla javascript app implementation no framework`.slice(0, 120)
 }
 
+/**
+ * How usable a retrieved snippet is AS A REFERENCE FOR OUR SHELL — higher is better.
+ *
+ * The shell hands the model an empty `<div id="app">` and requires the whole UI to be built from
+ * JavaScript. Most real vanilla-JS apps on the web do the OPPOSITE: their HTML file declares the
+ * markup and the script merely wires it (`document.querySelector('#task-form')`). Ported into our
+ * shell, every one of those selectors returns null, so such a snippet can only teach the model to
+ * query elements that do not exist. That is very likely the live empty-`<form>` failure (cont.79h):
+ * the model reproduced the reference's `form.addEventListener(...)` but not the children the
+ * reference never had to create, because in the reference they were markup.
+ *
+ * So rank by CONSTRUCTION. The old selector took the LONGEST block, which is uncorrelated with
+ * portability — measured live, it picked a snippet carrying 6 queries against markup we never ship.
+ * A snippet that builds its own DOM ports cleanly; one that only queries pre-existing markup cannot,
+ * and grounding on it is worse than not grounding at all.
+ */
+export function scoreAppReference(code: string): number {
+  const n = (re: RegExp) => (code.match(re) ?? []).length
+  const constructs = n(/createElement\s*\(/g) * 2 + n(/innerHTML\s*=/g) + n(/insertAdjacentHTML\s*\(/g)
+  // Queries against markup we do not ship. `#app` is the one element the shell actually provides.
+  const queriesMarkup = n(/(?:querySelector(?:All)?|getElementById)\s*\(\s*['"`](?!#?app['"`])/g)
+  return constructs - queriesMarkup
+}
+
 async function retrieveAppReference(goal: string): Promise<string | null> {
   try {
     const bundle = await retrieveForTask({ goal: buildAppSearchQuery(goal) }, { maxPages: 2, budget: 2200 })
@@ -955,7 +987,11 @@ async function retrieveAppReference(goal: string): Promise<string | null> {
       .map(c => c.code?.trim() ?? '')
       // Prefer real DOM/interaction code (addEventListener/createElement) over inert config blobs.
       .filter(c => /addEventListener|createElement|querySelector|innerHTML|onclick/.test(c))
-      .sort((a, b) => b.length - a.length)[0]
+      .map(code => ({ code, score: scoreAppReference(code) }))
+      // A net markup-querying snippet teaches the model to wire elements our shell never renders —
+      // strictly worse than proposing ungrounded, so drop it rather than ship a misleading prior.
+      .filter(c => c.score > 0)
+      .sort((a, b) => b.score - a.score || b.code.length - a.code.length)[0]?.code
     if (!snippet || snippet.length < 120) return null
     return `${WEB_APP_MARK}\n${snippet.slice(0, 6000)}`
   } catch {

@@ -18,7 +18,7 @@
 
 import { runtimeVerifyHtml, runtimeVerifyApp } from './htmlRuntimeVerify'
 import { classifyHtmlGoal } from './htmlGoalKind'
-import { buildAppShell, isWebArtifactGoal, defaultWebArtifactPath, nextRepairMove } from './synthDriver'
+import { buildAppShell, isWebArtifactGoal, defaultWebArtifactPath, nextRepairMove, scoreAppReference } from './synthDriver'
 
 const HEAD = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title></head>'
 
@@ -514,6 +514,41 @@ render();`
   const multi = nextRepairMove('B', ['A', 'B'], PREV, true)
   check('prior-fault ledger is carried into the echo-fixpoint move too',
     multi.feedback.includes('• A') && multi.feedback.includes('• B'), multi.feedback.slice(0, 160))
+
+  // ── Grounding reference selection (cont.79i) ─────────────────────────────────────────────────
+  // The shell provides ONLY <div id="app">, so a retrieved snippet that wires pre-existing markup
+  // teaches the model to query nulls. Verbatim shape of the block retrieval actually picked live
+  // for "todo list vanilla javascript" — it wires five elements the shell never renders:
+  const MARKUP_WIRING_REF = `
+    const form = document.querySelector('#task-form');
+    const taskInput = document.querySelector('#task');
+    const filter = document.querySelector('#filter');
+    const taskList = document.querySelector('.collection');
+    const clearBtn = document.querySelector('.clear-tasks');
+    form.addEventListener('submit', addTask);
+    taskList.addEventListener('click', removeTask);`
+  check('a markup-wiring snippet scores negative (it can only teach querying nonexistent elements)',
+    scoreAppReference(MARKUP_WIRING_REF) < 0, `score=${scoreAppReference(MARKUP_WIRING_REF)}`)
+
+  const CONSTRUCTING_REF = `
+    let app = document.getElementById('app');
+    function render() {
+      app.innerHTML = '';
+      let input = document.createElement('input');
+      let btn = document.createElement('button');
+      btn.addEventListener('click', add);
+      app.appendChild(input); app.appendChild(btn);
+    }`
+  check('a DOM-constructing snippet scores positive (it ports cleanly into the shell)',
+    scoreAppReference(CONSTRUCTING_REF) > 0, `score=${scoreAppReference(CONSTRUCTING_REF)}`)
+  check('construction outranks markup-wiring regardless of length',
+    scoreAppReference(CONSTRUCTING_REF) > scoreAppReference(MARKUP_WIRING_REF),
+    'ranking does not prefer the portable reference')
+  // getElementById('app') is the one lookup the shell DOES satisfy — it must not be penalised, or
+  // every correct reference (which all start by grabbing #app) would be scored down.
+  check("the shell's own #app lookup is not counted as a missing-markup query",
+    scoreAppReference("let a = document.getElementById('app'); let i = document.createElement('input');") > 0,
+    'the #app lookup was penalised')
 
   console.log(`\nhtml app invariants: ${pass}/${pass + fail} passed`)
   process.exit(fail === 0 ? 0 : 1)
