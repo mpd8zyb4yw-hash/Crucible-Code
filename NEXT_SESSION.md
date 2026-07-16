@@ -46,19 +46,40 @@ long-horizon, multi-file agentic workflows requiring sustained reasoning chains.
 MarkTechPost: "identifies no documented failures in multi-turn agent loops." 1-bit HF card: "No
 token-dropping warnings are mentioned." Do not treat as fact.
 
-### The hardware fact that decides it (MEASURED cont.87, this machine)
+### The REAL ceiling (re-measured cont.87b on an IDLE machine — the earlier finding was WRONG)
 
-`phi-3.5-mini` (3.8B, **~2.2GB**) **CANNOT LOAD**: *"context size of 4096 is too large for the
-available VRAM."* `gemma2-2b`: same. Only `qwen2.5-1.5b` loads. **If 2.2GB cannot get a 4096 context
-here, 5.2GB-peak is unlikely and 8.4GB-peak is impossible.** (Re-check whether that ceiling is real
-hardware or a conservative node-llama-cpp budget — a 2.2GB failure on an 8GB box is suspicious.)
+**Hardware: MacBook Neo, Mac17,5, Apple A18 Pro, 8GB — PHONE-CLASS silicon, not M-series.** Bonsai's
+laptop guidance ("M4 Pro and newer") does not describe this box; its *iPhone* guidance does. PrismML
+demos 1-bit on an iPhone 17 Pro (A19 Pro, same family one gen newer) at ~11 tok/s, and a Mac has **no
+~6GB per-app iOS sandbox** — so 1-bit has MORE headroom here than on the phone it ships on.
 
-### Recommendation
+**The ceiling is Metal's working set = 5.33 GB, NOT 8 GB** (`llama.getVramState()` on an idle box —
+this is what node-llama-cpp budgets against).
 
-The choice is **not 1-bit vs ternary** — it is **1-bit vs not-on-this-machine**. The variant that
-fits is the one with the tool-calling cliff; the one that holds up on tool-calling doesn't fit.
-**MEASURE BEFORE WIRING:** pull 1-bit, prove it loads and holds 10+ tool calls, THEN wire the
-interface. If ternary quality is required, this 8GB box is the wrong host — a hardware decision.
+| | peak @4K | vs the 5.33 GB budget |
+|---|---|---|
+| 1-bit | 5.2 GB | **fits — ~2.5% margin** |
+| Ternary | 8.4 GB | **impossible — 1.6× the budget** |
+
+**CORRECTION: the cont.87 claim "phi-3.5-mini CANNOT LOAD — context 4096 too large for available
+VRAM" was WRONG.** Re-measured on an idle machine: **phi-3.5-mini (2.23GB) loads in 3.1s @ctx4096;
+gemma2-2b (1.59GB) in 2.8s.** The original failure was a DIRTY MACHINE — orphan servers holding VRAM.
+**Re-measure model-load limits on an idle box and check orphans FIRST.** A VRAM failure here is far
+more often a dirty machine than a real ceiling. This also retracts "phi-3.5-mini, the catalog's best
+default escalation target, is unusable on this machine" — it is usable.
+
+### Revised recommendation
+
+**1-bit IS viable; ternary is NOT.** The original 1-bit plan was right on memory. The tradeoff that
+cannot be dodged: **the only variant that fits is the one with the tool-calling cliff (66.03 vs FP16
+80.00)** — on a tool-calling-heavy workload.
+
+1-bit's 5.2GB peak leaves ~0.13GB margin → **text-only; NO speculative-decoding drafter (+1.95GB),
+NO vision tower (+0.63GB)** — either blows the budget. Lever if needed: `iogpu.wired_limit_mb` can
+raise the Metal working set above its default ~2/3 of RAM (risky at 8GB, but real).
+
+**Measure before wiring:** pull 1-bit, prove it loads AND holds 10+ tool calls, THEN wire the
+interface behind the FM's seam.
 
 ### Caveat worth surfacing (not to bury)
 
