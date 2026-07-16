@@ -68,18 +68,48 @@ gemma2-2b (1.59GB) in 2.8s.** The original failure was a DIRTY MACHINE — orpha
 more often a dirty machine than a real ceiling. This also retracts "phi-3.5-mini, the catalog's best
 default escalation target, is unusable on this machine" — it is usable.
 
+### MEASURED cont.87c — 1-bit pulled and tested. IT RUNS. Memory was never the problem.
+
+`Bonsai-27B-Q1_0.gguf` (3.54 GiB) → `.crucible/models/` (gitignored). Loads and serves on the A18 Pro.
+
+**The "drops tokens past 10 turns" claim is NOT REPRODUCED.** 14-step forced chain (each `unlock()`
+returns the code needed for the next call — no shortcut possible): **15/15 valid tool calls, 0
+malformed JSON, 0 invalid codes**, completed the chain and reported the answer. No cliff at turn 11 —
+turns 11+ averaged **16.9s** vs 23.4s for the first five (turn 1 carries prompt processing).
+Harness: `scratchpad/toolloop.mjs`.
+
+| measured @ctx4096 | value |
+|---|---|
+| Metal VRAM used | **3.85 GB of 5.33 GB budget** (1.49 GB free) — better than the card's 5.2GB peak |
+| generation | **~4.3 tok/s** (card claims ~11 tok/s on iPhone 17 Pro / A19 Pro) |
+| prompt eval | ~19 tok/s |
+| **per tool call** | **~15–19s** → 15-turn loop = **~5 min** |
+| system memory free during run | **6%** — co-residency with the Crucible server is UNPROVEN |
+
+**THE REAL BLOCKER IS LATENCY, NOT MEMORY.** 4.3 tok/s makes agentic loops minutes long. The answer
+path already costs 25–60s.
+
+**Integration cost: `Q1_0` is NOT upstream llama.cpp.** Needs the PrismML fork
+(`github.com/PrismML-Eng/llama.cpp` — Q1_0_g128; Metal kernels present). **node-llama-cpp 3.19.0
+CANNOT load it.** Build: `brew install cmake`; `cmake -B build -DGGML_METAL=ON -DLLAMA_CURL=OFF`;
+`cmake --build build -j6 --target llama-server`. Run as an HTTP sidecar with **`--jinja`** (required
+for tool calling). Not in-process.
+
+**Caveat:** this proves multi-turn STABILITY, not tool-calling ACCURACY (BFCL 66.03 is separate; the
+chain used one trivial tool).
+
 ### Revised recommendation
 
-**1-bit IS viable; ternary is NOT.** The original 1-bit plan was right on memory. The tradeoff that
-cannot be dodged: **the only variant that fits is the one with the tool-calling cliff (66.03 vs FP16
-80.00)** — on a tool-calling-heavy workload.
+**1-bit runs; ternary remains impossible** (8.4GB peak vs the 5.33GB budget). The decision is no
+longer memory — it is whether **~4.3 tok/s / 15–19s per tool call** is acceptable. That is a product
+call and the only thing between this and shipping.
 
-1-bit's 5.2GB peak leaves ~0.13GB margin → **text-only; NO speculative-decoding drafter (+1.95GB),
-NO vision tower (+0.63GB)** — either blows the budget. Lever if needed: `iogpu.wired_limit_mb` can
-raise the Metal working set above its default ~2/3 of RAM (risky at 8GB, but real).
+Headroom: 1.49GB spare @ctx4096 → dspark drafter (+1.79GB) does NOT fit; vision tower (+0.63GB) does.
+`iogpu.wired_limit_mb` can raise the Metal working set if needed (risky at 8GB, but real).
 
-**Measure before wiring:** pull 1-bit, prove it loads AND holds 10+ tool calls, THEN wire the
-interface behind the FM's seam.
+If latency is acceptable → wire `llama-server` as an HTTP sidecar behind the FM's seam and A/B
+against the real failure: **will a 27B model COPY an identifier out of clean evidence where the ~3B
+FM refuses?** (cont.82). That is the one thing this pivot can actually fix.
 
 ### Caveat worth surfacing (not to bury)
 
