@@ -17,6 +17,61 @@
 
 ---
 
+## ⏸ PAUSED 2026-07-16 (cont.87 end) — DIRECTION CHANGE: Apple FM → Bonsai 27B
+
+**User paused the Apple FM path** — more debugging overhead than value. Next engine: **Bonsai 27B**
+(PrismML, released 2026-07-14, quantized Qwen3.6-27B, Apache 2.0, llama.cpp Metal + MLX), wired
+behind the same interface the FM used so it can be A/B'd.
+
+### READ THIS BEFORE PULLING ANYTHING — the 5.9GB number is not the footprint
+
+Web-verified 2026-07-16 (the model post-dates the Jan-2026 training cutoff — do NOT answer from
+memory about it):
+
+| | ideal weights | **deployed** | **peak @4K** | peak @10K | tool-calling |
+|---|---|---|---|---|---|
+| Ternary (1.71-bit) | 5.9 GB | **~7.2 GB** | **8.4 GB** | 8.7 GB | 74.01 |
+| 1-bit (1.125-bit) | 3.9 GB | ~3.9 GB | **5.2 GB** | 5.6 GB | 66.03 |
+| FP16 baseline | — | ~54 GB | — | — | 80.00 |
+
+HF ternary card verbatim: *"8 GB RAM/VRAM is marginal; the 4K context peak of 8.4 GB leaves minimal
+headroom"*; recommends **16+ GB**. **8.4 GB peak exceeds the entire 8 GB machine** before macOS
+takes ~3 GB. **Ternary does NOT "comfortably fit" — 5.9 GB is the IDEAL weight size, not deployed.**
+
+**Both variants warn against this exact workload.** Ternary card: *"not yet optimized for
+long-horizon, multi-file agentic workflows requiring sustained reasoning chains."* 1-bit card:
+*"agentic coding…is not yet a strong target of this release."*
+
+**UNVERIFIED:** "1-bit drops tokens in agent loops past 10 turns" — could NOT be sourced.
+MarkTechPost: "identifies no documented failures in multi-turn agent loops." 1-bit HF card: "No
+token-dropping warnings are mentioned." Do not treat as fact.
+
+### The hardware fact that decides it (MEASURED cont.87, this machine)
+
+`phi-3.5-mini` (3.8B, **~2.2GB**) **CANNOT LOAD**: *"context size of 4096 is too large for the
+available VRAM."* `gemma2-2b`: same. Only `qwen2.5-1.5b` loads. **If 2.2GB cannot get a 4096 context
+here, 5.2GB-peak is unlikely and 8.4GB-peak is impossible.** (Re-check whether that ceiling is real
+hardware or a conservative node-llama-cpp budget — a 2.2GB failure on an 8GB box is suspicious.)
+
+### Recommendation
+
+The choice is **not 1-bit vs ternary** — it is **1-bit vs not-on-this-machine**. The variant that
+fits is the one with the tool-calling cliff; the one that holds up on tool-calling doesn't fit.
+**MEASURE BEFORE WIRING:** pull 1-bit, prove it loads and holds 10+ tool calls, THEN wire the
+interface. If ternary quality is required, this 8GB box is the wrong host — a hardware decision.
+
+### Caveat worth surfacing (not to bury)
+
+cont.87 MEASURED that the model was **not** the top blocker: retrieval fetches `ip-num` /
+`ip-address@npmjs` instead of zod.dev, and code-shaped prompts skip grounding entirely. **A 27B
+model still gets handed the wrong docs.** The pivot DOES target one real measured failure — the ~3B
+FM won't copy an identifier out of clean in-context evidence (cont.82) — which a 27B model
+plausibly fixes. But blocker #1 is retrieval, and no engine swap touches it. ROADMAP's north star
+also says correctness comes from the loop, never "needs a bigger model" — flagging the tension; the
+call is the user's.
+
+---
+
 ## CURRENT STATE (last updated 2026-07-16 cont.87 — **THE ORACLE NOW EXECUTES (`da813cb`). It killed the gaming class regex could not reach. But its MEASURED LIVE REACH IS ZERO: `executed:false` on 4/4 live runs. The blocker is no longer the oracle — it is RETRIEVAL. Do not extend the verifier; make it reachable.**
 
 ### cont.87 — built the execution verifier, then measured that it never runs
