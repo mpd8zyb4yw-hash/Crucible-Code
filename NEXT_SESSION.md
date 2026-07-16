@@ -17,7 +17,65 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.79h — MEASURED the app path: 4 rounds × 5 live todo builds. **True pass rate is 1/5 (20%)**, and every earlier "pass" this path ever reported was JUNK — the gate was shipping todo apps with no input field. Fixed 5 universal defects (1 gate false-reject, 1 gate hole, 1 routing lockout, 2 misdiagnosing repair messages). App gate now carries 7 invariants (+empty-form). NO-TEMPLATES doctrine (cont.79f) still binding. **TOP PRIORITY unchanged and now quantified: the FM+retrieval PROPOSER.** bench:all 959/959 across 33 suites)
+## CURRENT STATE (last updated 2026-07-16 cont.80 — Phase 0: MEASURED the AGENTIC repo path, the last major path never audited the cont.79h way. **Synthetic true rate 5/12 (42%) vs 9/12 reported (75%) — 44% gate inflation.** The gate accepts a PROVABLE NO-OP on 11/12 tasks (12/12 on the multi-step wiring) with NO model involved. **On the REAL Crucible repo the agentic path is 0/N — wedged on a broken ESLint config before any work starts.** JS repos are 100% unservable (oracle include glob is .ts-only). Worst class found: the synth path REPLACES the target file with a synthesized module for a guessed topic, silently destroying working code and reporting success. New harness: `npm run agentic:live`. bench:all 959/959 across 33 suites — none of which touch this path.)
+
+**cont.80 (2026-07-16) — Phase 0: the agentic path measured for the first time.**
+
+Method: `npm run agentic:live` (`src/CrucibleEngine/agent/__agentic_{live,corpus}.ts`). 12 hermetic
+TS repos that START GREEN, each with a HIDDEN SPEC authored from the goal text alone and written in
+only AFTER the run — the agent can neither read nor satisfy it by construction. Rubric (user-set):
+a pass requires the change to be PRESENT + EXERCISED + SUITE-GREEN + OBJECTIVELY CORRECT. Passing
+the visible test and having the capability are not the same thing; we measure the latter.
+
+- **NO-OP CONTROL (no model, deterministic): the gate accepted a provable no-op on 11/12 tasks.**
+  Materialize the repo, append a comment, ask the real verifier → `passed:true`. The gate cannot
+  tell work from no work. Every live number below is therefore an upper bound.
+- **`unverified` is set honestly and read by NOBODY.** verify.ts:112 returns
+  `{passed:true, unverified:true}`; loop.ts:583 emits it to telemetry; loop.ts:584/589 branch only
+  on `!v.passed`. It is accepted as success.
+- **server.ts:3550 drops `goal`** — the multi-step/meta-router wiring builds `makeVerifier({command})`
+  with no goal, so `exampleGate` returns null on its FIRST LINE and the path falls to the unverified
+  branch. The ONE task the gate catches on the single-step wiring becomes a blind pass here: no-op
+  control goes 11/12 → **12/12**. The example gate is dead on the path most real repo work runs under.
+- **THE REAL REPO IS WEDGED.** On ~/crucible-local/crucible-local, `detectCheck` →
+  `npx tsc --noEmit` (clean) and `detectStaticAnalysis` → `npm run lint --silent`, which **exits 2**:
+  ESLint 10 needs `eslint.config.js`, the repo has only legacy `.eslintrc`. verify.ts:78 runs the
+  static plan FIRST → `passed:false` → same fingerprint twice → `escalate` → `verify_failed`.
+  Every agentic task on our own repo dies on a lint config error, with the hint `Error type: RUNTIME`,
+  before the code is ever considered. **Verified with the real verifier: attempt 1 fail, attempt 2
+  escalate=true.** Also note: the repo has NO `test` script, so all 33 bench suites (959/959) are
+  invisible to `detectCheck` — on a real tree "verification-guided" means *it compiles and lints*.
+- **JS repos are 100% unservable.** oracle.ts:101 writes `include: [**/*.ts, **/*.tsx]` — no `.js`.
+  A JavaScript project gives tsc zero inputs → TS18003 every round → out-of-depth tripwire → abstain,
+  reported as "no oracle-passing code" (reads like a proposer failure; it is a config bug).
+- **The WRONG class is not "close but buggy" — it is "did something else entirely, gate said yes":**
+  · `average-empty-array`: replaced the whole file with a synthesized sum/average/median/mode module,
+    invented median+mode nobody asked for, and `average([])` **still returns NaN** — the opposite of
+    the request. Reported pass.
+  · `dedupe-preserve-order`: still sorts, just with the comparator spelled out longhand. No change made.
+  · `add-titlecase`: **DATA LOSS.** titleCase never added; the existing `slugify` was overwritten with
+    a canned "User-built skill" slugify. Differential: **behaviour changed on 3/5 inputs**
+    (`'Hello, World!'` → `hello-world` not `hello,-world!`; `'x_y'` → `x-y`). The visible suite probed
+    the one input that still matched, so it stayed green. Working code destroyed, reported as success.
+  Three of these carry a `// Synthesized by Crucible` header: **the synth path replaces the target file
+  with a synthesized module for a guessed topic instead of making the requested in-place edit.**
+- **A mechanical oracle is only as strong as its worst probe.** `validate-email-domain` shipped
+  `includes('@') && includes('.')` and my first hidden spec CERTIFIED it (it only probed `'a@b'`,
+  which has no dot anywhere, so it passed by luck). A read caught it: `isValidEmail('a.b@c') === true`.
+  Spec strengthened; mechanical now agrees with the read. This is why the rubric is mechanical AND
+  judged — 6/12 mechanical became **5/12 read-confirmed**.
+- **NOT MEASURED — do not claim it:** EXERCISED is inert. The suite runs through `tsx`, whose
+  transpiled output does not map back to the `.ts` source in V8's coverage URLs, so `cov=not-run` on
+  every task and UNEXERCISED is currently undetectable. TRUE here means present + green + hidden-spec
+  correct ONLY. The harness prints this warning rather than let `not-run` read as fine.
+- **Harness honesty note:** the first cut scored 12/12 HONEST_FAIL because it read a nonexistent
+  `result.status` (the real shape is `{ok, stopped}`). Caught only by reading an artifact whose hidden
+  spec was GREEN behind a reported fail. A false reject poisons repair — read the artifact, both ways.
+
+**Next (Phase 1+), in order:** (1) fix the two infra wedges — the ESLint config and the oracle's
+`.js` glob — since they gate everything else and are not proposer problems; (2) make `unverified`
+non-accepting and thread `goal` at server.ts:3550; (3) the change-exercising invariant (needs a
+coverage path that survives tsx); (4) stop the synth path clobbering files it was asked to EDIT.
 
 **cont.79h (2026-07-16 — c90d041, 8baac15) — the 5-run measurement, and what it exposed:**
 
