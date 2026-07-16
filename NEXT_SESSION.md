@@ -17,20 +17,51 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-14 — sidebar-rail UI shell + fault-injection recovery harness + keep-K; recovery baseline 48-52%)
+## CURRENT STATE (last updated 2026-07-16 — zero-FM repair fast-path LIVE-PROVEN in prod; gold-example harvest + model-call accounting fixed; 695/695)
 
-**cont.69b (2026-07-14, this session — executing FABLE_HANDOFF_REDESIGN.md, Opus's critical read of the "8GB blueprint"):**
+**cont.79 (2026-07-16, this session — a2c1083):**
 
-- **UI: persistent left sidebar rail (desktop)** — `src/SidebarRail.tsx` (272px) replaces the pop-out history drawer: New chat, Chat/Agents rows, time-bucketed history slivers (`.rail-sliver` / `.rail-nav-row` primitives added to the index.css token sheet), Settings pinned at bottom. History drawer + top-bar wordmark/New-chat are now MOBILE-ONLY; mobile stays edge-to-edge and untouched. `?forceMobile=1` URL hook makes the mobile branch reproducible in desktop previews. Restore logic unified in `restoreConversation`. Preview-verified both branches; `app/` rebuilt + committed. NOTE: the three input-bar `left: isMobile ? 0 : 272` offsets in App.tsx must track rail width.
-- **Fault-injection recovery harness** — `reasoning/faultInject.ts`: deterministic mutation operators (flip-lt/gt, swap-plus-minus, shift-zero, negate-if, drop-guard, void-return) injected into known-good code; measures DETECTION (can the case set see the fault → spec coverage; equivalent mutants reported as coverage gaps, not loop failures) and RECOVERY (loop reads failing cases, patches, re-certifies). `fault:bench` 7/7 deterministic; `fault:live` is the metric: **81% detection, 48-52% recovery @6-call budget** — the first real measurement of the repair loop (clean-synthesis benches never measured this). This number is now the one to move.
-- **Keep-K candidate selection** — `reasoning/keepK.ts` (`solveWithKeptCandidates`): sequential retry-until-certified that KEEPS every distinct candidate across attempts; when none certify, the deterministic verifier's ranking picks the best, returned as an explicit `best-effort` with score + case coverage exposed, floored (default score ≥ -2) so garbage abstains. `keepk:bench` 7/7. **NOT yet wired into server.ts** (the parallel-session contention file) — wiring into the live retry loop is a deliberate follow-up.
-- **AFM-vs-MiniCPM head-to-head** — `fault:h2h` (`__fault_headtohead.ts`): both engines get IDENTICAL prompts via `buildProposalPrompt` (extracted from codeProposer; `extractCode`/`fingerprintCode` exported), MiniCPM through raw `completeLocalModel` + `stripReasoning` (the prose-tuned miniCpmAnswer wrapper sabotages code output). Agreed policy: MiniCPM earns a dedicated repair role ONLY if it beats AFM by >10 pts recovery; otherwise AFM stays the single brain. AFM side measured 52% (13/25).
-- **Blueprint verdict recorded** (FABLE_HANDOFF_REDESIGN.md): ~70% already built, often more rigorously; parallel-MCTS / KV-hibernation / Python-refactor rejected as wrong-for-stack; the two extracted ideas are exactly the harness + keep-K above.
-- vgr:bench 200/200 unchanged; fault:bench 7/7; keepk:bench 7/7; `npx tsc -b` clean; tsconfig.server.json check clean for the new files.
+- **The zero-FM deterministic repair fast-path is PROVEN in prod, end-to-end.** A real `/api/chat`
+  modify request (`mode:code`, `projectPath` = scratch dir, JWT recipe in the memory note
+  `crucible-local-auth-testing`) against `isAdult` with `return age > 18` now certifies with
+  **modelCalls === 0**, splices the correct `>= 18` into the real file, in ~11s. This was the
+  highest-value UNVERIFIED claim from cont.78 — the whole 48%→91% recovery gain does reach users.
+  The wiring it exercises: `server.ts` reads the named target file → `repairSeed` →
+  `solveCodingRequest({buggyCode})` → `solveCodeTask` → `composeProposers(makeMutationRepairProposer, proposeCode)`.
+- **Three bugs found BEHIND the passing test** — all found by reading what the run *reported*,
+  not whether it passed. A passing run is not a verified run; the report is the evidence.
+  1. **Silently-wrong GOLD examples (real correctness bug, pre-existing).** `EXAMPLE_RX`'s value
+     group excluded `.` (to avoid eating the sentence period), so `half(3) returns 1.5` harvested
+     **expected = 1**, and `-0.25` harvested `-0`. Those EVALUATE CLEANLY, so they were trusted as
+     gold — the one tier deliberately exempt from consensus — and would certify a wrong impl
+     against the user's own stated fact. Structured literals/numbers now match explicitly, ahead
+     of the fallback. **Lesson: the trusted tier needs the MOST coverage, not the least.**
+  2. **Modal phrasings dropped.** The connector had to sit directly after `)`, so
+     `isAdult(18) should return true` — the most natural repair phrasing — harvested nothing and
+     fell through to model-invented consensus (a wasted call AND weaker truth than the user's own
+     fact). Now allows `should|must|will|needs to|…` + `be|equals|outputs|…`. Safe by construction:
+     `addExample` discards non-literal pairs, so `run(x) should be fast` still yields 0 cases.
+     Also `=>` was unreachable (ordered after its `=` prefix) — multi-char operators now come first.
+  3. **Free work billed as model work.** `search()` incremented `modelCalls` on ANY accepted
+     candidate, so mechanical single-edit repairs and retrieved web source — neither of which
+     invokes a model — were each charged a call. This understated the deterministic tiers in every
+     report and starved the FM of its granted budget. `Candidate.modelFree` now gates the
+     increment, with a `maxFree` runaway backstop (that counter also bounds the outer loop).
+     `server.ts` no longer claims "the model proposed" on a zero-model solve.
+- **BUDGET SEMANTICS CHANGED:** model-free candidates no longer draw down `maxModelCalls`, so
+  `fault:live` numbers are **not directly comparable across a2c1083**. Re-baseline before
+  comparing to the 91% (42/46) figure.
+- vgr:bench 200→**208** (new PART G2 harvest fidelity, PART G3 model-free accounting);
+  bench:all 687→**695**; tsc unchanged at the pre-existing 457 project-wide errors (0 in touched files).
 
-**cont.78 (2026-07-16, commit 5f12a2c) — recovery lever moved 48-52%→60%:** `solveCodeTask` gains optional `buggyCode`; when set it runs ONE deterministic verify (no model call) over the broken impl and folds the concrete failing-case signals into the FIRST proposal's context (`repairEvidenceBlock` in solve.ts), so the repair loop localizes on call #1 instead of spending a model call rediscovering which cases fail. Wired into faultInject (`buggyCode: mutated`). `fault:live` 81% detect / **60% recover (15/25)** @6 calls (was 48-52%), many fixes now in 1 call — single-run, model-nondeterministic. `fault:bench` 8/8 (new hermetic §7 asserts the evidence block reaches call #1). vgr:bench 200/200, tsc clean. DONE cont.78b (commit be7238e): live repair path WIRED — `buggyCode` now threads through `solveCodingRequest` → every solveCodeTask call, and the /api/chat single-file VGR block reads a modify/fix request's named target file (`detectTargetPath`, ≤4KB) and passes its current source as the repair seed. Prod now gets the same call-#1 localization. fault:bench 8/8, vgr:bench 200/200.
-
-**Next (in order):** (1) wire keep-K's best-effort tier into the live single-file retry loop in server.ts (coordinate with the parallel session — contention file), surfacing score/coverage in the UI verify card; (2) use fault:live as the regression gate when touching proposer/feedback/search; (3) grow the fault-target set toward realistic multi-function/multi-file mutants; (4) act on the fault:h2h verdict (drop or seat MiniCPM).
+**Next priorities (in order):**
+1. **Wire keep-K into the live single-file retry loop** (`server.ts` — parallel-session contention
+   file, coordinate before editing). Highest remaining distribution-coverage mover: today a
+   real repair that doesn't certify abstains entirely instead of returning a scored best-effort.
+2. **Re-baseline `fault:live`** under the corrected accounting (see BUDGET SEMANTICS above).
+3. **Structural recovery (drop-guard / void-return) needs a stronger proposer, not more
+   scaffolding** — cont.78i proved prompt-steering does not move it (two runs inside FM variance).
+   Honest ceiling for the weak-FM lane; do not spend more turns on scaffolding here.
 
 ---
 
