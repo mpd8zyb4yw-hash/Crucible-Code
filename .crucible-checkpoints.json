@@ -1,17 +1,5 @@
 [
   {
-    "hash": "7c3861e",
-    "message": "pre-write_file",
-    "timestamp": 1783369104030,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/bugfixCsv"
-  },
-  {
-    "hash": "7b520c1",
-    "message": "pre-write_file",
-    "timestamp": 1783369181305,
-    "projectPath": "/Users/justin/Desktop/crucible-bench/bugfixCsv"
-  },
-  {
     "hash": "eba4c2a",
     "message": "pre-write_file",
     "timestamp": 1783369278221,
@@ -298,5 +286,17 @@
     "message": "pre-write_file",
     "timestamp": 1784188429981,
     "projectPath": "/tmp/scratch79e4"
+  },
+  {
+    "hash": "c880c9c",
+    "message": "pre-write_file",
+    "timestamp": 1784189491170,
+    "projectPath": "/tmp/s79f"
+  },
+  {
+    "hash": "b888fb0",
+    "message": "pre-write_file",
+    "timestamp": 1784190021010,
+    "projectPath": "/tmp/s79f4"
   }
 ]

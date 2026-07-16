@@ -717,246 +717,6 @@ but implement the requested app's OWN features — the example is a different ap
 its data or controls. Keep it simple and correct: a smaller app that works beats an ambitious one
 that throws or does nothing when clicked.`
 
-// ── Verified game templates — ZERO model inference ("Crucible IS the model") ──
-// The on-device FM writes passable novel game logic but botches classics (snake with
-// instant game-over, draw-only-on-keypress). For the games users actually ask for by
-// name — including the splash-screen demo — ship a deterministic, reviewed
-// implementation instead. Still run through the same runtime gate before writing.
-const GAME_TEMPLATES: Array<{ match: RegExp; title: string; js: string }> = [{
-  match: /\bsnake\b/i,
-  title: 'Snake',
-  js: `
-let CELL = 20, GRID = 24, W = CELL * GRID;
-let cv = document.getElementById('game'); cv.width = W; cv.height = W;
-let ctx = cv.getContext('2d');
-let snake, dir, nextDir, food, score, dead, tickMs, last = 0;
-
-function reset() {
-  snake = [{ x: 12, y: 12 }, { x: 11, y: 12 }, { x: 10, y: 12 }];
-  dir = { x: 1, y: 0 }; nextDir = dir;
-  score = 0; dead = false; tickMs = 140;
-  placeFood();
-  document.getElementById('hud').textContent = 'Score: 0';
-}
-function placeFood() {
-  do {
-    food = { x: Math.floor(Math.random() * GRID), y: Math.floor(Math.random() * GRID) };
-  } while (snake.some(s => s.x === food.x && s.y === food.y));
-}
-window.addEventListener('keydown', e => {
-  let k = e.key.toLowerCase();
-  let d = k === 'arrowup' || k === 'w' ? { x: 0, y: -1 }
-        : k === 'arrowdown' || k === 's' ? { x: 0, y: 1 }
-        : k === 'arrowleft' || k === 'a' ? { x: -1, y: 0 }
-        : k === 'arrowright' || k === 'd' ? { x: 1, y: 0 } : null;
-  if (dead) { reset(); return; }
-  if (d && !(d.x === -dir.x && d.y === -dir.y)) nextDir = d;
-});
-function step() {
-  dir = nextDir;
-  let head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
-  if (head.x < 0 || head.y < 0 || head.x >= GRID || head.y >= GRID ||
-      snake.some(s => s.x === head.x && s.y === head.y)) { dead = true; return; }
-  snake.unshift(head);
-  if (head.x === food.x && head.y === food.y) {
-    score++; tickMs = Math.max(70, tickMs - 3); placeFood();
-    document.getElementById('hud').textContent = 'Score: ' + score;
-  } else snake.pop();
-}
-function draw() {
-  ctx.fillStyle = '#16161e'; ctx.fillRect(0, 0, W, W);
-  ctx.fillStyle = '#e05555';
-  ctx.fillRect(food.x * CELL + 2, food.y * CELL + 2, CELL - 4, CELL - 4);
-  snake.forEach((s, i) => {
-    ctx.fillStyle = i === 0 ? '#7cf8a8' : '#4db89e';
-    ctx.fillRect(s.x * CELL + 1, s.y * CELL + 1, CELL - 2, CELL - 2);
-  });
-  if (dead) {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, W);
-    ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText('Game over — score ' + score, W / 2, W / 2 - 10);
-    ctx.font = '15px sans-serif';
-    ctx.fillText('Press any key to restart', W / 2, W / 2 + 20);
-  }
-}
-function loop(t) {
-  if (!dead && t - last >= tickMs) { last = t; step(); }
-  draw();
-  requestAnimationFrame(loop);
-}
-reset();
-requestAnimationFrame(loop);
-`,
-}, {
-  match: /\bpong\b/i,
-  title: 'Pong',
-  js: `
-let W = 480, H = 480, PW = 10, PH = 80, BS = 10;
-let cv = document.getElementById('game'); cv.width = W; cv.height = H;
-let ctx = cv.getContext('2d');
-let hud = document.getElementById('hud');
-let player, ai, ball, scoreP, scoreA, dead, up = false, down = false;
-
-function resetBall(towardPlayer) {
-  ball = { x: W / 2, y: H / 2, vx: (towardPlayer ? -1 : 1) * 4, vy: (Math.random() * 4 - 2) || 1.2 };
-}
-function reset() {
-  player = { y: H / 2 - PH / 2 }; ai = { y: H / 2 - PH / 2 };
-  scoreP = 0; scoreA = 0; dead = false;
-  resetBall(Math.random() < 0.5);
-  hud.textContent = 'You 0 — 0 CPU';
-}
-window.addEventListener('keydown', e => {
-  let k = e.key.toLowerCase();
-  if (dead) { reset(); return; }
-  if (k === 'arrowup' || k === 'w') up = true;
-  if (k === 'arrowdown' || k === 's') down = true;
-  // Left/right also steer, so the shell's four touch buttons all do something.
-  if (k === 'arrowleft' || k === 'a') { up = true; down = false; }
-  if (k === 'arrowright' || k === 'd') { down = true; up = false; }
-});
-window.addEventListener('keyup', e => {
-  let k = e.key.toLowerCase();
-  if (k === 'arrowup' || k === 'w' || k === 'arrowleft' || k === 'a') up = false;
-  if (k === 'arrowdown' || k === 's' || k === 'arrowright' || k === 'd') down = false;
-});
-function step() {
-  if (up) player.y -= 6;
-  if (down) player.y += 6;
-  player.y = Math.max(0, Math.min(H - PH, player.y));
-  let target = ball.y - PH / 2;
-  ai.y += Math.max(-4.2, Math.min(4.2, target - ai.y));
-  ai.y = Math.max(0, Math.min(H - PH, ai.y));
-  ball.x += ball.vx; ball.y += ball.vy;
-  if (ball.y <= 0 || ball.y >= H - BS) ball.vy = -ball.vy;
-  if (ball.vx < 0 && ball.x <= PW + 6 && ball.x >= 6 && ball.y + BS >= player.y && ball.y <= player.y + PH) {
-    ball.vx = -ball.vx * 1.04;
-    ball.vy += ((ball.y + BS / 2) - (player.y + PH / 2)) * 0.12;
-    ball.x = PW + 6;
-  }
-  if (ball.vx > 0 && ball.x + BS >= W - PW - 6 && ball.x + BS <= W - 6 && ball.y + BS >= ai.y && ball.y <= ai.y + PH) {
-    ball.vx = -ball.vx * 1.04;
-    ball.vy += ((ball.y + BS / 2) - (ai.y + PH / 2)) * 0.12;
-    ball.x = W - PW - 6 - BS;
-  }
-  ball.vy = Math.max(-8, Math.min(8, ball.vy));
-  if (ball.x < -BS) { scoreA++; resetBall(true); }
-  if (ball.x > W) { scoreP++; resetBall(false); }
-  hud.textContent = 'You ' + scoreP + ' — ' + scoreA + ' CPU';
-  if (scoreP >= 7 || scoreA >= 7) dead = true;
-}
-function draw() {
-  ctx.fillStyle = '#16161e'; ctx.fillRect(0, 0, W, H);
-  ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.setLineDash([6, 8]);
-  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke(); ctx.setLineDash([]);
-  ctx.fillStyle = '#7cf8a8'; ctx.fillRect(6, player.y, PW, PH);
-  ctx.fillStyle = '#e05555'; ctx.fillRect(W - PW - 6, ai.y, PW, PH);
-  ctx.fillStyle = '#e4e4ee'; ctx.fillRect(ball.x, ball.y, BS, BS);
-  if (dead) {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(scoreP > scoreA ? 'You win ' + scoreP + '–' + scoreA : 'CPU wins ' + scoreA + '–' + scoreP, W / 2, H / 2 - 10);
-    ctx.font = '15px sans-serif';
-    ctx.fillText('Press any key to restart', W / 2, H / 2 + 20);
-  }
-}
-function loop() {
-  if (!dead) step();
-  draw();
-  requestAnimationFrame(loop);
-}
-reset();
-requestAnimationFrame(loop);
-`,
-}, {
-  match: /\b(breakout|brick[\s-]?breaker|arkanoid)\b/i,
-  title: 'Breakout',
-  js: `
-let W = 480, H = 480, PW = 84, PH = 12, BS = 9;
-let COLS = 10, ROWS = 6, BW = 44, BH = 16, TOP = 50;
-let cv = document.getElementById('game'); cv.width = W; cv.height = H;
-let ctx = cv.getContext('2d');
-let hud = document.getElementById('hud');
-let px, ball, bricks, score, lives, dead, won, left = false, right = false;
-let COLORS = ['#e05555', '#e0a955', '#e0d855', '#7cf8a8', '#55b9e0', '#9b7ce0'];
-
-function resetBall() {
-  ball = { x: W / 2 - BS / 2, y: H - 90, vx: 3 * (Math.random() < 0.5 ? 1 : -1), vy: -4.4 };
-}
-function reset() {
-  px = W / 2 - PW / 2; score = 0; lives = 3; dead = false; won = false;
-  bricks = [];
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    bricks.push({ x: 6 + c * (BW + 3), y: TOP + r * (BH + 3), alive: true, color: COLORS[r % COLORS.length] });
-  }
-  resetBall();
-  updateHud();
-}
-function updateHud() { hud.textContent = 'Score: ' + score + '   Lives: ' + lives; }
-window.addEventListener('keydown', e => {
-  let k = e.key.toLowerCase();
-  if (dead || won) { reset(); return; }
-  if (k === 'arrowleft' || k === 'a' || k === 'arrowup' || k === 'w') left = true;
-  if (k === 'arrowright' || k === 'd' || k === 'arrowdown' || k === 's') right = true;
-});
-window.addEventListener('keyup', e => {
-  let k = e.key.toLowerCase();
-  if (k === 'arrowleft' || k === 'a' || k === 'arrowup' || k === 'w') left = false;
-  if (k === 'arrowright' || k === 'd' || k === 'arrowdown' || k === 's') right = false;
-});
-function step() {
-  if (left) px -= 7;
-  if (right) px += 7;
-  px = Math.max(0, Math.min(W - PW, px));
-  ball.x += ball.vx; ball.y += ball.vy;
-  if (ball.x <= 0 || ball.x >= W - BS) ball.vx = -ball.vx;
-  if (ball.y <= 0) ball.vy = -ball.vy;
-  if (ball.vy > 0 && ball.y + BS >= H - 24 && ball.y + BS <= H - 24 + PH && ball.x + BS >= px && ball.x <= px + PW) {
-    ball.vy = -Math.abs(ball.vy);
-    ball.vx += ((ball.x + BS / 2) - (px + PW / 2)) * 0.08;
-    ball.vx = Math.max(-6, Math.min(6, ball.vx));
-  }
-  for (let b of bricks) {
-    if (!b.alive) continue;
-    if (ball.x + BS >= b.x && ball.x <= b.x + BW && ball.y + BS >= b.y && ball.y <= b.y + BH) {
-      b.alive = false; score += 10; updateHud();
-      let fromSide = ball.x + BS - ball.vx <= b.x || ball.x - ball.vx >= b.x + BW;
-      if (fromSide) ball.vx = -ball.vx; else ball.vy = -ball.vy;
-      break;
-    }
-  }
-  if (bricks.every(b => !b.alive)) { won = true; return; }
-  if (ball.y > H) {
-    lives--; updateHud();
-    if (lives <= 0) { dead = true; return; }
-    resetBall();
-  }
-}
-function draw() {
-  ctx.fillStyle = '#16161e'; ctx.fillRect(0, 0, W, H);
-  for (let b of bricks) {
-    if (!b.alive) continue;
-    ctx.fillStyle = b.color; ctx.fillRect(b.x, b.y, BW, BH);
-  }
-  ctx.fillStyle = '#7cf8a8'; ctx.fillRect(px, H - 24, PW, PH);
-  ctx.fillStyle = '#e4e4ee'; ctx.fillRect(ball.x, ball.y, BS, BS);
-  if (dead || won) {
-    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = '#fff'; ctx.font = '26px sans-serif'; ctx.textAlign = 'center';
-    ctx.fillText(won ? 'You cleared it — score ' + score : 'Game over — score ' + score, W / 2, H / 2 - 10);
-    ctx.font = '15px sans-serif';
-    ctx.fillText('Press any key to restart', W / 2, H / 2 + 20);
-  }
-}
-function loop() {
-  if (!dead && !won) step();
-  draw();
-  requestAnimationFrame(loop);
-}
-reset();
-requestAnimationFrame(loop);
-`,
-}]
 
 // ── Web grounding for the game path ("Crucible IS the model" — but not from memory). ──
 // The on-device FM writes classics it has never seen well (Space Invaders failed 6× straight,
@@ -1009,18 +769,9 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
   const kind = classifyHtmlGoal(state.goal)
   debugBus.emit('agent', 'offline_html_kind', { path: targetPath, kind, goal: state.goal.slice(0, 80) }, { severity: 'info' })
   if (kind === 'app') return solveAppHtmlWrite(targetPath, state)
-  // Template hit → deterministic, verified game. Still runtime-gated below like FM output.
-  const tpl = GAME_TEMPLATES.find(t => t.match.test(state.goal))
-  if (tpl) {
-    const html = buildGameShell(tpl.js, `${tpl.title} — Crucible`)
-    const problem = validateHtmlDoc(html, 'game') ?? await runtimeVerifyHtml(html, state.goal)
-    if (!problem) {
-      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt: 0, template: tpl.title, bytes: html.length }, { severity: 'info' })
-      return html
-    }
-    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt: 0, problem: `template ${tpl.title}: ${problem}` }, { severity: 'warn' })
-    // fall through to FM generation
-  }
+  // NO memorized templates (doctrine, user-forced cont.79f): correctness comes from web-retrieved
+  // reference impls + FM synthesis + the runtime behavioral gate, never a baked-in answer. The
+  // game path grounds its first attempt on retrieveGameReference below.
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — html write escalating')
   const title = (state.goal.match(/\b(\w[\w\s-]{2,30}?)\s+game\b/i)?.[1] ?? 'Crucible').trim() + ' — Crucible'
@@ -1086,90 +837,46 @@ async function solveHtmlWrite(targetPath: string, state: CurrentState): Promise<
     `FM could not produce a working game after ${MAX_ATTEMPTS} run-verified attempts`)
 }
 
-// ── Verified app templates — ZERO model inference (mirrors GAME_TEMPLATES) ──
-// A todo list is to apps what snake is to games: the single most common request, and one the
-// on-device FM measurably CANNOT get right — across 6 run-verified attempts it kept appending the
-// input outside render() (self-erasing UI) or never appending it at all (blank page), so the gate
-// correctly refused to ship and escalated (cont.79e). For the canonical asks, ship a deterministic,
-// gate-passing implementation: correct by construction, still runtime-verified below like FM output.
-// Each `js` mounts into <div id="app"> (buildAppShell) and obeys every app invariant: the WHOLE UI
-// is (re)built inside render(); commit happens on the button/submit, never per-keystroke.
-export const APP_TEMPLATES: Array<{ match: RegExp; title: string; js: string }> = [{
-  match: /\b(to-?do|task)\b.*\b(list|app|manager)\b|\b(to-?do|task)\s*(list|app)?\b/i,
-  title: 'Todo',
-  js: `let app = document.getElementById('app');
-let todos = [];   // { text, done }
-let draft = '';
-function render() {
-  app.innerHTML = '';
-  let h = document.createElement('h1'); h.textContent = 'Todo'; app.appendChild(h);
-  let form = document.createElement('form');
-  let input = document.createElement('input');
-  input.placeholder = 'Add a task'; input.value = draft;
-  input.addEventListener('input', function (e) { draft = e.target.value; });  // track only — no commit
-  let add = document.createElement('button'); add.type = 'submit'; add.textContent = 'Add';
-  form.addEventListener('submit', function (e) {
-    e.preventDefault();
-    let v = draft.trim(); if (!v) return;   // ignore empty
-    todos.push({ text: v, done: false });
-    draft = ''; render();
-  });
-  form.appendChild(input); form.appendChild(add); app.appendChild(form);
-  let ul = document.createElement('ul');
-  todos.forEach(function (t, i) {
-    let li = document.createElement('li');
-    let cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = t.done;
-    cb.addEventListener('change', function () { todos[i].done = cb.checked; render(); });
-    let span = document.createElement('span'); span.textContent = t.text;
-    if (t.done) span.style.textDecoration = 'line-through';
-    let del = document.createElement('button'); del.textContent = 'Delete';
-    del.addEventListener('click', function () { todos.splice(i, 1); render(); });
-    li.appendChild(cb); li.appendChild(span); li.appendChild(del); ul.appendChild(li);
-  });
-  app.appendChild(ul);
-  let count = document.createElement('p');
-  count.textContent = todos.filter(function (t) { return !t.done; }).length + ' remaining';
-  app.appendChild(count);
-}
-render();`,
-}, {
-  match: /\bcounter\b/i,
-  title: 'Counter',
-  js: `let app = document.getElementById('app');
-let count = 0;
-function render() {
-  app.innerHTML = '';
-  let h = document.createElement('h1'); h.textContent = 'Counter'; app.appendChild(h);
-  let out = document.createElement('p'); out.style.fontSize = '40px'; out.textContent = String(count);
-  app.appendChild(out);
-  [['−', -1], ['+', 1], ['Reset', null]].forEach(function (pair) {
-    let b = document.createElement('button'); b.textContent = pair[0];
-    b.addEventListener('click', function () { count = pair[1] === null ? 0 : count + pair[1]; render(); });
-    app.appendChild(b);
-  });
-}
-render();`,
-}]
+// ── Web grounding for the app path (mirrors retrieveGameReference) ──
+// NO memorized templates (doctrine, user-forced cont.79f): the weak on-device FM can't one-shot a
+// correct app from parametric memory, so — exactly as the game path does — fetch a REAL working
+// vanilla-JS implementation from the open web ONCE and fold it into the first proposer prompt. The
+// retrieved code is an UNTRUSTED hint: every candidate, grounded or not, still passes the static +
+// RUNTIME app gate (dead-control / self-erasing / blank-render / NaN), so a wrong snippet can only
+// waste a proposal, never ship a broken app. Best-effort and bounded — any failure returns null and
+// the loop proceeds ungrounded.
+const WEB_APP_MARK = 'WORKING REFERENCE IMPLEMENTATION (fetched live from the open web — this app already works). PORT ITS LOGIC FAITHFULLY into a single render() that rebuilds everything inside document.getElementById(\'app\'): keep its state model and event handling, but delete any framework imports, external resources, and its own HTML shell/markup. Do NOT simplify or reinvent. Your output is run in a real browser and verified:'
 
-// Non-game interactive HTML. Same loop shape as the game path — propose JS → build a shell →
-// static gate → RUNTIME gate → feed the diagnostic back and repair the model's OWN code — with
-// the app kind's shell, prompt and invariants substituted. Deliberately NOT merged with the game
-// loop: the two share a skeleton but differ in every payload, and a single flag-threaded function
-// would make both harder to read than the duplicated 30 lines.
-async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promise<string> {
-  // Template hit → deterministic, correct-by-construction app. Still runtime-gated like FM output,
-  // so a template that ever regressed would be caught rather than trusted blindly.
-  const tpl = APP_TEMPLATES.find(t => t.match.test(state.goal))
-  if (tpl) {
-    const html = buildAppShell(tpl.js, `${tpl.title} — Crucible`)
-    const problem = validateHtmlDoc(html, 'app') ?? await runtimeVerifyApp(html, state.goal)
-    if (!problem) {
-      debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt: 0, template: tpl.title, kind: 'app', bytes: html.length }, { severity: 'info' })
-      return html
-    }
-    debugBus.emit('agent', 'offline_html_retry', { path: targetPath, attempt: 0, kind: 'app', problem: `template ${tpl.title}: ${problem}` }, { severity: 'warn' })
-    // fall through to FM generation
+function buildAppSearchQuery(goal: string): string {
+  // Distil the app's name from the request ("build me a markdown notes app" → "markdown notes")
+  // and pin retrieval to a self-contained vanilla-JS implementation, which ranks real usable code
+  // above framework tutorials the FM can't port offline.
+  const name = (goal.match(/\b([\w][\w '-]{2,40}?)\s+(?:app|tool|tracker|dashboard|page|widget)\b/i)?.[1] ?? goal)
+    .replace(/\b(build|make|create|write|me|a|an|the|please|can|could|you|would|like|want|app|tool|in|using|with|js|javascript|html5?|vanilla|simple)\b/gi, ' ')
+    .replace(/\s+/g, ' ').trim()
+  return `${name} vanilla javascript app implementation no framework`.slice(0, 120)
+}
+
+async function retrieveAppReference(goal: string): Promise<string | null> {
+  try {
+    const bundle = await retrieveForTask({ goal: buildAppSearchQuery(goal) }, { maxPages: 2, budget: 2200 })
+    const snippet = bundle.codeBlocks
+      .map(c => c.code?.trim() ?? '')
+      // Prefer real DOM/interaction code (addEventListener/createElement) over inert config blobs.
+      .filter(c => /addEventListener|createElement|querySelector|innerHTML|onclick/.test(c))
+      .sort((a, b) => b.length - a.length)[0]
+    if (!snippet || snippet.length < 120) return null
+    return `${WEB_APP_MARK}\n${snippet.slice(0, 6000)}`
+  } catch {
+    return null
   }
+}
+
+// Non-game interactive HTML. Same loop shape as the game path — retrieve a web reference → propose
+// JS → build a shell → static gate → RUNTIME gate → feed the diagnostic back and repair the model's
+// OWN code. Deliberately NOT merged with the game loop: the two share a skeleton but differ in every
+// payload, and a single flag-threaded function would make both harder to read than the duplicate.
+async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promise<string> {
   const fmUp = await checkFmAvailable()
   if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — html app write escalating')
   const title = (state.goal.match(/\b(\w[\w\s-]{2,30}?)\s+(?:app|page|tool|tracker|dashboard)\b/i)?.[1] ?? 'Crucible').trim() + ' — Crucible'
@@ -1177,8 +884,14 @@ async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promi
   let prevJs = ''
   let feedback = ''
   const seenProblems: string[] = []
+  // Web reference fetched ONCE up front — grounds the FIRST attempt so the FM adapts a real working
+  // app instead of guessing from memory. Dropped on later attempts (by then it repairs its own code
+  // against the higher-signal runtime diagnostic). null when the web returned nothing usable.
+  const webReference = await retrieveAppReference(state.goal)
+  if (webReference) debugBus.emit('agent', 'offline_html_web_ground', { path: targetPath, kind: 'app', bytes: webReference.length }, { severity: 'info' })
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const userMsg = `Build this app: ${state.goal}${feedback}\n\nOutput the JavaScript now.`
+    const grounding = (attempt === 1 && webReference) ? `\n\n${webReference}` : ''
+    const userMsg = `Build this app: ${state.goal}${grounding}${feedback}\n\nOutput the JavaScript now.`
     const raw = await fmComplete([
       { role: 'system', content: HTML_APP_SYSTEM },
       { role: 'user', content: userMsg },

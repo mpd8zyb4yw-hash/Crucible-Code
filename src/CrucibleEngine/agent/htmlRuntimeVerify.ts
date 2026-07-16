@@ -60,6 +60,9 @@ interface Probe {
   // Did the DOM structurally change after filling the fields and clicking the primary control?
   // null when unmeasurable → check skipped (fail-open).
   domChanged?: boolean | null
+  // Did the VISIBLE text (innerText) change after committing? The meaningful signal — an app can
+  // churn its innerHTML (re-append a node) while what the user reads is identical.
+  textChanged?: boolean | null
   // What the probe actually did — which control it clicked, how many fields it filled. Reported
   // in the rejection text so the repair feedback names the exact control that did nothing.
   interact?: { filled: number; clicked: number; control: string | null } | null
@@ -369,17 +372,35 @@ export async function runtimeVerifyApp(html: string, goal = ''): Promise<string 
         'This happens when render() clears its container (app.innerHTML = \'\') but only re-creates PART of the UI. ' +
         'Build the ENTIRE interface inside render() — the input, the buttons AND the list — so that everything is re-created every time you re-render.'
     }
-    // Dead-control invariant — the dominant broken-app shape from a small model: the UI renders
-    // perfectly, but the button is wired to the wrong id, the listener is registered before the
-    // element exists, or the handler updates state without re-rendering. Nothing is thrown, so
-    // the page looks finished and is completely unusable.
-    if (probe.controls && probe.controls > 0 && probe.domChanged === false) {
+    // Dead-control / no-visible-effect invariant — the dominant broken-app shape from a small
+    // model, and the one that survived the first no-template live run (cont.79f): the handler runs
+    // and mutates state, but never RE-RENDERS, so the item the user just entered is recorded and
+    // never shown. The earlier version keyed on `domChanged` (innerHTML) and MISSED this — the
+    // broken todo did `tasks.push(x); app.appendChild(row)`, which churns innerHTML while the
+    // visible list stays empty. The correct signal is VISIBLE change: after committing, either the
+    // text a user reads changed, or the number of controls changed (e.g. a new row appeared). If
+    // NEITHER did, the interaction produced nothing observable — the app is unusable.
+    //   * Requires a text field to have been filled (interact.filled > 0) so this fires only on
+    //     data-entry apps, never on a style-only toggle (color swatch) whose effect isn't textual.
+    //   * textChanged/controlsAfter undefined on the older harness → skip (fail-open).
+    const filledData = (probe.interact?.filled ?? 0) > 0
+    const controlCountChanged = probe.controlsAfter != null && probe.controlsAfter !== probe.controls
+    const nothingVisible = probe.textChanged === false && !controlCountChanged
+    if (filledData && probe.textChanged != null && nothingVisible) {
       const ctl = probe.interact?.control
       const which = ctl ? `the "${ctl}" control` : 'the primary control'
-      return `the app does not respond: after filling in every field and clicking ${which}, the page did not change at all. ` +
-        'The controls render but nothing is wired to them. Make sure you (a) attach the listener AFTER the element exists ' +
-        '(the script runs at the end of the body, or inside DOMContentLoaded), (b) look the element up by the id it actually has, ' +
-        'and (c) RE-RENDER the view at the end of the handler — updating a state variable alone changes nothing on screen.'
+      return `the app does nothing visible: after typing into the field and clicking ${which}, nothing the user can see changed — the value you entered never appears. ` +
+        'The handler likely updates a state variable (or re-appends the form) but never re-renders the list/output. ' +
+        'At the END of every handler, call render() so the view is rebuilt from the updated state — and make render() actually draw the current data (e.g. one <li> per item), not just re-add the input.'
+    }
+    // Fallback for pure-button apps (no field filled) that are entirely inert — nothing changed at
+    // all, visible or otherwise. Keeps the original dead-wiring coverage for e.g. a broken counter.
+    if (probe.controls && probe.controls > 0 && !filledData && probe.domChanged === false && probe.textChanged === false) {
+      const ctl = probe.interact?.control
+      const which = ctl ? `the "${ctl}" control` : 'the primary control'
+      return `the app does not respond: after clicking ${which}, the page did not change at all. ` +
+        'The controls render but nothing is wired to them. Make sure you (a) attach the listener AFTER the element exists, ' +
+        '(b) look the element up by the id it actually has, and (c) re-render the view at the end of the handler.'
     }
     return null
   } catch (e: any) {

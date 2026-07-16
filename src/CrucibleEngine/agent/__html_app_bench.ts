@@ -18,7 +18,7 @@
 
 import { runtimeVerifyHtml, runtimeVerifyApp } from './htmlRuntimeVerify'
 import { classifyHtmlGoal } from './htmlGoalKind'
-import { APP_TEMPLATES, buildAppShell } from './synthDriver'
+import { buildAppShell } from './synthDriver'
 
 const HEAD = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title></head>'
 
@@ -51,6 +51,35 @@ document.getElementById('f').addEventListener('submit', function (e) {
   var v = document.getElementById('t').value.trim(); if (!v) return;
   items.push(v);
 });`
+
+// VERBATIM shape from the first NO-TEMPLATE live run (cont.79f): the submit handler pushes the task
+// but calls app.appendChild(row) instead of render(), so the item is RECORDED but never DISPLAYED.
+// It churns innerHTML (the form node moves) while the visible list stays empty — so the old
+// innerHTML-keyed dead-control check PASSED it. Only the visible-text-change signal catches it.
+// Must REJECT.
+const NO_RERENDER = `${HEAD}<body><div id="app"></div>
+<script>
+let tasks = [], entered = '';
+function render() {
+  document.getElementById('app').innerHTML = '';
+  let ul = document.createElement('ul');
+  tasks.forEach(function (task) { let li = document.createElement('li'); li.textContent = task; ul.appendChild(li); });
+  document.getElementById('app').appendChild(ul);
+  let row = document.createElement('form');
+  let input = document.createElement('input'); input.value = entered;
+  input.addEventListener('input', function (e) { entered = e.target.value; });
+  let add = document.createElement('button'); add.type = 'submit'; add.textContent = 'Add';
+  row.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (entered.trim() === '') return;
+    tasks.push(entered); entered = '';
+    document.getElementById('app').appendChild(row);   // BUG: re-appends the form, never render()
+  });
+  row.appendChild(input); row.appendChild(add);
+  document.getElementById('app').appendChild(row);
+}
+render();
+</script></body></html>`
 
 // A calculator whose total is never initialized → "Total: NaN". Runs, responds, renders — every
 // other check passes. Must REJECT.
@@ -174,6 +203,11 @@ async function main() {
     erasing !== null && /erases its own|field is gone|ENTIRE interface/i.test(erasing),
     `expected a self-erasing rejection, got: ${erasing}`)
 
+  const noRerender = await runtimeVerifyApp(NO_RERENDER, 'todo app')
+  check('an app that records input but never re-renders it is rejected (visible-effect check)',
+    noRerender !== null && /nothing visible|never appears|re-render/i.test(noRerender),
+    `expected a no-visible-effect rejection, got: ${noRerender}`)
+
   const nan = await runtimeVerifyApp(NAN_HTML, 'calculator')
   check('an app displaying NaN is rejected with a readout hint',
     nan !== null && /NaN|undefined|Infinity/.test(nan), `expected a readout rejection, got: ${nan}`)
@@ -182,17 +216,28 @@ async function main() {
   check('a legitimately static page passes (no controls → check skipped, fail-open)',
     stat === null, `expected null, got: ${stat}`)
 
-  // Every shipped app template must pass its OWN runtime gate — the FM cannot produce a working
-  // todo app across 6 attempts, so these deterministic templates are what actually reaches users.
-  // Trusting them un-verified would reintroduce the exact silent-broken-ship this session removed.
-  for (const tpl of APP_TEMPLATES) {
-    const problem = await runtimeVerifyApp(buildAppShell(tpl.js, `${tpl.title} — Crucible`), tpl.title)
-    check(`APP_TEMPLATE "${tpl.title}" passes its own runtime gate`, problem === null, `got: ${problem}`)
-  }
-  // The todo template must actually be SELECTED for the canonical request (not fall through to FM).
-  check('the todo goal selects the Todo template',
-    (APP_TEMPLATES.find(t => t.match.test('build a todo list app')) || {}).title === 'Todo',
-    'todo goal did not match the Todo template')
+  // NOTE: there are NO templates to bench (doctrine cont.79f — no memorized answers). What reaches
+  // users is FM synthesis grounded on a web-retrieved reference, gated by these same checks. This
+  // positive control just proves buildAppShell + a correct render() PASSES — the shell itself is
+  // sound, so a rejection means the FM's logic, never the wrapper.
+  const CORRECT_APP_JS = `let app = document.getElementById('app');
+let items = [], draft = '';
+function render() {
+  app.innerHTML = '';
+  let form = document.createElement('form');
+  let input = document.createElement('input'); input.value = draft;
+  input.addEventListener('input', function (e) { draft = e.target.value; });
+  let add = document.createElement('button'); add.type = 'submit'; add.textContent = 'Add';
+  form.addEventListener('submit', function (e) { e.preventDefault(); let v = draft.trim(); if (!v) return; items.push(v); draft = ''; render(); });
+  form.appendChild(input); form.appendChild(add); app.appendChild(form);
+  let ul = document.createElement('ul');
+  items.forEach(function (t) { let li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
+  app.appendChild(ul);
+}
+render();`
+  const goodShell = await runtimeVerifyApp(buildAppShell(CORRECT_APP_JS, 'Todo — Crucible'), 'todo app')
+  check('buildAppShell + a correct render() passes the app gate (positive control)',
+    goodShell === null, `got: ${goodShell}`)
 
   console.log(`\nhtml app invariants: ${pass}/${pass + fail} passed`)
   process.exit(fail === 0 ? 0 : 1)

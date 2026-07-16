@@ -137,10 +137,17 @@ app.whenReady().then(async () => {
       out.fields = c0 ? c0.fields : 0
       out.loadText = [await ex(DOM_TEXT, '')]
       const before = await ex(DOM_SIG, null)
+      const textBefore = await ex(DOM_TEXT, '')       // VISIBLE text before the interaction
       out.interact = await ex(DOM_INTERACT, null)
       await wait(420)                       // let async handlers (render, fetch-free timers) settle
       const after = await ex(DOM_SIG, null)
+      const textAfter = await ex(DOM_TEXT, '')        // VISIBLE text after committing
+      // domChanged = the raw DOM churned at all (innerHTML). textChanged = the VISIBLE, meaningful
+      // content changed. The gap between them is the "handler mutated state / moved a node but
+      // rendered nothing new" bug: innerHTML differs (a form got re-appended) while what the user
+      // reads is identical. The verifier keys the dead-control check on textChanged, not domChanged.
       out.domChanged = (before !== null && after !== null) ? before !== after : null
+      out.textChanged = (textBefore !== textAfter)
       const c1 = await ex(DOM_CONTROLS, null)
       out.controlsAfter = c1 ? c1.controls : null
       out.fieldsAfter = c1 ? c1.fields : null
