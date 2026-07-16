@@ -1,0 +1,404 @@
+[
+  {
+    "arm": "fm",
+    "run": 0,
+    "ms": 83624,
+    "chars": 1650,
+    "finish": "stop",
+    "usage": {
+      "latency_ms": 68960,
+      "output_tokens_est": 412
+    },
+    "usesZIpv4": false,
+    "mangledZipv4": false,
+    "handRolledRegex": true,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": false,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "ipv4Schema",
+            "validator": false
+          }
+        ]
+      },
+      {
+        "block": 1,
+        "ran": false,
+        "error": "node:internal/modules/run_main:107\n    triggerUncaughtException(\n    ^\n\nError: Transform failed with 1 error:\n/Users/justin/crucible-local/crucible-local/audit-traces/p7/.probe-fm-0-1.ts:7:9: ERROR: Expected \">\" but found \"name\"\n    at failureErrorWithLog (/Users/justin/crucible-local/crucible-local"
+      }
+    ]
+  },
+  {
+    "arm": "fm",
+    "run": 1,
+    "ms": 15633,
+    "chars": 1697,
+    "finish": "stop",
+    "usage": {
+      "latency_ms": 15582,
+      "output_tokens_est": 424
+    },
+    "usesZIpv4": false,
+    "mangledZipv4": false,
+    "handRolledRegex": true,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": false,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": false,
+        "error": "/Users/justin/crucible-local/crucible-local/audit-traces/p7/.probe-fm-1-0.ts:4\nconst schema = toTypedSchema({\n               ^\n\nReferenceError: toTypedSchema is not defined\n    at <anonymous> (/Users/justin/crucible-local/crucible-local/audit-traces/p7/.probe-fm-1-0.ts:4:16)\n    at ModuleJob.run (no"
+      }
+    ]
+  },
+  {
+    "arm": "fm",
+    "run": 2,
+    "ms": 16174,
+    "chars": 1507,
+    "finish": "stop",
+    "usage": {
+      "latency_ms": 16169,
+      "output_tokens_est": 376
+    },
+    "usesZIpv4": false,
+    "mangledZipv4": false,
+    "handRolledRegex": false,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": false,
+    "attempts": []
+  },
+  {
+    "arm": "bonsai_nothink",
+    "run": 0,
+    "ms": 28204,
+    "chars": 340,
+    "finish": "stop",
+    "usage": {
+      "completion_tokens": 98,
+      "prompt_tokens": 1105,
+      "total_tokens": 1203,
+      "prompt_tokens_details": {
+        "cached_tokens": 1099
+      }
+    },
+    "usesZIpv4": true,
+    "mangledZipv4": false,
+    "handRolledRegex": false,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": true,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "ipSchema",
+            "validator": true,
+            "pass": true,
+            "okV": [
+              true,
+              true,
+              true,
+              true
+            ],
+            "okI": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "arm": "bonsai_nothink",
+    "run": 1,
+    "ms": 45539,
+    "chars": 831,
+    "finish": "stop",
+    "usage": {
+      "completion_tokens": 247,
+      "prompt_tokens": 1105,
+      "total_tokens": 1352,
+      "prompt_tokens_details": {
+        "cached_tokens": 1099
+      }
+    },
+    "usesZIpv4": true,
+    "mangledZipv4": false,
+    "handRolledRegex": false,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": true,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "ipSchema",
+            "validator": true,
+            "pass": true,
+            "okV": [
+              true,
+              true,
+              true,
+              true
+            ],
+            "okI": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        ]
+      },
+      {
+        "block": 1,
+        "ran": false,
+        "error": "/Users/justin/crucible-local/crucible-local/audit-traces/p7/.probe-bonsai_nothink-1-1.ts:3\nconst result = ipSchema.parse(\"192.168.1.1\"); // Success\n               ^\n\nReferenceError: ipSchema is not defined\n    at <anonymous> (/Users/justin/crucible-local/crucible-local/audit-traces/p7/.probe-bonsai_"
+      }
+    ]
+  },
+  {
+    "arm": "bonsai_nothink",
+    "run": 2,
+    "ms": 62652,
+    "chars": 1014,
+    "finish": "stop",
+    "usage": {
+      "completion_tokens": 323,
+      "prompt_tokens": 1105,
+      "total_tokens": 1428,
+      "prompt_tokens_details": {
+        "cached_tokens": 1099
+      }
+    },
+    "usesZIpv4": true,
+    "mangledZipv4": false,
+    "handRolledRegex": false,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": true,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "ipSchema",
+            "validator": true,
+            "pass": true,
+            "okV": [
+              true,
+              true,
+              true,
+              true
+            ],
+            "okI": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "name": "result",
+            "validator": false
+          }
+        ]
+      },
+      {
+        "block": 1,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "cidrSchema",
+            "validator": true,
+            "pass": false,
+            "okV": [
+              false,
+              false,
+              false,
+              false
+            ],
+            "okI": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          },
+          {
+            "name": "result",
+            "validator": false
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "arm": "bonsai_think",
+    "run": 0,
+    "ms": 361839,
+    "chars": 1113,
+    "finish": "stop",
+    "usage": {
+      "completion_tokens": 1897,
+      "prompt_tokens": 1103,
+      "total_tokens": 3000,
+      "prompt_tokens_details": {
+        "cached_tokens": 1099
+      }
+    },
+    "usesZIpv4": true,
+    "mangledZipv4": false,
+    "handRolledRegex": false,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": true,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "ipv4Schema",
+            "validator": true,
+            "pass": true,
+            "okV": [
+              true,
+              true,
+              true,
+              true
+            ],
+            "okI": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "arm": "bonsai_think",
+    "run": 1,
+    "ms": 492011,
+    "chars": 710,
+    "finish": "length",
+    "usage": {
+      "completion_tokens": 2500,
+      "prompt_tokens": 1103,
+      "total_tokens": 3603,
+      "prompt_tokens_details": {
+        "cached_tokens": 1099
+      }
+    },
+    "usesZIpv4": true,
+    "mangledZipv4": false,
+    "handRolledRegex": false,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": true,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "ipv4Schema",
+            "validator": true,
+            "pass": true,
+            "okV": [
+              true,
+              true,
+              true,
+              true
+            ],
+            "okI": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "arm": "bonsai_think",
+    "run": 2,
+    "ms": 386800,
+    "chars": 887,
+    "finish": "stop",
+    "usage": {
+      "completion_tokens": 2092,
+      "prompt_tokens": 1103,
+      "total_tokens": 3195,
+      "prompt_tokens_details": {
+        "cached_tokens": 1099
+      }
+    },
+    "usesZIpv4": true,
+    "mangledZipv4": false,
+    "handRolledRegex": false,
+    "jsonSchema": false,
+    "fabricatedZodNs": false,
+    "executesCorrectly": true,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": true,
+        "candidates": [
+          {
+            "name": "ipv4Schema",
+            "validator": true,
+            "pass": true,
+            "okV": [
+              true,
+              true,
+              true,
+              true
+            ],
+            "okI": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
