@@ -4,6 +4,7 @@
 // Guards the canonical-title preference (cont.67): within one salient-overlap tier the base
 // entity article must outrank its derivatives/sequels, and the top-1 must be the correct page.
 import { rankResults, selectRelevantPassages, queryTerms } from './groundedAnswer'
+import { namesExternalLibrary } from '../retrieval/retrievalLayer'
 import type { SearchResult } from '../retrieval/retrievalLayer'
 
 let pass = 0, fail = 0
@@ -210,6 +211,46 @@ console.log('\n== query-relevance windowing ==')
   check('queryTerms drops stopwords, keeps content tokens',
     queryTerms('what is the exact method to validate an IPv4 address').includes('ipv4') &&
     !queryTerms('what is the exact method to validate an IPv4 address').includes('the'))
+}
+
+
+// ── Library-vs-algorithmic routing (audit cont.81 §2.3 regression guard) ──────
+// The live bug: grounding was gated on QUESTION shape, so "Write a Zod schema…" got
+// 0 sources and returned JSON Schema — the wrong library. Library asks must reach the
+// web (an API surface can only be looked up); algorithmic asks must NOT (VGR certifies
+// them, and a needless lookup diverts work away from the verifier).
+console.log('\n== library-vs-algorithmic routing ==')
+{
+  const LIB = [
+    'Write a Zod schema that validates a string is a valid IPv4 address.',
+    'Build a React component that fetches users',
+    'How do I use Express middleware for auth',
+    'write a function using the lodash library to deep clone',
+    "import { z } from 'zod' — how do I add a refinement?",
+    'use z.string() to validate an email',
+    'npm package for parsing dates',
+  ]
+  const ALGO = [
+    'Write a function to reverse a linked list',
+    'write a TypeScript function to reverse a linked list',
+    'implement quicksort in Python',
+    'write a regex to match an IPv4 address',   // IPv4 is a standard, not a library
+    'create a function that returns the nth fibonacci number',
+    'write a method to check if a string is a palindrome',
+    'implement a binary search algorithm in Java',
+    'write a class that models a stack with push and pop',
+  ]
+  for (const q of LIB) check(`grounds (library): ${q.slice(0, 44)}`, namesExternalLibrary(q))
+  // False POSITIVES are the costly direction — they divert verifiable algorithmic work
+  // away from VGR, which would have CERTIFIED it. Guard all of them.
+  for (const q of ALGO) check(`skips (algorithmic): ${q.slice(0, 44)}`, !namesExternalLibrary(q))
+
+  // Language names are a closed grammatical class, not third-party libraries.
+  check('language name alone is not a library', !namesExternalLibrary('write a Python function to sort a list'))
+  // Known limitation, asserted so it is visible rather than silently assumed fixed:
+  // an all-lowercase library name has no structural signal to key on.
+  check('KNOWN GAP: lowercase library name is missed (documented, not fixed)',
+    !namesExternalLibrary('create a pandas dataframe from a csv'))
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)

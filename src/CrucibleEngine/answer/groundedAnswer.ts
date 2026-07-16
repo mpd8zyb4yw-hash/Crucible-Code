@@ -322,7 +322,6 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
 
   let block = parts.join('\n\n---\n\n')
   if (block.length > EVIDENCE_BUDGET) block = block.slice(0, EVIDENCE_BUDGET) + '\n… (truncated)'
-  return { block, sources, titles }
 }
 
 function safeHost(url: string): string {

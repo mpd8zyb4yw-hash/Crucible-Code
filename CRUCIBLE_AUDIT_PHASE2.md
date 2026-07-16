@@ -520,3 +520,151 @@ grep -rn "CRUCIBLE_CODE_WEB_GROUND" . --exclude-dir=node_modules   # 2 hits, bot
 Traces: `audit-traces/p2/` — `boot-default.log` (flag undefined), `boot-codeground.log` (flag on,
 still no fire), `boot-both.log` (both flags, retrieval fires, extraction fails),
 `t4-default-b.sse` (ZIP regex), `t4-fixed.sse` (`ipv4()`), `evidence-block.txt`.
+
+---
+
+# Phase 2a — the routing gate: FOUND, FIXED, and NOT SUFFICIENT
+
+Follow-on session. Traces: `audit-traces/p2/t4-routefix.sse`, `t4-rf2.sse`, `evidence-routefix.txt`.
+
+## The gate, located
+
+**Two** gates, both blocking, in different files.
+
+**`answerEngine.ts:337`** — the shape requirement, stated literally in the source:
+
+```ts
+const isGenRequest = CODE_GEN.test(message) || CODE_FENCE.test(message)
+const isQuestionShaped = /^\s*(what|how|why|when|which|who|where|does|do|is|are|…)\b/i.test(message)
+                         || message.trim().endsWith('?')
+const groundingEligible = !usedRetrieval && !useConsensus && !isGenRequest &&
+  !facets.needsComputation && isQuestionShaped && …
+```
+
+**The code contradicts itself.** `shouldResearch()` — gated *behind* `groundingEligible` — already
+encodes the exact finding of this audit:
+
+```ts
+if (isCodingQuery(message)) return true   // API/library/language specifics — FM bluffs; SO/docs strong
+```
+
+That line can never run for a code-gen prompt. `isGenRequest` / `isQuestionShaped` veto upstream
+first. **It is a dead branch inside the gate** — someone already knew the FM bluffs on library APIs
+and wrote the rule; the eligibility check silently made it unreachable.
+
+**`synthDriver.ts:207`** — the same veto, reached a different way:
+
+```ts
+if (!contextDependent && !isCodeShaped) {
+  const g = await answerWithWebGrounding(goal, { history })
+```
+
+`isCodeShaped` was written for the **research DAG** at line 221, whose abstain is *preserved as the
+final answer* (cont.53). For the DAG, its comment is right — *"over-matching here only means
+'answer directly instead of web-retrieving' — the safe failure direction."* **That reasoning does
+not transfer to grounding**, which returns `null` and falls through harmlessly. cont.69 added the
+grounding block at 207 and reused the DAG's guard, inheriting a condition that does not apply to it.
+
+## The principle behind the fix (not a shape rule)
+
+The "code generation opts out of grounding" rule has a *sound* justification — `answerEngine.ts:239`:
+
+> *"Only the dedicated VERIFIED non-web paths opt out upstream: arithmetic/consensus and code
+> GENERATION — those are checked, not memorized."*
+
+True for **algorithmic** work: VGR proposes and *executes* against a spec, which beats a lookup.
+It collapses for an **external library**: there is no spec to execute, and an API surface is an
+arbitrary fact about the world. **`z.ipv4()` cannot be derived from first principles. Reversing a
+linked list can.**
+
+So the fix routes on that distinction — `namesExternalLibrary()` in `retrievalLayer.ts`, using
+structural signals only (package nouns, imports, namespaced calls, non-language proper nouns).
+**No list of known package names** — that would rot on the next release and is what the
+no-templates rule forbids. Language names *are* enumerated, as a closed grammatical class (the
+`FUNCTION_WORDS` precedent), so "TypeScript" doesn't read as a third-party library.
+
+Cost asymmetry drove one design call: a **false positive is worse than a miss.** A missed lookup on
+a library ask is one bad answer; a needless lookup on algorithmic work **diverts it away from the
+verifier that would have certified it.** Hence the digit rule — standards carry version/width
+digits (IPv4, UTF8, SHA256), library names essentially never do — which fixed
+"write a regex to match an IPv4 address" being misread as a library ask.
+
+## Result: the gate opens. The answer is still wrong.
+
+| prompt | before | after |
+|---|---:|---:|
+| "Write a Zod schema that validates … IPv4 …" | **0** sources | **2** sources ✅ |
+
+Grounding now fires, retrieves the **same correct** zod DeepWiki page, and the evidence block
+**contains the answer**:
+
+```
+[AUDIT2] EVIDENCE len=3010 containsIpv4=true
+```
+
+**And the model still emitted JSON Schema** — the wrong library, ungrounded, from parametric memory:
+
+```json
+{ "$schema": "http://json-schema.org/draft-07/schema#", "title": "IPv4 Address",
+  "properties": { "address": { "type": "string", "pattern": "^(25[0-5]|…)$" } } }
+```
+
+(A prior run produced `import { Schema } from 'zod'` with a hand-rolled regex — right library, still
+fabricated API. Non-deterministic; both wrong.)
+
+### Why — and it is item #2, not a model ceiling
+
+Here is `ipv4` **as it appears in the evidence**:
+
+```
+Network Address Formats  Network validators handle IP addresses (v4/v6), CIDR blocks, and MAC
+addresses. ValidatorRegexipv4()regexes.ipv4ipv6()regexes.ipv6mac()regexes.mac() (factory for
+custom delimiters)cidrv4()regexes.cidrv4cidrv6()regexes.cidrv6
+```
+
+That is a documentation **table**, flattened by `stripBoilerplate` into an unreadable run-on.
+`ValidatorRegexipv4()regexes.ipv4` is a column header welded to two cells. The answer is *present*
+and *illegible*. The model ignored it and fell back on memory.
+
+**This is the same bug class a third time: retrieval delivers, the pipeline mangles, the model gets
+blamed.** And it retroactively explains the caveat in §4 — the question-shaped run produced correct
+*prose* (`ipv4()`) but a mangled *code block*, from this identical text. The model can sometimes
+squeeze the name out of the wreckage for prose; it cannot reconstruct a code sample from it.
+
+**Therefore `stripBoilerplate` (build-plan Phase 2b) is not cosmetic. It is on the critical path**,
+and it is now the highest-value remaining fix — promoted above Phase 3.
+
+## Status
+
+- ✅ Routing gate: **fixed and verified** (0 → 2 sources on the exact failing prompt)
+- ✅ Truncation: fixed (previous session)
+- ❌ **The code-shaped Zod prompt still returns a wrong answer.** Two of three stages are fixed;
+  the third (table-mangling) is not, and it is sufficient on its own to keep the answer wrong.
+
+**Phase 1's Task 4 verdict has NOT been overturned for code-shaped prompts.** It is now failing for
+a third, fully-characterized reason instead of an unknown one. Grounding fires; the evidence is
+right; the rendering destroys it.
+
+Benches: `ground:bench` **41/41** (17 pre-existing + 7 windowing + 17 routing incl. a
+`KNOWN GAP` assertion for lowercase library names), `vgr:bench` **208/208**. The one
+`retrievalLayer.ts` tsc error is pre-existing (verified by stash).
+
+## Revised order
+
+1. **Phase 2b — `stripBoilerplate` table/structure preservation.** Now proven load-bearing, not
+   polish. Milestone: the §2.3 prompt returns Zod using `z.ipv4()`.
+2. Phase 3 — code path fetches source, not READMEs.
+3. Phase 4 — ungate the code path.
+4. Phase 5 — retrieval on the app-build path (Task 3's class; still untouched).
+
+## Added open questions
+
+7. **Would a code-gen-specific synthesis prompt help independently?** `GROUNDING_SYSTEM` is written
+   for prose ("Write a clear, accurate, well-structured answer"). A generation ask may need
+   "use the API surface in the evidence; never invent an API name." Untested — it may be that
+   clean evidence alone suffices, and I would test 2b before adding a prompt variant.
+8. **`namesExternalLibrary` misses all-lowercase library names** ("pandas"). Asserted as a
+   `KNOWN GAP` in the bench so it stays visible. No structural signal exists; the honest options
+   are a package-registry lookup at gate time (latency) or accepting the miss.
+9. **Is the false-positive/miss asymmetry calibrated right?** I chose it by argument, not
+   measurement. If VGR's certify rate on algorithmic asks is low, the asymmetry inverts.

@@ -25,7 +25,7 @@ import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factCons
 import { applyExplainCheck, checkExplanation } from './explainCheck'
 import { matchMeta } from './conversational'
 import { answerWithWebGrounding } from './groundedAnswer'
-import { isCodingQuery } from '../retrieval/retrievalLayer'
+import { isCodingQuery, namesExternalLibrary } from '../retrieval/retrievalLayer'
 import { buildRecallContextAsync } from './conversationMemory'
 import { detectTruncation, buildContinuationMessages, stitchContinuation } from './longOutput'
 
@@ -335,8 +335,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // dedicated verified paths.
   const isGenRequest = CODE_GEN.test(message) || CODE_FENCE.test(message)
   const isQuestionShaped = /^\s*(what|how|why|when|which|who|where|does|do|is|are|can|could|should|would|explain|describe|tell me|define|compare|list)\b/i.test(message) || message.trim().endsWith('?')
-  const groundingEligible = !usedRetrieval && !useConsensus && !isGenRequest &&
-    !facets.needsComputation && isQuestionShaped &&
+  // LIBRARY-shaped code asks must reach the web even though they are gen-shaped and not
+  // question-shaped (audit cont.81). The "code generation is checked, not memorized" opt-out
+  // below is sound for ALGORITHMIC work — VGR executes it against a spec. It is NOT sound for
+  // an external API surface: there is no spec to execute and no way to derive `z.ipv4()`, so
+  // the FM bluffs (measured: "write a Zod schema validating an IPv4 address" returned JSON
+  // Schema — the wrong library entirely, ungrounded, uncited, no abstain). shouldResearch()
+  // ALREADY encodes this ("isCodingQuery → FM bluffs; SO/docs strong"), but could never fire:
+  // isGenRequest/isQuestionShaped vetoed upstream, making that branch dead. This opens the lane.
+  const libraryCodeAsk = (isGenRequest || isCodingQuery(message)) && namesExternalLibrary(message)
+  const groundingEligible = !usedRetrieval && !useConsensus &&
+    !facets.needsComputation &&
+    (libraryCodeAsk || (!isGenRequest && isQuestionShaped)) &&
     process.env.CRUCIBLE_WEB_GROUNDING !== '0'
   // Gap-gate: only the specialized/technical/recent subset actually hits the web.
   const researchGap = groundingEligible && shouldResearch(message, facets)

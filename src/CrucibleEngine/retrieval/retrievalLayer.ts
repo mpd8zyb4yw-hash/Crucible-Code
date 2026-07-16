@@ -133,6 +133,72 @@ export function isCodingQuery(q: string): boolean {
   return CODING_QUERY.test(q)
 }
 
+// ── Library-shaped vs algorithmic code requests ───────────────────────────────
+// The distinction that decides whether a CODE request needs the web (audit cont.81).
+//
+// Code generation legitimately opts out of grounding because it has a better oracle:
+// VGR proposes candidates and EXECUTES them against a spec — checked, not memorized.
+// But that argument only holds for ALGORITHMIC work, where the answer is derivable and
+// a spec exists to check it against. It collapses when the request names an external
+// LIBRARY: an API surface is an arbitrary fact about the world, not something a model
+// can derive or a verifier can discover. `z.ipv4()` cannot be reasoned out from first
+// principles — it can only be looked up. Reversing a linked list can.
+//
+// So: "write a Zod schema that validates an IPv4 address" MUST hit the web (the FM
+// bluffed JSON Schema — wrong library entirely). "write a function to reverse a linked
+// list" must NOT (VGR certifies it, and a lookup only adds latency).
+//
+// Signals are grammatical/structural, never a list of known package names — a memorized
+// library table would rot on contact with the next release and is exactly what the
+// no-templates rule forbids. Language names ARE enumerated, but as a closed grammatical
+// class (like FUNCTION_WORDS), so "TypeScript" doesn't read as a third-party library.
+
+const LANGUAGE_NAMES = new Set(
+  ('javascript typescript python java kotlin swift rust go golang ruby php perl scala haskell ' +
+   'elixir erlang clojure lua dart c c++ c# f# objective-c bash shell zsh sql html css scss sass ' +
+   'json yaml toml xml markdown regex regexp').split(/\s+/),
+)
+
+/**
+ * True when a code request references an external library/package whose API must be
+ * looked up rather than derived. Structural signals only:
+ *   1. an explicit package/library noun ("the X library", "npm package X")
+ *   2. an import/require of a named module
+ *   3. a namespaced call (`z.string()`, `np.array()`) — implies a library surface
+ *   4. a capitalized proper-noun token that is not a language name or sentence-initial
+ */
+export function namesExternalLibrary(q: string): boolean {
+  const msg = q ?? ''
+  // 1. explicit package/library nouns
+  if (/\b(librar(?:y|ies)|packages?|frameworks?|sdks?|modules?|npm|pypi|pip|cargo|gem|maven|nuget|crate)\b/i.test(msg)) return true
+  // 2. import / require of a named module
+  if (/\b(?:import|require|from)\b[^.?!\n]{0,40}['"`][\w@/.-]+['"`]/.test(msg)) return true
+  if (/\bimport\s+\{[^}]*\}\s*from\b/.test(msg)) return true
+  // 3. namespaced call — a dotted lowercase identifier invoked as a function
+  if (/\b[a-z][\w$]*\.[a-z][\w$]*\s*\(/i.test(msg)) return true
+  // 4. capitalized proper noun that isn't a language or sentence-initial
+  const tokens = msg.match(/\S+/g) ?? []
+  for (let i = 1; i < tokens.length; i++) {           // skip index 0 — sentence-initial
+    const bare = tokens[i].replace(/[^\w+#.-]/g, '')
+    if (!bare || bare.length < 2) continue
+    if (!/^[A-Z]/.test(bare)) continue
+    if (/^[A-Z0-9+#.-]+$/.test(bare) && bare.length <= 5) continue   // acronyms: API, JSON, HTTP, HTML
+    // Standards/protocols/encodings carry a version or width digit (IPv4, IPv6, UTF8, SHA256,
+    // Base64). Library names essentially never do. Without this, "write a regex to match an
+    // IPv4 address" — pure algorithmic work VGR can certify — was misread as a library ask and
+    // steered onto a slower, weaker path. Cost asymmetry favours the skip: a missed lookup on a
+    // library ask is one bad answer, but a needless lookup on algorithmic work diverts it away
+    // from the verifier that would have CERTIFIED it.
+    if (/\d/.test(bare)) continue
+    const low = bare.toLowerCase()
+    if (LANGUAGE_NAMES.has(low)) continue
+    // A capitalized, non-language, non-acronym token in a coding request is a library name
+    // far more often than not ("Zod", "React", "Pandas", "Express").
+    return true
+  }
+  return false
+}
+
 // Salient tokens = query words that carry topic meaning (drop interrogatives/stopwords).
 const REL_STOP = new Set(
   ('what is are how does do did why who whom when where the of for a an in on at to with ' +

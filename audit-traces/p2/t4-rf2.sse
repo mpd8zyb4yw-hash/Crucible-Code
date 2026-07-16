@@ -1,0 +1,250 @@
+data: {"type":"thinking"}
+
+data: {"type":"contract","promptType":"creative","requiredStructure":[],"forbiddenAntipatterns":[]}
+
+data: {"type":"stage","stage":1,"status":"start"}
+
+data: {"type":"thought","text":"Searching the web for current, verifiable sources…"}
+
+data: {"type":"thought","text":"Found 10 sources — reading the top 3: deepwiki.com, zod101.smol-apps.de, flaviocopes.com…"}
+
+data: {"type":"sources","phase":"reading","items":[{"url":"https://deepwiki.com/colinhacks/zod/3.2-string-format-validators","host":"deepwiki.com"},{"url":"https://zod101.smol-apps.de/","host":"zod101.smol-apps.de"},{"url":"https://flaviocopes.com/zod/","host":"flaviocopes.com"}]}
+
+data: {"type":"thought","text":"Grounding the answer in 3 sources…"}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"## EVIDENCE\n[S1] String","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Format Validators | colinhacks/zod","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" | DeepWiki — https://deepwiki.com","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"/colinhacks/zod/3.","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"2-string-format-validators\nString","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Format Validators | colinhacks/zod","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" | DeepWiki Loading... Index your code with Devin","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"DeepWikiDeepWikicolinhacks/zod","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Index your code with Devin Edit Wiki Share Loading...","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Last indexed: 12 June 20","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"26 (912f0f)","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"OverviewInstallation and SetupBasic Usage ExamplesCore ArchitecturePackage","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Structure and ExportsSchema Type SystemValidation PipelineCheck","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" SystemError Handling SystemSchema Types and Validat …","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" etWhether to allow timezone offsets like +0","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"5:30localWhether to allow local time","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" without a timezone suffix Sources: packages/z","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"od/src/v4/core/re","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"gexes.ts95-132 packages/zod/src/v","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"4/classic/tests/datetime.test.","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"ts5-137 packages/zod","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"/src/v4/classic/iso.","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"ts6-20 Network Address Formats Network valid","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"ators handle IP addresses (v4/v6","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"), CIDR blocks, and MAC addresses. Valid","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"atorRegexipv4()regexes","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":".ipv4ipv6()regex","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"es.ipv6mac()regexes","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":".mac() (factory for custom delimiters","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":")cidrv4()regexes.cid","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"rv4cidrv6()regexes.","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"cidrv6 Sources: packages/zod/","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"src/v4/core/regexes","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":".ts65-76 packages/z","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"od/src/v4/classic/tests","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"/continuability.test.ts11","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"4-219 Base64 and Enc","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"oding Formats Zod validates both standard Base64 and","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" URL-safe Base64 (Base64URL","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"). Base64: Validates length (multiple","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" of 4) and padding (=). Base6","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"4URL: Validates URL-safe c\n","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"\n---\n\n[S2] Zod1","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"01 - Interactive Zod Schema Playground & Validator","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" — https://zod101.sm","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"ol-apps.de/\nZod1","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"01 - Interactive Zod Schema Playground & Validator","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Interactive Zod Schema PlaygroundTest and validate your Zod sche","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"mas in real-time. Write your schema on","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" the left, input test data on the right,","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" and see validation results instantly. Perfect for learning Zod","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" or debugging complex schemas.\n\n---\n","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"\n[S3] Zod: Type-Safe","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Schema Validation for TypeScript — https://flavi","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"ocopes.com/zod/\nZ","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"od: Type-Safe Schema Validation for TypeScript","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Zod: Type-Safe Schema Validation for TypeScript","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"By Flavio CopesOct 20,","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" 2025Learn how to use Zod","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":", the TypeScript-first schema validation library that","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" validates data at runtime and infers your types from","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" a single schema definition.~~~TypeScript gives you","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" type safety at compile time. But what about runtime","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"? When data comes from an API, user input","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":", or environment variables, you can’t trust","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" it. That’s where Zod comes in.","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Zod is a TypeScript-first schema validation library","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":". You define a schema, and Zod validates data","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" against it. The best part? TypeScript automatically","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" infers types from your schemas. One schema","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":", both validation and types. I used to write","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" separate TypeScript types and validation logic. Types for","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" development, validators for runtime. Ke … rm","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" validation in TypeScript, especially for user sign-","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"ups. Here’s a breakdown of what the","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" code does: Schema definition: A signupSchema is","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" created using z.object(), specifying the requirements for","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" each field: username: Must be 3-","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"20 characters and only contain letters, numbers,","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" or underscores. email: Must be a valid email","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" address. password: At least 8 characters,","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" with an uppercase letter and a numbe\n","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"\n---\n\n## EVIDENCE\n[","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"S1] String Format Validators | colinh","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"acks/zod | DeepWiki — https://","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"deepwiki.com/colinhacks/z","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"od/3.2-string-format-","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"validators\nString Format Validators | colinh","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"acks/zod | DeepWiki Loading... Index","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" your code with DevinDeepWikiDeepWikicolinh","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"acks/zod Index your code with Devin Edit","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Wiki Share Loading... Last indexed: 12","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" June 2026 (912","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"f0f)OverviewInstallation and SetupBasic Usage","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" ExamplesCore ArchitecturePackage Structure and ExportsSchema Type","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" SystemValidation PipelineCheck SystemError Handling SystemSchema Types","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" and Validat … etWhether to allow timezone","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" offsets like +05:30localWhether","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" to allow local time without a timezone suffix Sources","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":": packages/zod/src/v4","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"/core/regexes.ts95","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"-132 packages/zod/src","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"/v4/classic/tests/datetime.","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"test.ts5-137 packages/","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"zod/src/v4/classic/","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"iso.ts6-20 Network Address Formats","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":" Network validators handle IP addresses (v4/","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"v6), CIDR blocks, and MAC addresses","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":". ValidatorRegexipv4()re","replace":false}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"gex","replace":false}
+
+data: {"type":"verify","passed":true,"report":"Answer grounded in 3 web sources with 4 inline citations."}
+
+data: {"type":"sources","phase":"grounded","items":[{"url":"https://deepwiki.com/colinhacks/zod/3.2-string-format-validators","host":"deepwiki.com"},{"url":"https://zod101.smol-apps.de/","host":"zod101.smol-apps.de"},{"url":"https://flaviocopes.com/zod/","host":"flaviocopes.com"}]}
+
+data: {"type":"verify","passed":false,"report":"The answer appears cut off before finishing."}
+
+data: {"type":"layer1","modelId":"local/apple-fm","model":"Crucible (offline)","text":"```json\n{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"IPv4 Address\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"address\": {\n      \"type\": \"string\",\n      \"pattern\": \"^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9])$\"\n    }\n  },\n  \"required\": [\"address\"]\n}\n```","done":true}
+
+data: {"type":"stage","stage":1,"status":"done"}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"```json\n{\n  \"$schema\": \"http://json-schema.org/draft-07/schema#\",\n  \"title\": \"IPv4 Address\",\n  \"type\": \"object\",\n  \"properties\": {\n    \"address\": {\n      \"type\": \"string\",\n      \"pattern\": \"^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9])$\"\n    }\n  },\n  \"required\": [\"address\"]\n}\n```","done":true,"replace":true}
+
+data: {"type":"stage","stage":5,"status":"done"}
+
+data: [DONE]
+

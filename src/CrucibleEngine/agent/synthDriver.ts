@@ -40,7 +40,7 @@ import { buildEditSpec, parseSectionPatches, applyPatch, isSectionPatchOutput } 
 import { ensureIndex } from '../state/codebaseIndex'
 import { debugBus } from '../debug/bus'
 import type { DriveTurn, DriveTurnResult } from './loop'
-import { retrieveForTask } from '../retrieval/retrievalLayer'
+import { retrieveForTask, namesExternalLibrary } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
 import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
 import { matchMeta } from '../answer/conversational'
@@ -204,7 +204,14 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
   // engine (search → read → synthesize → cite) that already grounds the chat path. Try it
   // FIRST; it returns a cited answer or null (web genuinely empty → a research-quality gap to
   // fix, per north-star, not a license to memorize). Non-code, non-back-reference goals only.
-  if (!contextDependent && !isCodeShaped) {
+  // NOTE (audit cont.81): `isCodeShaped` was written for the research DAG below, whose abstain
+  // is PRESERVED as the final answer (cont.53) — there, over-matching really is "the safe failure
+  // direction" as the comment above says. That reasoning does NOT transfer to grounding, which
+  // returns null and falls through harmlessly. Reusing the guard here meant a library-shaped code
+  // ask skipped the lookup and shipped parametric memory — the exact "dumb model as the brain"
+  // failure cont.69 exists to kill. So: keep the guard on the DAG, drop it for grounding when the
+  // ask names an external library whose API can only be looked up (never derived or verified).
+  if (!contextDependent && (!isCodeShaped || namesExternalLibrary(goal))) {
     try {
       const g = await answerWithWebGrounding(goal, { history })
       if (g && g.text.trim()) {
