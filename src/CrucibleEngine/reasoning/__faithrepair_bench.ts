@@ -52,6 +52,21 @@ const run = (draft: string, replies: string[], opts = {}) => {
   ).then(r => ({ r, s }))
 }
 
+/** Two scripted engines + a shared call ORDER log — the second-proposer rotation under test. */
+const run2 = (draft: string, primary: string[], alt: string[], opts = {}) => {
+  const order: string[] = []
+  const tap = (name: string, s: ReturnType<typeof scripted>) =>
+    async (m: RepairMessage[], sig?: AbortSignal) => { order.push(name); return s.complete(m) }
+  const p = scripted(primary), a = scripted(alt)
+  return repairUntilFaithful(
+    {
+      draft, evidence: ZOD_EV, goal: 'zod ipv4?', baseMsgs: BASE,
+      complete: tap('afm', p), completeAlt: tap('minicpm', a),
+    },
+    opts,
+  ).then(r => ({ r, p, a, order }))
+}
+
 ;(async () => {
   console.log('== the draft is free: a certified draft spends nothing ==')
   {
@@ -167,6 +182,88 @@ const run = (draft: string, replies: string[], opts = {}) => {
     const { r } = await run(DRAFT_BAD, [same, same, same])
     check('duplicate proposals terminate honestly', r.status === 'unrepaired', r.status)
     check('duplicates ship the draft', r.text === DRAFT_BAD)
+  }
+
+  console.log('\n== SECOND PROPOSER: MiniCPM seated alongside the FM (cont.86) ==')
+  {
+    // The measured cont.84/85 ceiling: the FM re-proposes a name the hint just rejected, forever.
+    // An independent generator gets the very next attempt and certifies. This is the whole point.
+    const { r, order } = await run2(DRAFT_BAD, [code("import * as z from 'zod'\nconst s = z.parseIPv4()")], [GOOD])
+    check('alt certifies what the FM could not', r.status === 'certified', r.detail)
+    check('certified text is the alt\'s', r.text === GOOD)
+    check('attributed to minicpm', r.proposedBy === 'minicpm', r.proposedBy)
+    check('detail names the winning engine', /minicpm/.test(r.detail), r.detail)
+    check('FM opened, alt took the next slot', JSON.stringify(order) === JSON.stringify(['afm', 'minicpm']), order.join(','))
+  }
+  {
+    // Rotation over K=3: afm → minicpm → afm. The FM opens (stronger on this path), the alt gets
+    // the attempt right after the FM's first failure, and the FM keeps the majority of the budget.
+    const bad = (n: string) => code(`import * as z from 'zod'\nconst s = z.${n}()`)
+    const { r, order } = await run2(DRAFT_BAD, [bad('aa'), bad('bb')], [bad('cc')])
+    check('K=3 rotates afm → minicpm → afm',
+      JSON.stringify(order) === JSON.stringify(['afm', 'minicpm', 'afm']), order.join(','))
+    check('rotation spends exactly K model calls', r.modelCalls === 3, `${r.modelCalls}`)
+    check('nothing certified → still ships the draft', r.text === DRAFT_BAD && r.status === 'unrepaired')
+    check('honest failure names BOTH engines tried', /afm/.test(r.detail) && /minicpm/.test(r.detail), r.detail)
+  }
+  {
+    // ANTI-STARVATION — the property that dies if rotation keys off history.length instead of an
+    // attempt counter. A whiffing alt (not resident / timed out / reasoning leak) returns '' → a
+    // null proposal → search retries the SAME slot free of charge. Keyed on history, the alt would
+    // be re-selected forever and the FM would never get its remaining calls.
+    const { r, p, a, order } = await run2(
+      DRAFT_BAD,
+      [code("import * as z from 'zod'\nconst s = z.parseIPv4()"), code("import * as z from 'zod'\nconst s = z.checkIp()"), GOOD],
+      ['', '', ''],   // MiniCPM never produces usable output
+    )
+    check('a whiffing alt does not starve the FM', r.status === 'certified', r.detail)
+    check('FM still got all K=3 of its calls', p.calls() === 3, `${p.calls()}`)
+    check('the alt was still tried (not silently skipped)', a.calls() > 0, `${a.calls()}`)
+    check('a whiffed alt call charges NO budget', r.modelCalls === 3, `${r.modelCalls}`)
+    check('slot rotates back to the FM after a whiff',
+      order.filter(o => o === 'afm').length === 3, order.join(','))
+    check('whiffed alt → result attributed to the FM', r.proposedBy === 'afm', r.proposedBy)
+  }
+  {
+    // Identical prompting: the escalating hint is the entire mechanism, so handicapping either
+    // engine would make the attribution meaningless (see __fault_headtohead's same discipline).
+    const { p, a } = await run2(
+      DRAFT_BAD,
+      [code("import * as z from 'zod'\nconst s = z.parseIPv4()"), code("import * as z from 'zod'\nconst s = z.zz()")],
+      [code("import * as z from 'zod'\nconst s = z.checkIp()")],
+    )
+    check('alt receives a real escalating hint', a.seenHints.length === 1 && a.seenHints[0].includes('parseIPv4'),
+      (a.seenHints[0] ?? '').slice(0, 120))
+    check('alt hint offers the documented surface too', a.seenHints[0].includes('ipv4'))
+    check('the FM\'s next hint carries the ALT\'s failure', p.seenHints[1]?.includes('checkIp'),
+      (p.seenHints[1] ?? '').slice(0, 160))
+  }
+  {
+    // NON-REGRESSION: the alt is bound by the same verifier. A worse alt repair is discarded.
+    const { r } = await run2(DRAFT_BAD, [code("import * as z from 'zod'\nconst s = z.parseIPv4()")],
+      [code("import { A, B } from 'zod'\nconst s: A = B()")])
+    check('a WORSE alt repair is discarded', r.text === DRAFT_BAD, r.detail)
+    check('an abstaining alt cannot win', r.status === 'unrepaired', r.status)
+  }
+  {
+    // No alt injected (MiniCPM never downloaded) → byte-for-byte the single-proposer search.
+    const { r } = await run(DRAFT_BAD, [GOOD])
+    check('no alt → unchanged single-proposer behavior', r.status === 'certified' && r.text === GOOD)
+    check('no alt → attributed to the FM', r.proposedBy === 'afm', r.proposedBy)
+  }
+  {
+    const { r } = await run(GOOD, [])
+    check('a free certified draft is attributed to the draft', r.proposedBy === 'draft', r.proposedBy)
+    check('draft-certified detail claims no repair call', /already faithful/.test(r.detail), r.detail)
+  }
+  {
+    // best-effort must attribute too — a partial win is still a measurement.
+    const draft2 = code("import { Schema, Infer } from 'zod'\nconst s: Schema<string> = Infer('ip')")
+    const { r } = await run2(draft2, [code("import { Schema, Infer } from 'zod'\nconst s: Schema<string> = Infer('ip4')")],
+      [code("import { Schema } from 'zod'\nconst s: Schema<string> = z.ipv4()")])
+    check('best-effort attributes the improving engine', r.status === 'best-effort' && r.proposedBy === 'minicpm',
+      `${r.status}/${r.proposedBy}`)
+    check('best-effort detail names the engine', /minicpm/.test(r.detail), r.detail)
   }
 
   console.log('\n== hint plumbing (pure) ==')

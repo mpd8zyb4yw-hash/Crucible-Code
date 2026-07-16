@@ -35,6 +35,13 @@ export interface Candidate<T = unknown> {
    * Proposers that do call a model leave this unset.
    */
   modelFree?: boolean
+  /**
+   * WHICH generator produced this candidate ('afm', 'minicpm', 'draft', 'retrieval', …), when
+   * the proposer draws from more than one. The search engine never reads it — it exists so the
+   * caller can ATTRIBUTE a certified result to the engine that earned it. Without attribution,
+   * seating a second proposer is unfalsifiable: you cannot tell recovery from coincidence.
+   */
+  source?: string
 }
 
 /**

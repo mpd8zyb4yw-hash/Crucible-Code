@@ -18,6 +18,7 @@ import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { debugBus } from '../debug/bus'
 import { verifyApiFaithfulness, describeViolations } from '../reasoning/apiFaithfulness'
 import { repairUntilFaithful } from '../reasoning/faithfulRepair'
+import { isMiniCpmAvailable, miniCpmComplete } from '../agent/miniCpmHarness'
 
 export interface GroundedResult {
   text: string
@@ -77,6 +78,18 @@ const REPAIR_ATTEMPTS = Number(process.env.CRUCIBLE_FAITH_ATTEMPTS ?? 3)
  * answer faster is not the goal. Set to 0 to disable repair entirely.
  */
 const REPAIR_BUDGET_MS = Number(process.env.CRUCIBLE_FAITH_BUDGET_MS ?? 60_000)
+/**
+ * Per-call ceiling for the SECOND repair proposer (MiniCPM5-1B). MiniCPM is materially slower than
+ * the FM here (cont.79c benched it ~14× slower as a code proposer, which is why it is out of every
+ * other hot path), and its first call additionally pays GGUF model-load — nothing warms it at boot.
+ *
+ * That cost is bounded, not ignored: this caps one call, the caller further clamps it to the repair
+ * budget actually remaining, and a MiniCPM call that times out returns '' → a null proposal, which
+ * `search()` treats as a transient infra failure that charges NO budget and rotates the slot back
+ * to the FM. So the worst case for the second proposer is "wasted wall-clock, same answer", never a
+ * lost attempt. Set to 0 to disable the second proposer and restore the single-FM search.
+ */
+const MINICPM_REPAIR_MS = Number(process.env.CRUCIBLE_FAITH_ALT_MS ?? 25_000)
 
 interface Evidence {
   block: string
@@ -475,18 +488,34 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
       // propose K candidates, keep any the verifier certifies, and carry every rejection
       // forward. The draft enters as candidate 0 for free, so it can only be replaced on a
       // verifier-measured improvement — never on the model's say-so.
+      // SECOND PROPOSER (cont.86). One model re-sampled K times re-samples ONE distribution: the
+      // FM was measured re-proposing a name the hint had just rejected, which is why K=3 never
+      // recovered live. MiniCPM5-1B is seated ALONGSIDE it (never replacing it) so a rejection is
+      // re-attempted by an independent generator. Gated on the model actually being resident —
+      // absent, `completeAlt` is undefined and this is exactly the cont.84 single-proposer search.
+      const altReady = MINICPM_REPAIR_MS > 0 && await isMiniCpmAvailable()
+      if (altReady) emit?.({ type: 'thought', text: 'Bringing in a second on-device model (MiniCPM) to cross-check the repair…' })
+
       const rep = await repairUntilFaithful(
-        { draft: text, evidence: ev.block, goal: message, baseMsgs: msgs, complete: (m, sig) =>
-          fmComplete(m as typeof msgs, { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal: sig }) },
+        {
+          draft: text, evidence: ev.block, goal: message, baseMsgs: msgs,
+          complete: (m, sig) =>
+            fmComplete(m as typeof msgs, { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal: sig }),
+          // Clamped to the wall-clock actually left, so the slower engine can never overrun the
+          // repair budget — a timeout here costs no attempt (null → rotate back to the FM).
+          completeAlt: altReady
+            ? (m, sig) => miniCpmComplete(m, sig, { maxTokens: 1100, timeoutMs: Math.min(MINICPM_REPAIR_MS, repairLeft()) })
+            : undefined,
+        },
         {
           attempts: REPAIR_ATTEMPTS,
           signal,
           // Re-checked before EVERY attempt, so a slow first repair cannot drag the answer past
           // the allowance: K bounds the calls, this bounds the wall-clock.
           canPropose: () => repairLeft() > 4000,
-          onAttempt: (n, v) => {
+          onAttempt: (n, v, src) => {
             if (n > 1 && v.status === 'violations')
-              emit?.({ type: 'thought', text: `Repair ${n - 1} still doesn't match the docs — ${describeViolations(v)}. Trying again…` })
+              emit?.({ type: 'thought', text: `Repair ${n - 1}${src ? ` (${src})` : ''} still doesn't match the docs — ${describeViolations(v)}. Trying again…` })
           },
         },
       )
@@ -496,6 +525,9 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
         opts.onToken?.(`\n\n${rep.text}`)
         debugBus.emit('pipeline', 'api_faithfulness_repaired', {
           library: faith.library, modelCalls: rep.modelCalls, detail: rep.detail,
+          // WHO earned it. If 'minicpm' never appears across real traffic, the second proposer is
+          // not paying for its latency — and that is a finding to report, not to bury.
+          proposedBy: rep.proposedBy, altSeated: altReady,
         }, { severity: 'info' })
       } else {
         // Honest failure. We do NOT return null: the caller's fallback is a PARAMETRIC answer,
@@ -510,6 +542,7 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
         unfaithful = describeViolations(rep.verdict)
         debugBus.emit('pipeline', 'api_faithfulness_repair_failed', {
           library: faith.library, status: rep.status, modelCalls: rep.modelCalls, detail: rep.detail,
+          proposedBy: rep.proposedBy, altSeated: altReady,
         }, { severity: 'warn' })
       }
     } else {

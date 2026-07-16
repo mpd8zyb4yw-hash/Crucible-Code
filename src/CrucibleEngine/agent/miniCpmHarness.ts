@@ -113,3 +113,59 @@ export async function miniCpmAnswer(question: string, opts: LocalAnswerOpts = {}
 export async function warmMiniCpm(): Promise<boolean> {
   return warmModel(MINICPM_ID)
 }
+
+/** A chat message. Structurally compatible with the FM client's and faithfulRepair's types. */
+export interface FlatMessage { role: string; content: string }
+
+/**
+ * Flatten a chat transcript into MiniCPM's (system, user) pair. GGUF chat templating here is
+ * not worth the coupling: the pool takes one system + one user, so roles are labelled inline.
+ * Pure + deterministic, so the bench can assert the flattening without a model.
+ */
+export function flattenMessages(msgs: FlatMessage[]): { system: string; user: string } {
+  const system = msgs.filter(m => m.role === 'system').map(m => m.content).join('\n\n')
+  const rest = msgs.filter(m => m.role !== 'system')
+  const user = rest
+    .map(m => (m.role === 'assistant' ? `Previous answer:\n${m.content}` : m.content))
+    .join('\n\n')
+  return { system, user }
+}
+
+/**
+ * MiniCPM as a general COMPLETION function — the adapter that lets it stand in anywhere a
+ * `(msgs) => text` proposer is expected (faithfulRepair's second proposer being the first
+ * consumer). Deliberately NOT built on miniCpmAnswer: that wrapper is prose-tuned and injects
+ * "answer in 2-5 sentences", which sabotages code output (the same reason __fault_headtohead
+ * drives the raw pool completer directly).
+ *
+ * Returns '' — never throws — when MiniCPM won't produce usable output (model not resident,
+ * timeout, or an unrecoverable reasoning leak). '' is the caller's signal to fall back; in a
+ * VGR search a null proposal is a transient infra failure that costs no budget, so a whiff
+ * hands the slot to the other model rather than burning an attempt.
+ *
+ * CAVEAT (honest): completeLocalModel takes no AbortSignal, so `signal` is only checked before
+ * the call. An in-flight generation runs to its own timeoutMs; bound that via opts.timeoutMs
+ * from the caller's remaining wall-clock budget rather than assuming abort works mid-flight.
+ */
+export async function miniCpmComplete(
+  msgs: FlatMessage[],
+  signal?: AbortSignal,
+  opts: { maxTokens?: number; timeoutMs?: number } = {},
+): Promise<string> {
+  if (signal?.aborted) return ''
+  const { system, user } = flattenMessages(msgs)
+  const maxTokens = opts.maxTokens ?? 1100
+  const timeoutMs = opts.timeoutMs ?? 30_000
+  if (timeoutMs <= 0) return ''
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (signal?.aborted) return ''
+    let raw = ''
+    try { raw = await completeLocalModel(MINICPM_ID, system, user, { maxTokens, timeoutMs }) }
+    catch { return '' }
+    const cleaned = stripReasoning(raw)
+    if (cleaned) return cleaned
+    // Leaked reasoning with no recoverable answer — the leak is stochastic, so resample once.
+  }
+  return ''
+}

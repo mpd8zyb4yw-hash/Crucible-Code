@@ -24,6 +24,28 @@
 // the draft competes with its own repairs under the same verifier, so a repair is only
 // preferred when the verifier actually says it is better — and never on the model's say-so.
 //
+// TWO PROPOSERS (cont.86). cont.84/85 measured the ceiling this search kept hitting: given a hint
+// that NAMES the fabricated identifier and lists the documented surface, the Apple FM re-proposes
+// a name the hint just rejected. K attempts against ONE model re-sample ONE distribution, so the
+// escalating hint has nothing to escalate INTO — that is a property of the generator, not of the
+// budget, and no value of K fixes it. The doctrinal answer (DOCTRINE.md: the loop, not the oracle)
+// is a second INDEPENDENT generator: MiniCPM5-1B, seated ALONGSIDE the FM (never replacing it),
+// with the search rotating between them so a rejection is re-attempted by a different distribution.
+// Both are unreliable; the verifier is unchanged and remains the only source of correctness, so a
+// second weak proposer can only ever ADD certified candidates — it cannot lower the bar.
+//
+// Rotation keys off an ATTEMPT COUNTER, never history.length. A proposer that whiffs (MiniCPM not
+// resident, timeout, unrecoverable reasoning leak) returns null, and `search()` treats null as a
+// transient infra failure: it retries the SAME slot without charging the budget, so history does
+// not grow. Keying rotation on history.length would therefore re-select the whiffing model forever
+// and starve the FM of the calls it was granted. Counting attempts instead means a whiff HANDS the
+// slot to the other engine — the graceful-degradation property that makes seating a flaky second
+// model safe on the hot path.
+//
+// The alt is OPTIONAL and injected. Omit it (a machine where MiniCPM was never downloaded) and this
+// is byte-for-byte the cont.84 single-proposer search — the same "zero voters when uninstalled"
+// contract the ONNX ensemble follows.
+//
 // HONEST LIMIT. If nothing certifies, this returns 'best-effort' and the caller still badges
 // the answer UNVERIFIED. Ranking by violation count is a PROXY (2 fabricated names are not
 // provably worse than 1), so ties and near-ties resolve to the ORIGINAL draft: the search may
@@ -54,7 +76,18 @@ export interface FaithfulRepairInput {
   goal: string
   /** Base conversation (system + history + question/evidence) each repair re-synthesizes from. */
   baseMsgs: RepairMessage[]
+  /** The primary generator (the Apple FM, live). */
   complete: CompleteFn
+  /**
+   * A SECOND, INDEPENDENT generator (MiniCPM5-1B, live) the search rotates to. Optional: when
+   * absent the loop is exactly the single-proposer search. Seated alongside the primary, never
+   * replacing it — it exists so a hint the FM ignores is re-attempted by a different distribution.
+   * Must resolve to '' rather than throw when it cannot produce output; '' hands the slot back.
+   */
+  completeAlt?: CompleteFn
+  /** Attribution labels for telemetry — which engine produced the shipped text. */
+  primaryName?: string
+  altName?: string
 }
 
 export interface FaithfulRepairOpts {
@@ -67,8 +100,8 @@ export interface FaithfulRepairOpts {
    * repair that overruns it is worse than an honest UNVERIFIED ship).
    */
   canPropose?: () => boolean
-  /** Progress sink — one line per attempt, for the live thought stream. */
-  onAttempt?: (n: number, verdict: FaithfulnessVerdict) => void
+  /** Progress sink — one line per attempt, for the live thought stream. `source` attributes it. */
+  onAttempt?: (n: number, verdict: FaithfulnessVerdict, source?: string) => void
 }
 
 export interface FaithfulRepairResult {
@@ -85,6 +118,12 @@ export interface FaithfulRepairResult {
   /** Model calls actually spent (the draft is free, so 0 means the draft won). */
   modelCalls: number
   attemptsRun: number
+  /**
+   * WHICH engine produced the shipped `text` ('draft' | primaryName | altName). The measurement
+   * that makes seating a second proposer falsifiable: if this never reads 'minicpm' across real
+   * traffic, the second proposer is not earning its latency and the honest move is to say so.
+   */
+  proposedBy: string
   detail: string
 }
 
@@ -118,10 +157,18 @@ const verdictOf = (a: Attempt<string>, evidence: string) => verifyApiFaithfulnes
  * rejection. Exported so the bench can assert the escalation without a model.
  */
 export function makeRepairProposer(input: FaithfulRepairInput, opts: FaithfulRepairOpts = {}): Proposer<string> {
+  const primaryName = input.primaryName ?? 'afm'
+  const altName = input.altName ?? 'minicpm'
+  // Model-backed attempts STARTED — incremented even when the call whiffs, so a dead engine
+  // rotates the slot to the other one instead of monopolizing it. See the header.
+  let turn = 0
+
   return async ({ history, signal }): Promise<Candidate<string> | null> => {
     // Round 0 — the draft we already have. modelFree: it was paid for by the synthesis call,
     // and charging it to the repair budget would silently cost us one real attempt.
-    if (!history.length) return { value: input.draft, fingerprint: fingerprintCode(input.draft), modelFree: true }
+    if (!history.length) {
+      return { value: input.draft, fingerprint: fingerprintCode(input.draft), modelFree: true, source: 'draft' }
+    }
     if (opts.canPropose && !opts.canPropose()) return null
 
     // Repair the most recent attempt, informed by every earlier one. `history` is oldest-first.
@@ -136,16 +183,26 @@ export function makeRepairProposer(input: FaithfulRepairInput, opts: FaithfulRep
     const hint = escalatedRepairHint(target, prior)
     if (!hint) return null
 
+    // Rotate: the primary opens (it is the stronger engine on this path), the alt takes the very
+    // next attempt — the FM's first repair failing is exactly the moment a second distribution is
+    // worth paying for, and with the default K=3 that spends one attempt on it. Identical prompt
+    // for both: the escalating hint is the whole point, so handicapping either engine would make
+    // the attribution meaningless.
+    const useAlt = !!input.completeAlt && turn % 2 === 1
+    const complete = useAlt ? input.completeAlt! : input.complete
+    const source = useAlt ? altName : primaryName
+    turn++  // BEFORE the call: a throw or an empty reply must still rotate the slot.
+
     let raw = ''
     try {
-      raw = (await input.complete([
+      raw = (await complete([
         ...input.baseMsgs,
         { role: 'assistant', content: latest.candidate.value },
         { role: 'user', content: hint },
       ], signal)).trim()
     } catch { return null }
     if (raw.length < 20) return null
-    return { value: raw, fingerprint: fingerprintCode(raw) }
+    return { value: raw, fingerprint: fingerprintCode(raw), source }
   }
 }
 
@@ -178,16 +235,20 @@ export async function repairUntilFaithful(
       emit: () => {},
     },
   )
-  for (const a of result.attempts) opts.onAttempt?.(++seen, verdictOf(a, input.evidence))
+  for (const a of result.attempts) opts.onAttempt?.(++seen, verdictOf(a, input.evidence), a.candidate.source)
 
   if (result.status === 'solved' && result.solution) {
+    const by = result.solution.source ?? 'draft'
     return {
       status: 'certified',
       text: result.solution.value,
       verdict: verifyApiFaithfulness(result.solution.value, input.evidence),
       modelCalls: result.modelCalls,
       attemptsRun: result.attempts.length,
-      detail: `certified after ${result.modelCalls} repair call(s)`,
+      proposedBy: by,
+      detail: by === 'draft'
+        ? 'the draft was already faithful — certified for free, no repair call'
+        : `certified after ${result.modelCalls} repair call(s) — winning candidate from ${by}`,
     }
   }
 
@@ -195,13 +256,13 @@ export async function repairUntilFaithful(
   // the draft — the ranking is a proxy, so the draft holds ties and the search can never make
   // the shipped answer worse than what it started with.
   const draftScore = faithfulnessVerdict(draftVerdict).score
-  let best: { text: string; verdict: FaithfulnessVerdict; score: number } | null = null
+  let best: { text: string; verdict: FaithfulnessVerdict; score: number; source: string } | null = null
   for (const a of result.attempts) {
     if (a.candidate.value === input.draft) continue
     const v = verdictOf(a, input.evidence)
     const score = faithfulnessVerdict(v).score
     if (score <= draftScore) continue          // ties → draft wins (earliest, conservative)
-    if (!best || score > best.score) best = { text: a.candidate.value, verdict: v, score }
+    if (!best || score > best.score) best = { text: a.candidate.value, verdict: v, score, source: a.candidate.source ?? 'unknown' }
   }
 
   if (best) {
@@ -211,7 +272,8 @@ export async function repairUntilFaithful(
       verdict: best.verdict,
       modelCalls: result.modelCalls,
       attemptsRun: result.attempts.length,
-      detail: `NOT certified — best of ${result.attempts.length} candidate(s) improved on the draft ` +
+      proposedBy: best.source,
+      detail: `NOT certified — best of ${result.attempts.length} candidate(s) (from ${best.source}) improved on the draft ` +
         `(${-draftScore} → ${-best.score} fabricated identifier(s)) but still does not match the evidence`,
     }
   }
@@ -222,8 +284,15 @@ export async function repairUntilFaithful(
     verdict: draftVerdict,
     modelCalls: result.modelCalls,
     attemptsRun: result.attempts.length,
+    proposedBy: 'draft',
     detail: result.modelCalls
-      ? `no candidate certified across ${result.modelCalls} repair call(s) and none improved on the draft — shipping the draft unverified`
+      ? `no candidate certified across ${result.modelCalls} repair call(s)${enginesTried(result.attempts)} and none improved on the draft — shipping the draft unverified`
       : 'no repair attempt was affordable — shipping the draft unverified',
   }
+}
+
+/** " (afm, minicpm)" — names the engines that actually proposed, so an honest failure says WHO failed. */
+function enginesTried(attempts: Array<Attempt<string>>): string {
+  const names = [...new Set(attempts.map(a => a.candidate.source).filter((s): s is string => !!s && s !== 'draft'))]
+  return names.length ? ` (${names.join(', ')})` : ''
 }
