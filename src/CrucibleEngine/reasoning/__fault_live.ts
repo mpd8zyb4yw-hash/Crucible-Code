@@ -130,19 +130,57 @@ const TARGETS: FaultTarget[] = [
   },
 ]
 
+/**
+ * The FM is stochastic and this harness has no seed, so ONE run is a sample, not a
+ * baseline. Measured cont.79: two back-to-back runs of identical code scored 83% and
+ * 87% recovery (38/46 vs 40/46) while detection stayed pinned at 75% — i.e. recovery
+ * carries a multi-point spread that a single number silently hides. Comparing one run
+ * against one earlier run cannot tell a real regression from noise; every historical
+ * single-sample figure (the old "91%") is quotable only with that spread attached.
+ *
+ * So: report the RANGE across N runs. Default 1 (a 300s run is expensive) — pass
+ * `--runs=3` before citing a number as a baseline or claiming a change moved recovery.
+ */
 async function main() {
+  const runsArg = process.argv.find(a => a.startsWith('--runs='))
+  const runs = Math.max(1, Number(runsArg?.split('=')[1] ?? 1) || 1)
+
   console.log('\nFAULT-INJECTION live — recovery rate of the on-device loop\n')
   const started = Date.now()
-  const report = await runFaultSuite(TARGETS, { maxModelCalls: 6 })
+  const recoveries: number[] = []
+  let last!: Awaited<ReturnType<typeof runFaultSuite>>
 
-  for (const t of report.trials) {
-    const tag = !t.applicable ? 'skip ' : !t.detected ? 'GAP  ' : t.recovered ? 'FIXED' : 'MISS '
-    console.log(`  ${tag} ${t.target}/${t.mutation}${t.detected ? ` — ${t.modelCalls} call(s), ${t.status}` : t.applicable ? ' — equivalent mutant (coverage gap)' : ''}`)
+  for (let run = 0; run < runs; run++) {
+    const report = await runFaultSuite(TARGETS, { maxModelCalls: 6 })
+    last = report
+    recoveries.push(report.recoveryRate)
+
+    if (runs > 1) console.log(`  ── run ${run + 1}/${runs} ──`)
+    for (const t of report.trials) {
+      const tag = !t.applicable ? 'skip ' : !t.detected ? 'GAP  ' : t.recovered ? 'FIXED' : 'MISS '
+      console.log(`  ${tag} ${t.target}/${t.mutation}${t.detected ? ` — ${t.modelCalls} call(s), ${t.status}` : t.applicable ? ' — equivalent mutant (coverage gap)' : ''}`)
+    }
+    if (runs > 1) console.log(`  run ${run + 1} recovery: ${(report.recoveryRate * 100).toFixed(0)}%  (${report.recovered}/${report.detected})`)
   }
-  console.log(`\n  applicable trials : ${report.applicable}`)
-  console.log(`  detection rate    : ${(report.detectionRate * 100).toFixed(0)}%  (case sets seeing injected faults)`)
-  console.log(`  RECOVERY RATE     : ${(report.recoveryRate * 100).toFixed(0)}%  (${report.recovered}/${report.detected} detected faults fixed+certified)`)
-  console.log(`  model calls       : ${report.totalModelCalls}`)
+
+  const pct = (r: number) => `${(r * 100).toFixed(0)}%`
+  console.log(`\n  applicable trials : ${last.applicable}`)
+  console.log(`  detection rate    : ${pct(last.detectionRate)}  (case sets seeing injected faults)`)
+  if (runs > 1) {
+    // Deliberately do NOT headline a single run's rate here: printing one bold number above
+    // the range is exactly the habit that produced the phantom "91% → 83% regression".
+    const lo = Math.min(...recoveries), hi = Math.max(...recoveries)
+    const sorted = [...recoveries].sort((a, b) => a - b)
+    const median = sorted.length % 2
+      ? sorted[(sorted.length - 1) / 2]
+      : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2
+    console.log(`  RECOVERY RATE     : median ${pct(median)}, range ${pct(lo)}–${pct(hi)} over ${runs} runs  [${recoveries.map(pct).join(', ')}]`)
+    console.log(`                      (last run ${pct(last.recoveryRate)} = ${last.recovered}/${last.detected}; cite the median+range, not any one run)`)
+  } else {
+    console.log(`  RECOVERY RATE     : ${pct(last.recoveryRate)}  (${last.recovered}/${last.detected} detected faults fixed+certified)`)
+    console.log(`  (single sample — FM is stochastic, spread is several points. Use --runs=3 for a baseline.)`)
+  }
+  console.log(`  model calls       : ${last.totalModelCalls}`)
   console.log(`  wall clock        : ${((Date.now() - started) / 1000).toFixed(0)}s\n`)
 }
 

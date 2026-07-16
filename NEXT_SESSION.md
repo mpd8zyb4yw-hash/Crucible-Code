@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 — zero-FM repair fast-path LIVE-PROVEN in prod; gold-example harvest + model-call accounting fixed; 695/695)
+## CURRENT STATE (last updated 2026-07-16 — zero-FM repair fast-path LIVE-PROVEN in prod; gold-example harvest + model-call accounting fixed; fault:live now reports median+range, 83-91% is a NOISE BAND not a level; 695/695)
 
 **cont.79 (2026-07-16, this session — a2c1083):**
 
@@ -25,7 +25,7 @@
   modify request (`mode:code`, `projectPath` = scratch dir, JWT recipe in the memory note
   `crucible-local-auth-testing`) against `isAdult` with `return age > 18` now certifies with
   **modelCalls === 0**, splices the correct `>= 18` into the real file, in ~11s. This was the
-  highest-value UNVERIFIED claim from cont.78 — the whole 48%→91% recovery gain does reach users.
+  highest-value UNVERIFIED claim from cont.78 — the whole 48%→83-91% recovery gain does reach users.
   The wiring it exercises: `server.ts` reads the named target file → `repairSeed` →
   `solveCodingRequest({buggyCode})` → `solveCodeTask` → `composeProposers(makeMutationRepairProposer, proposeCode)`.
 - **Three bugs found BEHIND the passing test** — all found by reading what the run *reported*,
@@ -48,9 +48,32 @@
      report and starved the FM of its granted budget. `Candidate.modelFree` now gates the
      increment, with a `maxFree` runaway backstop (that counter also bounds the outer loop).
      `server.ts` no longer claims "the model proposed" on a zero-model solve.
-- **BUDGET SEMANTICS CHANGED:** model-free candidates no longer draw down `maxModelCalls`, so
-  `fault:live` numbers are **not directly comparable across a2c1083**. Re-baseline before
-  comparing to the 91% (42/46) figure.
+**cont.79b (2026-07-16, this session) — the "re-baseline" found the METRIC was broken, not the code:**
+
+- **RETRACTED from cont.79:** I warned that model-free accounting "changes budget semantics, so
+  `fault:live` is not comparable across a2c1083". **That is false**, re-derived from the code:
+  `makeMutationRepairProposer` fires ONCE per search and returns a candidate ONLY when it already
+  certifies — so at most one free candidate exists per search and it is the *solving* one.
+  Charging it or not cannot change control flow; it only relabels a solved run 1→0 calls. The MISS
+  paths (drop-guard/void-return) yield no free candidate at all (proposer returns null and cedes),
+  so they are byte-identical. The change is **inert** for this bench. Comparability is intact.
+- **`fault:live` is a SAMPLE, not a baseline — it had no error bar.** Re-baselining scored 83%
+  (38/46) vs the cited 91%, which *looks* like an 8-point regression and is not: a second
+  back-to-back run of **identical code scored 87% (40/46)**. Detection is pinned at 75% every run
+  (deterministic), but **recovery carries a measured ±4pt+ spread**, entirely in the FM-territory
+  drop-guard/void-return faults the deterministic layer honestly cedes. Pooling all runs to date
+  the band is **38–42/46 (83–91%)** — the celebrated **91% was the TOP of the band, not a level**,
+  and no single-run comparison across this harness (including several cont.78 movement claims) can
+  separate a real change from noise. cont.78i's "honest null result" was the one past read that
+  got this right.
+- **Fix:** `__fault_live.ts` now takes **`--runs=N`** and reports **median + range + per-run list**;
+  the 1-run path prints an explicit single-sample warning, and the multi-run path deliberately does
+  *not* headline any one run's number. Default stays 1 (~300s/run) — **pass `--runs=3` before
+  citing a baseline or claiming a lever moved recovery.**
+- **Doc/measurement corrections:** `__fault_live.ts` is in **no tsconfig program** (tsc cannot
+  validate it — verify by running it). The real project error count is **442 under
+  `tsconfig.server.json`**; the "457" cited in cont.79 was a mis-measure (root `tsconfig.json` is
+  solution-style and checks nothing, reporting a meaningless 0).
 - vgr:bench 200→**208** (new PART G2 harvest fidelity, PART G3 model-free accounting);
   bench:all 687→**695**; tsc unchanged at the pre-existing 457 project-wide errors (0 in touched files).
 
@@ -58,10 +81,19 @@
 1. **Wire keep-K into the live single-file retry loop** (`server.ts` — parallel-session contention
    file, coordinate before editing). Highest remaining distribution-coverage mover: today a
    real repair that doesn't certify abstains entirely instead of returning a scored best-effort.
-2. **Re-baseline `fault:live`** under the corrected accounting (see BUDGET SEMANTICS above).
+2. ~~Re-baseline `fault:live`~~ **DONE (cont.79b)** — the premise was wrong (accounting is inert)
+   and the real finding was that the metric had no error bar. Recovery is a **38–42/46 (83–91%)
+   band**, not a level. Use `npm run fault:live -- --runs=3` and cite median+range.
 3. **Structural recovery (drop-guard / void-return) needs a stronger proposer, not more
    scaffolding** — cont.78i proved prompt-steering does not move it (two runs inside FM variance).
-   Honest ceiling for the weak-FM lane; do not spend more turns on scaffolding here.
+   Honest ceiling for the weak-FM lane; do not spend more turns on scaffolding here. **cont.79b
+   reinforces this: the residual MISSes are exactly where ALL the run-to-run variance lives, so
+   any future lever aimed here MUST be measured with `--runs=3+` — a single run will show a ±4pt
+   swing that looks like a win or a regression at random.**
+4. **Consider re-validating past single-run claims.** Several cont.78 numbers (78e/78f/78g/78h)
+   were single samples treated as levels. 78g/78h's jumps (65→87→91) are large enough to survive
+   the ±4pt band, so those levers are almost certainly real — but the exact figures are not, and
+   any *small* claimed movement in that history should be treated as unproven.
 
 ---
 
