@@ -28,6 +28,7 @@ const SUITES = [
   'memory:bench',
   'longout:bench',
   'vgr:bench',
+  'vgr:apifaith',
   'fuzz:bench',
   'harden:bench',
   'stakes:bench',
