@@ -17,7 +17,36 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.79f — BINDING DOCTRINE: NO TEMPLATES anywhere, universal fixes only. Removed GAME_TEMPLATES + APP_TEMPLATES; both HTML paths = web-retrieval + FM + behavioral gate. classifyHtmlGoal splits app/game; runtimeVerifyApp catches dead-control/self-erasing/blank-render/no-visible-effect(innerText)/NaN. LIVE: no-template todo retrieves+synthesizes a WORKING app, browser-verified. Residuals: empty-guard + field-clear uncaught. bench:all 928/928 across 33 suites)
+## CURRENT STATE (last updated 2026-07-16 cont.79g — app gate now carries 6 universal invariants: dead-control(innerText)/self-erasing/blank-render/NaN + empty-commit-adds-nothing + field-clears-after-commit, all add-shape-gated. NO-TEMPLATES doctrine (cont.79f) still binding. **NEW TOP PRIORITY: the FM+retrieval PROPOSER, not the gate** — a 6-attempt live todo run went 0/6 (all rejected by dead-control, escalated) where cont.79f's went 1-for-1 on the same goal. bench:all 932/932 across 33 suites)
+
+**cont.79g (2026-07-16 — 404c743) — two universal app-gate invariants + a live variance finding:**
+
+- **Added the two invariants cont.79f left open**, as GENERAL checks driven by a second
+  empty-field interaction (not todo-specific logic):
+  - **empty-commit-adds-nothing** — clear every field, press commit again; recording a blank entry
+    is a bug (the missing `if (!v.trim()) return`). Keys on the visible **control count** growing,
+    NOT text: a blank row brings its own Delete button, while a correct guard that renders "please
+    enter something" adds text but no control — so a guarded app passes on either signal.
+  - **field-clears-after-commit** — the value was added but the field still holds it, so the next
+    entry types onto the end of the last one.
+- **The add-shape gate is what makes them universal.** Both fire ONLY when the commit was
+  ADD-shaped (visible text grew AND took up the typed sentinel). A search box, a filter, a
+  calculator and a static page are all add-shaped=false and skip them. `FILTER_HTML` in the bench
+  is the false-reject guard for exactly this — it legitimately keeps its text and shrinks its list.
+- Harness (`htmlVerifyMain.cjs`, app path only — **game path untouched, html:bench 5/5 unchanged**):
+  `DOM_FIELD_VALUES`, `DOM_CLEAR_FIELDS`, `DOM_CLICK_PRIMARY`; reports `addShaped` /
+  `fieldSentinelAfter` / `emptyCommit` raw. Harness OBSERVES, verifier JUDGES — keep that split.
+- html:app:bench 28→**32/32** (+2 must-reject bugs, +1 filter false-reject guard, +1 correct
+  Delete-button todo as a real positive control for the empty-commit probe). bench:all **932/932**.
+- **LIVE (honest, and the important finding): the new invariants did NOT fire — they are
+  bench-verified only.** A fresh 6-attempt no-template todo run had ALL 6 attempts rejected by the
+  PRE-EXISTING dead-control check and escalated with no file shipped. cont.79f's run on the SAME
+  goal passed on attempt 1. So the proposer is high-variance and that — not the gate — is now the
+  bottleneck; the gate correctly abstained rather than shipping broken (doctrine-correct). Ruled
+  out a false-reject from the new probes: they run strictly AFTER the textChanged measurement, and
+  all 4 positive controls still pass.
+- Verified `offline_html_retry`'s 100-char truncation is **display-only** (`server.ts:3065`); the
+  full `problem` string does reach the repair prompt.
 
 **cont.79f (2026-07-16 — ea67f91) — BINDING DOCTRINE: NO TEMPLATES, universal fixes only:**
 
