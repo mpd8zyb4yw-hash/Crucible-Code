@@ -147,7 +147,15 @@
    reinforces this: the residual MISSes are exactly where ALL the run-to-run variance lives, so
    any future lever aimed here MUST be measured with `--runs=3+` — a single run will show a ±4pt
    swing that looks like a win or a regression at random.**
-4. **Consider re-validating past single-run claims.** Several cont.78 numbers (78e/78f/78g/78h)
+4. **Do NOT add a best-effort tier to the MULTI-FILE path** (investigated cont.79d, rejected).
+   When multi-file fails to certify it already FALLS THROUGH to the single-file path, which runs
+   its own solve and can produce its own best-effort draft. A multi-file draft would preempt that
+   legitimate escalation and likely make results worse. Folding mf's kept candidates into the
+   single-file selection is possible (`selectBestEffort` would need to go generic over
+   `CandidateFile[]`) but the payoff is narrow — a generic refactor was written, judged
+   speculative with no consumer, and reverted. Revisit only with evidence that multi-file
+   near-misses are common in real sessions.
+5. **Consider re-validating past single-run claims.** Several cont.78 numbers (78e/78f/78g/78h)
    were single samples treated as levels. 78g/78h's jumps (65→87→91) are large enough to survive
    the ±4pt band, so those levers are almost certainly real — but the exact figures are not, and
    any *small* claimed movement in that history should be treated as unproven.
