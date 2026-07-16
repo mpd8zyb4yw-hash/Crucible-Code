@@ -16,8 +16,8 @@
 //   5. CALL-ACCOUNTING     — model calls sum across attempts.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { solveWithKeptCandidates } from './keepK'
-import type { Proposer } from './types'
+import { solveWithKeptCandidates, selectBestEffort } from './keepK'
+import type { Attempt, Proposer } from './types'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -88,6 +88,42 @@ async function main() {
       proposer: sequence([OFF_BY_ONE, HALF_RIGHT, OFF_BY_ONE, HALF_RIGHT]),
     })
     check('5 model calls sum across attempts', r.modelCalls === 4 && r.attemptsRun === 2, `calls=${r.modelCalls} attempts=${r.attemptsRun}`)
+  }
+
+  // ── 6. selectBestEffort — the LIVE path (server.ts) calls this directly, so pin its
+  //       contract here rather than only through solveWithKeptCandidates. These are the
+  //       numbers the user is SHOWN ("7/8 cases pass"), so a wrong one is a false claim.
+  {
+    const mk = (value: string, score: number, signals: string[] = []): Attempt<string> =>
+      ({ candidate: { value, fingerprint: value }, verdict: { pass: false, score, signals } } as Attempt<string>)
+
+    // Picks the highest score across ALL kept candidates, not the last.
+    const pick = selectBestEffort([mk('a', -3), mk('b', -1), mk('c', -2)], 8, -2)
+    check('6a selectBestEffort picks the top score', pick?.code === 'b' && pick?.score === -1, `code=${pick?.code} score=${pick?.score}`)
+
+    // Coverage maths: score -1 on 8 cases = 7 pass. This is the shown claim.
+    check('6b coverage derives from the verifier score', pick?.coverage?.passed === 7 && pick?.coverage?.total === 8, JSON.stringify(pick?.coverage))
+
+    // Below the floor → null (abstain). The floor is what stops a guess reaching the user.
+    check('6c below-floor returns null', selectBestEffort([mk('a', -5)], 8, -1) === null, 'expected null')
+
+    // Exactly AT the floor is admissible (>= floor, not > floor).
+    check('6d at-floor is admissible', selectBestEffort([mk('a', -1)], 8, -1)?.code === 'a', 'expected admit')
+
+    // Empty kept set → null, never a crash on the reduce.
+    check('6e empty kept returns null', selectBestEffort([], 8, -1) === null, 'expected null')
+
+    // A syntax-penalised score (below -total) is NOT case coverage — refuse to claim any.
+    // Otherwise "-9 on 8 cases" would render as a nonsense negative pass count.
+    const syn = selectBestEffort([mk('a', -9)], 8, -100)
+    check('6f out-of-range score claims no coverage', syn?.coverage === null, JSON.stringify(syn?.coverage))
+
+    // Non-finite score must never be selected (it would print "NaN/8 cases pass").
+    check('6g non-finite score rejected', selectBestEffort([mk('a', -Infinity)], 8, -100) === null, 'expected null')
+
+    // Fractional score isn't a clean case count → no coverage claim, but still selectable.
+    const frac = selectBestEffort([mk('a', -1.5)], 8, -2)
+    check('6h fractional score claims no coverage', frac?.code === 'a' && frac?.coverage === null, JSON.stringify(frac?.coverage))
   }
 
   console.log(`\n${pass}/${pass + fail} checks passed\n`)

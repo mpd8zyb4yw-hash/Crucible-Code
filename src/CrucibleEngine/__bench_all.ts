@@ -48,13 +48,25 @@ const SUITES = [
   'localpool:bench',
   'answer:iterate',
   'fmreact:bench',
+  // Deterministic (injected proposers + real execution verifier), so they belong in the
+  // aggregate gate. Both were previously runnable ONLY by hand, which meant a regression in
+  // the repair fast-path or keep-K selection could not fail CI. `fault:live` stays OUT — it
+  // drives the real stochastic FM (300s, ±4pt noise); it is a tracked metric, not a gate.
+  'keepk:bench',
+  'fault:bench',
 ]
 
 const LEDGER = path.join(process.cwd(), '.bench-history.jsonl')
 
-/** Parse "92/92 passed" or "PASS — 93 passed, 0 failed" from a bench's output. */
+/**
+ * Parse "92/92 passed", "15/15 checks passed", or "PASS — 93 passed, 0 failed".
+ * The optional noun matters: keepk/fault print "N/N checks passed", and a parser that
+ * only accepted "N/N passed" silently scored them 0/0 — which is why they could not be
+ * registered here. A suite whose output we cannot read must FAIL loudly (it does, via the
+ * null return), never be quietly counted as zero checks.
+ */
 function parseCounts(out: string): { passed: number; total: number } | null {
-  const frac = /(\d+)\s*\/\s*(\d+) passed/.exec(out)
+  const frac = /(\d+)\s*\/\s*(\d+)(?:\s+\w+)? passed/.exec(out)
   if (frac) return { passed: +frac[1], total: +frac[2] }
   const pf = /(\d+) passed, (\d+) failed/.exec(out)
   if (pf) return { passed: +pf[1], total: +pf[1] + +pf[2] }

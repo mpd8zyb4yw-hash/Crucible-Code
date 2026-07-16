@@ -96,9 +96,9 @@ export async function solveWithKeptCandidates(
     }
   }
 
-  // Deterministic selection: the verifier already ranked everything; pick the top.
-  const best = kept.length ? kept.reduce((a, b) => (b.verdict.score > a.verdict.score ? b : a)) : null
-  if (!best || best.verdict.score < floor || !Number.isFinite(best.verdict.score)) {
+  const sel = selectBestEffort(kept, input.cases.length, floor)
+  if (!sel) {
+    const best = kept.length ? kept.reduce((a, b) => (b.verdict.score > a.verdict.score ? b : a)) : null
     return {
       status: 'abstained', code: null, score: best?.verdict.score ?? null, coverage: null,
       attemptsRun: K, modelCalls,
@@ -107,20 +107,54 @@ export async function solveWithKeptCandidates(
         : `no candidate produced across ${K} attempt(s) — abstaining honestly`,
     }
   }
+  return {
+    status: 'best-effort',
+    code: sel.code,
+    score: sel.score,
+    coverage: sel.coverage,
+    attemptsRun: K, modelCalls,
+    detail: `NOT certified — best of ${kept.length} kept candidate(s) across ${K} attempt(s): ${sel.detail}`,
+  }
+}
 
-  const total = input.cases.length
+/** What the verifier can honestly say about a non-certified survivor. */
+export interface BestEffortPick {
+  code: string
+  /** Verifier score — ground truth, not model opinion. 0 would mean certified. */
+  score: number
+  /** Cases passed/total, when the score maps cleanly onto case counts. */
+  coverage: { passed: number; total: number } | null
+  detail: string
+  signals: string[]
+}
+
+/**
+ * Deterministic selection over kept candidates: the verifier already ranked everything,
+ * so pick the top and report what it actually measured. Returns null when nothing clears
+ * the floor — i.e. abstain rather than dress up a guess.
+ *
+ * Extracted so the LIVE loop (server.ts) can reuse the exact selection + coverage maths
+ * that keepk:bench pins, instead of re-deriving them at the call site.
+ */
+export function selectBestEffort(
+  kept: Attempt<string>[],
+  total: number,
+  floor: number,
+): BestEffortPick | null {
+  const best = kept.length ? kept.reduce((a, b) => (b.verdict.score > a.verdict.score ? b : a)) : null
+  if (!best || !Number.isFinite(best.verdict.score) || best.verdict.score < floor) return null
   // Code-verifier score is -(#failing) - syntaxPenalty; a clean integer in [-total, 0]
-  // maps directly to case coverage. Anything outside that range gets no coverage claim.
-  const passed = Number.isInteger(best.verdict.score) && best.verdict.score >= -total
+  // maps directly to case coverage. Anything outside that range gets no coverage claim
+  // (a syntax penalty makes the score mean "broken", not "n cases failed").
+  const passed = Number.isInteger(best.verdict.score) && best.verdict.score >= -total && total > 0
     ? total + best.verdict.score
     : null
   return {
-    status: 'best-effort',
     code: best.candidate.value,
     score: best.verdict.score,
     coverage: passed != null ? { passed, total } : null,
-    attemptsRun: K, modelCalls,
-    detail: `NOT certified — best of ${kept.length} kept candidate(s) across ${K} attempt(s): score ${best.verdict.score}` +
+    signals: best.verdict.signals.slice(0, 2),
+    detail: `score ${best.verdict.score}` +
       (passed != null ? ` (${passed}/${total} cases pass)` : '') +
       `; top failure signals: ${best.verdict.signals.slice(0, 2).join(' | ') || 'none'}`,
   }

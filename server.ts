@@ -40,6 +40,8 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
+import { selectBestEffort } from './src/CrucibleEngine/reasoning/keepK'
+import type { Attempt } from './src/CrucibleEngine/reasoning/types'
 import { retrieveForTask as retrieveCodeRefs } from './src/CrucibleEngine/retrieval/retrievalLayer'
 import { detectPruneImportsAll, detectRename, detectTargetPath, extractPastedCode, isModifyRequest, planEmit, planEmitTree } from './src/CrucibleEngine/reasoning/emitPlan'
 import { planRefactor } from './src/server/refactorRoutes'
@@ -3293,6 +3295,12 @@ app.post('/api/chat', async (req, res) => {
           if (!repairSeed) repairSeed = extractPastedCode(message ?? '') ?? undefined
         }
         let vgr = null
+        // KEEP-K: the retry loop below restarts search() from scratch each attempt and throws
+        // away every non-certified candidate — discarding ranking the verifier already PAID to
+        // compute. Retain the distinct ones across attempts so that if nothing certifies we can
+        // still say something measured ("7/8 cases pass") instead of only "I gave up".
+        const keptAttempts: Attempt<string>[] = []
+        const keptSeen = new Set<string>()
         for (let attempt = 1; !handled && attempt <= VGR_MAX_ATTEMPTS; attempt++) {
           if (ac.signal.aborted) break
           // Escalate effort per attempt: attempt 1 is the FAST path (deterministic tiers + a
@@ -3315,6 +3323,11 @@ app.post('/api/chat', async (req, res) => {
           if (vgr && vgr.status === 'solved' && vgr.code && vgr.entry) {
             if (attempt > 1) send({ type: 'thought', text: `VGR · certified on attempt ${attempt}/${VGR_MAX_ATTEMPTS} (escalated effort converged where the first attempt abstained)` })
             break
+          }
+          for (const a of vgr?.search?.attempts ?? []) {
+            if (keptSeen.has(a.candidate.fingerprint)) continue
+            keptSeen.add(a.candidate.fingerprint)
+            keptAttempts.push(a)
           }
           if (attempt < VGR_MAX_ATTEMPTS) send({ type: 'thought', text: `VGR · attempt ${attempt}/${VGR_MAX_ATTEMPTS} did not certify (${vgr?.status ?? 'no result'}) — escalating before handing off` })
         }
@@ -3383,8 +3396,40 @@ app.post('/api/chat', async (req, res) => {
           historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr', models: ['crucible-vgr'], synthesis: answer })
           handled = true
         } else if (vgr) {
-          // Honest: could not CERTIFY a solution → do not ship a guess; fall through.
-          send({ type: 'thought', text: `VGR could not certify a solution (${vgr.status}: ${vgr.detail}) — handing off without shipping unverified code.` })
+          // ── KEEP-K best-effort tier ────────────────────────────────────────────────────
+          // Nothing certified. Before falling through, ask the verifier what the best kept
+          // candidate actually scored. A NEAR-MISS (default: at most 1 failing case) is worth
+          // showing, because the alternative here is NOT "something better" — it is a handoff
+          // to the model-driven loop, which ships code with no execution evidence at all. A
+          // draft measured at 7/8 is strictly more honest than an unmeasured guess.
+          //
+          // Three invariants keep this from becoming a silent unverified ship:
+          //   1. It is NEVER written to a file — certified code writes, drafts only display.
+          //   2. It is labelled NOT CERTIFIED, with the real score and the failing signals.
+          //   3. The floor is tight, so anything but a near-miss falls through exactly as before.
+          const beFloor = Number(process.env.CRUCIBLE_VGR_BEST_EFFORT_FLOOR ?? -1)
+          const pick = Number.isFinite(beFloor) && vgr.cases?.length
+            ? selectBestEffort(keptAttempts, vgr.cases.length, beFloor)
+            : null
+          if (pick) {
+            const cov = pick.coverage ? `${pick.coverage.passed}/${pick.coverage.total} cases pass` : `score ${pick.score}`
+            send({ type: 'thought', text: `VGR · nothing certified, but the best of ${keptAttempts.length} kept candidate(s) measures ${cov} — showing it as an explicit draft, not writing it.` })
+            debugBus.emit('agent', 'vgr_best_effort', { score: pick.score, coverage: pick.coverage, kept: keptAttempts.length, entry: vgr.entry }, { severity: 'info' })
+            const answer =
+              `I could **not certify** this, so I have not written it to any file. ` +
+              `Here is the closest candidate — the verifier actually executed it and measured **${cov}**:\n\n` +
+              '```ts\n' + pick.code + '\n```\n\n' +
+              (pick.signals.length ? `**What still fails:** ${pick.signals.join(' | ')}\n\n` : '') +
+              `Treat this as a draft, not a verified answer. Tell me to keep going and I'll iterate on the failing case${pick.coverage && pick.coverage.total - pick.coverage.passed === 1 ? '' : 's'}.`
+            send({ type: 'final', text: answer, meta: { vgrCertified: false, vgrBestEffort: true, score: pick.score, coverage: pick.coverage, entry: vgr.entry, modelCalls: vgr.search?.modelCalls, confidence: 0 } })
+            patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+            if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
+            historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr-best-effort', models: ['crucible-vgr'], synthesis: answer })
+            handled = true
+          } else {
+            // Honest: could not CERTIFY a solution → do not ship a guess; fall through.
+            send({ type: 'thought', text: `VGR could not certify a solution (${vgr.status}: ${vgr.detail}) — handing off without shipping unverified code.` })
+          }
         }
       } catch (vgrErr: any) {
         debugBus.emit('agent', 'vgr_error', { error: String(vgrErr?.message ?? vgrErr).slice(0, 120) }, { severity: 'warn' })
