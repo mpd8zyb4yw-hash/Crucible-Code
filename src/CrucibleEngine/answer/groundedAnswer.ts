@@ -61,6 +61,22 @@ const SYNTH_TIMEOUT_MS = Number(process.env.CRUCIBLE_GROUND_SYNTH_MS ?? 30_000)
  * violation — the common `abstain` path never enters the loop and costs nothing.
  */
 const REPAIR_ATTEMPTS = Number(process.env.CRUCIBLE_FAITH_ATTEMPTS ?? 3)
+/**
+ * Repair's OWN wall-clock allowance, measured from when repair starts — deliberately NOT the
+ * remainder of the retrieval budget, for the same reason SYNTH_TIMEOUT_MS is not (see above).
+ *
+ * MEASURED (cont.84): the retrieval budget defaults to 14s while synthesis alone is allowed 30s,
+ * so `remaining()` is tens of seconds NEGATIVE by the time the verifier rules — the old
+ * `remaining() > 4000` repair gate was therefore UNREACHABLE on default settings, and the repair
+ * path had never once executed live (cont.83 only saw it run under a hand-raised 90s budget).
+ * A gate that can never open is a dead feature that benches green, so the budget that governs
+ * FETCHING must not silently decide whether we FIX a known-fabricated answer.
+ *
+ * The tradeoff is explicit: repair costs a full re-synthesis per attempt and only ever fires on
+ * a REAL violation (the common `abstain` path never enters the loop). Shipping a knowingly-wrong
+ * answer faster is not the goal. Set to 0 to disable repair entirely.
+ */
+const REPAIR_BUDGET_MS = Number(process.env.CRUCIBLE_FAITH_BUDGET_MS ?? 60_000)
 
 interface Evidence {
   block: string
@@ -441,7 +457,11 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
       library: faith.library, identifiers: faith.violations.map(v => v.identifier), reason: faith.reason,
     }, { severity: 'warn' })
 
-    if (remaining() > 4000 && !signal?.aborted) {
+    // Repair runs on its OWN clock (REPAIR_BUDGET_MS), not the retrieval budget's remainder —
+    // which is always exhausted here and made this branch dead code. See REPAIR_BUDGET_MS.
+    const repairStarted = Date.now()
+    const repairLeft = () => REPAIR_BUDGET_MS - (Date.now() - repairStarted)
+    if (repairLeft() > 4000 && !signal?.aborted) {
       emit?.({ type: 'thought', text: `Checked the code against the docs — ${describeViolations(faith)}. Repairing…` })
 
       // REPAIR IS A SEARCH (cont.84), not a retry. One hinted retry was measured live to
@@ -455,9 +475,9 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
         {
           attempts: REPAIR_ATTEMPTS,
           signal,
-          // Re-checked before EVERY attempt: grounding runs under a wall-clock budget, and a
-          // repair that overruns it is worse than an honest UNVERIFIED ship.
-          canPropose: () => remaining() > 4000,
+          // Re-checked before EVERY attempt, so a slow first repair cannot drag the answer past
+          // the allowance: K bounds the calls, this bounds the wall-clock.
+          canPropose: () => repairLeft() > 4000,
           onAttempt: (n, v) => {
             if (n > 1 && v.status === 'violations')
               emit?.({ type: 'thought', text: `Repair ${n - 1} still doesn't match the docs — ${describeViolations(v)}. Trying again…` })

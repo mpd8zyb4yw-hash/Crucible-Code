@@ -1,0 +1,18 @@
+data: {"type":"thinking"}
+
+data: {"type":"contract","promptType":"factual","requiredStructure":[],"forbiddenAntipatterns":[]}
+
+data: {"type":"stage","stage":1,"status":"start"}
+
+data: {"type":"verify","passed":true,"report":"Computed deterministically (exact arithmetic, no model)."}
+
+data: {"type":"layer1","modelId":"local/apple-fm","model":"Crucible (offline)","text":"2 + 2 = **4**","done":true}
+
+data: {"type":"stage","stage":1,"status":"done"}
+
+data: {"type":"synthesis","modelId":"local/apple-fm","model":"Crucible","text":"2 + 2 = **4**","done":true,"replace":false}
+
+data: {"type":"stage","stage":5,"status":"done"}
+
+data: [DONE]
+
