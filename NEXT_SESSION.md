@@ -17,7 +17,66 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.85 — **THE JUDGING VOCABULARY WAS INVERTED: it certified the fabrication `import { Zod }` AND rejected the canonical `import { z } from 'zod'`. Both fixed at the harvester (`3192b64`), live-verified on a clean tree. The repair search (cont.84) runs; the FM still does not recover.**
+## CURRENT STATE (last updated 2026-07-16 cont.86 — **the second proposer is BUILT, live-verified, and DEFAULTED OFF: measured, MiniCPM earns nothing. It abstains 5/5 and mangles `z.ipv4()` → `zipv4()` — the SAME copy-failure as the FM, so it is not an independent failure mode, which was the whole premise. Mechanism kept (67/67); the seat is open for a code-capable engine.**
+
+### cont.86 — the standing instruction, executed and then MEASURED
+
+The long-orphaned standing instruction (seat MiniCPM5-1B alongside the Apple FM in every repair
+loop) is now implemented in `faithfulRepair.ts` and was live-verified reachable at `e1057fe`
+(t17 emitted "Bringing in a second on-device model (MiniCPM)"; the loop rotated afm → minicpm →
+afm). Then it was A/B'd on the real captured draft+evidence pair, N=4 per arm:
+
+| arm | certified | avg latency | MiniCPM-earned |
+|---|---|---|---|
+| FM only | 4/4 | **11.9s** | — |
+| FM + MiniCPM | 4/4 | **29.7s** | **0** |
+
+**MiniCPM abstained on every call.** Across 5 calls — the prose-shaped repair hint AND a
+code-shaped positive prompt built to `miniCpmHarness`'s own documented convention — it narrated
+instead of emitting code, deterministically (identical 2878-char output every run).
+
+**The detail that decides it:** it wrote `zipv4()` for `z.ipv4()` sitting verbatim in the
+evidence. That is the *same* cont.82 "won't copy an identifier out of clean evidence" failure as
+the FM. A second proposer only pays for its latency if it fails **independently** — this one does
+not. So it ships OFF (`CRUCIBLE_FAITH_ALT_MS=0`; set to `25000` to re-enable). The premise of the
+standing instruction is intact and the mechanism is built — the *engine* is what's wrong.
+
+**Caveat on those numbers, stated plainly:** the A/B's system prompt is a SIMPLIFIED stand-in, not
+the live `GROUNDING_SYSTEM`. The relative MiniCPM result is sound (same prompt in both arms, and it
+abstained under two different prompt shapes), but **4/4 is not the live certify rate — live is still
+0**. Live t18 (clean tree, `e98ad97`) shipped a JSON-Schema answer, honestly badged UNVERIFIED.
+
+### What shipped this session (committed, benches green, tsc delta 0)
+
+1. **Second-proposer rotation** — `faithfulRepair.ts` (`e1057fe`). `completeAlt` is optional and
+   injected; absent → byte-for-byte the cont.84 single-proposer search.
+   - **Rotation keys off an ATTEMPT COUNTER, never `history.length`.** A whiffing proposer returns
+     null; `search()` retries the SAME slot free of charge *without growing history*, so
+     history-keyed rotation re-selects a dead engine forever and starves the FM. Verified
+     load-bearing: keying on history makes the alt monopolize 6 of 7 slots, FM 3 calls → 1.
+   - Attribution (`Candidate.source` → `FaithfulRepairResult.proposedBy`) — this is what made the
+     feature falsifiable; without it "MiniCPM earned 0" is unknowable.
+   - Adapter uses the RAW pool completer, not `miniCpmAnswer` (its prose wrapper injects
+     "2-5 sentences" and sabotages code output).
+   - `vgr:faithrepair` 41 → **67**. `bench:all` **1129/1129** across 35 suites.
+
+2. **Defaulted OFF on the measurement** (`e98ad97`) — see the table above.
+
+### NEXT CRUCIAL ITEMS (cont.86 — this list is the current one; §5 further down is archive)
+
+1. **Seat a CODE-CAPABLE second proposer in the open seat.** The mechanism is built, benched and
+   one line from live (`completeAlt`). MiniCPM disqualified itself by narrating; the GGUF pool
+   already carries code-tuned models (`localModelCatalog`) — bench one as the alt with
+   `audit-traces/p6/ab_minicpm_experiment.ts` (it A/Bs any `completeAlt` unchanged). **Require
+   independence**: if the candidate also mangles identifiers out of clean evidence, it fails for
+   the same reason and must not ship. Re-measure against the LIVE prompt, not the A/B's stand-in.
+2. **Evidence-relevance gate** — do not synthesize when the evidence never mentions the subject.
+3. **Capitalization / code-shape routing** — MEASURED AGAIN this session: "Using zod, how do I
+   validate an IPv4 address? Show the code." is classified `promptType: coding`, bypasses grounding
+   entirely, and answers a **zod** question in **Python with a hand-rolled regex** (t16). Lowercase
+   library name + "show the code" = the verifier never runs. This is most real prompts. Universal fix.
+4. **A live gate-reachability assertion.** Three dead/inverted features in three sessions.
+5. **Code-aware `GROUNDING_SYSTEM`** — still a prose prompt that code asks get routed into.
 
 ### cont.85 — the fix asked for, plus the worse half of it nobody had seen
 
