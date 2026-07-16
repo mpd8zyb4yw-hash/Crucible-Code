@@ -485,6 +485,14 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   // identifiers? Both certify, but they are not the same claim, and the badge must not blur them:
   // a name-matched certify is the weak one that shipped JSON Schema as green (cont.86b).
   let executed = faith.status === 'certified' && faith.executed
+
+  // PROVE THE GATE OPENS (cont.84). A verifier that never actually executes is a dead feature that
+  // benches green forever. This says, per live request, whether the code REALLY ran — so "the
+  // execution verifier is live" is a claim we can READ, not one we assume. If `executed` is false
+  // across real traffic, the gate is unreachable and that is a finding to report, not to bury.
+  debugBus.emit('pipeline', 'answer_certify', {
+    status: faith.status, executed: faith.executed, library: faith.library, reason: faith.reason.slice(0, 120),
+  }, { severity: 'info' })
   if (process.env.CRUCIBLE_DUMP_FAITH) {
     const fsx = await import('fs')
     fsx.writeFileSync(process.env.CRUCIBLE_DUMP_FAITH + '.evidence.txt', ev.block)
