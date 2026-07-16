@@ -206,6 +206,45 @@ function deleteConversationById(userId: string | null, id: string): void {
 // completion patch can write the finished answer into the right conversation even if
 // the client disconnected mid-stream.
 const roundConversation = new Map<string, string>()
+
+// ── KEEP-K draft carry-forward ────────────────────────────────────────────────────────
+// A best-effort draft (VGR could not certify, so it was SHOWN but deliberately not written
+// to any file) would otherwise be lost the moment the turn ends: repairSeed only reads the
+// named target file or code pasted into the CURRENT message, and a draft is neither. So the
+// draft's own "tell me to keep going and I'll iterate" would be a promise the server cannot
+// keep, and the next turn would restart from zero — re-deriving a near-miss it already had.
+// Stashing it makes the near-miss the next turn's repair seed, which is exactly the
+// failing-case-evidence mechanism that lifted fault:live recovery in cont.78.
+// Keyed per user+project so one user's draft can never seed another's request.
+// The GOAL is stashed with the code and matters as much: the spec + acceptance cases are parsed
+// out of the message text, so a bare "keep going" would give solveCodingRequest nothing to verify
+// against and it would abstain instantly. Resuming means re-running the ORIGINAL goal with the
+// draft as the repair seed.
+const lastVgrDraft = new Map<string, { code: string; goal: string; ts: number }>()
+const DRAFT_TTL_MS = 30 * 60 * 1000
+const MAX_DRAFTS = 200
+const draftKey = (userId: string | null | undefined, projectPath: string) => `${userId ?? 'anon'}::${projectPath}`
+function stashVgrDraft(userId: string | null | undefined, projectPath: string, code: string, goal: string) {
+  if (lastVgrDraft.size >= MAX_DRAFTS) {
+    // Evict the oldest — bounded memory; this is a convenience cache, never a source of truth.
+    const oldest = [...lastVgrDraft.entries()].sort((a, b) => a[1].ts - b[1].ts)[0]
+    if (oldest) lastVgrDraft.delete(oldest[0])
+  }
+  lastVgrDraft.set(draftKey(userId, projectPath), { code, goal, ts: Date.now() })
+}
+function takeVgrDraft(userId: string | null | undefined, projectPath: string): { code: string; goal: string } | null {
+  const k = draftKey(userId, projectPath)
+  const hit = lastVgrDraft.get(k)
+  if (!hit) return null
+  lastVgrDraft.delete(k)   // single-use: a stale draft must never silently seed a later, unrelated task
+  if (Date.now() - hit.ts > DRAFT_TTL_MS) return null
+  return { code: hit.code, goal: hit.goal }
+}
+/** Non-consuming check — used by the VGR routing gate, which must not eat the draft. */
+function hasPendingVgrDraft(userId: string | null | undefined, projectPath: string): boolean {
+  const hit = lastVgrDraft.get(draftKey(userId, projectPath))
+  return !!hit && Date.now() - hit.ts <= DRAFT_TTL_MS
+}
 function patchConversationRound(userId: string | null, conversationId: string, roundId: string, patch: Record<string, unknown>): void {
   if (!conversationId || !roundId) return
   try {
@@ -3120,8 +3159,15 @@ app.post('/api/chat', async (req, res) => {
     // ships CERTIFIED code — on any abstain it falls through unchanged. So default-on strictly
     // adds certification to tasks that would otherwise hand off unverified. Set CRUCIBLE_VGR=0
     // to disable. See DOCTRINE.md + src/CrucibleEngine/reasoning/.
+    // A bare "keep going" carries no edit verb and no file path, so both task detectors say
+    // false and this block is skipped — which meant the follow-up a best-effort draft explicitly
+    // INVITES ("tell me to keep going") fell through to the tool-less pipeline and answered
+    // "I'm sorry, but I can't continue." A pending draft is strong evidence the conversation is
+    // mid-code-task, so it re-opens the gate. Deliberately narrow: only for a continuation
+    // phrase, only while an un-consumed draft exists for THIS user+project (30-min TTL).
     if (!handled && !resumable && !iterCheckpoint && process.env.CRUCIBLE_VGR !== '0'
-        && (isCodeImplementationTask(message ?? '') || isCodeEditTask(message ?? ''))) {
+        && (isCodeImplementationTask(message ?? '') || isCodeEditTask(message ?? '')
+            || (isContinuationPhrase(message ?? '') && hasPendingVgrDraft(chatUser?.id, projectPath)))) {
       try {
         send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
 
@@ -3294,6 +3340,22 @@ app.post('/api/chat', async (req, res) => {
           // reference the project tree at all.
           if (!repairSeed) repairSeed = extractPastedCode(message ?? '') ?? undefined
         }
+        // CARRY-FORWARD: "keep going" after a best-effort draft. The draft was shown but never
+        // written, so there is no file to read and nothing pasted — without this the next turn
+        // restarts from zero and re-derives a near-miss it already paid for. Single-use + TTL'd,
+        // and only ever a SEED: every candidate is still executed, so a stale draft can at worst
+        // waste evidence, never certify a wrong answer.
+        // The effective goal: normally the message itself, but a bare continuation carries no
+        // spec or acceptance cases, so resuming re-runs the ORIGINAL goal with the draft seeded.
+        let vgrGoal = message ?? ''
+        if (!repairSeed && isContinuationPhrase(message ?? '')) {
+          const draft = takeVgrDraft(chatUser?.id, projectPath)
+          if (draft) {
+            repairSeed = draft.code
+            vgrGoal = draft.goal
+            send({ type: 'thought', text: `VGR · resuming the previous task from its best draft (${draft.code.length} chars) — re-running the original goal with the draft's failing cases seeded into the first proposal.` })
+          }
+        }
         let vgr = null
         // KEEP-K: the retry loop below restarts search() from scratch each attempt and throws
         // away every non-certified candidate — discarding ranking the verifier already PAID to
@@ -3312,7 +3374,7 @@ app.post('/api/chat', async (req, res) => {
           // proposer — every candidate is executed, so it can never certify a wrong answer.
           const tryHard = attempt > 1
           if (tryHard) send({ type: 'thought', text: `VGR · escalating to convergence${webGroundOrNull ? ' + web reference lookup' : ''} for this harder task…` })
-          vgr = await solveCodingRequest(message ?? '', {
+          vgr = await solveCodingRequest(vgrGoal, {
             maxModelCalls: 8, beamWidth: 2,
             signal: ac.signal,
             buggyCode: repairSeed,
@@ -3342,7 +3404,9 @@ app.post('/api/chat', async (req, res) => {
           // Decide WHERE it lands: an explicit target path in the request → that file (append if
           // it exists and the combined file still compiles), else a new src/<entry>.ts. Never
           // corrupts an existing file (planEmit downgrades to a new file if appending would break).
-          const targetPath = detectTargetPath(message ?? '')
+          // vgrGoal, not message: on a resumed turn the file path lives in the ORIGINAL goal
+          // ("src/double.ts"), not in the bare "keep going" that triggered this run.
+          const targetPath = detectTargetPath(vgrGoal)
           const existingAbs = targetPath ? path.join(projectPath, targetPath) : null
           let existing: string | null = null
           try { if (existingAbs && fs.existsSync(existingAbs)) existing = fs.readFileSync(existingAbs, 'utf-8') } catch { /* treat as absent */ }
@@ -3414,6 +3478,10 @@ app.post('/api/chat', async (req, res) => {
           if (pick) {
             const cov = pick.coverage ? `${pick.coverage.passed}/${pick.coverage.total} cases pass` : `score ${pick.score}`
             send({ type: 'thought', text: `VGR · nothing certified, but the best of ${keptAttempts.length} kept candidate(s) measures ${cov} — showing it as an explicit draft, not writing it.` })
+            // Make the draft's own "tell me to keep going" offer real — see lastVgrDraft.
+            // Stash the GOAL, not the message: a second "keep going" must resume the original
+            // task, not the continuation phrase that triggered this run.
+            stashVgrDraft(chatUser?.id, projectPath, pick.code, vgrGoal)
             debugBus.emit('agent', 'vgr_best_effort', { score: pick.score, coverage: pick.coverage, kept: keptAttempts.length, entry: vgr.entry }, { severity: 'info' })
             const answer =
               `I could **not certify** this, so I have not written it to any file. ` +
