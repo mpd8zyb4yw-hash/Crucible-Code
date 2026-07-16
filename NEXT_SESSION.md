@@ -17,7 +17,20 @@
 
 ---
 
-## CURRENT STATE (last updated 2026-07-16 cont.84 — **REPAIR IS NOW A SEARCH (K candidates, keep any that certifies) AND IT RUNS LIVE — because the old repair gate was UNREACHABLE and had never executed once. The search still does not recover the answer: the FM re-proposes identifiers it was just told are absent. NEW: the verifier FALSE-CERTIFIES a total fabrication (`import { Zod }`) because the judging vocabulary harvests prose.**
+## CURRENT STATE (last updated 2026-07-16 cont.85 — **THE JUDGING VOCABULARY WAS INVERTED: it certified the fabrication `import { Zod }` AND rejected the canonical `import { z } from 'zod'`. Both fixed at the harvester (`3192b64`), live-verified on a clean tree. The repair search (cont.84) runs; the FM still does not recover.**
+
+### cont.85 — the fix asked for, plus the worse half of it nobody had seen
+
+`§1` below has the full account. The short version: cont.84 recorded the false certify's cause as
+the page title — **that was wrong**. It was the member rule `\.\s*(\w+)`, whose `\s*` crosses a
+prose sentence boundary (`addresses.\nZod v4`). Fixing it surfaced the real problem: the same
+function ALSO false-REJECTED `import { z } from 'zod'` (a `length > 1` floor meant `z` could
+never be documented), so the repair loop was being pointed at correct code — the cont.79h
+failure mode, live, behind a green bench. `vgr:apifaith` 48 → 59; `bench:all` 1103/1103.
+
+**The transferable lesson (now a METHOD rule):** a verifier has two failure directions. cont.84
+measured only the one it went looking for. When you find a false certify, feed the verifier the
+KNOWN-CORRECT answer in the same breath and assert it certifies.
 
 ### What shipped (all committed, benches green, tsc delta 0)
 
@@ -63,21 +76,44 @@ outcomes run to run** — retrieval ranking varies, and it decides which failure
   `Zod.Schema<IPv4Address> = {...}` object literal + hand-rolled regex — a total fabrication
   (zod exports no `Zod`; the real API is `z.ipv4()`). Verdict: **`certified`, green badge.**
 
-### §1 THE BLOCKER — the judging vocabulary harvests PROSE (why t12 ships green)
+### §1 FIXED (cont.85, `3192b64`) — the vocabulary bug fired in BOTH directions
 
-`documentedIdentifiers` is deliberately over-inclusive ("over-inclusion costs a missed
-fabrication; under-inclusion costs a false reject, which is strictly worse"). PROVEN mechanism:
-`Zod` is in the vocabulary **only because the page title reads "Defining schemas | Zod"**. It is
-NOT in `callSurface`. So a fabricated named import certifies whenever its identifier collides
-with any prose word — and the repair search never runs, because nothing was rejected.
+**cont.84's recorded cause was WRONG.** `Zod` does NOT enter from the page title "Defining
+schemas | Zod" — measured against the real captured evidence, the title never enters. The
+culprit is the member rule `\.\s*(\w+)`, whose `\s*` spans a **sentence boundary**:
+`...email addresses.\nZod v4` parses as a member access. Same path admitted `Perfect` from
+`instantly. Perfect for learning`, `Alternative`, `Install`, `It`.
 
-The sound fix (NOT yet made — it changes the judging vocabulary and needs its own bench + live
-run; a false reject is worse than a missed check): judge **named imports** against a stricter
-vocabulary — identifiers the evidence shows in an **import/export or call position** — instead
-of the prose-inclusive vocab. To claim `import { X } from 'pkg'`, the evidence must show X as an
-importable/callable name, not merely mention the word. Keep the permissive vocab for the
-whole-answer check. **Verify against BOTH: t12 (must reject) and the express false-reject guard
-in `vgr:apifaith` (must still not fire).**
+**The half nobody had noticed is the worse half.** `add()` dropped identifiers of length ≤ 1, so
+`z` could never be documented — meaning `import { z } from 'zod'`, the canonical zod import,
+with `const ipv4 = z.ipv4();` sitting in the evidence, was reported as a **fabricated
+identifier**. Measured on t11 evidence, pre-fix, the verifier was exactly inverted:
+
+| answer | pre-fix | post-fix |
+|---|---|---|
+| `import { Zod }` (total fabrication) | **certified** | violations |
+| `import { z } from 'zod'` (canonical, correct) | **violations** | certified |
+
+So every zod answer the repair loop opened on was being told to "fix" correct code — the
+cont.79h failure mode, live and unnoticed, behind a green bench.
+
+**Fix, at the harvester** (universal — every consumer shares this vocabulary): the dot binds
+tight (no whitespace either side, so prose cannot match while chained `\n  .min()` still does);
+dotted access harvests the namespace **root** too (`z` in `z.ipv4()`); the length floor is gone
+(single-char namespaces `z`/`_`/`$` are the norm for this import class). Dropping the floor and
+harvesting roots only ADD to the vocabulary — the safe side of the asymmetry.
+
+Surviving prose noise is DELIBERATE: `foo (v4)` still reads as a call (the `\b(\w+)\s*\(` rule
+keeps its `\s*`), because tightening it would drop `function foo (a)` from real docs and
+manufacture false rejects. Over-inclusion costs a missed check; under-inclusion costs a false
+reject. Do not "finish the job" here without a bench proving the false-reject direction.
+
+`vgr:apifaith` 48 → **59** (11 new: both directions on REAL t11 evidence, sentence-boundary,
+chained-call, lodash single-char guards; each fails pre-fix). Live-verified on a clean tree
+(`3192b64`, no `+dirty`): t14/t15 — gate fires, K=3 escalating repairs, none certify, honest
+UNVERIFIED. Both rejects **earned** (answers were JSON-Schema literals with zero zod API against
+evidence containing `ipv4`). The named-import class is not reproducible on demand live —
+retrieval variance picks the shape — which is why the bench pins it with captured evidence.
 
 ### §2 Retrieval fetched evidence that cannot answer the question
 
@@ -95,18 +131,26 @@ type, so the verifier is inert for most real prompts. Universal fix only (ground
 case-insensitive structural signal) — a package-name table is BANNED.
 
 ### Bench state
-`vgr:faithrepair` 41/41 (new) · `vgr:apifaith` 48/48 · `vgr:bench` 208/208 · `ground:bench` 41/41
-· `keepk:bench` 15/15 · `retrieval` 18/18 · `vgr:retrieval` 28/28 · `conversational` 108/108 ·
-tsc delta 0 (443 pre-existing under `tsconfig.server.json`; measure the baseline with
-`git stash -u` — a plain `git stash` leaves new untracked files orphaned and inflates it).
+`vgr:faithrepair` 41/41 · `vgr:apifaith` **59/59** · `ground:bench` 41/41 · `vgr:retrieval` 28/28
+· `vgr:decompose` 35/35 · **`bench:all` 1103/1103 across 35 suites** · tsc delta 0 (443
+pre-existing under `tsconfig.server.json`; measure the baseline with `git stash -u` — a plain
+`git stash` leaves new untracked files orphaned and inflates it). **`tsconfig.json` is a
+project-references shell: `tsc -p tsconfig.json` reports 0 errors and checks NOTHING. Always use
+`tsconfig.server.json`.**
 
 ### METHOD (cost this session real time — read before citing any live run)
 - **Boot banner `+dirty` is the tell.** It fires on untracked files too — trace dumps you just
-  wrote count. Point dumps outside the repo.
+  wrote count. Point dumps outside the repo. NOTE `audit-traces/p4/.token` is TRACKED, so
+  re-minting it dirties the tree; mint to the scratchpad instead.
 - **Verify the exit code, not the tail.** `npm run <bench> | tail -1` prints nothing for benches
   whose summary is `N/N passed`; three different summary formats are in use.
+- **Check the dump's mtime against the run window.** A dump file left from the previous run reads
+  exactly like a fresh result (t15 nearly got reported from t14's dump).
 - **Never diagnose from a reconstructed evidence block.** Dump from the real path.
-- **A green badge means "nothing I check is broken."** t12 is the proof: certified ≠ correct.
+- **A green badge means "nothing I check is broken."** t12 was the proof: certified ≠ correct.
+- **A verifier has TWO failure directions.** cont.84 reported only the false certify and the
+  false reject sat undetected in the same function — when you find one, test the other by
+  construction: feed it the KNOWN-CORRECT answer and assert it certifies.
 
 ## PRIOR STATE (last updated 2026-07-16 cont.83 — **WEB GROUNDING WAS 100% DEAD ON COMMITTED CODE for 3 sessions. Fixed (1c8bc46). API-faithfulness verifier built and LIVE (2ec8b3a): it DETECTS the fabrication; repair does not yet recover the answer.**
 

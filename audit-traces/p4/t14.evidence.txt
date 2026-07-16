@@ -1,0 +1,72 @@
+[S1] Defining schemas | Zod — https://zod.dev/api?id=ip-addresses
+
+String formats
+To validate against some common string formats:
+z.email();
+z.uuid();
+z.url();
+z.httpUrl(); // http or https URLs only
+z.hostname();
+z.e164(); // E.164 phone numbers
+z.emoji(); // validates a single emoji character
+z.base64();
+z.base64url();
+z.hex();
+z.jwt();
+z.nanoid();
+z.cuid();
+z.cuid2();
+z.ulid();
+z.ipv4();
+z.ipv6();
+z.mac();
+z.cidrv4(); // ipv4 CIDR block
+z.cidrv6(); // ipv6 CI … constrain the allowable decimal precision.
+z.iso.time({ precision: -1 }); // HH:MM (minute precision)
+z.iso.time({ precision: 0 }); // HH:MM:SS (second precision)
+z.iso.time({ precision: 1 }); // HH:MM:SS.s (decisecond precision)
+z.iso.time({ precision: 2 }); // HH:MM:SS.ss (centisecond precision)
+z.iso.time({ precision: 3 }); // HH:MM:SS.sss (millisecond precision)
+IP addresses
+const ipv4 = z.ipv …  keys of an object schema:
+ZodZod Mini
+const keySchema = Dog.keyof();
+// => ZodEnum<["name", "age"]>
+.extend()
+To add additional fields to an object schema:
+ZodZod Mini
+const DogWithBreed = Dog.extend({
+breed: z.string(),
+});
+This API can be used to overwrite existing fields! Be careful with this power! If the two schemas share keys, B will override A.
+Alternative: spread syntax — You can alternat
+
+---
+
+[S2] Zod101 - Interactive Zod Schema Playground & Validator — https://zod101.smol-apps.de/
+Zod101 - Interactive Zod Schema Playground & Validator
+Interactive Zod Schema Playground
+Test and validate your Zod schemas in real-time. Write your schema on the left, input test data on the right, and see validation results instantly. Perfect for learning Zod or debugging complex schemas.
+
+---
+
+[S3] Zod Schema Validation — https://vee-validate.logaretm.com/v4/integrations/zod-schema-validation/
+Zod Schema Validation
+Zod Schema Validation
+If you prefer to use zod for schema validation instead of yup, you can do so with the @vee-validate/zod package.
+With @vee-validate/zod you can use Zod typed schemas as drop-in replacements for yup schemas.
+Install
+To use this plugin, make sure to install these packages vee-validate, zod, and @vee-validate/zod.
+shyarn add vee-validate zod @vee-validate/zod
+# or with NPM
+npm install vee-validate zod @vee-validate/zod
+# or with Pnpm
+pnpm add vee-validate zod @vee-validate/zod
+Validating with Zod
+You can create validation schemas for either field-level validation or form-level validation, the @vee-validate/zod exposes a toTypedSchema function that transform Zod’s schemas into something that can be understood by vee-validate main core and use them to perform validation. It also allows vee-validate to figure out the types for both the input values and the submitted values.
+Field-level Validation
+The toTypedSchema function accepts a Zod schema. You can use the converted schema by passing it to the rules prop present on the <Field /> component:
+vue<template>
+<Form>
+<Field name="email" type="email" :rules="fieldSchema" />
+<ErrorMessage name="emai
