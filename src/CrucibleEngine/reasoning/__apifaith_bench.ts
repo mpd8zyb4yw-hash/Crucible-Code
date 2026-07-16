@@ -160,6 +160,63 @@ console.log('\n== FALSE-REJECT GUARDS for the whole-answer check ==')
   check('prose-only answer → abstain', v.status === 'abstain', v.reason)
 }
 
+// ── cont.86: the DECORATIVE IMPORT — repair taught the model to game the verifier ────────────
+// Verbatim from the live FM (audit-traces/p6, cont.86): given `escalatedRepairHint`'s list of the
+// documented surface, it pasted the WHOLE list into a require-destructure, called none of it, and
+// emitted the exact JSON-Schema-plus-regex substitution this check exists to catch. The old rule
+// ("ANY import → abstain, because that failure imports nothing at all") certified it, so the repair
+// loop turned an honest UNVERIFIED into a false GREEN badge. Importing a name is not using it.
+console.log('\n== [REAL] the decorative import: repair MANUFACTURED a false certify (cont.86) ==')
+{
+  // Every destructured name is documented by ZOD_EV — as in the real artifact, where the FM pasted
+  // back the surface the hint gave it. That is what makes the per-identifier checks pass and leaves
+  // the whole-answer check as the ONLY thing standing between JSON Schema and a green badge.
+  const GAMED = code(
+    "const { base64, cidrv4, cidrv6, cuid, e164, email, emoji, extend, hostname, httpUrl, ipv4, ipv6, jwt, mac, nanoid, string, ulid, url, uuid } = require('zod');\n" +
+    "\nconst ipv4Schema = {\n  type: 'object',\n  properties: { ip: { type: 'string', pattern: '^(25[0-5]|2[0-4][0-9]|[01]?[0-9]{2}){3}$' } },\n  required: ['ip'],\n};\n" +
+    "\nconst validateIpv4 = (ip) => ipv4Schema.validate(ip);\nmodule.exports = validateIpv4;")
+  const v = verifyEvidenceUsage(GAMED, ZOD_EV)
+  check('[REAL] decorative import + JSON Schema → violations', v.status === 'violations', v.reason)
+  check('[REAL] classified as ignored-evidence', v.violations[0]?.kind === 'ignored-evidence')
+  check('[REAL] reason names the import as decorative', /decorative/.test(v.reason), v.reason)
+  check('[REAL] reason does NOT claim it imports nothing', !/neither imports/.test(v.reason), v.reason)
+  // The whole point: the FULL verifier must reject it too, or the green badge still ships.
+  const full = verifyApiFaithfulness(GAMED, ZOD_EV)
+  check('[REAL] the FULL verifier rejects it (no green badge)', full.status === 'violations', full.status)
+}
+{
+  // The import-free original must still be caught — the old catch is not traded away.
+  const v = verifyEvidenceUsage(code("const schema = { type: 'string', format: 'ipv4', pattern: '^[0-9.]+$' };\nmodule.exports = schema;"), ZOD_EV)
+  check('import-free JSON Schema still → violations', v.status === 'violations', v.reason)
+  check('import-free reason still says "neither imports"', /neither imports/.test(v.reason), v.reason)
+}
+console.log('\n== cont.86 FALSE-REJECT GUARDS — the new rule must not reject real code ==')
+{
+  // A documented library imported AND called → the per-identifier checks own it. This is the
+  // canonical correct answer; rejecting it would poison repair (cont.79h).
+  const v = verifyApiFaithfulness(code("import { z } from 'zod'\nconst ipv4Schema = z.ipv4()\nexport const parse = (s: string) => ipv4Schema.parse(s)"), ZOD_EV)
+  check('canonical correct zod answer still CERTIFIES', v.status === 'certified', v.reason)
+}
+{
+  // Retrieval mismatch: express code judged against zod docs. The evidence does not document
+  // express, so "no overlap" is innocent — this MUST stay an abstain (the case the old rule cited).
+  const v = verifyEvidenceUsage(code("import express from 'express'\nconst app = express()\napp.get('/x', (req, res) => res.send('ok'))\napp.listen(3000)"), ZOD_EV)
+  check('foreign library (express vs zod docs) → abstain, not reject', v.status === 'abstain', v.reason)
+  check('foreign-import abstain names the uncovered library', /express/.test(v.reason), v.reason)
+}
+{
+  // MIXED: one foreign import + the documented library, calling nothing documented. The zod import
+  // is still decorative, so the foreign one must not launder it.
+  const v = verifyEvidenceUsage(code("import express from 'express'\nimport { z } from 'zod'\nconst schema = { type: 'object', properties: { ip: { type: 'string' } } }\nconst app = express()\napp.listen(3000)"), ZOD_EV)
+  check('foreign import does not launder a decorative documented import', v.status === 'violations', v.reason)
+}
+{
+  // A documented library imported and used via a call the docs DON'T list is NOT this check's
+  // business — the per-identifier check owns that as a fabrication. Must not double-fire here.
+  const v = verifyEvidenceUsage(code("import { z } from 'zod'\nconst s = z.parseIPv4()\nexport default s"), ZOD_EV)
+  check('undocumented member call → abstain here (per-identifier owns it)', v.status === 'abstain', v.reason)
+}
+
 // ── cont.85: the vocabulary bug that fired in BOTH directions ────────────────────────────────
 // Evidence is VERBATIM from audit-traces/p4/t11.evidence.txt — the prose that broke it:
 //   • `...email addresses.\nZod v4` — a sentence boundary the old `\.\s*(\w+)` member rule read

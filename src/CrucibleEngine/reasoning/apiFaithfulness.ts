@@ -241,6 +241,26 @@ function calledIdentifiers(code: string): Set<string> {
 }
 
 /**
+ * Is an imported binding actually TOUCHED — called (`z(`) or member-accessed (`z.`) — anywhere in
+ * the code? This is what separates a real (if wrong) use of a library from a DECORATIVE import.
+ *
+ * Deliberately NOT a bare `\bname\b` scan: the measured gaming artifact destructures `string` and
+ * then writes `type: 'string'`, so a plain word match reads a STRING LITERAL as use and un-catches
+ * the very thing this exists for. Call/member position is the narrow, checkable signal for "this
+ * name is being used AS the API".
+ *
+ * Under-counting here is the safe direction and is intentional: a miss means the decorative-import
+ * check abstains, which is exactly what this file does with every ambiguity (cont.79h — a false
+ * reject is the worse error).
+ */
+function bindingIsTouched(code: string, ids: string[]): boolean {
+  return ids.some(id => {
+    const esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`\\b${esc}\\s*[.(]`).test(code)
+  })
+}
+
+/**
  * The WHOLE-ANSWER failure: code that ignores the retrieved API completely.
  *
  * Measured live (cont.82/83) and by far the most common fabrication: asked for a Zod schema,
@@ -269,24 +289,55 @@ export function verifyEvidenceUsage(answer: string, evidence: string): Faithfuln
   // Without a rich API surface the evidence is prose or a stub, and "no overlap" means nothing.
   if (surface.length < MIN_VOCAB) return abstain(`evidence documents only ${surface.length} call-shaped APIs — not an authority`)
 
-  // ANY import at all disqualifies this check.
-  //   • imports a DOCUMENTED library → the per-identifier checks own it, not this one.
-  //   • imports an UNDOCUMENTED library → the evidence is about something else (a retrieval
-  //     mismatch, e.g. express code judged against zod docs). "No overlap" is then the expected,
-  //     innocent outcome, and firing here would be a false reject — the bench caught exactly this.
-  // The measured failure this check exists for — JSON Schema substituted for the library —
-  // imports nothing at all, so restricting to import-free code keeps the catch and drops the risk.
-  const imported = extractLibraryUsage(code)
-  if (imported.length)
-    return abstain(`answer imports ${imported.map(l => l.library).join(', ')} — not judged as ignoring the evidence`)
-
+  // USE is a CALL, never an import. Any overlap certifies (the deliberate asymmetry: cont.79h says
+  // a false reject is the worse error), so this runs first and settles the innocent cases.
   const called = calledIdentifiers(code)
   const overlap = surface.filter(s => called.has(s))
   if (overlap.length) return abstain(`answer calls documented APIs (${overlap.slice(0, 5).join(', ')}) — it used the evidence`)
 
+  // Zero documented APIs are CALLED. An import only earns an abstain when it points AWAY from the
+  // evidence — express code judged against zod docs is a retrieval mismatch, where "no overlap" is
+  // the innocent, expected outcome and firing here would be a false reject (the bench caught that).
+  //
+  // An import of the library the evidence DOCUMENTS is not innocent (cont.86, MEASURED LIVE). This
+  // check used to abstain on ANY import, reasoning that "JSON Schema substituted for the library
+  // imports nothing at all". **The repair loop falsified that premise.** `escalatedRepairHint` hands
+  // the model the documented surface, and the FM pastes the whole list into a decorative import —
+  //   const { base64, cidrv4, cuid, email, ipv4, string, … } = require('zod')
+  //   const ipv4Schema = { type: 'object', properties: { ip: { pattern: '^(25[0-5]|…' } } }
+  // — satisfying "it imported the docs' library" while emitting the exact JSON-Schema-plus-regex
+  // substitution this check exists to catch. Every identifier is documented, so the per-identifier
+  // checks pass too, and the answer CERTIFIED: the hint taught the model to game the verifier, and
+  // repair MANUFACTURED a false green badge out of an honest failure.
+  //
+  // Importing a name is not using it. Calling one is. Note the per-identifier checks already own the
+  // adjacent case (imports the library, then calls an UNDOCUMENTED member → named-import /
+  // namespace-member violation), so this fires only on the true gap: named the library, called
+  // nothing on it.
+  const imported = extractLibraryUsage(code)
+  const foreign = imported.filter(l => !evidenceCovers(evidence, l.library))
+  if (imported.length && foreign.length === imported.length)
+    return abstain(`answer imports ${foreign.map(l => l.library).join(', ')}, which the evidence does not document — not judged as ignoring it`)
+
+  // The documented library IS imported. Decorative means the binding is never touched — not merely
+  // that no DOCUMENTED api was called. `import { z } from 'zod'; z.parseIPv4()` calls a fabricated
+  // member: the code plainly used zod, it just used it WRONG, and the per-identifier checks own
+  // that (they name the exact fabrication). Firing here would report "the import is decorative" for
+  // code that demonstrably touched the library, and — because the repair hint is built from this
+  // reason — would send repair to fix something the model did not do.
+  const covered = imported.filter(l => evidenceCovers(evidence, l.library))
+  const bindings = covered.flatMap(l => [...l.named.map(n => n.identifier), ...l.namespaces])
+  if (bindings.length && bindingIsTouched(code, bindings))
+    return abstain(`answer uses its ${covered.map(l => l.library).join(', ')} import — any misuse is the per-identifier check's to judge`)
+
+  // Two distinct shapes reach here, and the repair hint is built from this reason — so it must say
+  // which one, or the model is told to fix something it did not do.
+  const decorative = imported.length > 0
   return {
     status: 'violations',
-    reason: `the answer's code neither imports nor calls ANY of the ${surface.length} APIs the retrieved docs document — it ignored the evidence`,
+    reason: decorative
+      ? `the answer's code imports ${imported.map(l => l.library).join(', ')} but CALLS none of the ${surface.length} APIs the retrieved docs document — the import is decorative; it ignored the evidence`
+      : `the answer's code neither imports nor calls ANY of the ${surface.length} APIs the retrieved docs document — it ignored the evidence`,
     violations: [{
       library: 'the retrieved documentation',
       identifier: '(no documented API used)',
@@ -375,8 +426,18 @@ export function verifyApiFaithfulness(answer: string, evidence: string): Faithfu
     return true
   })
 
-  if (!unique.length)
+  if (!unique.length) {
+    // PROVENANCE IS NECESSARY, NOT SUFFICIENT (cont.86). "Every identifier is documented" was the
+    // whole certify condition, and this branch returned green WITHOUT ever consulting the
+    // whole-answer check — that check only ran when there were no imports at all, or when no
+    // library was judgeable. So the one shape it could never see was the one the repair loop
+    // actually produces: import the documented library, call NOTHING on it, emit JSON Schema.
+    // Fixing verifyEvidenceUsage alone would have been inert here — the composite is the gate.
+    // Every name being real does not make the answer use the API; only a call does.
+    const whole = verifyEvidenceUsage(answer, evidence)
+    if (whole.status === 'violations') return whole
     return { status: 'certified', reason: `all ${judged} identifiers appear in the evidence`, violations: [], documented, callSurface: surface, library: judged }
+  }
 
   return {
     status: 'violations',
