@@ -16,6 +16,7 @@
 import { search, fetch as fetchPage, stripBoilerplate, type SearchResult } from '../retrieval/retrievalLayer'
 import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { debugBus } from '../debug/bus'
+import { verifyApiFaithfulness, repairHint, describeViolations } from '../reasoning/apiFaithfulness'
 
 export interface GroundedResult {
   text: string
@@ -322,6 +323,7 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
 
   let block = parts.join('\n\n---\n\n')
   if (block.length > EVIDENCE_BUDGET) block = block.slice(0, EVIDENCE_BUDGET) + '\n… (truncated)'
+  return { block, sources, titles }
 }
 
 function safeHost(url: string): string {
@@ -411,8 +413,62 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
     return null
   }
 
+  // ── API-FAITHFULNESS GATE (cont.82) ─────────────────────────────────────────────
+  // The measured blocker: the FM grounds on the right page, CITES it, and contradicts it —
+  // `import { Schema } from 'zod'` with a literal `z.ipv4();` in the evidence. Prompting alone
+  // does not fix it (a code-aware prompt merely swapped one fabrication for another), so we
+  // CHECK instead of asking: reject library identifiers the evidence never mentions, feed the
+  // violation back, and re-synthesize. Verification is pure and free; only a real violation
+  // ever spends a model call. `abstain` (the overwhelmingly common verdict — prose answers,
+  // no library) costs nothing and changes nothing.
+  // Set when the answer ships with known-fabricated APIs — suppresses the green "grounded"
+  // badge below. A verified-looking badge over a known-bad artifact is the exact cont.79h
+  // failure (a green gate only ever means "nothing I check is broken"), so the one verify
+  // event this function emits must tell the truth.
+  let unfaithful: string | null = null
+
+  const faith = verifyApiFaithfulness(text, ev.block)
+  if (faith.status === 'violations') {
+    debugBus.emit('pipeline', 'api_faithfulness_violation', {
+      library: faith.library, identifiers: faith.violations.map(v => v.identifier), reason: faith.reason,
+    }, { severity: 'warn' })
+
+    if (remaining() > 4000 && !signal?.aborted) {
+      emit?.({ type: 'thought', text: `Checked the code against the docs — ${describeViolations(faith)}. Repairing…` })
+      let repaired = ''
+      try {
+        repaired = (await fmComplete([
+          ...msgs,
+          { role: 'assistant', content: text },
+          { role: 'user', content: repairHint(faith) },
+        ], { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal })).trim()
+      } catch { repaired = '' }
+
+      // Only accept a repair the verifier actually certifies. A retry that fabricates a DIFFERENT
+      // API is not progress — keep the original rather than swap one defect for another.
+      const recheck = repaired.length > 20 ? verifyApiFaithfulness(repaired, ev.block) : null
+      if (recheck && recheck.status === 'certified') {
+        text = repaired
+        opts.onToken?.(`\n\n${repaired}`)
+        debugBus.emit('pipeline', 'api_faithfulness_repaired', { library: faith.library }, { severity: 'info' })
+      } else {
+        // Honest failure. We do NOT return null: the caller's fallback is a PARAMETRIC answer,
+        // which is strictly more fabrication-prone and loses the citations. Ship the grounded
+        // draft, but say it is unverified rather than badging it green.
+        unfaithful = describeViolations(faith)
+        debugBus.emit('pipeline', 'api_faithfulness_repair_failed', {
+          library: faith.library, after: recheck?.status ?? 'empty',
+        }, { severity: 'warn' })
+      }
+    } else {
+      unfaithful = describeViolations(faith)
+    }
+  }
+
   const cites = (text.match(/\[S\d+\]/g) ?? []).length
-  emit?.({ type: 'verify', passed: true, report: `Answer grounded in ${ev.sources.length} web source${ev.sources.length > 1 ? 's' : ''}${cites ? ` with ${cites} inline citation${cites > 1 ? 's' : ''}` : ''}.` })
+  emit?.(unfaithful
+    ? { type: 'verify', passed: false, report: `Grounded in ${ev.sources.length} source${ev.sources.length > 1 ? 's' : ''}, but UNVERIFIED — ${unfaithful}. Treat this code with suspicion.` }
+    : { type: 'verify', passed: true, report: `Answer grounded in ${ev.sources.length} web source${ev.sources.length > 1 ? 's' : ''}${cites ? ` with ${cites} inline citation${cites > 1 ? 's' : ''}` : ''}.` })
   // Flip the live strip's sources to 'grounded' (check-marked) now the answer actually cites them.
   emit?.({ type: 'sources', phase: 'grounded', items: ev.sources.map(u => ({ url: u, host: safeHost(u) })) })
   debugBus.emit('pipeline', 'grounding_hit', { message: message.slice(0, 80), sources: ev.sources.length, cites, ms: Date.now() - started }, { severity: 'info' })
