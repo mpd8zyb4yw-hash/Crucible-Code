@@ -15,7 +15,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { RouterTask } from '../router/capabilityRouter'
-import { snippetQuality, selectBestSnippet, type CodeBlock } from './retrievalLayer'
+import { snippetQuality, selectBestSnippet, stripBoilerplate, extractCodeBlocks, type CodeBlock } from './retrievalLayer'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -68,6 +68,37 @@ async function main() {
   const pick = selectBestSnippet([relFragment, { code: REAL_IMPL, lang: 'ts', source: 'b' }],
     task('debounce typescript function'))
   check('4 relevant one-liner loses to the relevant impl', pick?.source === 'b', `got=${pick?.source}`)
+
+  // 5. BLOCK BOUNDARIES — block-level tags must leave a separator behind.
+  // Regression: stripTags deleted every tag with no delimiter, so a docs table collapsed into
+  // one run-on token. Measured live on deepwiki's zod page (cont.82): the API the user asked
+  // for was PRESENT in the evidence and illegible — `ValidatorRegexipv4()regexes.ipv4`.
+  const TABLE =
+    '<table><tr><th>Validator</th><th>Regex</th></tr>' +
+    '<tr><td>ipv4()</td><td>regexes.ipv4</td></tr>' +
+    '<tr><td>ipv6()</td><td>regexes.ipv6</td></tr></table>'
+  const tbl = stripBoilerplate(TABLE)
+  check('5a table cells do not concatenate', !/ipv4\(\)regexes/.test(tbl), JSON.stringify(tbl))
+  check('5b cells are delimited', /ipv4\(\)\s*\|\s*regexes\.ipv4/.test(tbl), JSON.stringify(tbl))
+  check('5c rows are on separate lines', /regexes\.ipv4\n\s*ipv6\(\)/.test(tbl), JSON.stringify(tbl))
+
+  const para = stripBoilerplate('<p>First sentence.</p><p>Second sentence.</p>')
+  check('5d adjacent blocks do not weld', !/sentence\.Second/.test(para), JSON.stringify(para))
+  const li = stripBoilerplate('<ul><li>alpha</li><li>beta</li></ul>')
+  check('5e list items separate', !/alphabeta/.test(li), JSON.stringify(li))
+  check('5f <br> breaks the line', stripBoilerplate('<div>a<br>b</div>').includes('\n'), '')
+  // Prose still reads as prose: no stray delimiter, no intra-sentence break.
+  const prose = stripBoilerplate('<div><p>Zod is a validation library.</p></div>')
+  check('5g plain prose is unchanged', prose === 'Zod is a validation library.', JSON.stringify(prose))
+
+  // 5h GUARD — the fix is prose-path ONLY. extractCodeBlocks shares stripTags, and injecting
+  // delimiters there would corrupt the code it lifts. Code must come back byte-clean.
+  const codeHtml = '<pre><code class="language-ts">const s = z.ipv4();\nconst t = a || b;</code></pre>'
+  // (`a || b` is legitimate code containing '|', so assert the exact expected text rather than
+  // "contains no pipe" — that naive check fails on valid code and would be a false reject.)
+  const codeOut = extractCodeBlocks(codeHtml)
+  check('5h code extraction is byte-identical (no boundary markers leak into code)',
+    codeOut[0]?.code === 'const s = z.ipv4(); const t = a || b;', JSON.stringify(codeOut[0]?.code))
 
   console.log(`\n${pass}/${pass + fail} passed\n`)
   if (fail > 0) process.exit(1)

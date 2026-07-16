@@ -561,13 +561,46 @@ function stripTags(s: string): string {
   return decodeEntities(s.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
 }
 
+/** stripTags, but newlines survive as line breaks (intra-line whitespace still collapses). */
+function stripTagsKeepLines(s: string): string {
+  return decodeEntities(s.replace(/<[^>]+>/g, ''))
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .trim()
+}
+
+/**
+ * Insert boundaries at BLOCK-level tags before they are deleted.
+ *
+ * stripTags removes `<[^>]+>` with no separator, so adjacent cells concatenate: a docs table
+ * `<td>ipv4()</td><td>regexes.ipv4</td>` collapses to `ipv4()regexes.ipv4`. Measured on
+ * deepwiki's zod page (cont.82): the whole validator table arrived as the single run-on token
+ * `ValidatorRegexipv4()regexes.ipv4ipv6()regexes.ipv6mac()regexes.mac()` — the answer was
+ * present but illegible, and unsplittable back into cells by any downstream stage.
+ *
+ * Cells join with " | " and rows/blocks with a newline, so a table survives as readable rows.
+ * Applied ONLY on the prose path: stripTags stays separator-free for extractCodeBlocks, where
+ * injecting delimiters would corrupt the code it is lifting.
+ */
+function markBlockBoundaries(html: string): string {
+  return html
+    .replace(/<\/(td|th)\s*>/gi, ' | ')
+    .replace(/<\/(tr|table|thead|tbody|p|div|li|ul|ol|h[1-6]|section|article|pre|blockquote)\s*>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+}
+
 /** Remove boilerplate (script/style/nav/header/footer) and return readable text. */
 export function stripBoilerplate(html: string): string {
   const cleaned = html
     .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
-  return stripTags(cleaned)
+  // Collapse the trailing " | " a row's last cell leaves, and squeeze runs of blank lines,
+  // without touching intra-line whitespace (stripTags already normalizes that per line).
+  return stripTagsKeepLines(markBlockBoundaries(cleaned))
+    .replace(/ *\| *(?=\n|$)/g, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
 }
 
 /** Extract code blocks from fetched HTML, boilerplate stripped, lang detected. */
