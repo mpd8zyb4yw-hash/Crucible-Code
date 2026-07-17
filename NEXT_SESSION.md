@@ -17,120 +17,65 @@
 
 ---
 
-## CURRENT STATE — last updated cont.89, 2026-07-17, commit `0dbe991` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.89, 2026-07-17, commit `25b0451` (REPLACE THIS EVERY SESSION)
 
-**cont.89 fixed BLOCKER #1 and the machine-slowdown problem. Both were misdiagnosed.**
+**The answer path now SHIPS WORKING CODE for library asks, with web search completely dead.**
 
-### 1. Blocker #1 — FIXED (`e25640e`). The inherited diagnosis was STALE.
+LIVE, `CRUCIBLE_FORCE_SEARCH_EMPTY=1` (which is the NORMAL case — every SERP is blocked to a
+server IP): `.d.ts` evidence → FM draft (fabricates) → verifier catches → qwen2.5-1.5b rewrites
+→ `z.ipv4()` → **EXECUTES=true, 11.3s**. Before this session: 240s, or a shipped fabrication.
 
-It was never "retrieval fetches the wrong docs". Measured live:
-- **Every open-web SERP is DEAD to a server IP** — DDG → HTTP 202 anti-bot challenge, Bing →
-  HTTP 200 with a 73KB JS/consent shell, zero result markup. `search()` returns 0 → grounding
-  returned null → **the model fabricated**.
-- **`searchCache` had NO TTL and cached EMPTY results**, so one throttled moment poisoned that
-  query for the whole process. That is why the failure never reproduced the same way twice.
-- **`fetchTypeDefs()` had ZERO callers** — the authoritative source was dead code (4th
-  import-live/call-dead instance).
+### The four findings that did it (each overturned an inherited belief)
 
-**Fix:** a package's published `.d.ts` IS its API surface. `fetchLibraryApiForQuery` (jsDelivr:
-resolve → listing → parallel fetch) leads evidence as **[S1]**. Deterministic, keyless,
-unthrottled, universal (any npm package, no list). Scoped to the entry point's subtree so zod's
-bundled **v3** types and `/v4/core/` internals can't poison a v4 answer.
+1. **Blocker #1 was never "wrong docs".** Every open-web SERP is DEAD to a server IP (DDG → 202
+   challenge, Bing → 200 JS-shell, zero result markup), and `searchCache` was a plain Map with NO
+   TTL that cached EMPTY results — one throttled moment poisoned a query for the whole process.
+   Fix: ground library asks on the package's own published `.d.ts` (jsDelivr **raced with** unpkg —
+   jsDelivr's listing measured 16.6s vs unpkg's 843ms, so a sequential fallback blew the deadline).
+2. **The lane was gated behind the SHIFT KEY.** `namesExternalLibrary`'s strongest signal is a
+   CAPITALIZED proper noun → only **1 of 10** realistic asks reached it. Now **6/7**, 5/5
+   algorithmic still skipped, via an npm **download floor** (live data, not a name list) +
+   a **relevance gate** + `namesInstrument()` ("with axios").
+3. **THE REPAIR PROMPT WAS THE BUG** — three sessions of "detection works, recovery does not"
+   were this, not a model ceiling. Showing the model its own fabrication makes it re-fabricate:
+   `B fabrication-in-context 0/3` vs `C clean + forward constraint 3/3 @0.7s`.
+   **RULE: never put the rejected artifact in the retry's context.**
+4. **The 27B was never needed.** qwen2.5-1.5b (1.1GB, already downloaded) copies 3/3 and
+   EXECUTES 3/3 — same as Bonsai-27B — at **12x the speed, 3.5x smaller, 57ms stalls vs 435ms**.
+   The FM's failure was never about parameter count.
 
-**Also fixed a universal passage-selection bug it exposed:** `selectRelevantPassages` weighted
-terms `1/log2(2+f)` (bounded), so four common terms outscored the one window containing `ipv4` —
-the selected evidence came back full of `ZodCUID` with **zero ipv4** while the bench stayed green.
-Now classic window-IDF. **ipv4 x0 → x5** at the same budget.
+### Machine usability (the user's complaint) — FIXED
 
-**PROVEN with search FORCED DEAD** (`CRUCIBLE_FORCE_SEARCH_EMPTY=1`, the normal production case):
-`grounded: true`, source `npmjs.com/package/zod/v/4.4.3`, evidence 1330c with ipv4 x5 including
-the literal ``Use `z.ipv4()` instead.``
-`retrieval:bench` 21/21 · **`retrieval:live` 27/27 (NEW — the only check that proves the lane;
-6i asserts the identifier survives SELECTION, the stage 6e missed)** · `ground:bench` 41/41.
-
-### 2. Machine slowdown — FIXED (`0dbe991`). It is WIRED memory, not CPU.
-
-The box is at ~7.4GB/8GB used *before* anything loads. Metal buffers are **wired**, so `-ngl 99`
-pins 6.6GB and forces everything else to swap → the 435ms UI stalls. Measured, 400 tokens:
-
-| config | wired | worst stall | speed |
+| | wired | worst stall | speed |
 |---|---|---|---|
-| baseline | 1970MB | 10ms | — |
-| `-ngl 99` (all GPU) | 6587MB | **435ms** | ~4.3 tok/s |
-| `taskpolicy -b` | 6344MB | 495ms | **worse** |
-| `-ngl 16` (partial) | 5387MB | 132ms | **worst of both** |
-| **`-ngl 0` (CPU/mmap)** | **1540MB** | **18ms** | ~1.4 tok/s |
+| baseline | 1701 MB | 7 ms | — |
+| **qwen2.5-1.5b (the seat)** | **2916 MB** | **57 ms** | **40 tok/s** |
+| Bonsai-27B (old) | ~6600 MB | **435 ms** | 4.3 tok/s |
 
-`-ngl 0` mmaps the weights = file-backed clean pages the kernel evicts for free. **24x better
-worst case for 3x slower tokens.** `taskpolicy -b` and partial offload are MEASURED FALSE — the
-mode is binary; don't retry them.
+Sidecar seats the **cheapest PROVEN engine** (`REPAIR_MODELS` in `bonsaiSidecar.ts`), idle-unloads
+after 120s. Bonsai stays only as a fallback — **never put it on an interactive path without
+measuring**. If you ever run the 27B: background mode is `-ngl 0 -t 4` (wired memory, not CPU, is
+what stalls an 8GB box; `taskpolicy -b` and partial offload both measured WORSE).
 
-**`bonsaiSidecar.ts`**: background mode DEFAULT, `CRUCIBLE_BONSAI_MODE=focus` when you're away,
-**idle-unload after 120s**, serialized requests, no-think default, orphan-proof shutdown.
-Live: wired 1498 → **1502MB** while loaded (+4MB vs +4.6GB); auto-unload verified.
+### NEXT
 
-### NEXT, in order
+1. **Run the 5-task live suite** (`crucible-bench-doesnt-test-model`) — the answer path is fixed
+   for ONE task class (library API). The honest % move needs the broader distribution measured.
+2. **`lodash debounce example` still misses** — no coding keyword, no instrument phrase, no
+   capital. Needs a signal for "library leads a compound noun".
+3. **The FM still drafts fabrications** — every library ask now pays an FM draft + a repair.
+   Consider letting qwen draft directly for library asks (measured: 0.6s clean).
+4. Unmeasured: tool-calling ACCURACY (BFCL 66.03); running a model alongside the server.
 
-1. **Wire the sidecar into the answer path** — it is built + live-tested but nothing calls
-   `bonsaiComplete()` yet. Do NOT let it become the 5th import-live/call-dead feature. Gate it on
-   the library/extraction case only (where cont.88 proved the FM fails), and keep the FM for the
-   rest.
-2. **Lowercase library gate** — "express middleware…" still bypasses grounding entirely
-   (`namesExternalLibrary` is capitalization-dependent), so the new lane never runs for the way
-   users actually type. Needs a registry-verified async gate; a false positive diverts algorithmic
-   work away from the VGR verifier, so precision matters more than recall.
-3. **Re-measure the % with the new evidence.** The FM on the new clean `.d.ts` went 1/3 copies,
-   0/3 executes (from 0/3, 0/3) — better evidence is NOT sufficient, confirming cont.88.
+### Gotchas that each faked a result this session
 
----
-
-## SUPERSEDED — cont.88 (kept for rationale)
-
-**cont.88 ran the A/B the cont.87 pause asked for. Result: the cont.82 extraction failure is
-MODEL-bound, not prompt-bound — and Bonsai fixes it.**
-
-Fixture = the frozen cont.82 evidence (`audit-traces/p4/t9.evidence.txt`, contains `z.ipv4();`
-verbatim at line 20) + "Write a Zod schema that validates an IPv4 address" + the verbatim
-`GROUNDING_SYSTEM`. **Only the model differs.** Harness: `audit-traces/p7/ab_evidence_copy.mjs`.
-
-| arm | copies z.ipv4 (code) | EXECUTES | latency |
-|---|---|---|---|
-| Apple FM | **0/3** | **0/3** (jsonSchema 2/3, handRegex 3/3) | 38.5s |
-| Bonsai-27B no-think | **3/3** | **3/3** | **45.5s** |
-| Bonsai-27B think | **3/3** | **3/3** | 413.6s (9x cost, **zero gain**) |
-
-The FM latches onto the `@vee-validate/zod` **distractor [S3]** over the primary zod docs [S1] and
-writes JSON-Schema + a hand-rolled octet regex. Three sessions of prompt work never fixed this
-because prompting cannot.
-
-**Latency verdict is BETTER than cont.87c implied:** no-think Bonsai answers in **45.5s**, inside
-the FM answer path's existing 25–60s range. The 4.3 tok/s / 15–19s-per-tool-call figure still
-stands for *agentic loops*, but the *answer* path is not latency-blocked. **Always run no-think**
-(`chat_template_kwargs:{enable_thinking:false}`).
-
-### THE NEXT DECISION (in priority order)
-
-1. **Blocker #1 is now the ONLY thing between this and a real % move — and Bonsai does NOT fix it.**
-   Retrieval fetches the WRONG docs (`executed:false` 4/4 live, [[crucible-execution-verifier]]);
-   code-shaped + lowercase-library prompts bypass grounding entirely. A 27B handed ip-num docs for
-   a zod question still fails. **Fix retrieval/routing next, not the engine.**
-2. **Then wire the sidecar** behind the FM's seam (`llama-server` HTTP, `--jinja`, no-think) and
-   re-run the *live* answer path — the A/B used a frozen fixture, so it proves extraction, NOT the
-   end-to-end pipeline.
-3. Open: tool-calling ACCURACY (BFCL 66.03) is still unmeasured; running Bonsai alongside the
-   Crucible server is unproven (6% system memory free during generation).
-
-**Build preserved at `.crucible/prismml-bin/` (24MB, gitignored) — do NOT rebuild** (`/tmp`
-scratchpads get cleaned; the first build was lost that way). Start:
-`.crucible/prismml-bin/llama-server -m .crucible/models/Bonsai-27B-Q1_0.gguf --jinja -ngl 99 -c 4096 --port 8080`
-
-**Gotchas that each faked a result this session** (all fixed in the harness): Bonsai is a REASONING
-model (`content` empty until thinking completes → text is in `reasoning_content`); undici's 300s
-`headersTimeout` kills non-streaming calls >5min; and the verdict metric must be scored on CODE
-only (prose said `z.ipv4()` while the code said `z.string().ipv4()` — which, verified, genuinely
-works in zod 4.4.3).
-
----
+- Bonsai is a REASONING model: `content` is EMPTY until thinking completes (text → `reasoning_content`).
+- undici's 300s `headersTimeout` kills non-streaming calls >5min ("fetch failed", CLIENT-side).
+- Verdict metrics must be scored on CODE, not prose (`z.ipv4()` in prose while code said
+  `z.string().ipv4()` — which VERIFIED works in zod 4.4.3).
+- `retrieval:live` is NETWORK-FLAKY under CDN congestion (22/27 then 27/27 on identical code).
+- A verifier gaming vector shipped live: `export function ipv4(...)` — naming your own function
+  after the API satisfied "calls a documented API". Definitions are now subtracted from calls.
 
 ## ⏸ PAUSED 2026-07-16 (cont.87 end) — DIRECTION CHANGE: Apple FM → Bonsai 27B
 
