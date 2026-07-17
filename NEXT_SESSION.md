@@ -17,7 +17,74 @@
 
 ---
 
-## CURRENT STATE — last updated cont.88, 2026-07-17, commit `3f59fb8` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.89, 2026-07-17, commit `0dbe991` (REPLACE THIS EVERY SESSION)
+
+**cont.89 fixed BLOCKER #1 and the machine-slowdown problem. Both were misdiagnosed.**
+
+### 1. Blocker #1 — FIXED (`e25640e`). The inherited diagnosis was STALE.
+
+It was never "retrieval fetches the wrong docs". Measured live:
+- **Every open-web SERP is DEAD to a server IP** — DDG → HTTP 202 anti-bot challenge, Bing →
+  HTTP 200 with a 73KB JS/consent shell, zero result markup. `search()` returns 0 → grounding
+  returned null → **the model fabricated**.
+- **`searchCache` had NO TTL and cached EMPTY results**, so one throttled moment poisoned that
+  query for the whole process. That is why the failure never reproduced the same way twice.
+- **`fetchTypeDefs()` had ZERO callers** — the authoritative source was dead code (4th
+  import-live/call-dead instance).
+
+**Fix:** a package's published `.d.ts` IS its API surface. `fetchLibraryApiForQuery` (jsDelivr:
+resolve → listing → parallel fetch) leads evidence as **[S1]**. Deterministic, keyless,
+unthrottled, universal (any npm package, no list). Scoped to the entry point's subtree so zod's
+bundled **v3** types and `/v4/core/` internals can't poison a v4 answer.
+
+**Also fixed a universal passage-selection bug it exposed:** `selectRelevantPassages` weighted
+terms `1/log2(2+f)` (bounded), so four common terms outscored the one window containing `ipv4` —
+the selected evidence came back full of `ZodCUID` with **zero ipv4** while the bench stayed green.
+Now classic window-IDF. **ipv4 x0 → x5** at the same budget.
+
+**PROVEN with search FORCED DEAD** (`CRUCIBLE_FORCE_SEARCH_EMPTY=1`, the normal production case):
+`grounded: true`, source `npmjs.com/package/zod/v/4.4.3`, evidence 1330c with ipv4 x5 including
+the literal ``Use `z.ipv4()` instead.``
+`retrieval:bench` 21/21 · **`retrieval:live` 27/27 (NEW — the only check that proves the lane;
+6i asserts the identifier survives SELECTION, the stage 6e missed)** · `ground:bench` 41/41.
+
+### 2. Machine slowdown — FIXED (`0dbe991`). It is WIRED memory, not CPU.
+
+The box is at ~7.4GB/8GB used *before* anything loads. Metal buffers are **wired**, so `-ngl 99`
+pins 6.6GB and forces everything else to swap → the 435ms UI stalls. Measured, 400 tokens:
+
+| config | wired | worst stall | speed |
+|---|---|---|---|
+| baseline | 1970MB | 10ms | — |
+| `-ngl 99` (all GPU) | 6587MB | **435ms** | ~4.3 tok/s |
+| `taskpolicy -b` | 6344MB | 495ms | **worse** |
+| `-ngl 16` (partial) | 5387MB | 132ms | **worst of both** |
+| **`-ngl 0` (CPU/mmap)** | **1540MB** | **18ms** | ~1.4 tok/s |
+
+`-ngl 0` mmaps the weights = file-backed clean pages the kernel evicts for free. **24x better
+worst case for 3x slower tokens.** `taskpolicy -b` and partial offload are MEASURED FALSE — the
+mode is binary; don't retry them.
+
+**`bonsaiSidecar.ts`**: background mode DEFAULT, `CRUCIBLE_BONSAI_MODE=focus` when you're away,
+**idle-unload after 120s**, serialized requests, no-think default, orphan-proof shutdown.
+Live: wired 1498 → **1502MB** while loaded (+4MB vs +4.6GB); auto-unload verified.
+
+### NEXT, in order
+
+1. **Wire the sidecar into the answer path** — it is built + live-tested but nothing calls
+   `bonsaiComplete()` yet. Do NOT let it become the 5th import-live/call-dead feature. Gate it on
+   the library/extraction case only (where cont.88 proved the FM fails), and keep the FM for the
+   rest.
+2. **Lowercase library gate** — "express middleware…" still bypasses grounding entirely
+   (`namesExternalLibrary` is capitalization-dependent), so the new lane never runs for the way
+   users actually type. Needs a registry-verified async gate; a false positive diverts algorithmic
+   work away from the VGR verifier, so precision matters more than recall.
+3. **Re-measure the % with the new evidence.** The FM on the new clean `.d.ts` went 1/3 copies,
+   0/3 executes (from 0/3, 0/3) — better evidence is NOT sufficient, confirming cont.88.
+
+---
+
+## SUPERSEDED — cont.88 (kept for rationale)
 
 **cont.88 ran the A/B the cont.87 pause asked for. Result: the cont.82 extraction failure is
 MODEL-bound, not prompt-bound — and Bonsai fixes it.**
