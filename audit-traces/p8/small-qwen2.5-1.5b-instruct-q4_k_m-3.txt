@@ -1,0 +1,5 @@
+```javascript
+import { z } from 'zod';
+
+const ipv4Schema = z.ipv4();
+```

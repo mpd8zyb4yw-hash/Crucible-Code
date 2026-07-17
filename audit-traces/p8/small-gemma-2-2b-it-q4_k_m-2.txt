@@ -1,0 +1,9 @@
+```javascript
+import { z } from "zod";
+
+const ipv4Schema = z.string().regex(/^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/).refine((value) => {
+  return value.length === 15;
+});
+
+export default ipv4Schema;
+```

@@ -1,0 +1,9 @@
+```typescript
+import { z } from 'zod';
+
+const ipv4Schema = z.ipv4();
+
+export const validateIPv4 = (value: string) => {
+  return ipv4Schema.safeParse(value);
+};
+```

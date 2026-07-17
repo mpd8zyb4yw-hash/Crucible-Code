@@ -1,0 +1,4 @@
+```javascript
+const ipv4Schema = z.ipv4();
+```
+This Zod schema validates an IPv4 address.

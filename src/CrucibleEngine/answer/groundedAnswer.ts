@@ -25,7 +25,7 @@ import { describeViolations } from '../reasoning/apiFaithfulness'
 import { certifyAnswer } from '../reasoning/executionVerify'
 import { repairUntilFaithful, type RepairMessage } from '../reasoning/faithfulRepair'
 import { isMiniCpmAvailable, miniCpmComplete } from '../agent/miniCpmHarness'
-import { bonsaiComplete, isBonsaiInstalled } from '../localModels/bonsaiSidecar'
+import { bonsaiComplete, isBonsaiInstalled, repairModelName } from '../localModels/bonsaiSidecar'
 
 export interface GroundedResult {
   text: string
@@ -604,7 +604,7 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
       const altReady = MINICPM_REPAIR_MS > 0 && await isMiniCpmAvailable()
       if (altReady) emit?.({ type: 'thought', text: 'Bringing in a second on-device model (MiniCPM) to cross-check the repair…' })
 
-      if (bonsaiReady) emit?.({ type: 'thought', text: 'The docs disagree with the draft — bringing in the 27B local model to rewrite it against the real API. Slower, but it actually reads the docs…' })
+      if (bonsaiReady) emit?.({ type: 'thought', text: `The docs disagree with the draft — bringing in ${repairModelName()} to rewrite it against the real API…` })
 
       const fmFn = (m: RepairMessage[], sig?: AbortSignal) =>
         fmComplete(m as typeof msgs, { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal: sig })
@@ -613,9 +613,19 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
       const bonsaiFn = (m: RepairMessage[], sig?: AbortSignal) =>
         bonsaiComplete(m, { maxTokens: 700, timeoutMs: Math.min(BONSAI_REPAIR_MS, Math.max(1, repairLeft())), signal: sig })
 
+      // Bonsai reads its prompt at ~6.6 tok/s in background mode, so every token of padding is
+      // ~150ms of latency. MEASURED: the full 1550-token repair prompt cost 190s to READ — 68%
+      // of a 278s repair, before generating anything. Same question, same evidence, same hint;
+      // just none of the prose scaffolding that exists to shape a 250-word answer for a user.
+      const compactMsgs: RepairMessage[] = [
+        { role: 'system', content: 'You are a precise coding assistant. Use ONLY APIs that appear in the EVIDENCE. Answer with one short code block and at most one sentence.' },
+        { role: 'user', content: `Question: ${message}\n\n## EVIDENCE\n${ev.block}` },
+      ]
+
       const rep = await repairUntilFaithful(
         {
           draft: text, evidence: ev.block, goal: message, baseMsgs: msgs,
+          baseMsgsFor: src => (src === repairModelName() ? compactMsgs : null),
           // Bonsai LEADS when installed — it is the only engine measured to copy an identifier
           // out of clean evidence (3/3 vs the FM's 0/3), and the FM's repair attempts on this
           // exact failure class are measured NON-recovery, so opening with the FM would spend
@@ -627,7 +637,7 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
             : altReady
               ? (m, sig) => miniCpmComplete(m, sig, { maxTokens: 1100, timeoutMs: Math.min(MINICPM_REPAIR_MS, repairLeft()) })
               : undefined,
-          primaryName: bonsaiReady ? 'bonsai' : 'afm',
+          primaryName: bonsaiReady ? repairModelName() : 'afm',
           altName: bonsaiReady ? 'afm' : 'minicpm',
         },
         {

@@ -1,0 +1,7 @@
+```javascript
+import { z } from "zod";
+
+const ipv4Schema = z.string().ipv4();
+
+export default ipv4Schema;
+```

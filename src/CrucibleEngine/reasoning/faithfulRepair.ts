@@ -80,6 +80,22 @@ export interface FaithfulRepairInput {
   goal: string
   /** Base conversation (system + history + question/evidence) each repair re-synthesizes from. */
   baseMsgs: RepairMessage[]
+  /**
+   * Per-engine override of `baseMsgs`, keyed by the proposer's name. Return null to use
+   * `baseMsgs` unchanged.
+   *
+   * WHY THIS EXISTS — engines have wildly different COST PROFILES, and the prompt is the bill.
+   * MEASURED (cont.89) on Bonsai-27B in background mode: prompt processing runs at ~6.6 tok/s,
+   * so the ~1550-token repair prompt (full system + full evidence + the draft + the hint) cost
+   * **190 seconds to READ** before a single token was generated — 68% of a 278s repair. The FM
+   * reads the same prompt in about a second.
+   *
+   * This is NOT for handicapping an engine or changing the task (that would make `proposedBy`
+   * attribution meaningless — see the rotation note in the header). The QUESTION, the EVIDENCE
+   * and the escalating hint must all still be present. It exists so a slow-prefill engine can be
+   * given the same information without the padding it cannot afford to read.
+   */
+  baseMsgsFor?: (source: string) => RepairMessage[] | null
   /** The primary generator (the Apple FM, live). */
   complete: CompleteFn
   /**
@@ -160,6 +176,37 @@ const verdictOf = (a: Attempt<string>, evidence: string) => certifyAnswer(a.cand
  * Proposer: candidate 0 is the draft (free), thereafter re-synthesis carrying every prior
  * rejection. Exported so the bench can assert the escalation without a model.
  */
+/**
+ * Re-synthesize CLEAN, with the rejection expressed as a forward CONSTRAINT — never by showing
+ * the model the answer we are rejecting.
+ *
+ * THIS IS THE FIX FOR "detection works, recovery does not" (cont.83/84/86, three sessions of it).
+ * The loop used to prompt `[...base, {assistant: <the fabrication>}, {user: "that was wrong,
+ * fix it"}]`. MEASURED cont.89 on qwen2.5-1.5b, same evidence, N=3 each:
+ *
+ *   A  clean, no hint                          3/3 correct   0.6s
+ *   B  fabrication in context + hint (OLD)     0/3 correct   6.0s   <-- the architecture
+ *   C  clean + constraint, no draft (THIS)     3/3 correct   0.7s
+ *
+ * The model IMITATES the fabrication sitting in its context — in-context pattern-matching beats
+ * the instruction telling it not to. So the repair prompt was manufacturing the very failure it
+ * existed to fix, and it did so regardless of engine: this is exactly the shape in which the FM
+ * "re-fabricated a name the hint had just rejected". Nothing about the draft is load-bearing —
+ * the hint already names every rejected identifier — so it is simply not shown.
+ *
+ * The constraint is appended to the final USER turn rather than added as a new message: two
+ * consecutive user turns render unpredictably across chat templates.
+ */
+function withConstraints(base: RepairMessage[], hint: string): RepairMessage[] {
+  const out = base.map(m => ({ ...m }))
+  const block = `\n\n## CONSTRAINTS (a previous attempt was rejected — do not repeat it)\n${hint}`
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i].role === 'user') { out[i].content += block; return out }
+  }
+  out.push({ role: 'user', content: block.trim() })
+  return out
+}
+
 export function makeRepairProposer(input: FaithfulRepairInput, opts: FaithfulRepairOpts = {}): Proposer<string> {
   const primaryName = input.primaryName ?? 'afm'
   const altName = input.altName ?? 'minicpm'
@@ -199,11 +246,8 @@ export function makeRepairProposer(input: FaithfulRepairInput, opts: FaithfulRep
 
     let raw = ''
     try {
-      raw = (await complete([
-        ...input.baseMsgs,
-        { role: 'assistant', content: latest.candidate.value },
-        { role: 'user', content: hint },
-      ], signal)).trim()
+      const base = input.baseMsgsFor?.(source) ?? input.baseMsgs
+      raw = (await complete(withConstraints(base, hint), signal)).trim()
     } catch { return null }
     if (raw.length < 20) return null
     return { value: raw, fingerprint: fingerprintCode(raw), source }

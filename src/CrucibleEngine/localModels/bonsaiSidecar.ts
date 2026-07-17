@@ -46,9 +46,59 @@ export type BonsaiMode = 'background' | 'focus'
 // the server and the npm scripts — run from the repo root.
 const ROOT = process.env.CRUCIBLE_ROOT || process.cwd()
 const BIN = process.env.CRUCIBLE_BONSAI_BIN || join(ROOT, '.crucible', 'prismml-bin', 'llama-server')
-const MODEL = process.env.CRUCIBLE_BONSAI_MODEL || join(ROOT, '.crucible', 'models', 'Bonsai-27B-Q1_0.gguf')
 const PORT = Number(process.env.CRUCIBLE_BONSAI_PORT || 8080)
 const BASE = `http://127.0.0.1:${PORT}`
+
+/**
+ * THE REPAIR SEAT GOES TO THE FASTEST MODEL THAT CAN ACTUALLY DO THE JOB — measured, not assumed.
+ *
+ * cont.88 proved the Apple FM cannot copy an identifier out of clean evidence (0/3) while
+ * Bonsai-27B can (3/3), and the obvious-but-wrong conclusion was "we need the 27B". cont.89 tested
+ * the MIDDLE of the range that A/B skipped, same fixture, same prompt, EXECUTING oracle:
+ *
+ *   model              size     copies z.ipv4   EXECUTES   speed
+ *   qwen2.5-1.5b       1.1 GB       3/3           3/3      30.4 tok/s
+ *   phi-3.5-mini       2.4 GB       3/3           3/3       8.7 tok/s
+ *   Bonsai-27B Q1_0    3.8 GB       3/3           3/3       2.5 tok/s
+ *   gemma-2-2b         1.7 GB       1/3           2/3      11.0 tok/s
+ *
+ * A 1.5B does it as well as the 27B, **12x faster and 3.5x smaller**. So the FM's failure was
+ * never about parameter count — it is that specific model. Putting a 27B on the interactive path
+ * would have cost ~150s per repair and 3.8GB of an 8GB machine to buy exactly nothing.
+ *
+ * Order below is "cheapest proven engine first". Bonsai stays as a fallback because it IS proven,
+ * and because a harder task than identifier-copying may yet need it — but it is no longer the
+ * default, and nothing should put it on an interactive path without measuring first.
+ */
+const REPAIR_MODELS = [
+  'qwen2.5-1.5b-instruct-q4_k_m.gguf',   // 3/3 executes @ 30.4 tok/s — the seat
+  'phi-3.5-mini-instruct-q4_k_m.gguf',   // 3/3 executes @ 8.7 tok/s
+  'Bonsai-27B-Q1_0.gguf',                // 3/3 executes @ 2.5 tok/s — proven, but slow and big
+]
+
+function resolveModel(): string {
+  const override = process.env.CRUCIBLE_BONSAI_MODEL
+  if (override) return override
+  for (const name of REPAIR_MODELS) {
+    const p = join(ROOT, '.crucible', 'models', name)
+    if (existsSync(p)) return p
+  }
+  return join(ROOT, '.crucible', 'models', REPAIR_MODELS[0])
+}
+
+const MODEL = resolveModel()
+/** A 27B needs the wired-memory dance below; a 1.5B does not. */
+const IS_BIG = /bonsai/i.test(MODEL)
+
+/**
+ * The seated model's short name, for telemetry and for the user-facing "bringing in X" line.
+ * Derived from the resolved path — never hardcoded: the seat said "bonsai" while actually
+ * running qwen2.5-1.5b, which is exactly the kind of quiet lie that makes a trace unreadable.
+ */
+export function repairModelName(): string {
+  const base = MODEL.split('/').pop() ?? MODEL
+  return base.replace(/\.gguf$/i, '').replace(/-instruct.*$/i, '').replace(/-Q\d.*$/i, '').toLowerCase()
+}
 
 /** Unload after this long with no requests — the single biggest courtesy to an 8GB machine. */
 const IDLE_UNLOAD_MS = Number(process.env.CRUCIBLE_BONSAI_IDLE_MS || 120_000)
@@ -70,6 +120,10 @@ function argsFor(m: BonsaiMode): string[] {
   // machine) t4 and t6 converge (2.55 vs 2.62 tok/s) while t6 doubles the worst stall
   // (25ms → 45ms). Taking every core buys ~nothing and costs responsiveness, which is the
   // entire point of background mode.
+  // A SMALL model does not need the wired-memory tradeoff at all: qwen2.5-1.5b is ~1.1GB, so
+  // GPU offload costs little wired memory and buys real speed. The -ngl 0 rule exists because
+  // a 27B pins 6.6GB of an 8GB machine — that reasoning does not transfer to a 1.5B.
+  if (!IS_BIG) return [...common, '-ngl', '99', '-c', '4096']
   return m === 'focus'
     ? [...common, '-ngl', '99', '-c', '4096']
     : [...common, '-ngl', '0', '-c', '2048', '-t', '4']
