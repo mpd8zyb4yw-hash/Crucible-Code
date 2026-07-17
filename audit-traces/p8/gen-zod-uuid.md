@@ -1,7 +1,7 @@
 ```typescript
 import { guid } from 'zod';
 
-const uuidSchema = guid();
+const uuidString = guid();
 ```
 
 ---

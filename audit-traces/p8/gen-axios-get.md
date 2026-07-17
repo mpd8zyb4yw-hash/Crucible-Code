@@ -1,7 +1,15 @@
 ```javascript
 import axios from 'axios';
 
-axios.get('https://www.example.com');
+const url = 'https://www.example.com/data';
+
+axios.get(url)
+  .then(response => {
+    console.log('Success:', response.data);
+  })
+  .catch(error => {
+    console.error('Error:', error);
+  });
 ```
 
 ---

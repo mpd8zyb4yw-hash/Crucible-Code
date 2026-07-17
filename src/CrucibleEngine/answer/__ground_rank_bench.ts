@@ -211,6 +211,23 @@ console.log('\n== query-relevance windowing ==')
   check('queryTerms drops stopwords, keeps content tokens',
     queryTerms('what is the exact method to validate an IPv4 address').includes('ipv4') &&
     !queryTerms('what is the exact method to validate an IPv4 address').includes('the'))
+
+  // DEPRECATED declarations are down-weighted (cont.89). A .d.ts often documents the API twice —
+  // a live top-level function and a `@deprecated` method note pointing at it. MEASURED on zod's
+  // email surface: the passage filled with `@deprecated Use z.email() instead` and taught the
+  // model the deprecated method, which then shipped. A window carrying the query term behind
+  // `@deprecated` must lose to an equal window without it, so the live API wins evidence space.
+  const dep = '@deprecated use the new email api. email() old note. '.repeat(12)
+  const live = 'export declare function email(params) { return validator }. '.repeat(12)
+  const both = dep + 'PADDING. '.repeat(200) + live
+  const selDep = selectRelevantPassages(both, 'email validator', 600)
+  check('live API window is preferred over an equal @deprecated one',
+    selDep.includes('export declare function email'), JSON.stringify(selDep.slice(0, 80)))
+  // But not EXCLUDED: a deprecated window still beats an off-topic one (z.string().ipv4() is
+  // deprecated yet works), so deprecated-but-relevant must still be selected when it's all there is.
+  const onlyDep = '@deprecated email() note here. '.repeat(8) + 'UNRELATED. '.repeat(200)
+  check('a deprecated-but-relevant window is still selected when it is the only match',
+    selectRelevantPassages(onlyDep, 'email', 300).includes('email'))
 }
 
 

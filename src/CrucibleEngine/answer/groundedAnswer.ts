@@ -203,6 +203,14 @@ export function selectRelevantPassages(text: string, query: string, budget: numb
   for (let i = 0; i < nWin; i++) {
     let score = 0
     for (const t of terms) if (windows[i].includes(t)) score += weight(t)
+    // DOWN-WEIGHT DEPRECATED declarations. MEASURED cont.89 on zod's .d.ts for "email": the
+    // passage filled with `@deprecated Use z.email() instead` method notes and ZodCUID
+    // deprecation prose, so the model was TAUGHT the deprecated surface and kept reaching for it.
+    // A deprecated API is the one thing the docs are actively steering AWAY from — it is the
+    // opposite of what the answer should call. Halved, not excluded: `z.string().ipv4()` is
+    // deprecated yet works, so a deprecated window is still better than an off-topic one; it just
+    // must not outrank the live API when both are present. Universal (any package's @deprecated).
+    if (/@deprecated/.test(windows[i])) score *= 0.5
     scored.push({ i, score })
   }
   if (scored.every(s => s.score === 0)) return text.slice(0, budget)

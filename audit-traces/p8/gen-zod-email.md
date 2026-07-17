@@ -1,17 +1,7 @@
-```json
-{
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Email Validation Schema",
-  "type": "object",
-  "properties": {
-    "email": {
-      "type": "string",
-      "pattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
-      "description": "A valid email address"
-    }
-  },
-  "required": ["email"]
-}
+```typescript
+import { email } from 'zod';
+
+const emailSchema = email();
 ```
 
 ---
