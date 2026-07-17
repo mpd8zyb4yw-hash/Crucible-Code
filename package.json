@@ -57,6 +57,7 @@
     "vgr:iterate": "tsx src/CrucibleEngine/reasoning/__iterate_bench.ts",
     "vgr:coderesearch": "tsx src/CrucibleEngine/reasoning/__code_research_bench.ts",
     "retrieval:bench": "tsx src/CrucibleEngine/retrieval/__retrieval_bench.ts",
+    "retrieval:live": "CRUCIBLE_BENCH_LIVE=1 tsx src/CrucibleEngine/retrieval/__retrieval_bench.ts",
     "localpool:bench": "tsx src/CrucibleEngine/agent/__localModelPool_bench.ts",
     "fmreact:bench": "tsx src/CrucibleEngine/agent/__fmReact_bench.ts",
     "convo:coherence": "tsx __convo_coherence_bench.ts",

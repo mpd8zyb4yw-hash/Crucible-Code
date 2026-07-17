@@ -17,6 +17,7 @@
 import https from 'https'
 import http from 'http'
 import type { RouterTask } from '../router/capabilityRouter'
+import { debugBus } from '../debug/bus'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -53,8 +54,18 @@ export interface RetrievalBundle {
 // (common: the same package's d.ts referenced by several DAG nodes) hit memory.
 
 const pageCache = new Map<string, string>()
-const searchCache = new Map<string, SearchResult[]>()
+// A search result is cached with a TTL and ONLY when non-empty. Both properties are
+// load-bearing (audit cont.89):
+//   - This was a plain Map with no TTL, so a cached entry lived for the whole PROCESS.
+//   - It cached EMPTY results unconditionally (`searchCache.set(key, results)`).
+// Open-web SERP backends return a 202 anti-bot challenge / JS shell on burst, which parses
+// to zero results. One throttled moment therefore poisoned that query FOREVER on a
+// long-running server: grounding returned null and the answer path fabricated, silently.
+// An empty search is cheap to retry and catastrophic to cache — so we never cache one.
+const SEARCH_TTL_MS = 10 * 60_000
+const searchCache = new Map<string, { at: number; results: SearchResult[] }>()
 const typeDefCache = new Map<string, string>()
+const libraryApiCache = new Map<string, LibraryApiDocs | null>()
 
 /** Clear all caches (test isolation / long-running sessions). */
 export function clearCache(): void {
@@ -248,9 +259,13 @@ function isPackageQuery(q: string): boolean {
 }
 
 export async function search(query: string): Promise<SearchResult[]> {
+  // Fault injection: SERP backends are blocked to a server IP most of the time (DDG → 202
+  // challenge, Bing → JS shell), so "search returned nothing" is the COMMON case, not an edge
+  // one. This seam makes that case reproducible on demand instead of waiting to be throttled.
+  if (process.env.CRUCIBLE_FORCE_SEARCH_EMPTY) return []
   const key = query.trim().toLowerCase()
   const cached = searchCache.get(key)
-  if (cached) return cached
+  if (cached && Date.now() - cached.at < SEARCH_TTL_MS) return cached.results
 
   const coding = isCodingQuery(query)
   let results: SearchResult[] = []
@@ -289,7 +304,11 @@ export async function search(query: string): Promise<SearchResult[]> {
   }
 
   results = relevanceGate(results, query)
-  searchCache.set(key, results)
+  // NEVER cache an empty result — see SEARCH_TTL_MS above. Zero results almost always means
+  // "every backend was blocked/throttled", not "the web has no answer"; caching that turns a
+  // transient failure into a permanent one.
+  if (results.length > 0) searchCache.set(key, { at: Date.now(), results })
+  else debugBus.emit('pipeline', 'search_all_backends_empty', { query: query.slice(0, 80) }, { severity: 'warn' })
   return results
 }
 
@@ -745,6 +764,208 @@ export async function fetchTypeDefs(pkg: string): Promise<string> {
   } catch { dts = '' }
   typeDefCache.set(pkg, dts)
   return dts
+}
+
+// ── Capability: authoritative library API surface (blocker #1 fix, cont.89) ──────
+//
+// THE PROBLEM this solves. Grounding a LIBRARY question on web search is a gamble we lose:
+// measured live, every open-web SERP backend is dead to a server IP (DDG → HTTP 202 anti-bot
+// challenge, Bing → HTTP 200 with a JS/consent shell containing zero result markup), so
+// `search()` returns 0 results and the answer path falls back to fabrication. When a SERP
+// does answer, its ranking drifts between sessions — which is why the "retrieval fetches the
+// wrong docs" diagnosis kept changing shape and never reproduced twice the same way.
+//
+// THE FIX. A package's own published type definitions ARE its API surface — the same fact the
+// question is asking about, from the registry rather than a search engine. That makes it:
+//   - deterministic (a version-pinned file, not a ranked guess)
+//   - authoritative (`z.ipv4()` is IN zod's .d.ts; no SERP needed to discover it)
+//   - keyless and unthrottled (jsDelivr/unpkg CDN, not a scraped SERP)
+//   - UNIVERSAL — works for ANY npm package. No package list, no per-library mapping, so it
+//     cannot rot on the next release (the no-templates rule).
+//
+// WHY reachable-from-entry, not just largest-file: zod ships its OLD v3 API alongside v4
+// (`/v3/types.d.ts`, 52KB — the 2nd largest .d.ts in the package). Ranking purely by size
+// pulls v3 types into evidence for a v4 question and teaches the model a deprecated API —
+// evidence poisoning that would look exactly like a model failure. So we read the declared
+// entry point, take the subtree it actually imports from, and rank within that.
+
+export interface LibraryApiDocs {
+  pkg: string
+  version: string
+  url: string
+  title: string
+  text: string
+  files: string[]
+}
+
+const JSDELIVR_DATA = 'https://data.jsdelivr.com/v1/packages/npm'
+const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm'
+
+/** Flatten a jsDelivr file tree into `{path, size}`, paths rooted at `/`. */
+function flattenJsDelivr(nodes: any[], prefix = ''): Array<{ path: string; size: number }> {
+  const out: Array<{ path: string; size: number }> = []
+  for (const f of nodes ?? []) {
+    const p = `${prefix}/${f.name}`
+    if (f.type === 'directory') out.push(...flattenJsDelivr(f.files, p))
+    else out.push({ path: p, size: f.size ?? 0 })
+  }
+  return out
+}
+
+/**
+ * Extract candidate package names from a query using STRUCTURAL signals only — the same
+ * grammar `namesExternalLibrary` uses to decide a lookup is needed at all. No name list.
+ * Candidates are verified against the registry by `fetchLibraryApiDocs` (a real 200 from the
+ * CDN is the ground truth that a token is a package), so over-generating here is safe.
+ */
+export function extractPackageCandidates(q: string): string[] {
+  const msg = q ?? ''
+  const out: string[] = []
+  const push = (s: string | undefined | null) => {
+    const v = (s ?? '').trim().replace(/^['"`]|['"`]$/g, '')
+    if (v && v.length >= 2 && !LANGUAGE_NAMES.has(v.toLowerCase()) && !out.includes(v)) out.push(v)
+  }
+  // 1. quoted module specifier: import { z } from 'zod'  /  require("express")
+  for (const m of msg.matchAll(/(?:import|require|from)\s*\(?\s*['"`]([\w@/.-]+)['"`]/g)) {
+    push(m[1].startsWith('@') ? m[1].split('/').slice(0, 2).join('/') : m[1].split('/')[0])
+  }
+  // 2. explicit package noun: "the zod library", "npm package express"
+  for (const m of msg.matchAll(/\b(?:npm|pypi|pip)?\s*(?:packages?|librar(?:y|ies)|modules?|frameworks?)\s+(?:called\s+|named\s+)?([\w@/.-]{2,})/gi)) push(m[1])
+  for (const m of msg.matchAll(/\b(?:the\s+)?([\w@/.-]{2,})\s+(?:packages?|librar(?:y|ies)|modules?|frameworks?)\b/gi)) push(m[1])
+  // 3. capitalized proper-noun tokens (same rule as namesExternalLibrary #4), lowercased —
+  //    "Zod" → zod. Sentence-initial tokens are held back to LAST rather than dropped: in
+  //    "Write a Zod schema…", "Write" is only capitalized because it starts the sentence, and
+  //    trying it first cost ~4s of dead registry lookups (npm really does publish a `write`
+  //    package). But "Zod schema for an IP" legitimately starts with the library name, so it
+  //    stays a candidate — just a last-resort one.
+  const tokens = msg.match(/\S+/g) ?? []
+  const initial: string[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const bare = tokens[i].replace(/[^\w@/+#.-]/g, '')
+    if (!bare || bare.length < 2 || !/^[A-Z]/.test(bare)) continue
+    if (/^[A-Z0-9+#.-]+$/.test(bare) && bare.length <= 5) continue  // acronyms
+    if (/\d/.test(bare)) continue                                    // IPv4/SHA256 = standards
+    if (i === 0) initial.push(bare.toLowerCase())
+    else push(bare.toLowerCase())
+  }
+  initial.forEach(push)
+  return out.slice(0, 4)
+}
+
+/**
+ * Fetch a package's real API surface from the registry CDN. Returns null when `pkg` is not a
+ * published package (the registry 404 IS the verification) or ships no type definitions.
+ */
+export async function fetchLibraryApiDocs(pkg: string, budgetChars = 60_000): Promise<LibraryApiDocs | null> {
+  const cacheKey = `${pkg}:${budgetChars}`
+  const hit = libraryApiCache.get(cacheKey)
+  if (hit !== undefined) return hit
+  const miss = (): null => { libraryApiCache.set(cacheKey, null); return null }
+  if (!/^(@[\w.-]+\/)?[\w.-]+$/.test(pkg)) return miss()
+  try {
+    // 1. Resolve the current version — pins every later URL to one immutable snapshot.
+    const resolved = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}/resolved`, 6000))
+    const version: string = resolved?.version
+    if (!version) return miss()
+    // 2. Full file listing (one request, with sizes — no crawling to discover them).
+    const listing = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}@${version}`, 8000))
+    const all = flattenJsDelivr(listing?.files)
+    let dts = all.filter(f => /\.d\.(ts|cts|mts)$/.test(f.path))
+    if (!dts.length) return miss()
+    // 3. Follow the declared entry point to the subtree it actually re-exports, and keep only
+    //    that. Two distinct hazards this defuses, both measured on zod:
+    //      - zod ships its OLD v3 API alongside v4 (`/v3/types.d.ts`, the 2nd-largest .d.ts).
+    //        Size-ranking alone pulls v3 into evidence for a v4 question.
+    //      - zod's PUBLIC surface is `/v4/classic/` while `/v4/core/` holds bigger internal
+    //        types ($ZodIPv4Def, $ZodIPv4Internals). Ranking on size alone grounds the model
+    //        on internals and invites `$ZodIPv4` instead of `z.ipv4()`.
+    //    So prefer the entry's exact directory, widening only if it yields nothing.
+    const roots: string[] = []
+    try {
+      const meta = JSON.parse(await rawGet(`${JSDELIVR_CDN}/${pkg}@${version}/package.json`, 6000))
+      const entry: string | undefined = meta?.types || meta?.typings || meta?.exports?.['.']?.types
+      if (entry) {
+        const entryPath = '/' + entry.replace(/^\.\//, '')
+        const entryText = await rawGet(`${JSDELIVR_CDN}/${pkg}@${version}${entryPath}`, 6000).catch(() => '')
+        const rel = entryText.match(/from\s*['"]\.\/([\w.\-/]+)['"]/)
+        if (rel) {
+          const segs = rel[1].split('/').slice(0, -1)          // drop the filename
+          for (let i = segs.length; i > 0; i--) roots.push(`/${segs.slice(0, i).join('/')}/`)  // narrow → wide
+        }
+      }
+    } catch { /* no entry info — fall through to whole-package ranking */ }
+    for (const root of roots) {
+      const scoped = dts.filter(f => f.path.startsWith(root))
+      if (scoped.length) { dts = scoped; break }
+    }
+    // 4. Drop `.d.cts`/`.d.mts` twins of a `.d.ts` — byte-identical declarations under a second
+    //    module format. Keeping both spent the whole budget printing the same file twice.
+    const stem = (p: string) => p.replace(/\.d\.(ts|cts|mts)$/, '')
+    const haveTs = new Set(dts.filter(f => /\.d\.ts$/.test(f.path)).map(f => stem(f.path)))
+    dts = dts.filter(f => /\.d\.ts$/.test(f.path) || !haveTs.has(stem(f.path)))
+    // 5. Largest-first: the biggest declaration files carry the API surface; tiny barrels are
+    //    just re-exports. Bounded by budget so evidence assembly stays fast.
+    dts.sort((a, b) => b.size - a.size)
+    // Fetch the top files in PARALLEL. Sequentially these cost ~1.1s of round-trips against a
+    // ~14s grounding budget, and the CDN serves them concurrently for ~0.24s.
+    const picked = dts.slice(0, 3)
+    const bodies = await Promise.all(
+      picked.map(f => rawGet(`${JSDELIVR_CDN}/${pkg}@${version}${f.path}`, 8000).catch(() => '')),
+    )
+    const parts: string[] = []
+    const files: string[] = []
+    let total = 0
+    for (let i = 0; i < picked.length; i++) {
+      if (total >= budgetChars) break
+      const text = bodies[i]
+      if (text.length < 40) continue
+      const slice = text.slice(0, Math.max(0, budgetChars - total))
+      parts.push(`// ${pkg}@${version}${picked[i].path}\n${slice}`)
+      files.push(picked[i].path)
+      total += slice.length
+    }
+    if (!parts.length) return miss()
+    const docs: LibraryApiDocs = {
+      pkg, version,
+      url: `https://www.npmjs.com/package/${pkg}/v/${version}`,
+      title: `${pkg}@${version} — published type definitions (authoritative API surface)`,
+      text: parts.join('\n\n'),
+      files,
+    }
+    libraryApiCache.set(cacheKey, docs)
+    return docs
+  } catch { return miss() }
+}
+
+/**
+ * Resolve the first query-named package that actually exists and publishes types.
+ * Falls back to DefinitelyTyped: react/express/lodash bundle NO types of their own — the API
+ * surface lives in `@types/<pkg>` — so without this the whole lane misses the most common
+ * packages in the ecosystem (measured: `fetchLibraryApiDocs('react')` → null).
+ */
+export async function fetchLibraryApiForQuery(
+  query: string, budgetChars = 60_000, deadlineMs = 10_000,
+): Promise<LibraryApiDocs | null> {
+  // A hard wall-clock deadline. This lane is an ENHANCEMENT to grounding, never a stall: the
+  // CDN is normally ~1s, but a congested moment measured 43s — long enough to eat the whole
+  // grounding budget and leave the answer with nothing. Losing the lane costs one weaker
+  // answer; blocking on it costs the answer entirely.
+  const started = Date.now()
+  const left = () => deadlineMs - (Date.now() - started)
+  for (const cand of extractPackageCandidates(query)) {
+    if (left() <= 0) break
+    const race = async (p: string): Promise<LibraryApiDocs | null> => Promise.race([
+      fetchLibraryApiDocs(p, budgetChars),
+      new Promise<null>(r => setTimeout(() => r(null), Math.max(0, left()))),
+    ])
+    const own = await race(cand)
+    if (own) return own
+    if (left() <= 0) break
+    const scoped = cand.startsWith('@') ? cand.slice(1).replace('/', '__') : cand
+    const dt = await race(`@types/${scoped}`)
+    if (dt) return { ...dt, pkg: cand, title: `${cand} — @types/${scoped}@${dt.version} type definitions (authoritative API surface)` }
+  }
+  return null
 }
 
 // ── Pre-processing: relevance ranking ────────────────────────────────────────────

@@ -15,7 +15,8 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { RouterTask } from '../router/capabilityRouter'
-import { snippetQuality, selectBestSnippet, stripBoilerplate, extractCodeBlocks, type CodeBlock } from './retrievalLayer'
+import { selectRelevantPassages } from '../answer/groundedAnswer'
+import { snippetQuality, selectBestSnippet, stripBoilerplate, extractCodeBlocks, extractPackageCandidates, fetchLibraryApiForQuery, fetchLibraryApiDocs, type CodeBlock } from './retrievalLayer'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -99,6 +100,46 @@ async function main() {
   const codeOut = extractCodeBlocks(codeHtml)
   check('5h code extraction is byte-identical (no boundary markers leak into code)',
     codeOut[0]?.code === 'const s = z.ipv4(); const t = a || b;', JSON.stringify(codeOut[0]?.code))
+
+  // ── 6. Library API surface — the blocker-#1 lane (cont.89) ────────────────────
+  // These assert the lane ACTUALLY OPENS and returns the identifier the model kept
+  // fabricating. A green bench that never proves the evidence contains `ipv4` would be
+  // exactly the "bench doesn't test the thing" failure this project keeps paying for.
+
+  // 6a candidate ORDER: a sentence-initial capital ("Write") is a grammatical accident, not a
+  // library. It must not be tried before the real package (it cost ~4s of dead lookups).
+  const cands = extractPackageCandidates('Write a Zod schema that validates an IPv4 address')
+  check('6a real package outranks sentence-initial capital', cands.indexOf('zod') === 0, JSON.stringify(cands))
+  check('6b IPv4 is not treated as a package (digit rule)', !cands.includes('ipv4'), JSON.stringify(cands))
+  check('6c quoted import specifier is a candidate',
+    extractPackageCandidates(`import { z } from 'zod'`).includes('zod'), '')
+
+  // The live half is OPT-IN (`npm run retrieval:live`) so this bench keeps its no-network
+  // contract. It is the only check that proves the lane actually delivers — run it after any
+  // change here, and never cite this bench as evidence the lane works without it.
+  if (!process.env.CRUCIBLE_BENCH_LIVE) {
+    console.log('  (6d-6h live library-API checks SKIPPED — run `npm run retrieval:live` to prove the lane)')
+  } else {
+    const api = await fetchLibraryApiForQuery('Write a Zod schema that validates an IPv4 address')
+    check('6d library API lane resolves the named package', api?.pkg === 'zod', String(api?.pkg))
+    // THE load-bearing assertion: the evidence contains the identifier the FM could not produce.
+    check('6e evidence contains the real identifier (z.ipv4 surface)', !!api && /\bipv4\b/i.test(api.text), '')
+    // zod bundles its OLD v3 API (/v3/types.d.ts is the 2nd-largest .d.ts). Grounding on it
+    // would teach a deprecated surface — a false-evidence failure that reads as a model bug.
+    check('6f superseded v3 types are not pulled in', !!api && !api.files.some(f => f.startsWith('/v3/')), JSON.stringify(api?.files))
+    // Prefer the PUBLIC surface (/v4/classic) over bigger internal types (/v4/core/$ZodIPv4Def).
+    check('6g public API surface preferred over internals', !!api && api.files.some(f => f.includes('/classic/')), JSON.stringify(api?.files))
+    check('6h a non-existent package resolves to null (registry IS the verification)',
+      (await fetchLibraryApiDocs('definitely-not-a-real-pkg-xyz-9q')) === null, '')
+
+    // 6i THE STAGE THAT LIED. 6e passes on api.text — the raw 53KB .d.ts — but the model only
+    // ever sees what selectRelevantPassages keeps. Measured: the selector returned a passage
+    // full of ZodCUID with ZERO ipv4, so the evidence block silently lost the identifier while
+    // this bench stayed green. Assert the SELECTED passage, at the real per-source budget.
+    const sel = selectRelevantPassages(api?.text ?? '', 'Write a Zod schema that validates an IPv4 address', 1200)
+    check('6i identifier SURVIVES passage selection at the real budget', /\bipv4\b/i.test(sel),
+      `selected ${sel.length}c, ipv4 x${(sel.match(/ipv4/gi) ?? []).length}`)
+  }
 
   console.log(`\n${pass}/${pass + fail} passed\n`)
   if (fail > 0) process.exit(1)

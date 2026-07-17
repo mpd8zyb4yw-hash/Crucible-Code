@@ -13,7 +13,10 @@
 // the web yields nothing usable, so the caller falls back to a parametric draft — grounding
 // only ever makes an answer better or is transparently skipped, never worse.
 
-import { search, fetch as fetchPage, stripBoilerplate, type SearchResult } from '../retrieval/retrievalLayer'
+import {
+  search, fetch as fetchPage, stripBoilerplate, namesExternalLibrary,
+  fetchLibraryApiForQuery, type SearchResult, type LibraryApiDocs,
+} from '../retrieval/retrievalLayer'
 import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { debugBus } from '../debug/bus'
 import { describeViolations } from '../reasoning/apiFaithfulness'
@@ -148,22 +151,28 @@ export function selectRelevantPassages(text: string, query: string, budget: numb
   const lower = text.toLowerCase()
   const nWin = Math.ceil(text.length / WIN)
 
-  // Per-term page frequency → rare terms (e.g. "ipv4") outweigh common ones (e.g. "zod").
-  const freq = new Map<string, number>()
-  for (const t of terms) {
-    const m = lower.split(t).length - 1
-    freq.set(t, m)
-  }
+  // Window-level IDF: weight a term by how FEW windows contain it. The rare term is the whole
+  // point of the query ("ipv4"), and the common ones ("schema", "zod", "validate") are noise
+  // that appears on nearly every window of a library's docs.
+  //
+  // The previous weight — 1/log2(2+occurrences) — was bounded in (0,1], so a rare term only
+  // outweighed a common one ~4x and a window stacking FOUR common terms beat the one window
+  // that actually contained the answer. Measured on zod's 53KB .d.ts: the selected passage came
+  // back full of ZodCUID with ZERO mentions of ipv4, silently dropping the identifier from the
+  // evidence. Classic IDF is unbounded as df→0, so a window holding the rare term always wins.
+  const windows: string[] = []
+  for (let i = 0; i < nWin; i++) windows.push(lower.slice(i * WIN, i * WIN + WIN))
+  const df = new Map<string, number>()
+  for (const t of terms) df.set(t, windows.reduce((n, w) => n + (w.includes(t) ? 1 : 0), 0))
   const weight = (t: string) => {
-    const f = freq.get(t) ?? 0
-    return f === 0 ? 0 : 1 / Math.log2(2 + f)
+    const d = df.get(t) ?? 0
+    return d === 0 ? 0 : Math.log2(1 + nWin / (1 + d))
   }
 
   const scored: Array<{ i: number; score: number }> = []
   for (let i = 0; i < nWin; i++) {
-    const w = lower.slice(i * WIN, i * WIN + WIN)
     let score = 0
-    for (const t of terms) if (w.includes(t)) score += weight(t)
+    for (const t of terms) if (windows[i].includes(t)) score += weight(t)
     scored.push({ i, score })
   }
   if (scored.every(s => s.score === 0)) return text.slice(0, budget)
@@ -332,10 +341,31 @@ export function rankResults(results: SearchResult[], query: string): SearchResul
 /** Search → fetch top sources → assemble a budget-fit, citation-numbered evidence block. */
 async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence | null> {
   const { emit, signal } = opts
+
+  // ── Authoritative library API surface FIRST (blocker #1 fix, cont.89) ──────────
+  // When the question names a library, its published .d.ts IS the fact being asked about.
+  // Measured live: every open-web SERP backend is blocked to a server IP (DDG → 202 anti-bot
+  // challenge, Bing → 200 JS/consent shell with no result markup), so search() returns 0 and
+  // grounding gave up — the model then fabricated. The registry CDN is deterministic, keyless
+  // and unthrottled, so this lane WORKS WHEN SEARCH IS DOWN, which is most of the time.
+  // It leads the evidence block because a version-pinned declaration outranks any blog post.
+  let apiDocs: LibraryApiDocs | null = null
+  if (namesExternalLibrary(query)) {
+    emit?.({ type: 'thought', text: 'Reading the published type definitions for the named package…' })
+    try { apiDocs = await fetchLibraryApiForQuery(opts.searchQuery || query) } catch { apiDocs = null }
+    if (apiDocs) {
+      debugBus.emit('pipeline', 'grounding_library_api', { pkg: apiDocs.pkg, version: apiDocs.version, files: apiDocs.files }, { severity: 'info' })
+      emit?.({ type: 'thought', text: `Found ${apiDocs.pkg}@${apiDocs.version} type definitions — grounding on the real API surface.` })
+    }
+  }
+
   emit?.({ type: 'thought', text: 'Searching the web for current, verifiable sources…' })
   let results: SearchResult[] = []
   try { results = await search(opts.searchQuery || query) } catch { results = [] }
-  if (signal?.aborted || results.length === 0) return null
+  if (signal?.aborted) return null
+  // Search being down is NOT fatal any more — the API surface alone is better evidence than
+  // the SERP was. Only give up when we have neither.
+  if (results.length === 0 && !apiDocs) return null
 
   const ranked = rankResults(results, query).slice(0, MAX_SOURCES)
   emit?.({ type: 'thought', text: `Found ${results.length} sources — reading the top ${ranked.length}: ${ranked.map(r => safeHost(r.url)).join(', ')}…` })
@@ -364,6 +394,15 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
   const parts: string[] = []
   const sources: string[] = []
   const titles: string[] = []
+  // The published API surface leads as [S1]: it is version-pinned and authoritative, so it
+  // should win any conflict with a blog post or a Q&A snippet further down the block. It is
+  // already fetched (no fetchPage), but still passes through selectRelevantPassages so a
+  // 50KB .d.ts is trimmed to the windows that actually mention the query's terms.
+  if (apiDocs) {
+    parts.push(`[S1] ${apiDocs.title} — ${apiDocs.url}\n${selectRelevantPassages(apiDocs.text, opts.searchQuery || query, perSource)}`)
+    sources.push(apiDocs.url)
+    titles.push(apiDocs.title)
+  }
   for (const { item, text } of fetched) {
     if (text.length < 40) continue
     const n = sources.length + 1
