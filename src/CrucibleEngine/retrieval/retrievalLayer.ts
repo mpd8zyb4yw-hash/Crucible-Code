@@ -803,31 +803,56 @@ const JSDELIVR_DATA = 'https://data.jsdelivr.com/v1/packages/npm'
 const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm'
 const UNPKG = 'https://unpkg.com'
 
+type PkgFiles = { version: string; files: Array<{ path: string; size: number }> }
+
+/** First promise to deliver a non-null value wins; null only if every one fails. */
+async function firstSuccess<T>(tasks: Array<Promise<T | null>>): Promise<T | null> {
+  return new Promise(resolve => {
+    let left = tasks.length
+    if (!left) return resolve(null)
+    for (const t of tasks) {
+      t.then(v => { if (v !== null && v !== undefined) resolve(v); else if (--left === 0) resolve(null) })
+       .catch(() => { if (--left === 0) resolve(null) })
+    }
+  })
+}
+
 /**
- * Resolve a package to {version, files} from EITHER CDN. Two independent registries, because
- * one is a single point of failure: measured, jsDelivr served zod's listing in ~1.1s and then
- * timed out on the very next run under congestion — and a miss here costs the whole
- * authoritative-evidence lane, dropping the answer back to fabrication. unpkg's `?meta` returns
- * an equivalent flat listing with sizes, so the lane survives either one being down.
+ * Resolve a package to {version, files} by RACING two independent registries.
+ *
+ * Parallel, not sequential fallback. Measured under congestion: jsDelivr's listing endpoint took
+ * **16.6s** while unpkg answered the same question in **843ms**. A sequential chain waits for the
+ * slow one to fail before even starting the fast one, so it blew the lane's 10s deadline and the
+ * answer dropped back to fabrication — the fallback made us more robust and simultaneously too
+ * slow to use it. Racing costs one extra cheap GET and returns at the speed of whichever CDN is
+ * healthy right now.
  */
-async function resolvePackageFiles(pkg: string): Promise<{ version: string; files: Array<{ path: string; size: number }> } | null> {
-  try {
+async function resolvePackageFiles(pkg: string): Promise<PkgFiles | null> {
+  const viaJsDelivr = async (): Promise<PkgFiles | null> => {
     const resolved = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}/resolved`, 5000))
     const version: string = resolved?.version
-    if (version) {
-      const listing = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}@${version}`, 6000))
-      const files = flattenJsDelivr(listing?.files)
-      if (files.length) return { version, files }
-    }
-  } catch { /* fall through to unpkg */ }
-  try {
-    // unpkg redirects `pkg@latest` → the concrete version and returns a FLAT list already.
+    if (!version) return null
+    const listing = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}@${version}`, 6000))
+    const files = flattenJsDelivr(listing?.files)
+    return files.length ? { version, files } : null
+  }
+  const viaUnpkg = async (): Promise<PkgFiles | null> => {
+    // unpkg redirects `pkg` → the concrete version and returns a FLAT list already.
     const meta = JSON.parse(await rawGet(`${UNPKG}/${pkg}/?meta`, 8000))
     const version: string = meta?.version
     const files = (meta?.files ?? []).map((f: any) => ({ path: f.path as string, size: (f.size ?? 0) as number }))
-    if (version && files.length) return { version, files }
-  } catch { /* both down */ }
-  return null
+    return version && files.length ? { version, files } : null
+  }
+  return firstSuccess([viaJsDelivr(), viaUnpkg()])
+}
+
+/** Fetch one package file from whichever CDN answers first (same reason as resolvePackageFiles). */
+async function raceFile(pkg: string, version: string, path: string): Promise<string> {
+  const one = async (base: string) => {
+    const t = await rawGet(`${base}/${pkg}@${version}${path}`, 8000)
+    return t && t.length >= 40 ? t : null
+  }
+  return (await firstSuccess([one(JSDELIVR_CDN), one(UNPKG)])) ?? ''
 }
 
 /** Flatten a jsDelivr file tree into `{path, size}`, paths rooted at `/`. */
@@ -915,11 +940,14 @@ export async function fetchLibraryApiDocs(pkg: string, budgetChars = 60_000): Pr
     //    So prefer the entry's exact directory, widening only if it yields nothing.
     const roots: string[] = []
     try {
-      const meta = JSON.parse(await rawGet(`${JSDELIVR_CDN}/${pkg}@${version}/package.json`, 6000))
+      // Raced across both CDNs like every other fetch here — an unraced hop inside the deadline
+      // is what blew it: package.json + entry cost ~6s on a slow jsDelivr, and combined with the
+      // listing that pushed the lane past 10s and returned NULL despite both CDNs being up.
+      const meta = JSON.parse(await raceFile(pkg, version, '/package.json'))
       const entry: string | undefined = meta?.types || meta?.typings || meta?.exports?.['.']?.types
       if (entry) {
         const entryPath = '/' + entry.replace(/^\.\//, '')
-        const entryText = await rawGet(`${JSDELIVR_CDN}/${pkg}@${version}${entryPath}`, 6000).catch(() => '')
+        const entryText = await raceFile(pkg, version, entryPath)
         const rel = entryText.match(/from\s*['"]\.\/([\w.\-/]+)['"]/)
         if (rel) {
           const segs = rel[1].split('/').slice(0, -1)          // drop the filename
@@ -942,9 +970,7 @@ export async function fetchLibraryApiDocs(pkg: string, budgetChars = 60_000): Pr
     // Fetch the top files in PARALLEL. Sequentially these cost ~1.1s of round-trips against a
     // ~14s grounding budget, and the CDN serves them concurrently for ~0.24s.
     const picked = dts.slice(0, 3)
-    const bodies = await Promise.all(
-      picked.map(f => rawGet(`${JSDELIVR_CDN}/${pkg}@${version}${f.path}`, 8000).catch(() => '')),
-    )
+    const bodies = await Promise.all(picked.map(f => raceFile(pkg, version, f.path)))
     const parts: string[] = []
     const files: string[] = []
     let total = 0
