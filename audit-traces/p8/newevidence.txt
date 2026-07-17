@@ -1,0 +1,27 @@
+[S1] zod@4.4.3 — published type definitions (authoritative API surface) — https://www.npmjs.com/package/zod/v/4.4.3
+.ksuid()` instead. */
+    ksuid(params?: string | core.$ZodCheckKSUIDParams): this;
+    /** @deprecated Use `z.ipv4()` instead. */
+    ipv4(params?: string | core.$ZodCheckIPv4Params): this;
+    /** @deprecated Use `z.ipv6()` instead. */
+    ipv6(params?: string | core.$ZodCheckIPv6Params): this;
+    /** @deprecated Use `z.cidrv4()` instead. */
+    cidrv4(params?: string | core.$ZodCheckCIDRv4Para …  _zod: core.$ZodCUIDInternals;
+}
+/**
+ * @deprecated CUID v1 is deprecated by its authors due to information leakage
+ * (timestamps embedded in the id). Use {@link ZodCUID2} instead.
+ * See https://github.com/paralleldrive/cuid.
+ */
+export declare const ZodCUID: core.$constructor<ZodCUID>;
+/**
+ * Validates a CUID v1 string.
+ *
+ * @deprecated CUID v1 is deprecated by its authors due to information l … D: core.$constructor<ZodXID>;
+export declare function xid(params?: string | core.$ZodXIDParams): ZodXID;
+export interface ZodKSUID extends ZodStringFormat<"ksuid"> {
+    _zod: core.$ZodKSUIDInternals;
+}
+export declare const ZodKSUID: core.$constructor<ZodKSUID>;
+export declare function ksuid(params?: string | core.$ZodKSUIDParams): ZodKSUID;
+export interface ZodIPv4 extends ZodStringFormat<"ipv4">

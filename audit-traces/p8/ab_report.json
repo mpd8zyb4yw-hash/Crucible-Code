@@ -1,0 +1,62 @@
+[
+  {
+    "arm": "fm",
+    "run": 0,
+    "ms": 16504,
+    "chars": 1769,
+    "finish": "stop",
+    "usage": {
+      "latency_ms": 16480,
+      "output_tokens_est": 442
+    },
+    "usesZIpv4": false,
+    "mangledZipv4": false,
+    "handRolledRegex": true,
+    "jsonSchema": true,
+    "fabricatedZodNs": false,
+    "executesCorrectly": false,
+    "attempts": []
+  },
+  {
+    "arm": "fm",
+    "run": 1,
+    "ms": 13607,
+    "chars": 1411,
+    "finish": "stop",
+    "usage": {
+      "latency_ms": 13601,
+      "output_tokens_est": 352
+    },
+    "usesZIpv4": false,
+    "mangledZipv4": false,
+    "handRolledRegex": true,
+    "jsonSchema": true,
+    "fabricatedZodNs": false,
+    "executesCorrectly": false,
+    "attempts": []
+  },
+  {
+    "arm": "fm",
+    "run": 2,
+    "ms": 15706,
+    "chars": 1622,
+    "finish": "stop",
+    "usage": {
+      "latency_ms": 15697,
+      "output_tokens_est": 405
+    },
+    "usesZIpv4": true,
+    "mangledZipv4": false,
+    "handRolledRegex": true,
+    "jsonSchema": true,
+    "fabricatedZodNs": false,
+    "executesCorrectly": false,
+    "attempts": [
+      {
+        "block": 0,
+        "ran": false,
+        "error": "/Users/justin/crucible-local/crucible-local/audit-traces/p8/.probe-fm-2-0.ts:3\nconst validator = new Zod();\n                  ^\n\nReferenceError: Zod is not defined\n    at <anonymous> (/Users/justin/crucible-local/crucible-local/audit-traces/p8/.probe-fm-2-0.ts:3:19)\n    at ModuleJob.run (node:intern"
+      }
+    ]
+  }
+]
