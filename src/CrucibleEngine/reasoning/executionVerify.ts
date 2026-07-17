@@ -36,7 +36,7 @@ import * as vm from 'vm'
 import { createRequire } from 'module'
 import * as ts from 'typescript'
 import {
-  answerCodeBlocks, extractLibraryUsage, evidenceCovers,
+  answerCodeBlocks, extractLibraryUsage, evidenceCovers, documentedCallSurface,
   verifyApiFaithfulness, type FaithfulnessVerdict,
 } from './apiFaithfulness'
 
@@ -271,8 +271,23 @@ export function verifyByExecution(
 export function certifyAnswer(
   answer: string,
   evidence: string,
-  opts: { timeoutMs?: number; from?: string } = {},
+  opts: { timeoutMs?: number; from?: string; codeRequested?: boolean } = {},
 ): FaithfulnessVerdict & { executed: boolean } {
+  // CODE WAS ASKED FOR AND NONE CAME BACK. This lives in the SINGLE oracle rather than the
+  // caller, because the repair loop re-verifies through certifyAnswer — a check the caller adds
+  // on top is invisible inside repair, so the draft re-verifies as `abstain`, the proposer sees
+  // no violation and returns the prose unchanged. MEASURED cont.89: "zod schema for a uuid
+  // string" came back as prose, repair was entered but had nothing to act on, and the prose
+  // shipped. Putting it here means the draft AND every repair attempt are judged the same way.
+  if (opts.codeRequested && answerCodeBlocks(answer).length === 0) {
+    const surface = documentedCallSurface(evidence)
+    return {
+      status: 'violations',
+      reason: 'the answer is prose with no code block — the question asked for code',
+      violations: [{ library: '', identifier: '(no code block)', kind: 'no-code', line: '' }],
+      documented: surface, callSurface: surface, library: undefined, executed: false,
+    }
+  }
   const names = verifyApiFaithfulness(answer, evidence)
   const exec = verifyByExecution(answer, evidence, opts)
 

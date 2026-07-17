@@ -36,7 +36,7 @@ export interface ApiViolation {
    * `execution-failure` is the only kind produced by RUNNING the code (see executionVerify):
    * ground truth from the runtime, not a claim about names.
    */
-  kind: 'named-import' | 'namespace-member' | 'ignored-evidence' | 'execution-failure'
+  kind: 'named-import' | 'namespace-member' | 'ignored-evidence' | 'execution-failure' | 'no-code'
   /** Verbatim source line, for the repair prompt. */
   line: string
 }
@@ -593,6 +593,24 @@ export function repairHint(v: FaithfulnessVerdict): string {
       `Use the real ${v.library ?? 'library'} API from the evidence, which the runtime does provide: ${(v.callSurface.length ? v.callSurface : v.documented).slice(0, 60).join(', ')}`,
       'Importing those names is NOT enough — the code must actually CALL them and use what they return.',
       'Your code will be executed again, so it must genuinely work.',
+    ].join('\n')
+  }
+
+  // PROSE FOR A CODE ASK. There is no identifier to name and nothing to rename — the answer
+  // simply is not one. MEASURED cont.89: "zod schema for a uuid string" came back as prose about
+  // zod's uuid methods, every verifier abstained ("no code, nothing to check"), so nothing was
+  // repaired and a non-answer shipped — while the repair engine, asked directly, produced the
+  // correct schema in 3.6s. This hint must be non-empty or the proposer returns null and the
+  // repair gate silently never opens (the dead-gate pattern, cont.84).
+  if (v.violations.some(x => x.kind === 'no-code')) {
+    return [
+      'Your answer has no usable code block — it was prose, or JSON Schema, or a config object.',
+      'The question asked for CODE that uses the library.',
+      '',
+      `Answer with ONE fenced code block of runnable JavaScript/TypeScript that CALLS the documented API${v.library ? ` from ${v.library}` : ''}.`,
+      ...(v.callSurface.length ? [`The evidence documents these calls: ${v.callSurface.slice(0, 60).join(', ')}`] : []),
+      'Use the names exactly as the evidence writes them — call them, do not just import them.',
+      'Do NOT emit JSON Schema, a `$schema` object, or a hand-rolled regex. Keep prose to one sentence.',
     ].join('\n')
   }
 

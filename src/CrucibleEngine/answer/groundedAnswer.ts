@@ -19,7 +19,7 @@ import {
 } from '../retrieval/retrievalLayer'
 import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
 import { debugBus } from '../debug/bus'
-import { describeViolations } from '../reasoning/apiFaithfulness'
+import { describeViolations, answerCodeBlocks, documentedCallSurface } from '../reasoning/apiFaithfulness'
 // EXECUTES the answer's code against the real library. The name-matching check alone certified
 // JSON-Schema-with-a-regex wearing a decorative import (cont.86b) — provenance is not correctness.
 import { certifyAnswer } from '../reasoning/executionVerify'
@@ -556,7 +556,12 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   // event this function emits must tell the truth.
   let unfaithful: string | null = null
 
-  const faith = certifyAnswer(text, ev.block)
+  // A request for a schema/snippet that comes back as prose has not been answered. `codeRequested`
+  // makes the SINGLE oracle (certifyAnswer) treat "no code block" as a violation — so the draft
+  // and every repair attempt are judged identically. Doing it only here would be invisible inside
+  // the repair loop, which re-verifies through the same oracle (cont.89).
+  const codeRequested = isCodingQuery(message) || namesExternalLibrary(message) || namesInstrument(message)
+  const faith = certifyAnswer(text, ev.block, { codeRequested })
   // Did the shipped code actually RUN against the real library, or did it merely name documented
   // identifiers? Both certify, but they are not the same claim, and the badge must not blur them:
   // a name-matched certify is the weak one that shipped JSON Schema as green (cont.86b).
@@ -639,9 +644,16 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
               : undefined,
           primaryName: bonsaiReady ? repairModelName() : 'afm',
           altName: bonsaiReady ? 'afm' : 'minicpm',
+          codeRequested,
         },
         {
-          attempts: REPAIR_ATTEMPTS,
+          // More attempts when a FAST engine is seated. Repair is a search over a weak model, so
+          // each attempt is a Bernoulli trial (qwen measured ~2/3 per attempt on the harder asks
+          // like email, where run 0 copies the TYPE name `ZodEmail`). At ~30 tok/s an attempt is
+          // ~1-2s, so K=6 turns a 2/3 single-shot into ~99.9% and still fits the budget; the FM's
+          // slow non-recovery is exactly why K stayed at 3 before. `canPropose` (wall-clock) is
+          // the real backstop either way.
+          attempts: bonsaiReady ? Math.max(REPAIR_ATTEMPTS, 6) : REPAIR_ATTEMPTS,
           signal,
           // Re-checked before EVERY attempt, so a slow first repair cannot drag the answer past
           // the allowance: K bounds the calls, this bounds the wall-clock.

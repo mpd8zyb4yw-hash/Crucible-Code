@@ -108,6 +108,8 @@ export interface FaithfulRepairInput {
   /** Attribution labels for telemetry — which engine produced the shipped text. */
   primaryName?: string
   altName?: string
+  /** The ask was for code, so a prose answer is a violation (threaded into certifyAnswer). */
+  codeRequested?: boolean
 }
 
 export interface FaithfulRepairOpts {
@@ -164,13 +166,19 @@ export function faithfulnessVerdict(v: FaithfulnessVerdict): Verdict {
   return { pass: false, score: -v.violations.length, signals: [v.reason] }
 }
 
-/** Verifier<string> over an evidence block. Deterministic, no model — the source of truth. */
-export function makeFaithfulnessVerifier(evidence: string): Verifier<string> {
-  return (c: Candidate<string>) => faithfulnessVerdict(certifyAnswer(c.value, evidence))
+/**
+ * Verifier<string> over an evidence block. Deterministic, no model — the source of truth.
+ * `codeRequested` propagates the "prose is not an answer to a code ask" rule into the SAME
+ * oracle the whole loop uses; without it the draft's prose re-verifies as `abstain` here and the
+ * search never gets a violation to act on (cont.89).
+ */
+export function makeFaithfulnessVerifier(evidence: string, codeRequested = false): Verifier<string> {
+  return (c: Candidate<string>) => faithfulnessVerdict(certifyAnswer(c.value, evidence, { codeRequested }))
 }
 
 /** The faithfulness verdict behind a recorded attempt, recomputed from ground truth. */
-const verdictOf = (a: Attempt<string>, evidence: string) => certifyAnswer(a.candidate.value, evidence)
+const verdictOf = (a: Attempt<string>, evidence: string, codeRequested = false) =>
+  certifyAnswer(a.candidate.value, evidence, { codeRequested })
 
 /**
  * Proposer: candidate 0 is the draft (free), thereafter re-synthesis carrying every prior
@@ -223,14 +231,15 @@ export function makeRepairProposer(input: FaithfulRepairInput, opts: FaithfulRep
     if (opts.canPropose && !opts.canPropose()) return null
 
     // Repair the most recent attempt, informed by every earlier one. `history` is oldest-first.
+    const cr = input.codeRequested ?? false
     const latest = history[history.length - 1]
-    const latestVerdict = verdictOf(latest, input.evidence)
+    const latestVerdict = verdictOf(latest, input.evidence, cr)
     // Only violations carry a repair hint; an abstaining branch has nothing actionable to say,
     // so fall back to repairing the draft's own (real) violations rather than emitting noise.
-    const target = latestVerdict.status === 'violations' ? latestVerdict : verdictOf(history[0], input.evidence)
+    const target = latestVerdict.status === 'violations' ? latestVerdict : verdictOf(history[0], input.evidence, cr)
     if (target.status !== 'violations') return null
 
-    const prior = history.slice(0, -1).map(a => verdictOf(a, input.evidence)).filter(v => v.status === 'violations')
+    const prior = history.slice(0, -1).map(a => verdictOf(a, input.evidence, cr)).filter(v => v.status === 'violations')
     const hint = escalatedRepairHint(target, prior)
     if (!hint) return null
 
@@ -265,13 +274,14 @@ export async function repairUntilFaithful(
 ): Promise<FaithfulRepairResult> {
   const K = Math.max(1, opts.attempts ?? 3)
   const spec: TaskSpec = { goal: input.goal, domain: 'answer', acceptance: {}, context: input.evidence }
-  const draftVerdict = certifyAnswer(input.draft, input.evidence)
+  const cr = input.codeRequested ?? false
+  const draftVerdict = certifyAnswer(input.draft, input.evidence, { codeRequested: cr })
 
   let seen = 0
   const result = await search<string>(
     spec,
     makeRepairProposer(input, opts),
-    makeFaithfulnessVerifier(input.evidence),
+    makeFaithfulnessVerifier(input.evidence, cr),
     {
       beamWidth: 1,
       proposalsPerNode: 1,
@@ -283,7 +293,7 @@ export async function repairUntilFaithful(
       emit: () => {},
     },
   )
-  for (const a of result.attempts) opts.onAttempt?.(++seen, verdictOf(a, input.evidence), a.candidate.source)
+  for (const a of result.attempts) opts.onAttempt?.(++seen, verdictOf(a, input.evidence, cr), a.candidate.source)
 
   if (result.status === 'solved' && result.solution) {
     const by = result.solution.source ?? 'draft'
