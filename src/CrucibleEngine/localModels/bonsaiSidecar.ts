@@ -13,13 +13,18 @@
 //   -ngl 99 -c 4096  (all GPU)      6587MB    2575MB   38.6ms      435ms     ~4.3 tok/s
 //   taskpolicy -b -ngl 99 -t 3      6344MB    2657MB  204.8ms      495ms      slower
 //   -ngl 16 (partial offload)       5387MB    3238MB   44.8ms      132ms      slower
-//   -ngl 0  -c 2048  (CPU/mmap)     1540MB    1833MB   14.2ms       18ms      ~1.4 tok/s
+//   -ngl 0  -c 2048  (CPU/mmap)     1540MB    1833MB   14.2ms       18ms      ~3.2 tok/s
 //
 // THE FINDING: it is not CPU contention, it is WIRED memory. Metal buffers are wired, so
 // -ngl 99 pins 6.6GB of an 8GB machine and everything else is forced to swap — those are the
 // 435ms stalls you feel. With -ngl 0 the weights are mmap'd from disk: FILE-BACKED clean
 // pages the kernel can evict for free, so wired lands BELOW baseline and the worst stall
-// drops 435ms → 18ms (24x better) for 3x slower tokens.
+// drops 435ms → 18ms (24x better).
+//
+// The speed cost is SMALL, and an earlier "3x slower" reading was an artifact: that run was
+// measured while a responsiveness probe was itself saturating the CPU. Clean, idle numbers are
+// GPU ~5.3 tok/s vs CPU -t6 3.16 / -t4 2.53 tok/s — background mode costs ~1.7x, not 3x, and
+// under real contention the gap narrows further. That is a cheap price for a usable machine.
 //
 // Two things that sound right and are NOT (both measured above, do not retry):
 //   - `taskpolicy -b` (background QoS) makes it WORSE (p50 5.2ms → 28.5ms): E-cores stretch
@@ -60,9 +65,14 @@ function mode(): BonsaiMode {
  */
 function argsFor(m: BonsaiMode): string[] {
   const common = ['-m', MODEL, '--jinja', '--host', '127.0.0.1', '--port', String(PORT)]
+  // `-t 4` on a 2P+4E core box: measured, threads scale throughput when the machine is IDLE
+  // (t2 1.84 / t4 2.53 / t6 3.16 tok/s) — but under real contention (you actually using the
+  // machine) t4 and t6 converge (2.55 vs 2.62 tok/s) while t6 doubles the worst stall
+  // (25ms → 45ms). Taking every core buys ~nothing and costs responsiveness, which is the
+  // entire point of background mode.
   return m === 'focus'
     ? [...common, '-ngl', '99', '-c', '4096']
-    : [...common, '-ngl', '0', '-c', '2048']
+    : [...common, '-ngl', '0', '-c', '2048', '-t', '4']
 }
 
 let proc: ChildProcess | null = null

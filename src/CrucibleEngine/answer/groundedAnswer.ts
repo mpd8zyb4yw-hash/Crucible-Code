@@ -23,8 +23,9 @@ import { describeViolations } from '../reasoning/apiFaithfulness'
 // EXECUTES the answer's code against the real library. The name-matching check alone certified
 // JSON-Schema-with-a-regex wearing a decorative import (cont.86b) — provenance is not correctness.
 import { certifyAnswer } from '../reasoning/executionVerify'
-import { repairUntilFaithful } from '../reasoning/faithfulRepair'
+import { repairUntilFaithful, type RepairMessage } from '../reasoning/faithfulRepair'
 import { isMiniCpmAvailable, miniCpmComplete } from '../agent/miniCpmHarness'
+import { bonsaiComplete, isBonsaiInstalled } from '../localModels/bonsaiSidecar'
 
 export interface GroundedResult {
   text: string
@@ -109,6 +110,35 @@ const REPAIR_BUDGET_MS = Number(process.env.CRUCIBLE_FAITH_BUDGET_MS ?? 60_000)
  * search() treats as transient infra failure — charging NO budget and rotating the slot back to the FM.
  */
 const MINICPM_REPAIR_MS = Number(process.env.CRUCIBLE_FAITH_ALT_MS ?? 0)
+/**
+ * Bonsai-27B's per-call ceiling when it LEADS repair, and the repair allowance that must cover
+ * it. Both are large on purpose.
+ *
+ * The standing instruction — seat a second proposer in every refinement loop — has been parked
+ * since cont.86 for a stated reason: "ships OFF until a second engine that actually EMITS CODE
+ * is seated". Bonsai is that engine, and it is now measured (cont.88, identical evidence and
+ * prompt, only the model differing):
+ *
+ *   Apple FM      copies z.ipv4  0/3   EXECUTES 0/3
+ *   Bonsai-27B    copies z.ipv4  3/3   EXECUTES 3/3
+ *
+ * WHY IT LEADS RATHER THAN ROTATES SECOND. On this failure class the FM does not merely fail
+ * once — it re-fabricates the very name the hint just rejected (cont.83/86: "detection works,
+ * recovery does not"). Its repair attempts are ~12s each of measured non-recovery, so opening
+ * with the FM and rotating to Bonsai on attempt 2 would spend real budget on a known-dead
+ * branch. The engine that can actually fix it goes first; the FM stays seated as the alt, where
+ * it is free (it is fast) and can only ADD certified candidates — it cannot lower the bar.
+ *
+ * THE COST IS REAL AND DELIBERATE: Bonsai runs ~2.5 tok/s in background mode (the mode that
+ * keeps the machine usable — see bonsaiSidecar.ts), so a ~350-token re-synthesis is ~2 minutes.
+ * The 60s default could not fit even one attempt, which would seat the engine and never let it
+ * finish — a dead gate wearing a green badge, the exact failure this project keeps repeating.
+ * Repair only ever fires on a REAL violation (the common abstain path never enters the loop),
+ * and the alternative is knowingly shipping a fabricated API. Set CRUCIBLE_BONSAI_REPAIR_MS=0
+ * to unseat it.
+ */
+const BONSAI_REPAIR_MS = Number(process.env.CRUCIBLE_BONSAI_REPAIR_MS ?? 200_000)
+const BONSAI_BUDGET_MS = Number(process.env.CRUCIBLE_BONSAI_FAITH_BUDGET_MS ?? 240_000)
 
 interface Evidence {
   block: string
@@ -546,7 +576,11 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
     // Repair runs on its OWN clock (REPAIR_BUDGET_MS), not the retrieval budget's remainder —
     // which is always exhausted here and made this branch dead code. See REPAIR_BUDGET_MS.
     const repairStarted = Date.now()
-    const repairLeft = () => REPAIR_BUDGET_MS - (Date.now() - repairStarted)
+    // Bonsai leads repair when it is installed, and it is ~2.5 tok/s — so the allowance has to
+    // cover it or the engine is seated but can never finish (see BONSAI_REPAIR_MS).
+    const bonsaiReady = BONSAI_REPAIR_MS > 0 && isBonsaiInstalled()
+    const repairBudget = bonsaiReady ? Math.max(REPAIR_BUDGET_MS, BONSAI_BUDGET_MS) : REPAIR_BUDGET_MS
+    const repairLeft = () => repairBudget - (Date.now() - repairStarted)
     if (repairLeft() > 4000 && !signal?.aborted) {
       emit?.({ type: 'thought', text: `Checked the code against the docs — ${describeViolations(faith)}. Repairing…` })
 
@@ -563,16 +597,31 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
       const altReady = MINICPM_REPAIR_MS > 0 && await isMiniCpmAvailable()
       if (altReady) emit?.({ type: 'thought', text: 'Bringing in a second on-device model (MiniCPM) to cross-check the repair…' })
 
+      if (bonsaiReady) emit?.({ type: 'thought', text: 'The docs disagree with the draft — bringing in the 27B local model to rewrite it against the real API. Slower, but it actually reads the docs…' })
+
+      const fmFn = (m: RepairMessage[], sig?: AbortSignal) =>
+        fmComplete(m as typeof msgs, { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal: sig })
+      // Clamped to the wall-clock actually left, so the slower engine can never overrun the
+      // repair budget — a timeout here costs no attempt (null → rotate to the other engine).
+      const bonsaiFn = (m: RepairMessage[], sig?: AbortSignal) =>
+        bonsaiComplete(m, { maxTokens: 700, timeoutMs: Math.min(BONSAI_REPAIR_MS, Math.max(1, repairLeft())), signal: sig })
+
       const rep = await repairUntilFaithful(
         {
           draft: text, evidence: ev.block, goal: message, baseMsgs: msgs,
-          complete: (m, sig) =>
-            fmComplete(m as typeof msgs, { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal: sig }),
-          // Clamped to the wall-clock actually left, so the slower engine can never overrun the
-          // repair budget — a timeout here costs no attempt (null → rotate back to the FM).
-          completeAlt: altReady
-            ? (m, sig) => miniCpmComplete(m, sig, { maxTokens: 1100, timeoutMs: Math.min(MINICPM_REPAIR_MS, repairLeft()) })
-            : undefined,
+          // Bonsai LEADS when installed — it is the only engine measured to copy an identifier
+          // out of clean evidence (3/3 vs the FM's 0/3), and the FM's repair attempts on this
+          // exact failure class are measured NON-recovery, so opening with the FM would spend
+          // budget on a known-dead branch. The FM stays seated as the alt: it is fast, it can
+          // only ADD certified candidates, and `proposedBy` records if it ever earns one.
+          complete: bonsaiReady ? bonsaiFn : fmFn,
+          completeAlt: bonsaiReady
+            ? fmFn
+            : altReady
+              ? (m, sig) => miniCpmComplete(m, sig, { maxTokens: 1100, timeoutMs: Math.min(MINICPM_REPAIR_MS, repairLeft()) })
+              : undefined,
+          primaryName: bonsaiReady ? 'bonsai' : 'afm',
+          altName: bonsaiReady ? 'afm' : 'minicpm',
         },
         {
           attempts: REPAIR_ATTEMPTS,
