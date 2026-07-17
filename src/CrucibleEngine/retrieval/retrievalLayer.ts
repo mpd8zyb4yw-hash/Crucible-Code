@@ -873,11 +873,28 @@ function flattenJsDelivr(nodes: any[], prefix = ''): Array<{ path: string; size:
  * CDN is the ground truth that a token is a package), so over-generating here is safe.
  */
 export function extractPackageCandidates(q: string): string[] {
+  return extractPackageCandidatesRanked(q).map(c => c.name)
+}
+
+export interface PackageCandidate {
+  name: string
+  /**
+   * `named` — a structural signal identified it as a package (quoted import, "the X library",
+   * a capitalized proper noun). Trusted on its own.
+   * `token`  — a bare lowercase word from a coding query. NOT trusted on its own: npm publishes
+   * a package for nearly every English word, so these must be corroborated (see NPM_MIN_WEEKLY).
+   */
+  confidence: 'named' | 'token'
+}
+
+export function extractPackageCandidatesRanked(q: string): PackageCandidate[] {
   const msg = q ?? ''
-  const out: string[] = []
-  const push = (s: string | undefined | null) => {
+  const out: PackageCandidate[] = []
+  const push = (s: string | undefined | null, confidence: 'named' | 'token' = 'named') => {
     const v = (s ?? '').trim().replace(/^['"`]|['"`]$/g, '')
-    if (v && v.length >= 2 && !LANGUAGE_NAMES.has(v.toLowerCase()) && !out.includes(v)) out.push(v)
+    if (!v || v.length < 2 || LANGUAGE_NAMES.has(v.toLowerCase())) return
+    if (out.some(c => c.name === v)) return
+    out.push({ name: v, confidence })
   }
   // 1. quoted module specifier: import { z } from 'zod'  /  require("express")
   for (const m of msg.matchAll(/(?:import|require|from)\s*\(?\s*['"`]([\w@/.-]+)['"`]/g)) {
@@ -902,9 +919,59 @@ export function extractPackageCandidates(q: string): string[] {
     if (i === 0) initial.push(bare.toLowerCase())
     else push(bare.toLowerCase())
   }
-  initial.forEach(push)
-  return out.slice(0, 4)
+  initial.forEach(n => push(n))
+  // 4. BARE LOWERCASE TOKENS — what users actually type.
+  //
+  // MEASURED (cont.89): with signals 1-3 alone, only 1 of 10 realistic library asks grounded.
+  // "zod schema to validate an ipv4 address", "express middleware for error handling", "make an
+  // http request with axios" — all skipped, because the ONLY thing that fired was capitalization.
+  // The entire authoritative-docs lane was gated behind the user pressing shift.
+  //
+  // These are emitted as 'token' confidence and are NOT trusted on their own: npm publishes a
+  // package for nearly every English word ("sort", "list", "number" all resolve). They are
+  // corroborated downstream by popularity + relevance — see fetchLibraryApiForQuery.
+  if (isCodingQuery(msg) || namesInstrument(msg)) {
+    for (const t of msg.toLowerCase().match(/[a-z][a-z0-9.-]{2,}/g) ?? []) {
+      if (REL_STOP.has(t) || LANGUAGE_NAMES.has(t) || GENERIC_CODE_NOUNS.has(t)) continue
+      // The digit rule, same as the proper-noun path above: a token carrying a version/width
+      // digit is a STANDARD (IPv4, IPv6, UTF8, SHA256, Base64), not a library. Library names
+      // essentially never do. Omitting it here regressed the bench's 6b guard — the rule has to
+      // hold on EVERY path that proposes a package name, not just the capitalized one.
+      if (/\d/.test(t)) continue
+      push(t, 'token')
+    }
+  }
+  return out.slice(0, 8)
 }
+
+/**
+ * "…with axios", "…using yup", "…via prisma" — a prepositional phrase naming the INSTRUMENT the
+ * work should be done with. That is a library position, and it is GRAMMATICAL rather than a
+ * keyword list, so it does not rot.
+ *
+ * Needed because `isCodingQuery` is a keyword regex and misses obvious library asks that happen
+ * to use none of its words: "parse a csv file with papaparse", "make an http request with axios"
+ * and "validate a form with yup" all scored isCodingQuery=false, so the docs lane never ran.
+ * The named token is still only 'token' confidence — popularity + relevance still have to agree.
+ */
+export function namesInstrument(q: string): boolean {
+  return /\b(?:with|using|via)\s+[a-z][\w.-]{2,}/i.test(q ?? '')
+}
+
+/**
+ * Words that are common in coding questions and also happen to be npm packages. Skipping them
+ * is pure latency saving — the popularity + relevance gates would reject them anyway — but a
+ * dead registry lookup costs ~1-4s each on the answer's critical path. Closed class, no library
+ * names (the no-templates rule): these are English/CS nouns, not a package list.
+ */
+const GENERIC_CODE_NOUNS = new Set(
+  ('function functions method methods class classes object objects array arrays string strings ' +
+   'number numbers value values type types schema schemas file files code example examples ' +
+   'error errors test tests data list lists map set sort filter parse validate validation ' +
+   'write read create make build implement convert handle handling request response server ' +
+   'client api apis library package module component components hook hooks state props ' +
+   'address addresses user users form forms field fields input output result results').split(/\s+/),
+)
 
 /**
  * Fetch a package's real API surface from the registry CDN. Returns null when `pkg` is not a
@@ -997,6 +1064,62 @@ export async function fetchLibraryApiDocs(pkg: string, budgetChars = 60_000): Pr
 }
 
 /**
+ * Weekly-download floor for a BARE LOWERCASE token to be believed as a library name.
+ *
+ * MEASURED — npm's own download counts separate libraries from English words cleanly:
+ *   zod 210M · lodash 121M · express 107M · axios 85M · prisma 13M · papaparse 9.8M · yup 9.2M
+ *   write 2.7M · list 9.9k · fraction 428 · number 276 · sort 28 · handling 0
+ * A floor at 5M admits every real library measured and rejects every English word — including
+ * `write`, the one genuinely popular English-word package, which would otherwise be fetched for
+ * "Write a Zod schema…".
+ *
+ * This is a THRESHOLD over live registry data, not a list of known packages: it cannot rot on
+ * the next release, and a library crossing 5M starts working with no code change. A niche
+ * library below the floor is a MISS, not a wrong answer — it falls through to search, which is
+ * the safe direction. Structural signals ('named' confidence) bypass this entirely, so
+ * `import 'my-tiny-pkg'` still resolves.
+ */
+const NPM_MIN_WEEKLY = Number(process.env.CRUCIBLE_NPM_MIN_WEEKLY ?? 5_000_000)
+const downloadsCache = new Map<string, number>()
+
+/** Weekly downloads for a package; 0 when unknown/unpublished. Positive results cached only. */
+async function weeklyDownloads(pkg: string): Promise<number> {
+  const hit = downloadsCache.get(pkg)
+  if (hit !== undefined) return hit
+  try {
+    const j = JSON.parse(await rawGet(`https://api.npmjs.org/downloads/point/last-week/${pkg}`, 5000))
+    const n = Number(j?.downloads ?? 0)
+    if (n > 0) downloadsCache.set(pkg, n)
+    return n
+  } catch { return 0 }
+}
+
+const TS_PRIMITIVES = new Set(
+  ('string number boolean object array void null undefined any unknown never symbol bigint ' +
+   'promise record partial readonly return type interface export import declare const').split(/\s+/),
+)
+
+/**
+ * Do these docs actually answer THIS query? The last line of defence for a lowercase token.
+ *
+ * A package can be real, popular, and utterly irrelevant ("express a number as a fraction" →
+ * the `express` package). Grounding on irrelevant docs is WORSE than not grounding: the
+ * faithfulness verifier would see an answer touching none of the documented APIs, call it a
+ * violation, and "repair" correct algorithmic code into using a library it never needed.
+ *
+ * Language primitives are excluded because every .d.ts mentions `string`/`number` — matching on
+ * those would make this gate vacuous.
+ */
+function docsAreRelevant(docs: LibraryApiDocs, query: string): boolean {
+  const terms = salientTokens(query).filter(
+    t => t !== docs.pkg.toLowerCase() && !LANGUAGE_NAMES.has(t) && !TS_PRIMITIVES.has(t),
+  )
+  if (!terms.length) return true          // nothing to test against — don't invent a rejection
+  const hay = docs.text.toLowerCase()
+  return terms.some(t => hay.includes(t))
+}
+
+/**
  * Resolve the first query-named package that actually exists and publishes types.
  * Falls back to DefinitelyTyped: react/express/lodash bundle NO types of their own — the API
  * surface lives in `@types/<pkg>` — so without this the whole lane misses the most common
@@ -1011,18 +1134,42 @@ export async function fetchLibraryApiForQuery(
   // answer; blocking on it costs the answer entirely.
   const started = Date.now()
   const left = () => deadlineMs - (Date.now() - started)
-  for (const cand of extractPackageCandidates(query)) {
+  const ranked = extractPackageCandidatesRanked(query)
+
+  // Structural signals are trusted as-is. Bare tokens must EARN their place: npm publishes a
+  // package for nearly every English word, so each is corroborated against live download counts
+  // (in parallel — a serial probe of 8 tokens would eat the whole deadline) and the survivors
+  // are tried most-popular-first, which is the one the user almost certainly meant.
+  const named = ranked.filter(c => c.confidence === 'named').map(c => c.name)
+  const tokens = ranked.filter(c => c.confidence === 'token').map(c => c.name)
+  let corroborated: string[] = []
+  if (tokens.length) {
+    const counts = await Promise.all(tokens.map(async t => [t, await weeklyDownloads(t)] as const))
+    corroborated = counts
+      .filter(([, n]) => n >= NPM_MIN_WEEKLY)
+      .sort((a, b) => b[1] - a[1])
+      .map(([t]) => t)
+  }
+
+  for (const cand of [...named, ...corroborated]) {
     if (left() <= 0) break
     const race = async (p: string): Promise<LibraryApiDocs | null> => Promise.race([
       fetchLibraryApiDocs(p, budgetChars),
       new Promise<null>(r => setTimeout(() => r(null), Math.max(0, left()))),
     ])
-    const own = await race(cand)
-    if (own) return own
-    if (left() <= 0) break
-    const scoped = cand.startsWith('@') ? cand.slice(1).replace('/', '__') : cand
-    const dt = await race(`@types/${scoped}`)
-    if (dt) return { ...dt, pkg: cand, title: `${cand} — @types/${scoped}@${dt.version} type definitions (authoritative API surface)` }
+    let docs = await race(cand)
+    if (!docs && left() > 0) {
+      const scoped = cand.startsWith('@') ? cand.slice(1).replace('/', '__') : cand
+      const dt = await race(`@types/${scoped}`)
+      if (dt) docs = { ...dt, pkg: cand, title: `${cand} — @types/${scoped}@${dt.version} type definitions (authoritative API surface)` }
+    }
+    if (!docs) continue
+    // Real, popular, and still possibly the wrong package for THIS question.
+    if (!docsAreRelevant(docs, query)) {
+      debugBus.emit('pipeline', 'library_api_irrelevant', { pkg: docs.pkg, query: query.slice(0, 60) }, { severity: 'info' })
+      continue
+    }
+    return docs
   }
   return null
 }

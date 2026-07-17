@@ -16,7 +16,7 @@
 
 import type { RouterTask } from '../router/capabilityRouter'
 import { selectRelevantPassages } from '../answer/groundedAnswer'
-import { snippetQuality, selectBestSnippet, stripBoilerplate, extractCodeBlocks, extractPackageCandidates, fetchLibraryApiForQuery, fetchLibraryApiDocs, type CodeBlock } from './retrievalLayer'
+import { snippetQuality, selectBestSnippet, stripBoilerplate, extractCodeBlocks, extractPackageCandidates, extractPackageCandidatesRanked, fetchLibraryApiForQuery, fetchLibraryApiDocs, type CodeBlock } from './retrievalLayer'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, extra = '') {
@@ -113,6 +113,34 @@ async function main() {
   check('6b IPv4 is not treated as a package (digit rule)', !cands.includes('ipv4'), JSON.stringify(cands))
   check('6c quoted import specifier is a candidate',
     extractPackageCandidates(`import { z } from 'zod'`).includes('zod'), '')
+
+  // ── 6i. THE LOWERCASE GAP (cont.89) ───────────────────────────────────────────
+  // MEASURED: with structural signals alone, only 1 of 10 realistic library asks produced a
+  // candidate — the whole authoritative-docs lane was gated behind the user pressing SHIFT.
+  // "zod schema to validate an ipv4 address" is what people actually type.
+  for (const [q, want] of [
+    ['zod schema to validate an ipv4 address', 'zod'],
+    ['express middleware for error handling', 'express'],
+    ['make an http request with axios', 'axios'],          // via namesInstrument, not isCodingQuery
+    ['parse a csv file with papaparse', 'papaparse'],       // isCodingQuery is FALSE here
+  ] as const) {
+    check(`6i lowercase "${want}" is a candidate`, extractPackageCandidates(q).includes(want),
+      JSON.stringify(extractPackageCandidates(q)))
+  }
+
+  // ── 6j. FALSE POSITIVES ARE EXPENSIVE ─────────────────────────────────────────
+  // A bare token that is an English word must NOT reach the docs lane on structure alone. If
+  // algorithmic work grounds on an irrelevant package, the faithfulness verifier sees an answer
+  // touching none of the documented APIs, calls it a violation, and "repairs" CORRECT code into
+  // using a library it never needed. Popularity + relevance are what stop this at runtime; here
+  // we assert the cheap structural half stays honest.
+  check('6j "express a number as a fraction" does not name the express package as certain',
+    !extractPackageCandidatesRanked('express a number as a fraction in lowest terms')
+      .some(c => c.name === 'express' && c.confidence === 'named'),
+    JSON.stringify(extractPackageCandidatesRanked('express a number as a fraction in lowest terms')))
+  check('6j digit rule holds on the token path too (ipv4/sha256 are standards)',
+    !extractPackageCandidates('hash a password with sha256 in node').includes('sha256'),
+    JSON.stringify(extractPackageCandidates('hash a password with sha256 in node')))
 
   // The live half is OPT-IN (`npm run retrieval:live`) so this bench keeps its no-network
   // contract. It is the only check that proves the lane actually delivers — run it after any

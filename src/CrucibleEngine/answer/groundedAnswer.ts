@@ -14,7 +14,7 @@
 // only ever makes an answer better or is transparently skipped, never worse.
 
 import {
-  search, fetch as fetchPage, stripBoilerplate, namesExternalLibrary,
+  search, fetch as fetchPage, stripBoilerplate, namesExternalLibrary, isCodingQuery, namesInstrument,
   fetchLibraryApiForQuery, type SearchResult, type LibraryApiDocs,
 } from '../retrieval/retrievalLayer'
 import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
@@ -379,8 +379,15 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
   // grounding gave up — the model then fabricated. The registry CDN is deterministic, keyless
   // and unthrottled, so this lane WORKS WHEN SEARCH IS DOWN, which is most of the time.
   // It leads the evidence block because a version-pinned declaration outranks any blog post.
+  // `namesExternalLibrary` is capitalization-dependent by construction (its strongest signal is
+  // a capitalized proper noun), and MEASURED cont.89 that gate alone let only 1 of 10 realistic
+  // library asks through — "zod schema to validate an ipv4 address" skipped grounding entirely.
+  // For THIS lane the gate is redundant: fetchLibraryApiForQuery already proves a package exists,
+  // is popular enough to be meant, and publishes docs relevant to the question. Letting any
+  // coding query try it is what makes the lane reachable for lowercase phrasing; a query that
+  // names no real library simply gets null back.
   let apiDocs: LibraryApiDocs | null = null
-  if (namesExternalLibrary(query)) {
+  if (namesExternalLibrary(query) || isCodingQuery(query) || namesInstrument(query)) {
     emit?.({ type: 'thought', text: 'Reading the published type definitions for the named package…' })
     try { apiDocs = await fetchLibraryApiForQuery(opts.searchQuery || query) } catch { apiDocs = null }
     if (apiDocs) {
