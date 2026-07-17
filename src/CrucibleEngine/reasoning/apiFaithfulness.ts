@@ -222,10 +222,31 @@ export function documentedIdentifiers(evidence: string): Set<string> {
  * from call-shaped occurrences only: `z.ipv4()` (namespace member call) and `ipv4()` (bare
  * zero-arg call, the form the deepwiki docs table uses).
  */
+/**
+ * Control-flow keywords are followed by `(` too. They are a closed grammatical class (the
+ * FUNCTION_WORDS precedent), never a library's API, and letting them into the surface would
+ * both inflate the vocab count and let `if (…)` in an answer "overlap" the docs.
+ */
+const NOT_AN_API = new Set(
+  ('if else for while switch catch return function await typeof instanceof new delete void ' +
+   'do try throw case in of yield import export declare const let var class extends implements').split(/\s+/),
+)
+
 export function documentedCallSurface(evidence: string): string[] {
   const out = new Set<string>()
   for (const m of evidence.matchAll(/\.\s*([A-Za-z_$][\w$]*)\s*\(/g)) out.add(m[1])
   for (const m of evidence.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(\s*\)/g)) out.add(m[1])
+  // TypeScript DECLARATION signatures — `ipv4(params?: core.$ZodCheckIPv4Params): this;`,
+  // `declare function email(...): ZodEmail`. Neither pattern above can see these: there is no
+  // leading dot and the parens are not empty.
+  //
+  // This matters because the grounding path now leads with a package's published .d.ts (the
+  // authoritative API surface — cont.89 blocker #1). Measured on that evidence, this function
+  // extracted FOUR call-shaped APIs against a MIN_VOCAB of 4 — one fewer and the whole-answer
+  // check would abstain and every fabrication would ship. The richest, most precise source of
+  // API truth in the system was reading as almost no surface at all.
+  for (const m of evidence.matchAll(/\b([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*:/g)) out.add(m[1])
+  for (const k of NOT_AN_API) out.delete(k)
   return [...out].sort()
 }
 
@@ -235,10 +256,41 @@ export function evidenceCovers(evidence: string, library: string): boolean {
   return new RegExp(`(^|[^\\w@/-])${esc}([^\\w-]|$)`, 'i').test(evidence)
 }
 
-/** Identifiers the answer's code actually CALLS — `foo(` and `x.foo(`, normalized to bare names. */
+/**
+ * Identifiers the answer's code DEFINES for itself — declarations, not uses.
+ *
+ * MEASURED LIVE (cont.89), the gaming vector this closes: asked for a Zod schema and given zod's
+ * real .d.ts, the FM emitted
+ *   export function ipv4(address: string): boolean { return /^(25[0-5]|…)$/.test(address) }
+ * — a hand-rolled regex that never imports or touches zod. But `ipv4(` in its OWN declaration
+ * matched the "calls a documented API" test, so the whole-answer check concluded "it used the
+ * evidence" and ABSTAINED. The answer shipped in 11.9s with no repair.
+ *
+ * Naming your own function after the API you were told to use is not using it. Subtracting
+ * definitions is what makes "called a documented API" mean what it says.
+ */
+function definedIdentifiers(code: string): Set<string> {
+  const out = new Set<string>()
+  for (const m of code.matchAll(/\b(?:function|class)\s+([A-Za-z_$][\w$]*)/g)) out.add(m[1])
+  for (const m of code.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/g)) out.add(m[1])
+  // `foo(a) { … }` / `foo: (a) => …` — object-literal and class methods.
+  for (const m of code.matchAll(/^\s*([A-Za-z_$][\w$]*)\s*\([^()]*\)\s*\{/gm)) out.add(m[1])
+  for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*:\s*(?:async\s*)?(?:function\b|\([^()]*\)\s*=>)/g)) out.add(m[1])
+  return out
+}
+
+/**
+ * Identifiers the answer's code actually CALLS — `foo(` and `x.foo(`, normalized to bare names.
+ * Identifiers the code DEFINES are excluded: a declaration is not a use (see definedIdentifiers).
+ */
 function calledIdentifiers(code: string): Set<string> {
   const out = new Set<string>()
   for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) out.add(m[1])
+  // A member call (`z.ipv4()`, `s.parse()`) is always a real use, even if a local shares the
+  // name — so re-admit anything that appears in member position before subtracting definitions.
+  const memberCalled = new Set<string>()
+  for (const m of code.matchAll(/\.\s*([A-Za-z_$][\w$]*)\s*\(/g)) memberCalled.add(m[1])
+  for (const d of definedIdentifiers(code)) if (!memberCalled.has(d)) out.delete(d)
   return out
 }
 

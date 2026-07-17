@@ -312,5 +312,54 @@ console.log('\n== repair hint quality ==')
   check('repeated fabrication dedups to 1 violation', v.violations.length === 1, `got ${v.violations.length}`)
 }
 
+{
+  // ── SELF-NAMED FUNCTION — the gaming vector, caught live cont.89 ───────────────
+  // Asked for a Zod schema and handed zod's real .d.ts, the FM emitted a hand-rolled regex
+  // wrapped in `export function ipv4(...)`. It never imports or touches zod — but `ipv4(` in
+  // its OWN declaration satisfied "calls a documented API", so the whole-answer check
+  // ABSTAINED and the fabrication shipped in 11.9s with no repair. Naming your function after
+  // the API is not using it.
+  const SELF_NAMED = code(
+    'export function ipv4(address) {\n' +
+    "  const re = /^(25[0-5]|2[0-4][0-9])\\.(25[0-5])$/;\n" +
+    '  return re.test(address);\n' +
+    '}\n' +
+    "console.log(ipv4('1.2.3.4'));",
+  )
+  check('self-named ipv4() that never touches zod is a VIOLATION',
+    verifyEvidenceUsage(SELF_NAMED, ZOD_EV).status === 'violations',
+    verifyEvidenceUsage(SELF_NAMED, ZOD_EV).status)
+
+  // BOTH DIRECTIONS (cont.85): the subtraction must not reject genuine use. A local binding
+  // that shares the API's name while ACTUALLY calling it is a real use, not a fabrication.
+  const REAL_MEMBER = code("import * as z from 'zod'\nconst s = z.object({ ip: z.ipv4() })\nconst out = s.parse({ ip: '1.2.3.4' })\nconsole.log(out)")
+  check('genuine z.ipv4() member call still abstains (no false reject)',
+    verifyEvidenceUsage(REAL_MEMBER, ZOD_EV).status === 'abstain')
+  const LOCAL_SHADOW = code("import * as z from 'zod'\nconst ipv4 = z.ipv4()\nconst r = ipv4.safeParse('1.2.3.4')\nconsole.log(r.success)")
+  check('local `const ipv4 = z.ipv4()` still abstains (defined AND genuinely called)',
+    verifyEvidenceUsage(LOCAL_SHADOW, ZOD_EV).status === 'abstain')
+}
+
+{
+  // ── .d.ts SURFACE — grounding now leads with published type definitions (cont.89) ──
+  // A TypeScript declaration (`ipv4(params?: X): this;`) has no leading dot and no empty
+  // parens, so the original two patterns could not see it: zod's real .d.ts extracted FOUR
+  // call-shaped APIs against MIN_VOCAB=4 — one fewer and the whole-answer check abstains and
+  // every fabrication ships. The most authoritative source in the system read as no surface.
+  const DTS = [
+    'declare const api: {',
+    '    ipv4(params?: string | core.$ZodCheckIPv4Params): this;',
+    '    ipv6(params?: string | core.$ZodCheckIPv6Params): this;',
+    '    email(params?: string | core.$ZodCheckEmailParams): this;',
+    '    uuid(params?: string): this;',
+    '    cidrv4(params?: string): this;',
+    '};',
+  ].join('\n')
+  const surface = documentedCallSurface(DTS)
+  for (const id of ['ipv4', 'ipv6', 'email', 'uuid', 'cidrv4'])
+    check(`.d.ts declaration signature yields ${id}`, surface.includes(id), surface.join(','))
+  check('control-flow keywords are not APIs', !documentedCallSurface('if (x): y\nfor (a): b').includes('if'))
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

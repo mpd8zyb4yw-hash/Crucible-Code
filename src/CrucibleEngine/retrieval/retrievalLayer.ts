@@ -65,7 +65,8 @@ const pageCache = new Map<string, string>()
 const SEARCH_TTL_MS = 10 * 60_000
 const searchCache = new Map<string, { at: number; results: SearchResult[] }>()
 const typeDefCache = new Map<string, string>()
-const libraryApiCache = new Map<string, LibraryApiDocs | null>()
+// Positive results only — a negative is never cached (see fetchLibraryApiDocs).
+const libraryApiCache = new Map<string, LibraryApiDocs>()
 
 /** Clear all caches (test isolation / long-running sessions). */
 export function clearCache(): void {
@@ -800,6 +801,34 @@ export interface LibraryApiDocs {
 
 const JSDELIVR_DATA = 'https://data.jsdelivr.com/v1/packages/npm'
 const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm'
+const UNPKG = 'https://unpkg.com'
+
+/**
+ * Resolve a package to {version, files} from EITHER CDN. Two independent registries, because
+ * one is a single point of failure: measured, jsDelivr served zod's listing in ~1.1s and then
+ * timed out on the very next run under congestion — and a miss here costs the whole
+ * authoritative-evidence lane, dropping the answer back to fabrication. unpkg's `?meta` returns
+ * an equivalent flat listing with sizes, so the lane survives either one being down.
+ */
+async function resolvePackageFiles(pkg: string): Promise<{ version: string; files: Array<{ path: string; size: number }> } | null> {
+  try {
+    const resolved = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}/resolved`, 5000))
+    const version: string = resolved?.version
+    if (version) {
+      const listing = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}@${version}`, 6000))
+      const files = flattenJsDelivr(listing?.files)
+      if (files.length) return { version, files }
+    }
+  } catch { /* fall through to unpkg */ }
+  try {
+    // unpkg redirects `pkg@latest` → the concrete version and returns a FLAT list already.
+    const meta = JSON.parse(await rawGet(`${UNPKG}/${pkg}/?meta`, 8000))
+    const version: string = meta?.version
+    const files = (meta?.files ?? []).map((f: any) => ({ path: f.path as string, size: (f.size ?? 0) as number }))
+    if (version && files.length) return { version, files }
+  } catch { /* both down */ }
+  return null
+}
 
 /** Flatten a jsDelivr file tree into `{path, size}`, paths rooted at `/`. */
 function flattenJsDelivr(nodes: any[], prefix = ''): Array<{ path: string; size: number }> {
@@ -859,17 +888,21 @@ export function extractPackageCandidates(q: string): string[] {
 export async function fetchLibraryApiDocs(pkg: string, budgetChars = 60_000): Promise<LibraryApiDocs | null> {
   const cacheKey = `${pkg}:${budgetChars}`
   const hit = libraryApiCache.get(cacheKey)
-  if (hit !== undefined) return hit
-  const miss = (): null => { libraryApiCache.set(cacheKey, null); return null }
+  if (hit) return hit
+  // NEGATIVE RESULTS ARE NOT CACHED — the same trap that made `searchCache` poison a query for
+  // the whole process (see SEARCH_TTL_MS). "No API docs" here is usually TRANSIENT: a congested
+  // CDN blowing the deadline, not a package that doesn't exist. Measured: the lane resolved
+  // zod@4.4.3 in 1.1s, then returned null on the next run when jsDelivr was slow — caching that
+  // would have killed the lane for every later request in the process. A real 404 costs one
+  // cheap re-check; a cached false negative costs every answer.
+  const miss = (): null => null
   if (!/^(@[\w.-]+\/)?[\w.-]+$/.test(pkg)) return miss()
   try {
-    // 1. Resolve the current version — pins every later URL to one immutable snapshot.
-    const resolved = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}/resolved`, 6000))
-    const version: string = resolved?.version
-    if (!version) return miss()
-    // 2. Full file listing (one request, with sizes — no crawling to discover them).
-    const listing = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}@${version}`, 8000))
-    const all = flattenJsDelivr(listing?.files)
+    // 1+2. Resolve the version (pins every later URL to one immutable snapshot) and the full
+    // file listing with sizes — from either CDN, so one being down does not kill the lane.
+    const resolved = await resolvePackageFiles(pkg)
+    if (!resolved) return miss()
+    const { version, files: all } = resolved
     let dts = all.filter(f => /\.d\.(ts|cts|mts)$/.test(f.path))
     if (!dts.length) return miss()
     // 3. Follow the declared entry point to the subtree it actually re-exports, and keep only
