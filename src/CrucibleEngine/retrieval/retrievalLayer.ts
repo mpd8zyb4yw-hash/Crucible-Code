@@ -16,6 +16,7 @@
 
 import https from 'https'
 import http from 'http'
+import { readFileSync } from 'fs'
 import type { RouterTask } from '../router/capabilityRouter'
 import { debugBus } from '../debug/bus'
 
@@ -168,7 +169,12 @@ export function isCodingQuery(q: string): boolean {
 const LANGUAGE_NAMES = new Set(
   ('javascript typescript python java kotlin swift rust go golang ruby php perl scala haskell ' +
    'elixir erlang clojure lua dart c c++ c# f# objective-c bash shell zsh sql html css scss sass ' +
-   'json yaml toml xml markdown regex regexp').split(/\s+/),
+   'json yaml toml xml markdown regex regexp ' +
+   // Runtimes are the same closed grammatical class as languages: "a rate limiter in Node"
+   // names WHERE the code runs, not a package to look up. Without these, "in Node" alone
+   // opened the library lane and proposed the (typeless, irrelevant) `node` npm package
+   // (live false-match, cont.94).
+   'node nodejs deno bun').split(/\s+/),
 )
 
 /**
@@ -902,7 +908,19 @@ export function extractPackageCandidatesRanked(q: string): PackageCandidate[] {
   }
   // 2. explicit package noun: "the zod library", "npm package express"
   for (const m of msg.matchAll(/\b(?:npm|pypi|pip)?\s*(?:packages?|librar(?:y|ies)|modules?|frameworks?)\s+(?:called\s+|named\s+)?([\w@/.-]{2,})/gi)) push(m[1])
-  for (const m of msg.matchAll(/\b(?:the\s+)?([\w@/.-]{2,})\s+(?:packages?|librar(?:y|ies)|modules?|frameworks?)\b/gi)) push(m[1])
+  // "X library/module" is ambiguous between naming a package ("the zod library") and ordinary
+  // noun-compound prose ("a rate limiter module" — live false-match on limiter@3.0.0, cont.94).
+  // Only a package-SHAPED name (scoped, dashed, dotted) earns trust from this pattern; a plain
+  // English word here is 'token' confidence, so the popularity + relevance corroboration built
+  // for exactly this ambiguity gets to arbitrate.
+  for (const m of msg.matchAll(/\b(?:the\s+)?([\w@/.-]{2,})\s+(?:packages?|librar(?:y|ies)|modules?|frameworks?)\b/gi)) {
+    if (/[@/.-]/.test(m[1])) { push(m[1], 'named'); continue }
+    // Same compound-head grammar as the bare-token path below: "a rate limiter module" is a
+    // noun compound naming the deliverable ("limiter" head, "module" container), not a package.
+    const prev = msg.slice(0, m.index).toLowerCase().match(/([a-z][a-z0-9.-]*)\W*$/)?.[1]
+    if (isEnglishWord(m[1].toLowerCase()) && prev !== undefined && isContentWord(prev)) continue
+    push(m[1], 'token')
+  }
   // 3. capitalized proper-noun tokens (same rule as namesExternalLibrary #4), lowercased —
   //    "Zod" → zod. Sentence-initial tokens are held back to LAST rather than dropped: in
   //    "Write a Zod schema…", "Write" is only capitalized because it starts the sentence, and
@@ -919,7 +937,10 @@ export function extractPackageCandidatesRanked(q: string): PackageCandidate[] {
     if (i === 0) initial.push(bare.toLowerCase())
     else push(bare.toLowerCase())
   }
-  initial.forEach(n => push(n))
+  // A sentence-initial capital is a grammatical accident, not a naming signal ("Walk me
+  // through…" grounded on walk@2.3.4 live, cont.94) — so beyond being tried LAST, it is only
+  // 'token' confidence: it must clear the download floor + relevance gate like any bare word.
+  initial.forEach(n => push(n, 'token'))
   // 4. BARE LOWERCASE TOKENS — what users actually type.
   //
   // MEASURED (cont.89): with signals 1-3 alone, only 1 of 10 realistic library asks grounded.
@@ -931,8 +952,25 @@ export function extractPackageCandidatesRanked(q: string): PackageCandidate[] {
   // package for nearly every English word ("sort", "list", "number" all resolve). They are
   // corroborated downstream by popularity + relevance — see fetchLibraryApiForQuery.
   if (isCodingQuery(msg) || namesInstrument(msg)) {
-    for (const t of msg.toLowerCase().match(/[a-z][a-z0-9.-]{2,}/g) ?? []) {
-      if (REL_STOP.has(t) || LANGUAGE_NAMES.has(t) || GENERIC_CODE_NOUNS.has(t)) continue
+    // Keep SHORT words ("a", "an", "me") in the array: they don't become candidates, but they
+    // matter for the compound-head rule below — "build an express server" must see "an" as the
+    // word before "express" (article → attributive → keep), not the verb "build".
+    const words = msg.toLowerCase().match(/[a-z][a-z0-9.-]*/g) ?? []
+    for (let i = 0; i < words.length; i++) {
+      const t = words[i]
+      if (t.length < 3 || REL_STOP.has(t) || LANGUAGE_NAMES.has(t) || GENERIC_CODE_NOUNS.has(t)) continue
+      // COMPOUND-HEAD rule (live false-match, cont.94): popularity cannot arbitrate a candidate
+      // like "limiter" — the npm package really does clear the download floor (14M/wk), and its
+      // docs really do mention rate/token/bucket, so relevance passes too. The discriminating
+      // signal is GRAMMAR: in "build a rate limiter", the word is the HEAD of a noun compound —
+      // the deliverable being implemented — while a library name in the same position is an
+      // attributive MODIFIER ("zod schema", "express middleware", "react app": each preceded by
+      // an article, each modifying the noun after it). So: a common-English dictionary word
+      // (system wordlist — a closed linguistic fact, not a package list) preceded by another
+      // content word is a compound head, not a package name — unless it sits in explicit
+      // instrument position ("with/using/via X"), which overrides everything.
+      if (i > 0 && isEnglishWord(t) && isContentWord(words[i - 1]) &&
+          !new RegExp(`\\b(?:with|using|via)\\s+${t.replace(/[.-]/g, '\\$&')}\\b`).test(msg.toLowerCase())) continue
       // The digit rule, same as the proper-noun path above: a token carrying a version/width
       // digit is a STANDARD (IPv4, IPv6, UTF8, SHA256, Base64), not a library. Library names
       // essentially never do. Omitting it here regressed the bench's 6b guard — the rule has to
@@ -964,6 +1002,28 @@ export function namesInstrument(q: string): boolean {
  * dead registry lookup costs ~1-4s each on the answer's critical path. Closed class, no library
  * names (the no-templates rule): these are English/CS nouns, not a package list.
  */
+// System wordlist, loaded lazily and once. FAIL-OPEN: if the host has no dictionary (some
+// minimal Linux images), the compound-head rule simply never fires — the download floor and
+// relevance gate remain, which is exactly the pre-rule behavior. A missing wordlist must never
+// invent a rejection.
+let englishWords: Set<string> | null = null
+function isEnglishWord(w: string): boolean {
+  if (englishWords === null) {
+    englishWords = new Set<string>()
+    try {
+      for (const line of readFileSync('/usr/share/dict/words', 'utf-8').split('\n')) {
+        if (line.length >= 3) englishWords.add(line.toLowerCase())
+      }
+    } catch { /* fail-open */ }
+  }
+  return englishWords.has(w)
+}
+
+/** A word that carries topic meaning in modifier position (not an article/preposition/stopword). */
+function isContentWord(w: string): boolean {
+  return /^[a-z]{3,}/.test(w) && !REL_STOP.has(w)
+}
+
 const GENERIC_CODE_NOUNS = new Set(
   ('function functions method methods class classes object objects array arrays string strings ' +
    'number numbers value values type types schema schemas file files code example examples ' +

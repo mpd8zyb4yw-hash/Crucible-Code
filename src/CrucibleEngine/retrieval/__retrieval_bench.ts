@@ -138,6 +138,49 @@ async function main() {
     !extractPackageCandidatesRanked('express a number as a fraction in lowest terms')
       .some(c => c.name === 'express' && c.confidence === 'named'),
     JSON.stringify(extractPackageCandidatesRanked('express a number as a fraction in lowest terms')))
+  // 6k PROSE-WORD LAUNDERING (live false-matches, cont.94). npm publishes a package for
+  // nearly every English word, so the download floor + relevance gate must get to arbitrate
+  // EVERY bare-word candidate. Two side doors handed prose words 'named' confidence, which
+  // bypasses the floor:
+  //   - a sentence-initial capital ("Walk me through…" → grounded on walk@2.3.4)
+  //   - the "X module/library" noun-compound ("a rate limiter module" → limiter@3.0.0)
+  // And "in Node" proposed the `node` npm package — runtimes are the languages closed class.
+  check('6k sentence-initial capital is only token confidence ("Walk me through")',
+    !extractPackageCandidatesRanked('Walk me through building a rate limiter in Node')
+      .some(c => c.confidence === 'named'),
+    JSON.stringify(extractPackageCandidatesRanked('Walk me through building a rate limiter in Node')))
+  check('6k runtime names are not candidates at all (node/deno/bun)',
+    !extractPackageCandidates('Walk me through building a rate limiter in Node').includes('node'),
+    JSON.stringify(extractPackageCandidates('Walk me through building a rate limiter in Node')))
+  check('6k noun-compound before "module" is only token confidence ("rate limiter module")',
+    !extractPackageCandidatesRanked('write a rate limiter module with a token bucket')
+      .some(c => c.name === 'limiter' && c.confidence === 'named'),
+    JSON.stringify(extractPackageCandidatesRanked('write a rate limiter module with a token bucket')))
+  check('6k package-SHAPED name before "library" keeps named confidence (@scope/dash/dot)',
+    extractPackageCandidatesRanked('use the date-fns library to format a date')
+      .some(c => c.name === 'date-fns' && c.confidence === 'named'),
+    JSON.stringify(extractPackageCandidatesRanked('use the date-fns library to format a date')))
+  // 6l COMPOUND-HEAD rule (live false-match, cont.94). `limiter` clears the 5M download floor
+  // (14M/wk — popular transitive dep) AND its docs mention rate/token/bucket, so popularity and
+  // relevance both pass. The discriminating signal is grammar: a common-English word preceded by
+  // a content-word modifier ("rate limiter") is the HEAD of a compound naming the deliverable,
+  // not a package. Attributive library names ("express middleware", "react app") and coined
+  // names ("zod") are untouched; instrument position ("with limiter") overrides.
+  check('6l compound head is not a candidate ("build a rate limiter")',
+    !extractPackageCandidates('build a rate limiter in Node with a token bucket').includes('limiter'),
+    JSON.stringify(extractPackageCandidates('build a rate limiter in Node with a token bucket')))
+  check('6l compound head skipped even with trailing generic ("rate limiter module")',
+    !extractPackageCandidates('write a rate limiter module with a token bucket').includes('limiter'),
+    JSON.stringify(extractPackageCandidates('write a rate limiter module with a token bucket')))
+  check('6l attributive dict-word after an article survives ("build an express server")',
+    extractPackageCandidates('build an express server with json parsing').includes('express'),
+    JSON.stringify(extractPackageCandidates('build an express server with json parsing')))
+  check('6l coined name after a verb survives ("write a zod schema")',
+    extractPackageCandidates('write a zod schema to validate an email').includes('zod'),
+    JSON.stringify(extractPackageCandidates('write a zod schema to validate an email')))
+  check('6l instrument position overrides the compound-head rule ("with limiter")',
+    extractPackageCandidates('throttle api calls with limiter in a node service').includes('limiter'),
+    JSON.stringify(extractPackageCandidates('throttle api calls with limiter in a node service')))
   check('6j digit rule holds on the token path too (ipv4/sha256 are standards)',
     !extractPackageCandidates('hash a password with sha256 in node').includes('sha256'),
     JSON.stringify(extractPackageCandidates('hash a password with sha256 in node')))
