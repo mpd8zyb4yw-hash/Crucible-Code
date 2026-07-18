@@ -1021,6 +1021,30 @@ export function contractRepairSpec(question: string, verdict: ContractVerdict): 
 }
 
 /**
+ * The one-line API requirement a fresh synthesis must satisfy for the asked contract — derived
+ * from the same aliases/invariants the battery calibrates against, so the ask and the judge
+ * agree. Used by the seam's no-code repair: a collapse-shaped non-answer gives the retry no
+ * violations to learn from, so the KIND's own contract supplies the forward constraint.
+ */
+export function contractAskHint(kind: string): string | null {
+  switch (kind) {
+    case 'stack': return 'Expose push(value) and pop() where pop returns the most recently pushed value (LIFO).'
+    case 'queue': return 'Expose enqueue(value) and dequeue() where dequeue returns the oldest value (FIFO).'
+    case 'linked-list': return 'Expose an append/push method, a pop/remove method, and a toArray() that returns the stored values in order.'
+    case 'lru-cache': return 'Take the capacity in the constructor and expose get(key) and put(key, value) with least-recently-used eviction.'
+    case 'rate-limiter': return 'Expose an acquire() (or allow()) method that returns true when a request is admitted and false when rate-limited, with tokens refilling as time passes.'
+    case 'bst': return 'Expose insert(value), contains(value), and an inorder() traversal returning values ascending.'
+    case 'heap': return 'Expose push/insert and pop/extract where repeated extraction returns values in priority order.'
+    case 'event-emitter': return 'Expose on(event, handler), emit(event, ...args), and off(event, handler).'
+    case 'memoize': return 'memoize(fn) must return a wrapper that calls fn at most once per distinct argument and returns the cached result on repeats.'
+    case 'debounce': return 'debounce(fn, wait) must return a wrapper that coalesces rapid calls into a single execution after the wait.'
+    case 'throttle': return 'throttle(fn, interval) must return a wrapper that executes at most once per interval.'
+    case 'binary-search': return 'The function must take (sortedArray, target) and return the index of the target when present.'
+    default: return null
+  }
+}
+
+/**
  * Swap a certified repair into the answer: the FIRST fenced block becomes `code`, every later
  * fence is dropped (they demo/duplicate the code being replaced — keeping them would ship the
  * rejected artifact alongside its fix). Prose is preserved. Pure; the caller re-verifies the

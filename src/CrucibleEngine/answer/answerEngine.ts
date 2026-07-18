@@ -29,7 +29,7 @@ import { isCodingQuery, namesExternalLibrary } from '../retrieval/retrievalLayer
 import { buildRecallContextAsync } from './conversationMemory'
 import { detectTruncation, buildContinuationMessages, stitchContinuation } from './longOutput'
 
-export type AnswerIntent = 'lookup' | 'definition' | 'explain' | 'reason' | 'converse'
+export type AnswerIntent = 'lookup' | 'definition' | 'explain' | 'reason' | 'converse' | 'code'
 
 export interface AnswerFacets {
   needsExternalFact: boolean
@@ -126,7 +126,12 @@ export function classifyFacets(message: string): AnswerFacets {
   const needsMultiStep = !isCode && (MULTISTEP.test(m) || (needsComputation && (/\band\b/i.test(m) || multiQuantity)))
 
   let intent: AnswerIntent
-  if (isCode) intent = 'reason'
+  // A code-generation ask gets its OWN intent — never 'reason'. The reason prompt demands a
+  // trailing "Answer:" line (right for a math word problem, nonsensical for code): the weak FM
+  // occasionally obeys it literally and ships a bare "Answer: true" instead of a code block, which
+  // the prose critics then fail to flag as a non-answer. A dedicated 'code' intent carries a
+  // code-appropriate prompt (no "Answer:" line) and a code-shaped non-answer critic downstream.
+  if (isCode) intent = 'code'
   else if (needsComputation || REASON.test(m)) intent = 'reason'
   // Definition BEFORE explain: "what is a <term>" trips EXPLAIN, but a bare definition is lighter.
   else if (isDefinitionAsk(m)) intent = 'definition'
@@ -165,6 +170,11 @@ function systemPromptFor(facets: AnswerFacets, evidence: string): string {
   switch (facets.intent) {
     case 'reason':
       return `${base}\n\nThink through this step by step. Show each calculation or logical step explicitly. Re-check any arithmetic. State the final answer clearly on its own line at the end, prefixed with "Answer:".${grounding}`
+    case 'code':
+      // No "Answer:" line here — a code ask wants runnable code, not a one-word verdict. The weak
+      // FM will echo whatever closing instruction it's given, so the closing instruction must be
+      // "produce the code," not "state the answer on its own line."
+      return `${base}\n\nWrite complete, correct, runnable code that fully implements what was asked. Put the implementation in a single fenced code block with the right language tag. After the code block, add one or two sentences on how to use it. Do not output a bare yes/no or a one-line "Answer:" — the deliverable is the code itself.${grounding}`
     case 'explain':
       return `${base}\n\nGive a clear, thorough explanation. Build intuition first, then detail; include a concrete example. Use markdown structure where it helps. Do not pad — every sentence should add information.${grounding}`
     case 'definition':

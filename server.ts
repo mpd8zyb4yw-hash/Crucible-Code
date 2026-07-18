@@ -365,7 +365,7 @@ import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/Cruci
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
 import { domainVerify, correctArithmeticCascade, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
-import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks } from './src/CrucibleEngine/reasoning/contractVerify'
+import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks, detectContract, contractAskHint } from './src/CrucibleEngine/reasoning/contractVerify'
 import { isCodingQuery } from './src/CrucibleEngine/retrieval/retrievalLayer'
 import { bonsaiComplete, isBonsaiInstalled, repairModelName } from './src/CrucibleEngine/localModels/bonsaiSidecar'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
@@ -4181,9 +4181,15 @@ app.post('/api/chat', async (req, res) => {
           && isCodingQuery(message)) {
         try {
           debugBus.emit('pipeline', 'answer_code_missing', { len: answer.length, preview: answer.slice(0, 60) }, { severity: 'warn', requestId })
+          // When the question names a contract, the retry carries that contract's own API line
+          // as a forward constraint AND the adoption bar rises to contract-CERTIFIED — measured
+          // live (cont.92b): without it, qwen answered "rate limiter" with a token COUNTER
+          // (no acquire at all); the contract tier abstained and the wrong shape was adopted.
+          const asked = detectContract(message)
+          const hint = asked ? contractAskHint(asked.kind) : null
           const msgs = [
             { role: 'system' as const, content: 'You write correct, self-contained TypeScript. Output ONLY the code — no fences, no commentary.' },
-            { role: 'user' as const, content: `${message}\n\nProvide a complete, runnable implementation. End with a brief usage example that exercises it.` },
+            { role: 'user' as const, content: `${message}\n\nProvide a complete, runnable implementation.${hint ? `\n${hint}` : ''}\nEnd with a brief usage example that exercises it.` },
           ]
           const gens: Array<{ src: string; gen: () => Promise<string | null> }> = [
             { src: 'fm', gen: async () => (await fmComplete(msgs)).trim() },
@@ -4191,6 +4197,7 @@ app.post('/api/chat', async (req, res) => {
               ? [{ src: repairModelName(), gen: async () => (await bonsaiComplete(msgs, { maxTokens: 700, timeoutMs: 30_000 })).trim() }]
               : []),
           ]
+          let fallback: { text: string; by: string } | null = null
           for (const cand of gens) {
             if (turnSignal?.aborted) break
             let raw: string | null = null
@@ -4198,14 +4205,26 @@ app.post('/api/chat', async (req, res) => {
             if (!raw || raw.trim().length < 20) continue
             const codeBody = raw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '').trim()
             const candidate = '```ts\n' + codeBody + '\n```'
-            // Full stack: syntax, own-demo, and the behavioral contract (violations block adoption;
-            // certified or abstain pass — the baseline being replaced contains NOTHING).
+            // Full stack: syntax, own-demo, behavioral contract. Violations always block.
             if (verifyCodeBlocks(candidate).length > 0) continue
             if (verifyPlainCodeByExecution(candidate).status === 'violations') continue
-            if (verifyAnswerContract(message, candidate).status === 'violations') continue
+            const cv = verifyAnswerContract(message, candidate)
+            if (cv.status === 'violations') continue
+            if (asked && cv.status !== 'certified') {
+              // Right shape unproven for a NAMED contract — hold as best-effort, keep looking.
+              if (!fallback) fallback = { text: candidate, by: cand.src }
+              continue
+            }
             answer = candidate
-            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: cand.src }, { severity: 'info', requestId })
+            fallback = null
+            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: cand.src, certified: cv.status === 'certified' }, { severity: 'info', requestId })
             break
+          }
+          if (fallback) {
+            // Keep-K best-effort: unverified code beats the literal non-answer it replaces,
+            // but it must SAY it is unverified (a green-looking stamp here is the cont.79h sin).
+            answer = fallback.text + `\n\n> ⚠ This implementation could not be verified against the ${asked!.kind} contract — review before relying on it.`
+            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: fallback.by, certified: false }, { severity: 'info', requestId })
           }
         } catch { /* non-blocking: ship the answer as-is */ }
       }
