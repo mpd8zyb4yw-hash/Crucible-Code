@@ -40,7 +40,14 @@ Suite (live /api/chat, n=1 each; the failure KIND is the reliable part) split cl
    Linked-list `pop()` logic and the token-bucket ratelimiter (inverted acquire, no time refill) are
    still WRONG. The lever: construct + probe the defined class (like `executionVerify.ts` but NOT
    library-gated) so wrong LOGIC is caught, not just wrong syntax. Proposer ceiling, not architecture.
-2. `lodash debounce example` still misses the library gate (no coding keyword / instrument / capital).
+2. `lodash debounce example` still misses the library gate — and the fix is NOT a quick heuristic.
+   Investigated cont.90: `namesExternalLibrary` is SYNC (called in answerEngine/synthDriver/
+   groundedAnswer), so it can't do the npm-download corroboration that separates `lodash` from an
+   English word. The clean instrument prepositions (`with/using/via`) are already covered by
+   `namesInstrument`; looser ones (`in lodash`, `use lodash`) fire on "in place" / "use recursion"
+   and cause the diversion regression the code explicitly warns against (a needless lookup steers
+   algorithmic work away from VGR certification). The right fix is an ASYNC npm-corroborated gate —
+   a refactor of a hot, merge-contended path, not a session-end bolt-on.
 3. Below is cont.89's state, kept for context.
 
 ---
