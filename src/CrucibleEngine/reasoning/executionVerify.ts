@@ -197,6 +197,13 @@ export function verifyByExecution(
     console: { log: () => {}, error: () => {}, warn: () => {}, info: () => {} },
     JSON, Math, Array, Object, String, Number, Boolean, Date, RegExp, Error, TypeError,
     RangeError, Map, Set, Promise, Symbol, BigInt, isNaN, parseInt, parseFloat,
+    // Timer globals every Node/browser runtime provides. Stubbed, not faked: a demo that
+    // SCHEDULES work is valid code, and a missing global here reads as a ReferenceError the
+    // structural filter counts as a defect — a false reject (live cont.94: `setInterval is not
+    // defined` flagged a correct interval-refill limiter as broken). Timer BEHAVIOR is the
+    // contract battery's job (fake clock + timer queue); this tier only asks "does it run".
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+    setImmediate: () => 0, clearImmediate: () => {}, queueMicrotask: () => {},
   }
 
   const context = vm.createContext(sandbox)
@@ -548,7 +555,9 @@ export function verifyPlainCodeByExecution(
     console: { log: () => {}, error: () => {}, warn: () => {}, info: () => {} },
     JSON, Math, Array, Object, String, Number, Boolean, Date, RegExp, Error, TypeError,
     RangeError, Map, Set, Promise, Symbol, BigInt, isNaN, parseInt, parseFloat,
-    setTimeout: () => 0, clearTimeout: () => {},
+    // Same timer-global rationale as the library-path sandbox above (live cont.94 false reject).
+    setTimeout: () => 0, clearTimeout: () => {}, setInterval: () => 0, clearInterval: () => {},
+    setImmediate: () => 0, clearImmediate: () => {}, queueMicrotask: () => {},
   }
   const context = vm.createContext(sandbox)
 

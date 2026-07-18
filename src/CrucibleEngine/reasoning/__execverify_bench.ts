@@ -166,6 +166,20 @@ console.log(sum(1, 2));`))
   check('plain: reports not-defined', /is not defined/.test(v.defects[0]?.error ?? ''), v.defects[0]?.error)
 }
 {
+  // [REAL, cont.94] timer globals — a correct interval-refill limiter was flagged broken live
+  // because the sandbox stubbed setTimeout but not setInterval, and the ReferenceError read as
+  // structural. Every timer global a Node/browser demo can reach must be present (stubbed).
+  const timers = verifyPlainCodeByExecution(code(`class RateLimiter {
+  constructor(capacity, intervalMs) { this.capacity = capacity; this.tokens = capacity; this.timer = setInterval(() => { this.tokens = Math.min(this.capacity, this.tokens + 1) }, intervalMs); }
+  acquire() { if (this.tokens > 0) { this.tokens--; return true } return false }
+  stop() { clearInterval(this.timer); }
+}
+const r = new RateLimiter(3, 1000);
+console.log(r.acquire());
+r.stop();`))
+  check('plain: setInterval/clearInterval demo is NOT a structural defect', timers.status === 'certified', timers.status + ': ' + timers.reason)
+}
+{
   // CORRECT self-demonstrating answer — MUST certify (false-reject guard, load-bearing).
   const good = code(`class LinkedList {
   constructor() { this.head = null; }
