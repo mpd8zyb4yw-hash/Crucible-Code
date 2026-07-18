@@ -305,6 +305,7 @@ export async function domainVerify(
 // are out of scope — this gate is specifically "would it even parse".
 import { spawnSync } from 'child_process'
 import vmMod from 'vm'
+import ts from 'typescript'
 
 export interface CodeBlockProblem {
   lang: string
@@ -335,6 +336,30 @@ export function verifyCodeBlocks(text: string): CodeBlockProblem[] {
       } catch { /* python missing / timeout — do not block the answer */ }
     } else if (lang === 'javascript' || lang === 'js') {
       try { new vmMod.Script(code) } catch (e: any) {
+        error = `SyntaxError: ${String(e?.message ?? e).slice(0, 200)}`
+      }
+    } else if (lang === 'typescript' || lang === 'ts' || lang === 'tsx') {
+      // TS can't go through vm.Script (types, generics, `import` are all syntax errors to a JS
+      // parser) — transpile it and read the compiler's own diagnostics instead. But keep ONLY the
+      // SYNTACTIC ones (category Error, code 1000–1999): those are input-independent "this does not
+      // parse" defects (e.g. `this.head: T = null` inside a constructor → TS1005). Semantic/type
+      // errors (2xxx: unknown types, type mismatches) are deliberately NOT flagged — strict:false
+      // ignores them, they need the full lib graph to judge, and rejecting on them false-rejects
+      // valid snippets that reference types declared elsewhere. Measured: the 1xxx filter fires on
+      // broken syntax and stays silent on type-error-only / undeclared-type / valid code.
+      try {
+        const out = ts.transpileModule(code, {
+          compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, strict: false, jsx: ts.JsxEmit.Preserve },
+          reportDiagnostics: true,
+        })
+        const syntactic = (out.diagnostics ?? []).filter(
+          d => d.category === ts.DiagnosticCategory.Error && d.code >= 1000 && d.code < 2000,
+        )
+        if (syntactic.length) {
+          const first = syntactic[0]
+          error = `TS${first.code}: ${ts.flattenDiagnosticMessageText(first.messageText, '\n').slice(0, 180)}`
+        }
+      } catch (e: any) {
         error = `SyntaxError: ${String(e?.message ?? e).slice(0, 200)}`
       }
     }
