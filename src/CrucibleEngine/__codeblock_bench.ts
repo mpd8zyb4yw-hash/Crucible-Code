@@ -10,7 +10,7 @@
 // syntax error ships one warning-less answer; a false reject warns on CORRECT code and, worse,
 // invites a needless repair. Every "valid-*" case asserts we do NOT flag legitimate TS — including
 // TYPE errors and undeclared types, which strict:false deliberately ignores.
-import { verifyCodeBlocks } from './domainVerifiers'
+import { verifyCodeBlocks, relabelMislabeledJsFences } from './domainVerifiers'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -58,6 +58,22 @@ console.log('== other langs unchanged ==')
 check('valid js not flagged', !flagged(fence('js', 'const f = (a) => a + 1')))
 check('broken js flagged', flagged(fence('js', 'function f( {')))
 check('prose fence ignored', !flagged(fence('', 'just some text, no lang')))
+
+console.log('== TS-in-js-fence relabel (deterministic, cont.94) ==')
+// [REAL] the live 0/6 repair class: the FM writes TypeScript inside a ```js fence. The code is
+// fine; the LABEL is the defect. relabelMislabeledJsFences must fix it with zero inference…
+const TS_IN_JS = fence('js', 'class Bucket {\n  private tokens: number = 5;\n  take(): boolean { if (this.tokens > 0) { this.tokens--; return true } return false }\n}')
+const r1 = relabelMislabeledJsFences(TS_IN_JS)
+check('TS-in-js fence is relabeled to ts', r1.relabeled === 1 && r1.text.startsWith('```ts\n'))
+check('relabeled fence passes the syntax gate', !flagged(r1.text))
+check('relabel preserves the code byte-for-byte', r1.text.includes('private tokens: number = 5;'))
+// …and must NOT touch what isn't the mislabel class:
+const r2 = relabelMislabeledJsFences(fence('js', 'function f( {'))
+check('genuinely broken js is NOT relabeled', r2.relabeled === 0)
+const r3 = relabelMislabeledJsFences(fence('js', 'const f = (a) => a + 1'))
+check('valid js is untouched', r3.relabeled === 0 && r3.text === fence('js', 'const f = (a) => a + 1'))
+const r4 = relabelMislabeledJsFences(fence('ts', 'const x: number = 1'))
+check('ts fences are out of scope', r4.relabeled === 0)
 
 console.log(`\n${pass}/${pass + fail}`)
 if (fail) process.exit(1)

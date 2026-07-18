@@ -344,6 +344,38 @@ function semanticFatalTs(code: string): string | null {
   } catch { return null /* checker failure must never block an answer */ }
 }
 
+/**
+ * Deterministic fence-label repair (cont.94). The weak FM habitually writes TypeScript inside a
+ * ```js fence; `vm.Script` then reports `SyntaxError: Unexpected token ':'` and the model-backed
+ * syntax repair measured 0/6 recovery on exactly this class — six model calls spent on code whose
+ * only defect was the LABEL. If a failing js/javascript fence parses cleanly under the TS grammar
+ * (no syntactic diagnostics, no fatal semantic, and the transpiled output is valid JS), the code
+ * is fine and the fence is mislabeled: relabel it to `ts`, which every downstream verifier
+ * (plaincode-exec, contract battery) already transpiles. Zero inference, cannot false-reject:
+ * genuinely broken code fails the TS grammar too and falls through to the model repair unchanged.
+ */
+export function relabelMislabeledJsFences(text: string): { text: string; relabeled: number } {
+  let relabeled = 0
+  const out = text.replace(/```(js|javascript)\n([\s\S]*?)```/gi, (whole, lang: string, code: string) => {
+    if (!code.trim()) return whole
+    try { new vmMod.Script(code); return whole } catch { /* fails as JS — try the TS grammar */ }
+    try {
+      const t = ts.transpileModule(code, {
+        compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, strict: false },
+        reportDiagnostics: true,
+      })
+      const syntactic = (t.diagnostics ?? []).some(
+        d => d.category === ts.DiagnosticCategory.Error && d.code >= 1000 && d.code < 2000,
+      )
+      if (syntactic || semanticFatalTs(code)) return whole
+      new vmMod.Script(t.outputText)          // the transpiled JS must itself be valid
+      relabeled++
+      return '```ts\n' + code + '```'
+    } catch { return whole }
+  })
+  return { text: out, relabeled }
+}
+
 export function verifyCodeBlocks(text: string): CodeBlockProblem[] {
   const problems: CodeBlockProblem[] = []
   const fenceRe = /```(\w*)\n([\s\S]*?)```/g

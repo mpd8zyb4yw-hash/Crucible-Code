@@ -363,7 +363,7 @@ import { loadTriumvirateLog, loadPendingQueue } from './src/CrucibleEngine/trium
 import { createExperiment, getActiveExperiments, assignCohort, recordObservation, runAutoDecisions, getExperimentStats, loadExperiments } from './src/CrucibleEngine/abTesting'
 import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/CrucibleEngine/episodicMemory'
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
-import { domainVerify, correctArithmeticCascade, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
+import { domainVerify, correctArithmeticCascade, verifyCodeBlocks, relabelMislabeledJsFences } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
 import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks, detectContract, contractAskHint } from './src/CrucibleEngine/reasoning/contractVerify'
 import { isCodingQuery } from './src/CrucibleEngine/retrieval/retrievalLayer'
@@ -4234,6 +4234,13 @@ app.post('/api/chat', async (req, res) => {
       // Still broken → ship with an explicit warning instead of silently claiming it works.
       if (answer && answer.trim() && answer.includes('```')) {
         try {
+          // Deterministic first (cont.94): TS mislabeled as ```js is a LABEL defect, not a code
+          // defect — relabel before spending any model call on a "repair" measured 0/6 here.
+          const relab = relabelMislabeledJsFences(answer)
+          if (relab.relabeled > 0) {
+            answer = relab.text
+            debugBus.emit('pipeline', 'code_block_relabeled', { count: relab.relabeled }, { severity: 'info', requestId })
+          }
           let problems = verifyCodeBlocks(answer)
           for (const p of problems) {
             const fixedRaw = await fmComplete([
