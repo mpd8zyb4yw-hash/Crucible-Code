@@ -39,6 +39,21 @@ check('undeclared type (needs libs)', !flagged(fence('ts', 'const y: Foo = 1; ex
 check('import-using snippet', !flagged(fence('typescript', 'import { z } from "zod"\nexport const s = z.string()')))
 check('tsx with jsx', !flagged(fence('tsx', 'export const C = () => <div className="x">hi</div>')))
 
+console.log('== runtime-fatal SEMANTIC TS must be FLAGGED ==')
+// [REAL] the second live linked-list run parsed fine but reassigned `const current` while walking
+// the list → TS2588 → throws "Assignment to constant variable" the first time push() has >1 node.
+check('const reassignment (TS2588)', flagged(fence('typescript',
+  'class L<T>{ head:{v:T,next:any}|null=null; push(v:T){ const c=this.head; c=this.head as any } }')))
+check('redeclare block-scoped (TS2451)', flagged(fence('ts', 'let a = 1; let a = 2;')))
+
+console.log('== semantic check must NOT false-reject (the load-bearing half) ==')
+// noLib:true + types:[] must strip the DOM.Node collision that naive type-checking would flag.
+check('user Node class (no DOM collide)', !flagged(fence('ts', 'class Node<T>{ v:T; constructor(v:T){this.v=v} } export {Node}')))
+check('references global console', !flagged(fence('typescript', 'export function log(x: string){ console.log(x) }')))
+check('references undeclared external type', !flagged(fence('ts', 'export const y: Foo = 1 as any')))
+check('valid const, no reassign', !flagged(fence('typescript', 'export function f(){ const a = 1; return a + 1 }')))
+check('valid let reassignment', !flagged(fence('ts', 'export function f(){ let a = 1; a = 2; return a }')))
+
 console.log('== other langs unchanged ==')
 check('valid js not flagged', !flagged(fence('js', 'const f = (a) => a + 1')))
 check('broken js flagged', flagged(fence('js', 'function f( {')))

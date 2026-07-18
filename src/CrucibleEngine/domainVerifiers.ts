@@ -316,6 +316,34 @@ export interface CodeBlockProblem {
   code: string
 }
 
+// Semantic TS errors that are runtime-fatal AND input-independent AND not lib/env-dependent, so
+// flagging them can never false-reject a legitimate snippet. Keep this set TINY and conservative:
+//   TS2588 — assign to a `const`  (throws "Assignment to constant variable" at runtime)
+//   TS2451 — redeclare a block-scoped variable  (a hard binding conflict)
+// Do NOT add "cannot find name / module / type" (2304/2307/2503/2552) — those fire on any snippet
+// that legitimately references something declared elsewhere, which is the exact false-reject class
+// the syntactic-only filter was designed to avoid.
+const FATAL_TS_CODES = new Set([2588, 2451])
+function semanticFatalTs(code: string): string | null {
+  try {
+    const opts: import('typescript').CompilerOptions = {
+      target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS,
+      strict: false, noLib: true, skipLibCheck: true, types: [], noEmit: true,
+    }
+    const fname = '__answer__.ts'
+    const host = ts.createCompilerHost(opts)
+    const src = ts.createSourceFile(fname, code, ts.ScriptTarget.ES2020, true)
+    const orig = host.getSourceFile.bind(host)
+    host.getSourceFile = (f, ...r) => (f === fname ? src : orig(f, ...r))
+    host.writeFile = () => {}
+    const prog = ts.createProgram([fname], opts, host)
+    const hit = ts.getPreEmitDiagnostics(prog).find(
+      d => d.category === ts.DiagnosticCategory.Error && FATAL_TS_CODES.has(d.code),
+    )
+    return hit ? `TS${hit.code}: ${ts.flattenDiagnosticMessageText(hit.messageText, '\n').slice(0, 180)}` : null
+  } catch { return null /* checker failure must never block an answer */ }
+}
+
 export function verifyCodeBlocks(text: string): CodeBlockProblem[] {
   const problems: CodeBlockProblem[] = []
   const fenceRe = /```(\w*)\n([\s\S]*?)```/g
@@ -358,6 +386,18 @@ export function verifyCodeBlocks(text: string): CodeBlockProblem[] {
         if (syntactic.length) {
           const first = syntactic[0]
           error = `TS${first.code}: ${ts.flattenDiagnosticMessageText(first.messageText, '\n').slice(0, 180)}`
+        } else {
+          // Parses fine — now catch the narrow set of SEMANTIC errors that are BOTH runtime-fatal
+          // AND input-independent AND never a lib/env artifact. A live linked-list answer parsed
+          // cleanly but reassigned a `const` (TS2588 → throws "Assignment to constant variable" the
+          // first time push() walks the list). The syntactic filter above can't see it. This uses a
+          // real type-check Program, but the safety comes from three constraints: `noLib:true` +
+          // `types:[]` remove the whole class of lib-collision false positives (measured: a user
+          // `Node` class no longer collides with DOM.Node), and the whitelist admits ONLY codes that
+          // are definitively broken regardless of surrounding context. Nothing here rejects a snippet
+          // for referencing a type/global it declares elsewhere — those codes are deliberately absent.
+          const semantic = semanticFatalTs(code)
+          if (semantic) error = semantic
         }
       } catch (e: any) {
         error = `SyntaxError: ${String(e?.message ?? e).slice(0, 200)}`
