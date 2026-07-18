@@ -17,59 +17,46 @@
 
 ---
 
-## CURRENT STATE — last updated cont.94, 2026-07-18, commit `79583e1` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.95, 2026-07-18, commit `b38224d` (REPLACE THIS EVERY SESSION)
 
-**cont.94 closed the three handoff items + one live find, 4 commits, all pushed.**
+**cont.95 closed both cont.94 answer-shape gaps + a live routing find, 2 commits, pushed.**
 
-1. **Library-grounding prose-word false-match CLOSED** (`d7b6041`). Three side doors let common
-   English words ground the lane: sentence-initial capitals ("Walk me through" → walk@2.3.4) and
-   the "X module/library" noun-compound ("rate limiter module" → limiter@3.0.0) both carried
-   'named' confidence (bypassing the download floor), and runtimes (node/deno/bun) weren't in the
-   languages closed class. But the floor alone CANNOT arbitrate `limiter` — it has 14M weekly
-   downloads and its docs mention rate/token/bucket, so relevance passes too. The universal fix is
-   grammatical: a system-dictionary English word preceded by a content-word modifier is the HEAD of
-   a compound naming the DELIVERABLE ("rate limiter"), not a package; attributive names ("express
-   middleware", "react app", "zod schema") and instrument position ("with limiter") survive;
-   fail-open when the host has no wordlist. retrieval:bench 36/36, retrieval:live 42/42;
-   LIVE-VERIFIED on a clean 79583e1 server: the walk/limiter asks no longer ground, zod/axios do.
-   RESIDUAL: a non-compound head after an article ("build a limiter") still grounds — rarer
-   phrasing, needs a head-of-creation-object signal if it ever bites.
+1. **Fenceless-code answers CLOSED** (`747fbcf`). A live code answer shipped 3.7KB of raw source
+   with NO fences — every code gate keys on ```-presence, so syntax/own-demo/contract ALL
+   abstained. `fenceUnfencedCode` (domainVerifiers.ts): finds maximal runs of code-plausible
+   lines (≥5 non-blank, ≥60% punctuation density), trims up to 4 weak edge lines, and fences
+   ONLY a region that PARSES (python ast / vm.Script / TS grammar) — zero inference, byte-
+   identical code, prose cannot false-fire (fails all three grammars). Wired at the server seam
+   BEFORE the answer_code_missing re-synthesis (emits `code_fence_inferred`), message-independent.
 
-2. **Repair 0/6 decomposed → deterministic fence-relabel** (`7fde208`). The dominant defect class
-   in the unrepaired drafts was valid TypeScript inside a ```js fence → vm.Script SyntaxError
-   "Unexpected token ':'" → model calls spent repairing code whose only defect was the LABEL.
-   `relabelMislabeledJsFences` (domainVerifiers.ts): a failing js fence that parses cleanly under
-   the TS grammar is relabeled to ts, zero inference, byte-identical code; wired at the server
-   seam AHEAD of the FM syntax repair (emits `code_block_relabeled`), so the logic then flows into
-   plaincode-exec + the contract battery instead of dying at the syntax gate. Cannot false-reject:
-   genuinely broken code fails the TS grammar too and falls through unchanged. codeblock 24/24.
-   The `callback is not a function` half of the finding is logic, owned by the contract-battery
-   repair loop (live-proven cont.92); no residual model-repair work identified.
+2. **No-external-dependency constraint gate LIVE-VERIFIED** (`747fbcf`). The FM ships express for
+   "no external packages" asks. `detectNoDependencyConstraint` reads the constraint off the
+   QUESTION; `findExternalImports` checks fenced js/ts imports against the FULL node-builtin list
+   (builtins + relative allowed — the constraint is about npm packages, not I/O). Violation →
+   forward-only re-synthesis (constraint explicit, rejected code never shown), adopted only when
+   the candidate passes the full gate stack AND imports nothing external; else honest warning.
+   LIVE on clean 747fbcf: `answer_dependency_violation {externals:["express"]}` →
+   `answer_dependency_repaired {by:"fm"}`; shipped answer was builtin-only (events/fs/http).
 
-3. **Rate-limiter post-refill cap-clamp check landed** (`a0bdd2a`). elapsed×rate refill without
-   Math.min(capacity,…) banked 10 tokens on a capacity-5 bucket after 10 idle seconds and passed
-   both existing checks. New check: after the refill probe consumes one token, ≥1 of the next 5
-   immediate requests must be denied. False-reject judged before landing: every calibrated
-   convention has capacity 5; clamped bucket / fixed window / sliding window all deny the 6th; an
-   already-failed no-refill impl denies them all (no double-fire). contract 69/69 (3 new).
+3. **Code-intent routing gap CLOSED** (`b38224d`, live find). Both live asks ("Implement a stack
+   …in TypeScript", "Write a rate limiter middleware for a Node HTTP server…") routed
+   intent='converse': CODE_GEN requires a deliverable noun from a closed list (stack/middleware
+   absent). New rule: generation verb + language in INSTRUMENT position (in/using/with/for
+   <lang>) = code ask regardless of the noun; topic position ("essay about Python") stays out.
+   LIVE on clean b38224d: intent='code', answer_certify executed+certified.
 
-4. **LIVE FIND while verifying: setInterval false reject CLOSED** (`79583e1`). The plaincode
-   sandbox stubbed setTimeout but not setInterval → a CORRECT interval-refill limiter was shipped
-   with "will not run as written". Both execution sandboxes now stub the full timer surface
-   (setInterval/clearInterval, setImmediate/clearImmediate, queueMicrotask). execverify 44/44.
+**Benches:** codeblock 24→47, answer 135→138, execverify 44/44, contract 69/69; tsc server 445
+(baseline 447, zero net-new). Live runs on self-booted :3002, clean banners (747fbcf, b38224d),
+telemetry via /api/debug/history; test server killed after.
 
-**Benches all green:** retrieval 36/36 (+live 42/42), codeblock 24/24, execverify 44/44,
-contract 69/69, apifaith 80/80, faithrepair 67/67. tsc server baseline unchanged (447, zero
-net-new). Live runs on self-booted :3002, clean banners (a0bdd2a, 79583e1), telemetry read via
-/api/debug/history; concurrent :3001 server untouched.
-
-### NEXT (cont.95)
-1. Run the broader 5-task suite at n≥3 on a clean tree (the % claim still needs the distribution;
+### NEXT (cont.96)
+1. Broader 5-task suite at n≥3 on a clean tree (the % claim still needs the distribution;
    agent/app route still honest-fail).
-2. Live observation (3 asks, this session): the FM routinely IGNORES "no external packages" and
-   ships express/express-limiter code; one code-intent answer shipped 3.7KB with NO fences (so
-   every code gate abstained). Both are answer-shape gaps upstream of the verifiers.
-3. "build a limiter" residual (see item 1) if it appears in live telemetry.
+2. Live oddity (stack ask, b38224d run): `code_block_broken_shipped TS1005` fired on one fence
+   while plaincode-exec certified another — a multi-fence answer where the broken block's FM
+   repair failed. Honest (warning shipped), but the broken-block repair could try the
+   deterministic relabel + qwen seat before giving up; check /api/debug/history for recurrence.
+3. "build a limiter" grounding residual (cont.94 item 1) if it bites live.
 
 ---
 
