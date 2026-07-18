@@ -1,4 +1,4 @@
-```typescript
+```javascript
 import { ipv4 } from 'zod';
 
 const validateIPv4 = (ip: string) => ipv4(ip);

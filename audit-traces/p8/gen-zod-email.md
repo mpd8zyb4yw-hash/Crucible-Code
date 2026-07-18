@@ -1,7 +1,7 @@
-```typescript
+```javascript
 import { email } from 'zod';
 
-const emailSchema = email();
+const schema = email();
 ```
 
 ---

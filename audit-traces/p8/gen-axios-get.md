@@ -1,16 +1,6 @@
-```javascript
 import axios from 'axios';
 
-const url = 'https://www.example.com/data';
-
-axios.get(url)
-  .then(response => {
-    console.log('Success:', response.data);
-  })
-  .catch(error => {
-    console.error('Error:', error);
-  });
-```
+axios.get('https://api.example.com/data');
 
 ---
 Sources:

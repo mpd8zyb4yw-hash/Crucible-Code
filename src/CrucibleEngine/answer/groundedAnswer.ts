@@ -144,6 +144,10 @@ interface Evidence {
   block: string
   sources: string[]     // urls in [S#] order
   titles: string[]
+  /** The evidence leads with a package's published .d.ts (authoritative API surface). */
+  fromLibraryApi?: boolean
+  /** The package name, when fromLibraryApi. */
+  apiPkg?: string
 }
 
 // ── Query-relevance windowing ────────────────────────────────────────────────
@@ -460,7 +464,7 @@ async function gatherEvidence(query: string, opts: GroundOpts): Promise<Evidence
 
   let block = parts.join('\n\n---\n\n')
   if (block.length > EVIDENCE_BUDGET) block = block.slice(0, EVIDENCE_BUDGET) + '\n… (truncated)'
-  return { block, sources, titles }
+  return { block, sources, titles, fromLibraryApi: !!apiDocs, apiPkg: apiDocs?.pkg }
 }
 
 function safeHost(url: string): string {
@@ -535,15 +539,37 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
     ...historyToMessages(history),
     { role: 'user', content: `Question: ${message}\n\n## EVIDENCE\n${ev.block}` },
   ]
+  // ── WHO DRAFTS: skip the FM for grounded LIBRARY code (cont.89) ────────────────
+  // MEASURED: for a library ask grounded on a .d.ts, the FM draft certifies 0/3 — it fabricates
+  // JSON-Schema/regex every time, then the repair loop pays qwen to redo it. That FM draft is
+  // pure latency (up to 9s) on the critical path. When the fast repair engine is installed AND
+  // we grounded on authoritative API docs, let it draft DIRECTLY: it certifies ~first-try in
+  // ~0.6-5s. The FM still drafts everything else (prose Q&A, where it is strong and the library
+  // verifier does not even apply). This is not skipping verification — the same certify+repair
+  // gate runs on whatever drafts.
+  const libraryDraft = ev.fromLibraryApi && !opts.onToken && isBonsaiInstalled()
   let text = ''
   try {
-    // Synthesis gets its own generous timeout (it IS the answer) — NOT derived from the
-    // remaining budget, which starved it into timing out. A capped max_tokens keeps the
-    // focused answer fast regardless. When a token sink is wired, STREAM (first fragment ~0.7s).
     const fmOpts = { priority: 'high' as const, timeoutMs: SYNTH_TIMEOUT_MS, maxTokens: 1100, signal }
-    text = opts.onToken
-      ? (await fmStream(msgs, opts.onToken, fmOpts)).trim()
-      : (await fmComplete(msgs, fmOpts)).trim()
+    if (libraryDraft) {
+      emit?.({ type: 'thought', text: `Drafting from the ${ev.apiPkg ?? 'library'} type definitions with the on-device code model…` })
+      const sys = 'You are a precise coding assistant. Use ONLY APIs that appear in the EVIDENCE. Answer with one short code block that CALLS the documented API, then at most one sentence. Do not emit JSON Schema or a hand-rolled regex.'
+      try {
+        text = (await bonsaiComplete(
+          [{ role: 'system', content: sys }, { role: 'user', content: `Question: ${message}\n\n## EVIDENCE\n${ev.block}` }],
+          { maxTokens: 500, timeoutMs: Math.min(60_000, Math.max(1, remaining())), signal },
+        )).trim()
+      } catch { text = '' }
+    }
+    // Either the branch above was skipped, or the local model whiffed — fall back to the FM.
+    if (!text || text.length < 20) {
+      // Synthesis gets its own generous timeout (it IS the answer) — NOT derived from the
+      // remaining budget, which starved it into timing out. A capped max_tokens keeps the
+      // focused answer fast regardless. When a token sink is wired, STREAM (first fragment ~0.7s).
+      text = opts.onToken
+        ? (await fmStream(msgs, opts.onToken, fmOpts)).trim()
+        : (await fmComplete(msgs, fmOpts)).trim()
+    }
   } catch { text = '' }
   if (!text || text.length < 20) {
     debugBus.emit('pipeline', 'grounding_synth_empty', { message: message.slice(0, 80) }, { severity: 'warn' })

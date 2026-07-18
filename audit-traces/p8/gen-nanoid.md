@@ -1,8 +1,8 @@
 ```javascript
-import { nanoid } from 'nanoid'
+import { nanoid } from 'nanoid';
 
-const uniqueId = nanoid()
-console.log(uniqueId)
+const uniqueId = nanoid();
+console.log(uniqueId);
 ```
 
 ---

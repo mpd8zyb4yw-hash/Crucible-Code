@@ -1,7 +1,8 @@
-```typescript
+```javascript
 import { guid } from 'zod';
 
 const uuidString = guid();
+console.log(uuidString);
 ```
 
 ---

@@ -1,7 +1,8 @@
 ```javascript
-// Parse 11 February 2014 from middle-endian format:
-var result = parse('02/11/2014', 'MM/dd/yyyy', new Date());
-//=> Tue Feb 11 2014 00:00:00
+import { parse } from 'date-fns';
+
+const formattedDate = parse('28-a de februaro', "do 'de' MMMM", new Date(2010, 0, 1), { locale: 'eo' });
+console.log(formattedDate);
 ```
 
 ---
