@@ -121,7 +121,24 @@ export function correctClockArithmetic(text: string): { text: string; correction
  * Returns the (possibly arithmetic-corrected) text and any issues that need a repair round.
  * Never throws, never calls a model.
  */
-export function critiqueAnswer(draft: string, message: string): { text: string; issues: Issue[] } {
+// A code-generation reply must actually contain code. A bare verdict ("Answer: true"), a plain
+// prose sentence, or an empty fence is a non-answer no matter how the prose critics read it — this
+// is the guard that stops the reason-prompt "Answer:" collapse from shipping on a code ask.
+function isCodeNonAnswer(text: string): boolean {
+  const t = text.trim()
+  if (!t) return true
+  const fence = t.match(/```[^\n]*\n([\s\S]*?)```/)
+  if (fence) return fence[1].trim().length < 10        // fenced but effectively empty
+  // No fence: accept only if it still looks like source (has code punctuation across several lines).
+  const codey = /[;{}()=]|=>|\bfunction\b|\bclass\b|\bdef\b|\breturn\b|\bconst\b|\blet\b|\bimport\b/
+  return !(codey.test(t) && t.split('\n').length >= 3)
+}
+
+export function critiqueAnswer(
+  draft: string,
+  message: string,
+  opts: { intent?: string } = {},
+): { text: string; issues: Issue[] } {
   const issues: Issue[] = []
   let text = draft ?? ''
 
@@ -155,6 +172,18 @@ export function critiqueAnswer(draft: string, message: string): { text: string; 
       })
     }
   } catch { /* non-blocking */ }
+
+  // Code asks bypass the PROSE critics below: the consistency/non-answer/truncation heuristics are
+  // tuned for natural-language answers and both miss code-specific failures and false-positive on
+  // valid source (reassigned locals read as "contradictions", a trailing `}` reads as "truncated").
+  // A code reply gets exactly one check — does it actually contain code — routed through the same
+  // 'nonanswer' repair path so a bare "Answer:" collapse triggers a real regeneration.
+  if (opts.intent === 'code') {
+    if (isCodeNonAnswer(text)) {
+      issues.push({ kind: 'nonanswer', detail: 'A code implementation was requested but the reply contained no usable code.' })
+    }
+    return { text, issues }
+  }
 
   // ── Consistency critic — self-contradiction (reassigned values, always/never, etc.). ──
   // Not deterministically fixable, so it triggers an FM repair round rather than an in-place edit.

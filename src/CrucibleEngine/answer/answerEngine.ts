@@ -198,6 +198,7 @@ function maxTokensFor(facets: AnswerFacets): number {
     case 'converse': return 448  // a tight paragraph or two
     case 'explain': return 1100  // intuition + detail + an example
     case 'reason': return 1536   // full step-by-step chain, never truncated
+    case 'code': return 1536     // a whole class/module implementation, never truncated
     default: return 768
   }
 }
@@ -205,7 +206,7 @@ function maxTokensFor(facets: AnswerFacets): number {
 // Intents whose answers can legitimately run long enough to hit the budget and need continuation.
 // Lookups are meant to be short — a lookup that fills its budget is verbose, not truncated, so it
 // is deliberately excluded (continuing it would fight the length cap).
-const LONG_CONT_INTENTS = new Set<AnswerFacets['intent']>(['explain', 'reason', 'converse'])
+const LONG_CONT_INTENTS = new Set<AnswerFacets['intent']>(['explain', 'reason', 'converse', 'code'])
 const MAX_CONT_ROUNDS = Number(process.env.CRUCIBLE_LONG_CONT_ROUNDS ?? 3)
 
 function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content: string }> {
@@ -455,7 +456,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   }
 
   // ── Check with deterministic critics ───────────────────────────────────────
-  let { text, issues } = critiqueAnswer(draft, message)
+  let { text, issues } = critiqueAnswer(draft, message, { intent: facets.intent })
   let corrections = issues.filter(i => i.kind === 'arithmetic').length
   let repaired = false
 
@@ -474,7 +475,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     ]
     const retry = (await fmComplete(repairMsgs)).trim()
     if (retry) {
-      const second = critiqueAnswer(retry, message)
+      const second = critiqueAnswer(retry, message, { intent: facets.intent })
       // Accept the repair only if it removed the re-promptable issues; else keep the better draft.
       const stillBroken = second.issues.filter(i => !i.fixedText)
       if (stillBroken.length < needsReprompt.length) {
@@ -672,7 +673,9 @@ function buildRepairDirective(issues: Issue[]): string {
     switch (i.kind) {
       case 'empty': return 'Your reply was empty. Provide a complete answer to the question.'
       case 'truncated': return 'Your reply was cut off. Provide the complete answer, finishing every sentence.'
-      case 'nonanswer': return 'You acknowledged the request but did not answer it. Give the actual answer now.'
+      case 'nonanswer': return /code/i.test(i.detail)
+        ? 'You did not provide the code that was requested. Write the complete implementation now, in a single fenced code block.'
+        : 'You acknowledged the request but did not answer it. Give the actual answer now.'
       case 'contradiction': return `Your reply contradicts itself (${i.detail}). Resolve the contradiction and give one consistent answer.`
       default: return i.detail
     }
