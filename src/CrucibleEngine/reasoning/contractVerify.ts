@@ -512,6 +512,17 @@ function rateLimiterHarness(C: string, ctorParams: string[]): string {
   __progress('refill after time passes')
   __advance(10000)
   if (!callOn(L)) __fail('refill', 'after advancing the clock 10 seconds, a request is still denied — tokens never refill', 'after enough time passes (rate ~1 token/sec, window 1000ms), a previously exhausted limiter must admit requests again')
+  __progress('post-refill burst is still capped')
+  // 10 idle seconds at ~1 token/sec is 10 tokens of refill on a capacity-5 bucket: a correct
+  // limiter CLAMPS to capacity, so after the refill check consumed one token at most 4 remain —
+  // at least one of the next 5 immediate requests must be denied. Chunky elapsed*rate refill
+  // without the clamp admits all 6 (over-admits after idle). Every calibrated convention has
+  // capacity 5 (sliding window, fixed window, token bucket all deny the 6th here), and if the
+  // refill check above already failed (nothing refills), these are all denied too — no double
+  // judgment, so this check cannot fire on a correct or already-failed implementation.
+  var post = []
+  for (var r = 0; r < 5; r++) post.push(callOn(L))
+  if (post.indexOf(false) === -1) __fail('post-refill cap clamp', 'after 10 idle seconds on a capacity-5 limiter, requests #2–#6 following the refill were ALL admitted — idle time accumulated more tokens than capacity (elapsed×rate refill without a cap clamp)', 'refill must never raise available tokens above capacity: after any idle period, a capacity-5 limiter must still deny the 6th immediate request')
 })()`
 }
 

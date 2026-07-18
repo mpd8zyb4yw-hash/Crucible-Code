@@ -138,6 +138,37 @@ const r = new RateLimiter(3); console.log(r.allow())`)
   check('never-limits → violations (over-capacity)', v.status === 'violations' && v.defects.some(d => d.check === 'over-capacity limit'), v.reason)
 }
 {
+  // Unclamped refill (cont.94, item 3): elapsed×rate without Math.min(capacity, …) — burst and
+  // refill both look right, but 10 idle seconds bank 10 tokens on a capacity-5 bucket and the
+  // post-refill burst over-admits. The clamp check must catch it…
+  const unclamped = code(`class TokenBucket {
+  constructor(capacity, refillRate) { this.capacity = capacity; this.tokens = capacity; this.refillRate = refillRate; this.last = Date.now() }
+  acquire() { const now = Date.now(); this.tokens += ((now - this.last) / 1000) * this.refillRate; this.last = now; if (this.tokens >= 1) { this.tokens -= 1; return true } return false }
+}
+const b = new TokenBucket(3, 1); console.log(b.acquire())`)
+  const v = verifyAnswerContract('implement a token bucket rate limiter', unclamped, T)
+  check('[cont.94] unclamped refill over-admits → violations', v.status === 'violations' && v.defects.some(d => d.check === 'post-refill cap clamp'), v.status + ': ' + v.reason)
+}
+{
+  // …and the FALSE-REJECT guards (cont.85, feed the known-correct artifact): every correct
+  // convention must survive the new check — clamped lazy refill certifies above ('good'),
+  // and window-reset limiters clamp by construction:
+  const fixedWindow = code(`class RateLimiter {
+  constructor(limit, windowMs) { this.limit = limit; this.windowMs = windowMs; this.count = 0; this.windowStart = Date.now() }
+  allow() { const now = Date.now(); if (now - this.windowStart >= this.windowMs) { this.windowStart = now; this.count = 0 } if (this.count < this.limit) { this.count++; return true } return false }
+}
+const r = new RateLimiter(3, 1000); console.log(r.allow())`)
+  const v = verifyAnswerContract('build a rate limiter', fixedWindow, T)
+  check('[cont.94] correct fixed-window limiter still certifies (clamp check no false-reject)', v.status === 'certified', v.status + ': ' + v.reason)
+  const sliding = code(`class RateLimiter {
+  constructor(limit, windowMs) { this.limit = limit; this.windowMs = windowMs; this.hits = [] }
+  allow() { const now = Date.now(); this.hits = this.hits.filter(t => now - t < this.windowMs); if (this.hits.length < this.limit) { this.hits.push(now); return true } return false }
+}
+const r = new RateLimiter(3, 1000); console.log(r.allow())`)
+  const v2 = verifyAnswerContract('build a rate limiter', sliding, T)
+  check('[cont.94] correct sliding-window limiter still certifies', v2.status === 'certified', v2.status + ': ' + v2.reason)
+}
+{
   // Async (waiting) acquire is a VALID design — must abstain, never reject.
   const asyncAcq = code(`class RateLimiter {
   constructor(capacity) { this.capacity = capacity; this.tokens = capacity }
