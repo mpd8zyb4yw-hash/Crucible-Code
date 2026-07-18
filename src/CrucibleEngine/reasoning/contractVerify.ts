@@ -371,6 +371,17 @@ function linkedListHarness(C: string): string {
       var g = function (x) { return (x && typeof x === 'object' && x.value !== undefined) ? x.value : (x && typeof x === 'object' && x.val !== undefined ? x.val : x) }
       var drained = __sortedNums([got1, g(v2), g(v3)].filter(function (v) { return typeof v === 'number' }))
       if (!__eq(drained, [10, 20, 30])) __fail('drain preserves elements', 'removing all three after inserting 10,20,30 returned ' + __fmt([got1, g(v2), g(v3)]) + ' — every inserted element must come back exactly once', 'removing every node one by one must return each inserted value exactly once')
+      // The removal RETURNED the right values; the list must also have shrunk. The common bug
+      // (cont.97, shipped past certification) is a removal that unlinks via a predecessor and so
+      // never runs on the LAST node: pop() returns 1 but head still points at it, leaving a list
+      // that reports itself non-empty forever. Only the post-drain observation catches it.
+      __progress('draining leaves the list empty')
+      var end = observe(l)
+      if (Array.isArray(end) && end.length > 0) {
+        __fail('drain empties the list', 'after removing all 3 elements the list still contains ' + __fmt(end) + ' — the removal never clears the final node (head/tail left dangling)', 'removing every element must leave the list empty: head must be null and traversal must yield nothing')
+      }
+      var n0 = __num(l, ['size', 'length', 'count', 'getSize'])
+      if (n0 !== null && n0 !== 0) __fail('drain zeroes size', 'after removing all 3 elements size/length still reports ' + n0, 'size must be 0 once every element has been removed')
     }
   } else if (seq === null) { __abstain('${C} exposes no way to observe contents (no toArray/head/removal)'); return }
   var l2 = new ${C}(); l2[add](1); l2[add](2); l2[add](3)
