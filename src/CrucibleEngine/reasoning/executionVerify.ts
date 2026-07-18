@@ -70,6 +70,11 @@ const STRUCTURAL_ERROR = [
   /Cannot read propert(?:y|ies) of null\b/,
   /\bundefined is not an object\b/,
   /\bis not defined\b/,          // ReferenceError — fabricated free identifier
+  // `const x = …; x = …` throws EVERY time that line runs, for any input — the exact bug in the
+  // live FM's linked-list demo (`const current = head; current = current.next`). Input-independent,
+  // so it belongs here; the codeblock TS gate catches it only in TS blocks (2588), not JS.
+  /\bAssignment to constant variable\b/,
+  /\bAssignment to constant\b/,   // some engines phrase it "Assignment to constant '<name>'"
 ]
 
 function isStructural(e: unknown): boolean {
@@ -461,7 +466,11 @@ export function verifyPlainCodeByExecution(
 
   const blocks = answerCodeBlocks(answer)
   if (!blocks.length) return abstain('no code blocks in the answer — nothing to execute')
-  const source = blocks.join('\n')
+  // DEDUPE identical blocks before joining. Live FM output routinely emits the SAME program in two
+  // fences; joining them redeclares every top-level `const` and throws a SyntaxError, so the whole
+  // check false-abstained on real answers (measured cont.91). Exact-duplicate removal is safe —
+  // running one copy of an identical program is the same as running two.
+  const source = [...new Set(blocks.map(b => b.trim()))].join('\n')
 
   // This path is for PURE code only. Any import means either the library path already judged it,
   // or it needs a module we would have to DENY — and denying a module the code legitimately needs

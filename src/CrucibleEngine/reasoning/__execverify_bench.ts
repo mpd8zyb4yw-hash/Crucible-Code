@@ -203,6 +203,35 @@ console.log(guard(-1));`))
   check('plain: code with an import → abstain (not plain)', v.status === 'abstain', v.reason)
 }
 {
+  // [REAL cont.91] const-reassignment in the live FM's linked-list demo. `const current = head;
+  // current = current.next` throws "Assignment to constant variable" on EVERY run — structural.
+  const v = verifyPlainCodeByExecution(code(`function build(values) {
+  const head = { value: values[0], next: null };
+  const current = head;
+  for (let i = 1; i < values.length; i++) { current.next = { value: values[i], next: null }; current = current.next; }
+  return head;
+}
+const list = build([1, 2, 3]);
+console.log(list);`))
+  check('plain: const-reassignment demo → violations', v.status === 'violations', v.reason)
+  check('plain: names assignment-to-constant', /Assignment to constant/.test(v.defects[0]?.error ?? ''), v.defects[0]?.error)
+}
+{
+  // [REAL cont.91] the live FM shipped the SAME 84-line program in TWO fences. Joining redeclared
+  // every top-level const → SyntaxError → false-abstain. Dedup makes the real defect surface.
+  const prog = `function build(values) {
+  const head = { value: values[0], next: null };
+  let current = head;
+  for (let i = 1; i < values.length; i++) { current.next = { value: values[i], next: null }; current = current.next; }
+  return head;
+}
+const list = build([1, 2, 3]);
+console.log(JSON.stringify(list));`
+  const dup = code(prog) + '\n\n' + code(prog)   // identical block twice
+  const v = verifyPlainCodeByExecution(dup)
+  check('plain: identical duplicate blocks → not a false-abstain (dedup)', v.status === 'certified', v.reason)
+}
+{
   // No code at all → abstain.
   check('plain: prose only → abstain', verifyPlainCodeByExecution('just prose').status === 'abstain')
 }

@@ -364,6 +364,7 @@ import { createExperiment, getActiveExperiments, assignCohort, recordObservation
 import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/CrucibleEngine/episodicMemory'
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
 import { domainVerify, correctArithmeticCascade, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
+import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
 import { runSelfPatcher, loadPatches, rejectPatch } from './src/CrucibleEngine/selfPatcher'
@@ -4188,6 +4189,26 @@ app.post('/api/chat', async (req, res) => {
             }
           }
         } catch { /* non-blocking */ }
+      }
+      // Run-to-verify gate for PLAIN-code answers (cont.91): the codeblock gate above catches
+      // code that fails to PARSE. This catches code that parses and then dies STRUCTURALLY when
+      // its OWN example runs — a method that isn't defined, a fabricated free identifier reached
+      // only on a call, a `this.head` deref on undefined (the cont.90 linked-list class). It
+      // executes the answer's own demonstration in a module/network-denied vm, so it synthesizes
+      // NO inputs and cannot false-reject correct code: a structural throw on the author's chosen
+      // inputs is input-independent by construction. No self-demo → abstain → nothing appended.
+      if (answer && answer.trim() && answer.includes('```')) {
+        try {
+          const exec = verifyPlainCodeByExecution(answer)
+          debugBus.emit('pipeline', 'answer_plaincode_exec', {
+            status: exec.status, exercised: exec.exercised.length, reason: exec.reason.slice(0, 120),
+          }, { severity: exec.status === 'violations' ? 'warn' : 'info', requestId })
+          if (exec.status === 'violations') {
+            const err = exec.defects[0]?.error ?? 'a structural error'
+            answer += `\n\n> ⚠ Running the example above throws (${err}) — the code will not work as written.`
+            debugBus.emit('pipeline', 'code_block_exec_broken_shipped', { error: err }, { severity: 'warn', requestId })
+          }
+        } catch { /* non-blocking: ship the answer as-is */ }
       }
       if (answer && answer.trim()) {
         const provenanceModelId = routed ? `local/${routed.modelId}` : 'local/apple-fm'
