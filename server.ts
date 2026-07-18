@@ -366,6 +366,7 @@ import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngin
 import { domainVerify, correctArithmeticCascade, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
 import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks } from './src/CrucibleEngine/reasoning/contractVerify'
+import { isCodingQuery } from './src/CrucibleEngine/retrieval/retrievalLayer'
 import { bonsaiComplete, isBonsaiInstalled, repairModelName } from './src/CrucibleEngine/localModels/bonsaiSidecar'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
@@ -4167,6 +4168,47 @@ app.post('/api/chat', async (req, res) => {
           }
         } catch { /* non-blocking: ship the original answer */ }
       }
+      // CODE ASK, NO CODE (cont.92 live finding): the reason-intent lane can collapse a code
+      // ask to its extracted "Answer:" line — shipped live as the ENTIRE answer "Answer: true"
+      // for "implement a token bucket rate limiter". A code ask answered with zero fences is a
+      // non-answer, so re-synthesize from the QUESTION alone (there is nothing of the collapsed
+      // draft worth showing — which is also the cont.89 forward-only rule) and adopt only when
+      // the full gate stack clears the candidate. Double-gated on an implement-shaped verb so an
+      // explain-style ask that legitimately answers in prose is never replaced with bare code.
+      if (answer && answer.trim() && !answer.includes('```')
+          && /\b(implement|write|build|create|code|program)\b/i.test(message)
+          && !/\b(explain|why does|how does|what is|difference between)\b/i.test(message)
+          && isCodingQuery(message)) {
+        try {
+          debugBus.emit('pipeline', 'answer_code_missing', { len: answer.length, preview: answer.slice(0, 60) }, { severity: 'warn', requestId })
+          const msgs = [
+            { role: 'system' as const, content: 'You write correct, self-contained TypeScript. Output ONLY the code — no fences, no commentary.' },
+            { role: 'user' as const, content: `${message}\n\nProvide a complete, runnable implementation. End with a brief usage example that exercises it.` },
+          ]
+          const gens: Array<{ src: string; gen: () => Promise<string | null> }> = [
+            { src: 'fm', gen: async () => (await fmComplete(msgs)).trim() },
+            ...(isBonsaiInstalled()
+              ? [{ src: repairModelName(), gen: async () => (await bonsaiComplete(msgs, { maxTokens: 700, timeoutMs: 30_000 })).trim() }]
+              : []),
+          ]
+          for (const cand of gens) {
+            if (turnSignal?.aborted) break
+            let raw: string | null = null
+            try { raw = await cand.gen() } catch { raw = null }
+            if (!raw || raw.trim().length < 20) continue
+            const codeBody = raw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '').trim()
+            const candidate = '```ts\n' + codeBody + '\n```'
+            // Full stack: syntax, own-demo, and the behavioral contract (violations block adoption;
+            // certified or abstain pass — the baseline being replaced contains NOTHING).
+            if (verifyCodeBlocks(candidate).length > 0) continue
+            if (verifyPlainCodeByExecution(candidate).status === 'violations') continue
+            if (verifyAnswerContract(message, candidate).status === 'violations') continue
+            answer = candidate
+            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: cand.src }, { severity: 'info', requestId })
+            break
+          }
+        } catch { /* non-blocking: ship the answer as-is */ }
+      }
       // Run-to-verify gate for code answers (trust audit 2026-07-07, repro #3): the offline
       // brain shipped Python with a SyntaxError presented as working code. Syntax-check
       // every fenced py/js block; on failure, one FM repair attempt of that block, re-checked.
@@ -4260,7 +4302,11 @@ app.post('/api/chat', async (req, res) => {
               if (verifyPlainCodeByExecution(patched).status === 'violations') continue
               const re = verifyAnswerContract(message, patched)
               if (re.status === 'certified') {
-                answer = patched
+                // Earlier gates may have stamped warnings about the code being REPLACED — those
+                // claims are now false (the full stack just re-certified the patched artifact),
+                // and shipping them over correct code misleads (measured live, cont.92 run 1:
+                // a stale TS2588 warning rode along above qwen's correct repair).
+                answer = patched.replace(/\n+> ⚠ (The \w+ code above failed a syntax check|Running the example above throws)[^\n]*/g, '')
                 repaired = true
                 debugBus.emit('pipeline', 'answer_contract_repaired', {
                   family: contract.family, by: cand.src, checksRun: re.checksRun,
