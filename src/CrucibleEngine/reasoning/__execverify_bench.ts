@@ -9,7 +9,7 @@
 // A missed fabrication ships one bad answer; a false reject teaches repair to "fix" CORRECT code.
 // Every guard below asserts we do NOT reject something legitimate, and that we ABSTAIN rather
 // than guess whenever the environment cannot prove anything.
-import { verifyByExecution } from './executionVerify'
+import { verifyByExecution, verifyPlainCodeByExecution, certifyAnswer } from './executionVerify'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -137,6 +137,74 @@ console.log('\n== the sandbox is network-denied ==')
 const fs = require('fs');
 function validate(ip) { return z.ipv4().safeParse(ip).success; }`), ZOD_EV)
   check('require("fs") is blocked → cannot reach the host', v.status === 'abstain' || v.status === 'violations', v.reason)
+}
+
+// ── PLAIN-CODE execution: no library, run the answer's OWN demonstration ─────────
+console.log('\n== PLAIN-CODE execution — no import, run the answer\'s own demo ==')
+{
+  // A linked-list whose reverse() calls a method that does not exist. Parses fine (past the TS
+  // gate), but the author's own example dies structurally when run. THE cont.90 class.
+  const broken = code(`class LinkedList {
+  constructor() { this.head = null; }
+  push(v) { const n = { value: v, next: this.head }; this.head = n; }
+  reverse() { return this.rebuild(); }   // rebuild is never defined
+}
+const list = new LinkedList();
+list.push(1); list.push(2);
+console.log(list.reverse());`)
+  const v = verifyPlainCodeByExecution(broken)
+  check('plain: demo hits a missing method → violations', v.status === 'violations', v.reason)
+  check('plain: names it not-a-function', /is not a function/.test(v.defects[0]?.error ?? ''), v.defects[0]?.error)
+  check('plain: certifyAnswer surfaces it as executed violations',
+    (() => { const c = certifyAnswer(broken, '', { codeRequested: true }); return c.status === 'violations' && c.executed })())
+}
+{
+  // Fabricated free identifier reached only when the demo calls the function.
+  const v = verifyPlainCodeByExecution(code(`function sum(a, b) { return add(a, b); }
+console.log(sum(1, 2));`))
+  check('plain: free identifier in exercised fn → violations', v.status === 'violations', v.reason)
+  check('plain: reports not-defined', /is not defined/.test(v.defects[0]?.error ?? ''), v.defects[0]?.error)
+}
+{
+  // CORRECT self-demonstrating answer — MUST certify (false-reject guard, load-bearing).
+  const good = code(`class LinkedList {
+  constructor() { this.head = null; }
+  push(v) { this.head = { value: v, next: this.head }; }
+  reverse() { let prev = null, cur = this.head; while (cur) { const nx = cur.next; cur.next = prev; prev = cur; cur = nx; } this.head = prev; return this; }
+  toArray() { const out = []; let c = this.head; while (c) { out.push(c.value); c = c.next; } return out; }
+}
+const list = new LinkedList();
+list.push(1); list.push(2); list.push(3);
+console.log(list.reverse().toArray());`)
+  const v = verifyPlainCodeByExecution(good)
+  check('plain: correct linked-list demo → CERTIFIED', v.status === 'certified', v.reason)
+  check('plain: certifyAnswer certifies it as executed',
+    (() => { const c = certifyAnswer(good, '', { codeRequested: true }); return c.status === 'certified' && c.executed })())
+}
+{
+  // A demo that THROWS a normal Error on purpose is not a structural collapse → abstain, not reject.
+  const v = verifyPlainCodeByExecution(code(`function guard(x) { if (x < 0) throw new Error('negative'); return x; }
+console.log(guard(-1));`))
+  check('plain: intentional Error throw → abstain (not structural)', v.status === 'abstain', v.reason)
+}
+{
+  // Definitions with NO usage — nothing ran, so no standing to certify → abstain.
+  const v = verifyPlainCodeByExecution(code(`function reverseList(head) { let prev = null; while (head) { const n = head.next; head.next = prev; prev = head; head = n; } return prev; }`))
+  check('plain: definitions but no demo → abstain', v.status === 'abstain', v.reason)
+}
+{
+  // A lone console.log is NOT a self-exercise of the answer's own code → abstain.
+  const v = verifyPlainCodeByExecution(code(`function noop() { return 1; }\nconsole.log('hi');`))
+  check('plain: console.log alone is not a demo → abstain', v.status === 'abstain', v.reason)
+}
+{
+  // Imports a package → NOT the plain path's call (library path or out of scope).
+  const v = verifyPlainCodeByExecution(code(`const _ = require('lodash');\nconsole.log(_.chunk([1,2,3], 2));`))
+  check('plain: code with an import → abstain (not plain)', v.status === 'abstain', v.reason)
+}
+{
+  // No code at all → abstain.
+  check('plain: prose only → abstain', verifyPlainCodeByExecution('just prose').status === 'abstain')
 }
 
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`)

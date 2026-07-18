@@ -317,6 +317,43 @@ export function certifyAnswer(
     }
   }
 
+  // PLAIN-CODE PATH. The library exec abstains on pure code (no documented+installed import). Run
+  // the answer's own demonstration — it catches a runtime-structural break in code with no library
+  // surface (the cont.90 linked-list class). Only reached when the library path had no standing.
+  if (exec.status === 'abstain') {
+    const plain = verifyPlainCodeByExecution(answer, opts)
+    if (plain.status === 'violations') {
+      return {
+        status: 'violations',
+        reason: plain.reason,
+        violations: [
+          ...plain.defects.map(d => ({
+            library: 'unknown',
+            identifier: d.symbol,
+            kind: 'execution-failure' as const,
+            line: d.error,
+          })),
+          ...names.violations,
+        ],
+        documented: names.documented,
+        callSurface: names.callSurface,
+        library: names.library,
+        executed: true,
+      }
+    }
+    if (plain.status === 'certified' && names.status !== 'violations') {
+      return {
+        status: 'certified',
+        reason: plain.reason,
+        violations: [],
+        documented: names.documented,
+        callSurface: names.callSurface,
+        library: names.library,
+        executed: true,
+      }
+    }
+  }
+
   if (names.status === 'violations') return { ...names, executed: false }
 
   if (exec.status === 'certified') {
@@ -332,6 +369,159 @@ export function certifyAnswer(
   }
 
   return { ...names, executed: false }
+}
+
+// ============================================================
+// PLAIN-CODE execution verifier (cont.91)
+//
+// The library path above needs an imported package the evidence documents. Most answers to
+// "reverse a linked list", "implement an LRU cache", "write a debounce" import NOTHING — pure
+// JS/TS. The linked-list answer (cont.90) shipped uncompilable code the council stamped GREEN;
+// the codeblock TS gate now catches the SYNTACTIC/semantic-fatal slice, but a draft that PARSES
+// and then dies structurally at RUNTIME (a method that isn't defined, a fabricated free variable
+// reached only when called, `this.head` deref on undefined) slips past a static gate.
+//
+// WHY NOT PROBE like the library path does. The library probes (`'1.2.3.4'`, 0, {}, …) are
+// scalar/loose — safe for a VALIDATOR that takes a string. Plain-code answers take STRUCTURED
+// input: `reverseList(head)` wants a linked-list node. Feeding it `'1.2.3.4'` makes a CORRECT
+// function throw `Cannot read next of undefined` on every probe → a false reject of working code.
+// Synthesizing structured inputs is unbounded and is exactly the false-reject trap the north-star
+// memory warns against. So this path synthesizes NOTHING.
+//
+// WHAT IT DOES INSTEAD — run the answer's OWN demonstration. Good plain-code answers include
+// usage: `const list = new LinkedList(); list.push(1); console.log(list.reverse())`. Those are
+// the AUTHOR's chosen inputs, so a structural death there is INPUT-INDEPENDENT by construction —
+// the same universal principle as the library path, with zero input synthesis and therefore zero
+// false-reject risk. No demo → nothing exercised → abstain (honest, never a guess).
+// ============================================================
+
+/** Names declared at the top level, INCLUDING classes — used to tell a real demo from noise. */
+function topLevelLocals(js: string): Set<string> {
+  const sf = ts.createSourceFile('__answer.js', js, ts.ScriptTarget.ES2020, true)
+  const names = new Set<string>()
+  for (const st of sf.statements) {
+    if ((ts.isFunctionDeclaration(st) || ts.isClassDeclaration(st)) && st.name) names.add(st.name.text)
+    else if (ts.isVariableStatement(st)) {
+      for (const d of st.declarationList.declarations) {
+        if (ts.isIdentifier(d.name)) names.add(d.name.text)
+      }
+    }
+  }
+  return names
+}
+
+/** Root identifier of a call/new target: `new Foo` → Foo, `list.push` → list, `a.b.c()` → a. */
+function rootIdentifier(expr: ts.Expression): string | undefined {
+  let e: ts.Expression = expr
+  while (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) || ts.isCallExpression(e) || ts.isNonNullExpression(e)) {
+    e = ts.isCallExpression(e) ? e.expression : (e as any).expression
+  }
+  return ts.isIdentifier(e) ? e.text : undefined
+}
+
+/**
+ * Does the code actually EXERCISE its own definitions? True iff some call/new anywhere roots to a
+ * locally-declared name (`new LinkedList()`, `reverseList(x)`, `list.push()`). This is what
+ * separates a self-demonstrating answer (safe to certify on a clean run) from a bare definition
+ * file (nothing ran → abstain). `console.log(...)` roots to `console`, which is not local, so a
+ * lone log never counts as a demo.
+ */
+function exercisesLocals(js: string, locals: Set<string>): boolean {
+  const sf = ts.createSourceFile('__answer.js', js, ts.ScriptTarget.ES2020, true)
+  let found = false
+  const visit = (node: ts.Node): void => {
+    if (found) return
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const root = rootIdentifier(node.expression)
+      if (root && locals.has(root)) { found = true; return }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  return found
+}
+
+/**
+ * Execute a PLAIN-code answer (no third-party import) and let its OWN demonstration run.
+ *
+ * Certifies only when the answer exercises its own definitions and survives structurally.
+ * Rejects only on an input-independent structural throw from the author's own execution.
+ * Everything else abstains.
+ */
+export function verifyPlainCodeByExecution(
+  answer: string,
+  opts: { timeoutMs?: number } = {},
+): ExecutionVerdict {
+  const started = Date.now()
+  const timeoutMs = opts.timeoutMs ?? 5000
+  const done = (v: Omit<ExecutionVerdict, 'executionMs'>): ExecutionVerdict =>
+    ({ ...v, executionMs: Date.now() - started })
+  const abstain = (reason: string): ExecutionVerdict =>
+    done({ status: 'abstain', reason, defects: [], exercised: [] })
+
+  const blocks = answerCodeBlocks(answer)
+  if (!blocks.length) return abstain('no code blocks in the answer — nothing to execute')
+  const source = blocks.join('\n')
+
+  // This path is for PURE code only. Any import means either the library path already judged it,
+  // or it needs a module we would have to DENY — and denying a module the code legitimately needs
+  // makes correct code throw `Cannot find module`, a false reject. So imports => not our call.
+  if (extractLibraryUsage(source).length > 0) {
+    return abstain('answer imports a module — handled by the library path or out of scope for plain-code execution')
+  }
+
+  let js: string
+  try {
+    js = ts.transpileModule(source, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, strict: false },
+    }).outputText
+  } catch (e: any) {
+    return abstain(`answer code could not be transpiled: ${e?.message ?? e}`)
+  }
+
+  const locals = topLevelLocals(js)
+  if (!exercisesLocals(js, locals)) {
+    return abstain('answer defines code but never exercises it — no self-demonstration to run')
+  }
+
+  const moduleObj: { exports: Record<string, unknown> } = { exports: {} }
+  // Deny EVERYTHING. Pure code needs no modules; anything it reaches for is out of scope, and
+  // denying it (rather than providing it) keeps the sandbox unable to touch fs/net/child_process.
+  const denyRequire = (spec: string): never => { throw new Error(`Cannot find module '${spec}'`) }
+
+  const sandbox: Record<string, unknown> = {
+    require: denyRequire,
+    module: moduleObj,
+    exports: moduleObj.exports,
+    console: { log: () => {}, error: () => {}, warn: () => {}, info: () => {} },
+    JSON, Math, Array, Object, String, Number, Boolean, Date, RegExp, Error, TypeError,
+    RangeError, Map, Set, Promise, Symbol, BigInt, isNaN, parseInt, parseFloat,
+    setTimeout: () => 0, clearTimeout: () => {},
+  }
+  const context = vm.createContext(sandbox)
+
+  try {
+    new vm.Script(js).runInContext(context, { timeout: timeoutMs })
+  } catch (e: any) {
+    if (isStructural(e)) {
+      return done({
+        status: 'violations',
+        reason: `the answer's own example fails structurally when run: ${e.message}`,
+        defects: [{ symbol: '<demo>', error: e.message }],
+        exercised: [...locals],
+      })
+    }
+    // Syntax errors belong to the codeblock TS gate; a thrown Error the demo raises on purpose, a
+    // timeout, or a denied module are not this verifier's call. Abstain rather than guess.
+    return abstain(`answer code did not evaluate (${e?.name ?? 'Error'}: ${e?.message ?? e}) — not judged as a structural defect`)
+  }
+
+  return done({
+    status: 'certified',
+    reason: `the answer's own example ran to completion without structural failure`,
+    defects: [],
+    exercised: [...locals],
+  })
 }
 
 /** Call fn with each probe; return what each threw (undefined slots are dropped by construction). */
