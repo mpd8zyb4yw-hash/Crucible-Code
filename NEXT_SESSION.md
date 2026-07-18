@@ -17,38 +17,59 @@
 
 ---
 
-## CURRENT STATE — last updated cont.90, 2026-07-18, commit `ae2fab9` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.92, 2026-07-18, commit `ac7f8fe` (REPLACE THIS EVERY SESSION)
 
-**cont.90 ran the broader 5-task live suite and closed the plain-code answer-route hole.**
+**cont.92 closed the cont.91 residual: the answer path now judges LOGIC, not just survival — and
+repairs it live.** Commits `e9a4bc8` (verifier + wiring), `47fd3e4` (no-code seam guard), `ac7f8fe`
+(certified adoption bar).
 
-Suite (live /api/chat, n=1 each; the failure KIND is the reliable part) split cleanly BY ROUTE:
-- **Agent/app route** (todo 136s, notes 157s) → HONEST FAILs, `ok:false`. The run-verify gate
-  rejected 6 attempts each (input-not-cleared, JS syntax, `updatePreview is not defined`) and refused
-  to ship. IMPROVED vs the cont.80 audit (which shipped a 0-control notes page as a pass).
-- **Library answer route** (zod ipv4 88s) → PASS. `import { ipv4 } from 'zod'` executes
-  success:true, grounded (6 sources). cont.89's library fix HOLDS live.
-- **Plain-code answer route** (linked list 52s, rate limiter 138s) → THE HOLE. Linked list shipped
-  uncompilable TS that the COUNCIL stamped. Root cause: the answer-path gate `verifyCodeBlocks`
-  checked py/js but **skipped typescript**. FIXED (commits `5f3f752`+`ae2fab9`): TS1xxx syntactic +
-  `{2588 const-reassign, 2451 redeclare}` runtime-fatal semantic gate; `noLib:true`+`types:[]` kills
-  the DOM.Node false-reject class. `vgr:codeblock` 18/18, tsc baseline 443, LIVE-CONFIRMED (broken
-  draft now ships with a "will not run" warning instead of a silent stamp). See
-  [[crucible-answer-path-code-verifier]].
+`reasoning/contractVerify.ts`: behavioral-contract verifier for the answer route. 18
+execution-checked families (stack, queue, linked list, LRU, rate limiter, BST, heap, event
+emitter, memoize, debounce, throttle, binary search, fizzbuzz, anagram, brackets, two-sum,
+deep clone, deep equal) + the EXISTING metamorphic (sort/reverse/dedupe/…) and property
+(factorial/gcd/isPrime/…) families now reach /api/chat. Design: detection proposes (question
+text), resolution disposes (answer AST), calibration arbitrates (ctor conventions probed before
+judgment), only calibrated batteries judge; convention variance accepted, async APIs abstain,
+fake clock + fake timer queue put TIME under test, vm timeout catches + attributes infinite
+loops. Wired as a tier in `certifyAnswer` (question threaded from groundedAnswer AND
+faithfulRepair — single oracle holds) and at the server seam with a repair loop: FORWARD
+constraints only (cont.89), candidates canonical → FM → qwen sidecar, adopted ONLY when the
+patched answer re-certifies through the full gate stack.
 
-### NEXT (cont.91)
-1. **Execution verifier for plain-code answers** — the gate now WARNS but doesn't buy correctness.
-   Linked-list `pop()` logic and the token-bucket ratelimiter (inverted acquire, no time refill) are
-   still WRONG. The lever: construct + probe the defined class (like `executionVerify.ts` but NOT
-   library-gated) so wrong LOGIC is caught, not just wrong syntax. Proposer ceiling, not architecture.
-2. `lodash debounce example` still misses the library gate — and the fix is NOT a quick heuristic.
-   Investigated cont.90: `namesExternalLibrary` is SYNC (called in answerEngine/synthDriver/
-   groundedAnswer), so it can't do the npm-download corroboration that separates `lodash` from an
-   English word. The clean instrument prepositions (`with/using/via`) are already covered by
-   `namesInstrument`; looser ones (`in lodash`, `use lodash`) fire on "in place" / "use recursion"
-   and cause the diversion regression the code explicitly warns against (a needless lookup steers
-   algorithmic work away from VGR certification). The right fix is an ASYNC npm-corroborated gate —
-   a refactor of a hot, merge-contended path, not a session-end bolt-on.
-3. Below is cont.89's state, kept for context.
+**LIVE-CONFIRMED on clean trees, telemetry read (not assumed):**
+- linked list (commit `e9a4bc8`): FM draft → `answer_contract` violations → sidecar loads →
+  `answer_contract_repaired` by qwen2.5-1.5b, re-certified 3 checks. Shipped pop() is CORRECT.
+- rate limiter (same commit): never-limits draft caught ("requests #6,#7,#8 all admitted"),
+  repaired by qwen, re-certified. **Both cont.91 confirmed failure classes now caught AND
+  repaired live.** The 2nd-proposer standing seat produced its first two live recoveries.
+- "Answer: true" collapse (live finding, `47fd3e4`): reason-intent lane collapsed a code ask to
+  its extracted answer line. Seam guard `answer_code_missing` fired live and replaced the
+  non-answer (repaired by qwen). `ac7f8fe` then raised the adoption bar: named contract →
+  certified required; non-certified ships only as explicit best-effort with an unverified
+  warning (a token COUNTER had been adopted for a "rate limiter" under the weaker bar).
+
+Benches: `vgr:contract` 64/64 (both directions per family). Regressions all green:
+execverify 38/38, apifaith 80/80, codeblock 18/18, faithrepair 67/67, vgr:bench 208/208.
+tsc server baseline unchanged (458, zero net-new).
+
+### NEXT (cont.93)
+1. **A CONCURRENT session owns answerEngine.ts/verify.ts right now** (the reason-intent
+   collapse root fix — spun off as a task chip; its WIP was live-observed routing the limiter
+   ask to intent:'code'). Coordinate before touching those files; re-run the collapse phrase on
+   a CLEAN tree once it lands.
+2. **Known reach limit measured live:** an answer that imports a node builtin (`events`) slides
+   past the contract tier (imports → library path, which doesn't judge builtins) — a
+   structurally-broken EventEmitter-extending limiter shipped unwarned from the WIP engine.
+   Universal fix candidate: contract tier stubs/strips NODE-BUILTIN imports the battery doesn't
+   exercise, with false-reject guards benched first.
+3. **Battery hardening, cheap:** rate-limiter refill doesn't check the cap-clamp (chunky refill
+   can over-admit after advance); add "post-refill burst still limited" check. Judge-panel the
+   false-reject risk before landing.
+4. Run the broader 5-task suite at n≥3 on a clean tree (the % claim needs the distribution, and
+   the agent/app route is still honest-fail).
+5. Live-test gotchas that cost time this session: dotenv v17 prints a tip line to STDOUT (pipe
+   pollutes minted tokens — tail -1 or {quiet:true}); a newline inside a Cookie header makes
+   Node reply bare-400 with zero Express headers.
 
 ---
 
