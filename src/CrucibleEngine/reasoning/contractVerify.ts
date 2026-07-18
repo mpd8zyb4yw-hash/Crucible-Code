@@ -37,7 +37,7 @@
 
 import * as vm from 'vm'
 import * as ts from 'typescript'
-import { answerCodeBlocks, extractLibraryUsage } from './apiFaithfulness'
+import { answerCodeBlocks, extractLibraryUsage, classifyLibraryUsage, makeSafeBuiltinRequire } from './apiFaithfulness'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { propertyForFunction } from './propertyVerifier'
 
@@ -787,6 +787,9 @@ function runHarness(candidateJs: string, harnessJs: string, timeoutMs: number): 
     },
     __progress: (label: string) => { lastProgress = String(label); checksRun++ },
     __abstain: (reason: string) => { abstained = String(reason) },
+    // Resolves only the safe builtins the answer imports (events/util/…); denies everything else.
+    // The gate above already rejected third-party + I/O builtins, so this only serves the allowlist.
+    require: makeSafeBuiltinRequire(`${process.cwd()}/package.json`),
     module: moduleObj,
     exports: moduleObj.exports,
     console: { log: () => {}, error: () => {}, warn: () => {}, info: () => {} },
@@ -887,7 +890,12 @@ export function verifyAnswerContract(
   const blocks = answerCodeBlocks(answer)
   if (!blocks.length) return abstain('no code blocks in the answer — nothing to judge')
   const source = [...new Set(blocks.map(b => b.trim()))].join('\n')
-  if (extractLibraryUsage(source).length > 0) return abstain('answer imports a module — the library execution path judges it')
+  // A third-party import is the library path's job; an I/O-capable builtin we cannot safely provide.
+  // But a pure computational builtin (events/util/stream/…) is providable, so contract answers built
+  // on `import { EventEmitter } from 'events'` still get their LOGIC probed instead of laundering
+  // past the tier on the mere presence of an import (cont.93).
+  const { other } = classifyLibraryUsage(extractLibraryUsage(source))
+  if (other.length > 0) return abstain(`answer imports ${other.join(', ')} — the library execution path judges it`)
 
   let js: string
   try {

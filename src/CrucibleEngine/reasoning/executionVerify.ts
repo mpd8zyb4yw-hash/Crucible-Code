@@ -37,7 +37,7 @@ import { createRequire } from 'module'
 import * as ts from 'typescript'
 import {
   answerCodeBlocks, extractLibraryUsage, evidenceCovers, documentedCallSurface,
-  verifyApiFaithfulness, type FaithfulnessVerdict,
+  verifyApiFaithfulness, classifyLibraryUsage, makeSafeBuiltinRequire, type FaithfulnessVerdict,
 } from './apiFaithfulness'
 import { verifyAnswerContract } from './contractVerify'
 
@@ -511,11 +511,14 @@ export function verifyPlainCodeByExecution(
   // running one copy of an identical program is the same as running two.
   const source = [...new Set(blocks.map(b => b.trim()))].join('\n')
 
-  // This path is for PURE code only. Any import means either the library path already judged it,
-  // or it needs a module we would have to DENY — and denying a module the code legitimately needs
-  // makes correct code throw `Cannot find module`, a false reject. So imports => not our call.
-  if (extractLibraryUsage(source).length > 0) {
-    return abstain('answer imports a module — handled by the library path or out of scope for plain-code execution')
+  // This path is for PURE code plus SAFE node builtins. A third-party import means the library path
+  // already judged it; an I/O-capable builtin (fs/net/child_process/…) we must DENY, and denying a
+  // module the code legitimately needs is a false reject — so both abstain. But a pure computational
+  // builtin (events/util/stream/…) can be PROVIDED and the demo run: otherwise wrapping code around
+  // `import { EventEmitter } from 'events'` launders it past every execution tier (cont.93).
+  const { other } = classifyLibraryUsage(extractLibraryUsage(source))
+  if (other.length > 0) {
+    return abstain(`answer imports ${other.join(', ')} — handled by the library path or out of scope for plain-code execution`)
   }
 
   let js: string
@@ -533,12 +536,13 @@ export function verifyPlainCodeByExecution(
   }
 
   const moduleObj: { exports: Record<string, unknown> } = { exports: {} }
-  // Deny EVERYTHING. Pure code needs no modules; anything it reaches for is out of scope, and
-  // denying it (rather than providing it) keeps the sandbox unable to touch fs/net/child_process.
-  const denyRequire = (spec: string): never => { throw new Error(`Cannot find module '${spec}'`) }
+  // Resolve ONLY the safe builtins the code imports; deny everything else with the same
+  // `Cannot find module` a missing package throws. The allowlist cannot reach fs/net/child_process,
+  // so an executed answer still cannot touch the host.
+  const safeRequire = makeSafeBuiltinRequire(`${process.cwd()}/package.json`)
 
   const sandbox: Record<string, unknown> = {
-    require: denyRequire,
+    require: safeRequire,
     module: moduleObj,
     exports: moduleObj.exports,
     console: { log: () => {}, error: () => {}, warn: () => {}, info: () => {} },

@@ -236,5 +236,63 @@ console.log(JSON.stringify(list));`
   check('plain: prose only → abstain', verifyPlainCodeByExecution('just prose').status === 'abstain')
 }
 
+console.log('\n== NODE-BUILTIN LAUNDERING (cont.93) — a safe builtin import must not dodge execution ==')
+{
+  // A pure computational builtin (`events`) is PROVIDED, so correct code behind it runs → certified.
+  // Before the fix this abstained (any import → not the plain path), and any broken logic wrapped in
+  // the same import laundered past every execution tier untouched.
+  const good = code(`import { EventEmitter } from 'events';
+class Counter extends EventEmitter {
+  constructor() { super(); this.n = 0; }
+  inc() { this.n++; this.emit('inc', this.n); return this.n; }
+}
+const c = new Counter();
+let seen = 0;
+c.on('inc', v => { seen = v; });
+c.inc(); c.inc();
+console.log(seen);`)
+  const v = verifyPlainCodeByExecution(good)
+  check('plain: correct code behind `events` import → CERTIFIED (not laundered)', v.status === 'certified', v.reason)
+}
+{
+  // THE HOLE: structural death laundered behind an `events` import. Now the builtin resolves, the
+  // demo runs, and the const-reassignment is caught — instead of the import buying a free pass.
+  const laundered = code(`import { EventEmitter } from 'events';
+const bus = new EventEmitter();
+function build(values) {
+  const head = { value: values[0], next: null };
+  const current = head;
+  for (let i = 1; i < values.length; i++) { current.next = { value: values[i], next: null }; current = current.next; }
+  return head;
+}
+bus.emit('x');
+const list = build([1, 2, 3]);
+console.log(list);`)
+  const v = verifyPlainCodeByExecution(laundered)
+  check('plain: broken logic behind `events` import → violations (laundering closed)', v.status === 'violations', v.reason)
+  check('plain: certifyAnswer surfaces the laundered defect as executed',
+    (() => { const c = certifyAnswer(laundered, '', { codeRequested: true }); return c.status === 'violations' && c.executed })())
+}
+{
+  // FALSE-REJECT GUARD. An I/O-capable builtin (`fs`) is NOT on the allowlist — we deny it, and
+  // denying a module the code legitimately needs is not our call → abstain, never reject. The
+  // sandbox stays unable to touch the host.
+  const usesFs = code(`import * as fs from 'fs';
+function readCfg(p) { return fs.readFileSync(p, 'utf8'); }
+console.log(readCfg('/etc/hostname'));`)
+  const v = verifyPlainCodeByExecution(usesFs)
+  check('plain: fs import → abstain (deny, not reject — no host access, no false reject)', v.status === 'abstain', v.reason)
+}
+{
+  // FALSE-REJECT GUARD. A safe builtin next to a third-party package still abstains — the presence
+  // of ANY non-allowlisted library defers the whole answer to the library path.
+  const mixed = code(`import { EventEmitter } from 'events';
+import _ from 'lodash';
+const e = new EventEmitter();
+console.log(_.chunk([1, 2, 3], 2));`)
+  const v = verifyPlainCodeByExecution(mixed)
+  check('plain: safe builtin + third-party → abstain (defers to library path)', v.status === 'abstain', v.reason)
+}
+
 console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

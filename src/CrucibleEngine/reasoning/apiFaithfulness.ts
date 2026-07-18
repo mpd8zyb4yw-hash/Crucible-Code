@@ -23,6 +23,8 @@
 // the loop to "fix" correct code. Every ambiguity in this file resolves toward ABSTAIN.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import { createRequire as builtinCreateRequire } from 'module'
+
 /** One library identifier the answer used that the evidence never documents. */
 export interface ApiViolation {
   /** Package specifier as written in the answer (`zod`, `@vee-validate/zod`). */
@@ -158,6 +160,53 @@ export function extractLibraryUsage(code: string): LibBinding[] {
   }
 
   return [...byLib.values()]
+}
+
+// ── NODE-BUILTIN LAUNDERING (cont.93) ────────────────────────────────────────────
+// Both execution tiers gate on `extractLibraryUsage(source).length > 0` and abstain on ANY import:
+// the plain-code path because it denies every module, the contract path deferring to the library
+// path. But a node BUILTIN is neither documented by evidence (so the library path abstains) NOR a
+// third-party package (so it needs no install) — so `import { EventEmitter } from 'events'` slid
+// past ALL three tiers into the name-only fallback. That is a laundering vector: wrap otherwise
+// executable pure code around one harmless builtin import and it dodges execution entirely.
+//
+// The fix: a pure computational builtin can be PROVIDED to the sandbox and the code run as written.
+// The allowlist is deliberately narrow — modules that compute over in-memory data and cannot reach
+// the filesystem, network, environment, or spawn processes. Anything touching I/O (fs, net, http,
+// child_process, os, process, worker_threads, vm, dns, tls, cluster, …) stays DENIED: providing it
+// would let executed answer code reach the host, and denying a module the code legitimately needs
+// is a false reject — so those still abstain, exactly as before.
+export const SAFE_NODE_BUILTINS: ReadonlySet<string> = new Set([
+  'assert', 'buffer', 'crypto', 'events', 'path', 'punycode',
+  'querystring', 'stream', 'string_decoder', 'url', 'util', 'zlib',
+])
+
+/**
+ * Split imported libraries into safe node builtins (providable to a sandbox) and everything else
+ * (third-party packages + I/O-capable builtins, which must abstain). `library` is already the
+ * node:-stripped package token, so 'node:events' and 'events' both land in `safeBuiltins`.
+ */
+export function classifyLibraryUsage(usage: LibBinding[]): { safeBuiltins: string[]; other: string[] } {
+  const safeBuiltins: string[] = []
+  const other: string[] = []
+  for (const b of usage) {
+    if (SAFE_NODE_BUILTINS.has(b.library)) safeBuiltins.push(b.library)
+    else other.push(b.library)
+  }
+  return { safeBuiltins, other }
+}
+
+/**
+ * A `require` for a sandbox that resolves ONLY safe node builtins and denies everything else with
+ * the same `Cannot find module` a missing package throws. Handles the `node:` prefix and subpaths
+ * (`node:stream/promises`) by normalizing to the package token before the allowlist check.
+ */
+export function makeSafeBuiltinRequire(from: string): (spec: string) => unknown {
+  const req = builtinCreateRequire(from)
+  return (spec: string): unknown => {
+    if (SAFE_NODE_BUILTINS.has(packageToken(spec))) return req(spec)
+    throw new Error(`Cannot find module '${spec}'`)
+  }
 }
 
 /**

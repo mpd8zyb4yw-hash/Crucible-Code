@@ -535,6 +535,30 @@ const l = new LinkedList(); l.append(1); l.pop(); console.log(l.toArray())`)
   check('certifyAnswer without question: unchanged (no contract tier)', withoutQ.status !== 'violations', withoutQ.status)
 }
 {
+  // NODE-BUILTIN LAUNDERING (cont.93). Wrapping the SAME broken-pop logic around a pure builtin
+  // import (`events`) previously dodged the tier (any import → abstain). The builtin now resolves,
+  // so the contract battery probes the LIFO/drain invariant exactly as for the un-imported class.
+  const launderedPop = code(`import { EventEmitter } from 'events';
+class LinkedList extends EventEmitter {
+  constructor() { super(); this.head = null }
+  append(v) { const n = { value: v, next: null }; if (!this.head) { this.head = n } else { let c = this.head; while (c.next) c = c.next; c.next = n } this.emit('append', v); return this }
+  pop() { if (!this.head) return undefined; let c = this.head; while (c.next) c = c.next; return c.value }
+  toArray() { const out = []; let c = this.head; while (c) { out.push(c.value); c = c.next } return out }
+}
+const l = new LinkedList(); l.append(1); l.append(2); l.pop(); console.log(l.toArray())`)
+  const v = verifyAnswerContract('implement a linked list with append and pop', launderedPop, T)
+  check('laundered behind `events` import → violations (not abstain)', v.status === 'violations', v.status + ': ' + v.reason)
+}
+{
+  // FALSE-REJECT GUARD. A third-party import still defers to the library path — abstain, not judge.
+  const thirdParty = code(`import { EventEmitter } from 'events';
+import _ from 'lodash';
+class LinkedList extends EventEmitter { constructor() { super(); this.items = _.uniq([]) } }
+const l = new LinkedList()`)
+  const v = verifyAnswerContract('implement a linked list with append and pop', thirdParty, T)
+  check('safe builtin + third-party → abstain (defers to library path)', v.status === 'abstain', v.status)
+}
+{
   const orig = 'Here is the implementation:\n\n```ts\nconst broken = 1\n```\n\nAnd usage:\n\n```ts\nconsole.log(broken)\n```\n\nDone.'
   const out = replaceAnswerCodeBlocks(orig, 'const fixed = 2')
   check('replaceAnswerCodeBlocks: first block replaced', out.includes('const fixed = 2'))
