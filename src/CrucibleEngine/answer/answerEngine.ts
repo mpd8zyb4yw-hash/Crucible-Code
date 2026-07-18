@@ -71,6 +71,13 @@ const CODE_GEN = /\b(write|create|build|implement|generate|refactor|debug|optimi
 const CODE_FENCE = /```|\bdef\s+\w+\s*\(|\bclass\s+\w+|=>|\bfunction\s+\w+\s*\(|\bimport\s+\w+|\bconst\s+\w+\s*=/
 const LANG = /\b(python|javascript|typescript|java|c\+\+|c#|rust|go(?:lang)?|ruby|php|swift|kotlin|bash|shell|sql|html|css|react|node)\b/i
 const CODE_CONSTRUCT = /\b(function|method|class|code|script|program|lambda|closure|list|dict|array|tuple|regex|query|loop|sort|filter|parse|complexity|recursion|iterate)\b/i
+// A generation verb plus a language in INSTRUMENT position ("implement a stack in TypeScript",
+// "write a limiter for a Node server") is a code ask no matter what the deliverable NOUN is —
+// CODE_GEN's closed noun list missed live asks whose deliverable was "stack" / "middleware"
+// (cont.95: both routed 'converse'). Instrument position ("in/using/with/for <lang>") is the
+// load-bearing guard: "write an essay about Python" names the language as a TOPIC and stays out.
+const CODE_VERB = /\b(write|create|build|implement|generate|refactor|debug|optimi[sz]e|fix|convert|rewrite|complete|port)\b/i
+const LANG_INSTRUMENT = /\b(?:in|using|with|for)\s+(?:an?\s+)?(?:python|javascript|typescript|java|c\+\+|c#|rust|go(?:lang)?|ruby|php|swift|kotlin|bash|shell|sql|node(?:\.js)?)\b/i
 
 // Retrieval fires only for VOLATILE / recency-sensitive facts the FM cannot reliably know from
 // parametric memory (live prices, current events, "latest/newest", today's weather/score). It
@@ -111,6 +118,7 @@ function isDefinitionAsk(m: string): boolean {
 export function classifyFacets(message: string): AnswerFacets {
   const m = message ?? ''
   const isCode = CODE_GEN.test(m) || CODE_FENCE.test(m) || (LANG.test(m) && CODE_CONSTRUCT.test(m))
+    || (CODE_VERB.test(m) && LANG_INSTRUMENT.test(m))
   // A computation-bearing question that STATES two or more quantities is inherently multi-step
   // (relate → compute → conclude); it is also the signal that disambiguates a self-contained math
   // problem from a volatile lookup that merely shares a word like "price".

@@ -29,6 +29,15 @@ console.log('== facet classification: routing ==')
   const news = classifyFacets('What is the latest news on the stock market today?')
   check('latest/news/today → needsExternalFact (volatile → retrieval)', news.needsExternalFact, JSON.stringify(news))
 
+  // [REAL] cont.95 live: both asks routed 'converse' because the deliverable NOUN (stack /
+  // middleware) is not in CODE_GEN's closed list — verb + instrument-position language must carry.
+  const stk = classifyFacets('Implement a stack with push, pop and peek in TypeScript.')
+  check('implement <noun> in <lang> → code intent', stk.intent === 'code', JSON.stringify(stk))
+  const mw = classifyFacets('Write a rate limiter middleware for a Node HTTP server with no external packages.')
+  check('write <noun> for a Node server → code intent', mw.intent === 'code', JSON.stringify(mw))
+  const essay = classifyFacets('Write an essay about Python and its history.')
+  check('language as TOPIC is NOT a code ask', essay.intent !== 'code', JSON.stringify(essay))
+
   const hash = classifyFacets('Explain how a hash map works in simple terms.')
   check('explain → explain intent (thorough depth), not external', hash.intent === 'explain' && !hash.needsExternalFact, JSON.stringify(hash))
 
