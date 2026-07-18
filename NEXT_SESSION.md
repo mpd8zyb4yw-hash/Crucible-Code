@@ -17,7 +17,63 @@
 
 ---
 
-## CURRENT STATE — last updated cont.93, 2026-07-18, commit `a9014cb` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.94, 2026-07-18, commit `a743c3c` (REPLACE THIS EVERY SESSION)
+
+**cont.94 closed the three handoff items + one live find, 4 commits, all pushed.**
+
+1. **Library-grounding prose-word false-match CLOSED** (`738cb9a`). Three side doors let common
+   English words ground the lane: sentence-initial capitals ("Walk me through" → walk@2.3.4) and
+   the "X module/library" noun-compound ("rate limiter module" → limiter@3.0.0) both carried
+   'named' confidence (bypassing the download floor), and runtimes (node/deno/bun) weren't in the
+   languages closed class. But the floor alone CANNOT arbitrate `limiter` — it has 14M weekly
+   downloads and its docs mention rate/token/bucket, so relevance passes too. The universal fix is
+   grammatical: a system-dictionary English word preceded by a content-word modifier is the HEAD of
+   a compound naming the DELIVERABLE ("rate limiter"), not a package; attributive names ("express
+   middleware", "react app", "zod schema") and instrument position ("with limiter") survive;
+   fail-open when the host has no wordlist. retrieval:bench 36/36, retrieval:live 42/42;
+   LIVE-VERIFIED on a clean a743c3c server: the walk/limiter asks no longer ground, zod/axios do.
+   RESIDUAL: a non-compound head after an article ("build a limiter") still grounds — rarer
+   phrasing, needs a head-of-creation-object signal if it ever bites.
+
+2. **Repair 0/6 decomposed → deterministic fence-relabel** (`03e4e82`). The dominant defect class
+   in the unrepaired drafts was valid TypeScript inside a ```js fence → vm.Script SyntaxError
+   "Unexpected token ':'" → model calls spent repairing code whose only defect was the LABEL.
+   `relabelMislabeledJsFences` (domainVerifiers.ts): a failing js fence that parses cleanly under
+   the TS grammar is relabeled to ts, zero inference, byte-identical code; wired at the server
+   seam AHEAD of the FM syntax repair (emits `code_block_relabeled`), so the logic then flows into
+   plaincode-exec + the contract battery instead of dying at the syntax gate. Cannot false-reject:
+   genuinely broken code fails the TS grammar too and falls through unchanged. codeblock 24/24.
+   The `callback is not a function` half of the finding is logic, owned by the contract-battery
+   repair loop (live-proven cont.92); no residual model-repair work identified.
+
+3. **Rate-limiter post-refill cap-clamp check landed** (`3cd6bd3`). elapsed×rate refill without
+   Math.min(capacity,…) banked 10 tokens on a capacity-5 bucket after 10 idle seconds and passed
+   both existing checks. New check: after the refill probe consumes one token, ≥1 of the next 5
+   immediate requests must be denied. False-reject judged before landing: every calibrated
+   convention has capacity 5; clamped bucket / fixed window / sliding window all deny the 6th; an
+   already-failed no-refill impl denies them all (no double-fire). contract 69/69 (3 new).
+
+4. **LIVE FIND while verifying: setInterval false reject CLOSED** (`a743c3c`). The plaincode
+   sandbox stubbed setTimeout but not setInterval → a CORRECT interval-refill limiter was shipped
+   with "will not run as written". Both execution sandboxes now stub the full timer surface
+   (setInterval/clearInterval, setImmediate/clearImmediate, queueMicrotask). execverify 44/44.
+
+**Benches all green:** retrieval 36/36 (+live 42/42), codeblock 24/24, execverify 44/44,
+contract 69/69, apifaith 80/80, faithrepair 67/67. tsc server baseline unchanged (447, zero
+net-new). Live runs on self-booted :3002, clean banners (3cd6bd3, a743c3c), telemetry read via
+/api/debug/history; concurrent :3001 server untouched.
+
+### NEXT (cont.95)
+1. Run the broader 5-task suite at n≥3 on a clean tree (the % claim still needs the distribution;
+   agent/app route still honest-fail).
+2. Live observation (3 asks, this session): the FM routinely IGNORES "no external packages" and
+   ships express/express-limiter code; one code-intent answer shipped 3.7KB with NO fences (so
+   every code gate abstained). Both are answer-shape gaps upstream of the verifiers.
+3. "build a limiter" residual (see item 1) if it appears in live telemetry.
+
+---
+
+## PRIOR STATE — cont.93, commit `a9014cb`
 
 **cont.93 closed the node-builtin import laundering hole** (commit `a9014cb`). An answer importing a
 node builtin (`import {EventEmitter} from 'events'`) previously slid past ALL THREE execution tiers:
