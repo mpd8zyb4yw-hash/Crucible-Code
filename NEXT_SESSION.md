@@ -17,7 +17,34 @@
 
 ---
 
-## CURRENT STATE — last updated cont.92, 2026-07-18, commit `ac7f8fe` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.93, 2026-07-18, commit `a9014cb` (REPLACE THIS EVERY SESSION)
+
+**cont.93 closed the node-builtin import laundering hole** (commit `a9014cb`). An answer importing a
+node builtin (`import {EventEmitter} from 'events'`) previously slid past ALL THREE execution tiers:
+the library path abstains (builtins aren't evidence-documented), the plain-code path abstained on ANY
+import, and the contract path deferred to the library path. Net: wrap otherwise-executable/probeable
+code around one harmless builtin import and its LOGIC dodges execution, falling to the name-only
+fallback. This was the cont.92 known reach-limit (a structurally-broken EventEmitter-extending
+limiter shipped unwarned from the WIP engine).
+
+Fix (NOT strip/stub — the battery runs against the REAL builtin): `SAFE_NODE_BUILTINS` allowlist of
+pure computational modules (`events`, `util`, `stream`, `crypto`, `path`, `buffer`, `assert`, `zlib`,
+`url`, `querystring`, `punycode`, `string_decoder`) that are PROVIDED to the sandbox via
+`makeSafeBuiltinRequire`, so `verifyPlainCodeByExecution`'s demo AND `verifyAnswerContract`'s battery
+execute the code as written. I/O-capable builtins (`fs`/`net`/`child_process`/`os`/`process`/…) and
+third-party packages stay DENIED → abstain, never a false reject; the sandbox still cannot reach the
+host. Shared helpers `classifyLibraryUsage` + `makeSafeBuiltinRequire` in `apiFaithfulness.ts`.
+Benched both directions incl. false-reject guards (fs → abstain, safe-builtin+third-party → abstain):
+**execverify 43/43, contract 66/66, apifaith 80/80.** tsc: my 3 source files clean vs the known
+baseline (import.meta/server-synth/fmReact/stakesRouter noise unchanged).
+
+**Not yet done:** a live end-to-end run of the laundered-limiter case on a clean answerEngine tree
+(catch was proven by bench + oracle, not yet by a /api/chat telemetry read — do this once the
+concurrent answerEngine work lands).
+
+---
+
+## PRIOR STATE — cont.92, commit `ac7f8fe`
 
 **cont.92 closed the cont.91 residual: the answer path now judges LOGIC, not just survival — and
 repairs it live.** Commits `e9a4bc8` (verifier + wiring), `47fd3e4` (no-code seam guard), `ac7f8fe`
@@ -57,11 +84,9 @@ tsc server baseline unchanged (458, zero net-new).
    collapse root fix — spun off as a task chip; its WIP was live-observed routing the limiter
    ask to intent:'code'). Coordinate before touching those files; re-run the collapse phrase on
    a CLEAN tree once it lands.
-2. **Known reach limit measured live:** an answer that imports a node builtin (`events`) slides
-   past the contract tier (imports → library path, which doesn't judge builtins) — a
-   structurally-broken EventEmitter-extending limiter shipped unwarned from the WIP engine.
-   Universal fix candidate: contract tier stubs/strips NODE-BUILTIN imports the battery doesn't
-   exercise, with false-reject guards benched first.
+2. ~~**Node-builtin laundering hole.**~~ DONE cont.93 (commit `a9014cb`) — see CURRENT STATE. The
+   universal fix was to PROVIDE safe builtins, not strip them, so the battery judges real logic.
+   Still owed: a live /api/chat telemetry read of the laundered-limiter catch on a clean tree.
 3. **Battery hardening, cheap:** rate-limiter refill doesn't check the cap-clamp (chunky refill
    can over-admit after advance); add "post-refill burst still limited" check. Judge-panel the
    false-reject risk before landing.
