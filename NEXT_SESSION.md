@@ -3681,3 +3681,50 @@ each model in a probation slot.
 **E. Genealogy contribution rates in UI** — DONE (June 14 2026)
 `genealogy` SSE event now emitted after attribution pass. Process trail in App.tsx now shows
 per-model contribution rates as percentage bars under the ensemble section.
+
+---
+
+## cont.97 — the live suite's holes, closed (July 19 2026)
+
+The cont.96 handoff's item 1 (5-task suite at n=3) RAN. It was not a measurement so much
+as a bug-finder: 15 live `/api/chat` runs scored by reading the artifact, per the
+read-the-pass rule. Route scores: **app 0/6 fully working**, library 2/3, linked-list
+2/3 pass. Item 2 (`code_block_resynthesized`) **CLOSED** — fired live on linkedlist-1
+(`{by:"qwen2.5-1.5b", certified:true}` after a TS2588 draft and a failed block repair).
+
+Three holes the suite exposed, all now fixed and committed:
+
+1. **`bb3f3f4` — the agent route shipped web apps blind.** `runtimeVerifyApp`/`Html`
+   drive a page in a real browser but were only reachable from synthDriver, so the same
+   prompt shipped verified or blind depending on the route. All 6 broken app ships went
+   out through verify.ts's `"No runnable check detected"`. The fallthrough now finds the
+   entry HTML document and judges it. Two-direction checked; html:app:bench 71/71.
+
+2. **`748c7cf` — the linked-list battery never checked that draining EMPTIES the list.**
+   A certified list's `pop()` unlinked via the predecessor, so it never ran on the last
+   node: `pop()` returned 1 while the list still read `[1]`. The drain check verified the
+   returned values and stopped. Now head must be null and size 0 after a full drain.
+
+3. **`7f8ed7f` — an illegible-interface abstain is a verification hole, not a neutral
+   outcome.** Three broken "rate limiters" (`send`/`sendMessage`/`isRateLimitExceeded`)
+   shipped with a green structural certify because the contract battery found no judgeable
+   interface and silently abstained. When the QUESTION names a contract and the answer
+   exposes no legible implementation, it now re-synthesizes forward-only from the kind's
+   own hint and ships an honest unverifiable warning if nothing certifies. Deliberate-scope
+   and structural-death abstains stay excluded.
+   **Status: LIVE-PENDING.** The confirming probe took the third-party-import route
+   (`express-ratelimit` → library path) so the gate did not engage. Watch for
+   `answer_contract {illegibleInterface:true}` / `answer_contract_unverifiable`.
+
+### Open, in priority order
+- **Fabricated PACKAGE names ship un-flagged.** The live probe imported
+  `express-ratelimit` (the real package is `express-rate-limit`) and only an unrelated
+  TS1005 syntax warning stopped it. Library grounding checks the *API surface* of a
+  package it resolves; it has no check that the package NAME exists at all.
+- **Route selection is nondeterministic.** The same prompt hit the verified path on one
+  run and the unverified path on the next (app route), and library execution certified on
+  zod-1/3 but degraded to the name-only tier on zod-2. The badge stays honest
+  (`executed:false` suppresses the EXECUTED claim), so this is a coverage/flakiness
+  problem, not a false green — but it makes any n=3 score a lower bound.
+- **Re-run the 5-task suite at n>=3** now that the app route has a behavioral gate. The
+  previous run's 0/6 is the pre-fix baseline to beat.
