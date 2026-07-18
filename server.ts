@@ -4189,56 +4189,66 @@ app.post('/api/chat', async (req, res) => {
       // draft worth showing — which is also the cont.89 forward-only rule) and adopt only when
       // the full gate stack clears the candidate. Double-gated on an implement-shaped verb so an
       // explain-style ask that legitimately answers in prose is never replaced with bare code.
-      if (answer && answer.trim() && !answer.includes('```')
-          && /\b(implement|write|build|create|code|program)\b/i.test(message)
-          && !/\b(explain|why does|how does|what is|difference between)\b/i.test(message)
-          && isCodingQuery(message)) {
+      // FORWARD-ONLY code re-synthesis from the QUESTION (cont.89 rule: the retry never sees
+      // the rejected draft — showing a model its own broken artifact makes it re-produce it,
+      // measured 0/6 cont.94 and again 0/2 live cont.96). Shared by the no-code seam below and
+      // the broken-block escalation (cont.96). When the question names a contract, the retry
+      // carries that contract's own API line as a forward constraint AND the adoption bar rises
+      // to contract-CERTIFIED — measured live (cont.92b): without it, qwen answered "rate
+      // limiter" with a token COUNTER. fullyVerified = every gate cleared AND (no named
+      // contract, or certified); otherwise the best candidate returns flagged for the caller
+      // to ship (or not) as explicit best-effort.
+      const isImplementAsk = /\b(implement|write|build|create|code|program)\b/i.test(message)
+        && !/\b(explain|why does|how does|what is|difference between)\b/i.test(message)
+        && isCodingQuery(message)
+      const resynthCodeAnswer = async (): Promise<{ text: string; by: string; fullyVerified: boolean; certified: boolean; askedKind: string | null } | null> => {
+        const asked = detectContract(message)
+        const hint = asked ? contractAskHint(asked.kind) : null
+        const msgs = [
+          { role: 'system' as const, content: 'You write correct, self-contained TypeScript. Output ONLY the code — no fences, no commentary.' },
+          { role: 'user' as const, content: `${message}\n\nProvide a complete, runnable implementation.${hint ? `\n${hint}` : ''}\nEnd with a brief usage example that exercises it.` },
+        ]
+        const gens: Array<{ src: string; gen: () => Promise<string | null> }> = [
+          { src: 'fm', gen: async () => (await fmComplete(msgs)).trim() },
+          ...(isBonsaiInstalled()
+            ? [{ src: repairModelName(), gen: async () => (await bonsaiComplete(msgs, { maxTokens: 700, timeoutMs: 30_000 })).trim() }]
+            : []),
+        ]
+        let fallback: { text: string; by: string } | null = null
+        for (const cand of gens) {
+          if (turnSignal?.aborted) break
+          let raw: string | null = null
+          try { raw = await cand.gen() } catch { raw = null }
+          if (!raw || raw.trim().length < 20) continue
+          const codeBody = raw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '').trim()
+          const candidate = '```ts\n' + codeBody + '\n```'
+          // Full stack: syntax, own-demo, behavioral contract. Violations always block.
+          if (verifyCodeBlocks(candidate).length > 0) continue
+          if (verifyPlainCodeByExecution(candidate).status === 'violations') continue
+          const cv = verifyAnswerContract(message, candidate)
+          if (cv.status === 'violations') continue
+          if (asked && cv.status !== 'certified') {
+            // Right shape unproven for a NAMED contract — hold as best-effort, keep looking.
+            if (!fallback) fallback = { text: candidate, by: cand.src }
+            continue
+          }
+          return { text: candidate, by: cand.src, fullyVerified: true, certified: cv.status === 'certified', askedKind: asked?.kind ?? null }
+        }
+        if (fallback) return { ...fallback, fullyVerified: false, certified: false, askedKind: asked?.kind ?? null }
+        return null
+      }
+      if (answer && answer.trim() && !answer.includes('```') && isImplementAsk) {
         try {
           debugBus.emit('pipeline', 'answer_code_missing', { len: answer.length, preview: answer.slice(0, 60) }, { severity: 'warn', requestId })
-          // When the question names a contract, the retry carries that contract's own API line
-          // as a forward constraint AND the adoption bar rises to contract-CERTIFIED — measured
-          // live (cont.92b): without it, qwen answered "rate limiter" with a token COUNTER
-          // (no acquire at all); the contract tier abstained and the wrong shape was adopted.
-          const asked = detectContract(message)
-          const hint = asked ? contractAskHint(asked.kind) : null
-          const msgs = [
-            { role: 'system' as const, content: 'You write correct, self-contained TypeScript. Output ONLY the code — no fences, no commentary.' },
-            { role: 'user' as const, content: `${message}\n\nProvide a complete, runnable implementation.${hint ? `\n${hint}` : ''}\nEnd with a brief usage example that exercises it.` },
-          ]
-          const gens: Array<{ src: string; gen: () => Promise<string | null> }> = [
-            { src: 'fm', gen: async () => (await fmComplete(msgs)).trim() },
-            ...(isBonsaiInstalled()
-              ? [{ src: repairModelName(), gen: async () => (await bonsaiComplete(msgs, { maxTokens: 700, timeoutMs: 30_000 })).trim() }]
-              : []),
-          ]
-          let fallback: { text: string; by: string } | null = null
-          for (const cand of gens) {
-            if (turnSignal?.aborted) break
-            let raw: string | null = null
-            try { raw = await cand.gen() } catch { raw = null }
-            if (!raw || raw.trim().length < 20) continue
-            const codeBody = raw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '').trim()
-            const candidate = '```ts\n' + codeBody + '\n```'
-            // Full stack: syntax, own-demo, behavioral contract. Violations always block.
-            if (verifyCodeBlocks(candidate).length > 0) continue
-            if (verifyPlainCodeByExecution(candidate).status === 'violations') continue
-            const cv = verifyAnswerContract(message, candidate)
-            if (cv.status === 'violations') continue
-            if (asked && cv.status !== 'certified') {
-              // Right shape unproven for a NAMED contract — hold as best-effort, keep looking.
-              if (!fallback) fallback = { text: candidate, by: cand.src }
-              continue
-            }
-            answer = candidate
-            fallback = null
-            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: cand.src, certified: cv.status === 'certified' }, { severity: 'info', requestId })
-            break
-          }
-          if (fallback) {
+          const r = await resynthCodeAnswer()
+          if (r && r.fullyVerified) {
+            answer = r.text
+            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: r.by, certified: r.certified }, { severity: 'info', requestId })
+          } else if (r) {
             // Keep-K best-effort: unverified code beats the literal non-answer it replaces,
             // but it must SAY it is unverified (a green-looking stamp here is the cont.79h sin).
-            answer = fallback.text + `\n\n> ⚠ This implementation could not be verified against the ${asked!.kind} contract — review before relying on it.`
-            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: fallback.by, certified: false }, { severity: 'info', requestId })
+            answer = r.text + `\n\n> ⚠ This implementation could not be verified against the ${r.askedKind} contract — review before relying on it.`
+            debugBus.emit('pipeline', 'answer_code_missing_repaired', { by: r.by, certified: false }, { severity: 'info', requestId })
           }
         } catch { /* non-blocking: ship the answer as-is */ }
       }
@@ -4300,6 +4310,19 @@ app.post('/api/chat', async (req, res) => {
             if (!repairedBlock) {
               answer += `\n\n> ⚠ The ${p.lang} code above failed a syntax check (${p.error}) and could not be auto-repaired — it will not run as written.`
               debugBus.emit('pipeline', 'code_block_broken_shipped', { lang: p.lang, error: p.error }, { severity: 'warn', requestId })
+            }
+          }
+          // ESCALATION (cont.96, live-measured): the show-the-broken-block repair above is 0/2
+          // live and 0/6 benched — the model re-produces its own defect (cont.89). When a block
+          // is STILL broken on an implement-shaped ask, re-synthesize from the QUESTION alone
+          // and adopt only a candidate the FULL gate stack clears (syntax, own-demo, contract-
+          // certified when named). Anything less keeps the honestly-warned original — a fresh
+          // unverified draft must never replace a partially-good answer.
+          if (isImplementAsk && verifyCodeBlocks(answer).length > 0) {
+            const r = await resynthCodeAnswer()
+            if (r && r.fullyVerified) {
+              answer = r.text
+              debugBus.emit('pipeline', 'code_block_resynthesized', { by: r.by, certified: r.certified }, { severity: 'info', requestId })
             }
           }
         } catch { /* non-blocking */ }
