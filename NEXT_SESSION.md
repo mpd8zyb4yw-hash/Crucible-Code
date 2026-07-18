@@ -59,13 +59,18 @@ what stalls an 8GB box; `taskpolicy -b` and partial offload both measured WORSE)
 
 ### NEXT
 
-1. **Run the 5-task live suite** (`crucible-bench-doesnt-test-model`) — the answer path is fixed
-   for ONE task class (library API). The honest % move needs the broader distribution measured.
-2. **`lodash debounce example` still misses** — no coding keyword, no instrument phrase, no
-   capital. Needs a signal for "library leads a compound noun".
-3. **The FM still drafts fabrications** — every library ask now pays an FM draft + a repair.
-   Consider letting qwen draft directly for library asks (measured: 0.6s clean).
-4. Unmeasured: tool-calling ACCURACY (BFCL 66.03); running a model alongside the server.
+1. **The chain GENERALIZES now** (0/4 → 3-4/4 execute across zod/nanoid/date-fns/axios, 6/6 use
+   the API). Residual variance is one task occasionally failing at K=6 — the weak-model ceiling,
+   not a systematic bug. Do NOT chase it per-task (overfitting risk). If pushed, the lever is a
+   better draft model or a smarter draft prompt, not more special-casing.
+2. **Run the broader live suite** (`crucible-bench-doesnt-test-model`, the 5 real /api/chat tasks)
+   — the % move needs the non-library-API distribution measured. This session fixed ONE class
+   (library code) thoroughly.
+3. **`lodash debounce example` still misses the gate** — no coding keyword, no instrument phrase,
+   no capital. Needs a "library leads a compound noun" signal.
+4. **date-fns/axios are USE-API not EXECUTE** in the suite only because they are not installed /
+   would hit the network — not a product gap.
+5. Unmeasured: tool-calling ACCURACY (BFCL 66.03); running the sidecar alongside the live server.
 
 ### Gotchas that each faked a result this session
 
