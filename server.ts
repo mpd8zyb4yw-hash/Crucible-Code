@@ -363,7 +363,7 @@ import { loadTriumvirateLog, loadPendingQueue } from './src/CrucibleEngine/trium
 import { createExperiment, getActiveExperiments, assignCohort, recordObservation, runAutoDecisions, getExperimentStats, loadExperiments } from './src/CrucibleEngine/abTesting'
 import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/CrucibleEngine/episodicMemory'
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
-import { domainVerify, correctArithmeticCascade, verifyCodeBlocks, relabelMislabeledJsFences, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './src/CrucibleEngine/domainVerifiers'
+import { domainVerify, correctArithmeticCascade, verifyCodeBlocks, relabelMislabeledJsFences, crossGrammarRelabel, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
 import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks, detectContract, contractAskHint } from './src/CrucibleEngine/reasoning/contractVerify'
 import { isCodingQuery } from './src/CrucibleEngine/retrieval/retrievalLayer'
@@ -4255,21 +4255,51 @@ app.post('/api/chat', async (req, res) => {
             answer = relab.text
             debugBus.emit('pipeline', 'code_block_relabeled', { count: relab.relabeled }, { severity: 'info', requestId })
           }
-          let problems = verifyCodeBlocks(answer)
-          for (const p of problems) {
-            const fixedRaw = await fmComplete([
-              { role: 'system', content: 'You fix syntax errors in code. Output ONLY the corrected code, no fences, no commentary. Keep the logic identical.' },
-              { role: 'user', content: `This ${p.lang} code fails to parse: ${p.error}\n\n${p.code}` },
-            ])
-            const fixed = fixedRaw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '')
-            if (fixed.trim() && verifyCodeBlocks('```' + p.lang + '\n' + fixed + '\n```').length === 0) {
-              answer = answer.slice(0, p.start) + '```' + p.lang + '\n' + fixed.replace(/\n?$/, '\n') + '```' + answer.slice(p.end)
-              debugBus.emit('pipeline', 'code_block_repaired', { lang: p.lang, error: p.error }, { severity: 'info', requestId })
-              problems = verifyCodeBlocks(answer) // offsets shifted — recompute before next fix
-            } else {
+          // Re-verify from scratch after every splice: a repair/relabel shifts every later
+          // block's offsets, so iterating a stale problems array splices at wrong positions
+          // (latent multi-fence bug, found cont.96). The attempted-set makes progress explicit:
+          // each broken block gets exactly one shot at relabel → FM → sidecar, then an honest
+          // per-block warning — no early break that leaves later broken blocks unexamined
+          // (the cont.95 live oddity: one fence certified while another shipped TS1005).
+          const attempted = new Set<string>()
+          for (let guard = 0; guard < 6; guard++) {
+            const p = verifyCodeBlocks(answer).find(pr => !attempted.has(pr.lang + ' ' + pr.code))
+            if (!p) break
+            attempted.add(p.lang + ' ' + p.code)
+            // Deterministic first: a block that parses clean under ANOTHER grammar is a label
+            // defect (python inside a ```ts fence → TS1005) — relabel, byte-identical code.
+            const relang = crossGrammarRelabel(p.lang, p.code)
+            if (relang) {
+              answer = answer.slice(0, p.start) + '```' + relang + '\n' + p.code.replace(/\n?$/, '\n') + '```' + answer.slice(p.end)
+              debugBus.emit('pipeline', 'code_block_relabeled', { from: p.lang, to: relang, cross: true }, { severity: 'info', requestId })
+              continue
+            }
+            const msgs = [
+              { role: 'system' as const, content: 'You fix syntax errors in code. Output ONLY the corrected code, no fences, no commentary. Keep the logic identical.' },
+              { role: 'user' as const, content: `This ${p.lang} code fails to parse: ${p.error}\n\n${p.code}` },
+            ]
+            const seats: Array<{ src: string; gen: () => Promise<string> }> = [
+              { src: 'fm', gen: async () => await fmComplete(msgs) },
+              ...(isBonsaiInstalled()
+                ? [{ src: repairModelName(), gen: async () => await bonsaiComplete(msgs, { maxTokens: 700, timeoutMs: 30_000 }) }]
+                : []),
+            ]
+            let repairedBlock = false
+            for (const seat of seats) {
+              if (turnSignal?.aborted) break
+              let fixedRaw: string | null = null
+              try { fixedRaw = await seat.gen() } catch { fixedRaw = null }
+              const fixed = (fixedRaw ?? '').replace(/^```\w*\n?/, '').replace(/```\s*$/, '')
+              if (fixed.trim() && verifyCodeBlocks('```' + p.lang + '\n' + fixed + '\n```').length === 0) {
+                answer = answer.slice(0, p.start) + '```' + p.lang + '\n' + fixed.replace(/\n?$/, '\n') + '```' + answer.slice(p.end)
+                debugBus.emit('pipeline', 'code_block_repaired', { lang: p.lang, error: p.error, by: seat.src }, { severity: 'info', requestId })
+                repairedBlock = true
+                break
+              }
+            }
+            if (!repairedBlock) {
               answer += `\n\n> ⚠ The ${p.lang} code above failed a syntax check (${p.error}) and could not be auto-repaired — it will not run as written.`
               debugBus.emit('pipeline', 'code_block_broken_shipped', { lang: p.lang, error: p.error }, { severity: 'warn', requestId })
-              break
             }
           }
         } catch { /* non-blocking */ }

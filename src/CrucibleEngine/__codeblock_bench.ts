@@ -10,7 +10,7 @@
 // syntax error ships one warning-less answer; a false reject warns on CORRECT code and, worse,
 // invites a needless repair. Every "valid-*" case asserts we do NOT flag legitimate TS — including
 // TYPE errors and undeclared types, which strict:false deliberately ignores.
-import { verifyCodeBlocks, relabelMislabeledJsFences, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './domainVerifiers'
+import { verifyCodeBlocks, relabelMislabeledJsFences, crossGrammarRelabel, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './domainVerifiers'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -132,6 +132,22 @@ const BROKEN = `class Broken {
 }
 more broken ( } lines here;`
 check('unparseable region left unfenced', fenceUnfencedCode(BROKEN).fenced === 0)
+
+console.log('== cross-grammar relabel for a single failing fence (deterministic, cont.96) ==')
+// Python written inside a ts fence: fails the TS grammar (TS1005 on the colons) but parses
+// clean under python — a LABEL defect the model repair should never be asked to fix.
+const PY_IN_TS = 'def add(a, b):\n    return a + b\n\nprint(add(2, 3))'
+check('python-in-ts fence → python', crossGrammarRelabel('ts', PY_IN_TS) === 'python')
+check('python-in-js fence → python', crossGrammarRelabel('javascript', PY_IN_TS) === 'python')
+// TS written inside a python fence: ast.parse rejects it, TS accepts.
+const TS_IN_PY = 'const f = (a: number): number => a + 1\nexport { f }'
+check('ts-in-python fence → ts', crossGrammarRelabel('python', TS_IN_PY) === 'ts')
+// Genuinely broken code parses under NO grammar — must return null (cannot launder).
+check('broken-everywhere → null', crossGrammarRelabel('ts', 'def f(:\n  {{{') === null)
+check('broken ts (real TS1005 class) → null', crossGrammarRelabel('ts', REAL_LINKEDLIST) === null)
+// Prose parses under no grammar either.
+check('prose → null', crossGrammarRelabel('python', 'This function adds two numbers and returns the sum for you.') === null)
+check('empty → null', crossGrammarRelabel('ts', '   ') === null)
 
 console.log('== no-external-dependency constraint (deterministic, cont.95) ==')
 check('detects "no external packages"', detectNoDependencyConstraint('build a rate limiter with no external packages'))

@@ -376,6 +376,26 @@ export function relabelMislabeledJsFences(text: string): { text: string; relabel
   return { text: out, relabeled }
 }
 
+/**
+ * Cross-grammar relabel for a SINGLE failing fence (cont.96). A block that fails its labeled
+ * grammar but parses CLEAN under another supported grammar is a label defect, not a code defect
+ * (e.g. python written inside a ```ts fence → TS1005 on the colons). Deterministic, byte-identical
+ * code, cannot launder broken code: code that no grammar accepts returns null and flows to the
+ * model repair unchanged. Complements relabelMislabeledJsFences (js→ts) with ts/js→python and
+ * python→ts.
+ */
+export function crossGrammarRelabel(lang: string, code: string): string | null {
+  if (!code.trim()) return null
+  const l = lang.toLowerCase()
+  if (l === 'python' || l === 'py') {
+    return parsesCleanTs(code) ? 'ts' : null
+  }
+  if (['ts', 'typescript', 'tsx', 'js', 'javascript'].includes(l)) {
+    return parsesCleanPython(code) ? 'python' : null
+  }
+  return null
+}
+
 export function verifyCodeBlocks(text: string): CodeBlockProblem[] {
   const problems: CodeBlockProblem[] = []
   const fenceRe = /```(\w*)\n([\s\S]*?)```/g
