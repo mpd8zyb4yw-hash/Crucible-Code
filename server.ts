@@ -4362,15 +4362,28 @@ app.post('/api/chat', async (req, res) => {
       if (answer && answer.trim() && answer.includes('```')) {
         try {
           const contract = verifyAnswerContract(message, answer)
-          if (contract.status !== 'abstain') {
-            debugBus.emit('pipeline', 'answer_contract', {
-              family: contract.family, entry: contract.entry, status: contract.status,
-              checksRun: contract.checksRun, reason: contract.reason.slice(0, 140),
-            }, { severity: contract.status === 'violations' ? 'warn' : 'info', requestId })
-          }
-          if (contract.status === 'violations') {
+          const askedKind = detectContract(message)?.kind ?? null
+          // An abstain can be a DELIBERATE scope choice (async limiter, numeric-return
+          // conventions) or the battery failing to even FIND a judgeable interface. The second
+          // class is a verification hole, not a neutral outcome: the cont.97 suite shipped
+          // three broken "rate limiters" (send/sendMessage/isRateLimitExceeded — none in the
+          // entry conventions) exactly this way, each structurally exec-certified with the
+          // contract silently absent. When the QUESTION names a contract and the answer's code
+          // exposes no legible implementation of it, treat that like a violation: re-synthesize
+          // forward-only from the ask's own contract hint, and if nothing certifies, say so.
+          const outOfScopeAbstain = /returns a Promise|returns a number/.test(contract.reason)
+          const illegibleInterface = contract.status === 'abstain' && !!askedKind && !outOfScopeAbstain &&
+            /lacks|has no |exposes no |could not construct|no judgeable implementation/.test(contract.reason)
+          debugBus.emit('pipeline', 'answer_contract', {
+            family: contract.family || askedKind || '', entry: contract.entry, status: contract.status,
+            checksRun: contract.checksRun, reason: contract.reason.slice(0, 140),
+            ...(illegibleInterface ? { illegibleInterface: true } : {}),
+          }, { severity: contract.status === 'violations' || illegibleInterface ? 'warn' : 'info', requestId })
+          if (contract.status === 'violations' || illegibleInterface) {
             const rspec = contractRepairSpec(message, contract)
-            const ask = `${message}\n\nRequirements the code MUST satisfy:\n${rspec.constraints.map(c => `- ${c}`).join('\n')}\n${rspec.entry ? `Name it ${rspec.entry}.` : ''}\nEnd with a brief usage example that exercises it.`
+            const hint = contractAskHint(askedKind ?? contract.family)
+            const constraints = rspec.constraints.length ? rspec.constraints : (hint ? [hint] : [])
+            const ask = `${message}\n\nRequirements the code MUST satisfy:\n${constraints.map(c => `- ${c}`).join('\n')}\n${rspec.entry ? `Name it ${rspec.entry}.` : ''}\nEnd with a brief usage example that exercises it.`
             const msgs = [
               { role: 'system' as const, content: 'You write correct, self-contained TypeScript. Output ONLY the code — no fences, no commentary.' },
               { role: 'user' as const, content: ask },
@@ -4407,7 +4420,12 @@ app.post('/api/chat', async (req, res) => {
                 break
               }
             }
-            if (!repaired) {
+            if (!repaired && illegibleInterface) {
+              answer += `\n\n> ⚠ You asked for a ${askedKind}, but the code above exposes no recognizable ${askedKind} interface (${contract.reason}) — its behavior could not be verified against what was asked.`
+              debugBus.emit('pipeline', 'answer_contract_unverifiable', {
+                family: contract.family || askedKind || '', reason: contract.reason.slice(0, 160),
+              }, { severity: 'warn', requestId })
+            } else if (!repaired) {
               const d = contract.defects[0]
               answer += `\n\n> ⚠ Behavioral check failed (${contract.family}): ${d?.counterexample ?? contract.reason} — the code above does not correctly implement what was asked.`
               debugBus.emit('pipeline', 'answer_contract_broken_shipped', {
