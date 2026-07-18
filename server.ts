@@ -363,7 +363,7 @@ import { loadTriumvirateLog, loadPendingQueue } from './src/CrucibleEngine/trium
 import { createExperiment, getActiveExperiments, assignCohort, recordObservation, runAutoDecisions, getExperimentStats, loadExperiments } from './src/CrucibleEngine/abTesting'
 import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/CrucibleEngine/episodicMemory'
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
-import { domainVerify, correctArithmeticCascade, verifyCodeBlocks, relabelMislabeledJsFences } from './src/CrucibleEngine/domainVerifiers'
+import { domainVerify, correctArithmeticCascade, verifyCodeBlocks, relabelMislabeledJsFences, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
 import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks, detectContract, contractAskHint } from './src/CrucibleEngine/reasoning/contractVerify'
 import { isCodingQuery } from './src/CrucibleEngine/retrieval/retrievalLayer'
@@ -4168,6 +4168,20 @@ app.post('/api/chat', async (req, res) => {
           }
         } catch { /* non-blocking: ship the original answer */ }
       }
+      // FENCELESS CODE (cont.95 live finding): a code-intent answer shipped 3.7KB of raw source
+      // with NO fences, so every code gate below (they all key on ```-presence) abstained on the
+      // one answer that needed them. Deterministic first: if a fenceless answer contains a region
+      // that PARSES as code, fence it — zero inference, byte-identical code — so the full gate
+      // stack downstream gets to judge it. Message-independent: gated on the answer's own shape.
+      if (answer && answer.trim() && !answer.includes('```')) {
+        try {
+          const f = fenceUnfencedCode(answer)
+          if (f.fenced > 0) {
+            answer = f.text
+            debugBus.emit('pipeline', 'code_fence_inferred', { count: f.fenced }, { severity: 'info', requestId })
+          }
+        } catch { /* non-blocking */ }
+      }
       // CODE ASK, NO CODE (cont.92 live finding): the reason-intent lane can collapse a code
       // ask to its extracted "Answer:" line — shipped live as the ENTIRE answer "Answer: true"
       // for "implement a token bucket rate limiter". A code ask answered with zero fences is a
@@ -4347,6 +4361,54 @@ app.post('/api/chat', async (req, res) => {
                 family: contract.family, entry: contract.entry,
                 counterexample: (d?.counterexample ?? '').slice(0, 160),
               }, { severity: 'warn', requestId })
+            }
+          }
+        } catch { /* non-blocking: ship the answer as-is */ }
+      }
+      // NO-EXTERNAL-DEPENDENCY constraint gate (cont.95 live finding): the FM routinely IGNORES
+      // "no external packages" and ships express code. The constraint is stated by the QUESTION
+      // and checkable deterministically against the answer's own imports (all node builtins and
+      // relative paths allowed — the constraint is about npm packages). On violation: forward-only
+      // re-synthesis with the constraint made explicit (the retry never sees the rejected code,
+      // cont.89), adopted only when the candidate passes the FULL gate stack AND imports nothing
+      // external; otherwise the original ships with an honest violation warning, never silently.
+      if (answer && answer.trim() && answer.includes('```') && detectNoDependencyConstraint(message)) {
+        try {
+          const externals = findExternalImports(answer)
+          if (externals.length > 0) {
+            debugBus.emit('pipeline', 'answer_dependency_violation', { externals }, { severity: 'warn', requestId })
+            const ask = `${message}\n\nHARD CONSTRAINT: use ONLY Node.js built-in modules. Do not import or require ANY npm package. If the question mentions a package, implement the equivalent yourself with builtins.\nEnd with a brief usage example that exercises it.`
+            const msgs = [
+              { role: 'system' as const, content: 'You write correct, self-contained TypeScript using only Node.js built-in modules. Output ONLY the code — no fences, no commentary.' },
+              { role: 'user' as const, content: ask },
+            ]
+            const gens: Array<{ src: string; gen: () => Promise<string | null> }> = [
+              { src: 'fm', gen: async () => (await fmComplete(msgs)).trim() },
+              ...(isBonsaiInstalled()
+                ? [{ src: repairModelName(), gen: async () => (await bonsaiComplete(msgs, { maxTokens: 700, timeoutMs: 30_000 })).trim() }]
+                : []),
+            ]
+            let repaired = false
+            for (const cand of gens) {
+              if (turnSignal?.aborted) break
+              let raw: string | null = null
+              try { raw = await cand.gen() } catch { raw = null }
+              if (!raw || raw.trim().length < 20) continue
+              const code = raw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '').trim()
+              const candidate = '```ts\n' + code + '\n```'
+              if (findExternalImports(candidate).length > 0) continue
+              if (verifyCodeBlocks(candidate).length > 0) continue
+              if (verifyPlainCodeByExecution(candidate).status === 'violations') continue
+              const cv = verifyAnswerContract(message, candidate)
+              if (cv.status === 'violations') continue
+              answer = replaceAnswerCodeBlocks(answer, code)
+              repaired = true
+              debugBus.emit('pipeline', 'answer_dependency_repaired', { by: cand.src, was: externals }, { severity: 'info', requestId })
+              break
+            }
+            if (!repaired) {
+              answer += `\n\n> ⚠ The question asked for no external packages, but this code imports ${externals.join(', ')} — it does not satisfy that constraint as written.`
+              debugBus.emit('pipeline', 'answer_dependency_broken_shipped', { externals }, { severity: 'warn', requestId })
             }
           }
         } catch { /* non-blocking: ship the answer as-is */ }

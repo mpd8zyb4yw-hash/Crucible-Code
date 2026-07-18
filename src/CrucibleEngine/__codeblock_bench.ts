@@ -10,7 +10,7 @@
 // syntax error ships one warning-less answer; a false reject warns on CORRECT code and, worse,
 // invites a needless repair. Every "valid-*" case asserts we do NOT flag legitimate TS — including
 // TYPE errors and undeclared types, which strict:false deliberately ignores.
-import { verifyCodeBlocks, relabelMislabeledJsFences } from './domainVerifiers'
+import { verifyCodeBlocks, relabelMislabeledJsFences, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './domainVerifiers'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -74,6 +74,81 @@ const r3 = relabelMislabeledJsFences(fence('js', 'const f = (a) => a + 1'))
 check('valid js is untouched', r3.relabeled === 0 && r3.text === fence('js', 'const f = (a) => a + 1'))
 const r4 = relabelMislabeledJsFences(fence('ts', 'const x: number = 1'))
 check('ts fences are out of scope', r4.relabeled === 0)
+
+
+console.log('== fence inference on fenceless answers (deterministic, cont.95) ==')
+// [REAL-shaped] a code-intent answer shipped as raw source with NO fences — every code gate
+// abstained. fenceUnfencedCode must fence a parse-clean code region with zero inference…
+const RAW_TS = `Here is a token bucket rate limiter:
+
+class TokenBucket {
+  private tokens: number;
+  constructor(private capacity: number, private ratePerSec: number) {
+    this.tokens = capacity;
+  }
+  tryAcquire(): boolean {
+    if (this.tokens > 0) { this.tokens--; return true; }
+    return false;
+  }
+}
+
+const b = new TokenBucket(5, 1);
+console.log(b.tryAcquire());
+
+Use tryAcquire() before each request.`
+const f1 = fenceUnfencedCode(RAW_TS)
+check('raw TS region gets fenced', f1.fenced >= 1 && f1.text.includes('```'))
+check('fenced result passes the syntax gate', !flagged(f1.text))
+check('code preserved byte-for-byte', f1.text.includes('private ratePerSec: number'))
+check('surrounding prose stays outside the fence', /^Here is a token bucket rate limiter:/.test(f1.text.trim()))
+const RAW_PY = `def fib(n):
+    if n < 2:
+        return n
+    a, b = 0, 1
+    for _ in range(n - 1):
+        a, b = b, a + b
+    return b
+
+print(fib(10))`
+const f2 = fenceUnfencedCode(RAW_PY)
+check('raw python fenced as python', f2.fenced === 1 && f2.text.includes('```python'))
+// …and must NEVER fence what is not code:
+const PROSE = `The rate limiter pattern controls how often an action runs.
+
+It works by tracking a budget of tokens. Each request spends one token,
+and tokens refill over time at a fixed rate. When the bucket is empty,
+requests are denied until refill catches up. This bounds burst size
+while allowing a steady average rate over longer windows.`
+const f3 = fenceUnfencedCode(PROSE)
+check('plain prose is never fenced', f3.fenced === 0 && f3.text === PROSE)
+const f4 = fenceUnfencedCode('Use `x = 5` to set it.\nThen call f(x).\nDone.')
+check('short inline mentions not fenced', f4.fenced === 0)
+const f5 = fenceUnfencedCode('```ts\nconst x = 1\n```')
+check('already-fenced answers untouched', f5.fenced === 0)
+const BROKEN = `class Broken {
+  constructor( {
+    this.x = = 1;
+  }
+}
+more broken ( } lines here;`
+check('unparseable region left unfenced', fenceUnfencedCode(BROKEN).fenced === 0)
+
+console.log('== no-external-dependency constraint (deterministic, cont.95) ==')
+check('detects "no external packages"', detectNoDependencyConstraint('build a rate limiter with no external packages'))
+check('detects "without using any libraries"', detectNoDependencyConstraint('implement debounce without using any libraries'))
+check('detects "stdlib only"', detectNoDependencyConstraint('write an HTTP server, stdlib only'))
+check('detects "vanilla javascript"', detectNoDependencyConstraint('a carousel in vanilla JavaScript'))
+check('detects "zero dependencies"', detectNoDependencyConstraint('a zero-dependency logger'))
+check('no false-fire on plain code ask', !detectNoDependencyConstraint('implement a token bucket rate limiter in TypeScript'))
+check('no false-fire on express ask', !detectNoDependencyConstraint('add rate limiting to my express app'))
+const EXPRESS = fence('ts', "import express from 'express'\nimport rateLimit from 'express-rate-limit'\nconst app = express()")
+check('flags express + express-rate-limit', JSON.stringify(findExternalImports(EXPRESS)) === '[\"express\",\"express-rate-limit\"]')
+check('builtins are not external', findExternalImports(fence('ts', "import { EventEmitter } from 'events'\nimport fs from 'node:fs'")).length === 0)
+check('relative imports are not external', findExternalImports(fence('ts', "import { x } from './util'")).length === 0)
+check('scoped package token', JSON.stringify(findExternalImports(fence('ts', "import { z } from '@scope/pkg/sub'"))) === '[\"@scope/pkg\"]')
+check('require() form detected', JSON.stringify(findExternalImports(fence('js', "const _ = require('lodash')"))) === '[\"lodash\"]')
+check('no imports → empty', findExternalImports(fence('ts', 'const a = 1')).length === 0)
+check('python fences out of scope', findExternalImports(fence('python', 'import requests')).length === 0)
 
 console.log(`\n${pass}/${pass + fail}`)
 if (fail) process.exit(1)

@@ -439,3 +439,165 @@ export function verifyCodeBlocks(text: string): CodeBlockProblem[] {
   }
   return problems
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Deterministic fence inference (cont.95). A live code-intent answer shipped 3.7KB of raw
+// source with NO fences — every downstream code gate keys on ```-presence, so syntax, own-demo,
+// and contract verification ALL abstained on exactly the answer that needed them most. The FM
+// does this when a prompt style ("output only the code") bleeds into the answer path. If a
+// fenceless answer contains a contiguous region that PARSES as real code, fence it — zero
+// inference, byte-identical code, and the gate stack downstream then gets to judge it.
+// Cannot false-fire on prose: English does not parse under the TS/JS/Python grammars, and the
+// density + line-count guards keep short quoted expressions ("use `x = 5`") out of scope.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Parse-clean under the TS grammar: no syntactic diagnostics, no fatal semantic. */
+function parsesCleanTs(code: string): boolean {
+  try {
+    const t = ts.transpileModule(code, {
+      compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, strict: false },
+      reportDiagnostics: true,
+    })
+    const syntactic = (t.diagnostics ?? []).some(
+      d => d.category === ts.DiagnosticCategory.Error && d.code >= 1000 && d.code < 2000,
+    )
+    if (syntactic || semanticFatalTs(code)) return false
+    new vmMod.Script(t.outputText)
+    return true
+  } catch { return false }
+}
+
+function parsesCleanPython(code: string): boolean {
+  try {
+    const r = spawnSync('python3', ['-c', 'import sys,ast; ast.parse(sys.stdin.read())'],
+      { input: code, timeout: 5000, encoding: 'utf8' })
+    return r.status === 0
+  } catch { return false }
+}
+
+// A line that plausibly belongs to a code block: code punctuation, a keyword, or a comment.
+// Markdown headings (# Title) intentionally match the python-comment shape — the parse gate
+// arbitrates: a heading inside a would-be TS block fails the grammar and gets trimmed below.
+const CODEY_LINE = /[;{}()[\]=]|=>|^\s*(\/\/|\/\*|\*|#)|\b(function|class|def|return|const|let|var|import|export|from|if|else|for|while|try|except|print|self)\b/
+// A strongly code-marked line — used to arbitrate which run EDGE to trim when the region does
+// not parse: prose that sneaks into a run ("Use f(x) before each request.") carries at most
+// parentheses, while real code edges carry braces/semicolons/assignment/comments/keyword starts.
+const STRONG_CODE_LINE = /[;{}=]|=>|^\s*(\/\/|\/\*|\*|#)|^\s*(function|class|def|return|const|let|var|import|export|from|if|for|while|try)\b/
+
+/**
+ * Fence the code region of a fenceless answer, verified by parsing. Finds maximal runs of
+ * code-plausible lines (≥5 non-blank, ≥60% carrying code punctuation), trims up to 4
+ * non-parsing edge lines (stray headings/prose), and labels by which grammar accepts the
+ * region: python (ast.parse) when python-shaped, else JS (vm.Script) else TS. A region no
+ * grammar accepts is left untouched — broken drafts still flow to the existing repair gates
+ * ONLY if they at least parse; we never stamp a fence on text we could not verify is code.
+ */
+export function fenceUnfencedCode(text: string): { text: string; fenced: number } {
+  if (!text || text.includes('```')) return { text, fenced: 0 }
+  const lines = text.split('\n')
+  // Collect maximal runs of codey-or-blank lines.
+  const runs: Array<{ start: number; end: number }> = []
+  let runStart = -1
+  for (let i = 0; i <= lines.length; i++) {
+    const codey = i < lines.length && (lines[i].trim() === '' || CODEY_LINE.test(lines[i]))
+    if (codey && runStart < 0) runStart = i
+    if (!codey && runStart >= 0) { runs.push({ start: runStart, end: i - 1 }); runStart = -1 }
+  }
+  // Process bottom-up so earlier offsets stay valid after splicing.
+  let fenced = 0
+  for (const run of runs.reverse()) {
+    // Shrink blank edges.
+    let s = run.start, e = run.end
+    while (s <= e && lines[s].trim() === '') s++
+    while (e >= s && lines[e].trim() === '') e--
+    const nonBlank = () => lines.slice(s, e + 1).filter(l => l.trim() !== '')
+    let body = nonBlank()
+    if (body.length < 5) continue
+    const punct = body.filter(l => /[;{}()[\]=]|=>|^\s*(#|\/\/)|:\s*$/.test(l)).length
+    if (punct / body.length < 0.6) continue
+    // Trim up to 4 non-parsing edge lines (a stray heading or prose lead-in inside the run).
+    const pythonShaped = /^\s*(def |import |from \w+ import|class \w+.*:)/m.test(lines.slice(s, e + 1).join('\n'))
+    let lang: string | null = null
+    for (let trims = 0; trims <= 4 && s <= e; trims++) {
+      const code = lines.slice(s, e + 1).join('\n')
+      if (pythonShaped && parsesCleanPython(code)) { lang = 'python'; break }
+      if (!pythonShaped) {
+        try { new vmMod.Script(code); lang = 'js'; break } catch { /* try TS */ }
+        if (parsesCleanTs(code)) { lang = 'ts'; break }
+      }
+      // Drop the weaker edge line and retry: a heading or weakly-marked prose edge goes first;
+      // when both edges are strong code the region is genuinely broken — stop, never fence it.
+      const weakTop = /^\s*#{1,6}\s/.test(lines[s]) || !STRONG_CODE_LINE.test(lines[s])
+      const weakBottom = /^\s*#{1,6}\s/.test(lines[e]) || !STRONG_CODE_LINE.test(lines[e])
+      if (weakTop) s++
+      else if (weakBottom) e--
+      else break
+      while (s <= e && lines[s].trim() === '') s++
+      while (e >= s && lines[e].trim() === '') e--
+    }
+    body = nonBlank()
+    if (!lang || body.length < 5) continue
+    lines.splice(e + 1, 0, '```')
+    lines.splice(s, 0, '```' + lang)
+    fenced++
+  }
+  return { text: lines.join('\n'), fenced }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// No-external-dependency constraint gate (cont.95). Live observation: the FM routinely IGNORES
+// "no external packages" and ships express/express-limiter code — a constraint the QUESTION
+// itself states, checkable deterministically against the answer's own imports. Node builtins
+// (all of them, including fs/http — the constraint is about npm packages, not I/O) and relative
+// imports are always allowed; anything else violates. The check reads only fenced js/ts blocks.
+// ═══════════════════════════════════════════════════════════════════════════════
+import { builtinModules } from 'module'
+const ALL_NODE_BUILTINS: ReadonlySet<string> = new Set(builtinModules)
+
+const NO_DEP_PATTERNS: RegExp[] = [
+  /\bno (external|third[- ]party|npm|outside) (packages?|dependencies|deps|libraries|libs|modules)\b/i,
+  /\bno (dependencies|deps)\b/i,
+  /\bwithout (?:using )?(?:any )?(?:external |third[- ]party |npm )?(packages|libraries|dependencies|deps)\b/i,
+  /\b(?:standard library|stdlib) only\b/i,
+  /\bonly (?:the )?(?:standard library|stdlib|built-?ins?|node(?:\.js)? built-?ins?)\b/i,
+  /\bbuilt-?ins? only\b/i,
+  /\bvanilla (?:js|javascript|typescript|node(?:\.js)?)\b/i,
+  /\b(?:zero|0)[- ]dependenc(?:y|ies)\b/i,
+  /\bdependency[- ]free\b/i,
+]
+
+/** True when the question itself forbids external packages. */
+export function detectNoDependencyConstraint(question: string): boolean {
+  return NO_DEP_PATTERNS.some(re => re.test(question))
+}
+
+/** node:-stripped package token of an import specifier ('@scope/pkg/sub' → '@scope/pkg'). */
+function importPackageToken(spec: string): string {
+  const s = spec.replace(/^node:/, '')
+  const parts = s.split('/')
+  return s.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]
+}
+
+/**
+ * External (non-builtin, non-relative) packages imported by the answer's fenced js/ts code.
+ * Deduplicated, in first-appearance order.
+ */
+export function findExternalImports(answer: string): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const fenceRe = /```(?:js|javascript|ts|typescript|tsx)\n([\s\S]*?)```/gi
+  let f: RegExpExecArray | null
+  while ((f = fenceRe.exec(answer)) !== null) {
+    const code = f[1]
+    const specRe = /\b(?:import\s+[^'"`]*?from\s*|import\s*\(\s*|require\s*\(\s*|import\s+)['"`]([^'"`]+)['"`]/g
+    let m: RegExpExecArray | null
+    while ((m = specRe.exec(code)) !== null) {
+      const spec = m[1]
+      if (spec.startsWith('.') || spec.startsWith('/')) continue
+      const token = importPackageToken(spec)
+      if (ALL_NODE_BUILTINS.has(token)) continue
+      if (!seen.has(token)) { seen.add(token); out.push(token) }
+    }
+  }
+  return out
+}
