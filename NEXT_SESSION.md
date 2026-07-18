@@ -17,7 +17,48 @@
 
 ---
 
-## CURRENT STATE — last updated cont.95, 2026-07-18, commit `b38224d` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.96, 2026-07-18, commit `e6cbb58` (REPLACE THIS EVERY SESSION)
+
+**cont.96 closed the multi-fence broken-block repair gap (cont.95 NEXT item 2), 2 commits, pushed.**
+
+1. **Broken-block repair hardened** (`ad1a736`). The per-block syntax repair loop in server.ts:
+   (a) FIXED a latent multi-fence bug — the old for-of iterated a STALE problems array after a
+   splice, so a second broken block spliced at shifted offsets; now re-verifies from scratch
+   after every splice with an attempted-set for progress (guard 6). (b) No early `break` — every
+   broken block gets its own shot + honest per-block warning (the cont.95 live oddity was a later
+   block left unexamined). (c) `crossGrammarRelabel` (domainVerifiers.ts): a failing fence that
+   parses CLEAN under another grammar (python-in-ts, ts-in-python) is a LABEL defect — relabel,
+   byte-identical; broken-everywhere → null (cannot launder). (d) qwen sidecar seat tries after
+   the FM before giving up.
+
+2. **Escalation: forward-only re-synthesis on repair failure** (`e6cbb58`). Live measured on
+   ad1a736: show-the-broken-block repair went 0/2 (FM + qwen) on a TS1068 draft — cont.89 again
+   (the model re-produces its own defect). Extracted the cont.92 no-code re-synthesis into shared
+   `resynthCodeAnswer` (server.ts); when a block is STILL broken on an implement-shaped ask,
+   re-synthesize from the QUESTION alone; adopt ONLY a candidate the FULL gate stack clears
+   (syntax + own-demo + contract-certified when named), else the warned original ships. Emits
+   `code_block_resynthesized`. The helper's candidate loop is the SAME live-proven cont.92 code;
+   the escalation trigger itself has bench+shared-path evidence but no live broken-block
+   recurrence yet — watch `/api/debug/history` for `code_block_resynthesized`.
+
+**Live runs (clean banners ad1a736, e6cbb58, self-booted :3002, killed after):** run 1 hit the
+exact seam — broken TS1068 draft, both seats failed, honest warning (pre-escalation commit);
+run 2 on e6cbb58 shipped a contract-CERTIFIED stack, zero warnings, with a live qwen contract
+repair (`answer_contract_repaired {by:"qwen2.5-1.5b"}`).
+
+**Benches:** codeblock 47→54 (crossGrammarRelabel incl. cannot-launder guards), execverify
+44/44, contract 69/69; tsc server 443 (baseline 445, zero net-new).
+
+### NEXT (cont.97)
+1. Broader 5-task suite at n≥3 on a clean tree (the % claim still needs the distribution;
+   agent/app route still honest-fail). This is now the ONLY blocker on the distribution claim.
+2. Watch for `code_block_resynthesized` in live telemetry — the escalation gate has not yet
+   fired on a real broken-block recurrence (unreachable-gate rule: prove it opens).
+3. "build a limiter" grounding residual (cont.94 item 1) if it bites live.
+
+---
+
+## PRIOR STATE — cont.95, commit `b38224d`
 
 **cont.95 closed both cont.94 answer-shape gaps + a live routing find, 2 commits, pushed.**
 
