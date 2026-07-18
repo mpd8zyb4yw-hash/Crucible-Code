@@ -13,6 +13,41 @@ import { verifyMultiFileCode, type CandidateFile } from '../reasoning/codeVerifi
 import type { ExecutionResult, ErrorType, Language } from '../sandbox'
 import type { ToolCtx } from '../tools/protocol'
 import type { VerifyResult } from './loop'
+import { runtimeVerifyHtml, runtimeVerifyApp } from './htmlRuntimeVerify'
+import { classifyHtmlGoal } from './htmlGoalKind'
+
+/**
+ * The project's own entry HTML document, if it has one. Prefers index.html, then the shallowest
+ * / largest candidate — a build with one page has exactly one answer, and a build with several
+ * has an index. Returns null for anything that isn't a full document (fragments/partials have
+ * no runtime of their own).
+ */
+function findHtmlDocument(root: string): { file: string; html: string } | null {
+  // Its own walk: collectSourceFiles is scoped to JS/TS for the example gate, and widening it
+  // would feed HTML into a bundler that cannot run it.
+  const found: { file: string; html: string; depth: number }[] = []
+  const SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.crucible', 'out', 'coverage', '.next', '__derived__'])
+  const walk = (dir: string, depth: number) => {
+    if (found.length >= 20 || depth > 6) return
+    let ents: fs.Dirent[]
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of ents) {
+      if (e.name.startsWith('.') || SKIP.has(e.name)) continue
+      const abs = path.join(dir, e.name)
+      if (e.isDirectory()) walk(abs, depth + 1)
+      else if (/\.html?$/i.test(e.name)) {
+        try { found.push({ file: abs, html: fs.readFileSync(abs, 'utf-8'), depth }) } catch { /* skip */ }
+      }
+    }
+  }
+  walk(root, 0)
+  const docs = found.filter(d => /<html[\s>]|<body[\s>]/i.test(d.html))
+  if (!docs.length) return null
+  const index = docs.find(d => /(^|[\\/])index\.html?$/i.test(d.file))
+  if (index) return index
+  docs.sort((a, b) => a.depth - b.depth || b.html.length - a.html.length)
+  return docs[0]
+}
 
 export interface Verifier {
   verify: (finalText: string, ctx: ToolCtx) => Promise<VerifyResult & { escalate?: boolean }>
@@ -108,6 +143,31 @@ export function makeVerifier(opts: { command?: string; goal?: string } = {}): Ve
             return { ...gate, escalate }
           }
           return gate
+        }
+        // Still nothing to run — but a single-page HTML build IS runnable, and the behavioral
+        // gate that drives it already exists (runtimeVerifyApp/Html). It was only ever reachable
+        // from the synth route, so the same prompt shipped verified or blind depending on which
+        // route happened to build it: the cont.97 suite shipped 6/6 broken web apps through here,
+        // every one via "No runnable check detected". Whoever wrote the file, the artifact gets
+        // judged.
+        const doc = findHtmlDocument(ctx.projectPath)
+        if (doc) {
+          const kind = classifyHtmlGoal(opts.goal ?? '')
+          const problem = kind === 'game'
+            ? await runtimeVerifyHtml(doc.html, opts.goal ?? '')
+            : await runtimeVerifyApp(doc.html, opts.goal ?? '')
+          if (problem) {
+            attempts++
+            const fp = fingerprint(problem)
+            const escalate = fingerprints.has(fp) || attempts >= MAX_HEAL_ATTEMPTS
+            fingerprints.add(fp)
+            return {
+              passed: false, signal: 'test', escalate,
+              report: `Behavioral gate drove ${path.relative(ctx.projectPath, doc.file)} in a real browser and it failed: ${problem}`,
+              hints: [problem],
+            }
+          }
+          return { passed: true, signal: 'test', report: `Behavioral gate drove ${path.relative(ctx.projectPath, doc.file)} in a real browser — loads clean and its controls change the page.` }
         }
         return { passed: true, signal: 'none', report: 'No runnable check detected.', unverified: true }
       }
