@@ -17,7 +17,33 @@
 
 ---
 
-## CURRENT STATE — last updated cont.89, 2026-07-17, commit `25b0451` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.90, 2026-07-18, commit `ae2fab9` (REPLACE THIS EVERY SESSION)
+
+**cont.90 ran the broader 5-task live suite and closed the plain-code answer-route hole.**
+
+Suite (live /api/chat, n=1 each; the failure KIND is the reliable part) split cleanly BY ROUTE:
+- **Agent/app route** (todo 136s, notes 157s) → HONEST FAILs, `ok:false`. The run-verify gate
+  rejected 6 attempts each (input-not-cleared, JS syntax, `updatePreview is not defined`) and refused
+  to ship. IMPROVED vs the cont.80 audit (which shipped a 0-control notes page as a pass).
+- **Library answer route** (zod ipv4 88s) → PASS. `import { ipv4 } from 'zod'` executes
+  success:true, grounded (6 sources). cont.89's library fix HOLDS live.
+- **Plain-code answer route** (linked list 52s, rate limiter 138s) → THE HOLE. Linked list shipped
+  uncompilable TS that the COUNCIL stamped. Root cause: the answer-path gate `verifyCodeBlocks`
+  checked py/js but **skipped typescript**. FIXED (commits `5f3f752`+`ae2fab9`): TS1xxx syntactic +
+  `{2588 const-reassign, 2451 redeclare}` runtime-fatal semantic gate; `noLib:true`+`types:[]` kills
+  the DOM.Node false-reject class. `vgr:codeblock` 18/18, tsc baseline 443, LIVE-CONFIRMED (broken
+  draft now ships with a "will not run" warning instead of a silent stamp). See
+  [[crucible-answer-path-code-verifier]].
+
+### NEXT (cont.91)
+1. **Execution verifier for plain-code answers** — the gate now WARNS but doesn't buy correctness.
+   Linked-list `pop()` logic and the token-bucket ratelimiter (inverted acquire, no time refill) are
+   still WRONG. The lever: construct + probe the defined class (like `executionVerify.ts` but NOT
+   library-gated) so wrong LOGIC is caught, not just wrong syntax. Proposer ceiling, not architecture.
+2. `lodash debounce example` still misses the library gate (no coding keyword / instrument / capital).
+3. Below is cont.89's state, kept for context.
+
+---
 
 **The answer path now SHIPS WORKING CODE for library asks, with web search completely dead.**
 
