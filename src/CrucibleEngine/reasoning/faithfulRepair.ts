@@ -172,13 +172,13 @@ export function faithfulnessVerdict(v: FaithfulnessVerdict): Verdict {
  * oracle the whole loop uses; without it the draft's prose re-verifies as `abstain` here and the
  * search never gets a violation to act on (cont.89).
  */
-export function makeFaithfulnessVerifier(evidence: string, codeRequested = false): Verifier<string> {
-  return (c: Candidate<string>) => faithfulnessVerdict(certifyAnswer(c.value, evidence, { codeRequested }))
+export function makeFaithfulnessVerifier(evidence: string, codeRequested = false, question?: string): Verifier<string> {
+  return (c: Candidate<string>) => faithfulnessVerdict(certifyAnswer(c.value, evidence, { codeRequested, question }))
 }
 
 /** The faithfulness verdict behind a recorded attempt, recomputed from ground truth. */
-const verdictOf = (a: Attempt<string>, evidence: string, codeRequested = false) =>
-  certifyAnswer(a.candidate.value, evidence, { codeRequested })
+const verdictOf = (a: Attempt<string>, evidence: string, codeRequested = false, question?: string) =>
+  certifyAnswer(a.candidate.value, evidence, { codeRequested, question })
 
 /**
  * Proposer: candidate 0 is the draft (free), thereafter re-synthesis carrying every prior
@@ -233,13 +233,13 @@ export function makeRepairProposer(input: FaithfulRepairInput, opts: FaithfulRep
     // Repair the most recent attempt, informed by every earlier one. `history` is oldest-first.
     const cr = input.codeRequested ?? false
     const latest = history[history.length - 1]
-    const latestVerdict = verdictOf(latest, input.evidence, cr)
+    const latestVerdict = verdictOf(latest, input.evidence, cr, input.goal)
     // Only violations carry a repair hint; an abstaining branch has nothing actionable to say,
     // so fall back to repairing the draft's own (real) violations rather than emitting noise.
-    const target = latestVerdict.status === 'violations' ? latestVerdict : verdictOf(history[0], input.evidence, cr)
+    const target = latestVerdict.status === 'violations' ? latestVerdict : verdictOf(history[0], input.evidence, cr, input.goal)
     if (target.status !== 'violations') return null
 
-    const prior = history.slice(0, -1).map(a => verdictOf(a, input.evidence, cr)).filter(v => v.status === 'violations')
+    const prior = history.slice(0, -1).map(a => verdictOf(a, input.evidence, cr, input.goal)).filter(v => v.status === 'violations')
     const hint = escalatedRepairHint(target, prior)
     if (!hint) return null
 
@@ -275,13 +275,13 @@ export async function repairUntilFaithful(
   const K = Math.max(1, opts.attempts ?? 3)
   const spec: TaskSpec = { goal: input.goal, domain: 'answer', acceptance: {}, context: input.evidence }
   const cr = input.codeRequested ?? false
-  const draftVerdict = certifyAnswer(input.draft, input.evidence, { codeRequested: cr })
+  const draftVerdict = certifyAnswer(input.draft, input.evidence, { codeRequested: cr, question: input.goal })
 
   let seen = 0
   const result = await search<string>(
     spec,
     makeRepairProposer(input, opts),
-    makeFaithfulnessVerifier(input.evidence, cr),
+    makeFaithfulnessVerifier(input.evidence, cr, input.goal),
     {
       beamWidth: 1,
       proposalsPerNode: 1,
@@ -293,14 +293,14 @@ export async function repairUntilFaithful(
       emit: () => {},
     },
   )
-  for (const a of result.attempts) opts.onAttempt?.(++seen, verdictOf(a, input.evidence, cr), a.candidate.source)
+  for (const a of result.attempts) opts.onAttempt?.(++seen, verdictOf(a, input.evidence, cr, input.goal), a.candidate.source)
 
   if (result.status === 'solved' && result.solution) {
     const by = result.solution.source ?? 'draft'
     return {
       status: 'certified',
       text: result.solution.value,
-      verdict: certifyAnswer(result.solution.value, input.evidence),
+      verdict: certifyAnswer(result.solution.value, input.evidence, { question: input.goal }),
       modelCalls: result.modelCalls,
       attemptsRun: result.attempts.length,
       proposedBy: by,
@@ -317,7 +317,7 @@ export async function repairUntilFaithful(
   let best: { text: string; verdict: FaithfulnessVerdict; score: number; source: string } | null = null
   for (const a of result.attempts) {
     if (a.candidate.value === input.draft) continue
-    const v = verdictOf(a, input.evidence)
+    const v = verdictOf(a, input.evidence, false, input.goal)
     const score = faithfulnessVerdict(v).score
     if (score <= draftScore) continue          // ties → draft wins (earliest, conservative)
     if (!best || score > best.score) best = { text: a.candidate.value, verdict: v, score, source: a.candidate.source ?? 'unknown' }

@@ -595,7 +595,9 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   // and every repair attempt are judged identically. Doing it only here would be invisible inside
   // the repair loop, which re-verifies through the same oracle (cont.89).
   const codeRequested = isCodingQuery(message) || namesExternalLibrary(message) || namesInstrument(message)
-  const faith = certifyAnswer(text, ev.block, { codeRequested })
+  // `question` reaches the behavioral-contract tier (cont.92): the user's ask names the contract
+  // (stack/LRU/rate-limiter/…) whose invariants the answer's code is executed against.
+  const faith = certifyAnswer(text, ev.block, { codeRequested, question: message })
   // Did the shipped code actually RUN against the real library, or did it merely name documented
   // identifiers? Both certify, but they are not the same claim, and the badge must not blur them:
   // a name-matched certify is the weak one that shipped JSON Schema as green (cont.86b).

@@ -39,6 +39,7 @@ import {
   answerCodeBlocks, extractLibraryUsage, evidenceCovers, documentedCallSurface,
   verifyApiFaithfulness, type FaithfulnessVerdict,
 } from './apiFaithfulness'
+import { verifyAnswerContract } from './contractVerify'
 
 export type ExecutionStatus = 'certified' | 'violations' | 'abstain'
 
@@ -276,7 +277,7 @@ export function verifyByExecution(
 export function certifyAnswer(
   answer: string,
   evidence: string,
-  opts: { timeoutMs?: number; from?: string; codeRequested?: boolean } = {},
+  opts: { timeoutMs?: number; from?: string; codeRequested?: boolean; question?: string } = {},
 ): FaithfulnessVerdict & { executed: boolean } {
   // CODE WAS ASKED FOR AND NONE CAME BACK. This lives in the SINGLE oracle rather than the
   // caller, because the repair loop re-verifies through certifyAnswer — a check the caller adds
@@ -340,6 +341,44 @@ export function certifyAnswer(
           })),
           ...names.violations,
         ],
+        documented: names.documented,
+        callSurface: names.callSurface,
+        library: names.library,
+        executed: true,
+      }
+    }
+    // BEHAVIORAL-CONTRACT TIER (cont.92) — senior to the own-demo tier for LOGIC. The cont.91
+    // live suite showed exactly why: a linked list whose pop() loses nodes and a token bucket
+    // whose acquire() is inverted both survive their own demo (nothing throws) and shipped
+    // stamped. The contract tier probes the asked-for invariants (LIFO, FIFO, recency eviction,
+    // capacity+refill, …) under execution with a fake clock; its violations are wrong-LOGIC
+    // findings the structural tiers cannot see, and its certify is strictly stronger than
+    // "the demo didn't crash". Question-gated: no question → no contract detection → unchanged.
+    const contract = opts.question ? verifyAnswerContract(opts.question, answer, opts) : null
+    if (contract && contract.status === 'violations') {
+      return {
+        status: 'violations',
+        reason: contract.reason,
+        violations: [
+          ...contract.defects.map(d => ({
+            library: 'unknown',
+            identifier: contract.entry || contract.family,
+            kind: 'execution-failure' as const,
+            line: d.counterexample,
+          })),
+          ...names.violations,
+        ],
+        documented: names.documented,
+        callSurface: names.callSurface,
+        library: names.library,
+        executed: true,
+      }
+    }
+    if (contract && contract.status === 'certified' && names.status !== 'violations') {
+      return {
+        status: 'certified',
+        reason: contract.reason,
+        violations: [],
         documented: names.documented,
         callSurface: names.callSurface,
         library: names.library,

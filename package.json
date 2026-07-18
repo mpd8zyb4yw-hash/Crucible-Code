@@ -75,7 +75,8 @@
     "vgr:apifaith": "tsx src/CrucibleEngine/reasoning/__apifaith_bench.ts",
     "vgr:faithrepair": "tsx src/CrucibleEngine/reasoning/__faithrepair_bench.ts",
     "vgr:execverify": "tsx src/CrucibleEngine/reasoning/__execverify_bench.ts",
-    "vgr:codeblock": "tsx src/CrucibleEngine/__codeblock_bench.ts"
+    "vgr:codeblock": "tsx src/CrucibleEngine/__codeblock_bench.ts",
+    "vgr:contract": "tsx src/CrucibleEngine/reasoning/__contract_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",

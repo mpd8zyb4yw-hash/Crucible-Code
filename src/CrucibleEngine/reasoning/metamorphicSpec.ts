@@ -317,8 +317,11 @@ function detectStringClass(lower: string, entry: string): MetamorphicSpec | null
  * (e.g. bare "filter" with an unrecognized predicate — subset-preservation alone would not
  * pin the function uniquely).
  */
-export function deriveMetamorphicSpec(nl: string): MetamorphicSpec | null {
-  const entry = entryFromExamples(nl) || guessEntry(nl)
+export function deriveMetamorphicSpec(nl: string, entryOverride?: string): MetamorphicSpec | null {
+  // The ANSWER path (contractVerify) knows which function the answer actually DEFINED — judging
+  // assertions against a name guessed from the QUESTION would miss it ("sort an array" answered
+  // with `sortNumbers`). The override binds the same relation-class to the real entry.
+  const entry = entryOverride || entryFromExamples(nl) || guessEntry(nl)
   if (!entry) return null
   const lower = nl.toLowerCase()
 

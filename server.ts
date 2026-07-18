@@ -365,6 +365,8 @@ import { buildEpisodeContext, summariseSession, loadEpisodes } from './src/Cruci
 import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngine/benchmarks'
 import { domainVerify, correctArithmeticCascade, verifyCodeBlocks } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
+import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks } from './src/CrucibleEngine/reasoning/contractVerify'
+import { bonsaiComplete, isBonsaiInstalled, repairModelName } from './src/CrucibleEngine/localModels/bonsaiSidecar'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
 import { runSelfPatcher, loadPatches, rejectPatch } from './src/CrucibleEngine/selfPatcher'
@@ -4207,6 +4209,73 @@ app.post('/api/chat', async (req, res) => {
             const err = exec.defects[0]?.error ?? 'a structural error'
             answer += `\n\n> ⚠ Running the example above throws (${err}) — the code will not work as written.`
             debugBus.emit('pipeline', 'code_block_exec_broken_shipped', { error: err }, { severity: 'warn', requestId })
+          }
+        } catch { /* non-blocking: ship the answer as-is */ }
+      }
+      // BEHAVIORAL-CONTRACT gate for code answers (cont.92). The two gates above prove the code
+      // PARSES and SURVIVES its own demo — neither says the logic is right, which is exactly how
+      // the cont.91 live suite shipped a linked list whose pop() loses nodes and a token bucket
+      // whose acquire() is inverted, both council-stamped. When the QUESTION names a contract
+      // (stack/queue/linked list/LRU/rate limiter/heap/BST/emitter/memoize/debounce/…), execute
+      // the answer's own class/function against that contract's invariants (fake clock for the
+      // time-based ones). On violation, attempt repair with FORWARD constraints only — the retry
+      // never sees the rejected code (cont.89: showing a model its own broken artifact makes it
+      // re-produce it). Candidates in cost order: the verified canonical reference (zero model
+      // calls), the FM, then the sidecar seat (2nd-proposer standing rule). A repair is adopted
+      // ONLY when the patched answer re-certifies through the FULL gate stack — otherwise the
+      // original ships with an explicit counterexample warning instead of a silent stamp.
+      if (answer && answer.trim() && answer.includes('```')) {
+        try {
+          const contract = verifyAnswerContract(message, answer)
+          if (contract.status !== 'abstain') {
+            debugBus.emit('pipeline', 'answer_contract', {
+              family: contract.family, entry: contract.entry, status: contract.status,
+              checksRun: contract.checksRun, reason: contract.reason.slice(0, 140),
+            }, { severity: contract.status === 'violations' ? 'warn' : 'info', requestId })
+          }
+          if (contract.status === 'violations') {
+            const rspec = contractRepairSpec(message, contract)
+            const ask = `${message}\n\nRequirements the code MUST satisfy:\n${rspec.constraints.map(c => `- ${c}`).join('\n')}\n${rspec.entry ? `Name it ${rspec.entry}.` : ''}\nEnd with a brief usage example that exercises it.`
+            const msgs = [
+              { role: 'system' as const, content: 'You write correct, self-contained TypeScript. Output ONLY the code — no fences, no commentary.' },
+              { role: 'user' as const, content: ask },
+            ]
+            const candidates: Array<{ src: string; gen: () => Promise<string | null> }> = [
+              { src: 'canonical', gen: async () => rspec.canonical },
+              { src: 'fm', gen: async () => (await fmComplete(msgs)).trim() },
+              ...(isBonsaiInstalled()
+                ? [{ src: repairModelName(), gen: async () => (await bonsaiComplete(msgs, { maxTokens: 700, timeoutMs: 30_000 })).trim() }]
+                : []),
+            ]
+            let repaired = false
+            for (const cand of candidates) {
+              if (turnSignal?.aborted) break
+              let raw: string | null = null
+              try { raw = await cand.gen() } catch { raw = null }
+              if (!raw || raw.trim().length < 20) continue
+              const code = raw.replace(/^```\w*\n?/, '').replace(/```\s*$/, '').trim()
+              const patched = replaceAnswerCodeBlocks(answer, code)
+              // Full stack, same oracles: syntax gate, own-demo gate, and the SAME contract.
+              if (verifyCodeBlocks(patched).length > 0) continue
+              if (verifyPlainCodeByExecution(patched).status === 'violations') continue
+              const re = verifyAnswerContract(message, patched)
+              if (re.status === 'certified') {
+                answer = patched
+                repaired = true
+                debugBus.emit('pipeline', 'answer_contract_repaired', {
+                  family: contract.family, by: cand.src, checksRun: re.checksRun,
+                }, { severity: 'info', requestId })
+                break
+              }
+            }
+            if (!repaired) {
+              const d = contract.defects[0]
+              answer += `\n\n> ⚠ Behavioral check failed (${contract.family}): ${d?.counterexample ?? contract.reason} — the code above does not correctly implement what was asked.`
+              debugBus.emit('pipeline', 'answer_contract_broken_shipped', {
+                family: contract.family, entry: contract.entry,
+                counterexample: (d?.counterexample ?? '').slice(0, 160),
+              }, { severity: 'warn', requestId })
+            }
           }
         } catch { /* non-blocking: ship the answer as-is */ }
       }
