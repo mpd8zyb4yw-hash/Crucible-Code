@@ -63,23 +63,33 @@ function stripFences(raw: string): string {
  * (cont.100: src/report.ts grew 48 → 153 lines, three copies, TS1005 at line 153), which
  * reads as a reasoning failure but is purely a stopping failure.
  *
- * Universal + zero-inference: we do NOT parse or repair. We find the first top-level
- * declaration line, and if that exact line recurs later at column 0, everything from the
- * recurrence on is a restart — keep the first copy only. If the model never looped, or the
- * repeat is a genuine re-export, the text is returned untouched and the oracle judges it as
- * before. Cutting can only ever remove a duplicate suffix, so a correct candidate stays correct.
+ * Universal + zero-inference: we do NOT parse or repair. We track every top-level declaration
+ * line, and cut at the first line that exactly repeats ANY declaration already seen —
+ * everything from the recurrence on is a restart, so we keep the first copy only.
+ *
+ * Anchoring on the FIRST declaration alone (the original cont.100 form) was too narrow: a loop
+ * that restarts partway through the file, or one whose duplicated block does not happen to lead
+ * with the file's first declaration, slips straight past it. Confirmed live 2026-07-19 on
+ * rename-field-across-layers — the file leads with `renderItem` but the duplicated declaration
+ * was `isValidItem`, so the guard never fired and the oracle reported TS2323 "Cannot redeclare
+ * exported variable 'isValidItem'". Matching on any-seen-declaration catches both shapes.
+ *
+ * If the model never looped, the text is returned untouched and the oracle judges it as before.
+ * Cutting can only ever remove a duplicate suffix, so a correct candidate stays correct.
  */
 export function stripDegenerateRepetition(code: string): string {
   const lines = code.split('\n')
-  // Anchor on the first top-level declaration — an import line is a weak anchor because a
-  // legitimate second file section can re-import, whereas re-declaring the same symbol at
-  // column 0 is what a looping model does.
-  const anchorIdx = lines.findIndex(l => /^(export\s+)?(function|class|interface|type|const|enum)\s+\w/.test(l))
-  if (anchorIdx < 0) return code
-  const anchor = lines[anchorIdx]
-  const repeat = lines.findIndex((l, i) => i > anchorIdx && l === anchor)
-  if (repeat < 0) return code
-  return lines.slice(0, repeat).join('\n').trimEnd()
+  // Only top-level declarations anchor — an import line is a weak anchor because a legitimate
+  // second file section can re-import, whereas re-declaring the same symbol at column 0 is
+  // what a looping model does.
+  const isDecl = (l: string) => /^(export\s+)?(function|class|interface|type|const|enum)\s+\w/.test(l)
+  const seen = new Set<string>()
+  for (let i = 0; i < lines.length; i++) {
+    if (!isDecl(lines[i])) continue
+    if (seen.has(lines[i])) return lines.slice(0, i).join('\n').trimEnd()
+    seen.add(lines[i])
+  }
+  return code
 }
 
 /**
@@ -381,6 +391,21 @@ export async function synthesizeUniversal(
     })
     if (v.gateA) {
       return { files, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → tsc-clean (no behavioral test derivable; downstream verify required)` }
+    }
+    // ── Deterministic repair proposers, same contract as the behavioral loop above: pure-code
+    // mutations of the rejected candidate, re-gated by the SAME tsc oracle. The compile-gate
+    // path had none, so mechanically-fixable tsc failures (e.g. TS2440 import/local conflict,
+    // the dominant tier-2 residual) burned a full FM round the model could not self-correct.
+    for (const repaired of proposeRepairs(candidate, v.detail, sigBlock)) {
+      const rf: SynthFile[] = [{ path: modulePath, content: repaired }]
+      const rv = await verifyCandidateAsync(rf, undefined, oracleOpts)
+      logFmRound({
+        modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true,
+        accepted: rv.gateA, verdict: rv.detail.slice(0, 400),
+      })
+      if (rv.gateA) {
+        return { files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → deterministic repair → tsc-clean (no behavioral test derivable; downstream verify required)` }
+      }
     }
     // ── Out-of-depth tripwire (same signal as the behavioral loop): identical tsc failure
     // shape TRIPWIRE_STREAK consecutive rounds ⇒ not converging; abstain early.

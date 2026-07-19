@@ -276,6 +276,49 @@ function repairArrayGuard(candidate: string, detail: string): string | null {
   return repaired !== candidate ? repaired : null
 }
 
+/**
+ * TS2440 "Import declaration conflicts with local declaration of 'X'" — on a multi-file
+ * refactor the FM writes the file that DEFINES `X` but also carries over the import of `X`
+ * from the pre-refactor version. The local declaration is the one the spec asked for, so the
+ * universal fix is to drop `X` from its import clause (and drop the statement entirely if the
+ * clause empties out). If the local declaration were the spurious one instead, tsc rejects the
+ * repaired candidate exactly like any other wrong proposal — this is a proposal, not a ship.
+ */
+export function repairImportLocalConflict(candidate: string, detail: string): string | null {
+  const names = new Set<string>()
+  for (const m of detail.matchAll(/TS2440: Import declaration conflicts with local declaration of '([^']+)'/g)) {
+    names.add(m[1])
+  }
+  if (!names.size) return null
+
+  const lines = candidate.split('\n')
+  const out: string[] = []
+  let changed = false
+  for (const line of lines) {
+    // Only named-import clauses can be pruned specifier-by-specifier; a default or namespace
+    // import binds the whole module to that name, so there is nothing to prune — drop it whole.
+    const named = line.match(/^(\s*import\s*\{)([^}]*)(\}\s*from\s*['"][^'"]+['"];?\s*)$/)
+    if (named) {
+      const kept = named[2].split(',').map(s => s.trim()).filter(Boolean).filter(spec => {
+        // `a as b` binds `b` locally; the conflict is with the LOCAL name.
+        const local = spec.split(/\s+as\s+/).pop()!.trim()
+        return !names.has(local)
+      })
+      if (kept.length !== named[2].split(',').map(s => s.trim()).filter(Boolean).length) {
+        changed = true
+        if (kept.length) out.push(`${named[1]} ${kept.join(', ')} ${named[3]}`)
+        continue   // clause emptied — drop the whole statement
+      }
+      out.push(line)
+      continue
+    }
+    const whole = line.match(/^\s*import\s+(?:\*\s+as\s+)?([A-Za-z_$][\w$]*)\s*(?:,|from)\s/)
+    if (whole && names.has(whole[1])) { changed = true; continue }
+    out.push(line)
+  }
+  return changed ? out.join('\n') : null
+}
+
 // Detail-driven single-bug fixes. More than one can legitimately apply to the SAME candidate
 // (confirmed live 2026-07-04: one sortModule fire had both the dynamic-key-index bug and the
 // default-direction-check bug at once) — `proposeRepairs` below tries each alone AND all of
@@ -283,6 +326,7 @@ function repairArrayGuard(candidate: string, detail: string): string | null {
 // repaired variant instead of needing N separate rounds to discover each in isolation.
 const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string | null> = [
   repairMissingField,
+  repairImportLocalConflict,
   repairArrayGuard,
   repairDynamicKeyIndex,
   repairDefaultDirectionCheck,

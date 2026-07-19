@@ -42,6 +42,27 @@ export function renderItem(item: Item): string {
 }
 export interface Item { sku: string; quantity: number; }`,
   },
+  {
+    // Live 2026-07-19, rename-field-across-layers: the loop restarts at a declaration that is
+    // NOT the file's first one. Anchoring on the first declaration alone missed this entirely
+    // and the oracle reported TS2323 "Cannot redeclare exported variable 'isValidItem'".
+    name: 'restart at a non-first declaration is cut',
+    input: `export function renderItem(i: Item): string {
+  return i.sku;
+}
+export function isValidItem(i: Item): boolean {
+  return i.sku.length > 0;
+}
+export function isValidItem(i: Item): boolean {
+  return i.sku.length > 0;
+}`,
+    expect: `export function renderItem(i: Item): string {
+  return i.sku;
+}
+export function isValidItem(i: Item): boolean {
+  return i.sku.length > 0;
+}`,
+  },
 ]
 
 let pass = 0
