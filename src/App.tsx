@@ -13,6 +13,7 @@ import { AGENT_WORKFLOWS } from './AgentsTabView'
 import AgentMissionControl from './AgentMissionControl'
 import AutomationsView from './AutomationsView'
 import ConnectionsView from './ConnectionsView'
+import HomeSurface from './HomeSurface'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
@@ -2663,11 +2664,20 @@ export default function App() {
           Replaced by the conversation the moment the first round exists. ── */}
       {rounds.length === 0 && !thinking && (
         <div style={{
-          position: 'absolute', top: 56, left: 0, right: 0, bottom: 0, zIndex: 1, pointerEvents: 'none',
+          position: 'absolute', top: 56, left: 0, right: 0, bottom: 0, zIndex: 1,
+          // The wrapper stays pointer-transparent (composer/topbar underneath must keep
+          // working); HomeSurface re-enables pointer events on its own content column.
+          pointerEvents: 'none',
           display: 'flex', flexDirection: 'column', alignItems: 'center',
-          paddingBottom: Math.min(inputBarHeight + 24, 120), animation: 'fadeIn 0.5s ease', overflow: 'hidden',
+          paddingBottom: Math.min(inputBarHeight + 24, 120), animation: 'fadeIn 0.5s ease', overflow: 'hidden auto',
         }}>
-          {/* margin:auto centers when there's room and top-aligns (never clips) when there isn't */}
+          {/* Home: the assistant's day (digest, live runs, schedule) when there is one;
+              HomeSurface falls back to the identity splash below on a truly empty account. */}
+          <HomeSurface
+            allRounds={allRounds}
+            onOpenAgents={() => setAgentsOpen(true)}
+            onOpenAutomations={() => setAutomationsOpen(true)}
+            splash={
           <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
           {/* Quiet branded splash: the vessel mark over a slow ember glow — the product's
               identity (forged on-device) instead of a question. Self-authored SVG only. */}
@@ -2692,6 +2702,8 @@ export default function App() {
             Private, on-device. Nothing leaves this Mac.
           </div>
           </div>
+            }
+          />
         </div>
       )}
 

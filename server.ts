@@ -911,9 +911,12 @@ async function runAutomationNow(a: AutomationRecord): Promise<AutomationRunRecor
   const t0 = Date.now()
   const token = signJwt({ id: a.userId, email: 'automation@local', exp: Math.floor(Date.now() / 1000) + 2 * 3600 })
   const prior = a.lastRuns.find(r => r.status === 'ok')
+  // NB: wording matters — the intent classifier regex-matches redirect words like
+  // "no"/"wait"/"stop"; "no user at the keyboard" classified a run as
+  // conversational_redirect (live, 2026-07-19). Keep this preamble free of them.
   const preamble =
-    `[Standing automation "${a.name}" — scheduled run, no user at the keyboard. ` +
-    `Carry out the task autonomously and end with a concise summary of what was done or found. ` +
+    `[Standing automation "${a.name}" — unattended scheduled run. ` +
+    `Carry out the task autonomously and end with a concise summary of the findings. ` +
     `Now: ${new Date(t0).toLocaleString()}.` +
     (prior ? ` Previous successful run (${new Date(prior.ts).toLocaleString()}): ${prior.summary.slice(0, 400)}` : '') +
     ']'
@@ -958,6 +961,20 @@ async function runAutomationNow(a: AutomationRecord): Promise<AutomationRunRecor
     if (answer.startsWith(sent)) answer = answer.slice(sent.length).replace(/^\s*→\s*/, '').trim()
     else if (answer.startsWith(a.brief)) answer = answer.slice(a.brief.length).replace(/^\s*→\s*/, '').trim()
     if (!answer) return { ts: t0, status: 'failed', summary: errText || 'agent run produced no answer', ms: Date.now() - t0 }
+    // Off-brief guard (live finding 2026-07-19: a Morning-brief run returned a sentence
+    // about "reward-anticipatory units in vision language models" and recorded OK).
+    // Deterministic relevance check — zero shared content words between brief and
+    // answer means the agent answered something else; that is a FAILURE, not a digest
+    // entry. Conservative: any single shared content word passes.
+    const contentWords = (s: string) => new Set(
+      s.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/)
+        .filter(w => w.length >= 4 && !['this', 'that', 'with', 'from', 'then', 'each', 'them', 'have', 'what', 'your', 'today', 'write', 'anything', 'first'].includes(w))
+    )
+    const bw = contentWords(a.brief)
+    const overlap = [...contentWords(answer)].filter(w => bw.has(w)).length
+    if (overlap === 0 && bw.size >= 3) {
+      return { ts: t0, status: 'failed', summary: `off-brief answer (no overlap with the brief): ${answer.slice(0, 400)}`, ms: Date.now() - t0 }
+    }
     return { ts: t0, status: 'ok', summary: answer.slice(0, 2000), ms: Date.now() - t0 }
   } catch (e: any) {
     const msg = e?.name === 'AbortError' ? `timed out after ${AUTOMATION_RUN_TIMEOUT_MS / 60_000}m` : String(e?.message ?? e).slice(0, 300)

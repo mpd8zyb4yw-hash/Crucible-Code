@@ -1933,6 +1933,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-19e (Home surface + off-brief guard) — Assistant layer step 3 (first slice) + honest automation runs
+- **Home surface** (`src/HomeSurface.tsx`): an empty chat now opens on the assistant's day —
+  greeting + date row, "Latest from your automations" digest cards, live-agent banner (links to
+  Mission Control), "Scheduled" next-runs list. The identity splash is now the FALLBACK, rendered
+  by HomeSurface only when the account genuinely has nothing to show (honest-data rule). Wrapper
+  stays pointer-transparent; Home re-enables pointer events on its own column.
+- **Morning-brief live test run (user-requested) — plumbing PASSED, engine answer FAILED, and
+  the failure is now caught deterministically.** The run dispatched, executed 201s on-device, and
+  recorded — but the answer was off-topic prose ("reward-anticipatory units in vision language
+  models…"), recorded as ok. Fixes: (1) **off-brief guard** in `runAutomationNow` — zero
+  content-word overlap between brief and answer ⇒ status `failed` with an "off-brief answer"
+  summary (verified against the real bad/good strings: 0 vs 6 overlap); the bogus stored record
+  was corrected in place. (2) Automation preamble reworded — "no user at the keyboard" tripped
+  the intent classifier's redirect regex (\bno\b) when a stale session read as active. The
+  UNDERLYING engine gap (planner produced an unrelated answer instead of calling
+  gmail_search/calendar_list) is the cont.97e agentic-quality item — automation plumbing now
+  refuses to dress it up as success.
+- **Ops finding:** a launched Electron shell spawns its own :3001 backend with
+  CRUCIBLE_DATA_DIR=~/Library/Application Support/crucible-local — a SEPARATE data store. It
+  silently took the port after the dev server died mid-run, making the UI read empty stores.
+  Dev rule: check `lsof :3001` cwd before trusting what the UI shows.
+
 ### 2026-07-19d (Connections + Google) — Assistant layer step 2 shipped with live service widgets
 - **Registry** (`src/CrucibleEngine/connections/registry.ts`): one read model over external
   capability — Google OAuth (tokens + scopes → which of the 10 existing gmail_*/calendar_*/

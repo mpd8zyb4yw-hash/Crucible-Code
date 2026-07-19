@@ -17,9 +17,21 @@
 
 ---
 
-## CURRENT STATE — last updated Connections session, 2026-07-19d (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated Home-surface session, 2026-07-19e (REPLACE THIS EVERY SESSION)
 
-**Assistant layer steps 1 AND 2 are LIVE (see 2026-07-19c/d CHANGE LOG entries).**
+**Assistant layer steps 1, 2, and the first slice of 3 are LIVE (2026-07-19c/d/e CHANGE LOG).**
+Step 3 slice: `src/HomeSurface.tsx` — empty chat = the assistant's day (digest cards, live-agent
+banner, scheduled list); identity splash is the genuine-empty fallback. **CRITICAL ENGINE
+FINDING from the user-requested live Morning-brief run: the agent loop ran 201s and returned
+off-topic prose instead of calling gmail_search/calendar_list.** The automation layer now
+catches this deterministically (off-brief zero-overlap guard ⇒ failed, surfaced red on Home
+and in the Digest) but CANNOT fix it — **making the agent planner actually invoke the Google
+tools for a brief that names them is now the top engine item, concretizing cont.97e**: repro is
+`POST /api/automations/<morning-brief-id>/run` and watch [Agent] lines in .crucible/server.log
+(no tool lines appear at all). Also: intent classifier \bno\b redirect-regex is fragile
+(preamble reworded as workaround); Electron shell spawns a SEPARATE :3001 backend on
+~/Library/Application Support (ops trap, see 19e entry). Step 3 remainder: chats-strip → real
+tabs, drawers → pages; then REST connector, MCP client.
 Step 2 (Connections + Google): `src/CrucibleEngine/connections/registry.ts` (capability read
 model), `/api/connections` + google test/preview/disconnect endpoints in server.ts,
 `src/ConnectionsView.tsx` page with LIVE service widgets (real inbox glimpse + calendar strip
