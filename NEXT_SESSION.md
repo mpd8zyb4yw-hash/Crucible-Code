@@ -17,9 +17,27 @@
 
 ---
 
-## CURRENT STATE — last updated face-lift session, 2026-07-19 (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated chat-routing-gate session, 2026-07-19b (REPLACE THIS EVERY SESSION)
 
-**Face-lift session (2026-07-19, after cont.97d): full UI overhaul shipped — see the 2026-07-19
+**Chat-routing session (2026-07-19b): the chat-composer hallucination path is CLOSED.**
+Two-layer fix in server.ts, live-verified: (1) `detectAgentTask` now catches asset-bearing
+deliverables — "with a picture of each", picture-per-item, gallery/collection/album, and
+explicit on-disk destinations ("on my desktop/downloads") — the exact class the dog-breeds
+prompt ("create a desktop folder of the 10 most popular dog breeds in italy with a picture
+of each…") fell into; that literal prompt fired `agent_start` through plain `mode:'full'`
+chat in a live SSE test. (2) Backstop `stripFabricatedArtifacts()` in the offline chat
+branch: any answer containing "[Image: …]"-style placeholders or first-person file-creation
+claims from a zero-tool path gets them stripped and replaced with an honest agent-mode
+pointer (debug event `fabricated_artifact_stripped`). tsc unchanged vs baseline; no new
+errors at the edited ranges.
+**NEW: `ASSISTANT_SPEC.md`** — design-only spec (user-approved direction, NOT yet built) for
+the personal-assistant layer: Connections (Google OAuth formalization → REST connector →
+MCP client), Automations (trigger+brief+delivery on the existing agent loop, scheduler +
+`.crucible/automations.json`), and the Fortune-500 UI territory refactor (rail-first nav,
+Home/Digest, Automations + Connections pages replacing drawers). Build order inside the
+spec; Automations MVP is step 1. Await user go-ahead before building.
+
+**Prior face-lift session (2026-07-19a): full UI overhaul shipped — see the 2026-07-19
 CHANGE LOG entry in ROADMAP.md.** Highlights: stuck-"agent working" fixed at two layers (reducer
 `agent_done` + render-time defensive close for streams with no terminal agent event — the
 grounded-web path really does this); new full-page Agent Mission Control (`AgentMissionControl.tsx`,

@@ -1933,6 +1933,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-19b (chat-routing gate) — chat-composer hallucination path closed; ASSISTANT_SPEC.md authored
+- **Pre-gate (server.ts `detectAgentTask`):** new patterns for asset-bearing deliverables —
+  create-verb … "with … picture/image/photo" (with `(?! in mind)` idiom guard), picture-per-item
+  ("a picture of each"), gallery/album/collection builds, and explicit on-disk destinations
+  ("on my desktop/downloads/documents"). The live dog-breeds prompt ("create a desktop folder of
+  the 10 most popular dog breeds in italy with a picture of each…") previously slid past the
+  `{0,30}` folder window into the chat brain, which fabricated "[Image: Italian Greyhound]" prose;
+  it now fires `agent_start` from plain `mode:'full'` chat — verified with a live SSE test against
+  the running server.
+- **Backstop (`stripFabricatedArtifacts`, offline chat branch):** answers containing
+  "[Image: …]"-type placeholders or first-person file-creation claims ("I've created a folder on
+  your desktop…") from the zero-tool path get those stripped and replaced with an honest note
+  pointing at agent mode; emits `fabricated_artifact_stripped` (warn). Deterministic,
+  answer-shape-gated — normal prose is untouched (negative controls tested).
+- **`ASSISTANT_SPEC.md` (design-only):** personal-assistant layer spec — Connections
+  (Google-token formalization → REST connector → MCP client), Automations
+  (trigger+brief+delivery over the existing agent loop), memory inspectability, and the
+  Fortune-500 UI territory refactor (rail-first nav, Home/Digest, Automations + Connections
+  pages). Build order: Automations MVP → Google Connections → UI refactor → REST/MCP. Not built —
+  awaiting user go-ahead.
+- tsc: no new errors at edited ranges (baseline drift unchanged).
+
 ### 2026-07-19 (face-lift) — UI overhaul: Agent Mission Control page, stuck-"agent working" fixed (2 layers), shell titlebar band, auto-scroll rewrite, branded splash, Settings section-nav, design tokens
 - **Stuck "agent working" after the answer shipped — fixed at two layers.** (1) `agentReducer`'s
   `agent_done` case never set `active:false` (core.tsx) — only `final`/`plan_done`/`agent_error`

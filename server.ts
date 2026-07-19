@@ -2298,6 +2298,16 @@ function detectAgentTask(message: string): boolean {
     || detectPruneImportsAll(message)
     || /\b(download|fetch|grab|save)\b[\s\S]{0,40}\b(image|photo|file|url|link)\b/.test(m)
     || /\b(create|make|open|launch)\b[\s\S]{0,30}\b(folder|directory)\b/.test(m)
+    // Asset-bearing deliverables — chat can only FABRICATE these ("[Image: Italian
+    // Greyhound]"); a picture/file per item is physically an agent task. The dog-breeds
+    // failure: "create a desktop folder of the 10 most popular dog breeds … with a
+    // picture of each" — "desktop folder" defeated the {0,30} window above, and nothing
+    // else matched a request whose deliverable includes real images.
+    || /\b(create|make|build|put together|compile|assemble|generate|prepare)\b[\s\S]{0,120}\bwith\b[\s\S]{0,40}\b(picture|image|photo|screenshot|thumbnail|icon)s?\b(?! in mind)/.test(m)
+    || /\b(picture|image|photo|thumbnail)s?\b[\s\S]{0,30}\b(of|for) each\b/.test(m)
+    || /\b(create|make|build|generate|put together|assemble)\b[\s\S]{0,60}\b(gallery|album|collection|slideshow)\b/.test(m)
+    // A named on-disk destination makes any create/make/save request an agent task.
+    || /\b(create|make|build|save|put|generate|write)\b[\s\S]{0,80}\b(on|in|to|into) (my|the) (desktop|documents|downloads|home folder)\b/.test(m)
     || /\b(write|save|create)\b[\s\S]{0,40}\b(file|markdown|document|note|report)\b/.test(m)
     // "write a function/class" = code display in chat (stays in pipeline); only trigger
     // agent if there's also a file target (.py extension, "to file", "save to", etc.)
@@ -2324,6 +2334,26 @@ function detectAgentTask(message: string): boolean {
   const isConfirmation = /^\s*(yes|yeah|yep|ok|okay|sure|proceed|go ahead|do it|confirm|continue|approved|affirmative|correct|right|exactly|please do|go for it)[\.!]?\s*$/i.test(m)
   if (wantsDisplay && !wantsBuild && !wantsExternalExec && !wantsMacControl && !isConfirmation) return false
   return wantsBuild || wantsExternalExec || wantsMacControl || isConfirmation
+}
+
+// Backstop for action-shaped requests the regex gate above still misses: the chat brain
+// cannot create files or images, but it will happily PRETEND to — "[Image: Italian
+// Greyhound]" placeholders, "I've created a folder on your desktop…". If the shipped
+// answer fabricates artifacts, strip the placeholders and replace the false action claims
+// with an honest note pointing at agent mode. Deterministic, answer-shape-gated — it never
+// touches a normal prose answer (legit answers don't contain [Image:] placeholders or
+// first-person file-creation claims from a path that ran zero tools).
+function stripFabricatedArtifacts(answer: string): { text: string; stripped: boolean } {
+  const placeholder = /\[\s*(image|photo|picture|img|screenshot)\s*:[^\]\n]{0,120}\]/gi
+  const falseClaim = /\b(i(?:'ve| have)?\s+(?:created|made|built|saved|placed|added|put))\b[\s\S]{0,60}\b(folder|file|desktop|directory|document|image|photo)s?\b[^.!\n]*[.!]?/gi
+  const hadPlaceholder = placeholder.test(answer)
+  const hadClaim = falseClaim.test(answer)
+  if (!hadPlaceholder && !hadClaim) return { text: answer, stripped: false }
+  let text = answer.replace(placeholder, '').replace(falseClaim, '')
+  text = text.replace(/\n{3,}/g, '\n\n').trim()
+  const note = 'Note: this reply can only describe content — it has not created any files or images. Ask me to "run this as an agent task" (or use Agent mode) and I will actually create it on your machine.'
+  text = text ? `${text}\n\n${note}` : note
+  return { text, stripped: true }
 }
 
 // A short repair/continuation reply ("try again", "fix it", "another way?", "run it",
@@ -4167,6 +4197,18 @@ app.post('/api/chat', async (req, res) => {
             debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections }, { severity: 'info', requestId })
           }
         } catch { /* non-blocking: ship the original answer */ }
+      }
+      // Fabricated-artifact backstop (2026-07-19): any action-shaped ask that slipped past
+      // detectAgentTask lands here with an answer full of "[Image: …]" placeholders and
+      // "I've created a folder…" claims from a path that ran ZERO tools. Never ship the lie.
+      if (answer && answer.trim()) {
+        try {
+          const { text: honest, stripped } = stripFabricatedArtifacts(answer)
+          if (stripped) {
+            answer = honest
+            debugBus.emit('pipeline', 'fabricated_artifact_stripped', { query: message.slice(0, 80) }, { severity: 'warn', requestId })
+          }
+        } catch { /* non-blocking */ }
       }
       // FENCELESS CODE (cont.95 live finding): a code-intent answer shipped 3.7KB of raw source
       // with NO fences, so every code gate below (they all key on ```-presence) abstained on the
