@@ -28,9 +28,15 @@ brief); titlebar clearance centralized behind `html.electron` + `--titlebar-clea
 (**needs a quick Electron-shell visual check next session** — verified in web mode only);
 auto-scroll rewritten (single follow rule + programmatic-write guard); branded splash; Settings
 section nav + labeled SystemRow entries; design tokens + `src/ui.tsx` primitives. tsc clean.
-UI polish still open: topbar chips strip could become real tabs; binder drawers still overlay
-Settings (labeled now, but a future pass could inline them as pages); Mission Control only shows
-runs from the current conversation.
+Same-day follow-up from user feedback: Mission Control launches force `modeOverride='agent'`
+(plain chat sends hallucinated "created a folder" answers with 0 tools — real root cause of the
+broken dog-breeds answer); splash chips removed entirely; sidebar collapses to a 64px icon rail
+while Mission Control is open. UI polish still open: topbar chips strip could become real tabs;
+binder drawers still overlay Settings (labeled now, but a future pass could inline them as
+pages); Mission Control only shows runs from the current conversation. NOTE the answer-quality
+half of that bug is ENGINE work: the chat-path planner happily fabricates "[Image: …]" content
+for action requests — the intent gate that should route "create/make/build X" to the agent loop
+from the CHAT composer too is the open engine item.
 
 **Engine state below is cont.97d's, unchanged by this UI session:**
 

@@ -1,17 +1,5 @@
 [
   {
-    "hash": "e525007",
-    "message": "pre-write_file",
-    "timestamp": 1784195426280,
-    "projectPath": "/private/tmp/claude-501/-Users-justin-claude-project/baf4cebf-2920-4be0-8ad5-0a245f80248c/scratchpad/scratch-run4"
-  },
-  {
-    "hash": "2531d2f",
-    "message": "pre-write_file",
-    "timestamp": 1784196691134,
-    "projectPath": "/tmp/pr1"
-  },
-  {
     "hash": "b0ff0ab",
     "message": "pre-write_file",
     "timestamp": 1784197200132,
@@ -298,5 +286,17 @@
     "message": "pre-write_file",
     "timestamp": 1784476387538,
     "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/async-retry"
+  },
+  {
+    "hash": "e202c42",
+    "message": "pre-write_file",
+    "timestamp": 1784476398180,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/dedupe-preserve-order"
+  },
+  {
+    "hash": "394b45c",
+    "message": "pre-write_file",
+    "timestamp": 1784476416730,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/no-suite-wordcount"
   }
 ]

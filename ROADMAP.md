@@ -1962,6 +1962,12 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 - **Settings**: left section nav (API keys / Ensemble / Voice / Local models / System) with
   smooth-scroll jump; the System icon cluster replaced by labeled `SystemRow` entries (what each
   drawer is, why you'd open it) wrapping the existing binder triggers.
+- **Follow-up (same day, user feedback):** (1) Mission Control launches/steers now pass
+  `modeOverride='agent'` into send() — a plain chat send answered "create a desktop folder…"
+  with hallucinated prose and 0 tool calls; forced agent mode live-verified firing real tools
+  (open_app/type_text). (2) Splash suggestion chips removed entirely — no hand-holding, just
+  mark + wordmark + one line. (3) SidebarRail gains `collapsed` (64px icon-only rail) while
+  Mission Control is open — its own run list made the sidebar history redundant.
 - **Design tokens + primitives**: type scale (`--t-body/ui/small/micro`), motion tokens
   (`--ease/--dur*`), `:focus-visible` ring in index.css; `src/ui.tsx` (Card, SectionLabel,
   PrimaryButton, GhostButton, StatusChip, tint). Transcript body bumped to `--t-body` (14.5px),

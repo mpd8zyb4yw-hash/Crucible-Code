@@ -2025,6 +2025,9 @@ export default function App() {
             }}
             onRestore={restoreConversation}
             refreshKey={histRefresh}
+            // Mission Control has its own run list — collapse to an icon rail so the
+            // workspace gets the screen instead of a redundant history column.
+            collapsed={agentsOpen}
           />
         )}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
@@ -2156,8 +2159,10 @@ export default function App() {
           rounds={rounds}
           thinking={thinking}
           liveRoundId={liveRoundId}
-          onLaunch={text => { void send(text) }}
-          onReply={text => { void send(text) }}
+          // Force the real agent loop (tools, verify, artifacts) — a plain chat send can
+          // answer a "create X" brief with hallucinated prose and zero tool calls.
+          onLaunch={text => { void send(text, 'agent') }}
+          onReply={text => { void send(text, 'agent') }}
           onClose={() => setAgentsOpen(false)}
         />
       )}
@@ -2662,26 +2667,9 @@ export default function App() {
           <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--c-text)', marginBottom: 7, textAlign: 'center', padding: '0 24px' }}>
             Crucible
           </div>
-          <div style={{ fontSize: 12.5, color: 'var(--c-dim)', marginBottom: 26, textAlign: 'center', padding: '0 24px' }}>
+          {/* No suggestion chips, no hand-holding — the mark, the promise, the composer. */}
+          <div style={{ fontSize: 12.5, color: 'var(--c-dim)', textAlign: 'center', padding: '0 24px' }}>
             Private, on-device. Nothing leaves this Mac.
-          </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', maxWidth: 560, pointerEvents: 'auto', padding: '0 24px' }}>
-            {[
-              { label: 'Build a playable game', hint: 'Writes the code, then a Preview button makes it playable right here', text: 'Build me a snake game I can play right here' },
-              { label: 'Do something on my Mac', hint: 'Opens apps, changes settings, organizes files — with your permission', text: 'Open my downloads folder' },
-              { label: 'Explain its own answer', hint: 'Every answer can show its work — models, confidence, what it does not know', text: 'What can you do, and what are your limits?' },
-              { label: 'Type / for tools', hint: 'A command palette of every tool and skill — plain words work too', text: '/' },
-            ].map(s => (
-              <button
-                key={s.label}
-                title={s.hint}
-                onClick={() => {
-                  if (s.text === '/') { setInput('/'); requestAnimationFrame(() => textareaRef.current?.focus()); return }
-                  setInput(s.text); requestAnimationFrame(() => textareaRef.current?.focus())
-                }}
-                className="splash-chip"
-              >{s.label}</button>
-            ))}
           </div>
           </div>
         </div>

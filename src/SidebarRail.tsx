@@ -47,18 +47,23 @@ function Sliver({ session, active, onClick }: { session: HistorySession; active:
   )
 }
 
-function NavRow({ active, label, onClick, children }: {
-  active: boolean; label: string; onClick: () => void; children: React.ReactNode
+function NavRow({ active, label, onClick, children, title, iconOnly }: {
+  active: boolean; label: string; onClick: () => void; children: React.ReactNode; title?: string; iconOnly?: boolean
 }) {
   return (
-    <button className={`rail-nav-row${active ? ' rail-nav-row-active' : ''}`} onClick={onClick}>
+    <button
+      className={`rail-nav-row${active ? ' rail-nav-row-active' : ''}`}
+      onClick={onClick}
+      title={title ?? label}
+      style={iconOnly ? { width: 40, justifyContent: 'center', padding: 7 } : undefined}
+    >
       <span style={{ width: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{children}</span>
-      <span style={{ fontSize: 12.5, fontWeight: 600 }}>{label}</span>
+      {!iconOnly && <span style={{ fontSize: 12.5, fontWeight: 600 }}>{label}</span>}
     </button>
   )
 }
 
-function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, onNewChat, onRestore, refreshKey }: {
+function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, onNewChat, onRestore, refreshKey, collapsed }: {
   tab: CrucibleTab
   setTab: (t: CrucibleTab) => void
   agentsOpen: boolean
@@ -68,6 +73,9 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, 
   onRestore: (session: HistorySession) => void
   // Bumped by App when a round finishes saving, so the list picks up new titles.
   refreshKey: number
+  /** Slim icon-only mode — used while Mission Control is open, whose own run list makes
+   *  the sidebar's history redundant; collapsing frees the screen for the workspace. */
+  collapsed?: boolean
 }) {
   const [sessions, setSessions] = useState<HistorySession[]>([])
 
@@ -92,43 +100,48 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, 
     return BUCKET_ORDER.map(label => ({ label, items: map.get(label) ?? [] })).filter(b => b.items.length > 0)
   }, [sessions, refreshKey])
 
+  const iconOnly = !!collapsed
+
   return (
     <div style={{
-      width: 272, flexShrink: 0, zIndex: 20, height: '100%',
+      width: iconOnly ? 64 : 272, flexShrink: 0, zIndex: 20, height: '100%',
       display: 'flex', flexDirection: 'column',
+      alignItems: iconOnly ? 'center' : 'stretch',
       // Traffic-light clearance comes from the shared shell token (0 on the web).
-      padding: `calc(var(--titlebar-clearance) + 16px) 10px 12px`,
+      padding: `calc(var(--titlebar-clearance) + 16px) ${iconOnly ? 8 : 10}px 12px`,
       background: 'rgba(255,255,255,0.025)',
       backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
       borderRight: '1px solid var(--c-hairline)',
+      transition: 'width var(--dur) var(--ease)',
     }}>
       {/* Wordmark */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '2px 8px 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: iconOnly ? '2px 0 12px' : '2px 8px 12px' }}>
         <svg width="19" height="19" viewBox="0 0 48 48" fill="none">
           <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="var(--c-text)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" opacity="0.85" />
         </svg>
-        <span style={{ fontSize: 13.5, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--c-text)' }}>Crucible</span>
+        {!iconOnly && <span style={{ fontSize: 13.5, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--c-text)' }}>Crucible</span>}
       </div>
 
       {/* New chat */}
-      <button className="rail-nav-row" onClick={onNewChat} style={{
+      <button className="rail-nav-row" onClick={onNewChat} title="New chat" style={{
         border: '1px solid var(--c-hairline)', background: 'rgba(255,255,255,0.04)', marginBottom: 10,
+        ...(iconOnly ? { width: 40, justifyContent: 'center', padding: 7 } : {}),
       }}>
         <span style={{ width: 18, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
             <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
           </svg>
         </span>
-        <span style={{ fontSize: 12.5, fontWeight: 600 }}>New chat</span>
+        {!iconOnly && <span style={{ fontSize: 12.5, fontWeight: 600 }}>New chat</span>}
       </button>
 
       {/* Mode rows */}
-      <NavRow active={tab === 'chat' && !agentsOpen} label="Chat" onClick={() => { if (agentsOpen) onToggleAgents(); setTab('chat') }}>
+      <NavRow active={tab === 'chat' && !agentsOpen} label={iconOnly ? '' : 'Chat'} title="Chat" iconOnly={iconOnly} onClick={() => { if (agentsOpen) onToggleAgents(); setTab('chat') }}>
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
           <path d="M14 8a6 6 0 0 1-8.7 5.4L2 14l0.7-3A6 6 0 1 1 14 8Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
         </svg>
       </NavRow>
-      <NavRow active={agentsOpen} label="Agents" onClick={onToggleAgents}>
+      <NavRow active={agentsOpen} label={iconOnly ? '' : 'Agents'} title="Agents" iconOnly={iconOnly} onClick={onToggleAgents}>
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
           <rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" strokeWidth="1.4" />
           <path d="M8 5V2.8M6 9h.01M10 9h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
@@ -136,7 +149,10 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, 
         </svg>
       </NavRow>
 
-      {/* History slivers */}
+      {/* History slivers — hidden while collapsed (Mission Control has its own run list). */}
+      {iconOnly ? (
+        <div style={{ flex: 1 }} />
+      ) : (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', marginTop: 14, display: 'flex', flexDirection: 'column', gap: 2, paddingRight: 2 }}>
         {buckets.length === 0 && (
           <span style={{ fontSize: 11, color: 'var(--c-dim-deep)', padding: '4px 8px' }}>No conversations yet.</span>
@@ -153,10 +169,11 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, 
           </div>
         ))}
       </div>
+      )}
 
       {/* Bottom: settings */}
-      <div style={{ borderTop: '1px solid var(--c-hairline)', paddingTop: 8, marginTop: 8 }}>
-        <NavRow active={tab === 'settings'} label="Settings" onClick={() => setTab('settings')}>
+      <div style={{ borderTop: '1px solid var(--c-hairline)', paddingTop: 8, marginTop: 8, alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: iconOnly ? 'center' : 'stretch' }}>
+        <NavRow active={tab === 'settings'} label={iconOnly ? '' : 'Settings'} title="Settings" iconOnly={iconOnly} onClick={() => setTab('settings')}>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
