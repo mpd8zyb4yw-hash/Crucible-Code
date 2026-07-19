@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated cont.97d, 2026-07-19, commit `7fa1c52` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.97d, 2026-07-19, commit `c39e83f` (REPLACE THIS EVERY SESSION)
 
 **cont.97d: the identity replay did NOT reproduce; a different, 4/4-reproducible bug did — and is fixed.**
 
@@ -48,14 +48,41 @@
    induces the bleed). Live: gate fired 6/6, repaired 6/6, zero abstains. `npm run rolebleed:bench`
    25/25 two-direction; conversational 108/108, memory 18/18, answer 138/138; tsc 458 = baseline.
 
+5. **MEASURED audit — the quoted % was inflated. Real number ~25%, not 37%.** Ran the numbers
+   instead of asserting them. Against the 5 acceptance criteria, weighted to 1-3:
+   - **c1 frontier SWE ~15%** — `agentic:live` TRUE 5/12 (42%), but the corpus is **median 7 LOC,
+     single file** (clamp/chunk/parseQty): *isolated function synthesis*, which criterion 1
+     explicitly excludes. At goal difficulty there is **no evidence at all**.
+   - **c2 complex apps/backends ~10%** — no spec-compliance oracle; the HTML oracle passes apps
+     that ignore the SPEC.
+   - **c3 non-obvious bugs ~20%** — corpus bugs are planted off-by-ones; verifiers are real but
+     "non-obvious" is unmeasured.
+   - **c4 good fixes ~35%** — strongest area, but **gate inflation 44%** (4 of 9 reported passes
+     are not real).
+   - **c5 zero paid model calls ~90%** — `offlineGate` THROWS on any non-local provider and
+     `/api/chat` hard-pins strict. Caveat: the background model Hunter DOES hit OpenRouter to
+     probe free models — the answer path is clean, the discovery path is not.
+
+   **The headline trap: `agentic:live` reports 9/12 while TRUE is 5/12 — the quoted number runs
+   ~1.8x real.** New `npm run audit:reach` (`c39e83f`): 79% of engine modules reachable from
+   server.ts (199/253); it must exclude synth/skills+catalogs, which load dynamically via
+   loadLibrary.ts (counting them statically reports a bogus 23%). That script also shows the
+   ROADMAP's 2026-07-03 live-wiring block is **STALE** — nodeExecutor/decompositionDag/applyLayer
+   no longer exist, and capabilityRouter IS reachable.
+
+   **Rule going forward: re-measure the % every session. Never carry one forward.**
+
 ### NEXT (cont.97e)
-1. **Get the real failing history for the identity replay** from the user's debug log. 0/10 says
+1. **Raise the agentic corpus to the goal's difficulty floor.** This is now the top item: every
+   capability % we quote rests on a median-7-LOC, single-file corpus, while criterion 1 demands
+   multi-file changes and real refactors. Until the corpus tests the goal, the number is theatre.
+2. **Get the real failing history for the identity replay** from the user's debug log. 0/10 says
    the synthetic 5-turn shape is not the trigger; guessing again is waste.
-2. **Spec compliance for generated artifacts** — untouched for 3 sessions now, and confirmed twice
+3. **Spec compliance for generated artifacts** — untouched for 3 sessions now, and confirmed twice
    (dodge-the-blocks shipped for "driving sim"; suite todo/notes false greens). The HTML oracle
    passes apps that ignore the SPEC.
-3. **The shared repetition pathology** behind both degenerate outputs.
-4. Watch `code_block_resynthesized` (cont.96 escalation gate still has no live recurrence).
+4. **The shared repetition pathology** behind both degenerate outputs.
+5. Watch `code_block_resynthesized` (cont.96 escalation gate still has no live recurrence).
 
 ---
 
