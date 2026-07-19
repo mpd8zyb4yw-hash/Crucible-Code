@@ -17,7 +17,18 @@
 
 ---
 
-## CURRENT STATE — last updated named-tool-executor session, 2026-07-19f (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated real-tabs/settings-pages session, 2026-07-19g (REPLACE THIS EVERY SESSION)
+
+**Assistant layer step 3 UI remainder is DONE (2026-07-19g):** the open-chats chip strip in the
+App.tsx topbar is now a real browser-style tab strip (top-rounded tabs seated on the topbar's
+bottom edge, active tab lit/bordered, live dot + close preserved, "+" new-tab button), and the
+Library + Self-repair drawers are gone — `LibraryPage`/`SelfRepairPage` (same files, renamed
+exports) render as first-class inline Settings sections with their own left-nav entries; the
+System section keeps only History/Tasks/Integrations/Self-patcher/Governance rows. tsc + vite
+build clean; logged-in click-through NOT visually verified (sandbox refused injecting a session
+cookie into the preview browser) — worth a 30-second eyeball: Settings→Library / Self-repair,
+and open 2+ chats to see the tab strip. Assistant-layer NEXT per spec: REST connector, then MCP
+client; also extend live Connections widgets to GitHub (gh PRs) + Mac cards.
 
 **Assistant layer steps 1, 2, first slice of 3, AND the tool-explicit-brief engine fix are LIVE
 (2026-07-19c/d/e/f CHANGE LOG).** The Morning-brief 0-tool failure is FIXED: new Layer 1.5
@@ -31,8 +42,8 @@ DON'T name tools explicitly, the weak planner still can't pick tools (Layer 1.5 
 explicit mentions); this is the deeper cont.97e item. (b) intent classifier \bno\b redirect
 regex is fragile (src/CrucibleEngine/agent/intentClassifier.ts). (c) Electron shell spawns a
 SEPARATE :3001 backend on ~/Library/Application Support (ops trap — check `lsof :3001` cwd).
-Assistant-layer NEXT: step 3 remainder (chats-strip → real tabs, drawers → pages), then REST
-connector, then MCP client. Also: extend live widgets to GitHub (gh PRs) + Mac cards.
+Assistant-layer NEXT: REST connector, then MCP client (step 3 UI remainder done 19g above).
+Also: extend live widgets to GitHub (gh PRs) + Mac cards.
 Step 2 (Connections + Google): `src/CrucibleEngine/connections/registry.ts` (capability read
 model), `/api/connections` + google test/preview/disconnect endpoints in server.ts,
 `src/ConnectionsView.tsx` page with LIVE service widgets (real inbox glimpse + calendar strip

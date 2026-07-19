@@ -1,302 +1,302 @@
 [
   {
-    "hash": "b0ff0ab",
+    "hash": "3aa5330",
     "message": "pre-write_file",
-    "timestamp": 1784197200132,
-    "projectPath": "/tmp/run20/proj1"
+    "timestamp": 1784487700768,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/cart-remove"
   },
   {
-    "hash": "b7e4634",
+    "hash": "1d50d6f",
     "message": "pre-write_file",
-    "timestamp": 1784197570085,
-    "projectPath": "/tmp/run20/proj5"
+    "timestamp": 1784487715118,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/chunk-off-by-one"
   },
   {
-    "hash": "e21cf6e",
+    "hash": "a454ddb",
     "message": "pre-write_file",
-    "timestamp": 1784197591359,
-    "projectPath": "/tmp/run20/proj6"
+    "timestamp": 1784487754540,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/validate-email-domain"
   },
   {
-    "hash": "2789383",
+    "hash": "d8a1b08",
     "message": "pre-write_file",
-    "timestamp": 1784200942607,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-65318/live/add-titlecase"
+    "timestamp": 1784487796487,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/async-retry"
   },
   {
-    "hash": "7a92d7c",
+    "hash": "e5d8c0c",
     "message": "pre-write_file",
-    "timestamp": 1784201448739,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68549/live/clamp-upper-bound"
+    "timestamp": 1784487809852,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/dedupe-preserve-order"
   },
   {
-    "hash": "25bb212",
+    "hash": "91536ac",
     "message": "pre-write_file",
-    "timestamp": 1784201561608,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/clamp-upper-bound"
+    "timestamp": 1784487837707,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/no-suite-wordcount"
   },
   {
-    "hash": "d27a09b",
+    "hash": "235082f",
     "message": "pre-write_file",
-    "timestamp": 1784201568317,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/average-empty-array"
+    "timestamp": 1784487906235,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/thread-tax-rate"
   },
   {
-    "hash": "8c77c54",
+    "hash": "5c79a36",
     "message": "pre-write_file",
-    "timestamp": 1784201573390,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/add-titlecase"
+    "timestamp": 1784487962148,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/rename-field-across-layers"
   },
   {
-    "hash": "2c61682",
+    "hash": "27c245e",
     "message": "pre-write_file",
-    "timestamp": 1784201590767,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/cross-file-currency"
+    "timestamp": 1784488026984,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/rename-field-across-layers"
   },
   {
-    "hash": "b354818",
+    "hash": "bf4bd74",
     "message": "pre-write_file",
-    "timestamp": 1784201602653,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/unreached-negative-branch"
+    "timestamp": 1784488135211,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/extract-duplicated-discount"
   },
   {
-    "hash": "98229c9",
+    "hash": "bd92bfc",
     "message": "pre-write_file",
-    "timestamp": 1784201616257,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/cart-remove"
+    "timestamp": 1784488226485,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/clamp-upper-bound"
   },
   {
-    "hash": "8b6e4f8",
+    "hash": "bb8bdf8",
     "message": "pre-write_file",
-    "timestamp": 1784201620574,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/chunk-off-by-one"
+    "timestamp": 1784488235787,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/average-empty-array"
   },
   {
-    "hash": "d12909e",
+    "hash": "a0b232b",
     "message": "pre-write_file",
-    "timestamp": 1784201632381,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/validate-email-domain"
+    "timestamp": 1784488246837,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/add-titlecase"
   },
   {
-    "hash": "fa075e5",
+    "hash": "47ef307",
     "message": "pre-write_file",
-    "timestamp": 1784201659427,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/async-retry"
+    "timestamp": 1784488259811,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/cross-file-currency"
   },
   {
-    "hash": "db18abc",
+    "hash": "8577ae7",
     "message": "pre-write_file",
-    "timestamp": 1784201665116,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/dedupe-preserve-order"
+    "timestamp": 1784488273259,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/unreached-negative-branch"
   },
   {
-    "hash": "705c9ca",
+    "hash": "2e33365",
     "message": "pre-write_file",
-    "timestamp": 1784201674985,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-68863/live/no-suite-wordcount"
+    "timestamp": 1784488286786,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/cart-remove"
   },
   {
-    "hash": "c3ca8ac",
+    "hash": "d592e5a",
     "message": "pre-write_file",
-    "timestamp": 1784201853821,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-72099/live/validate-email-domain"
+    "timestamp": 1784488294389,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/chunk-off-by-one"
   },
   {
-    "hash": "b02a831",
+    "hash": "34f3af9",
     "message": "pre-write_file",
-    "timestamp": 1784202605910,
-    "projectPath": "/Users/justin/Desktop/Crucible/ward-fern-wren-form"
+    "timestamp": 1784488329618,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/validate-email-domain"
   },
   {
-    "hash": "177088f",
+    "hash": "3c10f4d",
     "message": "pre-write_file",
-    "timestamp": 1784210516486,
-    "projectPath": "/Users/justin/Desktop/Crucible/swift-mist-tarn-code"
+    "timestamp": 1784488354367,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/async-retry"
   },
   {
-    "hash": "5e9bfc4",
+    "hash": "546523d",
     "message": "pre-write_file",
-    "timestamp": 1784409249789,
-    "projectPath": "/Users/justin/Desktop/Crucible/sage-tip-forge-elm"
+    "timestamp": 1784488361628,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/dedupe-preserve-order"
   },
   {
-    "hash": "440c567",
+    "hash": "efc13ae",
     "message": "pre-write_file",
-    "timestamp": 1784409453935,
-    "projectPath": "/Users/justin/Desktop/Crucible/probe-rift-link-rune"
+    "timestamp": 1784488371888,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/no-suite-wordcount"
   },
   {
-    "hash": "7e19edf",
+    "hash": "5556b60",
     "message": "pre-write_file",
-    "timestamp": 1784409567969,
-    "projectPath": "/Users/justin/Desktop/Crucible/rise-trail-civic-trend"
+    "timestamp": 1784488387284,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/thread-tax-rate"
   },
   {
-    "hash": "30cc022",
+    "hash": "0907225",
     "message": "pre-write_file",
-    "timestamp": 1784409585871,
-    "projectPath": "/Users/justin/Desktop/Crucible/firm-civic-flair-form"
+    "timestamp": 1784488448900,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/thread-tax-rate"
   },
   {
-    "hash": "5aa3f7b",
+    "hash": "df8267c",
     "message": "pre-write_file",
-    "timestamp": 1784445623441,
-    "projectPath": "/Users/justin/Desktop/Crucible/rush-tame-rise-vigor"
+    "timestamp": 1784488468767,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/rename-field-across-layers"
   },
   {
-    "hash": "03b4e1e",
+    "hash": "2fea19b",
     "message": "pre-write_file",
-    "timestamp": 1784446157047,
-    "projectPath": "/Users/justin/Desktop/Crucible/cross-atlas-strand-root"
+    "timestamp": 1784488528781,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/rename-field-across-layers"
   },
   {
-    "hash": "104b68b",
+    "hash": "ef01f13",
     "message": "pre-write_file",
-    "timestamp": 1784446259034,
-    "projectPath": "/Users/justin/Desktop/Crucible/trunk-pact-moor-ring"
+    "timestamp": 1784488610849,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/extract-duplicated-discount"
   },
   {
-    "hash": "418d205",
+    "hash": "22d2a54",
     "message": "pre-write_file",
-    "timestamp": 1784471582654,
-    "projectPath": "/Users/justin/Desktop/Crucible/staff-tang-volt-zinc"
+    "timestamp": 1784488696110,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/clamp-upper-bound"
   },
   {
-    "hash": "942e996",
+    "hash": "2be16ea",
     "message": "pre-write_file",
-    "timestamp": 1784474193353,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/clamp-upper-bound"
+    "timestamp": 1784488704836,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/average-empty-array"
   },
   {
-    "hash": "be57046",
+    "hash": "652ed89",
     "message": "pre-write_file",
-    "timestamp": 1784474204458,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/average-empty-array"
+    "timestamp": 1784488713657,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/add-titlecase"
   },
   {
-    "hash": "107ad38",
+    "hash": "c245f79",
     "message": "pre-write_file",
-    "timestamp": 1784474212083,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/add-titlecase"
+    "timestamp": 1784488732333,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/cross-file-currency"
   },
   {
-    "hash": "4146fed",
+    "hash": "0dd4bd3",
     "message": "pre-write_file",
-    "timestamp": 1784474230124,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/cross-file-currency"
+    "timestamp": 1784488754158,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/unreached-negative-branch"
   },
   {
-    "hash": "dc7f21b",
+    "hash": "91aa860",
     "message": "pre-write_file",
-    "timestamp": 1784474252444,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/unreached-negative-branch"
+    "timestamp": 1784488776406,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/cart-remove"
   },
   {
-    "hash": "a6a597f",
+    "hash": "eb93eab",
     "message": "pre-write_file",
-    "timestamp": 1784474267145,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/cart-remove"
+    "timestamp": 1784488790897,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/chunk-off-by-one"
   },
   {
-    "hash": "409ae02",
+    "hash": "1de15cd",
     "message": "pre-write_file",
-    "timestamp": 1784474278427,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/chunk-off-by-one"
+    "timestamp": 1784488836180,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/validate-email-domain"
   },
   {
-    "hash": "1a3815c",
+    "hash": "405b846",
     "message": "pre-write_file",
-    "timestamp": 1784474291068,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/validate-email-domain"
+    "timestamp": 1784488878646,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/async-retry"
   },
   {
-    "hash": "51d900a",
+    "hash": "f386443",
     "message": "pre-write_file",
-    "timestamp": 1784474330371,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/async-retry"
+    "timestamp": 1784488896371,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/dedupe-preserve-order"
   },
   {
-    "hash": "8420616",
+    "hash": "237fe31",
     "message": "pre-write_file",
-    "timestamp": 1784474340676,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/dedupe-preserve-order"
+    "timestamp": 1784488917309,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/no-suite-wordcount"
   },
   {
-    "hash": "808208a",
+    "hash": "31e809d",
     "message": "pre-write_file",
-    "timestamp": 1784474352525,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-97541/live/no-suite-wordcount"
+    "timestamp": 1784489005954,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/rename-field-across-layers"
   },
   {
-    "hash": "10f202f",
+    "hash": "f866d67",
     "message": "pre-write_file",
-    "timestamp": 1784475937422,
-    "projectPath": "/Users/justin/Desktop/Crucible/flint-firm-rapid-snow"
+    "timestamp": 1784489119766,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/rename-field-across-layers"
   },
   {
-    "hash": "6d80124",
+    "hash": "6a5f3de",
     "message": "pre-write_file",
-    "timestamp": 1784476070298,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/clamp-upper-bound"
+    "timestamp": 1784489181816,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/extract-duplicated-discount"
   },
   {
-    "hash": "1b52cc2",
+    "hash": "663eb5b",
     "message": "pre-write_file",
-    "timestamp": 1784476081870,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/average-empty-array"
+    "timestamp": 1784492741770,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/13789/live/cross-file-currency"
   },
   {
-    "hash": "d1c473b",
+    "hash": "68f4455",
     "message": "pre-write_file",
-    "timestamp": 1784476094692,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/add-titlecase"
+    "timestamp": 1784492766246,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/13789/live/cart-remove"
   },
   {
-    "hash": "1659ffc",
+    "hash": "71d7043",
     "message": "pre-write_file",
-    "timestamp": 1784476122051,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/cross-file-currency"
+    "timestamp": 1784492842100,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/13789/live/extract-duplicated-discount"
   },
   {
-    "hash": "ae607bb",
+    "hash": "4debf46",
     "message": "pre-write_file",
-    "timestamp": 1784476142766,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/unreached-negative-branch"
+    "timestamp": 1784492890558,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/15386/live/cross-file-currency"
   },
   {
-    "hash": "19182ce",
+    "hash": "be239c9",
     "message": "pre-write_file",
-    "timestamp": 1784476181178,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/cart-remove"
+    "timestamp": 1784492914804,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/15386/live/cart-remove"
   },
   {
-    "hash": "4c544c4",
+    "hash": "51a0c14",
     "message": "pre-write_file",
-    "timestamp": 1784476224090,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/chunk-off-by-one"
+    "timestamp": 1784492974879,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/15386/live/extract-duplicated-discount"
   },
   {
-    "hash": "1ea9ef6",
+    "hash": "f50b424",
     "message": "pre-write_file",
-    "timestamp": 1784476301959,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/validate-email-domain"
+    "timestamp": 1784493014330,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/16901/live/cross-file-currency"
   },
   {
-    "hash": "d80ef1e",
+    "hash": "0477aa6",
     "message": "pre-write_file",
-    "timestamp": 1784476387538,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/async-retry"
+    "timestamp": 1784493041623,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/16901/live/cart-remove"
   },
   {
-    "hash": "e202c42",
+    "hash": "9e42988",
     "message": "pre-write_file",
-    "timestamp": 1784476398180,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/dedupe-preserve-order"
+    "timestamp": 1784493063977,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/16901/live/sync-store-to-async"
   },
   {
-    "hash": "394b45c",
+    "hash": "a40bd5c",
     "message": "pre-write_file",
-    "timestamp": 1784476416730,
-    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-agentic-phase0-7993/live/no-suite-wordcount"
+    "timestamp": 1784493128808,
+    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/16901/live/extract-duplicated-discount"
   }
 ]

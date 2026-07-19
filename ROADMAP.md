@@ -1933,6 +1933,24 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-19g (Real tabs + Settings pages) — Assistant layer step 3 remainder shipped
+- **Open-chats strip → real tabs** (`src/App.tsx` topbar): the chip strip is now a
+  browser-style tab strip seated on the topbar's bottom edge — top-rounded tabs, the
+  active tab reads as connected to the chat surface (bordered + lit, inactive tabs
+  flat), live-run dot and per-tab close preserved, plus a "+" new-tab affordance at the
+  end of the strip (same handler as New chat). Behavior unchanged: close only drops the
+  conversation from memory (History keeps it) and aborts a live run.
+- **Library & Self-repair drawers → inline Settings pages:** `LibraryBinder.tsx` now
+  exports `LibraryPage` and `SelfRepairBinder.tsx` exports `SelfRepairPage` — the old
+  trigger/scrim/fixed-drawer shells are gone; content renders inline, loads on mount
+  (Self-repair keeps its 5s poll while mounted). `SettingsTabView` gained `library` /
+  `selfRepair` props rendered as first-class sections with their own left-nav entries
+  ("Library", "Self-repair"); the two SystemRow drawer triggers were removed from the
+  System section (History/Tasks/Integrations/Self-patcher/Governance rows remain).
+- Verified: `tsc --noEmit` clean, `vite build` clean, dev server serves the new bundle
+  (login screen renders; logged-in visual check blocked — the sandbox denied injecting
+  a session cookie into the preview browser, so click-through is on the user).
+
 ### 2026-07-19f (Named-tool executor) — the engine planner now actually calls the tools a brief names
 - **Root cause of the Morning-brief 0-tool failure, found:** the brief is 280+ chars so
   `localFmPlan` bailed at `MAX_INPUT_CHARS`, AND its `ALLOWED_TOOLS` never included

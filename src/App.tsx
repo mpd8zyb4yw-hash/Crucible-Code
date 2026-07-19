@@ -3,8 +3,8 @@ import { API_BASE, apiFetch } from './api'
 import BackgroundBlobs from './BackgroundBlobs'
 import { useEnsemble, type EnsembleState } from './ensemble'
 import { IntegrationsBinder } from './IntegrationsBinder'
-import { LibraryBinder } from './LibraryBinder'
-import { SelfRepairBinder } from './SelfRepairBinder'
+import { LibraryPage } from './LibraryBinder'
+import { SelfRepairPage } from './SelfRepairBinder'
 import { SelfPatcherBinder } from './SelfPatcherBinder'
 import NavRail from './NavRail'
 import SidebarRail from './SidebarRail'
@@ -2071,6 +2071,8 @@ export default function App() {
       {tab === 'settings' && (
         <SettingsTabView
           ensemble={ensemble}
+          library={<LibraryPage onBuild={text => { setTab('chat'); void send(text) }} />}
+          selfRepair={<SelfRepairPage />}
           advanced={
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {/* System drawers relocated from the old chat topbar — each trigger now sits
@@ -2083,12 +2085,6 @@ export default function App() {
               </SystemRow>
               <SystemRow label="Integrations" desc="Connected services and what the current draft can reach.">
                 <IntegrationsBinder draft={input} />
-              </SystemRow>
-              <SystemRow label="Skill library" desc="Verified code skills Crucible has built and can reuse.">
-                <LibraryBinder onBuild={text => { setTab('chat'); void send(text) }} />
-              </SystemRow>
-              <SystemRow label="Self-repair" desc="Fixes Crucible proposes for its own failures — approve or dismiss.">
-                <SelfRepairBinder />
               </SystemRow>
               <SystemRow label="Self-patcher" desc="Applied self-patches and their verification status.">
                 <SelfPatcherBinder />
@@ -2441,12 +2437,15 @@ export default function App() {
             </span>
           )
         })()}
-        {/* F panels — open-chats strip: one chip per in-memory conversation. A running
-            chat shows a live dot and keeps streaming while another chat is on screen. */}
+        {/* F panels — open-chats TABS: one real tab per in-memory conversation, seated on
+            the topbar's bottom edge like a browser tab strip (top-rounded, the active tab
+            reads as connected to the chat surface below). A running chat shows a live dot
+            and keeps streaming while another chat is on screen. */}
         {openChats.length > 1 && (
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flexShrink: 1,
-            overflowX: 'auto', scrollbarWidth: 'none', WebkitAppRegion: 'no-drag',
+            display: 'flex', alignItems: 'flex-end', gap: 2, minWidth: 0, flexShrink: 1,
+            alignSelf: 'stretch', overflowX: 'auto', scrollbarWidth: 'none',
+            WebkitAppRegion: 'no-drag',
           } as any}>
             {openChats.map(c => {
               const active = c.id === conversationId
@@ -2457,12 +2456,15 @@ export default function App() {
                   title={c.title}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
-                    padding: '4px 8px 4px 10px', borderRadius: 8, cursor: 'pointer',
-                    border: `1px solid ${active ? 'rgba(255,255,255,0.16)' : 'rgba(255,255,255,0.07)'}`,
-                    background: active ? 'rgba(255,255,255,0.07)' : 'rgba(255,255,255,0.025)',
+                    height: 34, padding: '0 8px 0 12px', cursor: 'pointer',
+                    borderRadius: '10px 10px 0 0',
+                    border: `1px solid ${active ? 'rgba(255,255,255,0.12)' : 'transparent'}`,
+                    borderBottom: 'none',
+                    background: active ? 'rgba(255,255,255,0.06)' : 'transparent',
                     color: active ? '#d8d8e6' : '#77778c',
-                    fontSize: 10.5, fontWeight: 600, whiteSpace: 'nowrap',
-                    maxWidth: 160, transition: 'background 0.15s, color 0.15s, border-color 0.15s',
+                    fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
+                    maxWidth: 180, minWidth: 0, position: 'relative',
+                    transition: 'background 0.15s, color 0.15s, border-color 0.15s',
                   }}
                 >
                   {c.live && (
@@ -2487,7 +2489,7 @@ export default function App() {
                     title="Close chat"
                     style={{
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      width: 14, height: 14, borderRadius: 4, flexShrink: 0,
+                      width: 16, height: 16, borderRadius: 5, flexShrink: 0,
                       color: 'rgba(255,255,255,0.3)',
                     }}
                   >
@@ -2498,6 +2500,21 @@ export default function App() {
                 </div>
               )
             })}
+            {/* New-tab affordance at the end of the strip — same handler as New chat. */}
+            <button
+              onClick={() => setConversationId('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))}
+              title="New chat tab"
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                width: 26, height: 26, marginBottom: 4, marginLeft: 2, borderRadius: 8,
+                border: 'none', background: 'none', color: '#66667a', cursor: 'pointer',
+                transition: 'color 0.15s',
+              }}
+            >
+              <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
+                <path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+            </button>
           </div>
         )}
         <div style={{ flex: 1, minWidth: 8 }} />

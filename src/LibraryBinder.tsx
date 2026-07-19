@@ -1,5 +1,5 @@
-// LibraryBinder — topbar trigger + frosted right-edge drawer hosting TWO nested
-// libraries (FABLE5_HANDOFF Feature 1):
+// LibraryPage — inline Settings page hosting TWO nested libraries
+// (FABLE5_HANDOFF Feature 1), converted from the old right-edge drawer:
 //   · Skill Library — the merged oracle-verified synth catalog (zero-inference
 //     code primitives Crucible can emit without any model call)
 //   · Tool Library — the agent's built-in tool registry + per-project dynamic
@@ -90,8 +90,7 @@ function BuildBox({ placeholder, hint, onBuild }: {
   )
 }
 
-export function LibraryBinder({ onBuild }: { onBuild: (text: string) => void }) {
-  const [open, setOpen] = useState(false)
+export function LibraryPage({ onBuild }: { onBuild: (text: string) => void }) {
   const [skillsOpen, setSkillsOpen] = useState(true)
   const [toolsOpen, setToolsOpen] = useState(true)
   const [skills, setSkills] = useState<SkillEntry[]>([])
@@ -115,7 +114,7 @@ export function LibraryBinder({ onBuild }: { onBuild: (text: string) => void }) 
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { if (open) refresh() }, [open])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { refresh() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const q = search.trim().toLowerCase()
   const fSkills = q ? skills.filter(s => s.id.toLowerCase().includes(q) || s.summary.toLowerCase().includes(q)) : skills
@@ -123,12 +122,11 @@ export function LibraryBinder({ onBuild }: { onBuild: (text: string) => void }) 
   const fDynamic = q ? dynamic.filter(t => t.name.toLowerCase().includes(q) || t.description.toLowerCase().includes(q)) : dynamic
 
   const buildTool = (desc: string) => {
-    setOpen(false)
     onBuild(`Create a new reusable agent tool: ${desc}\n\nUse the create_tool mechanism so it persists for future sessions. Pick a clear snake_case name, write a focused description, and smoke-test it before confirming it works.`)
   }
 
   // Skill builds run through the dedicated verified pipeline (generate → oracle
-  // validate → prove:all), not the agent loop — the drawer stays open and polls
+  // validate → prove:all), not the agent loop — the page stays put and polls
   // the job so the user watches the proof happen.
   const [skillJob, setSkillJob] = useState<SkillBuildJob | null>(null)
   useEffect(() => {
@@ -160,224 +158,148 @@ export function LibraryBinder({ onBuild }: { onBuild: (text: string) => void }) 
   }
 
   return (
-    <>
-      <style>{`
-        @keyframes libSlideIn { from { transform: translateX(24px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        @keyframes libScrimIn { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes libPrism { 0% { background-position: 0% 50%; } 100% { background-position: 300% 50%; } }
-      `}</style>
-
-      {/* Trigger — stacked-layers icon, matches topbar button style */}
-      <button
-        onClick={() => setOpen(o => !o)}
-        title="Skill & tool library"
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
+      {/* Search — settings-page style row, replaces the old drawer header */}
+      <input
+        value={search} onChange={e => setSearch(e.target.value)}
+        placeholder="Search skills and tools…"
         style={{
-          background: open ? 'rgba(124,124,248,0.1)' : 'none',
-          border: 'none', cursor: 'pointer',
-          color: open ? '#9090f8' : '#555',
-          padding: '6px 7px', borderRadius: 8,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          transition: 'color 0.18s, background 0.18s',
+          background: 'rgba(255,255,255,0.04)',
+          border: '1px solid rgba(255,255,255,0.08)',
+          borderRadius: 10, padding: '7px 12px', marginBottom: 4,
+          fontSize: 12, color: '#c8c8e8', outline: 'none',
+          fontFamily: 'inherit', width: '100%',
         }}
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-          <path d="M8 2L14 5L8 8L2 5L8 2Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round"/>
-          <path d="M2 8.2L8 11.2L14 8.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-          <path d="M2 11.4L8 14.4L14 11.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-        </svg>
-      </button>
+      />
 
-      {open && (
-        <div onClick={() => setOpen(false)} style={{
-          position: 'fixed', inset: 0, zIndex: 89,
-          background: 'rgba(0,0,0,0.45)', animation: 'libScrimIn 0.28s ease',
-        }} />
+      {loading && skills.length === 0 && builtin.length === 0 && (
+        <div style={{ textAlign: 'center', color: '#55556a', fontSize: 12, padding: '24px 0' }}>loading…</div>
       )}
 
-      {open && (
-        <div style={{
-          position: 'fixed', top: 0, right: 0, bottom: 0,
-          width: 'min(400px, 92vw)', zIndex: 90,
-          display: 'flex', flexDirection: 'column',
-          background: 'rgba(13,13,20,0.82)',
-          backdropFilter: 'blur(40px) saturate(1.5)',
-          WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
-          borderLeft: '1px solid rgba(255,255,255,0.08)',
-          boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
-          animation: 'libSlideIn 0.28s cubic-bezier(0.22,1,0.36,1)',
-          overflow: 'hidden',
-        }}>
-          {/* Prismatic top edge — same language as the other drawers */}
-          <div style={{
-            height: 2, flexShrink: 0,
-            background: 'linear-gradient(90deg, #7c7cf8, #4db89e, #c084fc, #f59e0b, #7c7cf8)',
-            backgroundSize: '300% 100%', animation: 'libPrism 8s linear infinite', opacity: 0.65,
-          }} />
-
-          {/* Header */}
-          <div style={{
-            padding: 'calc(14px + env(safe-area-inset-top, 0px)) 16px 10px', flexShrink: 0,
-            borderBottom: '1px solid rgba(255,255,255,0.05)',
-            display: 'flex', alignItems: 'center', gap: 8,
-          }}>
-            <span style={{
-              fontSize: 10, fontWeight: 700, letterSpacing: '0.14em',
-              color: 'rgba(160,160,200,0.6)', textTransform: 'uppercase', flex: 1,
-            }}>Library</span>
-            <input
-              value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="search…"
-              style={{
-                background: 'rgba(255,255,255,0.05)',
-                border: '1px solid rgba(255,255,255,0.07)',
-                borderRadius: 8, padding: '6px 10px',
-                fontSize: 12, color: '#c8c8e8', outline: 'none',
-                fontFamily: 'inherit', width: 110,
-              }}
-            />
-            <button onClick={() => setOpen(false)} aria-label="Close" style={{
-              background: 'none', border: 'none', cursor: 'pointer', color: '#666',
-              width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              borderRadius: 8, flexShrink: 0,
+      {/* ── Skill Library ── */}
+      <SectionHeader
+        label="Skill library" count={skills.length ? fSkills.length : null}
+        open={skillsOpen} onToggle={() => setSkillsOpen(o => !o)}
+      />
+      {skillsOpen && (
+        <div style={{ paddingLeft: 4, marginBottom: 8 }}>
+          <BuildBox
+            placeholder={'Describe a skill: exact signature + 2 worked examples, e.g.\nexport function slugify(title: string): string\nslugify("Hello World") -> "hello-world"\nslugify("A  B!") -> "a-b"'}
+            hint="Runs the verified pipeline: synthesize, oracle-prove against your examples, then re-prove the whole library. Only proven code lands."
+            onBuild={buildSkill}
+          />
+          {skillJob && (
+            <div style={{
+              background: skillJob.status === 'failed' ? 'rgba(245,158,11,0.06)' : 'rgba(77,184,158,0.06)',
+              border: `1px solid ${skillJob.status === 'failed' ? 'rgba(245,158,11,0.22)' : 'rgba(77,184,158,0.2)'}`,
+              borderRadius: 10, padding: '9px 11px', marginBottom: 10,
             }}>
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-              </svg>
-            </button>
-          </div>
-
-          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, WebkitOverflowScrolling: 'touch', padding: '8px 14px 24px' }}>
-            {loading && skills.length === 0 && builtin.length === 0 && (
-              <div style={{ textAlign: 'center', color: '#333', fontSize: 12, padding: '32px 0' }}>loading…</div>
-            )}
-
-            {/* ── Skill Library ── */}
-            <SectionHeader
-              label="Skill library" count={skills.length ? fSkills.length : null}
-              open={skillsOpen} onToggle={() => setSkillsOpen(o => !o)}
-            />
-            {skillsOpen && (
-              <div style={{ paddingLeft: 4, marginBottom: 8 }}>
-                <BuildBox
-                  placeholder={'Describe a skill: exact signature + 2 worked examples, e.g.\nexport function slugify(title: string): string\nslugify("Hello World") -> "hello-world"\nslugify("A  B!") -> "a-b"'}
-                  hint="Runs the verified pipeline: synthesize, oracle-prove against your examples, then re-prove the whole library. Only proven code lands."
-                  onBuild={buildSkill}
-                />
-                {skillJob && (
-                  <div style={{
-                    background: skillJob.status === 'failed' ? 'rgba(245,158,11,0.06)' : 'rgba(77,184,158,0.06)',
-                    border: `1px solid ${skillJob.status === 'failed' ? 'rgba(245,158,11,0.22)' : 'rgba(77,184,158,0.2)'}`,
-                    borderRadius: 10, padding: '9px 11px', marginBottom: 10,
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', flex: 1,
-                        color: skillJob.status === 'running' ? 'rgba(124,124,248,0.8)'
-                          : skillJob.status === 'done' ? 'rgba(77,184,158,0.85)' : 'rgba(245,158,11,0.85)',
-                      }}>
-                        {skillJob.status === 'running' ? `Building — ${skillJob.stage}` : skillJob.status === 'done' ? 'Proven & added' : 'Not added'}
-                      </span>
-                      {skillJob.status !== 'running' && (
-                        <button onClick={() => setSkillJob(null)} style={{
-                          background: 'none', border: 'none', cursor: 'pointer',
-                          color: 'rgba(160,160,200,0.5)', fontSize: 11, fontFamily: 'inherit', padding: 0,
-                        }}>dismiss</button>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'rgba(200,200,232,0.75)', lineHeight: 1.55, marginTop: 4 }}>
-                      {skillJob.message}
-                    </div>
-                    {skillJob.detail && (
-                      <div style={{
-                        fontSize: 10, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 4,
-                        fontFamily: 'ui-monospace, monospace', whiteSpace: 'pre-wrap',
-                      }}>{skillJob.detail}</div>
-                    )}
-                  </div>
-                )}
-                {fSkills.map(s => (
-                  <div key={s.id} style={{
-                    borderBottom: '1px solid rgba(255,255,255,0.04)',
-                    padding: '9px 4px',
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#c8c8e8', fontFamily: 'ui-monospace, monospace' }}>{s.id}</span>
-                      <span style={{ fontSize: 10, color: 'rgba(160,160,200,0.35)', fontFamily: 'ui-monospace, monospace' }}>{s.defaultPath}</span>
-                    </div>
-                    <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 3 }}>{s.summary}</div>
-                  </div>
-                ))}
-                {!loading && fSkills.length === 0 && (
-                  <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.35)', padding: '10px 4px' }}>
-                    {q ? 'No matching skills' : 'No skills yet'}
-                  </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', flex: 1,
+                  color: skillJob.status === 'running' ? 'rgba(124,124,248,0.8)'
+                    : skillJob.status === 'done' ? 'rgba(77,184,158,0.85)' : 'rgba(245,158,11,0.85)',
+                }}>
+                  {skillJob.status === 'running' ? `Building — ${skillJob.stage}` : skillJob.status === 'done' ? 'Proven & added' : 'Not added'}
+                </span>
+                {skillJob.status !== 'running' && (
+                  <button onClick={() => setSkillJob(null)} style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    color: 'rgba(160,160,200,0.5)', fontSize: 11, fontFamily: 'inherit', padding: 0,
+                  }}>dismiss</button>
                 )}
               </div>
-            )}
-
-            {/* ── Tool Library ── */}
-            <SectionHeader
-              label="Tool library" count={builtin.length ? fBuiltin.length + fDynamic.length : null}
-              open={toolsOpen} onToggle={() => setToolsOpen(o => !o)}
-            />
-            {toolsOpen && (
-              <div style={{ paddingLeft: 4 }}>
-                <BuildBox
-                  placeholder="Describe a tool you want the agent to have…"
-                  hint="The agent writes, smoke-tests, and registers it. Persisted — available in all future sessions."
-                  onBuild={buildTool}
-                />
-
-                {/* Dynamic (agent-created) tools first — these are the user's own */}
-                {fDynamic.length > 0 && (
-                  <div style={{ marginBottom: 6 }}>
-                    <span style={{
-                      fontSize: 10, fontWeight: 700, letterSpacing: '0.12em',
-                      color: 'rgba(77,184,158,0.7)', textTransform: 'uppercase',
-                      display: 'block', padding: '4px 4px 6px',
-                    }}>Created for this project</span>
-                    {fDynamic.map(t => (
-                      <div key={t.name} style={{
-                        background: 'rgba(77,184,158,0.05)', border: '1px solid rgba(77,184,158,0.14)',
-                        borderRadius: 10, padding: '9px 11px', marginBottom: 6,
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: '#c8c8e8', fontFamily: 'ui-monospace, monospace' }}>{t.name}</span>
-                          <span style={{ fontSize: 9.5, color: 'rgba(160,160,200,0.45)' }}>
-                            used {t.useCount}x{t.tier !== 'session' ? ` · ${t.tier}` : ''}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 3 }}>{t.description}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Built-in tools */}
-                {fBuiltin.map(t => (
-                  <div key={t.name} style={{
-                    borderBottom: '1px solid rgba(255,255,255,0.04)',
-                    padding: '9px 4px',
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: '#c8c8e8', fontFamily: 'ui-monospace, monospace' }}>{t.name}</span>
-                      {t.mutates && (
-                        <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: 'rgba(245,158,11,0.65)', textTransform: 'uppercase' }}>writes</span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 3 }}>{t.description}</div>
-                  </div>
-                ))}
-                {!loading && fBuiltin.length === 0 && fDynamic.length === 0 && (
-                  <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.35)', padding: '10px 4px' }}>
-                    {q ? 'No matching tools' : 'No tools yet'}
-                  </div>
-                )}
+              <div style={{ fontSize: 11, color: 'rgba(200,200,232,0.75)', lineHeight: 1.55, marginTop: 4 }}>
+                {skillJob.message}
               </div>
-            )}
-          </div>
+              {skillJob.detail && (
+                <div style={{
+                  fontSize: 10, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 4,
+                  fontFamily: 'ui-monospace, monospace', whiteSpace: 'pre-wrap',
+                }}>{skillJob.detail}</div>
+              )}
+            </div>
+          )}
+          {fSkills.map(s => (
+            <div key={s.id} style={{
+              borderBottom: '1px solid rgba(255,255,255,0.04)',
+              padding: '9px 4px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: '#c8c8e8', fontFamily: 'ui-monospace, monospace' }}>{s.id}</span>
+                <span style={{ fontSize: 10, color: 'rgba(160,160,200,0.35)', fontFamily: 'ui-monospace, monospace' }}>{s.defaultPath}</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 3 }}>{s.summary}</div>
+            </div>
+          ))}
+          {!loading && fSkills.length === 0 && (
+            <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.35)', padding: '10px 4px' }}>
+              {q ? 'No matching skills' : 'No skills yet'}
+            </div>
+          )}
         </div>
       )}
-    </>
+
+      {/* ── Tool Library ── */}
+      <SectionHeader
+        label="Tool library" count={builtin.length ? fBuiltin.length + fDynamic.length : null}
+        open={toolsOpen} onToggle={() => setToolsOpen(o => !o)}
+      />
+      {toolsOpen && (
+        <div style={{ paddingLeft: 4 }}>
+          <BuildBox
+            placeholder="Describe a tool you want the agent to have…"
+            hint="The agent writes, smoke-tests, and registers it. Persisted — available in all future sessions."
+            onBuild={buildTool}
+          />
+
+          {/* Dynamic (agent-created) tools first — these are the user's own */}
+          {fDynamic.length > 0 && (
+            <div style={{ marginBottom: 6 }}>
+              <span style={{
+                fontSize: 10, fontWeight: 700, letterSpacing: '0.12em',
+                color: 'rgba(77,184,158,0.7)', textTransform: 'uppercase',
+                display: 'block', padding: '4px 4px 6px',
+              }}>Created for this project</span>
+              {fDynamic.map(t => (
+                <div key={t.name} style={{
+                  background: 'rgba(77,184,158,0.05)', border: '1px solid rgba(77,184,158,0.14)',
+                  borderRadius: 10, padding: '9px 11px', marginBottom: 6,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 600, color: '#c8c8e8', fontFamily: 'ui-monospace, monospace' }}>{t.name}</span>
+                    <span style={{ fontSize: 9.5, color: 'rgba(160,160,200,0.45)' }}>
+                      used {t.useCount}x{t.tier !== 'session' ? ` · ${t.tier}` : ''}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 3 }}>{t.description}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Built-in tools */}
+          {fBuiltin.map(t => (
+            <div key={t.name} style={{
+              borderBottom: '1px solid rgba(255,255,255,0.04)',
+              padding: '9px 4px',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: '#c8c8e8', fontFamily: 'ui-monospace, monospace' }}>{t.name}</span>
+                {t.mutates && (
+                  <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: 'rgba(245,158,11,0.65)', textTransform: 'uppercase' }}>writes</span>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.5)', lineHeight: 1.5, marginTop: 3 }}>{t.description}</div>
+            </div>
+          ))}
+          {!loading && fBuiltin.length === 0 && fDynamic.length === 0 && (
+            <div style={{ fontSize: 11, color: 'rgba(160,160,200,0.35)', padding: '10px 4px' }}>
+              {q ? 'No matching tools' : 'No tools yet'}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }

@@ -78,14 +78,20 @@ const SETTINGS_SECTIONS = [
   { id: 'ensemble', label: 'Ensemble' },
   { id: 'voice', label: 'Voice' },
   { id: 'models', label: 'Local models' },
+  { id: 'library', label: 'Library' },
+  { id: 'repair', label: 'Self-repair' },
   { id: 'system', label: 'System' },
 ] as const
 
-export default function SettingsTabView({ ensemble, advanced }: {
+export default function SettingsTabView({ ensemble, advanced, library, selfRepair }: {
   ensemble: EnsembleState
-  /** System drawers (history/tasks/integrations/library/self-repair/…) relocated from the
+  /** Remaining system drawers (history/tasks/integrations/…) relocated from the
    *  old chat topbar — rendered as labeled SystemRow entries in the System section. */
   advanced?: React.ReactNode
+  /** Skill & tool library — full inline page (formerly the LibraryBinder drawer). */
+  library?: React.ReactNode
+  /** RSI approval surface — full inline page (formerly the SelfRepairBinder drawer). */
+  selfRepair?: React.ReactNode
 }) {
   const nameRef = useRef<HTMLInputElement>(null)
   const valRef = useRef<HTMLInputElement>(null)
@@ -211,12 +217,38 @@ export default function SettingsTabView({ ensemble, advanced }: {
 
         <div id="settings-models" style={{ scrollMarginTop: 24 }}><LocalModelsPanel /></div>
 
+        {library && (
+          <div id="settings-library" style={{ display: 'flex', flexDirection: 'column', gap: 12, scrollMarginTop: 24 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Library</span>
+              <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
+                Verified code skills and agent tools Crucible has built and can reuse — plus a
+                describe-it box to have new ones built and proven.
+              </span>
+            </div>
+            {library}
+          </div>
+        )}
+
+        {selfRepair && (
+          <div id="settings-repair" style={{ display: 'flex', flexDirection: 'column', gap: 12, scrollMarginTop: 24 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Self-repair</span>
+              <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
+                Improvements Crucible proposes for its own learned settings — approve or decline
+                each one, or opt into fully automatic cycles.
+              </span>
+            </div>
+            {selfRepair}
+          </div>
+        )}
+
         {advanced && (
           <div id="settings-system" style={{ display: 'flex', flexDirection: 'column', gap: 12, scrollMarginTop: 24 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>System</span>
               <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
-                History, open tasks, integrations, the skill library, and Crucible's self-repair proposals.
+                History, open tasks, integrations, and applied self-patches.
               </span>
             </div>
             {advanced}
