@@ -27,6 +27,130 @@
 // repair candidate is ALSO passed through the spec-driven repair, so "stub the missing field"
 // and "compute the missing field correctly" can land in the SAME round instead of needing two.
 
+import path from 'path'
+
+/**
+ * What a repair needs to know about the file it is repairing, beyond its text. Optional
+ * everywhere: the nine original proposers are pure (candidate, detail) transforms and stay
+ * that way. Only import-path repair needs to LOOK UP what files actually exist, because the
+ * alternative — guessing a path from its shape — is inference, and inference is what this
+ * engine exists to avoid.
+ */
+export type RepairContext = {
+  /** Project-relative posix path of the file `candidate` is the content of. */
+  modulePath: string
+  /** Project-relative posix paths of every file the oracle staged alongside it. */
+  files: readonly string[]
+}
+
+/** For an extensionless import base, the file paths TS would try, in order. Mirrors
+ *  oracle.ts's `importResolutionCandidates` — kept local so this module stays leaf-level. */
+function resolutionCandidates(baseRel: string): string[] {
+  if (/\.(ts|tsx|js|mjs|cjs)$/.test(baseRel)) return [baseRel]
+  return [`${baseRel}.ts`, `${baseRel}.tsx`, `${baseRel}/index.ts`, `${baseRel}.js`, `${baseRel}/index.js`]
+}
+
+const rxEscape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const stripExt = (s: string) => s.replace(/\.(ts|tsx|js|mjs|cjs)$/, '')
+
+/** Rewrite every `'<from>'` module specifier to `'<to>'`, in import/require position only. */
+function replaceSpecifier(src: string, from: string, to: string): string {
+  return src.replace(
+    new RegExp(`((?:from|import|require)\\s*\\(?\\s*)(['"])${rxEscape(from)}\\2`, 'g'),
+    `$1$2${to}$2`,
+  )
+}
+
+/** Drop whole import statements bound to `spec` (named, default, namespace, type-only, bare). */
+function dropImportsOf(src: string, spec: string): string | null {
+  const q = rxEscape(spec)
+  const re = new RegExp(`^\\s*import\\s(?:[^'"]*from\\s*)?['"]${q}['"];?\\s*$`)
+  const lines = src.split('\n')
+  const kept = lines.filter(l => !re.test(l))
+  return kept.length !== lines.length ? kept.join('\n') : null
+}
+
+/**
+ * A relative specifier that does not resolve. Repair it by LOOKUP, never by guess: the
+ * specifier's basename must name exactly one staged file, and that file's real relative path
+ * replaces the specifier. Zero matches or more than one ⇒ null.
+ */
+function rewriteRelativeSpecifier(candidate: string, spec: string, ctx: RepairContext): string | null {
+  const files = ctx.files.map(f => f.replace(/\\/g, '/'))
+  const modulePath = ctx.modulePath.replace(/\\/g, '/')
+  const dir = path.posix.dirname(modulePath)
+
+  // If it already resolves, this TS2307 is about something else and the import is not ours
+  // to touch. (Rewriting a correct import would be the false-certify direction — cont.85.)
+  const asWritten = path.posix.normalize(path.posix.join(dir, spec))
+  if (resolutionCandidates(asWritten).some(c => files.includes(c))) return null
+
+  const want = stripExt(path.posix.basename(spec))
+  const hits = files.filter(f => f !== modulePath && stripExt(path.posix.basename(f)) === want)
+  if (hits.length !== 1) return null   // absent, or ambiguous — abstain rather than guess
+
+  let rel = stripExt(path.posix.relative(dir, hits[0]))
+  if (!rel.startsWith('.')) rel = `./${rel}`
+  if (rel === spec) return null
+  const out = replaceSpecifier(candidate, spec, rel)
+  return out !== candidate ? out : null
+}
+
+/**
+ * TS2307 "Cannot find module 'X'" — two distinct real failures behind one diagnostic.
+ *
+ * (a) X is RELATIVE and wrong. Measured live on extract-duplicated-discount (run 56499):
+ *     writing src/discount.ts, the FM emitted `from './src/checkout'` for what is a SIBLING
+ *     ('./checkout'). oracle.ts deliberately keeps this fatal instead of suffix-matching it
+ *     away (that suffix match was the cont.85 false-certify bug), so the FM IS shown the
+ *     error — and re-emits it every round, because nothing repairs it. Three rounds burn,
+ *     the tripwire fires, the task abstains. Fixed by resolving the specifier against the
+ *     staged file list.
+ *
+ * (b) X is BARE and absent. Measured live on sync-store-to-async: `await-promise`, which does
+ *     not exist. Note the sibling case in the same corpus imports `@angular/core`, which DOES
+ *     exist on npm but is not a dependency here — from inside an offline sandbox the two are
+ *     indistinguishable, which is precisely why a registry-404 gate cannot cover this class
+ *     and tsc can. Drop the import statement.
+ *
+ * Both branches are proposals, not ships: the repaired candidate goes back through the same
+ * oracle. If a dropped import was load-bearing, the result fails TS2304 "Cannot find name"
+ * and is discarded exactly like any wrong FM candidate. This cannot false-certify.
+ */
+export function repairUnresolvableImport(
+  candidate: string,
+  detail: string,
+  ctx?: RepairContext,
+): string | null {
+  const specs = new Set<string>()
+  for (const m of detail.matchAll(/TS2307: Cannot find module '([^']+)'/g)) specs.add(m[1])
+  if (!specs.size) return null
+
+  // The diagnostic names the IMPORTING file, which is not necessarily this candidate. A
+  // TS2307 located in a sibling is proposeSiblingRepairs' job; rewriting our own imports to
+  // chase another file's error would be a misfire. (Only one fatal line reaches `detail` —
+  // oracle.ts returns `fatal[0]` — so this check is per-round, not per-error.)
+  if (ctx) {
+    const loc = /^(?:typecheck:\s*)?(.*?)\(\d+,\d+\): error TS2307:/m.exec(detail.trim())
+    if (loc) {
+      const errPath = loc[1].replace(/\\/g, '/')
+      const modulePath = ctx.modulePath.replace(/\\/g, '/')
+      if (errPath !== modulePath && !errPath.endsWith(`/${modulePath}`)) return null
+    }
+  }
+
+  let out = candidate
+  for (const spec of specs) {
+    // A relative specifier can only be repaired by lookup, so without context we abstain
+    // rather than guess. A bare one is context-free: absent is absent.
+    const fixed = /^\.\.?\//.test(spec)
+      ? (ctx ? rewriteRelativeSpecifier(out, spec, ctx) : null)
+      : dropImportsOf(out, spec)
+    if (fixed) out = fixed
+  }
+  return out !== candidate ? out : null
+}
+
 /** Best-effort default literal for a TS primitive type name. */
 function defaultForType(t: string): string {
   if (t === 'string') return "''"
@@ -336,10 +460,23 @@ const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string
   repairSeparatorRunNormalize,
 ]
 
-/** Propose zero or more deterministically-repaired variants of a rejected candidate. */
-export function proposeRepairs(candidate: string, detail: string, spec: string): string[] {
+/** Propose zero or more deterministically-repaired variants of a rejected candidate.
+ *  `ctx` is optional: without it the context-free repairs still run, and the one repair that
+ *  needs a file list (relative-import resolution) abstains instead of guessing. */
+export function proposeRepairs(
+  candidate: string,
+  detail: string,
+  spec: string,
+  ctx?: RepairContext,
+): string[] {
+  // Bound the context-aware repair into the same (candidate, detail) shape as the rest, so it
+  // participates in the standalone AND composed passes below without special-casing either.
+  const repairs: Array<(c: string, d: string) => string | null> = [
+    ...DETAIL_DRIVEN_REPAIRS,
+    (c, d) => repairUnresolvableImport(c, d, ctx),
+  ]
   const stage1 = [candidate]   // seed so spec-driven repairs below can apply standalone too
-  for (const repair of DETAIL_DRIVEN_REPAIRS) {
+  for (const repair of repairs) {
     const r = repair(candidate, detail)
     if (r) stage1.push(r)
   }
@@ -347,7 +484,7 @@ export function proposeRepairs(candidate: string, detail: string, spec: string):
   // for the case where several independent slips co-occur (each fix is self-gated by its own
   // pattern match, so applying a non-matching one is a safe no-op).
   let composed = candidate
-  for (const repair of DETAIL_DRIVEN_REPAIRS) {
+  for (const repair of repairs) {
     const r = repair(composed, detail)
     if (r) composed = r
   }

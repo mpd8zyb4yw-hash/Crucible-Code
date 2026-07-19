@@ -127,7 +127,10 @@ function proposeSiblingRepairs(
   let content = ''
   try { content = fs.readFileSync(sibling.src, 'utf8') } catch { return [] }
   const out: SynthFile[] = []
-  for (const repaired of proposeRepairs(content, detail, spec)) {
+  // The repair context is the SIBLING's, not the candidate's — `content` is the sibling's text,
+  // so an import-path repair must resolve relative to where the sibling lives.
+  const ctx = { modulePath: sibling.rel, files: contextFiles.map(c => c.rel) }
+  for (const repaired of proposeRepairs(content, detail, spec, ctx)) {
     if (repaired !== content) out.push({ path: sibling.rel, content: repaired })
   }
   return out
@@ -437,7 +440,7 @@ export async function synthesizeUniversal(
     // mutations of the rejected candidate, re-gated by the SAME tsc oracle. The compile-gate
     // path had none, so mechanically-fixable tsc failures (e.g. TS2440 import/local conflict,
     // the dominant tier-2 residual) burned a full FM round the model could not self-correct.
-    for (const repaired of proposeRepairs(candidate, v.detail, sigBlock)) {
+    for (const repaired of proposeRepairs(candidate, v.detail, sigBlock, { modulePath, files: contextFiles.map(c => c.rel) })) {
       const rf: SynthFile[] = [{ path: modulePath, content: repaired }]
       const rv = await verifyCandidateAsync(rf, undefined, oracleOpts)
       logFmRound({

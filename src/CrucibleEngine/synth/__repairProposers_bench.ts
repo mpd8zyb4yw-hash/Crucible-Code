@@ -16,6 +16,9 @@ interface Case {
   candidate: string
   detail: string
   spec?: string
+  // File-list context, for repairs that resolve by lookup rather than by guess. Omitted on
+  // every pre-existing case: those proposers are pure (candidate, detail) transforms.
+  ctx?: { modulePath: string; files: string[] }
   // Exact string the repaired candidate must equal, or null if no repair should fire at all.
   expect: string | null
 }
@@ -108,12 +111,73 @@ const CASES: Case[] = [
     detail: 'unrelated failure text',
     expect: null,
   },
+
+  // ── repairUnresolvableImport (TS2307) ──────────────────────────────────────────────────
+  // Both branches replay a MEASURED live failure, not an invented one: the relative case is
+  // extract-duplicated-discount (run 56499, `from './src/checkout'` for a sibling), the bare
+  // case is sync-store-to-async (`await-promise`, fabricated). Each burned all 3 FM rounds
+  // and abstained because the compile-gate loop had no proposer for TS2307.
+  {
+    name: 'repairUnresolvableImport(a): wrong relative specifier resolves to the real sibling by lookup',
+    candidate: `import { checkoutTotal } from './src/checkout';\n\nexport function discountFor(cents: number): number {\n  return checkoutTotal(cents, false);\n}`,
+    detail: `typecheck: /tmp/crucible-oracle-nvzN3l/src/discount.ts(1,31): error TS2307: Cannot find module './src/checkout' or its corresponding type declarations.`,
+    ctx: { modulePath: 'src/discount.ts', files: ['src/checkout.ts', 'src/discount.ts', 'src/quote.ts', 'src/preview.ts'] },
+    expect: `import { checkoutTotal } from './checkout';\n\nexport function discountFor(cents: number): number {\n  return checkoutTotal(cents, false);\n}`,
+  },
+  {
+    name: 'repairUnresolvableImport(b): fabricated bare package import is dropped whole',
+    candidate: `import { async } from 'await-promise';\n\nexport async function get(id: string): Promise<string> {\n  return id;\n}`,
+    detail: `typecheck: /tmp/crucible-oracle-aQ2x/src/db.ts(1,26): error TS2307: Cannot find module 'await-promise' or its corresponding type declarations.`,
+    ctx: { modulePath: 'src/db.ts', files: ['src/db.ts'] },
+    expect: `\nexport async function get(id: string): Promise<string> {\n  return id;\n}`,
+  },
+  {
+    name: 'repairUnresolvableImport(b): type-only import of an absent package is dropped too',
+    candidate: `import type { Component } from '@angular/core';\n\nexport const x = 1;`,
+    detail: `typecheck: /tmp/o/src/ui.ts(1,32): error TS2307: Cannot find module '@angular/core' or its corresponding type declarations.`,
+    ctx: { modulePath: 'src/ui.ts', files: ['src/ui.ts'] },
+    expect: `\nexport const x = 1;`,
+  },
+  {
+    name: 'repairUnresolvableImport(b): bare side-effect import of an absent package is dropped',
+    candidate: `import 'ghost-polyfill';\n\nexport const y = 2;`,
+    detail: `typecheck: /tmp/o/src/boot.ts(1,8): error TS2307: Cannot find module 'ghost-polyfill' or its corresponding type declarations.`,
+    ctx: { modulePath: 'src/boot.ts', files: ['src/boot.ts'] },
+    expect: `\nexport const y = 2;`,
+  },
+  {
+    name: 'repairUnresolvableImport: ABSTAINS when the basename is ambiguous (two candidates, no guess)',
+    candidate: `import { u } from './util';\n\nexport const z = u;`,
+    detail: `typecheck: /tmp/o/src/main.ts(1,20): error TS2307: Cannot find module './util' or its corresponding type declarations.`,
+    ctx: { modulePath: 'src/main.ts', files: ['src/a/util.ts', 'src/b/util.ts', 'src/main.ts'] },
+    expect: null,
+  },
+  {
+    name: 'repairUnresolvableImport: ABSTAINS on a relative specifier with no file context (cannot look up ⇒ will not guess)',
+    candidate: `import { checkoutTotal } from './src/checkout';\n\nexport const q = checkoutTotal;`,
+    detail: `typecheck: /tmp/o/src/discount.ts(1,31): error TS2307: Cannot find module './src/checkout' or its corresponding type declarations.`,
+    expect: null,
+  },
+  {
+    name: 'repairUnresolvableImport: ABSTAINS when the error is located in a DIFFERENT file (that is the sibling path’s job)',
+    candidate: `import { checkoutTotal } from './discount';\n\nexport const r = checkoutTotal;`,
+    detail: `typecheck: /tmp/o/src/checkout.ts(1,10): error TS2307: Cannot find module './nowhere' or its corresponding type declarations.`,
+    ctx: { modulePath: 'src/discount.ts', files: ['src/discount.ts', 'src/checkout.ts'] },
+    expect: null,
+  },
+  {
+    name: 'repairUnresolvableImport: ABSTAINS when the specifier already resolves (never rewrites a correct import)',
+    candidate: `import { checkoutTotal } from './checkout';\n\nexport const s = checkoutTotal;`,
+    detail: `typecheck: /tmp/o/src/discount.ts(1,31): error TS2307: Cannot find module './checkout' or its corresponding type declarations.`,
+    ctx: { modulePath: 'src/discount.ts', files: ['src/checkout.ts', 'src/discount.ts'] },
+    expect: null,
+  },
 ]
 
 function main() {
   let pass = 0
   for (const c of CASES) {
-    const repairs = proposeRepairs(c.candidate, c.detail, c.spec ?? '')
+    const repairs = proposeRepairs(c.candidate, c.detail, c.spec ?? '', c.ctx)
     let ok: boolean
     if (c.expect === null) {
       ok = repairs.length === 0
