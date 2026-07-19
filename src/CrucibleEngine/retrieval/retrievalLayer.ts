@@ -1446,3 +1446,41 @@ function budgetFit(block: string, budget: number): string {
   if (block.length <= budget) return block
   return block.slice(0, budget).replace(/\n[^\n]*$/, '') + '\n  … (truncated to context budget)'
 }
+
+/**
+ * The library the QUESTION names, when the answer must actually use it.
+ *
+ * cont.97 live: "Write a zod schema that validates an IPv4 address string" came back as a
+ * ```json fence of raw JSON Schema — not zod, no `z.` anywhere — and shipped CLEAN. Every gate
+ * missed it for the same reason: the type checker skips json, library grounding had no import to
+ * ground, and the contract battery found no family. Nothing anywhere asked the one question that
+ * matters — did the answer use the technology it was asked about?
+ *
+ * Deliberately weak, because a strong version would false-reject. The corroboration is the same
+ * one the grounding lane trusts (structurally named, or a bare token with real download volume),
+ * and the answer only has to MENTION the name somewhere in its code — `JSON.parse` satisfies a
+ * "json" token, `z.string()` alone would not satisfy "zod" but `import ... from 'zod'` does.
+ * Returns the names that are named-and-missing; [] whenever the check cannot be trusted.
+ */
+export async function namedLibrariesMissingFromCode(question: string, code: string): Promise<string[]> {
+  if (!code.trim()) return []
+  const ranked = extractPackageCandidatesRanked(question)
+  const named = ranked.filter(c => c.confidence === 'named').map(c => c.name)
+  const tokens = ranked.filter(c => c.confidence === 'token').map(c => c.name)
+  // A bare token must clear the SAME popularity bar the grounding lane uses before it can
+  // accuse an answer of ignoring it — npm publishes a package for nearly every English word.
+  const corroborated = tokens.length
+    ? (await Promise.all(tokens.map(async t => [t, await weeklyDownloads(t)] as const)))
+        .filter(([, n]) => n >= NPM_MIN_WEEKLY).map(([t]) => t)
+    : []
+  const missing: string[] = []
+  for (const cand of [...new Set([...named, ...corroborated])]) {
+    // Only accuse over a package that demonstrably exists — a 404 is the phantom-package gate's
+    // finding, and an 'unknown' (transport failure) must never produce an accusation.
+    if (await packageExistence(cand) !== 'exists') continue
+    const bare = cand.startsWith('@') ? cand.split('/')[1] ?? cand : cand
+    const re = new RegExp(`\\b${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+    if (!re.test(code)) missing.push(cand)
+  }
+  return missing
+}

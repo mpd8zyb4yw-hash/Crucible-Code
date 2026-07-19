@@ -366,7 +366,7 @@ import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngin
 import { domainVerify, correctArithmeticCascade, verifyCodeBlocks, relabelMislabeledJsFences, crossGrammarRelabel, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
 import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks, detectContract, contractAskHint } from './src/CrucibleEngine/reasoning/contractVerify'
-import { isCodingQuery, packageExistence } from './src/CrucibleEngine/retrieval/retrievalLayer'
+import { isCodingQuery, packageExistence, namedLibrariesMissingFromCode } from './src/CrucibleEngine/retrieval/retrievalLayer'
 import { bonsaiComplete, isBonsaiInstalled, repairModelName } from './src/CrucibleEngine/localModels/bonsaiSidecar'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
@@ -4500,6 +4500,20 @@ app.post('/api/chat', async (req, res) => {
               answer += `\n\n> ⚠ ${phantom.length > 1 ? 'These packages do' : `\`${phantom[0]}\` does`} not exist on npm${phantom.length > 1 ? ` (${phantom.map(p => `\`${p}\``).join(', ')})` : ''} — the import${phantom.length > 1 ? 's' : ''} above ${phantom.length > 1 ? 'are' : 'is'} fabricated and the code cannot install as written.`
               debugBus.emit('pipeline', 'answer_phantom_package', { phantom }, { severity: 'warn', requestId })
             }
+          }
+        } catch { /* non-blocking: ship the answer as-is */ }
+      }
+      // NAMED-TECHNOLOGY gate (cont.97 live finding): "Write a zod schema that validates an IPv4
+      // address string" came back as a ```json fence of raw JSON Schema — not zod, no `z.`
+      // anywhere — and shipped CLEAN. Every gate missed it for the same reason: the type checker
+      // skips json, library grounding had no import to ground, and the contract battery found no
+      // family. Nothing asked whether the answer used the technology it was ASKED about.
+      if (answer && answer.trim() && answer.includes('```') && isCodingQuery(message)) {
+        try {
+          const missing = await namedLibrariesMissingFromCode(message, answer)
+          if (missing.length > 0) {
+            answer += `\n\n> ⚠ The question asked about ${missing.map(m => `\`${m}\``).join(', ')}, but the code above never uses ${missing.length > 1 ? 'them' : 'it'} — this does not answer what was asked.`
+            debugBus.emit('pipeline', 'answer_named_library_missing', { missing }, { severity: 'warn', requestId })
           }
         } catch { /* non-blocking: ship the answer as-is */ }
       }
