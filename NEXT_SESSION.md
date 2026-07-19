@@ -17,9 +17,22 @@
 
 ---
 
-## CURRENT STATE — last updated Automations-MVP session, 2026-07-19c (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated Connections session, 2026-07-19d (REPLACE THIS EVERY SESSION)
 
-**Automations MVP (ASSISTANT_SPEC.md step 1) is LIVE** — store
+**Assistant layer steps 1 AND 2 are LIVE (see 2026-07-19c/d CHANGE LOG entries).**
+Step 2 (Connections + Google): `src/CrucibleEngine/connections/registry.ts` (capability read
+model), `/api/connections` + google test/preview/disconnect endpoints in server.ts,
+`src/ConnectionsView.tsx` page with LIVE service widgets (real inbox glimpse + calendar strip
+— user direction 2026-07-19: visible, beautiful app widgets, implemented honestly: real data
+or absent, never placeholders). Morning Brief unlocked via template prefills in
+AutomationsView (prefills, not profiles) — created live on the real account, scheduled daily
+08:00; its first scheduled run is TOMORROW MORNING — check the Digest/its lastRuns for
+answer quality (engine planner quality is the risk, not plumbing). Assistant-layer NEXT per
+spec: UI territory refactor (Home/Digest page, rail-first everywhere), then REST connector,
+then MCP client. Also open: widgets only exist for Google — the spec's "widgets per app"
+direction should extend to GitHub (recent PRs/issues via gh) and Mac (disk/app state) cards.
+
+**Step 1 recap: Automations MVP (ASSISTANT_SPEC.md step 1) is LIVE** — store
 (`src/CrucibleEngine/automations/store.ts`, `.crucible/automations.json`), 30s scheduler +
 CRUD/digest API in server.ts (runs execute via internal self-POST to `/api/chat` with
 `mode:'agent'` — one execution path), and a full-page Automations UI

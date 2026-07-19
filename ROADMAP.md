@@ -1933,6 +1933,30 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-19d (Connections + Google) — Assistant layer step 2 shipped with live service widgets
+- **Registry** (`src/CrucibleEngine/connections/registry.ts`): one read model over external
+  capability — Google OAuth (tokens + scopes → which of the 10 existing gmail_*/calendar_*/
+  drive_*/contacts_*/youtube_* agent tools are usable), CLI integrations (from
+  integrations/registry.ts with detected/enabled state), built-in Mac control. ADDS no execution
+  path — it reports on tools that already run through registry.exec; `userId` was already
+  threaded into every agent ToolCtx, so automations use these tools as their owner.
+- **API (server.ts):** GET `/api/connections` (cards), POST `/google/test` (REAL Gmail profile +
+  Calendar calls — "connected" is a verified claim), POST `/google/disconnect` (forget tokens),
+  GET `/google/preview` (live widget data: 6 inbox messages w/ unread state + next-7-days
+  events; HTML entities decoded; a failing service returns null — honest absence, never
+  placeholder content).
+- **UI** (`src/ConnectionsView.tsx` + rail entry): card grid (Accounts / Local tools) with
+  status-dot vocabulary, per-tool mono chips, Connect/Reconnect (existing OAuth flow),
+  Test with inline per-service results, and **live widgets per user direction**: inbox glimpse
+  (unread-weighted rows, relative times) + calendar strip (date-chip rows) rendered inside the
+  connected Google card. All self-authored visuals, tokens only.
+- **Morning Brief unlocked:** template prefills in the Automations create form (Morning brief /
+  Inbox triage / Weekly cleanup) — prefills, NOT workflow profiles; the planner still infers the
+  workflow. Live-verified end-to-end on the real signed-in account: connections list correct
+  (google connected 10 tools, gh/jq detected, rg/semgrep honestly absent), test returned
+  "487 messages / 2 calendars", widgets rendered real inbox data, Morning brief created and
+  scheduled daily 08:00.
+
 ### 2026-07-19c (Automations MVP) — Assistant layer step 1 shipped and live-verified
 - **Store** (`src/CrucibleEngine/automations/store.ts`): Automation = trigger + brief + delivery,
   persisted in `.crucible/automations.json`. Triggers: interval / daily / weekly / once; pure

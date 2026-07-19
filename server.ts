@@ -83,7 +83,8 @@ import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/Cr
 import { detectConversational, buildConversationalFallback, applyVoiceLayer } from './src/CrucibleEngine/conversationalMode'
 import { readScratch } from './src/CrucibleEngine/agent/taskScratchpad'
 import { approveGlobalGraduation } from './src/CrucibleEngine/tools/dynamicTools'
-import { saveTokens, googleServicesStatus, GOOGLE_SCOPES } from './src/CrucibleEngine/tools/googleApis'
+import { saveTokens, googleServicesStatus, GOOGLE_SCOPES, gFetch, tokenFile as googleTokenFile } from './src/CrucibleEngine/tools/googleApis'
+import { listConnections } from './src/CrucibleEngine/connections/registry'
 import { latestResumable, saveSession, newSessionId, readMemoryDigest, appendMemory, readGlobalMemoryDigest, globalMemoryFile } from './src/CrucibleEngine/state/session'
 import { buildCodebaseContext, indexStats, ensureIndex, reindexFiles, searchIndex } from './src/CrucibleEngine/state/codebaseIndex'
 import { loadDynamicToolsInto, dynamicToolStats } from './src/CrucibleEngine/tools/dynamicTools'
@@ -1073,6 +1074,83 @@ app.get('/api/automations/digest', (req: express.Request, res: express.Response)
     .sort((x, y) => y.ts - x.ts)
     .slice(0, 50)
   res.json({ entries })
+})
+
+// ── Connections (Assistant layer step 2 — ASSISTANT_SPEC.md §1A) ──────────────
+// Read model over external capabilities: Google OAuth, CLI integrations, Mac
+// control. No new execution path — tools listed here already live in the agent
+// tool registry; these endpoints only report and manage AUTH state.
+
+app.get('/api/connections', async (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  try { res.json({ connections: await listConnections(user.id) }) }
+  catch (e: any) { res.status(500).json({ error: String(e?.message ?? e) }) }
+})
+
+// Live health check — one real Gmail profile call + one Calendar call, so
+// "connected" is a VERIFIED claim, not a token-file-exists guess.
+app.post('/api/connections/google/test', async (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const checks: Record<string, { ok: boolean; detail: string }> = {}
+  try {
+    const p = await gFetch(user.id, 'https://gmail.googleapis.com/gmail/v1/users/me/profile')
+    checks.gmail = { ok: true, detail: `${p.emailAddress} — ${p.messagesTotal} messages` }
+  } catch (e: any) { checks.gmail = { ok: false, detail: String(e?.message ?? e).slice(0, 200) } }
+  try {
+    const c = await gFetch(user.id, 'https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=5')
+    checks.calendar = { ok: true, detail: `${(c.items ?? []).length} calendar(s) visible` }
+  } catch (e: any) { checks.calendar = { ok: false, detail: String(e?.message ?? e).slice(0, 200) } }
+  res.json({ checks })
+})
+
+// Live service preview — feeds the Connections page widgets (inbox glimpse,
+// upcoming-calendar strip). REAL data or nothing: a service that errors returns
+// null for that widget, never placeholder content.
+app.get('/api/connections/google/preview', async (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const out: { gmail: Array<{ id: string; from: string; subject: string; date: string; unread: boolean }> | null
+               calendar: Array<{ title: string; start: string; end: string; allDay: boolean }> | null } = { gmail: null, calendar: null }
+  try {
+    const list = await gFetch(user.id, 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=6&labelIds=INBOX')
+    const msgs = await Promise.all(((list.messages ?? []) as Array<{ id: string }>).map(async m => {
+      const d = await gFetch(user.id, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`)
+      const h = (name: string) => (d.payload?.headers ?? []).find((x: any) => x.name === name)?.value ?? ''
+      // Gmail metadata headers arrive HTML-entity-encoded (&#x27; &amp; …) — decode
+      // the common ones so widget rows read as text, not markup soup.
+      const unent = (s: string) => s
+        .replace(/&#x([0-9a-f]+);/gi, (_, x) => String.fromCodePoint(parseInt(x, 16)))
+        .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      return {
+        id: m.id,
+        from: unent(String(h('From')).replace(/<.*>/, '').replace(/"/g, '').trim()),
+        subject: unent(h('Subject')) || '(no subject)',
+        date: h('Date'),
+        unread: (d.labelIds ?? []).includes('UNREAD'),
+      }
+    }))
+    out.gmail = msgs
+  } catch { /* not connected / scope missing — widget stays absent */ }
+  try {
+    const now = new Date()
+    const in7d = new Date(now.getTime() + 7 * 86400_000)
+    const ev = await gFetch(user.id, `https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=6&singleEvents=true&orderBy=startTime&timeMin=${encodeURIComponent(now.toISOString())}&timeMax=${encodeURIComponent(in7d.toISOString())}`)
+    out.calendar = ((ev.items ?? []) as any[]).map(e => ({
+      title: e.summary ?? '(untitled)',
+      start: e.start?.dateTime ?? e.start?.date ?? '',
+      end: e.end?.dateTime ?? e.end?.date ?? '',
+      allDay: !e.start?.dateTime,
+    }))
+  } catch { /* same honest-absence rule */ }
+  res.json(out)
+})
+
+// Disconnect = forget the stored tokens. Reversible: "Connect" runs OAuth again.
+app.post('/api/connections/google/disconnect', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  try { fs.unlinkSync(googleTokenFile(user.id)) } catch { /* already gone */ }
+  debugBus.emit('system', 'google_disconnected', { userId: user.id }, { severity: 'info' })
+  res.json({ ok: true })
 })
 
 // ── OAuth helpers ─────────────────────────────────────────────────────────────

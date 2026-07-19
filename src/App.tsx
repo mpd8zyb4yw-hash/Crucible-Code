@@ -12,6 +12,7 @@ import DebugCapture from './DebugCapture'
 import { AGENT_WORKFLOWS } from './AgentsTabView'
 import AgentMissionControl from './AgentMissionControl'
 import AutomationsView from './AutomationsView'
+import ConnectionsView from './ConnectionsView'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
@@ -72,6 +73,7 @@ export default function App() {
   // Automations page — standing tasks (Assistant layer step 1). Same overlay pattern
   // as Mission Control: chat stays mounted and streaming underneath.
   const [automationsOpen, setAutomationsOpen] = useState(false)
+  const [connectionsOpen, setConnectionsOpen] = useState(false)
   const [composerExpandOpen, setComposerExpandOpen] = useState(false)
   // ── Composer attachments — files the user uploads into the workspace sandbox via the
   // paperclip button. Each send prepends a note referencing them so the agent knows they
@@ -2017,11 +2019,13 @@ export default function App() {
         {!isMobile && (
           <SidebarRail
             tab={tab}
-            setTab={t => { if (t !== 'chat') { setAgentsOpen(false); setAutomationsOpen(false) } setTab(t) }}
+            setTab={t => { if (t !== 'chat') { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false) } setTab(t) }}
             agentsOpen={agentsOpen}
-            onToggleAgents={() => { setAutomationsOpen(false); setAgentsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            onToggleAgents={() => { setAutomationsOpen(false); setConnectionsOpen(false); setAgentsOpen(o => { if (!o) setTab('chat'); return !o }) }}
             automationsOpen={automationsOpen}
-            onToggleAutomations={() => { setAgentsOpen(false); setAutomationsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            onToggleAutomations={() => { setAgentsOpen(false); setConnectionsOpen(false); setAutomationsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            connectionsOpen={connectionsOpen}
+            onToggleConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(o => { if (!o) setTab('chat'); return !o }) }}
             conversationId={conversationId}
             onNewChat={() => {
               // F panels: a new chat is a new PANEL — the previous conversation stays
@@ -2033,7 +2037,7 @@ export default function App() {
             refreshKey={histRefresh}
             // Mission Control has its own run list — collapse to an icon rail so the
             // workspace gets the screen instead of a redundant history column.
-            collapsed={agentsOpen || automationsOpen}
+            collapsed={agentsOpen || automationsOpen || connectionsOpen}
           />
         )}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
@@ -2176,6 +2180,11 @@ export default function App() {
       {/* Automations — standing tasks page (same overlay pattern as Mission Control). */}
       {automationsOpen && (
         <AutomationsView onClose={() => setAutomationsOpen(false)} />
+      )}
+
+      {/* Connections — external capability cards with live service widgets. */}
+      {connectionsOpen && (
+        <ConnectionsView onClose={() => setConnectionsOpen(false)} />
       )}
 
       <>

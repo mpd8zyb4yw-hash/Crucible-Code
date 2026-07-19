@@ -79,6 +79,29 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--c-text)', fontFamily: 'inherit', fontSize: 'var(--t-ui)', padding: '7px 10px', outline: 'none',
 }
 
+// Templates are PREFILLS, not workflow profiles — the planner still infers the
+// workflow from the brief text (standing rule: no predefined profiles).
+const TEMPLATES: Array<{ label: string; name: string; brief: string; kind: 'daily' | 'weekly'; time: string; day?: number }> = [
+  {
+    label: 'Morning brief',
+    name: 'Morning brief',
+    brief: 'Use calendar_list to get today\'s events and gmail_search (query: "newer_than:1d in:inbox") to get the last day\'s inbox. Write a compact morning brief: schedule first, then notable emails (sender — subject — why it matters), then anything that needs a reply today. Plain text, no filler.',
+    kind: 'daily', time: '08:00',
+  },
+  {
+    label: 'Inbox triage',
+    name: 'Inbox triage',
+    brief: 'Use gmail_search (query: "newer_than:1d in:inbox") and gmail_read on anything ambiguous. Group the last day\'s email into: needs a reply, worth reading, ignorable. One line each with sender and subject. Do not send or modify anything.',
+    kind: 'daily', time: '17:30',
+  },
+  {
+    label: 'Weekly cleanup',
+    name: 'Weekly downloads cleanup',
+    brief: 'List the files in ~/Downloads older than 30 days with their sizes. Report the total reclaimable space and the ten largest offenders. Do not delete anything — report only.',
+    kind: 'weekly', time: '10:00', day: 6,
+  },
+]
+
 function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
   const [name, setName] = useState('')
   const [brief, setBrief] = useState('')
@@ -128,6 +151,19 @@ function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: 
       {/* Left: what */}
       <div style={{ flex: 1.2, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <SectionLabel>New automation</SectionLabel>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {TEMPLATES.map(t => (
+            <button
+              key={t.label}
+              onClick={() => {
+                setName(t.name); setBrief(t.brief); setKind(t.kind); setTime(t.time)
+                if (t.day != null) setDay(t.day)
+              }}
+              style={{ ...inputStyle, cursor: 'pointer', padding: '5px 11px', color: 'var(--c-dim)', fontSize: 'var(--t-small)' }}
+              title="Prefill — edit anything before creating"
+            >{t.label}</button>
+          ))}
+        </div>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="Name — e.g. Morning brief" maxLength={80} style={inputStyle} />
         <textarea
           value={brief} onChange={e => setBrief(e.target.value)} rows={5}
