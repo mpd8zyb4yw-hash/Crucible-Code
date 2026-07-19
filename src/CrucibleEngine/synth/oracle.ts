@@ -26,6 +26,7 @@ import { spawnSync, spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import type { SynthFile } from './synthEngine'
 import { lintCandidates } from './lintGate'
+import { checkDuplicateExports } from './dupSymbolGate'
 import { checkContract } from './contractGate'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -228,6 +229,8 @@ export function verifyCandidate(
     if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
     if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
+    const dv = checkDuplicateExports(files, opts.contextFiles)
+    if (!dv.ok) return { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false }
     const cv = checkContract(opts.spec ?? '', files)
     if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
@@ -263,6 +266,8 @@ export async function verifyCandidateAsync(
     if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
     if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
+    const dv = checkDuplicateExports(files, opts.contextFiles)
+    if (!dv.ok) return { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false }
     const cv = checkContract(opts.spec ?? '', files)
     if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
