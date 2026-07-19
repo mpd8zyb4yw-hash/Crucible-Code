@@ -239,7 +239,7 @@ export const MessageList = memo(function MessageList({
           const models = round.models
           return (
             <div key={round.id} className="crucible-msg-width" style={{
-              width: '100%', maxWidth: 680, display: 'flex', flexDirection: 'column', gap: 12,
+              width: '100%', maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 12,
             }}>
 
               {/* User bubble */}
@@ -252,7 +252,7 @@ export const MessageList = memo(function MessageList({
                   className="crucible-user-bubble"
                   style={{
                     maxWidth: '62%', padding: '9px 14px', borderRadius: 14,
-                    fontSize: 13, lineHeight: 1.58, cursor: models.length > 0 ? 'pointer' : 'default',
+                    fontSize: 'var(--t-body)', lineHeight: 1.6, cursor: models.length > 0 ? 'pointer' : 'default',
                     background: round.expandedModel ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.055)',
                     border: `1px solid ${round.expandedModel ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.09)'}`,
                     // Subtle bottom accent (hints "expandable") via boxShadow — avoids the
@@ -283,7 +283,19 @@ export const MessageList = memo(function MessageList({
               </div>
 
               {/* Agent loop panel (Section 7) */}
-              {round.agent && <AgentPanel agent={round.agent} onReply={text => send(text)} />}
+              {/* Defensive close: some drivers (e.g. the grounded-web path) end the round's
+                  SSE stream without ever emitting a terminal agent event, leaving
+                  agent.active=true forever — the "agent working after the answer shipped"
+                  bug. The round being over (not the live streaming round) is itself the
+                  terminal signal, so force-inactivate here at render time. */}
+              {round.agent && (
+                <AgentPanel
+                  agent={round.agent.active && !(round.id === liveRoundId && thinking)
+                    ? { ...round.agent, active: false }
+                    : round.agent}
+                  onReply={text => send(text)}
+                />
+              )}
 
               {/* Pipeline Theater — all model cards, shown when user message is clicked */}
               {round.expandedModel && <PipelineTheater round={round} />}
@@ -419,7 +431,7 @@ export const MessageList = memo(function MessageList({
                   {models.length > 0 && (
                     <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '10px -18px 12px' }} />
                   )}
-                  <div style={{ fontSize: 13.5, lineHeight: 1.75, color: '#d8d8e8', maxWidth: '100%', overflow: 'hidden', overflowWrap: 'anywhere' as const, wordBreak: 'break-word' as const, userSelect: 'text' as const }}>
+                  <div style={{ fontSize: 'var(--t-body)', lineHeight: 1.7, color: '#dcdcea', maxWidth: '100%', overflow: 'hidden', overflowWrap: 'anywhere' as const, wordBreak: 'break-word' as const, userSelect: 'text' as const }}>
                    <ReactMarkdown
                      components={{
                        pre({ children }: any) { return <>{children}</> },
@@ -458,8 +470,8 @@ export const MessageList = memo(function MessageList({
                        ol({ children }: any) { return <ol style={{ paddingLeft: 20, margin: '0 0 10px' }}>{children}</ol> },
                        li({ children }: any) { return <li style={{ marginBottom: 4 }}>{children}</li> },
                        h1({ children }: any) { return <h1 style={{ fontSize: 16, fontWeight: 700, margin: '14px 0 6px', color: '#fff' }}>{children}</h1> },
-                       h2({ children }: any) { return <h2 style={{ fontSize: 14, fontWeight: 700, margin: '12px 0 5px', color: '#fff' }}>{children}</h2> },
-                       h3({ children }: any) { return <h3 style={{ fontSize: 13, fontWeight: 600, margin: '10px 0 4px', color: 'rgba(255,255,255,0.8)' }}>{children}</h3> },
+                       h2({ children }: any) { return <h2 style={{ fontSize: 15.5, fontWeight: 700, margin: '14px 0 6px', color: '#fff' }}>{children}</h2> },
+                       h3({ children }: any) { return <h3 style={{ fontSize: 14, fontWeight: 600, margin: '11px 0 4px', color: 'rgba(255,255,255,0.82)' }}>{children}</h3> },
                      }}
                    >{round.synthesis}</ReactMarkdown>
                    {round.synthStreaming && !round.synthesisDone && (

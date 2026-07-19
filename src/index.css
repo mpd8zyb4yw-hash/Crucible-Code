@@ -35,6 +35,24 @@
   --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'SF Mono', 'Fira Code', Consolas, monospace;
 
+  /* Type scale — reference sizes for all new/edited UI. */
+  --t-body: 14.5px;      /* transcript / reading text */
+  --t-ui: 12.5px;        /* controls, rows, labels */
+  --t-small: 11px;       /* secondary metadata */
+  --t-micro: 10px;       /* uppercase section labels, chips */
+
+  /* Motion — one easing + two durations, everywhere. */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 0.16s;
+  --dur: 0.28s;
+
+  /* macOS traffic-light clearance. 0 on the web; main.tsx adds .electron to <html>
+     inside the desktop shell (hiddenInset titlebar) and every top-anchored surface
+     pads by these variables instead of carrying its own magic number.
+     Lights sit at x:12,y:16 and span to roughly x:70,y:30. */
+  --titlebar-clearance: 0px;      /* vertical band to keep clear at the top-left */
+  --titlebar-clearance-x: 0px;    /* horizontal inset when content starts at x=0 */
+
   color-scheme: dark;
   font-family: var(--sans);
   color: var(--c-text);
@@ -45,7 +63,18 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+html.electron {
+  --titlebar-clearance: 38px;
+  --titlebar-clearance-x: 78px;
+}
+
 * { box-sizing: border-box; }
+
+/* Keyboard accessibility — visible focus ring on interactive elements, mouse clicks stay quiet. */
+:focus-visible {
+  outline: 2px solid rgba(124, 124, 248, 0.55);
+  outline-offset: 1px;
+}
 
 body { margin: 0; background: var(--c-bg); }
 
@@ -116,6 +145,27 @@ pre code {
 .rail-nav-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--c-text); }
 .rail-nav-row-active { background: rgba(124, 124, 248, 0.13); color: #9d9dfa; }
 .rail-nav-row-active:hover { background: rgba(124, 124, 248, 0.16); color: #9d9dfa; }
+
+/* ── Splash (empty state) ── */
+@keyframes emberPulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.9); }
+  50%      { opacity: 0.7;  transform: scale(1.06); }
+}
+.splash-ember {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 50% 62%, rgba(255, 130, 60, 0.28) 0%, rgba(255, 110, 26, 0.10) 45%, transparent 70%);
+  animation: emberPulse 4.2s var(--ease) infinite;
+  pointer-events: none;
+}
+.splash-chip {
+  font-size: 11.5px; font-weight: 600; color: var(--c-dim); font-family: inherit;
+  padding: 7px 13px; border-radius: 999px; cursor: pointer;
+  background: transparent; border: 1px solid var(--c-hairline);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.splash-chip:hover {
+  background: var(--c-glass); color: var(--c-text-soft); border-color: var(--c-hairline-strong);
+}
 
 /* "Shows its work" disclosure */
 .crucible-shows-work > summary::-webkit-details-marker { display: none; }

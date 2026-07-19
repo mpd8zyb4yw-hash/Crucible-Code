@@ -9,9 +9,10 @@ import { SelfPatcherBinder } from './SelfPatcherBinder'
 import NavRail from './NavRail'
 import SidebarRail from './SidebarRail'
 import DebugCapture from './DebugCapture'
-import AgentsTabView, { AGENT_WORKFLOWS } from './AgentsTabView'
+import { AGENT_WORKFLOWS } from './AgentsTabView'
+import AgentMissionControl from './AgentMissionControl'
 import HistoryTabView from './HistoryTabView'
-import SettingsTabView from './SettingsTabView'
+import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
 
 // ── Componentized chat modules (ground-up restructure, 2026-07-07) ─────────────
@@ -526,110 +527,77 @@ export default function App() {
   }, [])
 
   const touchStartYRef = useRef(0)
+  // Distinguishes our own scrollTop writes from user scrolling inside onScroll —
+  // without this, every programmatic follow re-enters the handler and the two fight
+  // (the root cause of the old jitter/yank bugs).
+  const programmaticScrollRef = useRef(false)
 
-  // Engage the lock the instant the user shows upward intent — a small wheel tick or
-  // a short finger drag is enough. The old code only locked once you were >80px from
-  // the bottom, so auto-scroll kept yanking you back during streaming and you had to
-  // make one big decisive up-scroll to break free. Now any upward nudge frees it.
-  const lockAutoScroll = () => {
-    if (scrollLockedRef.current) return
-    scrollLockedRef.current = true
-    setShowScrollBtn(true)
-  }
+  // ONE rule replaces the old lock/pin heuristics: follow the bottom while `follow`
+  // is on; any user intent to read back (wheel up, finger drag down, or simply being
+  // >80px from the bottom) turns it off; returning to the bottom or sending a new
+  // message turns it back on. scrollLockedRef is the inverse flag, kept because
+  // send() and streaming effects elsewhere still read it.
+  const setFollow = useCallback((v: boolean) => {
+    scrollLockedRef.current = !v
+    setShowScrollBtn(!v)
+  }, [])
 
-  // Item 5: these are handed down to the memoized MessageList component as props, so they
-  // must be stable references (useCallback with no external deps — everything they read
-  // comes from refs) or the memoization below would be defeated every render.
+  // Item 5: handed down to the memoized MessageList — must be stable references.
   const handleScroll = useCallback(() => {
+    if (programmaticScrollRef.current) { programmaticScrollRef.current = false; return }
     const el = scrollRef.current
     if (!el) return
     const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    // Only RE-ENGAGE auto-follow here, when the user scrolls back to the bottom.
-    // Disengaging is driven by explicit upward intent (wheel/touch) so a tiny scroll
-    // up isn't immediately overridden by the next streamed chunk.
-    if (dist <= 80 && scrollLockedRef.current) {
-      scrollLockedRef.current = false
-      setShowScrollBtn(false)
+    if (dist <= 80) {
+      if (scrollLockedRef.current) setFollow(true)
+    } else if (!scrollLockedRef.current) {
+      setFollow(false)
     }
-  }, [])
+  }, [setFollow])
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
-    if (e.deltaY < 0) lockAutoScroll()
-  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+    // Instant intent: one upward tick frees the view even right at the bottom.
+    if (e.deltaY < 0) setFollow(false)
+  }, [setFollow])
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartYRef.current = e.touches[0]?.clientY ?? 0
   }, [])
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
     // Finger moving DOWN the screen scrolls content UP → user wants to read back.
-    if ((e.touches[0]?.clientY ?? 0) - touchStartYRef.current > 6) lockAutoScroll()
-  }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+    if ((e.touches[0]?.clientY ?? 0) - touchStartYRef.current > 6) setFollow(false)
+  }, [setFollow])
+
+  const followBottom = useCallback(() => {
+    const el = scrollRef.current
+    if (!el || scrollLockedRef.current) return
+    programmaticScrollRef.current = true
+    el.scrollTop = el.scrollHeight - el.clientHeight
+  }, [])
 
   const scrollToBottom = () => {
+    setFollow(true)
     const el = scrollRef.current
     if (!el) return
-    scrollLockedRef.current = false
-    setShowScrollBtn(false)
+    programmaticScrollRef.current = true
     el.scrollTop = el.scrollHeight
   }
 
-  // Reading-anchored auto-follow: while the latest exchange (user bubble + answer)
-  // still fits in the viewport we pin to the bottom as tokens stream in — but the
-  // moment it outgrows the viewport we freeze with the TOP of that exchange in view,
-  // so a large answer is read from its beginning instead of snapping the user to the
-  // bottom of a wall of text. The scroll-to-bottom button still jumps all the way.
-  const pinToLatest = useCallback(() => {
-    const el = scrollRef.current
-    if (!el || scrollLockedRef.current) return
-    const kids = el.children
-    // Last child is the bottom spacer; the latest round wrapper sits before it.
-    const last = kids.length >= 2 ? kids[kids.length - 2] as HTMLElement : null
-    const maxScroll = el.scrollHeight - el.clientHeight
-    if (!last) { el.scrollTop = maxScroll; return }
-    const lastTop = last.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop
-    // Does the latest exchange (from its top to the end of content) fit in the viewport?
-    const outgrew = (el.scrollHeight - lastTop) > el.clientHeight
-    if (!outgrew) {
-      // Fits: follow the bottom as tokens stream in.
-      el.scrollTop = maxScroll
-      return
-    }
-    // Outgrew the viewport: anchor its TOP in view ONCE, then LOCK so subsequent reflows
-    // (code-block highlight, image load, more streamed tokens) don't re-yank the reader back
-    // to the top every frame — that repeated re-pin was the "scrolling down jumps back up" bug.
-    // The reader now scrolls freely; reaching the bottom (handleScroll) or sending re-engages follow.
-    el.scrollTop = Math.min(maxScroll, Math.max(0, lastTop - 16))
-    lockAutoScroll()
-  }, [])
-
   useEffect(() => {
-    // Guard reads from the ref — always current, never stale.
-    if (scrollLockedRef.current) return
-    const el = scrollRef.current
-    if (!el) return
-    // Use rAF so the scroll happens after the browser has painted the new content,
-    // preventing the layout-recalculation jitter caused by setting scrollTop
-    // synchronously while React is still committing DOM mutations.
-    requestAnimationFrame(() => pinToLatest())
-  }, [rounds, inputBarHeight, pinToLatest])
+    // rAF so the scroll lands after the browser paints the newly committed content.
+    requestAnimationFrame(followBottom)
+  }, [rounds, inputBarHeight, followBottom])
 
-  // Items 3+4: the effect above only re-pins on `rounds`/`inputBarHeight` changes, but the
-  // streamed content's actual DOM height can keep changing AFTER that commit — most visibly
-  // when a markdown code block finishes parsing/highlighting and reflows taller or shorter
-  // than the plain-text placeholder that was there a frame earlier, or a nested code block's
-  // syntax highlighter mounts asynchronously. That extra layout shift has no matching state
-  // change to re-trigger the scroll effect above, so the view lags behind (or jumps ahead of)
-  // the actual token stream. A ResizeObserver on every direct message-card child watches real
-  // layout height directly, independent of React's commit timing, and re-pins to bottom on any
-  // shift while still respecting the user's scroll lock. Re-observes when the round count
-  // changes (new cards mounted); each card's own internal reflows are covered without needing
-  // per-token re-subscription since ResizeObserver keeps firing on the same observed node.
+  // Streamed content keeps reflowing AFTER the React commit (syntax highlight, images,
+  // async mounts) with no matching state change. A ResizeObserver on the message cards
+  // watches real layout height and re-follows — CSS overflow-anchor is disabled on the
+  // scroller (.crucible-scroll) so the browser's own anchoring never fights this.
   useEffect(() => {
     const el = scrollRef.current
     if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => pinToLatest())
+    const ro = new ResizeObserver(followBottom)
     Array.from(el.children).forEach(child => ro.observe(child))
     return () => ro.disconnect()
-  }, [rounds.length, pinToLatest])
+  }, [rounds.length, followBottom])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -2090,15 +2058,28 @@ export default function App() {
         <SettingsTabView
           ensemble={ensemble}
           advanced={
-            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-              {/* System drawers relocated from the old chat topbar — each renders its own
-                  trigger icon + anchored panel. */}
-              <HistoryBinder onRestore={restoreConversation} />
-              <TasksBinder onResume={goal => { setTab('chat'); void send(goal) }} />
-              <IntegrationsBinder draft={input} />
-              <LibraryBinder onBuild={text => { setTab('chat'); void send(text) }} />
-              <SelfRepairBinder />
-              <SelfPatcherBinder />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {/* System drawers relocated from the old chat topbar — each trigger now sits
+                  in a labeled row (SystemRow) instead of the old unlabeled icon cluster. */}
+              <SystemRow label="History" desc="Every past conversation, searchable and restorable.">
+                <HistoryBinder onRestore={restoreConversation} />
+              </SystemRow>
+              <SystemRow label="Open goals" desc="Long-running tasks Crucible is tracking — resume any of them.">
+                <TasksBinder onResume={goal => { setTab('chat'); void send(goal) }} />
+              </SystemRow>
+              <SystemRow label="Integrations" desc="Connected services and what the current draft can reach.">
+                <IntegrationsBinder draft={input} />
+              </SystemRow>
+              <SystemRow label="Skill library" desc="Verified code skills Crucible has built and can reuse.">
+                <LibraryBinder onBuild={text => { setTab('chat'); void send(text) }} />
+              </SystemRow>
+              <SystemRow label="Self-repair" desc="Fixes Crucible proposes for its own failures — approve or dismiss.">
+                <SelfRepairBinder />
+              </SystemRow>
+              <SystemRow label="Self-patcher" desc="Applied self-patches and their verification status.">
+                <SelfPatcherBinder />
+              </SystemRow>
+              <SystemRow label="Infrastructure requests" desc="Governed requests that need your sign-off.">
               <button
                 onClick={() => {
                   apiFetch(`${API_BASE}/api/governance`).then(r => r.json()).then((d: any[]) => {
@@ -2121,6 +2102,7 @@ export default function App() {
                   <span style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255,180,80,0.9)' }}>{govPending}</span>
                 )}
               </button>
+              </SystemRow>
             </div>
           }
         />
@@ -2165,40 +2147,19 @@ export default function App() {
         </>
       )}
 
-      {/* Items 18/19: Agents & capabilities is an inline drawer anchored to the chat panel,
-          not a tab swap — the conversation underneath stays mounted the entire time this is
-          open (unlike History/Settings above, which still fully cover the chat while open,
-          this is a right-edge drawer over a dimmed scrim so the chat is still visible behind
-          it, matching the LibraryBinder drawer pattern used elsewhere in this app). */}
+      {/* Agent Mission Control — full-page cockpit over the chat (chat stays mounted and
+          streaming underneath, same as Settings). Launching/steering routes through the
+          exact same send() pipeline as the composer, so the transcript stays the source
+          of truth; this page renders the live AgentState alongside a briefing column. */}
       {agentsOpen && (
-        <>
-          <div onClick={() => setAgentsOpen(false)} style={{
-            position: 'absolute', inset: 0, zIndex: 28,
-            background: 'rgba(0,0,0,0.4)', animation: 'fadeIn 0.2s ease',
-          }} />
-          {/* Left-strip pattern (F): the pane slides out FROM the NavRail edge its trigger
-              lives on, reading as an extension of the rail rather than a page-covering
-              modal from the far side. */}
-          <div style={{
-            position: 'absolute', top: 0, left: 0, bottom: inputBarHeight, zIndex: 29,
-            width: 'min(560px, 94vw)',
-            background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
-            borderRight: '1px solid rgba(255,255,255,0.08)',
-            boxShadow: '24px 0 80px rgba(0,0,0,0.5), inset -1px 0 0 rgba(255,255,255,0.05)',
-            animation: 'studioIn 0.24s cubic-bezier(0.22,1,0.36,1)',
-            display: 'flex', flexDirection: 'column',
-          }}>
-            <AgentsTabView
-              onBuild={(text, display) => { setAgentsOpen(false); void send(text, undefined, false, display) }}
-              onClose={() => setAgentsOpen(false)}
-              onInsert={text => {
-                setAgentsOpen(false)
-                setInput(text)
-                requestAnimationFrame(() => textareaRef.current?.focus())
-              }}
-            />
-          </div>
-        </>
+        <AgentMissionControl
+          rounds={rounds}
+          thinking={thinking}
+          liveRoundId={liveRoundId}
+          onLaunch={text => { void send(text) }}
+          onReply={text => { void send(text) }}
+          onClose={() => setAgentsOpen(false)}
+        />
       )}
 
       <>
@@ -2404,9 +2365,11 @@ export default function App() {
           left rail; the old binder/menu icon cluster is gone (binders now live in Settings). */}
       <div className="crucible-topbar" style={{
         height: 48, flexShrink: 0, display: 'flex', alignItems: 'center',
-        // Electron (hiddenInset titlebar): the macOS traffic lights spill ~16px past the
-        // 56px nav rail into this bar — inset the wordmark so they never overlap it.
-        padding: `0 18px 0 ${window.electronIPC ? 44 : 18}px`, gap: 12, zIndex: 10, position: 'relative',
+        // Desktop: the sidebar rail sits under the traffic lights, so no inset needed here.
+        // Mobile (rail hidden, bar starts at x=0): inset by the shared shell token so the
+        // lights never overlap the wordmark/nav icons. 0 on the web either way.
+        padding: `0 18px 0 ${isMobile ? 'max(18px, var(--titlebar-clearance-x))' : '18px'}`,
+        gap: 12, zIndex: 10, position: 'relative',
         WebkitAppRegion: 'drag',
       } as any}>
         {/* Wordmark lives in the sidebar rail on desktop — only mobile shows it here. */}
@@ -2681,13 +2644,28 @@ export default function App() {
         }}>
           {/* margin:auto centers when there's room and top-aligns (never clips) when there isn't */}
           <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
-          <div style={{ fontSize: 21, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--c-text)', marginBottom: 6, textAlign: 'center', padding: '0 24px' }}>
-            What are we making today?
+          {/* Quiet branded splash: the vessel mark over a slow ember glow — the product's
+              identity (forged on-device) instead of a question. Self-authored SVG only. */}
+          <div style={{ position: 'relative', width: 84, height: 84, marginBottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="splash-ember" />
+            <svg width="52" height="52" viewBox="0 0 48 48" fill="none" style={{ position: 'relative' }}>
+              <defs>
+                <linearGradient id="splashMelt" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stopColor="var(--c-text)" stopOpacity="0.9" />
+                  <stop offset="1" stopColor="#ff9e5e" stopOpacity="0.85" />
+                </linearGradient>
+              </defs>
+              <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0"
+                stroke="url(#splashMelt)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </div>
-          <div style={{ fontSize: 12, color: 'var(--c-dim)', marginBottom: 22 }}>
-            Private, on-device. Ask anything — or hand me a task.
+          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--c-text)', marginBottom: 7, textAlign: 'center', padding: '0 24px' }}>
+            Crucible
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center', maxWidth: 560, pointerEvents: 'auto', padding: '0 24px' }}>
+          <div style={{ fontSize: 12.5, color: 'var(--c-dim)', marginBottom: 26, textAlign: 'center', padding: '0 24px' }}>
+            Private, on-device. Nothing leaves this Mac.
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center', maxWidth: 560, pointerEvents: 'auto', padding: '0 24px' }}>
             {[
               { label: 'Build a playable game', hint: 'Writes the code, then a Preview button makes it playable right here', text: 'Build me a snake game I can play right here' },
               { label: 'Do something on my Mac', hint: 'Opens apps, changes settings, organizes files — with your permission', text: 'Open my downloads folder' },
@@ -2701,15 +2679,7 @@ export default function App() {
                   if (s.text === '/') { setInput('/'); requestAnimationFrame(() => textareaRef.current?.focus()); return }
                   setInput(s.text); requestAnimationFrame(() => textareaRef.current?.focus())
                 }}
-                style={{
-                  fontSize: 11.5, fontWeight: 600, color: 'var(--c-text-soft)', fontFamily: 'inherit',
-                  padding: '8px 14px', borderRadius: 999, cursor: 'pointer',
-                  background: 'var(--c-glass)', border: '1px solid var(--c-hairline-strong)',
-                  backdropFilter: 'var(--c-blur)', WebkitBackdropFilter: 'var(--c-blur)',
-                  transition: 'background 0.15s, border-color 0.15s',
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.07)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = 'var(--c-glass)' }}
+                className="splash-chip"
               >{s.label}</button>
             ))}
           </div>

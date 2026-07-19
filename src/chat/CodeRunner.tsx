@@ -140,7 +140,9 @@ export function PreviewOverlay({ doc, onClose }: { doc: string; onClose: () => v
         position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(5,5,10,0.82)',
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        animation: 'fadeIn 0.2s ease', padding: 24,
+        animation: 'fadeIn 0.2s ease',
+        // Keep the preview card clear of the macOS traffic lights in the desktop shell.
+        padding: 'calc(24px + var(--titlebar-clearance)) 24px 24px',
       }}
     >
       <div onClick={e => e.stopPropagation()} style={{

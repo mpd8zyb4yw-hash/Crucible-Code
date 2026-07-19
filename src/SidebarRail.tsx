@@ -92,15 +92,12 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, 
     return BUCKET_ORDER.map(label => ({ label, items: map.get(label) ?? [] })).filter(b => b.items.length > 0)
   }, [sessions, refreshKey])
 
-  // Same Electron traffic-light clearance as the old icon rail.
-  const isElectron = typeof window !== 'undefined' && !!(window as any).electronIPC
-  const topPad = isElectron ? 36 : 16
-
   return (
     <div style={{
       width: 272, flexShrink: 0, zIndex: 20, height: '100%',
       display: 'flex', flexDirection: 'column',
-      padding: `${topPad}px 10px 12px`,
+      // Traffic-light clearance comes from the shared shell token (0 on the web).
+      padding: `calc(var(--titlebar-clearance) + 16px) 10px 12px`,
       background: 'rgba(255,255,255,0.025)',
       backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
       borderRight: '1px solid var(--c-hairline)',

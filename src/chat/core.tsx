@@ -340,7 +340,10 @@ export function agentReducer(state: AgentState | null | undefined, ev: any): Age
     case 'agent_error':
       return { ...s, error: ev.error, active: false }
     case 'agent_done':
-      return { ...s, done: { ok: ev.ok, stopped: ev.stopped, iters: ev.iters, toolCallCount: ev.toolCallCount, ms: ev.ms } }
+      // Terminal event — must clear `active` too: some drivers deliver the answer via the
+      // synthesis stream and never emit a `final` event, which left the card pulsing
+      // "agent working" forever after the answer had already shipped.
+      return { ...s, done: { ok: ev.ok, stopped: ev.stopped, iters: ev.iters, toolCallCount: ev.toolCallCount, ms: ev.ms }, active: false }
     case 'plan_done':
       return { ...s, active: false }
     case 'final':

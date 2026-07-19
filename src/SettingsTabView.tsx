@@ -55,14 +55,42 @@ mkdir -p .crucible/whisper && curl -L -o .crucible/whisper/ggml-base.en.bin \\
   )
 }
 
+/** Labeled wrapper for a system drawer trigger — replaces the old cryptic icon cluster:
+ *  each binder now sits in a plain-language row (what it is, why you'd open it) with the
+ *  actual trigger control on the right. */
+export function SystemRow({ label, desc, children }: { label: string; desc: string; children: React.ReactNode }) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderRadius: 12,
+      background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+    }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: '#d8d8e8' }}>{label}</span>
+        <span style={{ fontSize: 11, color: '#66667a', lineHeight: 1.45 }}>{desc}</span>
+      </div>
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{children}</div>
+    </div>
+  )
+}
+
+const SETTINGS_SECTIONS = [
+  { id: 'keys', label: 'API keys' },
+  { id: 'ensemble', label: 'Ensemble' },
+  { id: 'voice', label: 'Voice' },
+  { id: 'models', label: 'Local models' },
+  { id: 'system', label: 'System' },
+] as const
+
 export default function SettingsTabView({ ensemble, advanced }: {
   ensemble: EnsembleState
   /** System drawers (history/tasks/integrations/library/self-repair/…) relocated from the
-   *  old chat topbar — rendered as a compact trigger cluster in an Advanced section. */
+   *  old chat topbar — rendered as labeled SystemRow entries in the System section. */
   advanced?: React.ReactNode
 }) {
   const nameRef = useRef<HTMLInputElement>(null)
   const valRef = useRef<HTMLInputElement>(null)
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const [section, setSection] = useState<string>('keys')
 
   const doAdd = () => {
     const n = nameRef.current?.value ?? ''
@@ -74,12 +102,32 @@ export default function SettingsTabView({ ensemble, advanced }: {
     if (valRef.current) valRef.current.value = ''
   }
 
+  const jump = (id: string) => {
+    setSection(id)
+    scrollerRef.current?.querySelector(`#settings-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1, overflowY: 'auto' }}>
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', position: 'relative', zIndex: 1, minHeight: 0 }}>
+      {/* Section nav — sticky left column (hidden on narrow widths via flex-wrap of content). */}
+      <div style={{
+        width: 168, flexShrink: 0, padding: '36px 8px 24px 20px',
+        display: 'flex', flexDirection: 'column', gap: 2,
+        borderRight: '1px solid rgba(255,255,255,0.05)',
+      }}>
+        <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', color: '#eef', padding: '0 8px 14px' }}>Settings</span>
+        {SETTINGS_SECTIONS.map(s => (
+          <button key={s.id} onClick={() => jump(s.id)}
+            className={`rail-nav-row${section === s.id ? ' rail-nav-row-active' : ''}`}>
+            <span style={{ fontSize: 12.5, fontWeight: 600 }}>{s.label}</span>
+          </button>
+        ))}
+      </div>
+
+      <div ref={scrollerRef} style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
       <div style={{ width: '100%', maxWidth: 640, margin: '0 auto', padding: '36px 32px 48px', display: 'flex', flexDirection: 'column', gap: 26 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em', color: '#eef' }}>Settings</span>
-          <span style={{ fontSize: 12.5, color: '#77778c' }}>Crucible runs fully on-device. External calls only happen through keys you add here.</span>
+          <span id="settings-keys" style={{ fontSize: 12.5, color: '#77778c' }}>Crucible runs fully on-device. External calls only happen through keys you add here.</span>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -143,7 +191,7 @@ export default function SettingsTabView({ ensemble, advanced }: {
           </span>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div id="settings-ensemble" style={{ display: 'flex', flexDirection: 'column', gap: 12, scrollMarginTop: 24 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Ensemble</span>
             <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
@@ -159,23 +207,22 @@ export default function SettingsTabView({ ensemble, advanced }: {
           </div>
         </div>
 
-        <VoiceSetupSection />
+        <div id="settings-voice" style={{ scrollMarginTop: 24 }}><VoiceSetupSection /></div>
 
-        <LocalModelsPanel />
+        <div id="settings-models" style={{ scrollMarginTop: 24 }}><LocalModelsPanel /></div>
 
         {advanced && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div id="settings-system" style={{ display: 'flex', flexDirection: 'column', gap: 12, scrollMarginTop: 24 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>System</span>
               <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
                 History, open tasks, integrations, the skill library, and Crucible's self-repair proposals.
               </span>
             </div>
-            <div style={{ padding: '10px 12px', borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
-              {advanced}
-            </div>
+            {advanced}
           </div>
         )}
+      </div>
       </div>
     </div>
   )

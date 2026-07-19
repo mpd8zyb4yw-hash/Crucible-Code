@@ -22,6 +22,9 @@ html, body, #root {
 .crucible-scroll {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
+  /* Auto-follow owns scroll position during streaming — the browser's built-in
+     scroll anchoring would double-adjust and cause visible jumps. */
+  overflow-anchor: none;
 }
 
 /* ── LeftDock proximity pill — retired; Code trigger lives in chat bar ───── */

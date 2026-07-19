@@ -1933,6 +1933,40 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-19 (face-lift) — UI overhaul: Agent Mission Control page, stuck-"agent working" fixed (2 layers), shell titlebar band, auto-scroll rewrite, branded splash, Settings section-nav, design tokens
+- **Stuck "agent working" after the answer shipped — fixed at two layers.** (1) `agentReducer`'s
+  `agent_done` case never set `active:false` (core.tsx) — only `final`/`plan_done`/`agent_error`
+  did; drivers that answer via the synthesis stream and end with `agent_done` alone left the card
+  pulsing forever. (2) The grounded-web path ends the round's SSE stream with NO terminal agent
+  event at all — reproduced live. Defensive close at render time in MessageList + Mission Control:
+  a round that is no longer the live streaming round is force-rendered inactive. Live-verified:
+  "AGENT FINISHED" now appears on that exact path.
+- **Agent Mission Control (`AgentMissionControl.tsx`)** replaces the AgentsTabView drawer as a
+  full-page cockpit. NO predefined workflow profiles (user direction 2026-07-19): the brief goes
+  straight into `send()` and the planner infers the workflow. Hero "send an agent on its way"
+  composer → roster of live agent cards (status glow, current-thought ticker) → selected agent's
+  workspace (plan / tools / terminal / diffs / artifact preview / verify seal / answer) + a
+  steer-reply composer into the same loop. Renders the same AgentState the chat reducer folds —
+  no separate network path. Live-verified end-to-end with an on-device build run (18.6s, verified
+  seal, Preview working). AgentsTabView remains only as the AGENT_WORKFLOWS export consumer
+  (composer (+) expander).
+- **Traffic-light clearance centralized.** `html.electron` class (main.tsx) + `--titlebar-clearance`
+  / `--titlebar-clearance-x` tokens (index.css) replace three divergent magic paddings (App topbar
+  44px, SidebarRail 36px, NavRail 34px); PreviewOverlay and Mission Control header respect it too.
+- **Streaming auto-scroll rewritten** (App.tsx): one follow-the-bottom rule with a
+  `programmaticScrollRef` guard so our own scrollTop writes never re-enter the handler and fight
+  the user — replaces the lockAutoScroll/pinToLatest heuristic tangle; `overflow-anchor: none` on
+  `.crucible-scroll` stops the browser's native anchoring double-adjusting.
+- **Branded splash**: ember-glow vessel mark + "Crucible" wordmark replaces "What are we making
+  today?"; suggestion chips demoted to ghost outlines (`.splash-chip`).
+- **Settings**: left section nav (API keys / Ensemble / Voice / Local models / System) with
+  smooth-scroll jump; the System icon cluster replaced by labeled `SystemRow` entries (what each
+  drawer is, why you'd open it) wrapping the existing binder triggers.
+- **Design tokens + primitives**: type scale (`--t-body/ui/small/micro`), motion tokens
+  (`--ease/--dur*`), `:focus-visible` ring in index.css; `src/ui.tsx` (Card, SectionLabel,
+  PrimaryButton, GhostButton, StatusChip, tint). Transcript body bumped to `--t-body` (14.5px),
+  measure 680→720, h2/h3 up a step.
+
 ### 2026-07-06 (cont. 35b) — NORTHSTAR UI redesign major slice: BYOK ensemble opt-in, final 3-phase pour animation, ambient v2 backdrop + mode pills (branch `crucible-northstar-sessions`)
 - **`d34e123`.** New components: `BackgroundBlobs.tsx` (ambient v2 canvas backdrop),
   `PourRing.tsx` (final 3-phase molten pour chat animation — idle→pouring w/ live-height

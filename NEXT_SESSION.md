@@ -17,7 +17,22 @@
 
 ---
 
-## CURRENT STATE — last updated cont.97d, 2026-07-19, commit `c39e83f` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated face-lift session, 2026-07-19 (REPLACE THIS EVERY SESSION)
+
+**Face-lift session (2026-07-19, after cont.97d): full UI overhaul shipped — see the 2026-07-19
+CHANGE LOG entry in ROADMAP.md.** Highlights: stuck-"agent working" fixed at two layers (reducer
+`agent_done` + render-time defensive close for streams with no terminal agent event — the
+grounded-web path really does this); new full-page Agent Mission Control (`AgentMissionControl.tsx`,
+NO predefined workflow profiles per user direction — the planner infers the workflow from the
+brief); titlebar clearance centralized behind `html.electron` + `--titlebar-clearance` tokens
+(**needs a quick Electron-shell visual check next session** — verified in web mode only);
+auto-scroll rewritten (single follow rule + programmatic-write guard); branded splash; Settings
+section nav + labeled SystemRow entries; design tokens + `src/ui.tsx` primitives. tsc clean.
+UI polish still open: topbar chips strip could become real tabs; binder drawers still overlay
+Settings (labeled now, but a future pass could inline them as pages); Mission Control only shows
+runs from the current conversation.
+
+**Engine state below is cont.97d's, unchanged by this UI session:**
 
 **cont.97d: the identity replay did NOT reproduce; a different, 4/4-reproducible bug did — and is fixed.**
 
