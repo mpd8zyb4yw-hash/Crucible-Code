@@ -1154,6 +1154,40 @@ async function weeklyDownloads(pkg: string): Promise<number> {
   } catch { return 0 }
 }
 
+const existenceCache = new Map<string, 'exists' | 'absent'>()
+
+/**
+ * Does this package exist on npm at all? TRI-STATE on purpose.
+ *
+ * `weeklyDownloads` answers 0 for "unpublished" AND for "the request failed", which is fine for
+ * RANKING candidates but fatal as a rejection oracle: one network hiccup would flag every real
+ * import in an answer as fabricated. Only a registry 404 is proof of absence; anything else
+ * (timeout, DNS, 5xx, rate-limit) is 'unknown' and the caller must stay silent.
+ *
+ * Motivating case (cont.97, live): an answer imported `express-ratelimit` — the real package is
+ * `express-rate-limit` — and nothing in the pipeline noticed, because grounding validates the
+ * API surface of a package it RESOLVED and never asks whether the name resolves at all.
+ */
+export async function packageExistence(pkg: string): Promise<'exists' | 'absent' | 'unknown'> {
+  const name = pkg.trim()
+  // Bare specifiers only: relative/absolute paths and subpath imports are not registry names.
+  if (!name || /^[./]/.test(name)) return 'unknown'
+  const root = name.startsWith('@') ? name.split('/').slice(0, 2).join('/') : name.split('/')[0]
+  const hit = existenceCache.get(root)
+  if (hit) return hit
+  try {
+    await rawGet(`https://registry.npmjs.org/${root.replace('/', '%2F')}`, 5000)
+    existenceCache.set(root, 'exists')
+    return 'exists'
+  } catch (e: any) {
+    if (/HTTP 404/.test(String(e?.message ?? e))) {
+      existenceCache.set(root, 'absent')
+      return 'absent'
+    }
+    return 'unknown' // transport failure — never a rejection
+  }
+}
+
 const TS_PRIMITIVES = new Set(
   ('string number boolean object array void null undefined any unknown never symbol bigint ' +
    'promise record partial readonly return type interface export import declare const').split(/\s+/),

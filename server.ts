@@ -366,7 +366,7 @@ import { loadBenchmarks, runBenchmarkSuite, loadRuns } from './src/CrucibleEngin
 import { domainVerify, correctArithmeticCascade, verifyCodeBlocks, relabelMislabeledJsFences, crossGrammarRelabel, fenceUnfencedCode, detectNoDependencyConstraint, findExternalImports } from './src/CrucibleEngine/domainVerifiers'
 import { verifyPlainCodeByExecution } from './src/CrucibleEngine/reasoning/executionVerify'
 import { verifyAnswerContract, contractRepairSpec, replaceAnswerCodeBlocks, detectContract, contractAskHint } from './src/CrucibleEngine/reasoning/contractVerify'
-import { isCodingQuery } from './src/CrucibleEngine/retrieval/retrievalLayer'
+import { isCodingQuery, packageExistence } from './src/CrucibleEngine/retrieval/retrievalLayer'
 import { bonsaiComplete, isBonsaiInstalled, repairModelName } from './src/CrucibleEngine/localModels/bonsaiSidecar'
 import { assessCollabMode, buildClarifyResponse } from './src/CrucibleEngine/collaborationGradient'
 import { recordRoundContributions, evaluateRoster, getModelsReadyForReprobe, promoteFromBench } from './src/CrucibleEngine/rosterRotation'
@@ -4480,6 +4480,25 @@ app.post('/api/chat', async (req, res) => {
             if (!repaired) {
               answer += `\n\n> ⚠ The question asked for no external packages, but this code imports ${externals.join(', ')} — it does not satisfy that constraint as written.`
               debugBus.emit('pipeline', 'answer_dependency_broken_shipped', { externals }, { severity: 'warn', requestId })
+            }
+          }
+        } catch { /* non-blocking: ship the answer as-is */ }
+      }
+      // PHANTOM-PACKAGE gate (cont.97 live finding): an answer imported `express-ratelimit` —
+      // the real package is `express-rate-limit` — and nothing noticed, because library grounding
+      // validates the API surface of a package it RESOLVED and never asks whether the name
+      // resolves at all. A fabricated package name is the one import defect no amount of API
+      // checking can see. `packageExistence` is tri-state and only a registry 404 counts as
+      // absent, so a network failure stays silent rather than flagging real imports.
+      if (answer && answer.trim() && answer.includes('```')) {
+        try {
+          const imported = findExternalImports(answer)
+          if (imported.length > 0) {
+            const checked = await Promise.all(imported.map(async p => [p, await packageExistence(p)] as const))
+            const phantom = checked.filter(([, s]) => s === 'absent').map(([p]) => p)
+            if (phantom.length > 0) {
+              answer += `\n\n> ⚠ ${phantom.length > 1 ? 'These packages do' : `\`${phantom[0]}\` does`} not exist on npm${phantom.length > 1 ? ` (${phantom.map(p => `\`${p}\``).join(', ')})` : ''} — the import${phantom.length > 1 ? 's' : ''} above ${phantom.length > 1 ? 'are' : 'is'} fabricated and the code cannot install as written.`
+              debugBus.emit('pipeline', 'answer_phantom_package', { phantom }, { severity: 'warn', requestId })
             }
           }
         } catch { /* non-blocking: ship the answer as-is */ }
