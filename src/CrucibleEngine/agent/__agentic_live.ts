@@ -56,7 +56,21 @@ const ONLY = ONLY_IDS?.length ? ONLY_IDS : null
 const NOOP_ONLY = ARGS.includes('--noop')
 const MAX_ITERS = Number(ARGS.find(a => a.startsWith('--iters='))?.split('=')[1] ?? 24)
 
-const RUN_ROOT = path.join(os.tmpdir(), `crucible-agentic-phase0-${process.pid}`)
+// Artifacts live under .crucible/agentic-runs/<pid>, NOT os.tmpdir(): tmpdir runs were reaped
+// between sessions, so every "read the artifact" follow-up (cont.98's 5 TRUE tier-1 reads, the
+// cont.99 runaway-output diagnosis) found nothing to read. Keep the last RUN_KEEP runs. (cont.100)
+const RUNS_DIR = path.join(process.cwd(), '.crucible', 'agentic-runs')
+const RUN_ROOT = path.join(RUNS_DIR, `${process.pid}`)
+const RUN_KEEP = 10
+
+function pruneOldRuns() {
+  try {
+    const keep = fs.readdirSync(RUNS_DIR)
+      .map(n => ({ n, t: fs.statSync(path.join(RUNS_DIR, n)).mtimeMs }))
+      .sort((a, b) => b.t - a.t).slice(RUN_KEEP)
+    for (const { n } of keep) fs.rmSync(path.join(RUNS_DIR, n), { recursive: true, force: true })
+  } catch { /* best-effort */ }
+}
 
 // ── tree helpers ──────────────────────────────────────────────────────────────
 
@@ -358,6 +372,7 @@ async function liveTask(task: AgenticTask): Promise<Outcome> {
 
 async function main() {
   fs.mkdirSync(RUN_ROOT, { recursive: true })
+  pruneOldRuns()
   console.log(`Phase 0 — agentic path true-rate measurement`)
   console.log(`artifacts: ${RUN_ROOT}\n`)
 
