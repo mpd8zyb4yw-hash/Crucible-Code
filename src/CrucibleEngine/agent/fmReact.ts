@@ -335,7 +335,32 @@ interface ParsedResponse {
   answer?: string
 }
 
-function parseResponse(text: string): ParsedResponse {
+/**
+ * Strip markdown decoration the FM wraps its protocol lines in.
+ *
+ * LIVE (cont.97, "Vibe Code: make me a simple driving sim"): the FM emitted
+ * `**TOOL: search**` — bolded, because the system prompt shows the protocol inside a
+ * markdown-formatted block and a weak model copies the FORMATTING along with the shape. The
+ * anchored `/^TOOL:/` never matched, nothing executed, and the raw tool transcript shipped to
+ * the user as the answer. A protocol the model gets 95% right must not fail closed on the
+ * other 5%: strip leading/trailing emphasis, heading, and list markers before matching.
+ */
+function undecorate(text: string): string {
+  return text.split('\n').map(line => line
+    .replace(/^\s*(?:[-*+]\s+|#{1,6}\s+|>\s+)?/, '')   // list bullet / heading / quote marker
+    .replace(/^\s*(?:\*{1,3}|_{1,3}|`{1,3})\s*/, '')    // opening emphasis or code span
+    .replace(/\s*(?:\*{1,3}|_{1,3}|`{1,3})\s*$/, '')    // closing emphasis or code span
+    .trimEnd(),
+  ).join('\n')
+}
+
+/** Does this text still carry raw agent-protocol scaffolding? Then it is not an answer. */
+function looksLikeProtocol(text: string): boolean {
+  return /^\s*(?:\*{0,3}|#{1,6}\s*)?TOOL:\s*\w+/im.test(text) || /FINAL_ANSWER:/i.test(text)
+}
+
+export function parseResponse(raw: string): ParsedResponse {
+  const text = undecorate(raw)
   const toolMatch = text.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
   const finalMatch = text.match(/FINAL_ANSWER:\s*\n?([\s\S]+)/i)
 
@@ -380,7 +405,12 @@ function parseResponse(text: string): ParsedResponse {
     return { type: 'final', answer: answerMatch[1].trim() }
   }
 
-  // If nothing matched but text is non-empty, treat as a final answer
+  // If nothing matched but text is non-empty, treat as a final answer — EXCEPT when the text
+  // is still visibly agent protocol. That is a parse failure, not an answer, and shipping it
+  // put `**TOOL: search**\nquery: "…"` in front of a user (cont.97). Returning empty makes the
+  // loop treat the round as unproductive and retry/escalate, which is the honest outcome;
+  // undecorate() above should mean we rarely get here, and this is the net under it.
+  if (looksLikeProtocol(text)) return { type: 'final', answer: '' }
   if (text.length > 20) {
     return { type: 'final', answer: text }
   }
