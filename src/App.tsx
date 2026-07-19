@@ -11,6 +11,7 @@ import SidebarRail from './SidebarRail'
 import DebugCapture from './DebugCapture'
 import { AGENT_WORKFLOWS } from './AgentsTabView'
 import AgentMissionControl from './AgentMissionControl'
+import AutomationsView from './AutomationsView'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
@@ -68,6 +69,9 @@ export default function App() {
   // Items 18/19: Agents & capabilities is an inline overlay anchored to the chat panel,
   // not a tab — toggling it never unmounts the conversation underneath (see AgentsTabView.tsx).
   const [agentsOpen, setAgentsOpen] = useState(false)
+  // Automations page — standing tasks (Assistant layer step 1). Same overlay pattern
+  // as Mission Control: chat stays mounted and streaming underneath.
+  const [automationsOpen, setAutomationsOpen] = useState(false)
   const [composerExpandOpen, setComposerExpandOpen] = useState(false)
   // ── Composer attachments — files the user uploads into the workspace sandbox via the
   // paperclip button. Each send prepends a note referencing them so the agent knows they
@@ -2013,9 +2017,11 @@ export default function App() {
         {!isMobile && (
           <SidebarRail
             tab={tab}
-            setTab={t => { if (t !== 'chat') setAgentsOpen(false); setTab(t) }}
+            setTab={t => { if (t !== 'chat') { setAgentsOpen(false); setAutomationsOpen(false) } setTab(t) }}
             agentsOpen={agentsOpen}
-            onToggleAgents={() => setAgentsOpen(o => { if (!o) setTab('chat'); return !o })}
+            onToggleAgents={() => { setAutomationsOpen(false); setAgentsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            automationsOpen={automationsOpen}
+            onToggleAutomations={() => { setAgentsOpen(false); setAutomationsOpen(o => { if (!o) setTab('chat'); return !o }) }}
             conversationId={conversationId}
             onNewChat={() => {
               // F panels: a new chat is a new PANEL — the previous conversation stays
@@ -2027,7 +2033,7 @@ export default function App() {
             refreshKey={histRefresh}
             // Mission Control has its own run list — collapse to an icon rail so the
             // workspace gets the screen instead of a redundant history column.
-            collapsed={agentsOpen}
+            collapsed={agentsOpen || automationsOpen}
           />
         )}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
@@ -2165,6 +2171,11 @@ export default function App() {
           onReply={text => { void send(text, 'agent') }}
           onClose={() => setAgentsOpen(false)}
         />
+      )}
+
+      {/* Automations — standing tasks page (same overlay pattern as Mission Control). */}
+      {automationsOpen && (
+        <AutomationsView onClose={() => setAutomationsOpen(false)} />
       )}
 
       <>

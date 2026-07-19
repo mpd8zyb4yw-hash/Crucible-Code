@@ -22,6 +22,8 @@ import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-
 import { createCheckpoint, rollbackToCheckpoint, getCheckpoints } from './src/CrucibleEngine/checkpoint'
 import { registry } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
+import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun } from './src/CrucibleEngine/automations/store'
+import type { Automation as AutomationRecord, AutomationRun as AutomationRunRecord } from './src/CrucibleEngine/automations/store'
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
@@ -893,6 +895,184 @@ app.post('/api/push/subscribe', async (req: express.Request, res: express.Respon
   subs.push({ userId: user.id, sub })
   await savePushSubs(subs)
   res.json({ ok: true })
+})
+
+// ── Automations (Assistant layer step 1 — ASSISTANT_SPEC.md §1B) ──────────────
+// trigger + brief + delivery, persisted in .crucible/automations.json. Execution
+// reuses the /api/chat agent loop via an internal self-request with a minted JWT
+// for the owning user — ONE execution path, so every automation run is a normal
+// buffered task (journaled, replayable, visible in Mission Control).
+
+const AUTOMATION_RUN_TIMEOUT_MS = 30 * 60_000   // hard cap per run
+let automationInFlight: string | null = null    // id of the running automation (max 1)
+
+async function runAutomationNow(a: AutomationRecord): Promise<AutomationRunRecord> {
+  const t0 = Date.now()
+  const token = signJwt({ id: a.userId, email: 'automation@local', exp: Math.floor(Date.now() / 1000) + 2 * 3600 })
+  const prior = a.lastRuns.find(r => r.status === 'ok')
+  const preamble =
+    `[Standing automation "${a.name}" — scheduled run, no user at the keyboard. ` +
+    `Carry out the task autonomously and end with a concise summary of what was done or found. ` +
+    `Now: ${new Date(t0).toLocaleString()}.` +
+    (prior ? ` Previous successful run (${new Date(prior.ts).toLocaleString()}): ${prior.summary.slice(0, 400)}` : '') +
+    ']'
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), AUTOMATION_RUN_TIMEOUT_MS)
+  try {
+    const res = await fetch(`http://127.0.0.1:${Number(process.env.PORT) || 3001}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `crucible_session=${token}` },
+      body: JSON.stringify({
+        message: `${preamble}\n\n${a.brief}`,
+        mode: 'agent', device: 'desktop',
+        sessionId: `automation-${a.id}`, conversationId: `automation-${a.id}`,
+        roundId: `${t0}`, history: [],
+      }),
+      signal: ctrl.signal,
+    })
+    if (!res.ok || !res.body) return { ts: t0, status: 'failed', summary: `HTTP ${res.status} from agent loop`, ms: Date.now() - t0 }
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''; let finalText = ''; let synthesis = ''; let errText = ''
+    outer: while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const chunks = buf.split('\n\n'); buf = chunks.pop() ?? ''
+      for (const chunk of chunks) {
+        const line = chunk.split('\n').find(l => l.startsWith('data: ')); if (!line) continue
+        const p = line.slice(6).trim(); if (p === '[DONE]') break outer
+        try {
+          const ev = JSON.parse(p)
+          if (ev.type === 'final' && typeof ev.text === 'string') finalText = ev.text
+          if (ev.type === 'synthesis' && typeof ev.text === 'string') synthesis = ev.replace ? ev.text : synthesis + ev.text
+          if (ev.type === 'error' && typeof ev.message === 'string') errText = ev.message
+        } catch { /* keepalive / partial frame */ }
+      }
+    }
+    let answer = (finalText || synthesis).trim()
+    // Some agent paths echo the request back as "<message> → <answer>" — the digest
+    // only wants the answer, so strip a leading echo of what we just sent.
+    const sent = `${preamble}\n\n${a.brief}`
+    if (answer.startsWith(sent)) answer = answer.slice(sent.length).replace(/^\s*→\s*/, '').trim()
+    else if (answer.startsWith(a.brief)) answer = answer.slice(a.brief.length).replace(/^\s*→\s*/, '').trim()
+    if (!answer) return { ts: t0, status: 'failed', summary: errText || 'agent run produced no answer', ms: Date.now() - t0 }
+    return { ts: t0, status: 'ok', summary: answer.slice(0, 2000), ms: Date.now() - t0 }
+  } catch (e: any) {
+    const msg = e?.name === 'AbortError' ? `timed out after ${AUTOMATION_RUN_TIMEOUT_MS / 60_000}m` : String(e?.message ?? e).slice(0, 300)
+    return { ts: t0, status: 'failed', summary: msg, ms: Date.now() - t0 }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function fireAutomation(id: string): Promise<void> {
+  if (automationInFlight) return
+  const list = loadAutomations()
+  const a = list.find(x => x.id === id)
+  if (!a) return
+  automationInFlight = a.id
+  try {
+    debugBus.emit('agent', 'automation_run_start', { id: a.id, name: a.name }, { severity: 'info' })
+    const run = await runAutomationNow(a)
+    // Reload before writing — the user may have edited/deleted mid-run.
+    const fresh = loadAutomations()
+    const cur = fresh.find(x => x.id === a.id)
+    if (cur) {
+      recordAutomationRun(cur, run, Date.now())
+      saveAutomations(fresh)
+      const disabled = !cur.enabled && cur.consecutiveFailures >= 3
+      debugBus.emit('agent', 'automation_run_done', { id: a.id, name: a.name, status: run.status, ms: run.ms, autoDisabled: disabled }, { severity: run.status === 'ok' ? 'info' : 'warn' })
+      if (cur.delivery === 'push' || run.status === 'failed') {
+        await notifyUser(cur.userId, {
+          title: run.status === 'ok' ? `${cur.name} — done` : `${cur.name} — failed${disabled ? ' (paused after repeated failures)' : ''}`,
+          body: run.summary.slice(0, 180),
+        }).catch(() => {})
+      }
+    }
+  } finally {
+    automationInFlight = null
+  }
+}
+
+setInterval(() => {
+  try {
+    const due = pickDueAutomation(loadAutomations(), Date.now())
+    if (due && !automationInFlight) void fireAutomation(due.id)
+  } catch (e) { console.warn('[Automations] tick failed:', e) }
+}, 30_000)
+
+app.get('/api/automations', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  res.json({ automations: loadAutomations().filter(a => a.userId === user.id), running: automationInFlight })
+})
+
+app.post('/api/automations', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const { name, brief, trigger, delivery } = req.body ?? {}
+  if (typeof name !== 'string' || !name.trim() || name.length > 80) return res.status(400).json({ error: 'name required (≤80 chars)' })
+  if (typeof brief !== 'string' || brief.trim().length < 8) return res.status(400).json({ error: 'brief required (≥8 chars)' })
+  if (!validateAutomationTrigger(trigger)) return res.status(400).json({ error: 'invalid trigger' })
+  const now = Date.now()
+  const a: AutomationRecord = {
+    id: crypto.randomUUID(), userId: user.id, name: name.trim(), brief: brief.trim(),
+    trigger, delivery: delivery === 'push' ? 'push' : 'digest',
+    enabled: true, createdAt: now, lastRuns: [], consecutiveFailures: 0,
+    nextRun: computeAutomationNextRun(trigger, now),
+  }
+  const list = loadAutomations(); list.push(a); saveAutomations(list)
+  res.json({ automation: a })
+})
+
+app.put('/api/automations/:id', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const list = loadAutomations()
+  const a = list.find(x => x.id === req.params.id && x.userId === user.id)
+  if (!a) return res.status(404).json({ error: 'not found' })
+  const b = req.body ?? {}
+  if (typeof b.name === 'string' && b.name.trim() && b.name.length <= 80) a.name = b.name.trim()
+  if (typeof b.brief === 'string' && b.brief.trim().length >= 8) a.brief = b.brief.trim()
+  if (b.trigger !== undefined) {
+    if (!validateAutomationTrigger(b.trigger)) return res.status(400).json({ error: 'invalid trigger' })
+    a.trigger = b.trigger
+    a.nextRun = a.enabled ? computeAutomationNextRun(a.trigger, Date.now()) : null
+  }
+  if (b.delivery === 'push' || b.delivery === 'digest') a.delivery = b.delivery
+  if (typeof b.enabled === 'boolean') {
+    a.enabled = b.enabled
+    a.consecutiveFailures = 0    // re-enabling clears the failure-pause
+    a.nextRun = a.enabled ? computeAutomationNextRun(a.trigger, Date.now()) : null
+  }
+  saveAutomations(list)
+  res.json({ automation: a })
+})
+
+app.delete('/api/automations/:id', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const list = loadAutomations()
+  const idx = list.findIndex(x => x.id === req.params.id && x.userId === user.id)
+  if (idx === -1) return res.status(404).json({ error: 'not found' })
+  list.splice(idx, 1); saveAutomations(list)
+  res.json({ ok: true })
+})
+
+app.post('/api/automations/:id/run', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const a = loadAutomations().find(x => x.id === req.params.id && x.userId === user.id)
+  if (!a) return res.status(404).json({ error: 'not found' })
+  if (automationInFlight) return res.status(409).json({ error: 'another automation is running', running: automationInFlight })
+  void fireAutomation(a.id)
+  res.json({ ok: true, started: a.id })
+})
+
+app.get('/api/automations/digest', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const entries = loadAutomations()
+    .filter(a => a.userId === user.id)
+    .flatMap(a => a.lastRuns.map(r => ({ automationId: a.id, name: a.name, ...r })))
+    .sort((x, y) => y.ts - x.ts)
+    .slice(0, 50)
+  res.json({ entries })
 })
 
 // ── OAuth helpers ─────────────────────────────────────────────────────────────

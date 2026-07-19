@@ -63,11 +63,13 @@ function NavRow({ active, label, onClick, children, title, iconOnly }: {
   )
 }
 
-function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, onNewChat, onRestore, refreshKey, collapsed }: {
+function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen, onToggleAutomations, conversationId, onNewChat, onRestore, refreshKey, collapsed }: {
   tab: CrucibleTab
   setTab: (t: CrucibleTab) => void
   agentsOpen: boolean
   onToggleAgents: () => void
+  automationsOpen: boolean
+  onToggleAutomations: () => void
   conversationId: string
   onNewChat: () => void
   onRestore: (session: HistorySession) => void
@@ -146,6 +148,12 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, conversationId, 
           <rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" strokeWidth="1.4" />
           <path d="M8 5V2.8M6 9h.01M10 9h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
           <circle cx="8" cy="2.2" r="0.9" fill="currentColor" />
+        </svg>
+      </NavRow>
+      <NavRow active={automationsOpen} label={iconOnly ? '' : 'Automations'} title="Automations" iconOnly={iconOnly} onClick={onToggleAutomations}>
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M8 4.8V8l2.3 1.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </NavRow>
 

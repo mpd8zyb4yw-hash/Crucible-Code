@@ -17,7 +17,19 @@
 
 ---
 
-## CURRENT STATE — last updated chat-routing-gate session, 2026-07-19b (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated Automations-MVP session, 2026-07-19c (REPLACE THIS EVERY SESSION)
+
+**Automations MVP (ASSISTANT_SPEC.md step 1) is LIVE** — store
+(`src/CrucibleEngine/automations/store.ts`, `.crucible/automations.json`), 30s scheduler +
+CRUD/digest API in server.ts (runs execute via internal self-POST to `/api/chat` with
+`mode:'agent'` — one execution path), and a full-page Automations UI
+(`src/AutomationsView.tsx`, rail entry). Verified end-to-end in the browser: create → run-now
+→ agent dispatch → digest entry → survives restart. See 2026-07-19c CHANGE LOG entry.
+Assistant-layer NEXT per spec build order: **step 2 = Connections registry + Google
+(Gmail/Calendar read tools from the existing google-tokens files) → unlocks Morning Brief**,
+then the UI territory refactor, then REST connector/MCP. MVP known limits: in-process
+scheduler (no catch-up beyond one fire), no mobile NavRail entry, digest quality = engine
+answer quality (the live test run stated the wrong date — engine, not plumbing).
 
 **Chat-routing session (2026-07-19b): the chat-composer hallucination path is CLOSED.**
 Two-layer fix in server.ts, live-verified: (1) `detectAgentTask` now catches asset-bearing

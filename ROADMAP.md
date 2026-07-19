@@ -1933,6 +1933,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-19c (Automations MVP) — Assistant layer step 1 shipped and live-verified
+- **Store** (`src/CrucibleEngine/automations/store.ts`): Automation = trigger + brief + delivery,
+  persisted in `.crucible/automations.json`. Triggers: interval / daily / weekly / once; pure
+  deterministic next-run math (unit-tested: interval, past/future daily, weekly wrap, spent once);
+  3 consecutive failures auto-disable the automation (surfaced, never silently retried forever).
+- **Scheduler + API (server.ts):** 30s tick, max 1 concurrent run; execution is an internal
+  self-POST to `/api/chat` with a minted JWT for the owning user and `mode:'agent'` — ONE
+  execution path, every automation run is a normal buffered agent task. Endpoints:
+  GET/POST `/api/automations`, PUT/DELETE `/:id`, POST `/:id/run`, GET `/digest`. Push delivery
+  reuses `notifyUser` (also fires on any failure). Echo-strip: agent paths that return
+  "<message> → <answer>" get the request echo removed before the digest stores the summary.
+- **UI** (`src/AutomationsView.tsx` + rail entry in SidebarRail/App): full-page overlay in the
+  Mission Control pattern (sidebar collapses to icon rail). Roster cards (status dot vocabulary:
+  running/ok/failed last run/paused·failing/off, next-run time), Run now / Pause / Delete,
+  two-pane create flow with live "next 3 runs" preview, right-hand Digest feed.
+- **Live-verified end-to-end:** created "Daily engine pulse" (daily 08:00) in the browser →
+  Run now → server log shows the internal `mode: agent` dispatch → run recorded `ok` with
+  computed next-run → digest renders it; store survives server restart. tsc app+server clean.
+- Known limits (by design, MVP): scheduler is in-process (no runs while the server is down —
+  missed schedules fire once on next tick); digest summaries inherit engine answer quality;
+  mobile NavRail has no Automations entry yet.
+
 ### 2026-07-19b (chat-routing gate) — chat-composer hallucination path closed; ASSISTANT_SPEC.md authored
 - **Pre-gate (server.ts `detectAgentTask`):** new patterns for asset-bearing deliverables —
   create-verb … "with … picture/image/photo" (with `(?! in mind)` idiom guard), picture-per-item
