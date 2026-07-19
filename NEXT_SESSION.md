@@ -3784,3 +3784,60 @@ pre-fix observations of a hole those commits now close.**
 2. **Live-confirm `34ed77f`** on the zod prompt (expect `answer_named_library_missing`).
 3. **Diagnose ratelimiter-3's escape** — missing `await` on a boolean-returning async
    method is a general wrong-logic class the contract tier should own.
+
+---
+
+## cont.97c — three bugs from a live user debug report (July 19 2026)
+
+A user's debug log showed three distinct breakages. Two are fixed and live-verified; the
+third did not reproduce and stays open.
+
+### 1. Raw agent protocol shipped to the user — FIXED (`e461f4c`), live-verified
+"Vibe Code: make me a simple driving sim" returned ~3800 characters of literal
+`**TOOL: search**` / `**TOOL: run_command**` blocks, the same six repeated six times.
+
+Mechanism: the FM emitted `**TOOL: search**` — BOLDED, because the system prompt shows the
+protocol inside a markdown block and a weak model copies the FORMATTING along with the
+shape. `parseResponse`'s anchored `/^TOOL:/` never matched, so nothing executed and the
+loop never advanced; control then fell to `if (text.length > 20) return final answer`,
+which put the raw transcript in front of the user.
+
+Two fixes, because the second saves the user even when the first misses a variant:
+- `undecorate()` strips emphasis/heading/list/code-span markers before matching. **A
+  protocol the model gets 95% right must not fail closed on the other 5%.**
+- Text still carrying `TOOL:`/`FINAL_ANSWER:` scaffolding is a PARSE FAILURE, not an
+  answer — return empty so the loop retries/escalates honestly.
+
+Live: the identical prompt now writes a working `game.html` (real game loop, collision,
+score, restart). Zero `TOOL:` leakage. *Caveat: it's a dodge-the-blocks game, not a
+driving sim — the spec-compliance gap from cont.97b, not a protocol bug.*
+
+### 2. Zero-character answer — FIXED (`c89aa96` + `c312967`), live-verified
+"Vibe Code: make me" returned a 0-char answer. Two compounding causes:
+- `BARE_BUILD` requires an artifact noun, so a creation verb with NO object matched
+  nothing — even though that is strictly LESS specific than "build me something", which
+  was already clarified.
+- **`c89aa96` alone was an UNREACHABLE GATE.** The preset does not send "Vibe Code: make
+  me"; it sends `Build this for me: make me\n\n<300 chars of fixed instructions>`. Every
+  matcher in conversational.ts is anchored and length-guarded, so the wrapper defeated all
+  of them. Only testing the real WIRE format — not the UI's display label in the debug
+  report — caught it. `unwrapPresetPrompt` now classifies the description.
+
+Live on the agent path: the preset with an empty description returns the clarify;
+`VIBE("a simple driving sim")` still falls through to the builder.
+
+### 3. Identity answer replayed for an unrelated prompt — OPEN, did not reproduce
+Turn 4 ("something totally unique", answering the game-clarify question) returned turn 2's
+"who made you?" answer BYTE-IDENTICALLY, with `cached: false`.
+
+Ruled out: `matchMeta` returns null for that text (tested directly), so it is not the
+deterministic layer. Replaying the exact 4-turn history through `/api/chat` produced a
+DIFFERENT broken answer — the single word "unique" — not the identity replay.
+
+So there are likely TWO bugs here, neither closed:
+- a one-word garbage answer for a short vague reply (reproduced), and
+- verbatim replay of a prior assistant turn (not reproduced; suspect
+  `buildRecallContextAsync` semantic recall feeding the prior answer back and the weak FM
+  parroting it, or session-state the isolated repro didn't recreate).
+Next step: reproduce with a real persisted `sessionId`/`conversationId` rather than an
+inline `history` array — the isolated repro may simply not exercise the recall path.
