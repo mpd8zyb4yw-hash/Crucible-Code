@@ -77,6 +77,49 @@ function pruneOldRuns() {
 /** The repo root, whose node_modules every scratch repo borrows (hermetic + offline: no install). */
 const REPO_ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..')
 
+// ── provenance stamp ────────────────────────────────────────────────────────────
+// Every true-rate number this harness prints is meaningless without the commit it was
+// measured on. Until now the only record was a run directory's mtime, reconstructed after
+// the fact against `git log` — which is exactly how cont.100/101's runs became ambiguous.
+// (HARD RULE from cont.83: check `running commit <sha>+dirty` before citing any live run.)
+//
+// The agentic path runs runAgentLoop IN-PROCESS, importing only from src/CrucibleEngine/**;
+// it never boots server.ts and never touches app/. So a dirty server.ts (routinely left by a
+// parallel session) CANNOT change this number, and flagging it would be a false alarm. We
+// therefore split the working tree: files under the harness's own import graph are
+// measurement-relevant and poison attribution; everything else is noise, reported but not
+// alarming.
+const HARNESS_GRAPH = /^src\/CrucibleEngine\//   // what runAgentLoop actually imports
+
+type Provenance = {
+  commit: string; subject: string
+  relevantDirty: string[]   // dirty files that CAN move the measured number
+  otherDirty: string[]      // dirty files outside the harness's import graph
+  attributable: boolean     // true ⇔ no relevant-dirty ⇔ the number belongs to `commit`
+}
+
+function provenance(): Provenance {
+  const git = (args: string[]) => {
+    try { return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' }).trim() }
+    catch { return '' }
+  }
+  const commit = git(['rev-parse', '--short', 'HEAD']) || '(unknown)'
+  const subject = git(['log', '-1', '--format=%s']) || ''
+  const dirty = git(['status', '--porcelain'])
+    .split('\n').map(l => l.slice(3).trim()).filter(Boolean)
+  const relevantDirty = dirty.filter(f => HARNESS_GRAPH.test(f))
+  const otherDirty = dirty.filter(f => !HARNESS_GRAPH.test(f))
+  return { commit, subject, relevantDirty, otherDirty, attributable: relevantDirty.length === 0 }
+}
+
+/** One-line stamp for banners: `running commit abc1234` (+dirty markers when present). */
+function stampLine(p: Provenance): string {
+  const marks: string[] = []
+  if (p.relevantDirty.length) marks.push(`+DIRTY(${p.relevantDirty.length} in harness graph — NOT attributable)`)
+  if (p.otherDirty.length) marks.push(`+dirty(${p.otherDirty.length} outside harness graph)`)
+  return `running commit ${p.commit}${marks.length ? ' ' + marks.join(' ') : ''}`
+}
+
 function materialize(task: AgenticTask, dir: string) {
   for (const [rel, body] of Object.entries(task.files)) {
     const abs = path.join(dir, rel)
@@ -373,7 +416,18 @@ async function liveTask(task: AgenticTask): Promise<Outcome> {
 async function main() {
   fs.mkdirSync(RUN_ROOT, { recursive: true })
   pruneOldRuns()
+  const prov = provenance()
+  // Persist provenance NEXT TO the artifacts so a run stays attributable without mtime
+  // archaeology against git log (the cont.100/101 failure). Written before any task runs.
+  fs.writeFileSync(path.join(RUN_ROOT, '__meta.json'), JSON.stringify({
+    ...prov, pid: process.pid, argv: ARGS, repoRoot: REPO_ROOT,
+  }, null, 2))
   console.log(`Phase 0 — agentic path true-rate measurement`)
+  console.log(`${stampLine(prov)}   ${prov.subject}`)
+  if (!prov.attributable) {
+    console.log(`  ⚠ harness-graph files are dirty — this run is NOT attributable to ${prov.commit}:`)
+    prov.relevantDirty.forEach(f => console.log(`      ${f}`))
+  }
   console.log(`artifacts: ${RUN_ROOT}\n`)
 
   // Sanity: every corpus repo must START green, or the trap isn't a trap.
@@ -423,6 +477,9 @@ async function main() {
   const truePass = by('TRUE')
 
   console.log(`\n═══ RESULT (n=${n}) ═══`)
+  // The stamp belongs HERE too, not just at the top: the RESULT block is what gets pasted
+  // into a handoff, and a number without its commit is the thing the HARD RULE forbids citing.
+  console.log(`  ${stampLine(prov)}`)
   console.log(`  REPORTED pass : ${reportedPass}/${n}   ← the number that was being trusted`)
   console.log(`  TRUE pass     : ${truePass}/${n}   ← present + exercised + green + hidden-spec correct`)
   console.log(`\n  of the reported passes:`)
