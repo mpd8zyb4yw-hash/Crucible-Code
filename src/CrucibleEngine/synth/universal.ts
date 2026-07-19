@@ -57,6 +57,32 @@ function stripFences(raw: string): string {
 }
 
 /**
+ * Cut degenerate repetition: a small FM that fails to stop re-emits the whole file it just
+ * wrote, two or three times over, and max_tokens then clips the final copy mid-token. The
+ * oracle sees the clipped copy and reports a syntax error at a line far past the real end
+ * (cont.100: src/report.ts grew 48 → 153 lines, three copies, TS1005 at line 153), which
+ * reads as a reasoning failure but is purely a stopping failure.
+ *
+ * Universal + zero-inference: we do NOT parse or repair. We find the first top-level
+ * declaration line, and if that exact line recurs later at column 0, everything from the
+ * recurrence on is a restart — keep the first copy only. If the model never looped, or the
+ * repeat is a genuine re-export, the text is returned untouched and the oracle judges it as
+ * before. Cutting can only ever remove a duplicate suffix, so a correct candidate stays correct.
+ */
+export function stripDegenerateRepetition(code: string): string {
+  const lines = code.split('\n')
+  // Anchor on the first top-level declaration — an import line is a weak anchor because a
+  // legitimate second file section can re-import, whereas re-declaring the same symbol at
+  // column 0 is what a looping model does.
+  const anchorIdx = lines.findIndex(l => /^(export\s+)?(function|class|interface|type|const|enum)\s+\w/.test(l))
+  if (anchorIdx < 0) return code
+  const anchor = lines[anchorIdx]
+  const repeat = lines.findIndex((l, i) => i > anchorIdx && l === anchor)
+  if (repeat < 0) return code
+  return lines.slice(0, repeat).join('\n').trimEnd()
+}
+
+/**
  * Per-round FM debug ledger (.crucible/fm-rounds.jsonl). Diagnosis instrument for the
  * "why doesn't the FM self-correct across rounds?" class of question — records what each
  * round was actually asked, what it produced, and why the oracle rejected it. Append-only,
@@ -255,7 +281,7 @@ export async function synthesizeUniversal(
         ? `Your previous attempt was REJECTED by the test oracle with:\n${priorError}\n\nFix it. Re-output the COMPLETE corrected file for ${modulePath}.\n\nSPEC:\n${sigBlock}`
         : `Write the complete file ${modulePath} implementing this spec exactly:\n\n${sigBlock}`
       let candidate = ''
-      try { candidate = stripFences(await localSynth(system, user)); fmCalls++ } catch (e: any) {
+      try { candidate = stripDegenerateRepetition(stripFences(await localSynth(system, user))); fmCalls++ } catch (e: any) {
         return { files: [], source: null, verified: false, testsDerived, fmCalls, detail: `FM proposer unavailable: ${String(e?.message ?? e).slice(0, 120)} — escalating` }
       }
       if (!candidate) { priorError = 'empty output'; continue }
@@ -335,7 +361,7 @@ export async function synthesizeUniversal(
       ? `Your previous attempt failed tsc with:\n${priorError}\n\nFix it. Re-output the COMPLETE corrected file for ${modulePath}.\n\nSPEC:\n${sigBlock}`
       : `Write the complete file ${modulePath} implementing this spec exactly:\n\n${sigBlock}`
     let candidate = ''
-    try { candidate = stripFences(await localSynth(system, user)); fmCalls++ } catch (e: any) {
+    try { candidate = stripDegenerateRepetition(stripFences(await localSynth(system, user))); fmCalls++ } catch (e: any) {
       return { files: [], source: null, verified: false, testsDerived: 0, fmCalls, detail: `FM proposer unavailable: ${String(e?.message ?? e).slice(0, 120)} — escalating` }
     }
     if (!candidate) { priorError = 'empty output'; continue }
