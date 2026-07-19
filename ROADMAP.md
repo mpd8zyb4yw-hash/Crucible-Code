@@ -1933,6 +1933,29 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-19f (Named-tool executor) — the engine planner now actually calls the tools a brief names
+- **Root cause of the Morning-brief 0-tool failure, found:** the brief is 280+ chars so
+  `localFmPlan` bailed at `MAX_INPUT_CHARS`, AND its `ALLOWED_TOOLS` never included
+  gmail_/calendar_ tools anyway; the request fell through every planning layer to the generic
+  non-code answer path, which has no tool access and free-associated prose.
+- **Fix — Layer 1.5 named-tool executor** (`src/CrucibleEngine/agent/namedToolRouter.ts` +
+  server.ts, runs after Layer 0, before Layer 2): when a message EXPLICITLY names read-only
+  registry tools, resolve them DETERMINISTICALLY (no planner guessing), extract inline args
+  (`gmail_search (query: "…")`), apply per-tool safe defaults, execute for REAL data, and hand
+  only the verified tool output to the FM to summarize. Doctrine-sound: the model phrases data it
+  cannot invent. Read-only by construction — only a whitelist (gmail_search/read, calendar_list,
+  drive_*, contacts_search, youtube_search_api, list_dir, read_file, web_search) can fire from a
+  name mention; send/create/delete never can. Tools missing a non-defaultable required arg
+  (gmail_read messageId, read_file path) are skipped, not fabricated. All-error case surfaces the
+  real errors, never hallucinated prose.
+- **Live-verified on the real account:** Morning-brief run went 201s→18.9s and called
+  calendar_list + gmail_search for real (empty result is CORRECT — the brief's own
+  `newer_than:1d` query genuinely matched nothing in the last 24h). A `newer_than:14d` probe
+  through the same path returned the actual inbox — real senders (Amazon, Claude Team) and
+  subjects. Server log confirms one gmail_search, 13.8s.
+- Unit-tested resolver: extracts both tools + the exact query in order; returns null on no-tool
+  messages; skips required-arg-missing tools.
+
 ### 2026-07-19e (Home surface + off-brief guard) — Assistant layer step 3 (first slice) + honest automation runs
 - **Home surface** (`src/HomeSurface.tsx`): an empty chat now opens on the assistant's day —
   greeting + date row, "Latest from your automations" digest cards, live-agent banner (links to

@@ -17,21 +17,22 @@
 
 ---
 
-## CURRENT STATE — last updated Home-surface session, 2026-07-19e (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated named-tool-executor session, 2026-07-19f (REPLACE THIS EVERY SESSION)
 
-**Assistant layer steps 1, 2, and the first slice of 3 are LIVE (2026-07-19c/d/e CHANGE LOG).**
-Step 3 slice: `src/HomeSurface.tsx` — empty chat = the assistant's day (digest cards, live-agent
-banner, scheduled list); identity splash is the genuine-empty fallback. **CRITICAL ENGINE
-FINDING from the user-requested live Morning-brief run: the agent loop ran 201s and returned
-off-topic prose instead of calling gmail_search/calendar_list.** The automation layer now
-catches this deterministically (off-brief zero-overlap guard ⇒ failed, surfaced red on Home
-and in the Digest) but CANNOT fix it — **making the agent planner actually invoke the Google
-tools for a brief that names them is now the top engine item, concretizing cont.97e**: repro is
-`POST /api/automations/<morning-brief-id>/run` and watch [Agent] lines in .crucible/server.log
-(no tool lines appear at all). Also: intent classifier \bno\b redirect-regex is fragile
-(preamble reworded as workaround); Electron shell spawns a SEPARATE :3001 backend on
-~/Library/Application Support (ops trap, see 19e entry). Step 3 remainder: chats-strip → real
-tabs, drawers → pages; then REST connector, MCP client.
+**Assistant layer steps 1, 2, first slice of 3, AND the tool-explicit-brief engine fix are LIVE
+(2026-07-19c/d/e/f CHANGE LOG).** The Morning-brief 0-tool failure is FIXED: new Layer 1.5
+named-tool executor (`src/CrucibleEngine/agent/namedToolRouter.ts` + server.ts) deterministically
+resolves+executes read-only registry tools a message NAMES, then FM summarizes REAL output.
+Live: Morning-brief 201s→18.9s, actually calls calendar_list+gmail_search; a 14-day probe
+returned real inbox senders/subjects. Empty Morning-brief result is CORRECT (brief's own
+`newer_than:1d` query). Off-brief guard (19e) remains as backstop for paths this doesn't cover.
+STILL OPEN (engine, lower priority now): (a) the on-device FM PLANNER proper — for briefs that
+DON'T name tools explicitly, the weak planner still can't pick tools (Layer 1.5 only covers
+explicit mentions); this is the deeper cont.97e item. (b) intent classifier \bno\b redirect
+regex is fragile (src/CrucibleEngine/agent/intentClassifier.ts). (c) Electron shell spawns a
+SEPARATE :3001 backend on ~/Library/Application Support (ops trap — check `lsof :3001` cwd).
+Assistant-layer NEXT: step 3 remainder (chats-strip → real tabs, drawers → pages), then REST
+connector, then MCP client. Also: extend live widgets to GitHub (gh PRs) + Mac cards.
 Step 2 (Connections + Google): `src/CrucibleEngine/connections/registry.ts` (capability read
 model), `/api/connections` + google test/preview/disconnect endpoints in server.ts,
 `src/ConnectionsView.tsx` page with LIVE service widgets (real inbox glimpse + calendar strip

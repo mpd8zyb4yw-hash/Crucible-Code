@@ -27,6 +27,7 @@ import type { Automation as AutomationRecord, AutomationRun as AutomationRunReco
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
+import { resolveNamedTools } from './src/CrucibleEngine/agent/namedToolRouter'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
@@ -3255,6 +3256,69 @@ app.post('/api/chat', async (req, res) => {
           console.warn('[Agent] Local fast-path threw — escalating to full agent loop:', e?.message ?? e)
           debugBus.emit('agent', 'local_intent_fallthrough', { intent: localPlan.intent, error: String(e?.message ?? e).slice(0, 120) }, { severity: 'warn' })
         }
+      }
+    }
+
+    // ── Layer 1.5: Named-tool executor (Offline-First, Track O) ───────────────
+    // When the request EXPLICITLY names registry tools ("Use calendar_list and
+    // gmail_search (query: …)"), there is nothing to plan — resolve them
+    // deterministically, execute for REAL data, and let the FM only SUMMARIZE the
+    // verified output. This is the fix for tool-explicit briefs (Morning Brief) that
+    // the weak on-device planner answered with off-topic prose (0 tool calls, 2026-07-19).
+    // Runs before Layer 2 because it is strictly more reliable when it applies.
+    if (!resumable && !iterCheckpoint && isAgenticIntent) {
+      const named = resolveNamedTools(message ?? '')
+      if (named && named.calls.length) {
+        console.log(`[Agent] Named-tool executor: ${named.calls.map(c => c.name).join(', ')}${named.skipped.length ? ` (skipped: ${named.skipped.join(', ')})` : ''}`)
+        debugBus.emit('agent', 'named_tools_resolved', { tools: named.calls.map(c => c.name), skipped: named.skipped }, { severity: 'info' })
+        send({ type: 'agent_start', driver: 'on-device (named tools)', projectPath, resumed: false })
+        const toolCtx: ToolCtx = {
+          projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
+          allowMutation: false, allowDestructive: false, onFileMutated,
+        }
+        const outputs: Array<{ tool: string; ok: boolean; output: string }> = []
+        for (const call of named.calls) {
+          if (ac.signal.aborted) break
+          send({ type: 'tool_call', id: call.id, tool: call.name, args: call.args })
+          let r: { ok: boolean; output: string }
+          try { r = await registry.exec(call, toolCtx) }
+          catch (e: any) { r = { ok: false, output: String(e?.message ?? e).slice(0, 300) } }
+          send({ type: 'tool_result', id: call.id, tool: call.name, ok: r.ok, output: r.output.slice(0, 800), truncated: r.output.length > 800 })
+          outputs.push({ tool: call.name, ok: r.ok, output: r.output })
+          debugBus.emit('agent', 'named_tool_exec', { tool: call.name, ok: r.ok }, { severity: r.ok ? 'info' : 'warn' })
+        }
+        const anyOk = outputs.some(o => o.ok)
+        if (anyOk) {
+          // Hand the REAL tool output to the FM to phrase the brief. Deterministic data,
+          // model only summarizes — it cannot invent what the tools didn't return.
+          const dataBlock = outputs.map(o => `### ${o.tool} (${o.ok ? 'ok' : 'error'})\n${o.output.slice(0, 3000)}`).join('\n\n')
+          const sys = 'You are a precise assistant. You are given REAL output from tools that already ran. Using ONLY that output, complete the user\'s request. Do not invent data not present in the tool output. If a tool returned nothing, say so plainly. Plain text, concise, no preamble.'
+          const usr = `Request:\n${message}\n\nTool output (this is real, already-fetched data):\n${dataBlock}`
+          let summary = ''
+          try { summary = stripThink(await callLocalModel(sys, usr, 30000)) } catch { /* fall back to raw */ }
+          if (!summary.trim()) {
+            // FM unavailable/empty — ship the raw verified tool output rather than nothing.
+            summary = outputs.map(o => `${o.tool}:\n${o.output}`).join('\n\n')
+          }
+          send({ type: 'final', text: summary })
+          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: summary, synthesisDone: true, synthStreaming: false })
+          if (chatSessionId) completeTask(chatSessionId, summary.slice(0, 200), [])
+          historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-named-tools', models: ['crucible-named-tools'], synthesis: summary })
+          debugBus.emit('agent', 'named_tools_done', { tools: named.calls.map(c => c.name), ms: Date.now() - t0 }, { severity: 'info' })
+          console.log(`[Agent] Named-tool executor done in ${((Date.now() - t0) / 1000).toFixed(2)}s`)
+          endAgent()
+          return
+        }
+        // Every named tool errored (e.g. Google not connected) — surface the real
+        // errors honestly instead of falling through to hallucinated prose.
+        const errBlock = outputs.map(o => `${o.tool}: ${o.output}`).join('\n')
+        const errText = `Couldn't complete this — the tools it needs returned errors:\n${errBlock}`
+        send({ type: 'final', text: errText })
+        patchActiveSessionRound(chatUser, chatRoundId, { synthesis: errText, synthesisDone: true, synthStreaming: false })
+        if (chatSessionId) completeTask(chatSessionId, errText.slice(0, 200), [])
+        debugBus.emit('agent', 'named_tools_all_failed', { tools: named.calls.map(c => c.name) }, { severity: 'warn' })
+        endAgent()
+        return
       }
     }
 
