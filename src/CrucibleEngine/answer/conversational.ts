@@ -133,8 +133,22 @@ function stripPresetLabel(m: string): string {
   return m.replace(/^[A-Z][\w'’]*(?:\s+[A-Z][\w'’]*){0,2}:\s+/, '')
 }
 
+/**
+ * Recover what the USER actually asked for out of an agent-preset prompt.
+ *
+ * The Vibe Code preset sends `Build this for me: <description>\n\n<fixed instruction tail>`,
+ * so the wire message for a user who typed "make me" is 300+ characters of boilerplate. Every
+ * matcher here is anchored and length-guarded, so the wrapper made them all unreachable — the
+ * fix for the live 0-char turn would have been DEAD without this (cont.97). Classify the
+ * description, not the template around it.
+ */
+function unwrapPresetPrompt(m: string): string {
+  const firstPara = m.split(/\n\s*\n/)[0].trim()
+  return firstPara.replace(/^(?:build|make|create|code|write)\s+(?:this|it|that)\s+for\s+me\s*:\s*/i, '').trim()
+}
+
 export function clarifyBuild(message: string): string | null {
-  const m0 = (message ?? '').trim()
+  const m0 = unwrapPresetPrompt((message ?? '').trim())
   if (!m0 || m0.length > 60) return null
   const m = stripPresetLabel(m0)
   if (BARE_BUILD_NO_OBJECT.test(m)) return BUILD_CLARIFY.nothing
