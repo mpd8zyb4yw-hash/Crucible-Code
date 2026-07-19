@@ -22,6 +22,7 @@
     "lintgate:bench": "tsx src/CrucibleEngine/synth/__lintGate_bench.ts",
     "repair:bench": "tsx src/CrucibleEngine/synth/__repairProposers_bench.ts",
     "rolebleed:bench": "tsx src/CrucibleEngine/answer/__rolebleed_bench.ts",
+    "audit:reach": "node scripts/audit-reachability.mjs",
     "generate:skills": "tsx src/CrucibleEngine/synth/generate.ts",
     "diag": "curl -s http://localhost:3001/api/diag | python3 -m json.tool",
     "build": "tsc -b && vite build",
