@@ -17,44 +17,45 @@
 
 ---
 
-## CURRENT STATE — last updated cont.96, 2026-07-18, commit `e6cbb58` (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated cont.97d, 2026-07-19, commit `7fa1c52` (REPLACE THIS EVERY SESSION)
 
-**cont.96 closed the multi-fence broken-block repair gap (cont.95 NEXT item 2), 2 commits, pushed.**
+**cont.97d: the identity replay did NOT reproduce; a different, 4/4-reproducible bug did — and is fixed.**
 
-1. **Broken-block repair hardened** (`ad1a736`). The per-block syntax repair loop in server.ts:
-   (a) FIXED a latent multi-fence bug — the old for-of iterated a STALE problems array after a
-   splice, so a second broken block spliced at shifted offsets; now re-verifies from scratch
-   after every splice with an attempted-set for progress (guard 6). (b) No early `break` — every
-   broken block gets its own shot + honest per-block warning (the cont.95 live oddity was a later
-   block left unexamined). (c) `crossGrammarRelabel` (domainVerifiers.ts): a failing fence that
-   parses CLEAN under another grammar (python-in-ts, ts-in-python) is a LABEL defect — relabel,
-   byte-identical; broken-everywhere → null (cannot launder). (d) qwen sidecar seat tries after
-   the FM before giving up.
+1. **The cont.97c "persisted sessionId" next-step rested on a false premise.** There is no
+   server-side session history. `/api/chat` takes `history` from the REQUEST BODY (server.ts:2482)
+   and passes it straight to `answerQuery` (server.ts:4128); `sessionId` is used only for agent-task
+   lookup and SSE broadcast. Nothing rehydrates history from it, so "persisted sessionId" and
+   "inline history array" produce an identical prompt. Do not spend another session on that framing.
 
-2. **Escalation: forward-only re-synthesis on repair failure** (`e6cbb58`). Live measured on
-   ad1a736: show-the-broken-block repair went 0/2 (FM + qwen) on a TS1068 draft — cont.89 again
-   (the model re-produces its own defect). Extracted the cont.92 no-code re-synthesis into shared
-   `resynthCodeAnswer` (server.ts); when a block is STILL broken on an implement-shaped ask,
-   re-synthesize from the QUESTION alone; adopt ONLY a candidate the FULL gate stack clears
-   (syntax + own-demo + contract-certified when named), else the warned original ships. Emits
-   `code_block_resynthesized`. The helper's candidate loop is the SAME live-proven cont.92 code;
-   the escalation trigger itself has bench+shared-path evidence but no live broken-block
-   recurrence yet — watch `/api/debug/history` for `code_block_resynthesized`.
+2. **Why cont.97c did not reproduce (real cause):** `DEFAULT_RECENT = 4` in conversationMemory.ts.
+   A 4-turn history hits `recentStart === 0` and returns an EMPTY recallBlock (line 291) — the
+   semantic-recall layer was never exercised. At 5+ turns it fires. Repro: `__repro_identity_replay.ts`
+   (`b490d71`). Live-confirmed injection: `memory_window {total:5, recent:4, recalled:1}`.
+   Note `anchorKeep = 1` — turn 1 is injected into EVERY later turn regardless of relevance, under
+   a header reading "facts the user already told you — treat as authoritative" (it is labelling our
+   OWN prior reply as an authoritative user fact).
 
-**Live runs (clean banners ad1a736, e6cbb58, self-booted :3002, killed after):** run 1 hit the
-exact seam — broken TS1068 draft, both seats failed, honest warning (pre-escalation commit);
-run 2 on e6cbb58 shipped a contract-CERTIFIED stack, zero warnings, with a live qwen contract
-repair (`answer_contract_repaired {by:"qwen2.5-1.5b"}`).
+3. **Identity replay: still 0/10 live.** Injection is necessary but NOT sufficient. My synthetic
+   history is a guess and it is wrong. NEXT: get the real failing history from the user's debug log.
 
-**Benches:** codeblock 47→54 (crossGrammarRelabel incl. cannot-launder guards), execverify
-44/44, contract 69/69; tsc server 443 (baseline 445, zero net-new).
+4. **Role-bleed critic — FIXED and live-verified (`7fa1c52`).** With recall active, "something
+   totally unique" (a fragment answering our own clarify) made the FM continue the USER's turn:
+   "I'd like to build a game that combines puzzle-solving and strategy…" — 4/4 live, fluent, and
+   invisible to every existing critic. `looksRoleBled()` in verify.ts flags a leading first-person
+   DESIRE / second-person REQUEST whose DIRECT OBJECT is the artifact (object-anchored, so
+   "I need a bit more detail before I can build this" does not trip it). New fatal-if-unrepaired
+   `rolebleed` Issue; repair is FORWARD-ONLY (cont.89 — replaying a user-voice draft is what
+   induces the bleed). Live: gate fired 6/6, repaired 6/6, zero abstains. `npm run rolebleed:bench`
+   25/25 two-direction; conversational 108/108, memory 18/18, answer 138/138; tsc 458 = baseline.
 
-### NEXT (cont.97)
-1. Broader 5-task suite at n≥3 on a clean tree (the % claim still needs the distribution;
-   agent/app route still honest-fail). This is now the ONLY blocker on the distribution claim.
-2. Watch for `code_block_resynthesized` in live telemetry — the escalation gate has not yet
-   fired on a real broken-block recurrence (unreachable-gate rule: prove it opens).
-3. "build a limiter" grounding residual (cont.94 item 1) if it bites live.
+### NEXT (cont.97e)
+1. **Get the real failing history for the identity replay** from the user's debug log. 0/10 says
+   the synthetic 5-turn shape is not the trigger; guessing again is waste.
+2. **Spec compliance for generated artifacts** — untouched for 3 sessions now, and confirmed twice
+   (dodge-the-blocks shipped for "driving sim"; suite todo/notes false greens). The HTML oracle
+   passes apps that ignore the SPEC.
+3. **The shared repetition pathology** behind both degenerate outputs.
+4. Watch `code_block_resynthesized` (cont.96 escalation gate still has no live recurrence).
 
 ---
 
