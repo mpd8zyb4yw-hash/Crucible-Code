@@ -3728,3 +3728,59 @@ Three holes the suite exposed, all now fixed and committed:
   problem, not a false green — but it makes any n=3 score a lower bound.
 - **Re-run the 5-task suite at n>=3** now that the app route has a behavioral gate. The
   previous run's 0/6 is the pre-fix baseline to beat.
+
+---
+
+## cont.97b — the n=3 re-run, scored (July 19 2026)
+
+15 live `/api/chat` runs against server **5208505** (clean tree; `+dirty` in the banner was
+only the runtime-written `.crucible-checkpoints.json`). Every run scored by reading the
+artifact — the app runs additionally re-driven through `runtimeVerifyApp` — never by the
+verdict. **Caveat: the suite predates `b3e847d` (phantom-package) and `34ed77f`
+(named-technology), which were committed while it ran. The zod results below are
+pre-fix observations of a hole those commits now close.**
+
+### Distribution: 2/15 fully correct
+
+| Route | Pass | Honest fail | Partial | **False green** |
+|---|---|---|---|---|
+| todo (3) | 0 | 1 | 1 | 1 |
+| notes (3) | 0 | 2 | 0 | 1 |
+| zod (3) | 0 | 0 | 0 | 3 |
+| linked list (3) | 2 | 1 | 0 | 0 |
+| rate limiter (3) | 0 | 2 | 0 | 1 |
+| **total** | **2** | **6** | **1** | **6** |
+
+### What moved
+- **The app route no longer ships blind. 0/6 unverified, down from 6/6.** Every app run
+  either honest-failed after the run-verify gate rejected 5–6 attempts, or shipped an
+  artifact that passed a real headless-browser drive. `bb3f3f4` did what it claimed.
+- **`7f8ed7f` is LIVE-VERIFIED.** `answer_contract_unverifiable` fired on ratelimiter-1
+  and ratelimiter-2 — `denyRequest`/`send` are not recognizable limiter entries, and both
+  shipped an honest warning instead of the green stamp that shipped three broken limiters
+  in the previous suite.
+- **`748c7cf` is consistent with the artifacts.** Both linked-list passes handle the
+  single-element `pop()` correctly; the one failure was caught by two honest warnings.
+
+### The three false greens now blocking (all read, all reproduced)
+1. **The HTML behavioral oracle cannot judge SPEC compliance.** todo-2 passes the gate
+   while being no todo app at all — no Add control, `items` never appended to, one global
+   `isDone` instead of per-item state, no delete. notes-3 passes with no markdown preview
+   (the headline ask) and a `keyup` handler that pushes a note per keystroke ("abc" →
+   "a","ab","abc"). The oracle asks "do the controls change the page?" and both answer yes.
+   **This is the single highest-value gap: it converts a shipped-wrong app into a green.**
+2. **ratelimiter-3 escaped every gate.** `if (this.isRateLimited())` is missing an `await`,
+   so the check is always a truthy Promise and EVERY request throws; `new Date() -
+   this.lastRequestTime` is Date arithmetic that the TS gate did not flag; and the answer
+   degenerates into ~200 repeated `await limiter.request()` lines. Why the contract battery
+   engaged on -1/-2 but not -3 is unresolved — start there.
+3. **zod 0/3 — all three returned JSON Schema, not zod.** `34ed77f` closes this class;
+   it needs a live confirmation run.
+
+### Next, in order
+1. **Spec-compliance for HTML apps.** The generic "controls change the page" oracle is the
+   binding constraint on the app route. The features are stated in the question; the gate
+   must check the asked features exist and work, not merely that something reacts.
+2. **Live-confirm `34ed77f`** on the zod prompt (expect `answer_named_library_missing`).
+3. **Diagnose ratelimiter-3's escape** — missing `await` on a boolean-returning async
+   method is a general wrong-logic class the contract tier should own.
