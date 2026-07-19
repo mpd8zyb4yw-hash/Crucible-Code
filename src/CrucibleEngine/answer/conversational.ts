@@ -108,11 +108,36 @@ const BUILD_CLARIFY: Record<string, string> = {
   website:
     'Sure — what\'s the site for? A **personal landing page**, a **portfolio**, a **product page**, or a **blog**? ' +
     'Give me the purpose and a rough style (minimal, playful, dark, …) and I\'ll build it.',
+  nothing:
+    'I\'m in — what should I build? A few things I can put together and run for you right now:\n\n' +
+    '- **A game** — snake, memory match, number guessing\n' +
+    '- **An app** — to-do list, notes, timer, unit converter\n' +
+    '- **A site** — landing page, portfolio, product page\n\n' +
+    'Tell me which (or describe your own), and whether you want it in the **browser** or the **terminal**.',
+}
+
+// A creation verb with NO OBJECT AT ALL — "make me", "build", "create something for me".
+// LIVE (cont.97): "Vibe Code: make me" produced a 0-character answer, because BARE_BUILD
+// requires an artifact noun and this has none. That is strictly LESS specific than
+// "build me something", which we already clarify — the least buildable request in the
+// language fell through to the agent, which had nothing to build and returned empty.
+const BARE_BUILD_NO_OBJECT =
+  /^(?:can\s+you\s+|please\s+|could\s+you\s+)?(?:build|make|create|write|code|develop|design|generate|whip\s+up|put\s+together)(?:\s+(?:me|us|it|one|that))?\s*(?:for\s+me)?[.!?]*$/i
+
+// The agent-preset picker prepends its label ("Vibe Code: <what the user typed>"), and that
+// prefix defeated every anchored matcher in this file — the live 0-char turn came in as
+// "Vibe Code: make me". Strip a short leading label so a preset-routed message is classified
+// exactly like the same words typed plain. Safe by construction: the remainder still has to
+// match a bare-build pattern for anything to happen.
+function stripPresetLabel(m: string): string {
+  return m.replace(/^[A-Z][\w'’]*(?:\s+[A-Z][\w'’]*){0,2}:\s+/, '')
 }
 
 export function clarifyBuild(message: string): string | null {
-  const m = (message ?? '').trim()
-  if (!m || m.length > 60) return null
+  const m0 = (message ?? '').trim()
+  if (!m0 || m0.length > 60) return null
+  const m = stripPresetLabel(m0)
+  if (BARE_BUILD_NO_OBJECT.test(m)) return BUILD_CLARIFY.nothing
   const match = BARE_BUILD.exec(m)
   if (!match) return null
   const noun = match[1].toLowerCase().replace(/\s+/g, '')
