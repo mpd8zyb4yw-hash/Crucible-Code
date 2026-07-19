@@ -106,6 +106,88 @@ function writeTsConfig(cfgDir: string, scratch: string, projectPath?: string): s
 function firstTsError(out: string): string { return out.split('\n').find(l => /error TS/.test(l)) ?? out.slice(0, 200) }
 
 /**
+ * Change-set-scoped typecheck (cont.99).
+ *
+ * FOUND 2026-07-19 (tier-2 multi-file corpus, 0/4): the oracle is a whole-project tsc but it
+ * gates ONE FILE AT A TIME. A coupled multi-file refactor is transiently type-broken BY
+ * CONSTRUCTION between the first and last edit, so the mandatory intermediate state was
+ * unreachable — `rename-field-across-layers` renamed `qty` in src/types.ts CORRECTLY and was
+ * rejected because the three consumers it had not reached yet no longer compiled. Re-synthesizing
+ * the target file cannot fix an error located in an unedited file, so the failure shape was
+ * byte-identical every round → the out-of-depth tripwire fired at iter 1-2 and the agent
+ * abstained before touching file #2.
+ *
+ * Fix: gate on the CHANGE SET, not the file. `changeSetScope` names the sibling files the caller
+ * has declared it still intends to edit (agent loop: state.goalPaths minus the current target).
+ * Two error classes become DEFERRED rather than fatal:
+ *   (a) errors LOCATED IN a not-yet-edited change-set file  (the rename-field shape)
+ *   (b) TS2307 "cannot find module" in ANY file where the unresolved specifier names a
+ *       change-set file that has not been created yet     (the extract-duplicated shape)
+ * Everything else stays fatal — in particular errors in the file being written right now, which
+ * is the whole point of the gate. Whole-project green is still required at change-set close;
+ * this only makes the intermediate states reachable.
+ *
+ * Returns the fatal-error lines (empty ⇒ gate A passes) plus the deferred ones for telemetry.
+ */
+/** Append-only ledger of errors the change-set scope deferred. Best-effort; never throws.
+ *  Read this to prove the widened scope actually OPENED (cont.84 rule: an unreachable gate
+ *  is a dead feature — assert its telemetry exists). */
+function logDeferred(deferred: string[]) {
+  try {
+    const dir = path.join(process.cwd(), '.crucible')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(path.join(dir, 'fm-rounds.jsonl'), JSON.stringify({
+      ts: new Date().toISOString(), event: 'changeset_scope_deferred',
+      count: deferred.length, errors: deferred.slice(0, 8).map(l => l.slice(0, 240)),
+    }) + '\n')
+  } catch { /* debug-only */ }
+}
+
+export function scopeTsErrors(out: string, changeSetScope?: string[], rootDir?: string): { fatal: string[]; deferred: string[] } {
+  const errLines = out.split('\n').filter(l => /error TS/.test(l))
+  if (!changeSetScope?.length) return { fatal: errLines, deferred: [] }
+  const scope = changeSetScope.map(p => p.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\.(ts|tsx)$/, ''))
+  // tsc runs with cwd=CODE_DIR and reports paths relative to it; resolve to absolute, then
+  // express as a path RELATIVE TO THE STAGED ROOT so a scope entry can be matched EXACTLY.
+  // Exact matching is load-bearing: a suffix match cannot distinguish <root>/src/discount from
+  // the FM's wrong <root>/src/src/discount, and conflating them hides a real defect.
+  const toRel = (p: string): string => {
+    const abs = path.resolve(CODE_DIR, p.replace(/\\/g, '/'))
+    const rel = rootDir ? path.relative(rootDir, abs) : abs
+    return rel.replace(/\\/g, '/').replace(/\.(ts|tsx|js)$/, '')
+  }
+  const matchesScope = (rel: string) => scope.some(s => rel === s || (!rootDir && rel.endsWith(`/${s}`)))
+  const inScope = (filePath: string) => matchesScope(toRel(filePath))
+  const fatal: string[] = []
+  const deferred: string[] = []
+  for (const line of errLines) {
+    // `<path>(<line>,<col>): error TS####: <msg>`
+    const loc = /^(.*?)\((\d+),(\d+)\): error TS(\d+): (.*)$/.exec(line.trim())
+    if (!loc) { fatal.push(line); continue }
+    const [, filePath, , , code, msg] = loc
+    if (inScope(filePath)) { deferred.push(line); continue }          // (a)
+    if (code === '2307') {                                            // (b)
+      const spec = /Cannot find module '([^']+)'/.exec(msg)?.[1]
+      // RESOLVE the specifier against the IMPORTING file's directory before matching.
+      //
+      // FOUND live 2026-07-19 (first tier-2 re-run): a bare suffix match here false-DEFERRED a
+      // real defect. The FM, writing src/checkout.ts, emitted `from './src/discount'` — a wrong
+      // path (it is a sibling: './discount'). Suffix-matching 'src/discount' against the scope
+      // entry 'src/discount.ts' hid that error, so the FM was never shown its own bad import and
+      // burned all 3 rounds re-emitting it. Proper resolution sends './src/discount' to
+      // src/src/discount — NOT in the change set — so it stays fatal and reaches the retry prompt.
+      // (cont.85: a verifier fails in two directions; this is the false-certify direction.)
+      if (spec && /^\.\.?\//.test(spec)) {
+        const importerDir = path.posix.dirname(filePath.replace(/\\/g, '/'))
+        if (matchesScope(toRel(path.posix.normalize(path.posix.join(importerDir, spec))))) { deferred.push(line); continue }
+      }
+    }
+    fatal.push(line)
+  }
+  return { fatal, deferred }
+}
+
+/**
  * Summarize a test run's console output for the retry prompt / audit trail.
  *
  * BUG FOUND 2026-07-04 (filterModule ledger audit): this used to be a fixed `.slice(-4)` over
@@ -135,13 +217,15 @@ function testTail(out: string): string {
 export function verifyCandidate(
   files: SynthFile[],
   testFile?: SynthFile,
-  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string } = {},
+  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string; changeSetScope?: string[] } = {},
 ): Verdict {
   if (!files.length) return { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false }
   const { scratch, cfgDir, cfgPath, testAbs } = stage(files, testFile, opts.contextFiles, opts.projectPath)
   try {
     const tc = run('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000)
-    if (!tc.ok) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${firstTsError(tc.out)}`, ranAssertions: false }
+    const scoped = scopeTsErrors(tc.out, opts.changeSetScope, scratch)
+    if (!tc.ok && scoped.fatal.length) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false }
+    if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
     if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
     const cv = checkContract(opts.spec ?? '', files)
@@ -168,13 +252,15 @@ export function verifyCandidate(
 export async function verifyCandidateAsync(
   files: SynthFile[],
   testFile?: SynthFile,
-  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string } = {},
+  opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string; changeSetScope?: string[] } = {},
 ): Promise<Verdict> {
   if (!files.length) return { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false }
   const { scratch, cfgDir, cfgPath, testAbs } = stage(files, testFile, opts.contextFiles, opts.projectPath)
   try {
     const tc = await runAsync('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000)
-    if (!tc.ok) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${firstTsError(tc.out)}`, ranAssertions: false }
+    const scoped = scopeTsErrors(tc.out, opts.changeSetScope, scratch)
+    if (!tc.ok && scoped.fatal.length) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false }
+    if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
     if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
     const cv = checkContract(opts.spec ?? '', files)

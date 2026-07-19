@@ -140,6 +140,12 @@ export async function synthesizeUniversal(
      *  Caller fetches via retrieval/retrievalLayer.retrieveForTask when the router routes
      *  the task to `retrieve`; passed here it is woven into the FM prompt prefix only. */
     retrievalBlock?: string
+    /** Sibling files the caller still intends to edit as part of the SAME coupled change set
+     *  (agent loop: state.goalPaths minus the current target). Type errors located in those
+     *  files — and unresolved imports naming them — are DEFERRED by the oracle rather than
+     *  failing gate A, so the transiently-broken intermediate states of a multi-file refactor
+     *  are reachable. See scopeTsErrors in oracle.ts (cont.99). */
+    changeSetScope?: string[]
   } = {},
 ): Promise<UniversalResult> {
   const feats = extractFeatures(spec)
@@ -210,6 +216,7 @@ export async function synthesizeUniversal(
     spec,
     ...(contextFiles.length ? { contextFiles } : {}),
     ...(opts.projectPath ? { projectPath: opts.projectPath } : {}),
+    ...(opts.changeSetScope?.length ? { changeSetScope: opts.changeSetScope } : {}),
   }
 
   // ── Property tests: weaker but still oracle-gated fallback when no behavioral examples. ──
@@ -358,5 +365,7 @@ export async function synthesizeUniversal(
     priorFingerprint = fp
     priorError = v.detail
   }
-  return { files: [], source: null, verified: false, testsDerived: 0, fmCalls, detail: `FM could not produce tsc-clean code in ${rounds} rounds — escalating honestly` }
+  // The last verdict's tsc text rides along: without it this message was unreadable and the
+  // root cause of a compile-gate failure had to be INFERRED from shape (cont.99 diagnosis note).
+  return { files: [], source: null, verified: false, testsDerived: 0, fmCalls, detail: `FM could not produce tsc-clean code in ${rounds} rounds — escalating honestly${priorError ? ` (last tsc: ${priorError.slice(0, 300)})` : ''}` }
 }

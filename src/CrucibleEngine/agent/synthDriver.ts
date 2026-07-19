@@ -1283,6 +1283,15 @@ async function solveCodeWrite(
       modulePath: targetPath,
       acceptGateAOnly: true,
       retrievalBlock: retrievalBlock || undefined,
+      // Change-set scope (cont.99): the goal's OTHER declared files are pending edits, so a
+      // type error located in one of them is a consequence of this edit being incomplete, not
+      // of this edit being wrong. Deferring them makes the transiently-broken intermediate
+      // states of a coupled multi-file refactor reachable. Whole-project green is still
+      // required once every goalPath has been written.
+      // Only files NOT yet written are deferred: once a change-set file has been written, an
+      // error in it is a real defect this gate must still catch (cont.85 — a verifier fails in
+      // two directions; widening scope past the pending set would false-CERTIFY).
+      changeSetScope: state.goalPaths.filter(p => p !== targetPath && !state.writtenPaths.includes(p)),
     })
   } catch (e: any) {
     throw new OfflineEscalateError(`synthesizeUniversal threw: ${String(e?.message ?? e).slice(0, 200)}`)

@@ -49,7 +49,10 @@ import { makeOfflineDriveTurn } from './synthDriver'
 import type { ToolCtx } from '../tools/protocol'
 
 const ARGS = process.argv.slice(2)
-const ONLY = ARGS.find(a => a.startsWith('--only='))?.split('=')[1]
+// --only accepts a comma-separated list so a whole tier can be run as one batch
+// (`--only=a,b,c`); a single id is the degenerate case.
+const ONLY_IDS = ARGS.find(a => a.startsWith('--only='))?.split('=')[1]?.split(',').map(s => s.trim()).filter(Boolean)
+const ONLY = ONLY_IDS?.length ? ONLY_IDS : null
 const NOOP_ONLY = ARGS.includes('--noop')
 const MAX_ITERS = Number(ARGS.find(a => a.startsWith('--iters='))?.split('=')[1] ?? 24)
 
@@ -207,7 +210,7 @@ async function noopControl(): Promise<{ holes: number; total: number; rows: stri
   const rows: string[] = []
   let holes = 0, total = 0
   for (const task of TASKS) {
-    if (ONLY && task.id !== ONLY) continue
+    if (ONLY && !ONLY.includes(task.id)) continue
     const dir = path.join(RUN_ROOT, 'noop', task.id)
     fs.mkdirSync(dir, { recursive: true })
     materialize(task, dir)
@@ -362,7 +365,7 @@ async function main() {
   console.log('── corpus sanity (every repo must start green) ──')
   let sane = true
   for (const task of TASKS) {
-    if (ONLY && task.id !== ONLY) continue
+    if (ONLY && !ONLY.includes(task.id)) continue
     const dir = path.join(RUN_ROOT, 'sanity', task.id)
     fs.mkdirSync(dir, { recursive: true })
     materialize(task, dir)
@@ -390,7 +393,7 @@ async function main() {
   console.log('\n── LIVE (real loop, strict on-device, production wiring) ──')
   const outcomes: Outcome[] = []
   for (const task of TASKS) {
-    if (ONLY && task.id !== ONLY) continue
+    if (ONLY && !ONLY.includes(task.id)) continue
     process.stdout.write(`  ${task.id.padEnd(26)} … `)
     const t0 = Date.now()
     const o = await liveTask(task)
