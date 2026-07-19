@@ -265,6 +265,10 @@ export async function synthesizeUniversal(
         modulePath, gate: kindLabel, round: r + 1, of: rounds,
         priorError: priorError.slice(0, 400) || null,
         candidate: candidate.slice(0, 1200),
+        // TRUE size, recorded before the 1200-char clip above. Without these the ledger is
+        // structurally blind to runaway/truncated output: every oversized candidate lands at
+        // exactly 1200 and looks identical to a merely-long one. (cont.100)
+        candidateChars: candidate.length, candidateLines: candidate.split('\n').length,
         accepted: v.accepted, verdict: v.detail.slice(0, 400),
       })
       if (v.accepted) {
@@ -346,6 +350,7 @@ export async function synthesizeUniversal(
       modulePath, gate: 'compile-only', round: r + 1, of: rounds,
       priorError: priorError.slice(0, 400) || null,
       candidate: candidate.slice(0, 1200),
+      candidateChars: candidate.length, candidateLines: candidate.split('\n').length,
       accepted: v.gateA, verdict: v.detail.slice(0, 400),
     })
     if (v.gateA) {
