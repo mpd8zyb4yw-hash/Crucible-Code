@@ -13,7 +13,7 @@
 import { correctArithmeticCascade, verifyConsistency } from '../domainVerifiers'
 
 export interface Issue {
-  kind: 'arithmetic' | 'clock' | 'contradiction' | 'empty' | 'truncated' | 'nonanswer'
+  kind: 'arithmetic' | 'clock' | 'contradiction' | 'empty' | 'truncated' | 'nonanswer' | 'rolebleed'
   /** Human-readable defect, spliced into the repair prompt so the FM fixes THIS, not vibes. */
   detail: string
   /** When set, the critic already produced a corrected text (deterministic fix, no re-prompt). */
@@ -29,6 +29,48 @@ function looksTruncated(text: string): boolean {
   if (/[.!?)\]}"'`]$/.test(t)) return false
   if (/\b(and|but|or|the|a|an|to|of|for|with|that|which|because|so|then|is|are|was)$/i.test(t)) return true
   return !/[.!?]$/.test(t) && t.length > 200
+}
+
+// ── Role-bleed critic ────────────────────────────────────────────────────────────────────
+// A weak FM handed a conversation that ends in OUR OWN clarifying question ("what kind of game
+// — puzzle, arcade, or something else?") plus a short user fragment ("something totally unique")
+// often continues the USER's turn instead of responding to it: it elaborates the REQUEST in the
+// first person ("I'd like to build a game that combines puzzle-solving and strategy…"). The reply
+// is fluent, on-topic, and passes every existing critic — non-answer, truncation and consistency
+// all read it as fine — yet it answers nobody. Measured 4/4 live on 2026-07-19 (cont.97d).
+//
+// The signal is VOICE, not topic: an assistant states what IT will do ("I'll build…", "Here's…"),
+// never what the user WANTS ("I'd like…", "could you build me…"). We flag only a leading
+// first-person DESIRE (or a second-person REQUEST) aimed at producing the artifact, so ordinary
+// assistant hedging ("I'd like to clarify one thing") is untouched by the META_USE exclusion.
+const ROLE_DESIRE = /^\s*(?:and\s+|also,?\s+)?(?:i(?:'d| would)\s+(?:like|love)|i\s+want|i\s+need|i(?:'m| am)\s+looking\s+for|my\s+idea\s+is)\b/i
+// Assistant-legitimate uses of "I'd like to …" — meta/dialogue acts, not artifact requests.
+const META_USE = /^\s*(?:and\s+|also,?\s+)?i(?:'d| would)\s+(?:like|love)\s+to\s+(?:clarify|confirm|check|know|understand|suggest|propose|recommend|note|point\s+out|mention|help|make\s+sure|start\s+by|offer|flag|highlight)\b/i
+// A second-person request: the reply asks the ASSISTANT to build — i.e. it is the user's turn.
+const ROLE_REQUEST = /^\s*(?:could|can|would|will)\s+you\s+(?:please\s+)?(?:build|create|make|write|design|develop|code|help)\b|^\s*please\s+(?:build|create|make|write|design|develop|code)\b/i
+// The desire's DIRECT OBJECT must be the artifact — checked against the text immediately following
+// the desire phrase, never searched loosely across the sentence. That distinction is what separates
+// "I need AN APP that…" (the user's voice) from "I need A BIT MORE DETAIL before I can build this"
+// (the assistant's), which a loose search for a creation verb anywhere wrongly flagged.
+// "…to build" (speaker builds) and "…YOU to build" (speaker directs the assistant to build) are
+// both the requester's voice. The second form was a live miss on 2026-07-19: "I'd like you to
+// create a unique puzzle game" survived a repair round because the object was "you", not the artifact.
+const DESIRE_TO_CREATE = /^\s*(?:you\s+)?(?:to\s+)?(?:build|create|make|design|develop|code|write|generate)\b/i
+const DESIRE_FOR_ARTIFACT = /^\s*(?:a|an|the|some)\s+(?:[\w-]+\s+){0,3}(?:game|app|application|website|site|tool|program|script|feature|dashboard|extension|bot|api|library|page|widget)\b/i
+
+export function looksRoleBled(text: string): boolean {
+  const t = (text ?? '').trim()
+  if (!t) return false
+  // Judge the OPENING clause: role is established up front, and a long answer that merely quotes
+  // the user later ("you said you'd like a game…") is not itself written in the user's voice.
+  const head = t.slice(0, 200)
+  const firstSentence = (head.split(/(?<=[.!?])\s/)[0] ?? head)
+  if (ROLE_REQUEST.test(firstSentence)) return true
+  const desire = ROLE_DESIRE.exec(firstSentence)
+  if (!desire) return false
+  if (META_USE.test(firstSentence)) return false
+  const rest = firstSentence.slice(desire[0].length)
+  return DESIRE_TO_CREATE.test(rest) || DESIRE_FOR_ARTIFACT.test(rest)
 }
 
 // The FM sometimes "answers" by restating the question or emitting meta-chatter
@@ -194,7 +236,12 @@ export function critiqueAnswer(
     }
   } catch { /* non-blocking */ }
 
-  if (isNonAnswer(text, message)) {
+  // Role bleed outranks the non-answer/truncation critics: a reply written in the user's voice is
+  // a specific, differently-repaired defect (regenerate in the assistant's voice — see the
+  // forward-only branch in answerEngine), and it is fluent enough that neither of them fires.
+  if (looksRoleBled(text)) {
+    issues.push({ kind: 'rolebleed', detail: 'The reply was written in the user\'s voice — it restated the request instead of responding to it.' })
+  } else if (isNonAnswer(text, message)) {
     issues.push({ kind: 'nonanswer', detail: 'The reply acknowledged the request but did not actually answer it.' })
   } else if (looksTruncated(text)) {
     issues.push({ kind: 'truncated', detail: 'The answer appears cut off before finishing.' })

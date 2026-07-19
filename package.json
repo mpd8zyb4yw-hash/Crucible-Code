@@ -21,6 +21,7 @@
     "contract:bench": "tsx src/CrucibleEngine/synth/__contractGate_bench.ts",
     "lintgate:bench": "tsx src/CrucibleEngine/synth/__lintGate_bench.ts",
     "repair:bench": "tsx src/CrucibleEngine/synth/__repairProposers_bench.ts",
+    "rolebleed:bench": "tsx src/CrucibleEngine/answer/__rolebleed_bench.ts",
     "generate:skills": "tsx src/CrucibleEngine/synth/generate.ts",
     "diag": "curl -s http://localhost:3001/api/diag | python3 -m json.tool",
     "build": "tsc -b && vite build",

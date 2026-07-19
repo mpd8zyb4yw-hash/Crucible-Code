@@ -474,13 +474,25 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   if (needsReprompt.length) {
     emit?.({ type: 'verify', passed: false, report: needsReprompt.map(i => i.detail).join(' ') })
     const directive = buildRepairDirective(needsReprompt)
-    const repairMsgs = [
-      { role: 'system', content: sys },
-      ...historyToMessages(history),
-      { role: 'user', content: message },
-      { role: 'assistant', content: draft },
-      { role: 'user', content: directive },
-    ]
+    // Role bleed is repaired FORWARD-ONLY (cont.89: "the repair prompt was the bug"). Every other
+    // defect benefits from the model seeing its own draft, but a draft written in the USER's voice
+    // is the single worst thing to replay — the transcript then ends with a user-voice "assistant"
+    // turn, which is exactly the pattern that induced the bleed. Re-synthesize from the request.
+    const roleBled = needsReprompt.some(i => i.kind === 'rolebleed')
+    const repairMsgs = roleBled
+      ? [
+          { role: 'system', content: sys },
+          ...historyToMessages(history),
+          { role: 'user', content: `${message}\n\n${directive}` },
+        ]
+      : [
+          { role: 'system', content: sys },
+          ...historyToMessages(history),
+          { role: 'user', content: message },
+          { role: 'assistant', content: draft },
+          { role: 'user', content: directive },
+        ]
+    if (roleBled) debugBus.emit('pipeline', 'role_bleed_repair', { message: message.slice(0, 80) }, { severity: 'warn' })
     const retry = (await fmComplete(repairMsgs)).trim()
     if (retry) {
       const second = critiqueAnswer(retry, message, { intent: facets.intent })
@@ -494,7 +506,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       }
     }
     // Still fundamentally broken (empty / non-answer) after the repair → abstain honestly.
-    const fatal = issues.filter(i => i.kind === 'empty' || i.kind === 'nonanswer')
+    const fatal = issues.filter(i => i.kind === 'empty' || i.kind === 'nonanswer' || i.kind === 'rolebleed')
     if (fatal.length) {
       debugBus.emit('pipeline', 'abstain_after_repair', { message: message.slice(0, 80), issues: fatal.map(i => i.kind) }, { severity: 'warn' })
       return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, corrections, repaired, streamed }
@@ -685,6 +697,9 @@ function buildRepairDirective(issues: Issue[]): string {
         ? 'You did not provide the code that was requested. Write the complete implementation now, in a single fenced code block.'
         : 'You acknowledged the request but did not answer it. Give the actual answer now.'
       case 'contradiction': return `Your reply contradicts itself (${i.detail}). Resolve the contradiction and give one consistent answer.`
+      // Stated positively — naming the artifact to avoid ("do not say I'd like…") tends to make a
+      // weak model echo the very phrasing. Tell it whose turn it is and what its turn should do.
+      case 'rolebleed': return 'You are the assistant answering the user. Respond to what they just said — state what YOU will do, or ask the one question you still need answered. Never write the user\'s side of the conversation.'
       default: return i.detail
     }
   })
