@@ -93,6 +93,47 @@ export function stripDegenerateRepetition(code: string): string {
 }
 
 /**
+ * Multi-file repair surface (cont.101).
+ *
+ * The change-set oracle defers errors in change-set files that are still PENDING, but an
+ * already-WRITTEN sibling is deliberately back in scope — an error there is a real defect
+ * (cont.99/cont.85: widening scope past the pending set would false-certify). The gap is that
+ * the current candidate structurally CANNOT fix a sibling it does not own, so a coupled
+ * refactor that makes a written sibling stale grinds all its rounds out and abstains. Measured
+ * live on extract-duplicated-discount: checkout.ts is written first, then extracting the helper
+ * into discount.ts leaves checkout.ts holding a TS2440 no discount.ts candidate can reach.
+ *
+ * So instead of widening the gate, widen the REPAIR: when the fatal error is located in a
+ * project file that is not the candidate, propose deterministic repairs to THAT file and offer
+ * the pair as one change-set. Re-gated by the same oracle, so a misfire is rejected exactly
+ * like any wrong candidate — this cannot false-certify, it can only unstick a real refactor.
+ */
+function proposeSiblingRepairs(
+  detail: string,
+  modulePath: string,
+  contextFiles: OracleContextFile[],
+  spec: string,
+): SynthFile[] {
+  // `<path>(<line>,<col>): error TS####: <msg>` — the path is staged under a scratch root, so
+  // match it against known context files by suffix rather than trying to un-stage it.
+  const loc = /^(?:typecheck:\s*)?(.*?)\((\d+),(\d+)\): error TS\d+:/.exec(detail.trim())
+  if (!loc) return []
+  const errPath = loc[1].replace(/\\/g, '/')
+  const sibling = contextFiles.find(c => {
+    const rel = c.rel.replace(/\\/g, '/')
+    return rel !== modulePath && (errPath === rel || errPath.endsWith(`/${rel}`))
+  })
+  if (!sibling) return []
+  let content = ''
+  try { content = fs.readFileSync(sibling.src, 'utf8') } catch { return [] }
+  const out: SynthFile[] = []
+  for (const repaired of proposeRepairs(content, detail, spec)) {
+    if (repaired !== content) out.push({ path: sibling.rel, content: repaired })
+  }
+  return out
+}
+
+/**
  * Per-round FM debug ledger (.crucible/fm-rounds.jsonl). Diagnosis instrument for the
  * "why doesn't the FM self-correct across rounds?" class of question — records what each
  * round was actually asked, what it produced, and why the oracle rejected it. Append-only,
@@ -405,6 +446,20 @@ export async function synthesizeUniversal(
       })
       if (rv.gateA) {
         return { files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → deterministic repair → tsc-clean (no behavioral test derivable; downstream verify required)` }
+      }
+    }
+    // ── Multi-file repair: the fatal error may be in an already-written change-set sibling
+    // this candidate does not own and cannot reach. Offer candidate + repaired sibling as one
+    // change-set, re-gated by the same oracle.
+    for (const sib of proposeSiblingRepairs(v.detail, modulePath, contextFiles, sigBlock)) {
+      const rf: SynthFile[] = [...files, sib]
+      const rv = await verifyCandidateAsync(rf, undefined, oracleOpts)
+      logFmRound({
+        modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true, siblingRepair: sib.path,
+        accepted: rv.gateA, verdict: rv.detail.slice(0, 400),
+      })
+      if (rv.gateA) {
+        return { files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → deterministic repair of sibling ${sib.path} → tsc-clean (no behavioral test derivable; downstream verify required)` }
       }
     }
     // ── Out-of-depth tripwire (same signal as the behavioral loop): identical tsc failure
