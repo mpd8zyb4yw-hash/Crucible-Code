@@ -42,7 +42,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { execFileSync, execSync } from 'child_process'
-import { TASKS, type AgenticTask } from './__agentic_corpus'
+import { TASKS, targetsOf, primaryTarget, type AgenticTask } from './__agentic_corpus'
 import { makeVerifier } from './verify'
 import { runAgentLoop } from './loop'
 import { makeOfflineDriveTurn } from './synthDriver'
@@ -214,8 +214,9 @@ async function noopControl(): Promise<{ holes: number; total: number; rows: stri
 
     // The no-op: append a comment to the file the change was supposed to land in.
     // Semantically identical to doing nothing at all.
-    const target = path.join(dir, task.mustTouch)
-    fs.appendFileSync(target, '\n// (agent looked at this file and changed nothing)\n')
+    for (const t of targetsOf(task)) {
+      fs.appendFileSync(path.join(dir, t), '\n// (agent looked at this file and changed nothing)\n')
+    }
 
     const ctx = { projectPath: dir, emit: () => {}, allowMutation: true,
       budget: { remainingTokens: 10_000 } } as unknown as ToolCtx
@@ -307,19 +308,26 @@ async function liveTask(task: AgenticTask): Promise<Outcome> {
   const reported: 'pass' | 'fail' = result?.ok && result?.stopped === 'final' ? 'pass' : 'fail'
 
   const changedFiles = Object.keys(after).filter(f => after[f] !== before[f] && !f.startsWith('__cov__'))
-  const targetBefore = before[task.mustTouch] ?? ''
-  const targetAfter = after[task.mustTouch] ?? ''
-  const lines = changedLines(targetBefore, targetAfter)
-  // A comment-only / whitespace-only edit is a no-op in substance.
-  const substantive = lines.filter(ln => {
-    const t = (targetAfter.split('\n')[ln - 1] ?? '').trim()
-    return t && !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
-  })
+  // Substantive change is computed PER TARGET. On the multi-file tier every coupled file
+  // must move: editing 1 of 4 is a partial refactor, and crediting it is the inflation this
+  // corpus exists to catch. `substantive` therefore carries the PRIMARY file's changed lines
+  // (that is what coverage instruments), but a miss in ANY target forces NOOP below.
+  const changedIn = (f: string): number[] => {
+    const a = before[f] ?? '', b = after[f] ?? ''
+    return changedLines(a, b).filter(ln => {
+      const t = (b.split('\n')[ln - 1] ?? '').trim()
+      // A comment-only / whitespace-only edit is a no-op in substance.
+      return t && !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
+    })
+  }
+  const targets = targetsOf(task)
+  const untouched = targets.filter(f => changedIn(f).length === 0)
+  const substantive = changedIn(primaryTarget(task))
 
   const h = hiddenVerdict(dir, task)
   const hasTest = Boolean((() => { try { return JSON.parse(after['package.json']).scripts?.test } catch { return null } })())
   const ex = hasTest && substantive.length
-    ? exercised(dir, task.mustTouch, substantive, 'npm test --silent')
+    ? exercised(dir, primaryTarget(task), substantive, 'npm test --silent')
     : { ran: false, covered: 0, total: substantive.length }
 
   const out: Outcome = {
@@ -330,6 +338,12 @@ async function liveTask(task: AgenticTask): Promise<Outcome> {
   }
 
   if (reported === 'fail') return { ...out, klass: 'HONEST_FAIL' }
+  // A partial refactor is a no-op with extra steps: the coupled files it skipped are exactly
+  // the ones that make the change real, and the hidden spec probes the top of that chain.
+  if (untouched.length) {
+    return { ...out, klass: 'NOOP',
+      status: `${out.status} [untouched: ${untouched.join(', ')}]` }
+  }
   if (!substantive.length) return { ...out, klass: 'NOOP' }
   if (unverified || signal === 'none') return { ...out, klass: 'BLIND' }
   if (ex.ran && ex.covered === 0) return { ...out, klass: 'UNEXERCISED' }
@@ -423,7 +437,7 @@ async function main() {
     console.log(`\n  READ THESE — mechanical TRUE is not a verdict (cont.79h):`)
     for (const o of trues) {
       const t = TASKS.find(x => x.id === o.id)!
-      console.log(`    ${o.id}: ${path.join(o.dir, t.mustTouch)}`)
+      console.log(`    ${o.id}: ${targetsOf(t).map(f => path.join(o.dir, f)).join('\n      ')}`)
       console.log(`      rubric: ${t.readRubric}`)
     }
   }

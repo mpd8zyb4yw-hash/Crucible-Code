@@ -43,11 +43,23 @@ export interface AgenticTask {
   files: Record<string, string>
   /** Authored from the goal alone. Written in AFTER the run. The correctness oracle. */
   hidden: string
-  /** A real change must land here — anything else is a no-op. */
-  mustTouch: string
+  /**
+   * A real change must land in EVERY file listed here — anything less is a no-op.
+   * A bare string is the single-file case. For the multi-file tier this is the whole
+   * coupled set: a refactor that edits 1 of 4 coupled files is a partial change, and
+   * scoring it as work is exactly the inflation this corpus exists to catch.
+   */
+  mustTouch: string | string[]
   /** What a human reviewer must confirm when reading the artifact behind a mechanical pass. */
   readRubric: string
 }
+
+/** Every file a real change must land in. The single-file tier yields a 1-element list. */
+export const targetsOf = (t: AgenticTask): string[] =>
+  Array.isArray(t.mustTouch) ? t.mustTouch : [t.mustTouch]
+
+/** The file coverage/instrumentation keys off. First listed is the primary. */
+export const primaryTarget = (t: AgenticTask): string => targetsOf(t)[0]
 
 const PKG = (name: string) => JSON.stringify(
   { name, version: '1.0.0', scripts: { test: 'tsx test.ts' } }, null, 2) + '\n'
@@ -491,6 +503,366 @@ assert.strictEqual(wordCount(''), 0, 'the stated empty case must hold');
 assert.strictEqual(wordCount('one'), 1, 'single word');
 assert.strictEqual(wordCount('  a   b  '), 2, 'leading/repeated whitespace must not create phantom words');
 assert.strictEqual(typeof m.charCount, 'function', 'charCount must survive');
+console.log('HIDDEN OK');
+`,
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TIER 2 — MULTI-FILE REFACTORS (cont.98)
+  // ═══════════════════════════════════════════════════════════════════════════
+  //
+  // Tier 1 above is median 7 LOC in a single file. That is isolated function synthesis,
+  // which the goal text explicitly excludes ("non-trivial multi-file changes, real
+  // debugging, real refactors, NOT just isolated function synthesis"). A capability %
+  // measured only against tier 1 says nothing about the goal — it was the single most
+  // misleading artifact in the repo.
+  //
+  // The tier-2 shape rules, over and above the tier-1 rules:
+  //  · `mustTouch` lists the WHOLE coupled set. Editing 1 of 4 coupled files is a partial
+  //    change, and the runner scores it NOOP — no credit for touching the easy file.
+  //  · The change cannot be localized. Each task threads a signature, a field name, or a
+  //    sync→async boundary through a call chain, so a correct edit to one file makes the
+  //    others fail to compile until they are reconciled too.
+  //  · The hidden spec probes at the TOP of the chain (the outermost caller), so a fix that
+  //    only lands in the leaf module cannot pass.
+
+  // ── 13. Thread a new parameter down a 4-deep call chain. ───────────────────
+  {
+    id: 'thread-tax-rate',
+    goal: 'The tax rate is hardcoded at 8% inside applyTax() in src/tax.ts, but invoices for different regions need different rates. Thread an optional tax rate parameter through the whole chain — invoice() in src/invoice.ts, orderTotal() in src/order.ts, lineTotal() in src/lineItem.ts, and applyTax() in src/tax.ts — so a caller can pass a rate to invoice() and have it reach applyTax(). When no rate is passed, the existing 8% must still be used. Tax is rounded per line, as it is today.',
+    mustTouch: ['src/tax.ts', 'src/lineItem.ts', 'src/order.ts', 'src/invoice.ts'],
+    readRubric: 'rate flows invoice→order→lineItem→tax; omitted rate still yields 8%; rounding stays per-line, not on the grand total.',
+    files: {
+      ...BASE('invoice-kit'),
+      'src/tax.ts': `export function applyTax(cents: number): number {
+  return Math.round(cents * 1.08);
+}
+`,
+      'src/lineItem.ts': `import { applyTax } from './tax';
+export interface Line { qty: number; unitCents: number }
+export function lineTotal(line: Line): number {
+  return applyTax(line.qty * line.unitCents);
+}
+`,
+      'src/order.ts': `import { lineTotal, Line } from './lineItem';
+export function orderTotal(lines: Line[]): number {
+  return lines.reduce((sum, l) => sum + lineTotal(l), 0);
+}
+`,
+      'src/invoice.ts': `import { orderTotal } from './order';
+import { Line } from './lineItem';
+export function invoice(customer: string, lines: Line[]): { customer: string; totalCents: number } {
+  return { customer, totalCents: orderTotal(lines) };
+}
+`,
+      'test.ts': `import assert from 'assert';
+import { applyTax } from './src/tax';
+import { lineTotal } from './src/lineItem';
+import { orderTotal } from './src/order';
+import { invoice } from './src/invoice';
+assert.strictEqual(applyTax(1000), 1080);
+console.log('  ok applies the default rate');
+assert.strictEqual(lineTotal({ qty: 2, unitCents: 500 }), 1080);
+console.log('  ok totals a line');
+assert.strictEqual(orderTotal([{ qty: 2, unitCents: 500 }, { qty: 1, unitCents: 300 }]), 1404);
+console.log('  ok totals an order');
+assert.strictEqual(invoice('acme', [{ qty: 2, unitCents: 500 }]).totalCents, 1080);
+console.log('  ok builds an invoice');
+console.log('all passed');
+`,
+    },
+    hidden: `import assert from 'assert';
+import { applyTax } from './src/tax';
+import { lineTotal } from './src/lineItem';
+import { orderTotal } from './src/order';
+import { invoice } from './src/invoice';
+
+const LINES = [{ qty: 2, unitCents: 500 }, { qty: 1, unitCents: 300 }];
+
+// Probed at the TOP of the chain: a leaf-only edit cannot satisfy this.
+assert.strictEqual((invoice as any)('acme', LINES, 0.2).totalCents, 1560,
+  'a rate passed to invoice() must reach applyTax() (1200 + 360)');
+assert.strictEqual((invoice as any)('acme', LINES, 0).totalCents, 1300,
+  'a zero rate must be honoured (untaxed 1000 + 300), not fall back to the 8% default');
+assert.strictEqual(invoice('acme', LINES).totalCents, 1404,
+  'an omitted rate must still default to 8%');
+
+// Each intermediate link must actually carry the parameter.
+assert.strictEqual((orderTotal as any)(LINES, 0.2), 1560, 'orderTotal must accept and forward a rate');
+assert.strictEqual((lineTotal as any)({ qty: 2, unitCents: 500 }, 0.2), 1200, 'lineTotal must accept and forward a rate');
+assert.strictEqual((applyTax as any)(1000, 0.2), 1200, 'applyTax must accept a rate');
+assert.strictEqual(applyTax(1000), 1080, 'applyTax default must hold');
+
+// Rounding must stay PER LINE. Rounding the grand total instead gives 1461 here, not 1462.
+const ODD = [{ qty: 1, unitCents: 333 }, { qty: 1, unitCents: 1017 }];
+assert.strictEqual((orderTotal as any)(ODD, 0.085), 1464,
+  'tax must round per line (361 + 1103), not once on the grand total (which gives 1465)');
+console.log('HIDDEN OK');
+`,
+  },
+
+  // ── 14. Rename a domain field across every layer that names it. ────────────
+  {
+    id: 'rename-field-across-layers',
+    goal: 'The Item field `qty` is too terse and is being confused with other counters. Rename it to `quantity` everywhere it appears — the interface in src/types.ts, the check in src/validate.ts, the accumulation in src/store.ts, and the rendering in src/report.ts. The existing suite in test.ts uses the old name and must be updated too, so `npm test` is green again afterwards. After the rename, an object that still uses the old `qty` key must no longer validate.',
+    mustTouch: ['src/types.ts', 'src/validate.ts', 'src/store.ts', 'src/report.ts', 'test.ts'],
+    readRubric: 'every layer names `quantity`; no `qty` survives in any of the four src files; the suite is reconciled rather than deleted or weakened; old-shaped objects fail validation; totals and rendering unchanged in behaviour.',
+    files: {
+      ...BASE('inventory-kit'),
+      'src/types.ts': `export interface Item {
+  sku: string;
+  qty: number;
+}
+`,
+      'src/validate.ts': `import { Item } from './types';
+export function isValidItem(item: Item): boolean {
+  return typeof item.sku === 'string' && item.sku.length > 0
+    && typeof item.qty === 'number' && item.qty > 0;
+}
+`,
+      'src/store.ts': `import { Item } from './types';
+import { isValidItem } from './validate';
+export class Store {
+  items: Item[] = [];
+  add(item: Item): boolean {
+    if (!isValidItem(item)) return false;
+    this.items.push(item);
+    return true;
+  }
+  totalUnits(): number {
+    return this.items.reduce((sum, i) => sum + i.qty, 0);
+  }
+}
+`,
+      'src/report.ts': `import { Item } from './types';
+export function renderItem(item: Item): string {
+  return item.sku + ' x' + item.qty;
+}
+`,
+      'test.ts': `import assert from 'assert';
+import { isValidItem } from './src/validate';
+import { Store } from './src/store';
+import { renderItem } from './src/report';
+assert.strictEqual(isValidItem({ sku: 'a', qty: 2 }), true);
+console.log('  ok validates an item');
+const s = new Store();
+s.add({ sku: 'a', qty: 2 });
+s.add({ sku: 'b', qty: 3 });
+assert.strictEqual(s.totalUnits(), 5);
+console.log('  ok totals units');
+assert.strictEqual(renderItem({ sku: 'a', qty: 2 }), 'a x2');
+console.log('  ok renders an item');
+console.log('all passed');
+`,
+    },
+    hidden: `import assert from 'assert';
+import fs from 'fs';
+import { isValidItem } from './src/validate';
+import { Store } from './src/store';
+import { renderItem } from './src/report';
+
+const item = (sku: string, quantity: number) => ({ sku, quantity }) as any;
+
+assert.strictEqual(isValidItem(item('a', 2)), true, 'the renamed field must validate');
+assert.strictEqual(isValidItem({ sku: 'a', qty: 2 } as any), false,
+  'the OLD key must no longer validate — a half-done rename leaves this passing');
+
+const s = new Store();
+assert.strictEqual(s.add(item('a', 2)), true, 'store must accept the renamed shape');
+s.add(item('b', 3));
+assert.strictEqual(s.totalUnits(), 5, 'accumulation must read the renamed field');
+assert.strictEqual(s.add({ sku: 'c', qty: 9 } as any), false, 'store must reject the old shape');
+assert.strictEqual(s.totalUnits(), 5, 'a rejected add must not change the total');
+
+assert.strictEqual(renderItem(item('a', 2)), 'a x2', 'rendering must read the renamed field');
+
+// Structural: the rename must land in EVERY layer, not just the ones the suite exercises.
+for (const f of ['src/types.ts', 'src/validate.ts', 'src/store.ts', 'src/report.ts']) {
+  const src = fs.readFileSync(f, 'utf8');
+  assert.ok(/\\bquantity\\b/.test(src), f + ' must use the new field name');
+  assert.ok(!/\\bqty\\b/.test(src), f + ' must not still mention qty');
+}
+console.log('HIDDEN OK');
+`,
+  },
+
+  // ── 15. Sync → async across a boundary. Every caller must be reconciled. ───
+  {
+    id: 'sync-store-to-async',
+    goal: 'The storage layer in src/db.ts is about to be backed by a network call, so it has to become asynchronous. Make get() in src/db.ts return a Promise, and update every caller so the whole chain still works — findUser() in src/userRepo.ts, greet() in src/userService.ts, and handle() in src/api.ts. handle() should resolve to the same shape it returns today. The existing suite in test.ts calls handle() synchronously and must be updated to await it, so `npm test` is green again afterwards.',
+    mustTouch: ['src/db.ts', 'src/userRepo.ts', 'src/userService.ts', 'src/api.ts', 'test.ts'],
+    readRubric: 'db.get returns a Promise; every layer awaits rather than passing the raw Promise along; handle() resolves to the same shape; the suite awaits rather than being weakened; the missing-user path still yields ok:false.',
+    files: {
+      ...BASE('userapi-kit'),
+      'src/db.ts': `const ROWS: Record<string, { name: string }> = {
+  u1: { name: 'Ada' },
+  u2: { name: 'Grace' },
+};
+export function get(id: string): { name: string } | undefined {
+  return ROWS[id];
+}
+`,
+      'src/userRepo.ts': `import { get } from './db';
+export function findUser(id: string): { name: string } | undefined {
+  return get(id);
+}
+`,
+      'src/userService.ts': `import { findUser } from './userRepo';
+export function greet(id: string): string | null {
+  const u = findUser(id);
+  if (!u) return null;
+  return 'Hello ' + u.name;
+}
+`,
+      'src/api.ts': `import { greet } from './userService';
+export function handle(id: string): { ok: boolean; body: string } {
+  const g = greet(id);
+  if (!g) return { ok: false, body: 'not found' };
+  return { ok: true, body: g };
+}
+`,
+      'test.ts': `import assert from 'assert';
+import { handle } from './src/api';
+const a = handle('u1');
+assert.deepStrictEqual(a, { ok: true, body: 'Hello Ada' });
+console.log('  ok handles a known user');
+const b = handle('nope');
+assert.deepStrictEqual(b, { ok: false, body: 'not found' });
+console.log('  ok handles a missing user');
+console.log('all passed');
+`,
+    },
+    hidden: `import assert from 'assert';
+import { get } from './src/db';
+import { findUser } from './src/userRepo';
+import { greet } from './src/userService';
+import { handle } from './src/api';
+
+const isThenable = (v: any) => Boolean(v) && typeof v.then === 'function';
+
+(async () => {
+  assert.ok(isThenable((get as any)('u1')), 'db.get must return a Promise');
+
+  // Probed at the TOP of the chain. A leaf-only edit leaves handle() returning
+  // {ok:true, body:'Hello [object Promise]'} — which still LOOKS like a pass to a
+  // gate that only checks the suite is green.
+  const a = await (handle as any)('u1');
+  assert.deepStrictEqual(a, { ok: true, body: 'Hello Ada' },
+    'handle must resolve to the same shape, with the name actually awaited');
+  const b = await (handle as any)('u2');
+  assert.deepStrictEqual(b, { ok: true, body: 'Hello Grace' }, 'a second user must work');
+  const c = await (handle as any)('nope');
+  assert.deepStrictEqual(c, { ok: false, body: 'not found' }, 'the missing-user path must survive');
+
+  // Every intermediate layer must be reconciled, not just the two ends.
+  assert.deepStrictEqual(await (findUser as any)('u1'), { name: 'Ada' }, 'findUser must resolve the row');
+  assert.strictEqual(await (greet as any)('u1'), 'Hello Ada', 'greet must await the user');
+  assert.strictEqual(await (greet as any)('nope'), null, 'greet must still null on a miss');
+
+  // The stringified-Promise failure mode, named explicitly.
+  assert.ok(!/\\[object Promise\\]/.test(String(a.body)), 'a Promise must not be concatenated into the body');
+  console.log('HIDDEN OK');
+})().catch((e: any) => { console.error('HIDDEN FAIL: ' + e.message); process.exit(1); });
+`,
+  },
+
+  // ── 16. Extract triplicated logic — and the copies DISAGREE. ───────────────
+  //     One of the three copies has a bug. Extracting whichever copy the model reads
+  //     first is a 1-in-3 coin flip; the hidden spec requires the CORRECT behaviour at
+  //     all three call sites, so the task cannot be passed by mechanical copy-paste.
+  {
+    id: 'extract-duplicated-discount',
+    goal: 'The same discount rule is copy-pasted into three modules — src/checkout.ts, src/quote.ts and src/preview.ts — and the copies have drifted apart, so the three disagree. The rule is: 10% off orders of 10000 cents or more, then 5% more off if the customer is a member, each step rounded to whole cents. Extract that rule into a single shared module src/discount.ts and make all three call sites use it, so they agree.',
+    mustTouch: ['src/checkout.ts', 'src/quote.ts', 'src/preview.ts'],
+    readRubric: 'one shared implementation in src/discount.ts; all three modules delegate to it rather than keeping a local copy; the threshold is >= 10000 and the member step compounds on the discounted price.',
+    files: {
+      ...BASE('discount-kit'),
+      // The correct rule, per the goal: >=10000 → 10% off, then member → 5% more off.
+      'src/checkout.ts': `export function checkoutTotal(cents: number, member: boolean): number {
+  let out = cents;
+  if (cents >= 10000) out = Math.round(out * 0.9);
+  if (member) out = Math.round(out * 0.95);
+  return out;
+}
+`,
+      // DRIFT 1: threshold is a strict > instead of >=.
+      'src/quote.ts': `export function quoteTotal(cents: number, member: boolean): number {
+  let out = cents;
+  if (cents > 10000) out = Math.round(out * 0.9);
+  if (member) out = Math.round(out * 0.95);
+  return out;
+}
+`,
+      // DRIFT 2: the member discount is taken off the ORIGINAL price, not compounded.
+      'src/preview.ts': `export function previewTotal(cents: number, member: boolean): number {
+  let out = cents;
+  if (cents >= 10000) out = Math.round(out * 0.9);
+  if (member) out = out - Math.round(cents * 0.05);
+  return out;
+}
+`,
+      'test.ts': `import assert from 'assert';
+import { checkoutTotal } from './src/checkout';
+import { quoteTotal } from './src/quote';
+import { previewTotal } from './src/preview';
+// The visible suite only ever probes a value where all three copies happen to agree.
+assert.strictEqual(checkoutTotal(20000, false), 18000);
+console.log('  ok checkout discounts a large order');
+assert.strictEqual(quoteTotal(20000, false), 18000);
+console.log('  ok quote discounts a large order');
+assert.strictEqual(previewTotal(20000, false), 18000);
+console.log('  ok preview discounts a large order');
+assert.strictEqual(checkoutTotal(5000, false), 5000);
+console.log('  ok small orders are undiscounted');
+console.log('all passed');
+`,
+    },
+    hidden: `import assert from 'assert';
+import fs from 'fs';
+
+import { checkoutTotal } from './src/checkout';
+import { quoteTotal } from './src/quote';
+import { previewTotal } from './src/preview';
+
+const fns: Array<[string, (c: number, m: boolean) => number]> = [
+  ['checkout', checkoutTotal as any], ['quote', quoteTotal as any], ['preview', previewTotal as any],
+];
+
+// The correct rule, computed independently of every copy in the tree.
+const expected = (cents: number, member: boolean): number => {
+  let out = cents;
+  if (cents >= 10000) out = Math.round(out * 0.9);
+  if (member) out = Math.round(out * 0.95);
+  return out;
+};
+
+const CASES: Array<[number, boolean]> = [
+  [10000, false], // exactly the threshold — catches the strict-\`>\` drift in quote.ts
+  [10000, true],
+  [9999, false],
+  [20000, true],  // compounding — catches the off-the-original drift in preview.ts
+  [12345, true],
+  [5000, true],
+  [0, true],
+];
+
+for (const [cents, member] of CASES) {
+  const want = expected(cents, member);
+  for (const [name, fn] of fns) {
+    assert.strictEqual(fn(cents, member), want,
+      name + '(' + cents + ', ' + member + ') must be ' + want + ' — the three call sites must agree on the CORRECT rule');
+  }
+}
+
+// Structural: a shared module must exist and the copies must actually be gone.
+assert.ok(fs.existsSync('src/discount.ts'), 'the rule must be extracted into src/discount.ts');
+const shared = fs.readFileSync('src/discount.ts', 'utf8');
+assert.ok(/export/.test(shared), 'src/discount.ts must export the shared rule');
+for (const f of ['src/checkout.ts', 'src/quote.ts', 'src/preview.ts']) {
+  const src = fs.readFileSync(f, 'utf8');
+  assert.ok(/from '\\.\\/discount'/.test(src), f + ' must import the shared rule');
+  assert.ok(!/10000/.test(src), f + ' must not keep a local copy of the threshold');
+}
 console.log('HIDDEN OK');
 `,
   },
