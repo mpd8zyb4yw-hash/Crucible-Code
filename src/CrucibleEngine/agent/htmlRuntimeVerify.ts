@@ -236,6 +236,45 @@ function runtimeErrorProblem(probe: Probe): string | null {
 // an app's total alike. `\b` around undefined avoids matching prose like "undefined behavior".
 const BAD_READOUT_RX = /\b(?:NaN|Infinity)\b|\bundefined\b/
 
+// ── Spec-conformance judge (goal-aware, injected) ─────────────────────────────
+// Every structural invariant in runtimeVerifyApp is deliberately goal-BLIND — it proves the app
+// is a working app, never that it is THE app that was asked for. So an app that runs flawlessly
+// but ignores the spec (asked for a tip calculator, shipped a to-do list) passes them all
+// (cont.97 OPEN). The conformance step is the one place the goal is consulted. It is also the
+// highest-risk check in the module: a false reject here poisons the repair loop — the exact
+// failure mode this whole file is scarred by (cont.79h). It is therefore fenced hard:
+//   • it runs ONLY when a judge is injected AND the goal is specific enough to be checkable,
+//   • it is grounded in what the app actually RENDERED (never its source — no comments, no dead
+//     code to be fooled by), and
+//   • it fails OPEN on every ambiguity, and may reject only on a confident, cited category
+//     mismatch. The judge itself is instructed to default to a PASS.
+export type AppSpecJudge = (x: { goal: string; surface: string })
+  => Promise<{ mismatch: boolean; missing?: string } | null>
+
+const MIN_JUDGE_SURFACE = 12    // chars of rendered text before a judge call could say anything
+const JUDGE_GOAL_MIN_WORDS = 3  // a goal too terse to name a concrete artifact isn't checkable
+
+/** The user-visible surface the app actually rendered: load text + drawn/status text + the label
+ *  of the control the harness touched. Deduped; NEVER the source — the judge sees only what a
+ *  user would see. */
+function appSurface(probe: Probe): string {
+  const parts: string[] = []
+  if (probe.loadText) parts.push(...probe.loadText)
+  if (probe.texts) parts.push(...probe.texts)
+  if (probe.interact?.control) parts.push(probe.interact.control)
+  const seen = new Set<string>()
+  return parts.map(s => (s || '').replace(/\s+/g, ' ').trim()).filter(s => {
+    if (s.length < 1 || seen.has(s)) return false
+    seen.add(s); return true
+  }).join(' | ').slice(0, 1200)
+}
+
+/** A goal too terse or generic for any rendered surface to confidently contradict is NOT
+ *  checkable — running the judge on it can only manufacture false rejects. Require a few words. */
+function isCheckableGoal(goal: string): boolean {
+  return (goal || '').trim().split(/\s+/).filter(Boolean).length >= JUDGE_GOAL_MIN_WORDS
+}
+
 export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string | null> {
   try {
     const probe = await runProbe(html, goal, 'game')
@@ -342,7 +381,7 @@ export async function runtimeVerifyHtml(html: string, goal = ''): Promise<string
 // must be interactive" is NOT (a landing page is legitimately static), and enforcing the latter
 // would re-create in miniature the exact false-reject this module was written to kill. Every check
 // is skipped when its probe field is absent (older harness → fail-open), same as the game path.
-export async function runtimeVerifyApp(html: string, goal = ''): Promise<string | null> {
+export async function runtimeVerifyApp(html: string, goal = '', judge?: AppSpecJudge): Promise<string | null> {
   try {
     const probe = await runProbe(html, goal, 'app')
     const errProblem = runtimeErrorProblem(probe)
@@ -501,6 +540,22 @@ export async function runtimeVerifyApp(html: string, goal = ''): Promise<string 
       return `the app does not respond: after clicking ${which}, the page did not change at all. ` +
         'The controls render but nothing is wired to them. Make sure you (a) attach the listener AFTER the element exists, ' +
         '(b) look the element up by the id it actually has, and (c) re-render the view at the end of the handler.'
+    }
+    // ── Spec-conformance (goal-aware) — the one goal-consulting check ──────────
+    // Runs last: every structural bug above is a stronger, deterministic signal, so we only ask
+    // "is this even the right KIND of app?" once we know it is a working one. See the AppSpecJudge
+    // doc above for why this is fenced so hard. Fail-open at every step.
+    if (judge && isCheckableGoal(goal)) {
+      const surface = appSurface(probe)
+      if (surface.length >= MIN_JUDGE_SURFACE) {
+        let verdict: { mismatch: boolean; missing?: string } | null = null
+        try { verdict = await judge({ goal, surface }) } catch { verdict = null }
+        if (verdict && verdict.mismatch === true && typeof verdict.missing === 'string' && verdict.missing.trim().length >= 4) {
+          debugBus.emit('agent', 'html_spec_mismatch', { goal: goal.slice(0, 80), missing: verdict.missing.slice(0, 120) }, { severity: 'warn' })
+          return `the app does not do what was asked: ${verdict.missing.trim().slice(0, 220)} ` +
+            'Re-read the request and build the interface it describes — the specific inputs, controls and output it names — not a generic app of a different kind.'
+        }
+      }
     }
     return null
   } catch (e: any) {

@@ -45,7 +45,7 @@ import { runResearchDag } from '../research/researchDag'
 import { fmReact, fmDirectAnswer, checkFmAvailable, fmComplete, type ConvTurn } from './fmReact'
 import { matchMeta } from '../answer/conversational'
 import { answerWithWebGrounding } from '../answer/groundedAnswer'
-import { runtimeVerifyHtml, runtimeVerifyApp } from './htmlRuntimeVerify'
+import { runtimeVerifyHtml, runtimeVerifyApp, type AppSpecJudge } from './htmlRuntimeVerify'
 import { classifyHtmlGoal, type HtmlGoalKind } from './htmlGoalKind'
 // (MiniCPM/GGUF proposer removed from the game hot path — see solveHtmlWrite; h2h cont.70.)
 
@@ -106,6 +106,32 @@ async function _callLocalFm(system: string, user: string, ms = _RESEARCH_FM_TIME
     const data = await res.json() as any
     return (data.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   } catch { return '' }
+}
+
+/** Conservative spec-conformance judge for the app path (cont.106). Sees ONLY the app's rendered
+ *  surface — never its source — and is told to default to a PASS: it may flag a mismatch only when
+ *  the rendered app is clearly a DIFFERENT KIND of thing than the request asked for. Fails open
+ *  (returns null) on any model, empty-output or parse error, so it can never turn a working
+ *  pipeline red on infrastructure trouble. */
+const _appSpecJudge: AppSpecJudge = async ({ goal, surface }) => {
+  const sys = 'You check whether a web app matches its build request. You are shown the REQUEST and ' +
+    'the TEXT THE APP RENDERED (visible labels and content only — not its code). Decide whether the ' +
+    'rendered app is the KIND of app the request asked for. Be lenient: different styling, wording, ' +
+    'layout and extra features are all fine, and partial/simple implementations still MATCH. Flag a ' +
+    'mismatch ONLY when the rendered app is clearly a DIFFERENT KIND of application than requested — ' +
+    'e.g. the request asks for a tip calculator but the app is a to-do list. When in any doubt, it ' +
+    'MATCHES. Reply with ONE line of strict JSON and nothing else: {"mismatch": false} if it matches, ' +
+    'or {"mismatch": true, "missing": "<what the app should be doing but clearly is not>"} if not.'
+  const usr = `REQUEST:\n${goal}\n\nRENDERED APP TEXT:\n${surface}`
+  const raw = await _callLocalFm(sys, usr, 12000)
+  if (!raw) return null
+  const m = raw.match(/\{[\s\S]*\}/)
+  if (!m) return null
+  try {
+    const v = JSON.parse(m[0])
+    if (typeof v.mismatch !== 'boolean') return null
+    return { mismatch: v.mismatch, missing: typeof v.missing === 'string' ? v.missing : undefined }
+  } catch { return null }
 }
 
 /**
@@ -1038,7 +1064,7 @@ async function solveAppHtmlWrite(targetPath: string, state: CurrentState): Promi
     const js = (fence ? fence[1] : raw).trim().replace(/\bconst\b/g, 'let')
     const html = js ? buildAppShell(js, title) : ''
     const problem = html
-      ? (validateHtmlDoc(html, 'app') ?? await runtimeVerifyApp(html, state.goal))
+      ? (validateHtmlDoc(html, 'app') ?? await runtimeVerifyApp(html, state.goal, _appSpecJudge))
       : 'empty completion'
     if (!problem) {
       debugBus.emit('agent', 'offline_html_synth', { path: targetPath, attempt, model: 'apple-fm', kind: 'app', bytes: html.length }, { severity: 'info' })
