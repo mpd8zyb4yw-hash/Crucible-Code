@@ -112,6 +112,50 @@ export function pickDue(list: Automation[], now: number): Automation | null {
   return due[0] ?? null
 }
 
+// ── Off-brief relevance guard ──────────────────────────────────────────────────
+// Live catch (2026-07-19): a Morning-brief run returned a sentence about
+// "reward-anticipatory units in vision language models" and recorded OK. Lexical
+// overlap between brief and answer is a cheap off-topic signal — but it is ONLY a
+// valid signal for prose-answering-prose. It cannot be a correctness test (see
+// crucible-verifier-cannot-be-regex): a legitimate answer routinely shares no
+// vocabulary with its brief — "state what 17×4 equals" → "68", currency/unit
+// conversions, translations, single-value lookups. Rejecting those made real
+// scheduled results vanish behind a scary "off-brief" label (2026-07-20 user finding);
+// a false reject is worse than a false accept here, since an accepted-but-weak card is
+// still readable and the user judges it, while a rejected run just disappears.
+//
+// So: only trust zero-overlap as off-topic when the answer is ITSELF substantial prose
+// (many content words) yet still shares nothing with a content-bearing brief. Short or
+// computed answers are exempt — their divergent vocabulary is expected, not suspicious.
+
+const OFF_BRIEF_STOP = ['this', 'that', 'with', 'from', 'then', 'each', 'them', 'have', 'what', 'your', 'today', 'write', 'anything', 'first', 'about', 'into', 'their', 'would', 'could', 'should', 'these', 'those', 'there', 'here', 'when', 'will', 'been', 'they']
+
+/** Substantive tokens: alpha words ≥4 chars (minus stopwords) and multi-digit numbers
+ *  (2024, 68) — numbers carry meaning ("Q4 2024 revenue" ↔ "…2024…") so they count. */
+function offBriefContentWords(s: string): Set<string> {
+  return new Set(
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+      .filter(w => !OFF_BRIEF_STOP.includes(w) && ((/[a-z]/.test(w) && w.length >= 4) || /^\d{2,}$/.test(w)))
+  )
+}
+
+/** Answer content-word count at/above which zero brief-overlap is treated as anomalous.
+ *  Set below the original real catch (the "reward-anticipatory…" sentence had ~9) yet
+ *  above any computed/short answer, so genuine off-topic prose is caught and terse
+ *  correct answers pass. */
+const OFF_BRIEF_MIN_ANSWER_WORDS = 6
+
+/** Reason string if the answer looks off-brief, else null (relevant / can't tell → keep). */
+export function offBriefReason(brief: string, answer: string): string | null {
+  const bw = offBriefContentWords(brief)
+  if (bw.size < 3) return null                       // brief too thin to judge relevance
+  const aw = offBriefContentWords(answer)
+  if (aw.size < OFF_BRIEF_MIN_ANSWER_WORDS) return null  // short/computed answer — exempt
+  const overlap = [...aw].filter(w => bw.has(w)).length
+  if (overlap > 0) return null                       // shares at least one content word
+  return 'no content-word overlap with the brief'
+}
+
 export function validateTrigger(t: unknown): t is Trigger {
   if (!t || typeof t !== 'object') return false
   const o = t as Record<string, unknown>
