@@ -130,7 +130,7 @@ const PERSONAL_DEIXIS = /\b(my|me|mine|i\s+have|i've\s+got|today'?s?|tomorrow|ye
 // NB: 'reply'/'forward' are excluded as bare words — "any email that needs a reply" is a
 // RETRIEVAL ask where "reply" is a noun (this exact phrasing fabricated an answer in the
 // 2026-07-20 report). Only their verb-with-object forms ("reply to", "forward to") count.
-const MUTATION_VERBS = /\b(send|draft|compose|create|add|book|cancel|delete|unsubscribe|reply\s+to|forward\s+to|schedule\s+an?)\b/i
+const MUTATION_VERBS = /\b(send|draft|compose|create|add|book|cancel|delete|unsubscribe|reply\s+to|forward\s+to|schedule\s+an?|build|make|generate|implement|develop|design|code)\b/i
 
 /** Day window stated in the message → gmail newer_than / calendar days. Deterministic map;
  *  null when nothing recency-shaped is stated (caller applies the 7-day default). */

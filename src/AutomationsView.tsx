@@ -15,7 +15,7 @@ type Trigger =
   | { kind: 'weekly'; day: number; time: string }
   | { kind: 'once'; at: number }
 
-interface RunRec { ts: number; status: 'ok' | 'failed'; summary: string; ms: number }
+interface RunRec { ts: number; status: 'ok' | 'failed'; summary: string; answer?: string; ms: number }
 interface Automation {
   id: string; name: string; brief: string; trigger: Trigger
   delivery: 'digest' | 'push'; enabled: boolean; createdAt: number
