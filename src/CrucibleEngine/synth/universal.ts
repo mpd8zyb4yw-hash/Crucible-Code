@@ -32,6 +32,7 @@ import { distillHint } from './errorHints'
 import { proposeRepairs } from './repairProposers'
 import { verifyCandidateAsync } from './oracle'
 import { synthesizePureCode, distillToSkill } from './pureCode'
+import { deriveGoalExampleTests } from './goalExampleOracle'
 import { buildRepoContext, withRetrieval, type OracleContextFile } from './repoContext'
 import { ensureIndex } from '../state/codebaseIndex'
 
@@ -317,7 +318,15 @@ export async function synthesizeUniversal(
   const smokeDerived = (derived || propertyDerived || invariantDerived || !contextFiles.length)
     ? null
     : deriveOptsTransformSmokeTest(spec, modulePath, contextFiles)
-  const effectiveDerived = derived ?? propertyDerived ?? invariantDerived ?? smokeDerived
+  // ── Goal-example oracle: LOWEST-priority fallback. Mines literal `fn(<literals>) → <literal>`
+  // examples stated verbatim in the goal prose and asserts them (zero inference; abstains on
+  // anything not in clean literal-call form). Catches the stable-WRONG subclass whose goal states
+  // a concrete call example but whose FM-visible test.ts is too weak to enforce it (cont.101
+  // add-titlecase clobber). Only tried when no stronger derived test exists, so it never displaces.
+  const goalExampleDerived = (derived || propertyDerived || invariantDerived || smokeDerived)
+    ? null
+    : deriveGoalExampleTests(spec, modulePath)
+  const effectiveDerived = derived ?? propertyDerived ?? invariantDerived ?? smokeDerived ?? goalExampleDerived
 
   // ── L3: reason a candidate with the on-device FM, GATED by the oracle. ─────────────────
   if (effectiveDerived) {
@@ -327,7 +336,9 @@ export async function synthesizeUniversal(
         ? `context-invariant (${invariantDerived.family})`
         : smokeDerived
           ? `context-invariant (${smokeDerived.family})`
-          : `property (${(effectiveDerived as any).family ?? 'unknown'})`
+          : goalExampleDerived
+            ? 'goal-example'
+            : `property (${(effectiveDerived as any).family ?? 'unknown'})`
     // Full behavioral oracle: tsc + spec-derived test.
     for (let r = 0; r < rounds; r++) {
       const system = 'You are a precise TypeScript engineer. Output ONLY the complete contents of the requested .ts file — no prose, no markdown fences, no explanations. It must compile under strict-off TypeScript and export EXACTLY the requested symbols.'
