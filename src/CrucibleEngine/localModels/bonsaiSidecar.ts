@@ -36,7 +36,7 @@
 
 import { spawn, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { debugBus } from '../debug/bus'
 
 export type BonsaiMode = 'background' | 'focus'
@@ -181,7 +181,22 @@ export async function ensureBonsai(): Promise<boolean> {
     if (await healthy()) return true            // someone else's server is already on the port
     const m = mode()
     debugBus.emit('pipeline', 'bonsai_load', { mode: m, port: PORT }, { severity: 'info' })
-    const child = spawn(BIN, argsFor(m), { stdio: 'ignore', detached: false })
+    // The PrismML llama-server binary was built with an @rpath pointing at the (now-gone) build
+    // tree, so dyld cannot find its sibling dylibs (libllama-server-impl.dylib et al.) unless we
+    // point DYLD_LIBRARY_PATH at the binary's own directory. WITHOUT THIS the child exits on
+    // launch with "Library not loaded", ensureBonsai() times out, and every head/repair call
+    // silently falls back to the Apple FM — which is exactly the bug that made the sidecar look
+    // seated while never actually running (cont.90). The libs live next to the binary.
+    const binDir = dirname(BIN)
+    const child = spawn(BIN, argsFor(m), {
+      stdio: 'ignore',
+      detached: false,
+      env: {
+        ...process.env,
+        DYLD_LIBRARY_PATH: [binDir, process.env.DYLD_LIBRARY_PATH].filter(Boolean).join(':'),
+        DYLD_FALLBACK_LIBRARY_PATH: [binDir, process.env.DYLD_FALLBACK_LIBRARY_PATH].filter(Boolean).join(':'),
+      },
+    })
     child.on('exit', code => {
       if (proc === child) { proc = null; debugBus.emit('pipeline', 'bonsai_exit', { code }, { severity: 'info' }) }
     })
@@ -241,6 +256,66 @@ export async function bonsaiComplete(
       // and the text lands in `reasoning_content`. Reading only `content` scores a truncated
       // run as an empty answer (cont.88 lost a whole arm to this).
       return (msg.content || msg.reasoning_content || '').trim()
+    } finally { armIdle() }
+  }
+  const next = queue.then(run, run)
+  queue = next.then(() => undefined, () => undefined)
+  return next
+}
+
+/**
+ * Streaming completion — same OpenAI `/v1/chat/completions` SSE shape the Apple FM daemon speaks
+ * (llama-server is OpenAI-compatible), so the caller's delta parser is identical. Serialized on
+ * the same queue as bonsaiComplete: one generation at a time on an 8GB box. Used when the local
+ * model LEADS as the head (see CRUCIBLE_HEAD) so the interactive draft streams token-by-token
+ * exactly as the FM path did. Throws on an unavailable sidecar so the caller can fall back to FM.
+ */
+export async function sidecarStream(
+  messages: Array<{ role: string; content: string }>,
+  onDelta: (delta: string) => void,
+  opts: BonsaiOpts = {},
+): Promise<string> {
+  const run = async (): Promise<string> => {
+    if (!await ensureBonsai()) throw new Error('bonsai sidecar unavailable')
+    clearIdle()
+    try {
+      const body: Record<string, unknown> = {
+        model: 'bonsai',
+        messages,
+        stream: true,
+        max_tokens: opts.maxTokens ?? 1536,
+        temperature: opts.temperature ?? 0.2,
+      }
+      if (!opts.think) body.chat_template_kwargs = { enable_thinking: false }
+      const res = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: opts.signal ?? AbortSignal.timeout(opts.timeoutMs ?? 900_000),
+      })
+      if (!res.ok || !res.body) throw new Error(`sidecar HTTP ${res.status}`)
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let buf = ''
+      let full = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const parts = buf.split('\n\n')
+        buf = parts.pop() ?? ''
+        for (const part of parts) {
+          const line = part.split('\n').find(l => l.startsWith('data:'))
+          if (!line) continue
+          const p = line.slice(5).trim()
+          if (p === '[DONE]') continue
+          let ev: any
+          try { ev = JSON.parse(p) } catch { continue }
+          const delta = ev?.choices?.[0]?.delta?.content ?? ''
+          if (delta) { full += delta; try { onDelta(delta) } catch { /* sink errors */ } }
+        }
+      }
+      return full.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
     } finally { armIdle() }
   }
   const next = queue.then(run, run)

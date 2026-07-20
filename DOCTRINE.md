@@ -24,12 +24,19 @@ errors and try again against ground truth.
 ## Why this is our thesis (the constraint that forged it)
 
 Crucible runs on an **8GB unified-memory Mac with ~2GB of headroom**. The primary model today is
-Apple's on-device Foundation Model (~3B, on the ANE, weights shared by the OS so they cost us
-almost no process RAM). A 7B won't fit; a 14–32B is physically impossible here. But the constraint
-is not "this model is as big as we can go." **The direction of travel is the opposite of bigger —
-it is a smaller, reasoning-denser _cognitive core_ (see below).** The right model for Crucible is
-not the largest that fits; it is the *smallest* one whose reasoning, wrapped in the loop, still
-certifies — because everything it does NOT try to memorize is one less thing it can be wrong about.
+**qwen2.5-1.5b**, run on-device via a local llama-server sidecar (cont.90). It replaced Apple's
+on-device Foundation Model as the head because the FM was MEASURED (cont.88/89) to fail the core
+job — it could not copy an identifier out of clean evidence (0/3) while qwen2.5-1.5b does it 3/3
+AND executes 3/3, at ~40–50 tok/s, ~93ms warm. Crucially qwen1.5b is *SMALLER* than the ~3B FM,
+so this was never a "bigger model" move: it is the doctrine's own thesis in action — the FM's
+failure was model-specific, not a parameter-count ceiling. The Apple FM is retained only as a
+fallback when the sidecar is unavailable. A 7B won't fit; a 14–32B is physically impossible here
+(the 27B was tested and rejected: it pinned ~6.6GB of the 8GB box for ZERO accuracy gain over the
+1.5B). But the constraint is not "this model is as big as we can go." **The direction of travel is
+the opposite of bigger — it is a smaller, reasoning-denser _cognitive core_ (see below).** The
+right model for Crucible is not the largest that fits; it is the *smallest* one whose reasoning,
+wrapped in the loop, still certifies — because everything it does NOT try to memorize is one less
+thing it can be wrong about.
 
 We went to the Moon on a computer with ~4KB of RAM. It worked because the **guidance loop**
 did the reasoning: measure state, compute error against ground truth, correct, repeat. The

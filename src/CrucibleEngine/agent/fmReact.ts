@@ -27,8 +27,29 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import { enqueueFm } from './fmQueue'
+import { bonsaiComplete, sidecarStream, isBonsaiInstalled, repairModelName } from '../localModels/bonsaiSidecar'
 
 const FM_URL = process.env.LOCAL_INFERENCE_URL ?? 'http://127.0.0.1:11435'
+
+// ── Head model selection (cont.90) ──────────────────────────────────────────────
+// cont.88/89 MEASURED the Apple FM cannot copy an identifier out of clean evidence (0/3) while
+// qwen2.5-1.5b — SMALLER than the FM (~3B) and already on disk — does it 3/3 AND executes 3/3, at
+// 40 tok/s. The FM's failure was model-specific, not parameter count. Per the user's cont.87
+// decision (Apple FM path paused: more debugging overhead than value), the local sidecar model is
+// now the HEAD for every interactive reasoning/planning/tool-routing call, with the Apple FM kept
+// only as a fallback when the sidecar is not installed or fails. This is doctrine-COMPLIANT: the
+// cognitive core is meant to be the smallest reasoning-dense model that certifies, not the largest
+// that fits — qwen1.5b is closer to that ~1B endpoint than the FM ever was. Set CRUCIBLE_HEAD=fm
+// to pin the old Apple-FM-first behavior (e.g. to re-bench the two head-to-head).
+const HEAD = (process.env.CRUCIBLE_HEAD ?? 'local').toLowerCase()
+/** True when the local sidecar should LEAD this call (installed + not explicitly pinned to fm). */
+function useLocalHead(): boolean {
+  return HEAD !== 'fm' && HEAD !== 'apple-fm' && isBonsaiInstalled()
+}
+/** Short name of the model actually serving the head, for telemetry / user-facing lines. */
+export function headModelName(): string {
+  return useLocalHead() ? repairModelName() : 'apple-fm'
+}
 const DEFAULT_MAX_ROUNDS = 8
 // Healthy generation measured at 21-28s, already against the old 30s ceiling —
 // under load this crossed it, fired AbortSignal.timeout, and got misreported as
@@ -109,6 +130,16 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
   // concurrent-load GenerationError that starved live VGR searches. Optional verification
   // lanes pass priority:'normal' so a fresh request's HIGH draft preempts them on the gate.
   if (signal?.aborted) throw new Error('aborted before FM call')
+  // Local head leads (cont.90): route the completion to the sidecar model. On any sidecar
+  // failure fall through to the Apple FM daemon below so the head swap never HARD-fails a turn.
+  if (useLocalHead()) {
+    try {
+      return await bonsaiComplete(
+        [{ role: 'system', content: system }, ...messages],
+        { maxTokens, temperature, timeoutMs, signal },
+      )
+    } catch { /* sidecar unavailable/errored — fall back to Apple FM */ }
+  }
   // Combine the caller's abort signal with the per-call timeout so a disconnected client
   // (or a wedged call hitting the ceiling) both release the gate promptly.
   const timeoutSignal = AbortSignal.timeout(timeoutMs)
@@ -623,6 +654,10 @@ Use the prior conversation turns ONLY to resolve what the user is referring to (
  * Check if the Apple FM daemon is available.
  */
 export async function checkFmAvailable(): Promise<boolean> {
+  // cont.90: the local HEAD may be the sidecar model, which can serve even when the Apple FM
+  // daemon is down. Treat the head as available if the sidecar is installed (it starts on first
+  // use) — otherwise the whole local path would be skipped and the turn would go external.
+  if (useLocalHead()) return true
   try {
     const res = await fetch(`${FM_URL}/health`, { signal: AbortSignal.timeout(3000) })
     return res.ok
@@ -655,6 +690,17 @@ export async function fmStream(
     'You are Crucible, an expert AI assistant. Answer concisely and accurately.'
   const convo = messages.filter(m => m.role !== 'system')
   if (!convo.length) return ''
+  // Local head leads (cont.90): stream from the sidecar with the same delta contract. Any
+  // sidecar failure falls through to the Apple FM streaming path so a turn never hard-fails.
+  if (useLocalHead()) {
+    try {
+      return await sidecarStream(
+        [{ role: 'system', content: system }, ...convo],
+        onDelta,
+        { maxTokens: opts?.maxTokens ?? 1536, temperature: opts?.temperature, timeoutMs: opts?.timeoutMs ?? FM_TIMEOUT_MS, signal: opts?.signal },
+      )
+    } catch { /* fall back to Apple FM streaming */ }
+  }
   const timeoutMs = opts?.timeoutMs ?? FM_TIMEOUT_MS
   const timeoutSignal = AbortSignal.timeout(timeoutMs)
   const combined = opts?.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal

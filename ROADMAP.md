@@ -1933,6 +1933,35 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21b (cont.90 — HEAD MODEL SWAP: Apple FM → qwen2.5-1.5b, and the dylib bug that hid it)
+The user's standing decision (cont.87, 2026-07-16: "Apple FM path paused — more debugging overhead
+than value") had been benched but never actually wired: qwen2.5-1.5b was proven (cont.89) to beat
+the FM at the core identifier-copy/execute task 3/3 vs 0/3 at 12x speed, yet it was seated ONLY in
+the library-API repair lane while Apple FM stayed the exclusive head for every planning / tool-
+routing / synthesis / conversation call. This session promoted qwen to the actual headrunner.
+- **Head routing** (`src/CrucibleEngine/agent/fmReact.ts`): new `CRUCIBLE_HEAD` selector (default
+  `local`; set `fm` to pin the old behavior). `callFmInner` and `fmStream` now route through the
+  sidecar (`bonsaiComplete` / new `sidecarStream`) when the local head leads, with a graceful
+  fall-through to the Apple FM daemon on any sidecar failure so a turn never hard-fails.
+  `checkFmAvailable()` returns true when the sidecar is installed (the FM daemon may be down).
+  New exported `headModelName()` for telemetry / user-facing "bringing in X" lines.
+- **Streaming primitive** (`src/CrucibleEngine/localModels/bonsaiSidecar.ts`): new `sidecarStream`
+  — OpenAI-compatible SSE with the identical delta contract the FM daemon used, so the interactive
+  draft still streams token-by-token. Serialized on the sidecar's existing single-generation queue.
+- **THE BUG THAT HID EVERYTHING** (`bonsaiSidecar.ts` `ensureBonsai`): the PrismML `llama-server`
+  binary was built with an `@rpath` pointing at a now-deleted build tree, so dyld could not find
+  its sibling dylibs. The `spawn()` never set `DYLD_LIBRARY_PATH`, so the child exited on launch
+  with "Library not loaded", `ensureBonsai()` ran to its 90s start-timeout, and EVERY sidecar call
+  (head AND the old repair seat) silently fell back to Apple FM. Meaning: the qwen repair seat
+  "seated" since cont.89 had *never actually run*. Fix: spawn with `DYLD_LIBRARY_PATH` (+ fallback)
+  pointed at the binary's own directory.
+- **Measured** (live, on-device): head = qwen2.5-1.5b, cold start (spawn + first gen) 2.3s (was
+  ~91s = the FM-fallback path via the start-timeout), **warm 93ms**, correct answer. 51.8 tok/s raw.
+  `tsc` + `vite build` clean.
+- **Doctrine sync** (`DOCTRINE.md`): "primary model today" line updated FM → qwen2.5-1.5b, with the
+  cont.88/89 evidence and the note that this is doctrine-COMPLIANT (a *smaller* reasoning-dense core,
+  not a bigger model; the 27B was tested and rejected for pinning 6.6GB at zero gain).
+
 ### 2026-07-21a (Entity-scoped mail retrieval "surface all emails from/about X" — PA surface, Phase 4)
 - **Entity-scoped resolver** (`src/CrucibleEngine/agent/namedToolRouter.ts`,
   `resolveEntityScopedMail` folded into `resolveImplicitPersonalTools`): translates the

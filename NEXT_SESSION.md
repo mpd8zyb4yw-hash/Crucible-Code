@@ -17,7 +17,34 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21a entity-mail-retrieval session (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21b HEAD-MODEL-SWAP session (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-21b (cont.90 — Apple FM demoted, qwen2.5-1.5b is now the HEAD):**
+- The user's cont.87 decision (pause Apple FM as head) was finally wired. `CRUCIBLE_HEAD` env
+  (default `local`, `fm` to pin old behavior) in `src/CrucibleEngine/agent/fmReact.ts`:
+  `callFmInner` + `fmStream` now route through the sidecar (qwen2.5-1.5b) via
+  `bonsaiComplete` / new `sidecarStream`, with graceful FM fallback. `checkFmAvailable()` true when
+  the sidecar is installed. New `headModelName()`.
+- **Found + fixed a bug that had silently disabled the sidecar entirely:** the PrismML
+  `llama-server` binary's `@rpath` points at a deleted build dir, and `ensureBonsai`'s `spawn` never
+  set `DYLD_LIBRARY_PATH` → the child died on launch, hit the 90s start-timeout, and EVERY sidecar
+  call (head + the old repair seat) fell back to Apple FM. So the "qwen repair seat" since cont.89
+  had never actually run. Fixed by spawning with `DYLD_LIBRARY_PATH` at the binary's own dir.
+- **Measured live on-device:** head = qwen2.5-1.5b, cold 2.3s, **warm 93ms**, correct answer,
+  51.8 tok/s raw. `tsc` + `vite build` clean. `DOCTRINE.md` primary-model line updated to match.
+
+**Open items / risks to check next (priority order):**
+- **Eyeball the full app on the swapped head** — the runtime proof was a direct `fmComplete` probe;
+  the live `:3001` server path (answerEngine draft → `fmStream`, synthDriver, localModelRouter,
+  the ReAct loop) should be exercised end-to-end to confirm quality/latency across real turns and
+  that the FM-fallback never silently re-engages. This is the main unverified surface.
+- **Re-bench the personal-tool + repair benches on the new head** — they were green under FM; the
+  head swap changes who answers. Run `repair:bench` (now that the sidecar ACTUALLY runs, its qwen
+  numbers are real for the first time) and the namedToolRouter benches.
+- **localFmPlanner implicit-intent** (`src/CrucibleEngine/agent/localFmPlanner.ts`) — still the
+  binding planner gap; now worth re-measuring on qwen, which may plan better than the FM did.
+- Idle-unload tradeoff: sidecar unloads after 120s idle, so the first turn after a lull pays the
+  ~2.3s cold start. Tune `CRUCIBLE_BONSAI_IDLE_MS` if that felt-latency matters.
 
 **Shipped 2026-07-21a (Phase 4 — entity-scoped mail retrieval + lossless personal-data render):**
 - `src/CrucibleEngine/agent/namedToolRouter.ts` `resolveEntityScopedMail` (in
