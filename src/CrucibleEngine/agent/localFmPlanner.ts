@@ -48,8 +48,13 @@ const ALLOWED_TOOLS = new Set([
   'search_web', 'search_youtube',
 ])
 
-// Max characters we send to FM. Keeps latency under ~500ms on A18.
-const MAX_INPUT_CHARS = 280
+// Max characters we send to FM. 280 was tuned for <500ms on A18 but rejected legitimate
+// single-step requests that merely carried context ("open the spreadsheet I was just looking
+// at in Downloads called Q3-forecast and…"), forcing them onto the slower LLM loop. Raised to
+// 360: the SYSTEM prompt dominates the token budget, so the marginal latency of ~80 more input
+// chars is well under the ceiling, while more real one-shot commands now reach Layer 2. The
+// HARD_PASS / MULTI_STEP / ACTION_VERB guards still divert anything genuinely multi-step.
+const MAX_INPUT_CHARS = 360
 
 // Requests that Layer 2 should never attempt — hand to LLM immediately.
 const HARD_PASS = /\b(refactor|rewrite|implement|build|fix|debug|write (a |the )?function|create (a |the )?class|edit (the )?file|open (the )?file|in vs ?code|in xcode|commit|push|pull request|deploy|test|spec|unit test)\b/i
