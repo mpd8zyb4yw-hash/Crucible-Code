@@ -7,7 +7,7 @@
 import { SectionLabel } from './ui'
 
 export interface GooglePreview {
-  gmail: Array<{ id: string; from: string; subject: string; date: string; unread: boolean }> | null
+  gmail: Array<{ id: string; from: string; subject: string; date: string; unread: boolean; important?: boolean; reasons?: string[] }> | null
   calendar: Array<{ title: string; start: string; end: string; allDay: boolean }> | null
 }
 
@@ -56,6 +56,14 @@ export function GmailWidget({ items, onOpenMessage }: {
             <span style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, alignSelf: 'center', background: m.unread ? '#7c7cf8' : 'transparent', border: m.unread ? 'none' : '1px solid var(--c-hairline)' }} />
             <span style={{ fontSize: 'var(--t-small)', fontWeight: m.unread ? 650 : 400, color: m.unread ? 'var(--c-text)' : 'var(--c-dim)', width: 108, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.from}</span>
             <span style={{ fontSize: 'var(--t-small)', color: m.unread ? '#c9c9da' : 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subject}</span>
+            {m.important && (
+              // Deterministic, labeled suggestion — never fabricated. Tooltip names the exact
+              // signals (server-side importance.ts); "Priority?" keeps it a suggestion, not a verdict.
+              <span title={`Suggested priority — ${(m.reasons ?? []).join(', ')}`}
+                style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#e6b34d', background: 'rgba(230,179,77,0.12)', border: '1px solid rgba(230,179,77,0.35)', borderRadius: 4, padding: '1px 5px', lineHeight: 1.4 }}>
+                Priority?
+              </span>
+            )}
             <span style={{ fontSize: 10.5, color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{relTime(m.date)}</span>
           </div>
         )

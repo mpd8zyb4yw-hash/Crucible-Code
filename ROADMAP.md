@@ -1933,6 +1933,27 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-20g (Deterministic inbox-importance flag + Layer-2 planner hygiene — PA surface, Phase 3)
+- **Importance verifier** (`src/CrucibleEngine/importance.ts`, NEW): pure, benchable
+  `assessImportance(signals)` — doctrine-sound deterministic-first, labeled-suggestion, never
+  fabricated. Signals come verbatim from Gmail: `unread` (UNREAD label), `addressedToMe` (the
+  account's own address in the To header), `asksQuestion` ('?' in subject or snippet), `bulk`
+  (List-Unsubscribe header present). Threshold: bulk is NEVER flagged; otherwise flag only when
+  addressed directly to the user AND (unread OR asks-a-question), and return the exact
+  contributing `reasons[]`. Bench `__importance_bench.ts` 13/13.
+- **Server** (`server.ts` inbox preview): fetches the account address once (honest degradation
+  — on failure addressed-to-me stays false), adds To + List-Unsubscribe metadata headers, uses
+  the message `snippet`, attaches `{important, reasons}` per row.
+- **Widget** (`src/ConnectionWidgets.tsx` `GmailWidget`): amber **"PRIORITY?"** pill (a
+  suggestion, not a verdict) with the reasons in its tooltip. Screenshot-verified via throwaway
+  mocked harness (direct+question and direct+unread flagged; bulk/read not), zero console
+  errors. `tsc` + `vite build` clean.
+- **Planner hygiene** (`e499aa7`, `src/CrucibleEngine/agent/localFmPlanner.ts` + `server.ts`):
+  Layer 2 now gates GUI-control tools (get_ui_tree/click_element/type_text) behind
+  `desktopIntent` (`isDesktopActionGoal`) — removed from both the prompt and the validation
+  allowlist for non-desktop briefs, so a plain reasoning/math brief can no longer draw a
+  screen-capture step whose unattended output is Crucible's own window. Bench 4/4.
+
 ### 2026-07-20f (In-reader reply composer + consent-gated Send — PA surface, Phase 2)
 - **Reply composer** (`src/ReplyComposer.tsx`, NEW): opened from the email reader's new
   **Reply here** action. Prefills **To** (bare address extracted from the "Name <addr>" From

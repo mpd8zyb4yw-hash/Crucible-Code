@@ -8,6 +8,7 @@ import { Mistral } from '@mistralai/mistralai'
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import { evaluateIteration, DEFAULT_SCORING_CONFIG, generateContract, getAspectContext } from './src/CrucibleEngine/index'
 import { buildWorldContext } from './src/CrucibleEngine/state/world'
+import { assessImportance, isAddressedToMe, asksQuestion } from './src/CrucibleEngine/importance'
 import type { InterfaceContract } from './src/CrucibleEngine/index'
 import fs from 'fs'
 import path from 'path'
@@ -1138,12 +1139,17 @@ app.post('/api/connections/google/test', async (req: express.Request, res: expre
 // null for that widget, never placeholder content.
 app.get('/api/connections/google/preview', async (req: express.Request, res: express.Response) => {
   const user = getAuthUser(req)!
-  const out: { gmail: Array<{ id: string; from: string; subject: string; date: string; unread: boolean }> | null
+  const out: { gmail: Array<{ id: string; from: string; subject: string; date: string; unread: boolean; important: boolean; reasons: string[] }> | null
                calendar: Array<{ title: string; start: string; end: string; allDay: boolean }> | null } = { gmail: null, calendar: null }
   try {
+    // The account's own address — lets the deterministic importance verifier tell a message
+    // addressed DIRECTLY to the user apart from cc/list mail. Fetched once; empty on failure
+    // (importance then simply never fires the addressed-to-me signal — honest degradation).
+    let me = ''
+    try { me = String((await gFetch(user.id, 'https://gmail.googleapis.com/gmail/v1/users/me/profile')).emailAddress ?? '').toLowerCase() } catch { /* addressed-to-me stays false */ }
     const list = await gFetch(user.id, 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=6&labelIds=INBOX')
     const msgs = await Promise.all(((list.messages ?? []) as Array<{ id: string }>).map(async m => {
-      const d = await gFetch(user.id, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`)
+      const d = await gFetch(user.id, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date&metadataHeaders=To&metadataHeaders=List-Unsubscribe`)
       const h = (name: string) => (d.payload?.headers ?? []).find((x: any) => x.name === name)?.value ?? ''
       // Gmail metadata headers arrive HTML-entity-encoded (&#x27; &amp; …) — decode
       // the common ones so widget rows read as text, not markup soup.
@@ -1151,12 +1157,23 @@ app.get('/api/connections/google/preview', async (req: express.Request, res: exp
         .replace(/&#x([0-9a-f]+);/gi, (_, x) => String.fromCodePoint(parseInt(x, 16)))
         .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
         .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      const subject = unent(h('Subject')) || '(no subject)'
+      const unread = (d.labelIds ?? []).includes('UNREAD')
+      // Deterministic importance — a labeled suggestion, never fabricated (see importance.ts).
+      const verdict = assessImportance({
+        unread,
+        addressedToMe: isAddressedToMe(String(h('To')), me),
+        asksQuestion: asksQuestion(subject, String(d.snippet ?? '')),
+        bulk: !!h('List-Unsubscribe'),
+      })
       return {
         id: m.id,
         from: unent(String(h('From')).replace(/<.*>/, '').replace(/"/g, '').trim()),
-        subject: unent(h('Subject')) || '(no subject)',
+        subject,
         date: h('Date'),
-        unread: (d.labelIds ?? []).includes('UNREAD'),
+        unread,
+        important: verdict.important,
+        reasons: verdict.reasons,
       }
     }))
     out.gmail = msgs

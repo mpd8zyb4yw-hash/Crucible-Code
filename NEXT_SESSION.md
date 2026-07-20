@@ -17,6 +17,39 @@
 
 ---
 
+## CURRENT STATE — last updated 2026-07-20g importance-flag session (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-20g (Phase 3 — deterministic importance flag + planner hygiene):**
+- `src/CrucibleEngine/importance.ts` (NEW): pure, benchable verifier `assessImportance` +
+  signal extractors (`isAddressedToMe`, `asksQuestion`). Threshold: bulk mail (has
+  List-Unsubscribe) is NEVER flagged; otherwise flag only when addressed DIRECTLY to the
+  user AND (unread OR asks-a-question) — a single weak signal doesn't cry wolf. Returns the
+  exact contributing `reasons[]`. Bench `__importance_bench.ts` 13/13.
+- `server.ts` inbox preview (`GET /api/connections/google/preview`): fetches the account's
+  own address once, adds To + List-Unsubscribe metadata headers, uses the message `snippet`
+  for the question signal, attaches `{important, reasons}` per row. Honest degradation: if the
+  profile fetch fails, addressed-to-me stays false (flag just doesn't fire).
+- `src/ConnectionWidgets.tsx` `GmailWidget`: renders an amber **"PRIORITY?"** pill (labeled
+  suggestion, never a verdict) with the reasons in its tooltip. Screenshot-verified via
+  throwaway mocked harness (direct+question and direct+unread flagged; bulk/read not), zero
+  console errors. `tsc` + `vite build` clean.
+- Also committed earlier this session (`e499aa7`): Layer-2 planner now gates GUI-control tools
+  (get_ui_tree/click_element/type_text) behind `desktopIntent` — a plain reasoning brief can no
+  longer draw a screen-capture step whose output is Crucible's own window. Bench 4/4.
+
+**Next phases of THIS feature (in priority order):**
+- Phase 4 — NL "surface all emails from/about X" → precise `gmail_search` query (from:X / term)
+  + organized/grouped results. Gmail does the accurate retrieval; Crucible organizes. Extend
+  `src/CrucibleEngine/agent/namedToolRouter.ts` with the from/about → query mapping.
+- Optional Phase 2.5 — wire an agent-generated draft into `ReplyComposer`'s `initialDraft`
+  (the composer already supports it; only the draft-generation handoff is unbuilt).
+- REMAINING CHECK (Phases 1-3): reader + real SEND + real importance signals need the user's
+  OAuth + live backend (:3001) — not reproducible in-sandbox. Same eyeball boundary as tiles.
+- localFmPlanner implicit-intent (`src/CrucibleEngine/agent/localFmPlanner.ts`) — on-device
+  planner still can't select tools for intent-only briefs; the binding engine-capability gap.
+
+**Previous CURRENT STATE (reply composer) below — historical, superseded by the block above:**
+
 ## CURRENT STATE — last updated 2026-07-20f reply-composer session (REPLACE THIS EVERY SESSION)
 
 **USER DIRECTION (2026-07-20e): the "Your day" tiles must become a real personal-assistant
