@@ -17,7 +17,53 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-20 handoff-list session (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-20b usefulness-overhaul session (REPLACE THIS EVERY SESSION)
+
+**USER VERDICT DRIVING THIS SESSION (2026-07-20): the assistant surfaces were "half-finished
+thoughts" — automations/digest had NO interaction, Mission Control was a garbled mess you
+can't click, Connections offered no value. Ruling for all future UI work: if a surface shows
+a result, the result must OPEN, and there must be an action to take on it. Renders-clean is
+not shipped.**
+
+**Shipped + verified this session (isolated stack: backend :3011 + scratch CRUCIBLE_DIR +
+vite :5184 via `crucible-vite-iso` launch config + `localStorage.crucible_api_base`):**
+- **Run results are now first-class objects.** Full answer stored per run (24k cap, stripped
+  from polls), `GET /api/automations/:id/runs/:ts`, shared `RunDetailOverlay` (full answer +
+  brief + Continue-in-chat prefill + Run again + Copy) openable from Digest, roster run
+  history, Mission Control, Home. All click-paths screenshot-verified, desktop AND mobile.
+- **Automations are editable in place** (brief + schedule via TriggerEditor; PUT round-trip
+  verified server-side), two-tap delete, whole-row expand, mobile Tasks/Digest pane toggle.
+- **Mission Control shows scheduled runs** ("While you were away" on empty state + roster
+  group), each clickable → overlay. Roster/workspace stack on narrow.
+- **Connections restructured for value**: Accounts & devices heroes (Google, GitHub with the
+  LIVE open-PRs widget — verified with real PRs, closing the item-9 pending check, This Mac)
+  each with one-tap try-it prompts through chat; other CLI bins collapsed to a compact
+  plain-language Agent toolbox.
+- ui.tsx Card: onClick ⇒ real button semantics (a11y + keyboard).
+- Bonus live finding: the iso scheduler fired a due automation through the REAL agent loop
+  and honestly recorded its tool-auth failure — full unattended loop exercised.
+
+**Still missing toward the user's bar (do these before more surface-area):**
+1. **Home "widget view" proper** — live calendar/inbox/PR tiles on the Home surface (reuse
+   /api/connections/google/preview + github/preview), each tappable into chat. Digest cards
+   there DO open the overlay now, but the day-at-a-glance tiles don't exist yet.
+2. **Remote-brain hang** — still needs the live tunnel repro (fmQueue proven clean).
+3. Items 3 (db.ts), 4 (property judge), 7 (REST connector + MCP client), 10 (tool-selection
+   bench tier) from the previous list — genuinely unstarted.
+4. Mission Control working-state narrow stacking implemented but not exercised with a live
+   agent round; eyeball on a phone during a real run.
+
+**Dev-verify recipe that made this possible (reuse it):** mint JWT with src/server/jwt.ts +
+JWT_SECRET from .env.local → document.cookie in the preview tab; `PORT=3011
+CRUCIBLE_DIR=<scratch> npx tsx server.ts`; `crucible-vite-iso` (session-dir launch.json) +
+`localStorage.setItem('crucible_api_base','http://localhost:3011')`; seed
+<scratch>/automations.json. NOTE: seed timestamps in the PAST make automations due →
+the scheduler fires them for real. Kill the :3011 process after (orphan rule);
+NEVER kill :3001 (the user's live Electron backend).
+
+---
+
+## PRIOR STATE — 2026-07-20 handoff-list session
 
 **This session shipped 4 verified engine items from the pending list (each committed):**
 - **Item 1 — goalExampleOracle wired** as lowest-priority `effectiveDerived` fallback in
