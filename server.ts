@@ -3094,8 +3094,16 @@ app.post('/api/chat', async (req, res) => {
     debugBus.emit('agent', 'sticky_agentic_route', { message: (message ?? '').slice(0, 80) }, { severity: 'info' })
   }
 
+  // A retrieval ask about the user's OWN email/calendar ("just show me my emails",
+  // "summarize today's calendar") must enter the agentic block so the named-tool executor can
+  // fetch REAL data. Without this it fell to the synthesis pipeline, which fabricated "your
+  // inbox is empty" with zero tool calls and shipped it verifier-clean (debug report 2026-07-20).
+  // resolveImplicitPersonalTools is deterministic + read-only + mutation-guarded, so this only
+  // ever ROUTES a personal-data question to real tools — it never triggers on prose/code asks.
+  const implicitPersonalData = !isCreativeProse(message ?? '') && resolveImplicitPersonalTools(message ?? '') !== null
+
   // ── Agent mode — sustained tool loop instead of the synthesis pipeline ─────
-  if (buildTurn.action === 'build' || slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
+  if (buildTurn.action === 'build' || slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || implicitPersonalData || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')

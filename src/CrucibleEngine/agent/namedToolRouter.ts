@@ -144,6 +144,42 @@ function statedDayWindow(msg: string): number | null {
   return null
 }
 
+// ── Catch-up / "brief me on my day" intent ─────────────────────────────────────
+// The residual gap from the 2026-07-20 report ("real turn 3": "just in general"): asks
+// that describe the INTENT — a day-at-a-glance catch-up — without naming a domain noun
+// (email/calendar). "what's on my plate today", "what needs my attention", "brief me on
+// my day", "what's my day look like". Deixis is present but no domain noun, so the
+// domain loop above resolves nothing and the request falls to the prose pipeline that
+// fabricated "your inbox is empty". This IS the "Your day" concept the Home tiles ship:
+// it maps 1:1 to the SAME two read-only tools, so it stays doctrine-sound (the model
+// never invents data; the tools state their own windows).
+//
+// EXPLICIT phrase alternation, not a loose "catch me up on X" — "catch me up on the auth
+// refactor" must NOT fire gmail/calendar. Each alternative carries its own day/attention
+// framing so a false fire can't hijack an ordinary project/code turn.
+const CATCHUP_INTENT = new RegExp(
+  [
+    "what'?s?\\s+(?:on\\s+)?my\\s+(?:plate|agenda)",
+    "what\\s+(?:do\\s+i|have\\s+i)\\s+(?:got|have)\\s+(?:on|going\\s+on)\\b",
+    "what'?s?\\s+going\\s+on\\s+(?:today|this\\s+(?:morning|afternoon|week))",
+    "(?:catch|fill)\\s+me\\s+(?:up|in)\\s+on\\s+my\\s+day",
+    "brief\\s+me\\s+on\\s+my\\s+day",
+    "what\\s+needs?\\s+my\\s+attention",
+    "what\\s+should\\s+i\\s+(?:know|be\\s+aware\\s+of|focus\\s+on)\\s+(?:about\\s+)?today",
+    "(?:what|how)\\s+does\\s+my\\s+day\\s+look",
+    "what'?s?\\s+my\\s+day\\s+look\\s+like",
+    "anything\\s+i\\s+(?:need\\s+to|should)\\s+(?:deal\\s+with|handle|know\\s+about)\\b",
+  ].join('|'),
+  'i',
+)
+
+function catchupCalls(days: number): ToolCall[] {
+  return [
+    { id: 'catchup_0', name: 'gmail_search', args: { query: `newer_than:${days}d in:inbox`, maxResults: 15 } },
+    { id: 'catchup_1', name: 'calendar_list', args: { maxResults: 15, days } },
+  ]
+}
+
 /**
  * Resolve a retrieval ask about the user's own email/calendar into the same read-only
  * ToolCalls the explicit router produces. Null when the message isn't such an ask —
@@ -153,6 +189,12 @@ export function resolveImplicitPersonalTools(message: string): NamedToolResoluti
   const msg = (message ?? '').trim()
   if (!msg || msg.length > 400) return null            // long briefs deserve real planning
   if (MUTATION_VERBS.test(msg)) return null
+  // Catch-up brief: intent named without a domain noun → both read-only day tools.
+  // Checked before the domain loop so a bare "what's on my plate" resolves even though
+  // PERSONAL_DOMAINS finds no email/calendar noun to match.
+  if (CATCHUP_INTENT.test(msg)) {
+    return { calls: catchupCalls(statedDayWindow(msg) ?? 1), skipped: [] }
+  }
   if (!PERSONAL_DEIXIS.test(msg)) return null
   const days = statedDayWindow(msg) ?? 7
   const calls: ToolCall[] = []

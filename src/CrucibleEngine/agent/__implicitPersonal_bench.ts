@@ -49,6 +49,27 @@ check('past-N-days window honored', String(argOf('any new mail in the past 2 day
 check('unread counts as deixis', tools('list unread emails').includes('gmail_search'))
 check('upcoming events resolve calendar', tools('upcoming events on my calendar').includes('calendar_list'))
 
+// ── Catch-up brief: intent without a domain noun → BOTH day tools ────────────
+check('catchup: "what\'s on my plate today" → both tools',
+  tools("what's on my plate today").sort().join(',') === 'calendar_list,gmail_search')
+check('catchup: "what needs my attention" → both tools',
+  tools('what needs my attention').sort().join(',') === 'calendar_list,gmail_search')
+check('catchup: "brief me on my day" → both tools',
+  tools('brief me on my day').sort().join(',') === 'calendar_list,gmail_search')
+check('catchup: "what does my day look like" → both tools',
+  tools("what does my day look like").sort().join(',') === 'calendar_list,gmail_search')
+check('catchup: "catch me up on my day" → both tools',
+  tools('catch me up on my day').sort().join(',') === 'calendar_list,gmail_search')
+check('catchup: bare (no stated window) defaults to 1d, not 7d',
+  String(argOf('what needs my attention', 'gmail_search')?.query).includes('newer_than:1d'))
+// Must NOT hijack a project/code turn that merely says "catch me up on X".
+check('catchup negative: "catch me up on the auth refactor" abstains',
+  tools('catch me up on the auth refactor').length === 0)
+check('catchup negative: "what should I know about React" abstains',
+  tools('what should I know about React').length === 0)
+check('catchup negative: "fill me in on the deploy status" abstains',
+  tools('fill me in on the deploy status').length === 0)
+
 // ── Negatives — must ABSTAIN ─────────────────────────────────────────────────
 check('creation: "draft an email to Bob about the launch"', tools('draft an email to Bob about the launch').length === 0)
 check('creation: "send my mom an email today"', tools('send my mom an email today').length === 0)

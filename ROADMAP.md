@@ -1933,6 +1933,24 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-20d (Catch-up brief intent — implicit-personal item 3) — planner-gap chip
+- **Catch-up / "brief me on my day" routing** (`src/CrucibleEngine/agent/namedToolRouter.ts`):
+  closes the residual gap from the 2026-07-20 report ("real turn 3") — asks that describe the
+  day-at-a-glance INTENT without naming a domain noun ("what's on my plate today", "what needs
+  my attention", "brief me on my day", "what does my day look like") previously found no
+  email/calendar noun, resolved zero tools, and fell to the prose pipeline that fabricated
+  "your inbox is empty". A new `CATCHUP_INTENT` (explicit phrase alternation, each carrying its
+  own day/attention framing) resolves the SAME two read-only tools (`gmail_search` +
+  `calendar_list`) the Home "Your day" tiles use — doctrine-sound (model never invents data;
+  tools state their own windows). Bare ask defaults to a 1-day window (day-at-a-glance), not 7.
+- **False-fire guard proven**: "catch me up on the auth refactor" / "what should I know about
+  React" / "fill me in on the deploy status" all ABSTAIN — the alternation matches only
+  day/attention framings, never arbitrary "catch me up on X", so an ordinary project/code turn
+  is never hijacked (verifier-two-directions rule).
+- **Bench**: `__implicitPersonal_bench.ts` extended to 30/30 (6 catch-up positives + window
+  default + 3 false-fire negatives); `__personalTools_bench.ts` still 22/22. Wired via
+  `server.ts:3328` (explicit router → implicit fallback). `tsc --noEmit` clean.
+
 ### 2026-07-20c (Home day-at-a-glance tiles + widget extraction) — CURRENT-STATE item 1
 - **Live tiles on the Home surface** (`src/HomeSurface.tsx`): a new "Your day" section
   renders the real calendar / inbox / open-PR tiles above the composer, gated on live

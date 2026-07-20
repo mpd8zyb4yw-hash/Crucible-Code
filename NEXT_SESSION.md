@@ -17,7 +17,22 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-20b usefulness-overhaul session (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-20d catch-up-brief session (REPLACE THIS EVERY SESSION)
+
+**Shipped this session (2026-07-20d, commit pending):** catch-up-brief intent routing
+(`namedToolRouter.ts` `CATCHUP_INTENT`). Day-at-a-glance asks that name no domain noun
+("what's on my plate today", "what needs my attention", "brief me on my day", "what does my
+day look like") now resolve BOTH read-only day tools (`gmail_search` + `calendar_list`, 1-day
+default window) instead of falling to the prose pipeline that fabricated "your inbox is empty"
+— the residual "real turn 3" gap from the 2026-07-20 report. Explicit phrase alternation keeps
+it from hijacking project/code turns ("catch me up on the auth refactor" abstains).
+`__implicitPersonal_bench.ts` now 30/30; `tsc` clean; wired at `server.ts:3328`. NOTE: this
+closes the DEIXIS-without-domain-noun class only; the localFmPlanner.ts macOS-automation
+implicit-intent gap (below, item "planner for implicit intent") is a SEPARATE, still-open path.
+
+---
+
+## CURRENT STATE — prior 2026-07-20b usefulness-overhaul session
 
 **USER VERDICT DRIVING THIS SESSION (2026-07-20): the assistant surfaces were "half-finished
 thoughts" — automations/digest had NO interaction, Mission Control was a garbled mess you
