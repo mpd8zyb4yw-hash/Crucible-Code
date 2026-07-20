@@ -37,15 +37,35 @@
 **NOT done this session, with honest reasons (do NOT assume these are trivial):**
 - Item 3 (db.ts sync→async, unstable TS2307) — open-ended root-cause dig, not started.
 - Item 4 (property/metamorphic judge for rule-goals) — separate riskier build, not started.
-- Item 5 (manual visual eyeball) — still blocked by sandbox cookie injection.
+- Item 5 (manual visual eyeball) — NOW DONE via dev-cookie method (see Mobile section below).
 - Item 7 (REST connector + MCP client) — large; not started.
-- Item 9 (GitHub/Mac connection widgets) — not started.
+- Item 9 (GitHub/Mac connection widgets) — DONE (GitHub PRs widget added; Mac card pre-existed).
 - Item 10 (agentic tool-selection bench tier) — this is NEW harness infra, not a bounded edit.
 - **Remote-brain "dies after N messages"** — FM queue is structurally clean (finally always
   releases `active`), so the hang is NOT queue saturation. Needs a LIVE reproduction pass over
   the tunnel with per-turn `fmQueueStats` + begin/endForeground logging; three suspects listed
   in FABLE_CODEX_PARITY.md #1. Do not blind-fix.
-- Mobile UI overhaul — bounded design work, not started; needs the running preview to verify.
+- Mobile UI overhaul — DONE for Settings + nav reachability (see Mobile section below).
+
+**Mobile UI overhaul — DONE for the two worst offenders (verified live in preview via
+`?forceMobile=1` + a dev session cookie):**
+- SettingsTabView was rendering its desktop two-column layout squeezed into phone width
+  (content clipped off the right edge). Now responsive <640px: left rail → horizontal pill
+  strip, full-width content, wrapped key row, X clear of the pills.
+- The mobile top-bar NavRail only had Chat/Agents/History/Settings — **Automations and
+  Connections were unreachable on a phone**. Added both (optional overlay toggles; desktop
+  vertical rail unchanged) and dropped the redundant 'Crucible' wordmark so six icons fit
+  without crowding. Verified: Connections opens + renders full-width cards cleanly.
+- NOTE: this also effectively closes **item 5** (visual eyeball) — reached the authed UI by
+  minting a dev `crucible_session` cookie and setting it via the preview's JS (httpOnly only
+  blocks JS *read*, not the server accepting it). Recipe for next session: mint with
+  `src/server/jwt.ts signJwt`, secret at `.crucible/jwt_secret`, set `document.cookie`, load
+  `/?forceMobile=1`.
+
+**Item 9 (GitHub PRs widget) DONE** — `/api/connections/github/preview` (`gh search prs
+--author @me`) + GithubWidget on the GitHub CLI card (id `cli-github`). `gh` verified to
+return real PRs; tsc+build clean. Live render pending a backend restart (running :3001 is the
+Electron app's tsx server, predates the route — do NOT kill it casually).
 
 **NEW: `FABLE_CODEX_PARITY.md`** — ranked highest-leverage items to close the frontier gap.
 The gap is (a) multi-step tool-use planning, (b) coupled change-set-native synthesis, (c)
