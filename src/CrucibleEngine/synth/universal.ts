@@ -475,6 +475,33 @@ export async function synthesizeUniversal(
       if (rv.gateA) {
         return { files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → deterministic repair of sibling ${sib.path} → tsc-clean (no behavioral test derivable; downstream verify required)` }
       }
+      // ── Item 2 (cont.101 handoff): a coupled refactor can need BOTH ends repaired in one
+      // step. Repairing the sibling (e.g. deleting the now-extracted symbol from checkout.ts)
+      // can leave the candidate holding its OWN residual fatal — classically TS2307, importing
+      // the extracted module whose specifier the FM got slightly wrong. The sibling-only
+      // change-set still fails, and the candidate-only loop above already failed the same way,
+      // so neither reaches the fixed point alone. When the residual fatal is now located IN the
+      // candidate, re-run proposeRepairs on the candidate against THIS verdict and offer both
+      // repairs as one change-set. Re-gated by the same oracle, so a misfire is rejected exactly
+      // like any wrong candidate — it can only unstick a real two-sided refactor.
+      const residualInCandidate = new RegExp(
+        `(?:^|/)${modulePath.replace(/\\/g, '/').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}\\(\\d+,\\d+\\): error TS`,
+      ).test(rv.detail.replace(/\\/g, '/'))
+      if (residualInCandidate) {
+        for (const repairedCand of proposeRepairs(candidate, rv.detail, sigBlock, { modulePath, files: contextFiles.map(c => c.rel) })) {
+          if (repairedCand === candidate) continue
+          const both: SynthFile[] = [{ path: modulePath, content: repairedCand }, sib]
+          const bv = await verifyCandidateAsync(both, undefined, oracleOpts)
+          logFmRound({
+            modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true,
+            siblingRepair: sib.path, combinedRepair: true,
+            accepted: bv.gateA, verdict: bv.detail.slice(0, 400),
+          })
+          if (bv.gateA) {
+            return { files: both, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → combined deterministic repair of ${modulePath} + sibling ${sib.path} → tsc-clean (no behavioral test derivable; downstream verify required)` }
+          }
+        }
+      }
     }
     // ── Out-of-depth tripwire (same signal as the behavioral loop): identical tsc failure
     // shape TRIPWIRE_STREAK consecutive rounds ⇒ not converging; abstain early.
