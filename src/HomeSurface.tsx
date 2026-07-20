@@ -2,9 +2,10 @@
 // 2026-07-21 redesign: the splash is CLEAN. No inbox tiles, no digest cards, no
 // schedule strips — those are widgets on Mission Control's Overview board now, where
 // they're interactable and the user arranges them. An empty chat shows exactly three
-// things: a greeting, one line when agents are working (the only live signal worth
-// interrupting the calm for), and one quiet door to Mission Control. First-run keeps
-// the full identity splash (App.tsx renders that instead via the `splash` prop).
+// things: the mark, a greeting, the date — plus one line when agents are working (the only
+// live signal worth interrupting the calm for). First-run keeps the full identity splash
+// (App.tsx renders that instead via the `splash` prop). This exact layout is a standing
+// user decision (2026-07-21): do not add anything back here.
 
 import { Card, StatusChip } from './ui'
 import type { Round } from './chat/core'
@@ -53,26 +54,10 @@ export default function HomeSurface({ allRounds, onOpenAgents, splash }: {
         </Card>
       )}
 
-      {/* One quiet door to the day — widgets, results, schedule live there now. */}
-      {live.length === 0 && (
-        <button
-          onClick={onOpenAgents}
-          style={{
-            alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 7,
-            padding: '7px 14px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit',
-            background: 'rgba(255,255,255,0.035)', border: '1px solid var(--c-hairline)',
-            color: 'var(--c-dim)', fontSize: 'var(--t-small)', fontWeight: 600,
-            transition: 'color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease)',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.color = '#b0b0f8'; e.currentTarget.style.borderColor = 'rgba(124,124,248,0.35)' }}
-          onMouseLeave={e => { e.currentTarget.style.color = 'var(--c-dim)'; e.currentTarget.style.borderColor = 'var(--c-hairline)' }}
-        >
-          Your day is on Mission Control
-          <svg width="11" height="11" viewBox="0 0 16 16" fill="none">
-            <path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      )}
+      {/* USER DECISION (2026-07-21, permanent): NOTHING else on the splash. The user asked
+          for the "Your day is on Mission Control" pill to be removed and for the splash to
+          stay exactly this — mark + greeting + date, plus the live-agents card only when
+          agents are actually running. Do not add tiles, pills, links, or promos here. */}
     </div>
   )
 }

@@ -42,9 +42,25 @@ import { debugBus } from '../debug/bus'
 export type BonsaiMode = 'background' | 'focus'
 
 // process.cwd(), not __dirname/import.meta: this file is loaded as ESM (no __dirname) but is
-// typechecked under a CJS-module tsconfig (which rejects import.meta). Both entry points —
-// the server and the npm scripts — run from the repo root.
-const ROOT = process.env.CRUCIBLE_ROOT || process.cwd()
+// typechecked under a CJS-module tsconfig (which rejects import.meta). BUT the deployed
+// backend's cwd is `~/Library/Application Support/crucible-local` (found live 2026-07-21),
+// NOT the repo — cwd alone made isBonsaiInstalled() false there, so every head call silently
+// fell to the Apple FM daemon, which 503s ⇒ "send an agent on its way" died with "FM HTTP 503".
+// Resolve the root by PROBING for the sidecar binary across the plausible roots instead:
+// explicit env override first, then cwd, then the server entrypoint's directory
+// (process.argv[1] is `<repo>/server.ts` under tsx regardless of cwd).
+function resolveRoot(): string {
+  const candidates = [
+    process.env.CRUCIBLE_ROOT,
+    process.cwd(),
+    process.argv[1] ? dirname(process.argv[1]) : undefined,
+  ]
+  for (const c of candidates) {
+    if (c && existsSync(join(c, '.crucible', 'prismml-bin', 'llama-server'))) return c
+  }
+  return process.env.CRUCIBLE_ROOT || process.cwd()
+}
+const ROOT = resolveRoot()
 const BIN = process.env.CRUCIBLE_BONSAI_BIN || join(ROOT, '.crucible', 'prismml-bin', 'llama-server')
 const PORT = Number(process.env.CRUCIBLE_BONSAI_PORT || 8080)
 const BASE = `http://127.0.0.1:${PORT}`

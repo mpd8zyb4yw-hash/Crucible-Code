@@ -1933,6 +1933,25 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21d (cont.93 — agent "exit 0" residue guard + sidecar root fix for the FM HTTP 503)
+- **FM HTTP 503 on every agent launch — ROOT-CAUSED AND FIXED.** The deployed backend's cwd is
+  `~/Library/Application Support/crucible-local`, not the repo, so `bonsaiSidecar.ts`'s
+  `ROOT = cwd` resolved `.crucible/prismml-bin/llama-server` to a nonexistent path ⇒
+  `isBonsaiInstalled()` false ⇒ every head call silently fell to the Apple FM daemon ⇒ 503 ⇒
+  "send an agent on its way" died at iter 1. Fix: `resolveRoot()` PROBES for the sidecar binary
+  across CRUCIBLE_ROOT → cwd → `dirname(process.argv[1])` (the server entrypoint's dir, correct
+  under tsx regardless of cwd). Verified from the AppSupport cwd (`installed: true`) and live
+  end-to-end: the cont.91 repro prompt now returns a real verified answer through the agent path.
+- **Tool-residue guard (loop.ts)** — the pinned "exit 0"-as-final-answer bug. New deterministic
+  `isToolResidue()` (exported, unit-checked: 8 residue shapes caught, 4 real answers passed)
+  rejects a final that is only an exit status / bare acknowledgement; bounded 2-bounce correction
+  (`residue_bounced` debug event), then an honest `stalled` stop instead of shipping residue.
+- **Splash pill removed (user decision, PERMANENT):** `HomeSurface.tsx` is now mark + greeting +
+  date + live-agents card only. The user explicitly asked that nothing ever be added back to the
+  splash — guard comments in the file + assistant memory (`crucible-splash-keep-clean`).
+- Also committed (leftover finished work found uncommitted from the cont.92 session):
+  `groundedAnswer.ts` no-citations ⇒ no-sources-footer fix + `__sources_footer_bench.ts`.
+
 ### 2026-07-21c (cont.91 — UI overhaul: widget board on Mission Control, clean splash, chat deletion + forget-me, agent follow-up threading)
 User direction: widgets belong on Mission Control (interactable, add/remove/rearrange), NOT the
 splash; splash must be clean; "follow up with agent" must continue the nested convo instead of

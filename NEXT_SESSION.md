@@ -17,7 +17,36 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21c UI-overhaul session (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21d (cont.93) (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-21d (cont.93 — "exit 0" residue guard, FM-503 root fix, splash finalized):**
+- **FM HTTP 503 on agent launch FIXED at the root:** the deployed backend runs with cwd
+  `~/Library/Application Support/crucible-local`, so `bonsaiSidecar.ts`'s `ROOT = cwd` never found
+  `.crucible/` ⇒ sidecar "not installed" ⇒ silent Apple-FM fallback ⇒ 503. `resolveRoot()` now
+  probes CRUCIBLE_ROOT → cwd → `dirname(process.argv[1])` for the llama-server binary. Verified
+  from the AppSupport cwd AND live end-to-end in the browser (agent answered the repro prompt
+  with real verified prose, on-device).
+- **Tool-residue guard (`loop.ts`):** exported deterministic `isToolResidue()`; a final answer
+  that is only "exit 0" / "ok" / "Command executed successfully." etc. is bounced (max 2, debug
+  event `residue_bounced`) then honestly `stalled`. Unit-checked both ways.
+- **Splash (`HomeSurface.tsx`) is FINAL — permanent user decision:** mark + greeting + date +
+  live-agents card, nothing else, "Your day is on Mission Control" pill removed. NEVER add
+  anything back (guard comment in file; assistant memory `crucible-splash-keep-clean`).
+- Backend was found dead during the session; restarted (tsx watch, AppSupport cwd, port 3001).
+- Also committed: leftover cont.92 finished work — `groundedAnswer.ts` uncited-answer ⇒
+  no-sources-footer + `__sources_footer_bench.ts`.
+
+**Open items / risks (priority order):**
+- **Re-bench the swapped head now that the sidecar truly serves everywhere** — `repair:bench`,
+  namedToolRouter benches, and an agent-mode quality pass; the residue guard has a live escape
+  hatch (`stalled` after 2 bounces) whose hit-rate should be watched via `residue_terminal`.
+- **Bench the synthDriver history fix** — seed `messages` with a prior turn + goal "why?" and
+  assert the research DAG receives the thread (`src/CrucibleEngine/agent/synthDriver.ts`).
+- **Automation follow-ups still prefill-only** — thread into conversationId `automation-${id}`
+  (server.ts:934) through send().
+- **localFmPlanner implicit-intent** (`src/CrucibleEngine/agent/localFmPlanner.ts`) — unchanged.
+
+**Previous (cont.91) state below — still-relevant items folded above:**
 
 **Shipped 2026-07-21c (cont.91 — widget board, clean splash, chat deletion/forget-me, follow-up threading):**
 - Mission Control has an Overview | Agents segment; Overview = customizable widget board

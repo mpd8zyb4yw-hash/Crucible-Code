@@ -498,10 +498,14 @@ function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content:
 }
 
 /** Append a compact, clickable sources footer so citations resolve for the user. */
-function withSourcesFooter(text: string, ev: Evidence): string {
+export function withSourcesFooter(text: string, ev: Evidence): string {
   const cited = new Set((text.match(/\[S(\d+)\]/g) ?? []).map(m => Number(m.replace(/\D/g, ''))))
-  // If the model cited nothing, still show all sources (the answer is grounded in them).
-  const idxs = cited.size ? [...cited].sort((a, b) => a - b) : ev.sources.map((_, i) => i + 1)
+  // GATE ON ACTUAL USE: only attach a source when the answer CITES it. An uncited answer is
+  // not grounded in the retrieved evidence — it was derived parametrically or computed (e.g.
+  // "17 × 4 = 68"), and the search bundle is just whatever generic pages the query happened to
+  // surface. The old "cited nothing → show all sources" fallback stapled unrelated Wikipedia
+  // links onto such answers (cont: spurious-sources). No citations ⇒ no footer.
+  const idxs = [...cited].sort((a, b) => a - b)
   const lines = idxs
     .filter(n => n >= 1 && n <= ev.sources.length)
     .map(n => `[S${n}] ${ev.titles[n - 1]} — ${ev.sources[n - 1]}`)

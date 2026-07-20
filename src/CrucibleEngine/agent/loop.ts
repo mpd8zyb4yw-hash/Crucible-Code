@@ -197,6 +197,26 @@ TYPESCRIPT PROJECTS: When creating a new TypeScript project, always follow these
 7. Keep tsconfig MINIMAL (module commonjs, esModuleInterop, target es2020, skipLibCheck). Don't enable strict/declaration/composite — they create build friction without changing whether the program runs. Spend your effort on the implementation, not on the compiler config.`
 }
 
+/**
+ * True when a candidate final answer is nothing but tool residue — an exit status, a bare
+ * acknowledgement, or shell-prompt noise — rather than prose. Deterministic (doctrine:
+ * verify, never guess): the small head has been observed shipping "exit 0" as the entire
+ * answer (2026-07-21 repro), and no legitimate answer to a user request is only that.
+ */
+export function isToolResidue(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false // empty finals are handled by the caller's own paths
+  if (t.length > 80) return false
+  // Strip trivial decoration so "`exit 0`" / "**Done.**" still match.
+  const bare = t.replace(/[`*_#>\s]+/g, ' ').trim()
+  return (
+    /^(exit|exit code|exit status|status|return(ed)?(( exit)? code)?|rc|\$\?)[ :=]*\d+[.!]?$/i.test(bare) ||
+    /^(ok(ay)?|done|success(ful(ly)?)?|succeeded|finished|completed?|task complete[d.!]*)[.!]?$/i.test(bare) ||
+    /^(command|tool|script|process) (ran|executed|completed|finished|succeeded)( successfully)?[.!]?$/i.test(bare) ||
+    /^\d+$/.test(bare)
+  )
+}
+
 export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult> {
   const {
     goal, projectPath, driveTurn, emit, signal,
@@ -308,6 +328,12 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
 
   // Refusal-bounce state — a zero-tool-call refusal gets exactly one correction.
   let refusalBounces = 0
+
+  // Tool-residue guard state — a "final answer" that is nothing but tool residue
+  // ("exit 0", "ok", a bare status code) is a parse/attention failure of the small head,
+  // not an answer. Bounded corrections; if the model can't produce prose, stop honestly.
+  let residueBounces = 0
+  const MAX_RESIDUE_BOUNCES = 2
 
   // Grounding gate state — bounds how many times a rejected final answer can be
   // bounced back for correction, so a stubborn checker can never loop forever.
@@ -575,6 +601,31 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       return done('stalled',
         'The reasoning model declined this task without attempting it, even after a correction. ' +
         'This is a model limitation, not a permissions issue — try rephrasing (e.g. name the app or file directly), or run the request again.', iter)
+    }
+
+    // Tool-residue guard — CONCRETE REPRO 2026-07-21 (cont.91): agent-mode "what is a
+    // crucible?" ran one `run` tool and finished with "exit 0" as the entire answer. The
+    // qwen head sometimes echoes the last observation's status line instead of writing
+    // prose. Deterministic check (no model call): a final that is only an exit status /
+    // bare acknowledgement / shell-prompt residue is rejected and bounced with a targeted
+    // correction. Bounded; on exhaustion stop honestly rather than ship the residue.
+    if (isToolResidue(turn.text)) {
+      if (residueBounces < MAX_RESIDUE_BOUNCES) {
+        residueBounces++
+        debugBus.emit('agent', 'residue_bounced', { iter, text: turn.text.slice(0, 80) }, { severity: 'warn' })
+        emit({ type: 'thought', text: '[Final answer was raw tool residue — asking the model for the real answer]', iter })
+        messages.push({ role: 'assistant', content: turn.text })
+        messages.push({
+          role: 'user',
+          content: 'SYSTEM CORRECTION: Your final answer was raw tool output (an exit status or bare acknowledgement), NOT an answer. ' +
+            `Write the actual answer to the user's request in plain prose, using the information you gathered. The request was: ${goal.slice(0, 400)}`,
+        })
+        continue
+      }
+      debugBus.emit('agent', 'residue_terminal', { iter, text: turn.text.slice(0, 80) }, { severity: 'error' })
+      return done('stalled',
+        'The reasoning model completed its tool calls but could not produce a real answer (it kept returning tool status output). ' +
+        'Try running the request again or rephrasing it.', iter)
     }
 
     // No tool calls — model thinks it's done. Verify before accepting.
