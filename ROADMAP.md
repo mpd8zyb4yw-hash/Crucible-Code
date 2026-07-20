@@ -1933,6 +1933,34 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-20f (In-reader reply composer + consent-gated Send — PA surface, Phase 2)
+- **Reply composer** (`src/ReplyComposer.tsx`, NEW): opened from the email reader's new
+  **Reply here** action. Prefills **To** (bare address extracted from the "Name <addr>" From
+  header via `extractAddress`) and **Subject** ("Re: …", not double-prefixed if already "Re:"),
+  with an editable body. Screenshot-verified end-to-end via a throwaway mocked-fetch harness
+  (deleted after): empty-body state disables Send, typing enables it (green), clicking yields
+  "Sent ✓" + "Reply sent." — zero console errors.
+- **Consent gate = the user's click.** The POST to the send endpoint happens strictly inside
+  the Send button's `onClick`; Crucible never fires it on its own. Send is disabled until To +
+  Subject + a non-empty body are present (client guard), and the server re-checks the same
+  (`400` on empty) so a slipped/malformed request can't send a blank email. Doctrine line held:
+  the agent may PROPOSE a draft (seeded via `initialDraft`), the USER certifies + sends.
+- **Send endpoint** (`server.ts` `POST /api/connections/google/send`): REST door to the same
+  Gmail send the `gmail_send` TOOL uses. Threads the reply deterministically — looks up the
+  source message's RFC `Message-ID` + `threadId` (best-effort) and sets `In-Reply-To` /
+  `References` + `threadId` so it lands in the original conversation. Honest-fail: `502` on
+  Gmail error, `400` on missing fields.
+- **Reader action bar reshaped** (`src/EmailReader.tsx`): **Reply here** (opens the composer),
+  **Draft with agent** (the Phase-1 chat handoff, unchanged), **Open in Gmail** (the escape).
+  None auto-send.
+- Verification: `tsc --noEmit` + `vite build` clean; composer flow visually verified (mocked
+  send). NOT reproducible in-sandbox: a send against REAL Gmail (needs the user's OAuth + live
+  backend) — same boundary as the tiles/reader.
+- **Phases still open**: (3) importance flagging from deterministic signals (unread + to-me +
+  question + known sender) as a labeled suggestion; (4) NL "surface all emails from/about X" →
+  precise `gmail_search` query + organized results. Optional Phase-2.5: wire an agent-generated
+  draft into the composer's `initialDraft` (compose path already supports it).
+
 ### 2026-07-20e (Interactive email reader — "Your day" tiles become a real PA surface, Phase 1)
 - **In-Crucible email reader** (`src/EmailReader.tsx`, NEW): clicking a row in the Home inbox
   tile opens a clean overlay (matches `RunDetailOverlay` convention) that fetches the FULL

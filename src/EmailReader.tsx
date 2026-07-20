@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react'
 import { API_BASE, apiFetch } from './api'
 import { PrimaryButton, GhostButton } from './ui'
+import ReplyComposer from './ReplyComposer'
 
 export interface MessageStub { id: string; from: string; subject: string; date: string; unread: boolean }
 
@@ -28,6 +29,7 @@ export default function EmailReader({ stub, onClose, onDraftReply }: {
 }) {
   const [msg, setMsg] = useState<FullMessage | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [composing, setComposing] = useState(false)   // in-reader reply composer (Phase 2)
 
   useEffect(() => {
     let dead = false
@@ -104,18 +106,34 @@ export default function EmailReader({ stub, onClose, onDraftReply }: {
           )}
         </div>
 
-        {/* Actions — draft-with-agent (does NOT send), open in Gmail (the escape) */}
-        <div style={{ padding: '12px 18px', borderTop: '1px solid var(--c-hairline)', display: 'flex', alignItems: 'center', gap: 10 }}>
-          {onDraftReply && (
-            <PrimaryButton accent="#ff9e5e" onClick={() => { onDraftReply(draftPrompt); onClose() }}>
-              Draft a reply
+        {/* In-reader reply composer — user writes + clicks Send (the consent gate). */}
+        {composing && (
+          <ReplyComposer
+            inReplyToId={stub.id}
+            from={msg?.from ?? stub.from}
+            subject={msg?.subject ?? stub.subject}
+            onCancel={() => setComposing(false)}
+            onDone={() => { /* sent — keep the confirmation visible until the user closes */ }}
+          />
+        )}
+
+        {/* Actions — reply-here (composer), draft-with-agent (chat handoff), open in Gmail. None auto-send. */}
+        {!composing && (
+          <div style={{ padding: '12px 18px', borderTop: '1px solid var(--c-hairline)', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <PrimaryButton accent="#6fd08a" onClick={() => setComposing(true)} title="Write a reply and send it from here">
+              Reply here
             </PrimaryButton>
-          )}
-          <div style={{ flex: 1 }} />
-          <a href={gmailUrl} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-            <GhostButton title="Open the full thread in Gmail">Open in Gmail</GhostButton>
-          </a>
-        </div>
+            {onDraftReply && (
+              <GhostButton onClick={() => { onDraftReply(draftPrompt); onClose() }} title="Have the agent draft a reply in chat for review">
+                Draft with agent
+              </GhostButton>
+            )}
+            <div style={{ flex: 1 }} />
+            <a href={gmailUrl} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
+              <GhostButton title="Open the full thread in Gmail">Open in Gmail</GhostButton>
+            </a>
+          </div>
+        )}
       </div>
     </div>
   )

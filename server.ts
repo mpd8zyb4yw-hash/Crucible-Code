@@ -1215,6 +1215,59 @@ app.get('/api/connections/google/message/:id', async (req: express.Request, res:
   }
 })
 
+// Consent-gated reply send (Phase 2). This is a REST door to the same Gmail send the
+// gmail_send tool uses — but the CONSENT here is the user clicking "Send" in the reader's
+// composer, which IS the user acting, not the agent auto-sending. Crucible never calls this
+// on its own; only a user gesture in ReplyComposer does. Doctrine line held: agent proposes
+// a draft, the user certifies + sends. We thread the reply (In-Reply-To/References + threadId)
+// so it lands in the original conversation, computed deterministically from the source message.
+app.post('/api/connections/google/send', async (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const b = (req.body ?? {}) as Record<string, unknown>
+  const to = String(b.to ?? '').trim()
+  const subject = String(b.subject ?? '').trim()
+  const body = String(b.body ?? '')
+  const cc = String(b.cc ?? '').trim()
+  const inReplyToId = String(b.inReplyToId ?? '').trim()   // Gmail internal id of the message being replied to
+  // Server-side guard so an empty/malformed request can't fire a blank email even if the UI slips.
+  if (!to || !subject || !body.trim()) {
+    return res.status(400).json({ error: 'to, subject, and a non-empty body are required.' })
+  }
+  try {
+    // Look up the RFC Message-ID + thread of the source message for correct threading (best-effort).
+    let rfcMessageId = ''
+    let threadId = ''
+    if (inReplyToId) {
+      try {
+        const src = await gFetch(user.id, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(inReplyToId)}?format=metadata&metadataHeaders=Message-ID`)
+        threadId = String(src.threadId ?? '')
+        const hs: any[] = src.payload?.headers ?? []
+        rfcMessageId = hs.find((x: any) => String(x.name).toLowerCase() === 'message-id')?.value ?? ''
+      } catch { /* threading is best-effort; a non-threaded send is still correct */ }
+    }
+    const raw = [
+      `To: ${to}`,
+      cc ? `Cc: ${cc}` : '',
+      `Subject: ${subject}`,
+      rfcMessageId ? `In-Reply-To: ${rfcMessageId}` : '',
+      rfcMessageId ? `References: ${rfcMessageId}` : '',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      body,
+    ].filter(Boolean).join('\r\n')
+    const encoded = Buffer.from(raw).toString('base64url')
+    const payload: Record<string, unknown> = { raw: encoded }
+    if (threadId) payload.threadId = threadId
+    const sent = await gFetch(user.id, 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    })
+    res.json({ ok: true, id: sent.id, threadId: sent.threadId ?? threadId })
+  } catch (e: any) {
+    res.status(502).json({ error: String(e?.message ?? e).slice(0, 200) })
+  }
+})
+
 // Live GitHub widget: the signed-in user's own open PRs via the `gh` CLI (read-only,
 // no network creds handled by us — gh uses its own stored auth). Honest-absence rule like
 // Google: any failure (gh missing, not authed, offline) leaves the widget absent, never faked.

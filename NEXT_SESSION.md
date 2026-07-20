@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-20e email-reader session (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-20f reply-composer session (REPLACE THIS EVERY SESSION)
 
 **USER DIRECTION (2026-07-20e): the "Your day" tiles must become a real personal-assistant
 surface — not a static pane. Click an email → open it in-Crucible (clone the UI, cleanly +
@@ -27,31 +27,36 @@ emails from/about X" and Crucible ACCURATELY surfaces + organizes them (PA-grade
 lines locked: agent DRAFTS, user SENDS (never auto-send); importance is deterministic-first +
 labeled suggestion (never fabricated).**
 
-**Shipped this session (2026-07-20e, Phase 1 of the PA surface):**
-- `src/EmailReader.tsx` (NEW): in-Crucible email reader overlay — clicking a Home inbox row
-  fetches the FULL message and renders real headers + body, with an "Open in Gmail" deep-link
-  escape and a "Draft a reply" button that hands a reply-context prompt to chat (agent drafts,
-  user sends — no `gmail_send` fired by Crucible). Screenshot-verified via a throwaway mocked
-  harness; renders beautifully, zero console errors.
-- `server.ts` `GET /api/connections/google/message/:id`: structured REST door to `gmail_read`
-  (text/plain preferred, HTML deterministically stripped; honest-fail 502 → reader error state).
-- `src/ConnectionWidgets.tsx` `GmailWidget` gains optional `onOpenMessage` (rows = read one,
-  stopPropagation so the AskTile "summarize all" tap still fires); `HomeSurface.tsx` owns the
-  reader state. `tsc` + `vite build` clean.
+**Shipped 2026-07-20f (Phase 2 — reply composer + consent-gated Send):**
+- `src/ReplyComposer.tsx` (NEW): opened from the reader's **Reply here** action. Prefills To
+  (bare address via `extractAddress`) + Subject ("Re:", no double-prefix), editable body.
+  Send is disabled until To+Subject+body present (client guard) AND the server re-checks (400
+  on empty). The send POST fires ONLY inside the Send button's onClick — never auto. Screenshot-
+  verified end-to-end via throwaway mocked harness (empty→disabled, typed→enabled, click→"Sent
+  ✓"), zero console errors.
+- `server.ts` `POST /api/connections/google/send`: REST door to the same Gmail send as the
+  `gmail_send` TOOL; threads the reply (looks up source Message-ID + threadId → In-Reply-To /
+  References + threadId). Honest-fail 502/400.
+- `src/EmailReader.tsx` action bar reshaped: **Reply here** (composer) + **Draft with agent**
+  (Phase-1 chat handoff) + **Open in Gmail**. `tsc` + `vite build` clean.
 
-**Phase 1 REMAINING CHECK:** reader against REAL inbox data needs the user's OAuth + live
-backend (:3001) — not reproducible in-sandbox (the app gates on login before Home renders).
+**Shipped 2026-07-20e (Phase 1 — email reader):** `src/EmailReader.tsx`,
+`server.ts` `GET /api/connections/google/message/:id`, `GmailWidget.onOpenMessage`. Reader
+renders real headers+body with Gmail-escape; verified via mocked harness.
+
+**REMAINING CHECK (Phases 1+2):** reader + a real SEND against REAL Gmail need the user's OAuth
++ live backend (:3001) — not reproducible in-sandbox (app gates on login before Home renders).
 Same eyeball boundary as the tiles.
 
 **Next phases of THIS feature (in priority order):**
-- Phase 2 — inline reply composer + a consent-gated Send button the USER clicks (still no
-  auto-send); wire it to `gmail_send`.
 - Phase 3 — importance flag on tile rows from DETERMINISTIC signals (unread + addressed to me
   + contains a question + known sender), rendered as a labeled suggestion; optional one-line
   model "suggested reply" shown as a draft to verify.
 - Phase 4 — NL "surface all emails from/about X" → precise `gmail_search` query (from:X / term)
   + organized/grouped results. Gmail does the accurate retrieval; Crucible organizes. Extend
   `namedToolRouter.ts` with the from/about → query mapping (deterministic, doctrine-sound).
+- Optional Phase 2.5 — wire an agent-generated draft into `ReplyComposer`'s `initialDraft`
+  (the composer already supports it; only the draft-generation handoff is unbuilt).
 
 ---
 
