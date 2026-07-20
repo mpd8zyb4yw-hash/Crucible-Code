@@ -21,12 +21,28 @@ export interface ClassifyResult {
 }
 
 // Signals that the user is correcting or aborting a current in-flight task
-const REDIRECT_PATTERNS = [
-  /\b(actually|wait|no|stop|cancel|nevermind|never mind|forget it|instead|go back|undo)\b/i,
-  /\bdon'?t\s+(do|open|play|search|show|go)\b/i,
-  /\bi (don'?t want|changed my mind)\b/i,
-  /\b(open|go to|show me|switch to|use)\s+\w+\s+instead\b/i,
-]
+// Strong redirect cues — unambiguous mid-task corrections, safe to match ANYWHERE in the
+// message. 'instead' is included here because a bare "instead" is itself a correction signal.
+const REDIRECT_STRONG = /\b(actually|cancel|nevermind|never mind|forget it|go back|undo|scratch that|change of plan|instead)\b/i
+const REDIRECT_DONT = /\bdon'?t\s+(do|open|play|search|show|go)\b/i
+const REDIRECT_MIND = /\bi (don'?t want|changed my mind)\b/i
+const REDIRECT_INSTEAD_TARGET = /\b(open|go to|show me|switch to|use)\s+\w+\s+instead\b/i
+
+// Ambiguous stopwords — 'no', 'nope', 'wait', 'stop', 'hold on' — are a redirect ONLY when they
+// LEAD the message as a correction, never when embedded in a benign phrase. Bare \bno\b / \bwait\b
+// (the cont.97e handoff bug) misclassified "no worries", "no rush", "wait for the download to
+// finish", "there's no problem", "don't stop" as redirects. Require sentence-initial position and
+// reject a following benign continuation word.
+const REDIRECT_LEADING = /^\s*(no|nope|wait|stop|hold on|hold up|hang on)\b/i
+const REDIRECT_LEADING_BENIGN = /^\s*(?:no|nope|wait|stop|hold on|hold up|hang on)\b[\s,]*(?:problem|worries|worry|rush|need|idea|ideas|thanks|thank|one|biggie|comment|for\b|until|till|a\s+(?:sec|second|moment|minute|bit|while)|please)/i
+
+/** True when `msg` is a mid-task redirect. Strong cues match anywhere; the ambiguous leading
+ *  stopwords fire only at sentence start and only when not part of a benign collocation. */
+export function isRedirectMessage(msg: string): boolean {
+  if (REDIRECT_STRONG.test(msg) || REDIRECT_DONT.test(msg) || REDIRECT_MIND.test(msg) || REDIRECT_INSTEAD_TARGET.test(msg)) return true
+  if (REDIRECT_LEADING.test(msg) && !REDIRECT_LEADING_BENIGN.test(msg)) return true
+  return false
+}
 
 // Simple single-step commands the Layer 0 router can dispatch directly
 const SIMPLE_COMMAND_PATTERNS = [
@@ -72,25 +88,24 @@ export function classifyIntent(
   // Check redirect first — takes priority over other classifications
   // Only meaningful when there is an active in-flight task
   if (opts?.hasActiveTask) {
-    for (const pat of REDIRECT_PATTERNS) {
-      if (pat.test(msg)) {
-        // Extract what the new target might be (words after "instead", "open X instead", etc.)
-        const insteadMatch = msg.match(/\b(open|go to|use|switch to|play)\s+(.+?)(?:\s+instead)?$/i)
-        return {
-          intent: 'conversational_redirect',
-          confidence: 'high',
-          redirectTarget: insteadMatch?.[2]?.trim(),
-        }
+    if (isRedirectMessage(msg)) {
+      // Extract what the new target might be (words after "instead", "open X instead", etc.)
+      const insteadMatch = msg.match(/\b(open|go to|use|switch to|play)\s+(.+?)(?:\s+instead)?$/i)
+      return {
+        intent: 'conversational_redirect',
+        confidence: 'high',
+        redirectTarget: insteadMatch?.[2]?.trim(),
       }
     }
-    // Short follow-up after a task likely means redirect or clarification
-    if (msg.split(/\s+/).length <= 4 && /\b(actually|but|wait|hmm)\b/i.test(msg)) {
+    // Short follow-up after a task likely means redirect or clarification. 'wait' still guarded
+    // by the benign-collocation check so "wait for it" doesn't read as a correction.
+    if (msg.split(/\s+/).length <= 4 && /\b(actually|but|hmm)\b/i.test(msg)) {
       return { intent: 'conversational_redirect', confidence: 'medium' }
     }
   }
 
   // Redirect patterns also apply without an active task (catches "actually go back" etc.)
-  if (REDIRECT_PATTERNS[0].test(msg) || REDIRECT_PATTERNS[1].test(msg)) {
+  if (isRedirectMessage(msg)) {
     const insteadMatch = msg.match(/\b(open|go to|use|switch to|play)\s+(.+?)(?:\s+instead)?$/i)
     if (insteadMatch) {
       return {
