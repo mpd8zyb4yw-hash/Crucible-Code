@@ -28,7 +28,7 @@ import type { Automation as AutomationRecord, AutomationRun as AutomationRunReco
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
-import { resolveNamedTools, resolveImplicitPersonalTools } from './src/CrucibleEngine/agent/namedToolRouter'
+import { resolveNamedTools, resolveImplicitPersonalTools, renderPersonalData } from './src/CrucibleEngine/agent/namedToolRouter'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
@@ -3452,16 +3452,30 @@ app.post('/api/chat', async (req, res) => {
         }
         const anyOk = outputs.some(o => o.ok)
         if (anyOk) {
-          // Hand the REAL tool output to the FM to phrase the brief. Deterministic data,
-          // model only summarizes — it cannot invent what the tools didn't return.
-          const dataBlock = outputs.map(o => `### ${o.tool} (${o.ok ? 'ok' : 'error'})\n${o.output.slice(0, 3000)}`).join('\n\n')
-          const sys = 'You are a precise assistant. You are given REAL output from tools that already ran. Using ONLY that output, complete the user\'s request. Do not invent data not present in the tool output. If a tool returned nothing, say so plainly. Plain text, concise, no preamble.'
-          const usr = `Request:\n${message}\n\nTool output (this is real, already-fetched data):\n${dataBlock}`
+          // Deterministic render of retrieved personal data (email/calendar). The tools
+          // already return clean, structured text; the FM "summary" step is pure downside
+          // for a retrieval ask (live 2026-07-20: it collapsed a full inbox to one sender
+          // address, fabricated "your inbox is empty" over real mail, and twice shipped a
+          // 0-char answer). When the user asked to SEE their data, the data IS the answer.
+          const rendered = renderPersonalData(outputs)
           let summary = ''
-          try { summary = stripThink(await callLocalModel(sys, usr, 30000)) } catch { /* fall back to raw */ }
-          if (!summary.trim()) {
-            // FM unavailable/empty — ship the raw verified tool output rather than nothing.
-            summary = outputs.map(o => `${o.tool}:\n${o.output}`).join('\n\n')
+          if (implicit && rendered) {
+            // Pure retrieval ("show me my emails", "what's on my calendar") — ship the
+            // lossless render and skip the FM entirely. Empty/fabricated finals become
+            // structurally impossible whenever a tool returned data.
+            summary = rendered
+            debugBus.emit('agent', 'personal_data_rendered', { tools: named.calls.map(c => c.name), chars: rendered.length }, { severity: 'info' })
+          } else {
+            // Explicit summarize brief (e.g. Morning Brief "…then summarize"). Let the FM
+            // phrase it, but never invent — and fall back to the lossless render (then raw)
+            // so an empty FM reply can never become an empty answer.
+            const dataBlock = outputs.map(o => `### ${o.tool} (${o.ok ? 'ok' : 'error'})\n${o.output.slice(0, 3000)}`).join('\n\n')
+            const sys = 'You are a precise assistant. You are given REAL output from tools that already ran. Using ONLY that output, complete the user\'s request. Do not invent data not present in the tool output. If a tool returned nothing, say so plainly. Plain text, concise, no preamble.'
+            const usr = `Request:\n${message}\n\nTool output (this is real, already-fetched data):\n${dataBlock}`
+            try { summary = stripThink(await callLocalModel(sys, usr, 30000)) } catch { /* fall back below */ }
+            if (!summary.trim()) {
+              summary = rendered ?? outputs.map(o => `${o.tool}:\n${o.output}`).join('\n\n')
+            }
           }
           send({ type: 'final', text: summary })
           patchActiveSessionRound(chatUser, chatRoundId, { synthesis: summary, synthesisDone: true, synthStreaming: false })

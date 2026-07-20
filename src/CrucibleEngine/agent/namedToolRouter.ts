@@ -180,6 +180,95 @@ function catchupCalls(days: number): ToolCall[] {
   ]
 }
 
+// ── Entity-scoped inbox retrieval — "surface all emails from/about X" ───────────
+// The emphasized PA ask (2026-07-20e user direction): "surface all emails from/about X"
+// and Crucible ACCURATELY surfaces them. Doctrine-sound because GMAIL does the accurate
+// retrieval — we only translate the NL relation into a precise gmail_search query
+// (from:X / a content term), never guess at results. Deterministic string mapping, no
+// model. Conservative firing: only on a clear retrieval request (a find/show/surface verb,
+// an all/any/every quantifier, or a trailing "?"), so a statement like "the email from
+// Dana was rude" never triggers a search.
+const RETRIEVAL_FRAME = /\b(?:find|show|surface|search|get|pull\s+up|dig\s+up|list|fetch|look\s+up|bring\s+up|see|display|round\s+up|gather)\b/i
+const RETRIEVAL_QUANTIFIER = /\b(?:all|any|every|everything|anything)\b/i
+const isRetrievalRequest = (m: string): boolean =>
+  RETRIEVAL_FRAME.test(m) || RETRIEVAL_QUANTIFIER.test(m) || /\?\s*$/.test(m)
+
+// The noun that precedes the relation — real mail synonyms only. "stuff/anything/everything"
+// let "surface everything from Dana" work without the literal word "email".
+const MAIL_NOUN = '(?:emails?|mail|messages?|inbox|correspondence|stuff|anything|everything)'
+// Compound "from X about Y" first (most specific), then sender-only, then content-only.
+const FROM_ABOUT_REL = new RegExp(`\\b${MAIL_NOUN}\\s+from\\s+(.+?)\\s+(?:about|regarding|mentioning|concerning|re)\\s+(.+)$`, 'i')
+const FROM_REL = new RegExp(`\\b${MAIL_NOUN}\\s+from\\s+(.+)$`, 'i')
+const ABOUT_REL = new RegExp(`\\b${MAIL_NOUN}\\s+(?:about|regarding|mentioning|concerning|related\\s+to|on\\s+the\\s+(?:subject|topic)\\s+of|re)\\s+(.+)$`, 'i')
+
+// Trailing time expressions are a window, not part of the sender/topic — strip them off the
+// captured target so "emails from Dana in the last week" → from:Dana (+ newer_than:7d), not
+// a from: filter containing the words "in the last week".
+const TIME_TAIL = /\s+(?:(?:in|from|over|during|within|since)\s+)?(?:the\s+)?(?:last|past|this|recent)?\s*(?:\d{1,2}\s+)?(?:days?|weeks?|months?|today|yesterday|tonight|this\s+(?:week|morning|afternoon|evening)|few\s+days?|couple(?:\s+of)?\s+days?|night)\b.*$/i
+// A LEADING time expression means the "target" was purely a recency phrase ("emails from
+// last week") — strip it so cleanTarget collapses to '' and the ask falls through to the
+// recency resolver instead of producing a nonsense from:last filter.
+const TIME_LEAD = /^(?:(?:in|from|over|during|within|since)\s+)?(?:the\s+)?(?:last|past|this|recent)\s+(?:\d{1,2}\s+)?(?:days?|weeks?|months?|week|day|night|few\s+days?|couple(?:\s+of)?\s+days?)\b/i
+
+/** Normalize a captured target: drop trailing punctuation/politeness, a trailing time
+ *  clause, and a leading article. Returns '' when nothing meaningful survives (e.g. the
+ *  "target" was only a time expression → this isn't an entity search after all). */
+function cleanTarget(raw: string): string {
+  let t = raw.trim().replace(/[?.!,;:]+\s*$/, '').replace(/\s+please\b\s*$/i, '').trim()
+  t = t.replace(TIME_LEAD, '').trim()
+  t = t.replace(TIME_TAIL, '').trim()
+  t = t.replace(/^(?:the|a|an|my|any|all|some)\s+/i, '').trim()
+  // A residue that is itself purely a recency/deixis word is not an entity.
+  if (!t || /^(?:last|past|this|recent|recently|new|newer|unread|latest|lately)$/i.test(t)) return ''
+  return t
+}
+
+// A valid entity target is a short name/topic, not a relative clause. These markers signal
+// the capture ran past the entity into a predicate ("...from the last day THAT NEEDS a reply")
+// — reject so a recency/brief ask isn't mangled into a from:"that needs a reply" filter.
+const CLAUSE_MARKER = /\b(?:that|which|who|whom|whose|and|needs?|requires?|please|when|where|containing|labeled)\b/i
+const isEntityLike = (t: string): boolean =>
+  !!t && t.split(/\s+/).length <= 5 && !CLAUSE_MARKER.test(t)
+
+// A strong calendar noun alongside a mail noun means this is a multi-domain day brief
+// ("today's calendar and my inbox…"), not a single-entity mail search — defer to the
+// catch-up / recency resolvers. "meeting"/"event" are deliberately NOT here: they're common
+// mail TOPICS ("emails about the meeting") and must not block an entity search.
+const CALENDAR_STRONG = /\b(?:calendar|schedule|appointments?)\b/i
+
+/** Gmail from: operand — quote multi-word names so `from:"Dana Rivera"` stays one filter. */
+const senderOperand = (t: string): string => (/\s/.test(t) ? `from:"${t}"` : `from:${t}`)
+/** Gmail content operand — quote a multi-word phrase for an exact-phrase match. */
+const contentOperand = (t: string): string => (/\s/.test(t) ? `"${t}"` : t)
+
+/** Build the entity-scoped gmail_search calls, or null when the message isn't one. */
+function resolveEntityScopedMail(msg: string): NamedToolResolution | null {
+  if (!isRetrievalRequest(msg)) return null
+  if (CALENDAR_STRONG.test(msg)) return null   // multi-domain brief → not a single-entity search
+  const days = statedDayWindow(msg) ?? (/\byesterday\b/i.test(msg) ? 1 : null)
+  const window = days ? ` newer_than:${days}d` : ''
+
+  let query: string | null = null
+  let ma: RegExpMatchArray | null
+  if ((ma = msg.match(FROM_ABOUT_REL))) {
+    const sender = cleanTarget(ma[1]); const topic = cleanTarget(ma[2])
+    if (isEntityLike(sender) && isEntityLike(topic)) query = `${senderOperand(sender)} ${contentOperand(topic)}`
+    else if (isEntityLike(sender)) query = senderOperand(sender)
+  }
+  if (!query && (ma = msg.match(FROM_REL))) {
+    const sender = cleanTarget(ma[1])
+    if (isEntityLike(sender)) query = senderOperand(sender)
+  }
+  if (!query && (ma = msg.match(ABOUT_REL))) {
+    const topic = cleanTarget(ma[1])
+    if (isEntityLike(topic)) query = contentOperand(topic)
+  }
+  if (!query) return null
+  // No in:inbox restriction — "surface ALL emails from/about X" searches all mail. maxResults
+  // higher than the recency default since an entity search is meant to be exhaustive.
+  return { calls: [{ id: 'entity_0', name: 'gmail_search', args: { query: query + window, maxResults: 25 } }], skipped: [] }
+}
+
 /**
  * Resolve a retrieval ask about the user's own email/calendar into the same read-only
  * ToolCalls the explicit router produces. Null when the message isn't such an ask —
@@ -189,6 +278,11 @@ export function resolveImplicitPersonalTools(message: string): NamedToolResoluti
   const msg = (message ?? '').trim()
   if (!msg || msg.length > 400) return null            // long briefs deserve real planning
   if (MUTATION_VERBS.test(msg)) return null
+  // Entity-scoped mail ("surface all emails from/about X") → a precise gmail_search query.
+  // Checked before catch-up + the recency domain loop because it carries its own sender/topic
+  // filter; a bare recency ask ("emails from last week") strips to no entity and falls through.
+  const entity = resolveEntityScopedMail(msg)
+  if (entity) return entity
   // Catch-up brief: intent named without a domain noun → both read-only day tools.
   // Checked before the domain loop so a bare "what's on my plate" resolves even though
   // PERSONAL_DOMAINS finds no email/calendar noun to match.
@@ -207,4 +301,53 @@ export function resolveImplicitPersonalTools(message: string): NamedToolResoluti
     calls.push({ id: `implicit_${i++}`, name: d.tool, args })
   }
   return calls.length ? { calls, skipped: [] } : null
+}
+
+// ── Deterministic personal-data renderer ───────────────────────────────────────
+// gmail_search and calendar_list already return CLEAN, structured text. Handing that
+// to the weak on-device FM to "summarize" is pure downside for a retrieval ask: live
+// (2026-07-20) the FM collapsed a full inbox to a single sender address, fabricated
+// "your inbox is empty" over real mail, and twice shipped a 0-char answer. When the user
+// asked to SEE their email/calendar, the data IS the answer — format it, never
+// paraphrase it. This turns a lossy reasoning step into a lossless formatting step and
+// makes an empty/fabricated final structurally impossible whenever a tool returned data.
+
+export interface RenderableOutput { tool: string; ok: boolean; output: string }
+
+const GMAIL_EMPTY = /^No emails found/i
+const CAL_EMPTY = /^No upcoming events found/i
+
+function renderGmail(output: string): string {
+  if (GMAIL_EMPTY.test(output.trim())) return 'No emails found in your inbox for that window.'
+  // Blocks are "[id] From: …\nDate: …\nSubject: …\nSnippet: …" joined by "\n\n---\n\n".
+  const blocks = output.split(/\n\n---\n\n/).map(b => b.trim()).filter(Boolean)
+  const items = blocks.map((b, i) => {
+    const from = /^\s*(?:\[[^\]]*\]\s*)?From:\s*(.*)$/im.exec(b)?.[1]?.trim() ?? ''
+    const date = /^\s*Date:\s*(.*)$/im.exec(b)?.[1]?.trim() ?? ''
+    const subj = /^\s*Subject:\s*(.*)$/im.exec(b)?.[1]?.trim() || '(no subject)'
+    const snip = /^\s*Snippet:\s*([\s\S]*)$/im.exec(b)?.[1]?.trim() ?? ''
+    const head = `${i + 1}. ${subj} — ${from || 'unknown sender'}${date ? ` · ${date}` : ''}`
+    return snip ? `${head}\n   ${snip}` : head
+  })
+  return items.length ? `Your recent emails:\n\n${items.join('\n\n')}` : output.trim()
+}
+
+function renderCalendar(output: string): string {
+  if (CAL_EMPTY.test(output.trim())) return 'Nothing on your calendar for that window.'
+  return `Your calendar:\n\n${output.trim()}`
+}
+
+/**
+ * Format retrieved personal-data tool outputs into a clean, lossless answer. Returns
+ * null when none of the successful outputs are renderable personal data (caller keeps
+ * its FM path). Only ok outputs are rendered; errors are the caller's concern.
+ */
+export function renderPersonalData(outputs: RenderableOutput[]): string | null {
+  const parts: string[] = []
+  for (const o of outputs) {
+    if (!o.ok) continue
+    if (o.tool === 'gmail_search') parts.push(renderGmail(o.output))
+    else if (o.tool === 'calendar_list') parts.push(renderCalendar(o.output))
+  }
+  return parts.length ? parts.join('\n\n') : null
 }

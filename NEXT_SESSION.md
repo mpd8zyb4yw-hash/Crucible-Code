@@ -17,6 +17,34 @@
 
 ---
 
+## CURRENT STATE — last updated 2026-07-21a entity-mail-retrieval session (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-21a (Phase 4 — entity-scoped mail retrieval + lossless personal-data render):**
+- `src/CrucibleEngine/agent/namedToolRouter.ts` `resolveEntityScopedMail` (in
+  `resolveImplicitPersonalTools`): "surface all emails from/about X" → precise `gmail_search`
+  query (`from:X`, content term, or `from:X topic` compound); multi-word senders quoted, topics
+  phrase-quoted, time expressions → `newer_than:Nd`. Conservative firing (find/show/surface verb,
+  all/any/every, or trailing "?"; `isEntityLike` rejects clause-shaped targets; strong calendar
+  noun defers to the day-brief path). Bench `__entityMail_bench.ts` 12/12; existing 30/30 + 22/22.
+- `renderPersonalData` (`namedToolRouter.ts` + `server.ts`, was pre-existing uncommitted, verified
+  then committed): pure retrieval asks ship a LOSSLESS render of gmail/calendar tool output, FM
+  summary skipped — kills the "inbox is empty"/0-char fabrications. Bench 8/8. `tsc` + build clean.
+
+**Doctrine note:** Gmail does the accurate retrieval; Crucible only maps NL→query and organizes.
+All four phases' engine logic is bench-verified; the REAL-inbox behaviors (reader, send,
+importance signals, entity search) still need the user's OAuth + live `:3001` backend — not
+sandbox-reproducible. Same eyeball boundary as the tiles.
+
+**Next of THIS feature / open items (priority order):**
+- Optional Phase 2.5 — wire an agent-generated draft into `src/ReplyComposer.tsx`'s `initialDraft`
+  prop (the composer already supports it; only the draft-generation handoff is unbuilt).
+- Grouping/organization of entity-search results in the UI (currently a flat gmail_search render);
+  the "organizes them" half of the user's PA direction — group by sender/thread/date.
+- localFmPlanner implicit-intent (`src/CrucibleEngine/agent/localFmPlanner.ts`) — on-device planner
+  still can't select tools for intent-only briefs; the binding engine-capability gap.
+
+**Previous CURRENT STATE (importance flag) below — historical, superseded by the block above:**
+
 ## CURRENT STATE — last updated 2026-07-20g importance-flag session (REPLACE THIS EVERY SESSION)
 
 **Shipped 2026-07-20g (Phase 3 — deterministic importance flag + planner hygiene):**

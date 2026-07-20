@@ -1933,6 +1933,26 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21a (Entity-scoped mail retrieval "surface all emails from/about X" — PA surface, Phase 4)
+- **Entity-scoped resolver** (`src/CrucibleEngine/agent/namedToolRouter.ts`,
+  `resolveEntityScopedMail` folded into `resolveImplicitPersonalTools`): translates the
+  emphasized PA ask — "surface all emails from/about X" — into a PRECISE `gmail_search` query
+  (`from:X`, a content term, or the `from:X topic` compound), then lets Gmail do the accurate
+  retrieval. Doctrine-sound: we map the NL relation deterministically; the model never invents
+  results. Multi-word senders quoted (`from:"Dana Rivera"`), topics phrase-quoted; trailing/
+  leading time expressions stripped into `newer_than:Nd` (not baked into the from: filter).
+  Conservative firing — needs a find/show/surface verb, an all/any/every quantifier, or a
+  trailing "?"; rejects clause-shaped targets (`isEntityLike`) and defers when a strong calendar
+  noun signals a multi-domain brief. Bench `__entityMail_bench.ts` 12/12; existing personal-tool
+  benches still 30/30 + 22/22.
+- **Also landed (pre-existing uncommitted fix, verified before commit):** `renderPersonalData`
+  (`namedToolRouter.ts` + `server.ts`) — for a PURE retrieval ask the already-structured
+  gmail_search/calendar_list output is rendered LOSSLESSLY and the FM summary step is skipped
+  (a weak FM had collapsed a full inbox to one sender, fabricated "your inbox is empty", and
+  twice shipped a 0-char answer, live 2026-07-20). Explicit summarize briefs still phrase via the
+  FM but fall back to the lossless render, so an empty final is structurally impossible when a
+  tool returned data. Bench `__renderPersonalData_bench.ts` 8/8. `tsc` + `vite build` clean.
+
 ### 2026-07-20g (Deterministic inbox-importance flag + Layer-2 planner hygiene — PA surface, Phase 3)
 - **Importance verifier** (`src/CrucibleEngine/importance.ts`, NEW): pure, benchable
   `assessImportance(signals)` — doctrine-sound deterministic-first, labeled-suggestion, never
