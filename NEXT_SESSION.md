@@ -17,7 +17,43 @@
 
 ---
 
-## CURRENT STATE — last updated real-tabs/settings-pages session, 2026-07-19g (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-20 handoff-list session (REPLACE THIS EVERY SESSION)
+
+**This session shipped 4 verified engine items from the pending list (each committed):**
+- **Item 1 — goalExampleOracle wired** as lowest-priority `effectiveDerived` fallback in
+  universal.ts. Mines literal `fn(<lits>) → <lit>` examples from goal prose (zero inference,
+  abstains otherwise); catches the stable-WRONG subclass with a too-weak visible test. Oracle
+  bench 23/23, no new tsc errors. Slots in only when no stronger derived test exists.
+- **Item 2 — combined candidate+sibling repair** in universal.ts compile-gate path: when a
+  sibling repair leaves the candidate with its OWN residual fatal (TS2307 class), re-run
+  proposeRepairs on the candidate and offer both as one change-set. Residual-location regex
+  unit-tested. **Still needs a live measurement pass (FM daemon).**
+- **Item 8 — intent classifier redirect hardening**: split strong cues (match anywhere) from
+  ambiguous leading stopwords (`no`/`wait`/`stop`) that now fire only sentence-initial and only
+  when not a benign collocation. Exposes `isRedirectMessage()`. Unit test 16/16.
+- **Item 6 (shallow slice) — MAX_INPUT_CHARS 280→360** in localFmPlanner. Deep half (tool-aware
+  ReAct) NOT done — needs the Layer-2 executor contract, flagged risky.
+
+**NOT done this session, with honest reasons (do NOT assume these are trivial):**
+- Item 3 (db.ts sync→async, unstable TS2307) — open-ended root-cause dig, not started.
+- Item 4 (property/metamorphic judge for rule-goals) — separate riskier build, not started.
+- Item 5 (manual visual eyeball) — still blocked by sandbox cookie injection.
+- Item 7 (REST connector + MCP client) — large; not started.
+- Item 9 (GitHub/Mac connection widgets) — not started.
+- Item 10 (agentic tool-selection bench tier) — this is NEW harness infra, not a bounded edit.
+- **Remote-brain "dies after N messages"** — FM queue is structurally clean (finally always
+  releases `active`), so the hang is NOT queue saturation. Needs a LIVE reproduction pass over
+  the tunnel with per-turn `fmQueueStats` + begin/endForeground logging; three suspects listed
+  in FABLE_CODEX_PARITY.md #1. Do not blind-fix.
+- Mobile UI overhaul — bounded design work, not started; needs the running preview to verify.
+
+**NEW: `FABLE_CODEX_PARITY.md`** — ranked highest-leverage items to close the frontier gap.
+The gap is (a) multi-step tool-use planning, (b) coupled change-set-native synthesis, (c)
+sustained sessions — NOT raw single-file quality (already at parity) and NOT model size.
+
+---
+
+## PRIOR STATE — real-tabs/settings-pages session, 2026-07-19g
 
 **Assistant layer step 3 UI remainder is DONE (2026-07-19g):** the open-chats chip strip in the
 App.tsx topbar is now a real browser-style tab strip (top-rounded tabs seated on the topbar's
