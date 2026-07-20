@@ -100,3 +100,69 @@ export function resolveNamedTools(message: string): NamedToolResolution | null {
   if (calls.length === 0) return skipped.length ? { calls, skipped } : null
   return { calls, skipped }
 }
+
+// ── Implicit personal-data resolution ──────────────────────────────────────────
+// Live failure this closes (debug report 2026-07-20): "Summarize today's calendar and any
+// inbox email from the last day that needs a reply." / "just show me my emails" named no
+// snake_case tool and didn't classify as agentic, so the request fell through to the prose
+// pipeline — which FABRICATED "Today's calendar is empty. There are no emails…" with ZERO
+// tool calls, and the verifier stamped it clean. An answer about the user's own external
+// data must come from a tool or be an honest failure — never from the model's imagination.
+//
+// Deterministic and conservative by construction (BINDING no-inference rule):
+//  · fires only on a RETRIEVAL-shaped ask (no send/draft/create/delete verbs),
+//  · only for domain nouns that map 1:1 to read-only registry tools (same whitelist as
+//    NAME_TRIGGERABLE_TOOLS — this is a synonym layer, not a planner),
+//  · needs first-person/deictic grounding ("my", "me", "today's", "last few days") so
+//    "write an email validator" or "how do calendars work" never fire,
+//  · time windows come from the message when stated; a bare ask defaults to 7 days
+//    (the tool output states its own window, so the answer stays honest either way).
+
+const PERSONAL_DOMAINS: Array<{ noun: RegExp; tool: string }> = [
+  { noun: /\b(emails?|inbox|mail)\b/i, tool: 'gmail_search' },
+  { noun: /\b(calendar|schedule|meetings?|events?|appointments?)\b/i, tool: 'calendar_list' },
+]
+
+// First-person / deictic grounding — the ask is about the USER's data, now-ish.
+const PERSONAL_DEIXIS = /\b(my|me|mine|i\s+have|i've\s+got|today'?s?|tomorrow|yesterday|tonight|this\s+(?:week|morning|afternoon|evening)|last\s+(?:day|night|week|\d+\s+days?|few\s+days?|couple(?:\s+of)?\s+days?)|past\s+(?:day|week|\d+\s+days?|few\s+days?)|recent(?:ly)?|new|unread|upcoming)\b/i
+
+// Creation/mutation intent — needs real planning and consent, never a bare-name fire.
+// NB: 'reply'/'forward' are excluded as bare words — "any email that needs a reply" is a
+// RETRIEVAL ask where "reply" is a noun (this exact phrasing fabricated an answer in the
+// 2026-07-20 report). Only their verb-with-object forms ("reply to", "forward to") count.
+const MUTATION_VERBS = /\b(send|draft|compose|create|add|book|cancel|delete|unsubscribe|reply\s+to|forward\s+to|schedule\s+an?)\b/i
+
+/** Day window stated in the message → gmail newer_than / calendar days. Deterministic map;
+ *  null when nothing recency-shaped is stated (caller applies the 7-day default). */
+function statedDayWindow(msg: string): number | null {
+  const n = msg.match(/\b(?:last|past)\s+(\d{1,2})\s+days?\b/i)
+  if (n) return Math.max(1, Math.min(30, Number(n[1])))
+  if (/\b(?:last|past)\s+(?:few)\s+days?\b/i.test(msg)) return 3
+  if (/\b(?:last|past)\s+couple(?:\s+of)?\s+days?\b/i.test(msg)) return 2
+  if (/\b(?:last|past|this)\s+week\b/i.test(msg)) return 7
+  if (/\btoday'?s?\b|\blast\s+(?:day|night)\b|\btonight\b|\bthis\s+(?:morning|afternoon|evening)\b/i.test(msg)) return 1
+  return null
+}
+
+/**
+ * Resolve a retrieval ask about the user's own email/calendar into the same read-only
+ * ToolCalls the explicit router produces. Null when the message isn't such an ask —
+ * the caller proceeds to its normal path unchanged.
+ */
+export function resolveImplicitPersonalTools(message: string): NamedToolResolution | null {
+  const msg = (message ?? '').trim()
+  if (!msg || msg.length > 400) return null            // long briefs deserve real planning
+  if (MUTATION_VERBS.test(msg)) return null
+  if (!PERSONAL_DEIXIS.test(msg)) return null
+  const days = statedDayWindow(msg) ?? 7
+  const calls: ToolCall[] = []
+  let i = 0
+  for (const d of PERSONAL_DOMAINS) {
+    if (!d.noun.test(msg)) continue
+    const args = d.tool === 'gmail_search'
+      ? { query: `newer_than:${days}d in:inbox`, maxResults: 15 }
+      : { maxResults: 15, days }
+    calls.push({ id: `implicit_${i++}`, name: d.tool, args })
+  }
+  return calls.length ? { calls, skipped: [] } : null
+}

@@ -27,7 +27,7 @@ import type { Automation as AutomationRecord, AutomationRun as AutomationRunReco
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
-import { resolveNamedTools } from './src/CrucibleEngine/agent/namedToolRouter'
+import { resolveNamedTools, resolveImplicitPersonalTools } from './src/CrucibleEngine/agent/namedToolRouter'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
@@ -3308,11 +3308,20 @@ app.post('/api/chat', async (req, res) => {
     // verified output. This is the fix for tool-explicit briefs (Morning Brief) that
     // the weak on-device planner answered with off-topic prose (0 tool calls, 2026-07-19).
     // Runs before Layer 2 because it is strictly more reliable when it applies.
-    if (!resumable && !iterCheckpoint && isAgenticIntent) {
-      const named = resolveNamedTools(message ?? '')
+    if (!resumable && !iterCheckpoint) {
+      // Explicit snake_case tool names keep their existing agentic-intent gate. The implicit
+      // resolver ("just show me my emails", "summarize today's calendar") carries its OWN
+      // intent evidence — a retrieval ask about the user's personal data IS the intent — and
+      // must not hide behind isAgenticIntent: that gate is exactly what let four such turns
+      // fall through to the prose pipeline, which fabricated "your inbox is empty" with zero
+      // tool calls and shipped it verifier-stamped (debug report 2026-07-20). An answer about
+      // personal external data comes from a tool or is an honest failure — never invented.
+      const explicit = isAgenticIntent ? resolveNamedTools(message ?? '') : null
+      const named = (explicit && explicit.calls.length) ? explicit : resolveImplicitPersonalTools(message ?? '')
       if (named && named.calls.length) {
-        console.log(`[Agent] Named-tool executor: ${named.calls.map(c => c.name).join(', ')}${named.skipped.length ? ` (skipped: ${named.skipped.join(', ')})` : ''}`)
-        debugBus.emit('agent', 'named_tools_resolved', { tools: named.calls.map(c => c.name), skipped: named.skipped }, { severity: 'info' })
+        const implicit = named !== explicit
+        console.log(`[Agent] Named-tool executor${implicit ? ' (implicit personal-data)' : ''}: ${named.calls.map(c => c.name).join(', ')}${named.skipped.length ? ` (skipped: ${named.skipped.join(', ')})` : ''}`)
+        debugBus.emit('agent', implicit ? 'personal_data_tools_resolved' : 'named_tools_resolved', { tools: named.calls.map(c => c.name), skipped: named.skipped }, { severity: 'info' })
         send({ type: 'agent_start', driver: 'on-device (named tools)', projectPath, resumed: false })
         const toolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
