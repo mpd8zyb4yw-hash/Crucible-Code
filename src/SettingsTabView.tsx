@@ -98,6 +98,19 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [section, setSection] = useState<string>('keys')
 
+  // Responsive: below 640px the fixed 168px left rail squeezes the content column off the
+  // right edge (inputs overflow, badges wrap mid-word). On narrow, hide the rail and render the
+  // section nav as a horizontal scrollable pill strip pinned above the content instead.
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 640px)').matches,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 640px)')
+    const h = (e: MediaQueryListEvent) => setNarrow(e.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
+  }, [])
+
   const doAdd = () => {
     const n = nameRef.current?.value ?? ''
     const v = valRef.current?.value ?? ''
@@ -115,7 +128,8 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', position: 'relative', zIndex: 1, minHeight: 0 }}>
-      {/* Section nav — sticky left column (hidden on narrow widths via flex-wrap of content). */}
+      {/* Section nav — sticky left column on wide viewports; collapses to a top pill strip on narrow. */}
+      {!narrow && (
       <div style={{
         width: 168, flexShrink: 0, padding: '36px 8px 24px 20px',
         display: 'flex', flexDirection: 'column', gap: 2,
@@ -129,9 +143,28 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
           </button>
         ))}
       </div>
+      )}
 
       <div ref={scrollerRef} style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
-      <div style={{ width: '100%', maxWidth: 640, margin: '0 auto', padding: '36px 32px 48px', display: 'flex', flexDirection: 'column', gap: 26 }}>
+      {narrow && (
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 2, marginRight: 46,
+          display: 'flex', gap: 6, padding: '12px 14px', overflowX: 'auto',
+          background: 'rgba(13,13,21,0.82)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
+          borderBottom: '1px solid rgba(255,255,255,0.06)', scrollbarWidth: 'none',
+        }}>
+          {SETTINGS_SECTIONS.map(s => (
+            <button key={s.id} onClick={() => jump(s.id)} style={{
+              flexShrink: 0, padding: '6px 13px', borderRadius: 999, cursor: 'pointer',
+              fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap',
+              border: `1px solid ${section === s.id ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.08)'}`,
+              background: section === s.id ? 'rgba(124,124,248,0.16)' : 'rgba(255,255,255,0.03)',
+              color: section === s.id ? '#b0b0ff' : '#9a9aae',
+            }}>{s.label}</button>
+          ))}
+        </div>
+      )}
+      <div style={{ width: '100%', maxWidth: 640, margin: '0 auto', padding: narrow ? '20px 16px 44px' : '36px 32px 48px', display: 'flex', flexDirection: 'column', gap: 26 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span id="settings-keys" style={{ fontSize: 12.5, color: '#77778c' }}>Crucible runs fully on-device. External calls only happen through keys you add here.</span>
         </div>
@@ -174,11 +207,11 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '12px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: narrow ? 'wrap' : 'nowrap', padding: '12px 14px', borderRadius: 14, background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)' }}>
             <input
               ref={nameRef}
               placeholder="Name (anything)"
-              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '7px 12px', fontSize: 12, color: '#d0d0e0', outline: 'none', fontFamily: 'inherit', width: 160 }}
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, padding: '7px 12px', fontSize: 12, color: '#d0d0e0', outline: 'none', fontFamily: 'inherit', width: narrow ? '100%' : 160, boxSizing: 'border-box' }}
             />
             <input
               ref={valRef}
