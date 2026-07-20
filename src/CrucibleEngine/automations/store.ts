@@ -17,7 +17,11 @@ export type Trigger =
 export interface AutomationRun {
   ts: number
   status: 'ok' | 'failed'
-  summary: string        // final answer (ok) or error text (failed), trimmed for display
+  summary: string        // short text for digest cards (ok: answer head; failed: error text)
+  /** FULL final answer, capped generously (24k). The whole value of an automation is its
+   *  output — truncating it to a card blurb made every digest entry a dead end (2026-07-20
+   *  user finding). Optional so pre-existing run records stay valid. */
+  answer?: string
   ms: number
 }
 

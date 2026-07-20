@@ -10,7 +10,9 @@ export default defineConfig({
     strictPort: true,
     allowedHosts: ['.ngrok-free.dev', '.ngrok-free.app', '.trycloudflare.com'],
     proxy: {
-      '/api': { target: 'http://localhost:3001', changeOrigin: true, ws: true },
+      // CRUCIBLE_API_TARGET lets a second dev stack (e.g. an isolated verification
+      // backend on another port) reuse this config; default behavior is unchanged.
+      '/api': { target: process.env.CRUCIBLE_API_TARGET ?? 'http://localhost:3001', changeOrigin: true, ws: true },
     },
   },
   build: {

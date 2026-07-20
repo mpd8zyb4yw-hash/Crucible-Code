@@ -976,7 +976,9 @@ async function runAutomationNow(a: AutomationRecord): Promise<AutomationRunRecor
     if (overlap === 0 && bw.size >= 3) {
       return { ts: t0, status: 'failed', summary: `off-brief answer (no overlap with the brief): ${answer.slice(0, 400)}`, ms: Date.now() - t0 }
     }
-    return { ts: t0, status: 'ok', summary: answer.slice(0, 2000), ms: Date.now() - t0 }
+    // summary = card blurb; answer = the full result (the product). Truncating to 2000 made
+    // every digest entry a dead end — the run detail view needs the whole thing.
+    return { ts: t0, status: 'ok', summary: answer.slice(0, 2000), answer: answer.slice(0, 24_000), ms: Date.now() - t0 }
   } catch (e: any) {
     const msg = e?.name === 'AbortError' ? `timed out after ${AUTOMATION_RUN_TIMEOUT_MS / 60_000}m` : String(e?.message ?? e).slice(0, 300)
     return { ts: t0, status: 'failed', summary: msg, ms: Date.now() - t0 }
@@ -1021,9 +1023,13 @@ setInterval(() => {
   } catch (e) { console.warn('[Automations] tick failed:', e) }
 }, 30_000)
 
+// List + digest strip the full `answer` from run records (the 15s polls stay light);
+// the run-detail endpoint below serves the full text on demand.
+const stripRunAnswers = (a: AutomationRecord) => ({ ...a, lastRuns: a.lastRuns.map(({ answer: _a, ...r }) => r) })
+
 app.get('/api/automations', (req: express.Request, res: express.Response) => {
   const user = getAuthUser(req)!
-  res.json({ automations: loadAutomations().filter(a => a.userId === user.id), running: automationInFlight })
+  res.json({ automations: loadAutomations().filter(a => a.userId === user.id).map(stripRunAnswers), running: automationInFlight })
 })
 
 app.post('/api/automations', (req: express.Request, res: express.Response) => {
@@ -1088,10 +1094,22 @@ app.get('/api/automations/digest', (req: express.Request, res: express.Response)
   const user = getAuthUser(req)!
   const entries = loadAutomations()
     .filter(a => a.userId === user.id)
-    .flatMap(a => a.lastRuns.map(r => ({ automationId: a.id, name: a.name, ...r })))
+    .flatMap(a => a.lastRuns.map(({ answer: _a, ...r }) => ({ automationId: a.id, name: a.name, hasAnswer: !!_a, ...r })))
     .sort((x, y) => y.ts - x.ts)
     .slice(0, 50)
   res.json({ entries })
+})
+
+// Full run detail — the complete answer plus enough context to act on it (brief, name).
+// This is what makes a digest card a door instead of a dead end.
+app.get('/api/automations/:id/runs/:ts', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const a = loadAutomations().find(x => x.id === req.params.id && x.userId === user.id)
+  if (!a) return res.status(404).json({ error: 'not found' })
+  const ts = Number(req.params.ts)
+  const run = a.lastRuns.find(r => r.ts === ts)
+  if (!run) return res.status(404).json({ error: 'run not found (only the last 20 are kept)' })
+  res.json({ automationId: a.id, name: a.name, brief: a.brief, run })
 })
 
 // ── Connections (Assistant layer step 2 — ASSISTANT_SPEC.md §1A) ──────────────

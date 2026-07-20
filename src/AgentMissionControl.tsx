@@ -19,6 +19,46 @@ import type { Round } from './chat/core'
 import { STEP_GLYPH, STEP_COLOR, ToolRow, DiffBlock } from './chat/panels'
 import { ClarificationCard } from './chat/AgentPanel'
 import { ArtifactPreviewBar } from './chat/CodeRunner'
+import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
+import { API_BASE, apiFetch } from './api'
+
+interface ScheduledRun { automationId: string; name: string; ts: number; status: 'ok' | 'failed'; summary: string; ms: number }
+
+function fmtShort(ts: number): string {
+  const d = new Date(ts)
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const day = new Date(ts); day.setHours(0, 0, 0, 0)
+  const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (day.getTime() === today.getTime()) return hm
+  if (day.getTime() === today.getTime() - 86400_000) return `yesterday ${hm}`
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hm}`
+}
+
+/** One scheduled (automation) run on the roster — same visual language as AgentCard,
+ *  clickable through to the full result. Before this, unattended work was invisible here. */
+function ScheduledCard({ e, onOpen }: { e: ScheduledRun; onOpen: () => void }) {
+  const color = e.status === 'ok' ? '#4db89e' : '#f87171'
+  return (
+    <div
+      onClick={onOpen} role="button" tabIndex={0}
+      onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onOpen() } }}
+      style={{
+        display: 'flex', flexDirection: 'column', gap: 5, padding: '10px 14px', cursor: 'pointer',
+        borderRadius: 'var(--c-radius)', background: 'var(--c-glass)',
+        border: '1px solid var(--c-hairline)', boxShadow: 'var(--c-inset-highlight)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
+        <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.name}</span>
+        <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtShort(e.ts)}</span>
+      </div>
+      <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', lineHeight: 1.45, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {e.status === 'failed' ? `failed — ${e.summary}` : e.summary}
+      </span>
+    </div>
+  )
+}
 
 function runStatus(r: Round): { label: string; color: string; live: boolean } {
   const a = r.agent
@@ -78,7 +118,7 @@ function AgentCard({ r, active, onSelect }: { r: Round; active: boolean; onSelec
   )
 }
 
-export default function AgentMissionControl({ rounds: rawRounds, thinking, liveRoundId, onLaunch, onReply, onClose }: {
+export default function AgentMissionControl({ rounds: rawRounds, thinking, liveRoundId, onLaunch, onReply, onClose, onFollowUp }: {
   rounds: Round[]
   thinking: boolean
   liveRoundId: string | null
@@ -88,6 +128,8 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
   /** Continue the conversation / answer a clarification — same send() pipeline. */
   onReply: (text: string) => void
   onClose: () => void
+  /** Prefill the chat composer (run-detail “Continue in chat”) — wired by App. */
+  onFollowUp?: (text: string) => void
 }) {
   // Same defensive close as MessageList: a driver that ends its stream without a terminal
   // agent event would leave active=true forever — the round no longer being the live
@@ -103,6 +145,32 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
   const [steer, setSteer] = useState('')
   const workScrollRef = useRef<HTMLDivElement>(null)
   const briefRef = useRef<HTMLTextAreaElement>(null)
+
+  // Scheduled (automation) runs — the assistant's unattended work belongs on this page
+  // too, as clickable results, not just live client-launched agents.
+  const [scheduled, setScheduled] = useState<ScheduledRun[]>([])
+  const [openRun, setOpenRun] = useState<RunRef | null>(null)
+  useEffect(() => {
+    let dead = false
+    const load = () => {
+      apiFetch(`${API_BASE}/api/automations/digest`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (!dead && d) setScheduled((d.entries ?? []).slice(0, 12)) })
+        .catch(() => {})
+    }
+    load()
+    const iv = setInterval(load, 20_000)
+    return () => { dead = true; clearInterval(iv) }
+  }, [])
+
+  // Mobile: the roster column + workspace stack vertically instead of side-by-side.
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 700px)').matches)
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 700px)')
+    const h = (e: MediaQueryListEvent) => setNarrow(e.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
+  }, [])
 
   const latest = agentRounds[agentRounds.length - 1]
   const selected = agentRounds.find(r => r.id === selectedId) ?? latest
@@ -211,9 +279,9 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
         </button>
       </div>
 
-      {/* ── Empty state: hero composer, nothing else competing ── */}
+      {/* ── Empty state: hero composer + the assistant's recent unattended work ── */}
       {!hasRuns ? (
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 24px' }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: scheduled.length ? 'flex-start' : 'center', padding: scheduled.length ? '32px 24px 24px' : '0 24px' }}>
           <div style={{ width: 'min(560px, 92%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
             <svg width="40" height="40" viewBox="0 0 48 48" fill="none" style={{ opacity: 0.5, marginBottom: 16 }}>
               <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="var(--c-text)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -226,16 +294,27 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
               The agent works out its own plan and you watch it happen here.
             </div>
             {briefBox(false)}
+            {scheduled.length > 0 && (
+              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8, marginTop: 28 }}>
+                <SectionLabel>While you were away — scheduled runs</SectionLabel>
+                {scheduled.slice(0, 6).map((e, i) => (
+                  <ScheduledCard key={`${e.automationId}:${e.ts}:${i}`} e={e}
+                    onOpen={() => setOpenRun({ automationId: e.automationId, ts: e.ts, name: e.name })} />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       ) : (
-        /* ── Working state: roster column + selected agent workspace ── */
-        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+        /* ── Working state: roster column + selected agent workspace (stacks on narrow) ── */
+        <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: narrow ? 'column' : 'row' }}>
 
           {/* Roster */}
           <div style={{
-            width: 'min(340px, 40vw)', flexShrink: 0, display: 'flex', flexDirection: 'column',
-            borderRight: '1px solid var(--c-hairline)', minHeight: 0,
+            width: narrow ? '100%' : 'min(340px, 40vw)', flexShrink: 0, display: 'flex', flexDirection: 'column',
+            borderRight: narrow ? 'none' : '1px solid var(--c-hairline)',
+            borderBottom: narrow ? '1px solid var(--c-hairline)' : 'none',
+            minHeight: 0, maxHeight: narrow ? '38%' : undefined,
           }}>
             <div style={{ padding: '14px 14px 10px', borderBottom: '1px solid var(--c-hairline)' }}>
               {briefBox(true)}
@@ -245,6 +324,15 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
               {[...agentRounds].reverse().map(r => (
                 <AgentCard key={r.id} r={r} active={r.id === selected?.id} onSelect={() => setSelectedId(r.id)} />
               ))}
+              {scheduled.length > 0 && (
+                <>
+                  <SectionLabel style={{ padding: '8px 2px 2px' }}>Scheduled runs</SectionLabel>
+                  {scheduled.map((e, i) => (
+                    <ScheduledCard key={`${e.automationId}:${e.ts}:${i}`} e={e}
+                      onOpen={() => setOpenRun({ automationId: e.automationId, ts: e.ts, name: e.name })} />
+                  ))}
+                </>
+              )}
             </div>
           </div>
 
@@ -401,6 +489,14 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
             </div>
           </div>
         </div>
+      )}
+
+      {openRun && (
+        <RunDetailOverlay
+          runRef={openRun}
+          onClose={() => setOpenRun(null)}
+          onFollowUp={onFollowUp ? t => { setOpenRun(null); onFollowUp(t) } : undefined}
+        />
       )}
     </div>
   )

@@ -14,6 +14,7 @@ import AgentMissionControl from './AgentMissionControl'
 import AutomationsView from './AutomationsView'
 import ConnectionsView from './ConnectionsView'
 import HomeSurface from './HomeSurface'
+import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
@@ -75,6 +76,8 @@ export default function App() {
   // as Mission Control: chat stays mounted and streaming underneath.
   const [automationsOpen, setAutomationsOpen] = useState(false)
   const [connectionsOpen, setConnectionsOpen] = useState(false)
+  // Run detail opened from the Home surface (page overlays own their own instance).
+  const [homeOpenRun, setHomeOpenRun] = useState<RunRef | null>(null)
   const [composerExpandOpen, setComposerExpandOpen] = useState(false)
   // ── Composer attachments — files the user uploads into the workspace sandbox via the
   // paperclip button. Each send prepends a note referencing them so the agent knows they
@@ -503,6 +506,18 @@ export default function App() {
   const bottomRef  = useRef<HTMLDivElement>(null)
   const scrollRef  = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // "Continue in chat" from a run-detail overlay: close every full-page overlay, prefill
+  // the composer with the run's context, and hand focus to the user. Prefill, not send —
+  // acting on the assistant's output stays a user decision.
+  const followUpInChat = useCallback((text: string) => {
+    setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false); setHomeOpenRun(null)
+    setTab('chat')
+    setInput(text)
+    requestAnimationFrame(() => {
+      const el = textareaRef.current
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
+    })
+  }, [])
   // Ref holds the lock synchronously — never stale inside effects or rAF callbacks.
   // State is only for showing/hiding the scroll-to-bottom button (UI only).
   const scrollLockedRef = useRef(false)
@@ -2171,17 +2186,27 @@ export default function App() {
           onLaunch={text => { void send(text, 'agent') }}
           onReply={text => { void send(text, 'agent') }}
           onClose={() => setAgentsOpen(false)}
+          onFollowUp={followUpInChat}
         />
       )}
 
       {/* Automations — standing tasks page (same overlay pattern as Mission Control). */}
       {automationsOpen && (
-        <AutomationsView onClose={() => setAutomationsOpen(false)} />
+        <AutomationsView onClose={() => setAutomationsOpen(false)} onFollowUp={followUpInChat} />
       )}
 
       {/* Connections — external capability cards with live service widgets. */}
       {connectionsOpen && (
-        <ConnectionsView onClose={() => setConnectionsOpen(false)} />
+        <ConnectionsView onClose={() => setConnectionsOpen(false)} onFollowUp={followUpInChat} />
+      )}
+
+      {/* Run detail opened from the Home surface (the page overlays render their own). */}
+      {homeOpenRun && (
+        <RunDetailOverlay
+          runRef={homeOpenRun}
+          onClose={() => setHomeOpenRun(null)}
+          onFollowUp={t => { setHomeOpenRun(null); followUpInChat(t) }}
+        />
       )}
 
       <>
@@ -2701,6 +2726,7 @@ export default function App() {
             allRounds={allRounds}
             onOpenAgents={() => setAgentsOpen(true)}
             onOpenAutomations={() => setAutomationsOpen(true)}
+            onOpenRun={setHomeOpenRun}
             splash={
           <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
           {/* Quiet branded splash: the vessel mark over a slow ember glow — the product's

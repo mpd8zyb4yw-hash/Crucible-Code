@@ -4,7 +4,7 @@
 // from the CSS variables in index.css; no component-local color literals except
 // per-feature accent tints passed in by the caller.
 
-import type { CSSProperties, ReactNode } from 'react'
+import type { CSSProperties, ReactNode, MouseEvent as ReactMouseEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 export function tint(hex: string, alpha: number) {
   const r = parseInt(hex.slice(1, 3), 16)
@@ -14,9 +14,17 @@ export function tint(hex: string, alpha: number) {
 }
 
 /** Tier-1 glass surface — the standard container. */
-export function Card({ children, style, accent }: { children: ReactNode; style?: CSSProperties; accent?: string }) {
+export function Card({ children, style, accent, onClick }: { children: ReactNode; style?: CSSProperties; accent?: string; onClick?: (e: ReactMouseEvent) => void }) {
   return (
-    <div style={{
+    <div
+      onClick={onClick}
+      // Clickable cards must be real controls: keyboard-reachable and visible to the
+      // accessibility tree, not mouse-only divs.
+      {...(onClick ? {
+        role: 'button', tabIndex: 0,
+        onKeyDown: (e: ReactKeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); (onClick as (ev: unknown) => void)(e) } },
+      } : {})}
+      style={{
       borderRadius: 'var(--c-radius)',
       background: accent ? `linear-gradient(150deg, ${tint(accent, 0.07)} 0%, var(--c-glass) 60%)` : 'var(--c-glass)',
       border: '1px solid var(--c-hairline)',

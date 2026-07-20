@@ -127,7 +127,15 @@ function GithubWidget({ items }: { items: NonNullable<GithubPreview['prs']> }) {
   )
 }
 
-function ConnectionCard({ c, onChanged }: { c: Connection; onChanged: () => void }) {
+// One-tap real value per connection — sends a genuine task through chat so the page
+// DOES something instead of only describing auth state. Prefill-only; user presses send.
+const TRY_PROMPTS: Record<string, { label: string; prompt: string }> = {
+  'google': { label: 'Brief me', prompt: 'Summarize today\'s calendar and any inbox email from the last day that needs a reply.' },
+  'cli-github': { label: 'Check my PRs', prompt: 'List my open GitHub PRs and flag any that look stalled or are waiting on review.' },
+  'mac': { label: 'Check this Mac', prompt: 'How much free disk space and memory does this Mac have right now? Anything worth cleaning up?' },
+}
+
+function ConnectionCard({ c, onChanged, onTry }: { c: Connection; onChanged: () => void; onTry?: (prompt: string) => void }) {
   const st = STATE_META[c.authState]
   const [testing, setTesting] = useState(false)
   const [checks, setChecks] = useState<Record<string, { ok: boolean; detail: string }> | null>(null)
@@ -204,6 +212,14 @@ function ConnectionCard({ c, onChanged }: { c: Connection; onChanged: () => void
       {preview?.gmail && <GmailWidget items={preview.gmail} />}
       {preview?.calendar && <CalendarWidget items={preview.calendar} />}
       {ghPreview?.prs && <GithubWidget items={ghPreview.prs} />}
+      {onTry && c.authState === 'connected' && TRY_PROMPTS[c.id] && (
+        <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+          <PrimaryButton
+            onClick={() => onTry(TRY_PROMPTS[c.id].prompt)}
+            title="Send this through chat — you review before it runs"
+          >{TRY_PROMPTS[c.id].label}</PrimaryButton>
+        </div>
+      )}
       {c.id === 'google' && (
         <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
           {(c.authState === 'disconnected' || c.authState === 'expired') && (
@@ -223,7 +239,20 @@ function ConnectionCard({ c, onChanged }: { c: Connection; onChanged: () => void
   )
 }
 
-export default function ConnectionsView({ onClose }: { onClose: () => void }) {
+// Plain-language value lines for the agent toolbox — what each tool DOES FOR YOU,
+// not what binary it is. Unknown ids fall back to the server-provided detail.
+const TOOL_VALUE: Record<string, string> = {
+  'cli-github': 'Lets the agent read your PRs, issues, and repos when you ask about them.',
+  'cli-ripgrep': 'Fast code search — agents find things in big projects in milliseconds.',
+  'cli-jq': 'Lets agents reshape JSON data cleanly instead of guessing with string edits.',
+  'cli-semgrep': 'Code security scanning the agent can run over a project on request.',
+}
+
+export default function ConnectionsView({ onClose, onFollowUp }: {
+  onClose: () => void
+  /** Prefill the chat composer and return to chat — wired by App. */
+  onFollowUp?: (text: string) => void
+}) {
   const [list, setList] = useState<Connection[]>([])
   const [loaded, setLoaded] = useState(false)
 
@@ -237,10 +266,11 @@ export default function ConnectionsView({ onClose }: { onClose: () => void }) {
 
   useEffect(() => { void refresh() }, [refresh])
 
-  const groups: Array<{ label: string; kinds: Connection['kind'][] }> = [
-    { label: 'Accounts', kinds: ['oauth'] },
-    { label: 'Local tools', kinds: ['cli', 'builtin'] },
-  ]
+  // Accounts + This Mac + GitHub are hero cards (they carry live widgets and try-it
+  // actions); the remaining CLI binaries are plumbing — compact rows, not cards
+  // competing for attention.
+  const heroes = list.filter(c => c.kind === 'oauth' || c.kind === 'builtin' || c.id === 'cli-github')
+  const toolbox = list.filter(c => c.kind === 'cli' && c.id !== 'cli-github')
 
   return (
     <div style={{
@@ -266,18 +296,40 @@ export default function ConnectionsView({ onClose }: { onClose: () => void }) {
             Everything the agent can reach beyond this app. Each connection powers specific agent
             tools — automations and Mission Control runs use them under your account.
           </div>
-          {groups.map(g => {
-            const items = list.filter(c => g.kinds.includes(c.kind))
-            if (!items.length) return null
-            return (
-              <div key={g.label} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                <SectionLabel>{g.label}</SectionLabel>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 12 }}>
-                  {items.map(c => <ConnectionCard key={c.id} c={c} onChanged={() => void refresh()} />)}
-                </div>
+          {heroes.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <SectionLabel>Accounts & devices</SectionLabel>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))', gap: 12 }}>
+                {heroes.map(c => <ConnectionCard key={c.id} c={c} onChanged={() => void refresh()} onTry={onFollowUp} />)}
               </div>
-            )
-          })}
+            </div>
+          )}
+
+          {toolbox.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <SectionLabel>Agent toolbox</SectionLabel>
+              <div style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', lineHeight: 1.5, marginTop: -4 }}>
+                Local command-line tools agents can use during runs. Installed ones light up automatically.
+              </div>
+              <Card style={{ padding: '4px 0' }}>
+                {toolbox.map(c => {
+                  const connected = c.authState === 'connected'
+                  return (
+                    <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px' }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: connected ? '#4db89e' : '#55556a', flexShrink: 0 }} />
+                      <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: connected ? 'var(--c-text)' : 'var(--c-dim)', flexShrink: 0 }}>{c.name}</span>
+                      <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {TOOL_VALUE[c.id] ?? c.detail}
+                      </span>
+                      <span style={{ fontSize: 'var(--t-small)', color: connected ? '#4db89e' : 'var(--c-dim-deep)', flexShrink: 0 }}>
+                        {connected ? 'ready' : 'not installed'}
+                      </span>
+                    </div>
+                  )
+                })}
+              </Card>
+            </div>
+          )}
         </div>
       </div>
     </div>

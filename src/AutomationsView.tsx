@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, SectionLabel, GhostButton, PrimaryButton, StatusChip } from './ui'
 import { API_BASE, apiFetch } from './api'
+import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
 
 type Trigger =
   | { kind: 'interval'; minutes: number }
@@ -147,9 +148,9 @@ function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: 
   })
 
   return (
-    <Card accent="#7c7cf8" style={{ padding: '16px 18px', display: 'flex', gap: 18 }}>
-      {/* Left: what */}
-      <div style={{ flex: 1.2, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <Card accent="#7c7cf8" style={{ padding: '16px 18px', display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+      {/* Left: what (wraps to a single column on narrow widths — min basis keeps both legible) */}
+      <div style={{ flex: '1.2 1 260px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <SectionLabel>New automation</SectionLabel>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {TEMPLATES.map(t => (
@@ -172,7 +173,7 @@ function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: 
         />
       </div>
       {/* Right: when + delivery */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ flex: '1 1 240px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
         <SectionLabel>Trigger</SectionLabel>
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
           {(['daily', 'weekly', 'interval', 'once'] as const).map(k => (
@@ -219,37 +220,165 @@ function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: 
   )
 }
 
-function Row({ a, running, onToggle, onRunNow, onDelete }: {
+/** Inline trigger editor — the same controls as the create form, reusable for editing. */
+function TriggerEditor({ value, onChange }: { value: Trigger; onChange: (t: Trigger | null) => void }) {
+  const [kind, setKind] = useState<Trigger['kind']>(value.kind)
+  const [time, setTime] = useState(value.kind === 'daily' || value.kind === 'weekly' ? value.time : '08:00')
+  const [day, setDay] = useState(value.kind === 'weekly' ? value.day : 1)
+  const [minutes, setMinutes] = useState(value.kind === 'interval' ? value.minutes : 120)
+  const [onceAt, setOnceAt] = useState('')
+
+  useEffect(() => {
+    if (kind === 'interval') onChange(minutes >= 1 ? { kind, minutes } : null)
+    else if (kind === 'daily') onChange(/^\d{1,2}:\d{2}$/.test(time) ? { kind, time } : null)
+    else if (kind === 'weekly') onChange(/^\d{1,2}:\d{2}$/.test(time) ? { kind, day, time } : null)
+    else {
+      const at = onceAt ? new Date(onceAt).getTime() : NaN
+      onChange(Number.isFinite(at) && at > Date.now() ? { kind: 'once', at } : null)
+    }
+  }, [kind, time, day, minutes, onceAt])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const selStyle = (active: boolean): React.CSSProperties => ({
+    ...inputStyle, cursor: 'pointer', padding: '5px 10px', fontSize: 'var(--t-small)',
+    borderColor: active ? 'rgba(124,124,248,0.45)' : 'var(--c-hairline)',
+    background: active ? 'rgba(124,124,248,0.12)' : 'rgba(0,0,0,0.3)',
+    color: active ? '#b0b0f8' : 'var(--c-dim)',
+  })
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {(['daily', 'weekly', 'interval', 'once'] as const).map(k => (
+          <button key={k} onClick={() => setKind(k)} style={selStyle(kind === k)}>{k}</button>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {kind === 'weekly' && (
+          <select value={day} onChange={e => setDay(Number(e.target.value))} style={{ ...inputStyle, cursor: 'pointer' }}>
+            {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+          </select>
+        )}
+        {(kind === 'daily' || kind === 'weekly') && (
+          <input type="time" value={time} onChange={e => setTime(e.target.value)} style={inputStyle} />
+        )}
+        {kind === 'interval' && (
+          <>
+            <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)' }}>every</span>
+            <input type="number" min={5} max={10080} value={minutes} onChange={e => setMinutes(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
+            <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)' }}>minutes</span>
+          </>
+        )}
+        {kind === 'once' && (
+          <input type="datetime-local" value={onceAt} onChange={e => setOnceAt(e.target.value)} style={inputStyle} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
   a: Automation; running: string | null
   onToggle: () => void; onRunNow: () => void; onDelete: () => void
+  onSave: (patch: { brief?: string; trigger?: Trigger }) => Promise<void>
+  onOpenRun: (r: RunRef) => void
 }) {
   const st = statusOf(a, running)
   const [expanded, setExpanded] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [briefDraft, setBriefDraft] = useState(a.brief)
+  const [triggerDraft, setTriggerDraft] = useState<Trigger | null>(a.trigger)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    if (saving) return
+    setSaving(true)
+    try {
+      await onSave({
+        ...(briefDraft.trim().length >= 8 && briefDraft.trim() !== a.brief ? { brief: briefDraft.trim() } : {}),
+        ...(triggerDraft ? { trigger: triggerDraft } : {}),
+      })
+      setEditing(false)
+    } finally { setSaving(false) }
+  }
+
   return (
     <Card style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      {/* Whole header row is the expand target — a bigger tap target than the name alone. */}
+      <div
+        role="button" tabIndex={0}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={e => { if (e.key === 'Enter') setExpanded(v => !v) }}
+        style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer', flexWrap: 'wrap' }}
+      >
         <span style={{ width: 7, height: 7, borderRadius: '50%', background: st.color, flexShrink: 0, animation: st.pulse ? 'dotpulse 1.2s ease-in-out infinite' : undefined }} />
-        <span
-          role="button" tabIndex={0} onClick={() => setExpanded(v => !v)}
-          onKeyDown={e => { if (e.key === 'Enter') setExpanded(v => !v) }}
-          style={{ fontSize: 'var(--t-body)', fontWeight: 600, color: 'var(--c-text)', cursor: 'pointer', overflowWrap: 'anywhere' }}
-        >{a.name}</span>
+        <span style={{ fontSize: 'var(--t-body)', fontWeight: 600, color: 'var(--c-text)', overflowWrap: 'anywhere' }}>{a.name}</span>
         <StatusChip color={st.color} pulse={st.pulse}>{st.label}</StatusChip>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', whiteSpace: 'nowrap' }}>{describeTrigger(a.trigger)}</span>
         {a.enabled && a.nextRun != null && (
           <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>next {fmtWhen(a.nextRun)}</span>
         )}
+        <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>▾</span>
       </div>
-      {expanded && (
+
+      {expanded && !editing && (
         <div style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)', lineHeight: 1.6, overflowWrap: 'anywhere', paddingLeft: 19 }}>
           {a.brief}
         </div>
       )}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', paddingLeft: 19 }}>
+
+      {expanded && editing && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, paddingLeft: 19 }}>
+          <textarea
+            value={briefDraft} onChange={e => setBriefDraft(e.target.value)} rows={5}
+            style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.55, minHeight: 90, width: '100%', boxSizing: 'border-box' }}
+          />
+          <TriggerEditor value={a.trigger} onChange={setTriggerDraft} />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <PrimaryButton onClick={save} disabled={saving || briefDraft.trim().length < 8}>{saving ? 'Saving…' : 'Save changes'}</PrimaryButton>
+            <GhostButton onClick={() => { setEditing(false); setBriefDraft(a.brief); setTriggerDraft(a.trigger) }}>Cancel</GhostButton>
+          </div>
+        </div>
+      )}
+
+      {/* Run history — every past run is a door to its full result. */}
+      {expanded && !editing && a.lastRuns.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingLeft: 19 }}>
+          <SectionLabel style={{ marginBottom: 4 }}>Runs</SectionLabel>
+          {a.lastRuns.slice(0, 8).map(r => (
+            <div
+              key={r.ts} role="button" tabIndex={0}
+              onClick={() => onOpenRun({ automationId: a.id, ts: r.ts, name: a.name })}
+              onKeyDown={e => { if (e.key === 'Enter') onOpenRun({ automationId: a.id, ts: r.ts, name: a.name }) }}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', margin: '0 -8px',
+                borderRadius: 8, cursor: 'pointer',
+              }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)' }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+            >
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.status === 'ok' ? '#4db89e' : '#f87171', flexShrink: 0 }} />
+              <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtWhen(r.ts)}</span>
+              <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.summary}</span>
+              <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', flexShrink: 0 }}>open ›</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', paddingLeft: 19, flexWrap: 'wrap' }}>
         <GhostButton onClick={onRunNow} title="Run this brief through the agent loop now">Run now</GhostButton>
+        {expanded && !editing && <GhostButton onClick={() => { setEditing(true); setBriefDraft(a.brief); setTriggerDraft(a.trigger) }}>Edit</GhostButton>}
         <GhostButton onClick={onToggle}>{a.enabled ? 'Pause' : 'Resume'}</GhostButton>
-        <GhostButton onClick={onDelete} title="Delete this automation">Delete</GhostButton>
+        {!confirmDelete
+          ? <GhostButton onClick={() => setConfirmDelete(true)} title="Delete this automation">Delete</GhostButton>
+          : (
+            <>
+              <GhostButton onClick={onDelete} title="This cannot be undone" style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.4)' }}>Confirm delete</GhostButton>
+              <GhostButton onClick={() => setConfirmDelete(false)}>Keep</GhostButton>
+            </>
+          )}
         <div style={{ flex: 1 }} />
         {a.lastRuns[0] && (
           <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums' }}>
@@ -261,12 +390,26 @@ function Row({ a, running, onToggle, onRunNow, onDelete }: {
   )
 }
 
-export default function AutomationsView({ onClose }: { onClose: () => void }) {
+export default function AutomationsView({ onClose, onFollowUp }: {
+  onClose: () => void
+  /** Prefill the chat composer with text and return to chat — wired by App. */
+  onFollowUp?: (text: string) => void
+}) {
   const [list, setList] = useState<Automation[]>([])
   const [digest, setDigest] = useState<DigestEntry[]>([])
   const [running, setRunning] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [loaded, setLoaded] = useState(false)
+  const [openRun, setOpenRun] = useState<RunRef | null>(null)
+  // Mobile: roster + digest stack as switchable panes instead of side-by-side columns.
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 700px)').matches)
+  const [pane, setPane] = useState<'roster' | 'digest'>('roster')
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 700px)')
+    const h = (e: MediaQueryListEvent) => setNarrow(e.matches)
+    mq.addEventListener('change', h)
+    return () => mq.removeEventListener('change', h)
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -315,19 +458,27 @@ export default function AutomationsView({ onClose }: { onClose: () => void }) {
         borderBottom: '1px solid var(--c-hairline)',
       }}>
         <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--c-text)' }}>Automations</span>
-        {anyRunning
+        {/* The status chip yields on narrow — the header must fit title + pane toggle + Close. */}
+        {!narrow && (anyRunning
           ? <StatusChip color="#7c7cf8" pulse>running</StatusChip>
           : list.some(a => a.enabled)
             ? <StatusChip color="#4db89e">{list.filter(a => a.enabled).length} scheduled</StatusChip>
-            : null}
+            : null)}
         <div style={{ flex: 1 }} />
-        {!creating && <PrimaryButton onClick={() => setCreating(true)}>New automation</PrimaryButton>}
+        {narrow && (
+          <div style={{ display: 'flex', gap: 4 }}>
+            <GhostButton active={pane === 'roster'} onClick={() => setPane('roster')}>Tasks</GhostButton>
+            <GhostButton active={pane === 'digest'} onClick={() => setPane('digest')}>Digest{digest.length ? ` · ${digest.length}` : ''}</GhostButton>
+          </div>
+        )}
+        {!creating && !narrow && <PrimaryButton onClick={() => setCreating(true)}>New automation</PrimaryButton>}
         <GhostButton onClick={onClose} title="Back to chat">Close</GhostButton>
       </div>
 
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         {/* Roster */}
-        <div style={{ flex: 1.5, minWidth: 0, overflowY: 'auto', padding: '18px 22px 24px' }}>
+        {(!narrow || pane === 'roster') && (
+        <div style={{ flex: 1.5, minWidth: 0, overflowY: 'auto', padding: narrow ? '14px 14px 24px' : '18px 22px 24px' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 760 }}>
             {creating && <CreateForm onCreated={() => { setCreating(false); void refresh() }} onCancel={() => setCreating(false)} />}
             {loaded && list.length === 0 && !creating && (
@@ -341,28 +492,42 @@ export default function AutomationsView({ onClose }: { onClose: () => void }) {
                 <PrimaryButton onClick={() => setCreating(true)} style={{ marginTop: 6 }}>Create your first</PrimaryButton>
               </Card>
             )}
+            {narrow && !creating && (
+              <PrimaryButton onClick={() => setCreating(true)}>New automation</PrimaryButton>
+            )}
             {list.map(a => (
               <Row
                 key={a.id} a={a} running={running}
                 onToggle={() => void patch(a.id, { enabled: !a.enabled })}
                 onRunNow={() => void runNow(a.id)}
                 onDelete={() => void del(a.id)}
+                onSave={async p => { await patch(a.id, p) }}
+                onOpenRun={setOpenRun}
               />
             ))}
           </div>
         </div>
+        )}
 
-        {/* Digest */}
+        {/* Digest — every card opens the run's full result. */}
+        {(!narrow || pane === 'digest') && (
         <div style={{
-          width: 380, flexShrink: 0, borderLeft: '1px solid var(--c-hairline)',
-          overflowY: 'auto', padding: '18px 18px 24px', display: 'flex', flexDirection: 'column', gap: 10,
+          width: narrow ? '100%' : 380, flexShrink: 0,
+          borderLeft: narrow ? 'none' : '1px solid var(--c-hairline)',
+          overflowY: 'auto', padding: narrow ? '14px 14px 24px' : '18px 18px 24px',
+          display: 'flex', flexDirection: 'column', gap: 10,
         }}>
           <SectionLabel>Digest</SectionLabel>
           {digest.length === 0 && (
             <span style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim-deep)' }}>Run results will appear here.</span>
           )}
           {digest.map((e, i) => (
-            <Card key={`${e.automationId}:${e.ts}:${i}`} accent={e.status === 'ok' ? '#4db89e' : '#f87171'} style={{ padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <Card
+              key={`${e.automationId}:${e.ts}:${i}`}
+              accent={e.status === 'ok' ? '#4db89e' : '#f87171'}
+              onClick={() => setOpenRun({ automationId: e.automationId, ts: e.ts, name: e.name })}
+              style={{ padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 6, cursor: 'pointer' }}
+            >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: e.status === 'ok' ? '#4db89e' : '#f87171', flexShrink: 0 }} />
                 <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text)', overflowWrap: 'anywhere' }}>{e.name}</span>
@@ -373,10 +538,20 @@ export default function AutomationsView({ onClose }: { onClose: () => void }) {
                 fontSize: 'var(--t-small)', color: 'var(--c-dim)', lineHeight: 1.55, overflowWrap: 'anywhere',
                 display: '-webkit-box', WebkitLineClamp: 6, WebkitBoxOrient: 'vertical', overflow: 'hidden',
               }}>{e.summary}</div>
+              <span style={{ fontSize: 10.5, color: '#9d9dfa' }}>Open full result ›</span>
             </Card>
           ))}
         </div>
+        )}
       </div>
+
+      {openRun && (
+        <RunDetailOverlay
+          runRef={openRun}
+          onClose={() => setOpenRun(null)}
+          onFollowUp={onFollowUp ? t => { setOpenRun(null); onFollowUp(t) } : undefined}
+        />
+      )}
     </div>
   )
 }

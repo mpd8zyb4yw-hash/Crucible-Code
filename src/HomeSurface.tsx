@@ -23,10 +23,12 @@ function fmtWhen(ts: number): string {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hm}`
 }
 
-export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations, splash }: {
+export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations, onOpenRun, splash }: {
   allRounds: Round[]
   onOpenAgents: () => void
   onOpenAutomations: () => void
+  /** Open a run's full result (App renders the RunDetailOverlay above everything). */
+  onOpenRun?: (r: { automationId: string; ts: number; name?: string }) => void
   /** First-run identity view — rendered when the assistant genuinely has nothing to show. */
   splash: React.ReactNode
 }) {
@@ -94,7 +96,10 @@ export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <SectionLabel>Latest from your automations</SectionLabel>
           {digest.map((e, i) => (
-            <Card key={`${e.automationId}:${e.ts}:${i}`} accent={e.status === 'ok' ? '#4db89e' : '#f87171'} style={{ padding: '11px 14px', display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <Card
+              key={`${e.automationId}:${e.ts}:${i}`} accent={e.status === 'ok' ? '#4db89e' : '#f87171'}
+              onClick={onOpenRun ? () => onOpenRun({ automationId: e.automationId, ts: e.ts, name: e.name }) : undefined}
+              style={{ padding: '11px 14px', display: 'flex', flexDirection: 'column', gap: 5, cursor: onOpenRun ? 'pointer' : 'default' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: e.status === 'ok' ? '#4db89e' : '#f87171', flexShrink: 0 }} />
                 <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text)' }}>{e.name}</span>
