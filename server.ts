@@ -3479,7 +3479,7 @@ app.post('/api/chat', async (req, res) => {
     if (!resumable && !iterCheckpoint && localInferenceAvailable && isAgenticIntent
         && !isCodeEditTask(message ?? '')) {
       try {
-        const fmPlan = await localFmPlan(message ?? '', (sys, usr) => callLocalModel(sys, usr, 12000))
+        const fmPlan = await localFmPlan(message ?? '', (sys, usr) => callLocalModel(sys, usr, 12000), { desktopIntent: isDesktopActionGoal(message ?? '') })
         if (fmPlan) {
           console.log(`[Agent] Layer 2 FM plan: ${fmPlan.intent} (${fmPlan.steps.length} steps)`)
           debugBus.emit('agent', 'layer2_fm_plan', { intent: fmPlan.intent, steps: fmPlan.steps.map(s => s.tool) }, { severity: 'info' })

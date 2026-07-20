@@ -48,6 +48,19 @@ const ALLOWED_TOOLS = new Set([
   'search_web', 'search_youtube',
 ])
 
+// GUI-control tools read/drive the LIVE macOS desktop (the frontmost window's
+// accessibility tree, clicks, keystrokes). They only make sense when the goal actually
+// expresses desktop-interaction intent. Offered indiscriminately they are a standing
+// temptation for the weak on-device planner: a plain reasoning/math brief ("what is
+// 17×4?") would sometimes emit a get_ui_tree step, whose output — during an UNATTENDED
+// automation run the frontmost window is Crucible itself — is self-referential garbage
+// ("APP: Claude\nWINDOW: …") that then got summarized as the answer (live, 2026-07-20).
+// Without desktop intent these tools are removed from BOTH the prompt and the validation
+// allowlist, so the planner can neither see nor smuggle them in.
+const GUI_CONTROL_TOOLS = new Set(['get_ui_tree', 'click_element', 'type_text'])
+const allowedFor = (desktopIntent: boolean): Set<string> =>
+  desktopIntent ? ALLOWED_TOOLS : new Set([...ALLOWED_TOOLS].filter(t => !GUI_CONTROL_TOOLS.has(t)))
+
 // Max characters we send to FM. 280 was tuned for <500ms on A18 but rejected legitimate
 // single-step requests that merely carried context ("open the spreadsheet I was just looking
 // at in Downloads called Q3-forecast and…"), forcing them onto the slower LLM loop. Raised to
@@ -59,17 +72,25 @@ const MAX_INPUT_CHARS = 360
 // Requests that Layer 2 should never attempt — hand to LLM immediately.
 const HARD_PASS = /\b(refactor|rewrite|implement|build|fix|debug|write (a |the )?function|create (a |the )?class|edit (the )?file|open (the )?file|in vs ?code|in xcode|commit|push|pull request|deploy|test|spec|unit test)\b/i
 
-const SYSTEM = `You are a macOS automation planner. Given a user request, output a JSON object (NO markdown fences) with this exact shape:
+const TOOL_SPECS: Record<string, string> = {
+  open_app: '- open_app: {"target":"App Name or URL or file path"}',
+  shell_exec: '- shell_exec: {"command":"shell command string"}',
+  get_ui_tree: '- get_ui_tree: {}',
+  click_element: '- click_element: {"label":"button or menu item label"}',
+  type_text: '- type_text: {"text":"text to type"}',
+  search_web: '- search_web: {"query":"search query"}',
+  search_youtube: '- search_youtube: {"query":"search query"}',
+}
+
+// Built per-request so the tool menu reflects exactly what this goal is allowed to use —
+// a goal without desktop intent never even sees the GUI-control tools.
+function buildSystem(allowed: Set<string>): string {
+  const specs = [...allowed].map(t => TOOL_SPECS[t]).filter(Boolean).join('\n')
+  return `You are a macOS automation planner. Given a user request, output a JSON object (NO markdown fences) with this exact shape:
 {"intent":"short label","steps":[{"tool":"tool_name","args":{}}],"summary":"one-line prediction"}
 
 Allowed tools and their required args:
-- open_app: {"target":"App Name or URL or file path"}
-- shell_exec: {"command":"shell command string"}
-- get_ui_tree: {}
-- click_element: {"label":"button or menu item label"}
-- type_text: {"text":"text to type"}
-- search_web: {"query":"search query"}
-- search_youtube: {"query":"search query"}
+${specs}
 
 Rules:
 - Use 1–3 steps only. No chaining beyond that.
@@ -79,6 +100,7 @@ Rules:
 - Use open_app with a URL ONLY for a site the user names by domain (e.g. "go to github.com").
 - If you cannot confidently plan with the given tools, output: {"intent":"pass","steps":[],"summary":""}
 - Output ONLY the JSON object, nothing else.`
+}
 
 // Model-constructed media/watch URLs are almost always hallucinated (dead video IDs).
 // Any plan that opens one is rejected → the full LLM loop replans with search_youtube.
@@ -98,6 +120,7 @@ export type LocalSynth = (system: string, user: string) => Promise<string>
 export async function localFmPlan(
   message: string,
   localSynth: LocalSynth,
+  opts: { desktopIntent?: boolean } = {},
 ): Promise<FmPlan | null> {
   const q = (message ?? '').trim()
   if (q.length < 4 || q.length > MAX_INPUT_CHARS) return null
@@ -105,9 +128,12 @@ export async function localFmPlan(
   // Compound / sequenced request → exceeds Layer 2's simple-step scope; let the LLM loop plan it.
   if (MULTI_STEP.test(q) || (q.match(ACTION_VERB)?.length ?? 0) >= 3) return null
 
+  // GUI-control tools are offered only when the caller confirms desktop-interaction intent.
+  const allowed = allowedFor(opts.desktopIntent ?? false)
+
   let raw: string
   try {
-    raw = await localSynth(SYSTEM, q)
+    raw = await localSynth(buildSystem(allowed), q)
   } catch {
     return null
   }
@@ -132,7 +158,7 @@ export async function localFmPlan(
 
   for (const step of plan.steps) {
     if (typeof step?.tool !== 'string') return null
-    if (!ALLOWED_TOOLS.has(step.tool)) return null
+    if (!allowed.has(step.tool)) return null
     if (typeof step?.args !== 'object' || step.args === null) return null
     // Safety net: never execute a model-constructed video/watch URL — the FM hallucinates
     // video IDs (dead links). Reject the whole plan so the LLM loop replans via search_youtube.
