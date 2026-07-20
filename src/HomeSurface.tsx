@@ -9,6 +9,7 @@ import { Card, SectionLabel, StatusChip } from './ui'
 import { API_BASE, apiFetch } from './api'
 import type { Round } from './chat/core'
 import { GmailWidget, CalendarWidget, GithubWidget, type GooglePreview, type GithubPreview } from './ConnectionWidgets'
+import EmailReader, { type MessageStub } from './EmailReader'
 
 interface DigestEntry { automationId: string; name: string; ts: number; status: 'ok' | 'failed'; summary: string; ms: number }
 interface AutomationLite { id: string; name: string; enabled: boolean; nextRun: number | null }
@@ -60,6 +61,7 @@ export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations
   const [google, setGoogle] = useState<GooglePreview | null>(null)
   const [github, setGithub] = useState<GithubPreview | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const [reading, setReading] = useState<MessageStub | null>(null)
 
   useEffect(() => {
     let dead = false
@@ -131,7 +133,9 @@ export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations
             <AskTile onAsk={onAsk} prompt={ASK_CALENDAR}><CalendarWidget items={google.calendar} /></AskTile>
           )}
           {google?.gmail && (
-            <AskTile onAsk={onAsk} prompt={ASK_INBOX}><GmailWidget items={google.gmail} /></AskTile>
+            <AskTile onAsk={onAsk} prompt={ASK_INBOX}>
+              <GmailWidget items={google.gmail} onOpenMessage={setReading} />
+            </AskTile>
           )}
           {github?.prs && (
             <AskTile onAsk={onAsk} prompt={ASK_PRS}><GithubWidget items={github.prs} /></AskTile>
@@ -181,6 +185,13 @@ export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations
         </div>
       )}
 
+      {reading && (
+        <EmailReader
+          stub={reading}
+          onClose={() => setReading(null)}
+          onDraftReply={onAsk}
+        />
+      )}
     </div>
   )
 }

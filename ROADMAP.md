@@ -1933,6 +1933,35 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-20e (Interactive email reader — "Your day" tiles become a real PA surface, Phase 1)
+- **In-Crucible email reader** (`src/EmailReader.tsx`, NEW): clicking a row in the Home inbox
+  tile opens a clean overlay (matches `RunDetailOverlay` convention) that fetches the FULL
+  message and renders real headers + body inside Crucible — the "clone the UI" path the user
+  asked for. Small **Open in Gmail** deep-link button is the escape to the full app (user's
+  choice, honoring the 2026-07-20 "about choice, cleanly + beautifully" ruling). Screenshot-
+  verified via a throwaway mocked-fetch harness (deleted after): header/body/action-bar render
+  correctly, zero console errors.
+- **Structured message endpoint** (`server.ts` `GET /api/connections/google/message/:id`):
+  REST door to the same Gmail data + body-extraction as the `gmail_read` TOOL (text/plain
+  preferred, HTML stripped deterministically — no model). Returns from/to/date/subject/body/
+  snippet/threadId + a `gmailUrl` deep link. Honest-fail: any error → 502 and the reader shows
+  an error state with the Gmail escape still working.
+- **Row wiring** (`src/ConnectionWidgets.tsx` `GmailWidget` gains optional `onOpenMessage`):
+  rows become buttons that open the reader and `stopPropagation`, so the surrounding `AskTile`
+  "summarize the set" tap still works elsewhere — row = read this one, tile = summarize all.
+- **Draft-a-reply holds the doctrine line**: the button hands a reply-context prompt to chat
+  via the existing `onAsk`/`followUpInChat` — the AGENT drafts (using its gmail tools), the
+  USER reviews and sends. Crucible NEVER fires `gmail_send` on its own; the draft is a PROPOSE
+  step the user certifies. No new send plumbing, no auto-send path introduced.
+- Verification: `tsc --noEmit` + `vite build` clean; reader visually verified (mocked data);
+  dev server serves the app with zero console errors. NOT reproducible in-sandbox: the reader
+  against REAL inbox data (needs the user's OAuth + live backend) — same boundary as the tiles.
+- **Phases still open** (this is Phase 1 of the PA-surface build): (2) inline reply composer +
+  consent-gated Send button the user clicks; (3) importance flagging from deterministic signals
+  (unread + to-me + question + known sender) as a labeled suggestion; (4) NL "surface all
+  emails from/about X" → precise `gmail_search` query + organized results (Gmail does the
+  accurate retrieval, Crucible organizes — doctrine-sound, the model never invents the set).
+
 ### 2026-07-20d (Catch-up brief intent — implicit-personal item 3) — planner-gap chip
 - **Catch-up / "brief me on my day" routing** (`src/CrucibleEngine/agent/namedToolRouter.ts`):
   closes the residual gap from the 2026-07-20 report ("real turn 3") — asks that describe the

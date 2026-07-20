@@ -23,8 +23,14 @@ export function relTime(dateStr: string): string {
   return `${Math.round(mins / (24 * 60))}d`
 }
 
-/** Inbox glimpse — real messages, unread-weighted rows, no imagery. */
-export function GmailWidget({ items }: { items: NonNullable<GooglePreview['gmail']> }) {
+/** Inbox glimpse — real messages, unread-weighted rows, no imagery.
+ *  When `onOpenMessage` is passed, each row opens the in-Crucible reader (clone-the-UI);
+ *  the click is stopped from bubbling so a surrounding "summarize" tap wrapper doesn't
+ *  also fire — row = read this one, elsewhere = summarize the set. */
+export function GmailWidget({ items, onOpenMessage }: {
+  items: NonNullable<GooglePreview['gmail']>
+  onOpenMessage?: (m: NonNullable<GooglePreview['gmail']>[number]) => void
+}) {
   return (
     <div style={{ background: 'rgba(0,0,0,0.32)', border: '1px solid var(--c-hairline)', borderRadius: 10, overflow: 'hidden' }}>
       <div style={{ padding: '7px 12px 6px', borderBottom: '1px solid var(--c-hairline)', display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -37,14 +43,23 @@ export function GmailWidget({ items }: { items: NonNullable<GooglePreview['gmail
       {items.length === 0 && (
         <div style={{ padding: '10px 12px', fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)' }}>Inbox is empty.</div>
       )}
-      {items.map(m => (
-        <div key={m.id} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
-          <span style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, alignSelf: 'center', background: m.unread ? '#7c7cf8' : 'transparent', border: m.unread ? 'none' : '1px solid var(--c-hairline)' }} />
-          <span style={{ fontSize: 'var(--t-small)', fontWeight: m.unread ? 650 : 400, color: m.unread ? 'var(--c-text)' : 'var(--c-dim)', width: 108, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.from}</span>
-          <span style={{ fontSize: 'var(--t-small)', color: m.unread ? '#c9c9da' : 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subject}</span>
-          <span style={{ fontSize: 10.5, color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{relTime(m.date)}</span>
-        </div>
-      ))}
+      {items.map(m => {
+        const clickable = !!onOpenMessage
+        return (
+          <div key={m.id}
+            role={clickable ? 'button' : undefined} tabIndex={clickable ? 0 : undefined}
+            onClick={clickable ? (e => { e.stopPropagation(); onOpenMessage!(m) }) : undefined}
+            onKeyDown={clickable ? (e => { if (e.key === 'Enter') { e.stopPropagation(); onOpenMessage!(m) } }) : undefined}
+            onMouseEnter={clickable ? (e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)' }) : undefined}
+            onMouseLeave={clickable ? (e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }) : undefined}
+            style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: '1px solid rgba(255,255,255,0.03)', cursor: clickable ? 'pointer' : 'default', transition: 'background 90ms' }}>
+            <span style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, alignSelf: 'center', background: m.unread ? '#7c7cf8' : 'transparent', border: m.unread ? 'none' : '1px solid var(--c-hairline)' }} />
+            <span style={{ fontSize: 'var(--t-small)', fontWeight: m.unread ? 650 : 400, color: m.unread ? 'var(--c-text)' : 'var(--c-dim)', width: 108, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.from}</span>
+            <span style={{ fontSize: 'var(--t-small)', color: m.unread ? '#c9c9da' : 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subject}</span>
+            <span style={{ fontSize: 10.5, color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{relTime(m.date)}</span>
+          </div>
+        )
+      })}
     </div>
   )
 }

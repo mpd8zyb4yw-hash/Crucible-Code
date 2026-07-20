@@ -22,7 +22,7 @@ import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-
 import { createCheckpoint, rollbackToCheckpoint, getCheckpoints } from './src/CrucibleEngine/checkpoint'
 import { registry } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
-import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun } from './src/CrucibleEngine/automations/store'
+import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun, offBriefReason } from './src/CrucibleEngine/automations/store'
 import type { Automation as AutomationRecord, AutomationRun as AutomationRunRecord } from './src/CrucibleEngine/automations/store'
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
@@ -962,19 +962,13 @@ async function runAutomationNow(a: AutomationRecord): Promise<AutomationRunRecor
     if (answer.startsWith(sent)) answer = answer.slice(sent.length).replace(/^\s*→\s*/, '').trim()
     else if (answer.startsWith(a.brief)) answer = answer.slice(a.brief.length).replace(/^\s*→\s*/, '').trim()
     if (!answer) return { ts: t0, status: 'failed', summary: errText || 'agent run produced no answer', ms: Date.now() - t0 }
-    // Off-brief guard (live finding 2026-07-19: a Morning-brief run returned a sentence
-    // about "reward-anticipatory units in vision language models" and recorded OK).
-    // Deterministic relevance check — zero shared content words between brief and
-    // answer means the agent answered something else; that is a FAILURE, not a digest
-    // entry. Conservative: any single shared content word passes.
-    const contentWords = (s: string) => new Set(
-      s.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/)
-        .filter(w => w.length >= 4 && !['this', 'that', 'with', 'from', 'then', 'each', 'them', 'have', 'what', 'your', 'today', 'write', 'anything', 'first'].includes(w))
-    )
-    const bw = contentWords(a.brief)
-    const overlap = [...contentWords(answer)].filter(w => bw.has(w)).length
-    if (overlap === 0 && bw.size >= 3) {
-      return { ts: t0, status: 'failed', summary: `off-brief answer (no overlap with the brief): ${answer.slice(0, 400)}`, ms: Date.now() - t0 }
+    // Off-brief guard — only fires when a SUBSTANTIAL prose answer shares no content word
+    // with the brief (genuine off-topic). Short/computed answers are exempt so correct
+    // results in divergent vocabulary (math, conversions, translations) aren't rejected.
+    // Full rationale + the original live catch live in automations/store.ts.
+    const offBrief = offBriefReason(a.brief, answer)
+    if (offBrief) {
+      return { ts: t0, status: 'failed', summary: `off-brief answer (${offBrief}): ${answer.slice(0, 400)}`, ms: Date.now() - t0 }
     }
     // summary = card blurb; answer = the full result (the product). Truncating to 2000 made
     // every digest entry a dead end — the run detail view needs the whole thing.
@@ -1179,6 +1173,46 @@ app.get('/api/connections/google/preview', async (req: express.Request, res: exp
     }))
   } catch { /* same honest-absence rule */ }
   res.json(out)
+})
+
+// Full single-message read for the in-Crucible email reader (clone-the-UI path). Same
+// data source and body-extraction as the gmail_read TOOL — this is the REST door to it so
+// the tile reader shows real message text, never a fabricated body. Read-only; honest-fail:
+// any error returns 502 and the reader shows an error state + the "open in Gmail" escape.
+app.get('/api/connections/google/message/:id', async (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)!
+  const id = String(req.params.id)
+  try {
+    const msg = await gFetch(user.id, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=full`)
+    const headers: any[] = msg.payload?.headers ?? []
+    const h = (name: string) => headers.find((x: any) => x.name === name)?.value ?? ''
+    const unent = (s: string) => s
+      .replace(/&#x([0-9a-f]+);/gi, (_, x) => String.fromCodePoint(parseInt(x, 16)))
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    // Prefer text/plain; fall back to stripping a text/html part. Deterministic, no model.
+    const pick = (part: any, mime: string): string => {
+      if (part?.mimeType === mime && part?.body?.data) return Buffer.from(part.body.data, 'base64').toString('utf8')
+      for (const p of part?.parts ?? []) { const got = pick(p, mime); if (got) return got }
+      return ''
+    }
+    const plain = pick(msg.payload, 'text/plain')
+    const body = plain || pick(msg.payload, 'text/html').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/[ \t]+\n/g, '\n')
+    res.json({
+      id,
+      threadId: msg.threadId ?? id,
+      from: unent(h('From')),
+      to: unent(h('To')),
+      date: h('Date'),
+      subject: unent(h('Subject')) || '(no subject)',
+      snippet: unent(msg.snippet ?? ''),
+      body: unent(body).replace(/\n{3,}/g, '\n\n').trim().slice(0, 20000),
+      // Deep link that opens the exact thread in Gmail web — the "open the full app" escape.
+      gmailUrl: `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(id)}`,
+    })
+  } catch (e: any) {
+    res.status(502).json({ error: String(e?.message ?? e).slice(0, 200) })
+  }
 })
 
 // Live GitHub widget: the signed-in user's own open PRs via the `gh` CLI (read-only,
