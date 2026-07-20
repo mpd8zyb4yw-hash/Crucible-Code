@@ -44,9 +44,13 @@ vite :5184 via `crucible-vite-iso` launch config + `localStorage.crucible_api_ba
   and honestly recorded its tool-auth failure — full unattended loop exercised.
 
 **Still missing toward the user's bar (do these before more surface-area):**
-1. **Home "widget view" proper** — live calendar/inbox/PR tiles on the Home surface (reuse
-   /api/connections/google/preview + github/preview), each tappable into chat. Digest cards
-   there DO open the overlay now, but the day-at-a-glance tiles don't exist yet.
+1. ~~Home "widget view" proper~~ **DONE 2026-07-20c** — `HomeSurface.tsx` now renders a
+   "Your day" section (calendar/inbox/open-PR tiles) above the composer, each an `AskTile`
+   that prefills a real chat turn. Widgets extracted to `src/ConnectionWidgets.tsx` and
+   shared with Connections (byte-identical, can't drift). REMAINING CHECK: live *populated*
+   render on a connected account — verified statically (tsc/build clean, widgets already
+   screenshot-verified on Connections) but not eyeballed on Home with real OAuth/`gh` data
+   (the preview endpoints need the user's creds + live backend, not reproducible in-sandbox).
 2. **Remote-brain hang** — still needs the live tunnel repro (fmQueue proven clean).
 3. Items 3 (db.ts), 4 (property judge), 7 (REST connector + MCP client), 10 (tool-selection
    bench tier) from the previous list — genuinely unstarted.

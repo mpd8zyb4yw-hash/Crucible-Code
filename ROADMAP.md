@@ -1933,6 +1933,30 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-20c (Home day-at-a-glance tiles + widget extraction) — CURRENT-STATE item 1
+- **Live tiles on the Home surface** (`src/HomeSurface.tsx`): a new "Your day" section
+  renders the real calendar / inbox / open-PR tiles above the composer, gated on live
+  data (honest-absence — a null preview omits its tile, never a fabricated empty state).
+  Each tile is wrapped in `AskTile` so the whole thing taps into a real agent turn:
+  clicking prefills the composer via `followUpInChat` (prefill, not auto-send), wording
+  matched to the Connections page try-its. Loaded best-effort alongside the digest fetch
+  (`/api/connections/google/preview` + `/api/connections/github/preview`).
+- **Widget extraction** (`src/ConnectionWidgets.tsx`, NEW): `GmailWidget`,
+  `CalendarWidget`, `GithubWidget` + `relTime` + the `GooglePreview`/`GithubPreview`
+  types moved out of `ConnectionsView.tsx` into one shared module so Home and Connections
+  render byte-identical tiles and can never drift. `ConnectionsView.tsx` now imports them;
+  `STATE_META` and everything else there unchanged.
+- **Dropped a dangling edit**: `RunRec.answer?` (unused; the RunDetailOverlay fetches full
+  detail by timestamp and the field is stripped from polls, so it was always undefined).
+- **New bench committed**: `src/CrucibleEngine/agent/__implicitPersonal_bench.ts` (21/21)
+  locks the four real 2026-07-20 fabrication turns + creation/mutation/generic negatives
+  for `resolveImplicitPersonalTools`.
+- Verification: `tsc --noEmit` + `vite build` clean; the three tiles are the same widgets
+  already screenshot-verified live on Connections. Live *populated* Home render not
+  reproduced in-sandbox — the preview endpoints need the user's real OAuth/`gh` creds and
+  the live backend (:3001 was down); the honest-absence path (no tiles) is what an
+  isolated stack shows. 30-second eyeball on a connected account is the remaining check.
+
 ### 2026-07-19g (Real tabs + Settings pages) — Assistant layer step 3 remainder shipped
 - **Open-chats strip → real tabs** (`src/App.tsx` topbar): the chip strip is now a
   browser-style tab strip seated on the topbar's bottom edge — top-rounded tabs, the

@@ -2727,6 +2727,7 @@ export default function App() {
             onOpenAgents={() => setAgentsOpen(true)}
             onOpenAutomations={() => setAutomationsOpen(true)}
             onOpenRun={setHomeOpenRun}
+            onAsk={followUpInChat}
             splash={
           <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
           {/* Quiet branded splash: the vessel mark over a slow ember glow — the product's

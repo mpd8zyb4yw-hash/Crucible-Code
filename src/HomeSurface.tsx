@@ -8,9 +8,30 @@ import { useEffect, useState } from 'react'
 import { Card, SectionLabel, StatusChip } from './ui'
 import { API_BASE, apiFetch } from './api'
 import type { Round } from './chat/core'
+import { GmailWidget, CalendarWidget, GithubWidget, type GooglePreview, type GithubPreview } from './ConnectionWidgets'
 
 interface DigestEntry { automationId: string; name: string; ts: number; status: 'ok' | 'failed'; summary: string; ms: number }
 interface AutomationLite { id: string; name: string; enabled: boolean; nextRun: number | null }
+
+// Day-at-a-glance tap prompts — each tile is a door into a real agent turn, not a
+// dead render. Wording matches the Connections page try-its so the two never diverge.
+const ASK_INBOX = 'Summarize any inbox email from the last day that needs a reply.'
+const ASK_CALENDAR = 'Summarize today\'s calendar and what\'s coming up over the next few days.'
+const ASK_PRS = 'List my open GitHub PRs and flag any that look stalled or are waiting on review.'
+
+/** Wraps a live tile so the whole thing taps into a chat turn — result that OPENS. */
+function AskTile({ onAsk, prompt, children }: { onAsk?: (p: string) => void; prompt: string; children: React.ReactNode }) {
+  if (!onAsk) return <>{children}</>
+  return (
+    <div role="button" tabIndex={0}
+      onClick={() => onAsk(prompt)}
+      onKeyDown={e => { if (e.key === 'Enter') onAsk(prompt) }}
+      style={{ cursor: 'pointer', borderRadius: 10 }}
+      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.filter = 'brightness(1.12)' }}
+      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.filter = 'none' }}
+    >{children}</div>
+  )
+}
 
 function fmtWhen(ts: number): string {
   const d = new Date(ts)
@@ -23,38 +44,49 @@ function fmtWhen(ts: number): string {
   return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${hm}`
 }
 
-export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations, onOpenRun, splash }: {
+export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations, onOpenRun, onAsk, splash }: {
   allRounds: Round[]
   onOpenAgents: () => void
   onOpenAutomations: () => void
   /** Open a run's full result (App renders the RunDetailOverlay above everything). */
   onOpenRun?: (r: { automationId: string; ts: number; name?: string }) => void
+  /** Tap a live tile into a chat turn — prefills the composer, user presses send. */
+  onAsk?: (prompt: string) => void
   /** First-run identity view — rendered when the assistant genuinely has nothing to show. */
   splash: React.ReactNode
 }) {
   const [digest, setDigest] = useState<DigestEntry[]>([])
   const [upcoming, setUpcoming] = useState<AutomationLite[]>([])
+  const [google, setGoogle] = useState<GooglePreview | null>(null)
+  const [github, setGithub] = useState<GithubPreview | null>(null)
   const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     let dead = false
+    // Live account previews load best-effort alongside the digest: a null (not-connected
+    // or failed) simply omits its tile — honest-absence, never a fabricated empty state.
     Promise.all([
       apiFetch(`${API_BASE}/api/automations/digest`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
       apiFetch(`${API_BASE}/api/automations`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
-    ]).then(([d, a]) => {
+      apiFetch(`${API_BASE}/api/connections/google/preview`, { credentials: 'include' }).then(r => r.ok ? r.json() : null).catch(() => null),
+      apiFetch(`${API_BASE}/api/connections/github/preview`, { credentials: 'include' }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]).then(([d, a, g, gh]) => {
       if (dead) return
       if (d) setDigest((d.entries ?? []).slice(0, 4))
       if (a) setUpcoming((a.automations ?? [])
         .filter((x: AutomationLite) => x.enabled && x.nextRun != null)
         .sort((x: AutomationLite, y: AutomationLite) => x.nextRun! - y.nextRun!)
         .slice(0, 3))
+      if (g) setGoogle(g)
+      if (gh) setGithub(gh)
       setLoaded(true)
     }).catch(() => { if (!dead) setLoaded(true) })
     return () => { dead = true }
   }, [])
 
   const live = allRounds.filter(r => r.agent?.active)
-  const hasContent = digest.length > 0 || upcoming.length > 0 || live.length > 0
+  const hasGlance = !!(google?.calendar || google?.gmail || github?.prs)
+  const hasContent = digest.length > 0 || upcoming.length > 0 || live.length > 0 || hasGlance
 
   // Until the day's data arrives, render nothing (a 200ms blank beats a splash
   // that flashes and is replaced). Genuinely-empty accounts get the identity splash.
@@ -90,6 +122,21 @@ export default function HomeSurface({ allRounds, onOpenAgents, onOpenAutomations
             <span style={{ fontSize: 'var(--t-small)', color: '#9d9dfa', flexShrink: 0 }}>Mission Control</span>
           </div>
         </Card>
+      )}
+
+      {hasGlance && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <SectionLabel>Your day</SectionLabel>
+          {google?.calendar && (
+            <AskTile onAsk={onAsk} prompt={ASK_CALENDAR}><CalendarWidget items={google.calendar} /></AskTile>
+          )}
+          {google?.gmail && (
+            <AskTile onAsk={onAsk} prompt={ASK_INBOX}><GmailWidget items={google.gmail} /></AskTile>
+          )}
+          {github?.prs && (
+            <AskTile onAsk={onAsk} prompt={ASK_PRS}><GithubWidget items={github.prs} /></AskTile>
+          )}
+        </div>
       )}
 
       {digest.length > 0 && (
