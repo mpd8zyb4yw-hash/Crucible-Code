@@ -1163,6 +1163,30 @@ app.get('/api/connections/google/preview', async (req: express.Request, res: exp
   res.json(out)
 })
 
+// Live GitHub widget: the signed-in user's own open PRs via the `gh` CLI (read-only,
+// no network creds handled by us — gh uses its own stored auth). Honest-absence rule like
+// Google: any failure (gh missing, not authed, offline) leaves the widget absent, never faked.
+app.get('/api/connections/github/preview', async (_req: express.Request, res: express.Response) => {
+  const out: { prs: Array<{ title: string; repo: string; url: string; updatedAt: string; state: string }> | null } = { prs: null }
+  try {
+    const stdout = await new Promise<string>((resolve, reject) => {
+      execFile('gh', ['search', 'prs', '--author', '@me', '--state', 'open', '--limit', '8',
+        '--json', 'title,repository,url,updatedAt,state'],
+        { timeout: 8000, maxBuffer: 1 << 20 },
+        (err, so) => err ? reject(err) : resolve(so))
+    })
+    const rows = JSON.parse(stdout) as Array<any>
+    out.prs = rows.map(r => ({
+      title: String(r.title ?? '(untitled)'),
+      repo: String(r.repository?.nameWithOwner ?? r.repository?.name ?? ''),
+      url: String(r.url ?? ''),
+      updatedAt: String(r.updatedAt ?? ''),
+      state: String(r.state ?? 'open'),
+    }))
+  } catch { /* gh absent / not authed / offline — widget stays absent */ }
+  res.json(out)
+})
+
 // Disconnect = forget the stored tokens. Reversible: "Connect" runs OAuth again.
 app.post('/api/connections/google/disconnect', (req: express.Request, res: express.Response) => {
   const user = getAuthUser(req)!

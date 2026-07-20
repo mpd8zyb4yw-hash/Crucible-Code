@@ -102,11 +102,37 @@ const STATE_META: Record<Connection['authState'], { label: string; color: string
   disconnected: { label: 'not connected', color: '#55556a' },
 }
 
+type GithubPreview = { prs: Array<{ title: string; repo: string; url: string; updatedAt: string; state: string }> | null }
+
+/** Open PRs the signed-in user authored — repo · title · relative age. Read-only via `gh`. */
+function GithubWidget({ items }: { items: NonNullable<GithubPreview['prs']> }) {
+  return (
+    <div style={{ background: 'rgba(0,0,0,0.32)', border: '1px solid var(--c-hairline)', borderRadius: 10, overflow: 'hidden' }}>
+      <div style={{ padding: '7px 12px 6px', borderBottom: '1px solid var(--c-hairline)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <SectionLabel style={{ fontSize: 9.5 }}>Your open PRs</SectionLabel>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums' }}>{items.length}</span>
+      </div>
+      {items.length === 0 && (
+        <div style={{ padding: '10px 12px', fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)' }}>No open PRs.</div>
+      )}
+      {items.map((p, i) => (
+        <div key={`${p.url}:${i}`} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+          <span style={{ fontSize: 'var(--t-small)', fontFamily: 'var(--mono)', color: 'var(--c-dim)', flexShrink: 0, maxWidth: 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.repo.split('/').pop()}</span>
+          <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-text)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
+          <span style={{ fontSize: 10.5, color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{p.updatedAt ? relTime(p.updatedAt) : ''}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function ConnectionCard({ c, onChanged }: { c: Connection; onChanged: () => void }) {
   const st = STATE_META[c.authState]
   const [testing, setTesting] = useState(false)
   const [checks, setChecks] = useState<Record<string, { ok: boolean; detail: string }> | null>(null)
   const [preview, setPreview] = useState<GooglePreview | null>(null)
+  const [ghPreview, setGhPreview] = useState<GithubPreview | null>(null)
 
   // Live widgets: real inbox/calendar data the moment the card mounts connected.
   useEffect(() => {
@@ -115,6 +141,17 @@ function ConnectionCard({ c, onChanged }: { c: Connection; onChanged: () => void
     apiFetch(`${API_BASE}/api/connections/google/preview`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
       .then(p => { if (!dead && p) setPreview(p) })
+      .catch(() => {})
+    return () => { dead = true }
+  }, [c.id, c.authState])
+
+  // Live GitHub widget: the user's own open PRs via `gh` (honest-absence — absent on any failure).
+  useEffect(() => {
+    if (c.id !== 'cli-github' || c.authState !== 'connected') return
+    let dead = false
+    apiFetch(`${API_BASE}/api/connections/github/preview`, { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(p => { if (!dead && p) setGhPreview(p) })
       .catch(() => {})
     return () => { dead = true }
   }, [c.id, c.authState])
@@ -166,6 +203,7 @@ function ConnectionCard({ c, onChanged }: { c: Connection; onChanged: () => void
       )}
       {preview?.gmail && <GmailWidget items={preview.gmail} />}
       {preview?.calendar && <CalendarWidget items={preview.calendar} />}
+      {ghPreview?.prs && <GithubWidget items={ghPreview.prs} />}
       {c.id === 'google' && (
         <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
           {(c.authState === 'disconnected' || c.authState === 'expired') && (
