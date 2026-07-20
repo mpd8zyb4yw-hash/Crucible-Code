@@ -122,11 +122,24 @@ export function GithubWidget({ items }: { items: NonNullable<GithubPreview['prs'
         <div style={{ padding: '10px 12px', fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)' }}>No open PRs.</div>
       )}
       {items.map((p, i) => (
-        <div key={`${p.url}:${i}`} style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: '1px solid rgba(255,255,255,0.03)' }}>
+        // Rows are real links now — p.url used to be dead data (rendered nowhere, rows
+        // unclickable). stopPropagation so a surrounding ask-wrapper doesn't also fire.
+        <a
+          key={`${p.url}:${i}`}
+          href={p.url} target="_blank" rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          style={{
+            display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px',
+            borderBottom: '1px solid rgba(255,255,255,0.03)', textDecoration: 'none',
+            cursor: 'pointer', transition: 'background 90ms',
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
+        >
           <span style={{ fontSize: 'var(--t-small)', fontFamily: 'var(--mono)', color: 'var(--c-dim)', flexShrink: 0, maxWidth: 118, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.repo.split('/').pop()}</span>
           <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-text)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.title}</span>
           <span style={{ fontSize: 10.5, color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{p.updatedAt ? relTime(p.updatedAt) : ''}</span>
-        </div>
+        </a>
       ))}
     </div>
   )

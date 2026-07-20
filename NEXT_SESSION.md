@@ -17,7 +17,40 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21b HEAD-MODEL-SWAP session (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21c UI-overhaul session (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-21c (cont.91 — widget board, clean splash, chat deletion/forget-me, follow-up threading):**
+- Mission Control has an Overview | Agents segment; Overview = customizable widget board
+  (`src/MissionWidgets.tsx`): inbox/calendar/PRs/digest/scheduled, add/remove/◂ ▸ reorder,
+  layout in `crucible_mc_widgets` localStorage. Splash (`HomeSurface.tsx`) stripped to greeting +
+  Mission Control door. Follow-ups thread via `Round.followUpOf` — one roster card per thread,
+  stacked workspace convo, thread-scoped history, steer disabled while streaming. Chat deletion:
+  hover-X per row (rail + mobile History) + red delete-all w/ centered ConfirmModal → NEW
+  `DELETE /api/conversations` wipes chats + ALL learned-user stores (cwd + ~/.crucible + in-memory
+  sessions; google-tokens/users deliberately kept). `synthDriver.ts` noncode path now passes thread
+  history to `solveNonCodeTurn` (bare "why?" no longer retrieves context-free garbage). All
+  browser-verified live with a test-user JWT; `tsc` + `vite build` clean, `app/` rebuilt.
+
+**Open items / risks (priority order):**
+- **Loop ships tool noise as answers on the qwen head — CONCRETE REPRO:** agent-mode
+  "Answer in one sentence: what is a crucible?" → Layer-2 ReAct ran one `run` tool and finished
+  with "exit 0" as the whole answer (twice this session). The head swap (cont.90) needs its
+  re-bench + a loop guard: a final answer that is pure tool residue must be rejected/retried.
+  This is the binding quality item now.
+- **Live-verify the synthDriver history fix** — routing to solveNonCodeTurn is nondeterministic
+  from the UI; tsc-verified only. A bench seeding `messages` with a prior crucible turn + goal
+  "why?" would pin it.
+- **Automation follow-ups still prefill-only** — RunDetailOverlay "Continue in chat" carries just
+  name+date+1500 chars; the run's real session lives under conversationId `automation-${id}`
+  (server.ts:934). Threading INTO that session (pass conversationId through send()) is the
+  designed next step; see cont.91 audit notes in the change log.
+- Widget board v2 candidates: drag-reorder, per-user server persistence, more widgets (open goals,
+  model status), digest widget click-through opens RunDetailOverlay from Overview (wired) — but
+  Overview lacks a "while you were away" hero for OLD runs now that empty-state cards moved.
+- localFmPlanner implicit-intent (`src/CrucibleEngine/agent/localFmPlanner.ts`) — unchanged, still
+  behind everything above.
+
+**Previous (cont.90) state below — still-relevant items folded above:**
 
 **Shipped 2026-07-21b (cont.90 — Apple FM demoted, qwen2.5-1.5b is now the HEAD):**
 - The user's cont.87 decision (pause Apple FM as head) was finally wired. `CRUCIBLE_HEAD` env

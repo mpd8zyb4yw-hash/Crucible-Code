@@ -119,6 +119,19 @@ export function getSessionMessages(sessionId: string): Array<Record<string, unkn
   return sessions.get(sessionId)?.messages ?? []
 }
 
+/** Wipe EVERY session's accumulated messages/goals — the in-memory half of a user-requested
+ *  "delete all chats + forget me" reset. Aborts any in-flight task first so a running loop
+ *  can't keep appending to a session the user just asked to erase. */
+export function clearAllSessions(): number {
+  let n = 0
+  for (const [, s] of sessions) {
+    try { s.ac?.abort() } catch { /* already done */ }
+    n++
+  }
+  sessions.clear()
+  return n
+}
+
 /** Purge sessions idle for more than 2 hours. */
 export function purgeStaleSessions() {
   const cutoff = Date.now() - 2 * 60 * 60 * 1000

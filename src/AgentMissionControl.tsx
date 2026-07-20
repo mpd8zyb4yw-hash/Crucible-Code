@@ -20,6 +20,7 @@ import { STEP_GLYPH, STEP_COLOR, ToolRow, DiffBlock } from './chat/panels'
 import { ClarificationCard } from './chat/AgentPanel'
 import { ArtifactPreviewBar } from './chat/CodeRunner'
 import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
+import MissionWidgets from './MissionWidgets'
 import { API_BASE, apiFetch } from './api'
 
 interface ScheduledRun { automationId: string; name: string; ts: number; status: 'ok' | 'failed'; summary: string; ms: number }
@@ -70,13 +71,15 @@ function runStatus(r: Round): { label: string; color: string; live: boolean } {
   return { label: 'done', color: '#4db89e', live: false }
 }
 
-/** One assistant on the roster — status glow, goal, live thought ticker. */
-function AgentCard({ r, active, onSelect }: { r: Round; active: boolean; onSelect: () => void }) {
+/** One assistant THREAD on the roster — status glow, goal, live thought ticker.
+ *  `r` is the thread's latest round (drives status/thought); `title` is the thread
+ *  root's goal; `turns` > 1 marks a continued conversation. */
+function AgentCard({ r, title, turns, active, onSelect }: { r: Round; title: string; turns: number; active: boolean; onSelect: () => void }) {
   const st = runStatus(r)
   const a = r.agent!
   const thought = a.active ? a.thoughts[a.thoughts.length - 1]?.replace(/^\[|\]$/g, '') : undefined
   const meta = a.done
-    ? `${a.done.ms != null ? (a.done.ms / 1000).toFixed(1) + 's · ' : ''}${a.tools.length} tool${a.tools.length === 1 ? '' : 's'}`
+    ? `${turns > 1 ? `${turns} turns · ` : ''}${a.done.ms != null ? (a.done.ms / 1000).toFixed(1) + 's · ' : ''}${a.tools.length} tool${a.tools.length === 1 ? '' : 's'}`
     : a.tools.length > 0 ? `${a.tools.length} tool${a.tools.length === 1 ? '' : 's'} so far` : ''
   return (
     <div
@@ -101,7 +104,7 @@ function AgentCard({ r, active, onSelect }: { r: Round; active: boolean; onSelec
         <span style={{
           flex: 1, minWidth: 0, fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text)',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-        }}>{r.userMessage || 'Untitled'}</span>
+        }}>{title || 'Untitled'}</span>
         <span style={{ fontSize: 'var(--t-micro)', fontWeight: 700, letterSpacing: '0.06em', color: st.color, textTransform: 'uppercase', flexShrink: 0 }}>
           {st.label}
         </span>
@@ -118,18 +121,24 @@ function AgentCard({ r, active, onSelect }: { r: Round; active: boolean; onSelec
   )
 }
 
-export default function AgentMissionControl({ rounds: rawRounds, thinking, liveRoundId, onLaunch, onReply, onClose, onFollowUp }: {
+export default function AgentMissionControl({ rounds: rawRounds, thinking, liveRoundId, onLaunch, onReply, onClose, onFollowUp, onAsk, onOpenConnections }: {
   rounds: Round[]
   thinking: boolean
   liveRoundId: string | null
   /** Send a new agent on its way — same send() pipeline as the composer; the engine
    *  decides the workflow from the brief itself. */
   onLaunch: (text: string) => void
-  /** Continue the conversation / answer a clarification — same send() pipeline. */
-  onReply: (text: string) => void
+  /** Continue the conversation / answer a clarification — same send() pipeline.
+   *  `anchorRoundId` links the reply into the followed-up round's thread (followUpOf),
+   *  so the exchange stays ONE card here and the agent gets the thread's own history. */
+  onReply: (text: string, anchorRoundId?: string) => void
   onClose: () => void
   /** Prefill the chat composer (run-detail “Continue in chat”) — wired by App. */
   onFollowUp?: (text: string) => void
+  /** Widget-board ask action — prefill the chat composer with a grounded prompt. */
+  onAsk?: (prompt: string) => void
+  /** Widget empty states point here when a source isn't connected. */
+  onOpenConnections?: () => void
 }) {
   // Same defensive close as MessageList: a driver that ends its stream without a terminal
   // agent event would leave active=true forever — the round no longer being the live
@@ -140,7 +149,33 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
       : r
   ), [rawRounds, liveRoundId, thinking])
   const agentRounds = useMemo(() => rounds.filter(r => r.agent), [rounds])
+  // Threads: rounds chained by followUpOf collapse into ONE roster card whose workspace
+  // stacks the whole exchange — the nested convo a follow-up continues, instead of every
+  // follow-up spawning a disconnected sibling card (the 2026-07-21 complaint).
+  const threads = useMemo(() => {
+    const byId = new Map(rounds.map(r => [r.id, r]))
+    const rootOf = (r: Round): string => {
+      let cur: Round = r
+      const seen = new Set<string>()
+      while (cur.followUpOf && byId.has(cur.followUpOf) && !seen.has(cur.id)) {
+        seen.add(cur.id)
+        cur = byId.get(cur.followUpOf)!
+      }
+      return cur.id
+    }
+    const groups = new Map<string, Round[]>()
+    for (const r of agentRounds) {
+      const root = rootOf(r)
+      const arr = groups.get(root)
+      if (arr) arr.push(r); else groups.set(root, [r])
+    }
+    return [...groups.entries()].map(([rootId, items]) => ({ rootId, items }))
+  }, [rounds, agentRounds])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  // Overview (the customizable widget board) vs Agents (roster + workspace). The page
+  // lands on the board — the mission-control glance — and jumps to Agents whenever a
+  // run goes live so work is never invisible.
+  const [view, setView] = useState<'overview' | 'agents'>('overview')
   const [brief, setBrief] = useState('')
   const [steer, setSteer] = useState('')
   const workScrollRef = useRef<HTMLDivElement>(null)
@@ -172,18 +207,24 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
     return () => mq.removeEventListener('change', h)
   }, [])
 
-  const latest = agentRounds[agentRounds.length - 1]
-  const selected = agentRounds.find(r => r.id === selectedId) ?? latest
-  // Auto-follow the newest run unless the user explicitly picked an older one.
+  const latestThread = threads[threads.length - 1]
+  const selectedThread = threads.find(t => t.rootId === selectedId) ?? latestThread
+  // The thread's LATEST round drives status, live detail, and the steer anchor; the
+  // earlier rounds render as the compact conversation trail above it.
+  const selected = selectedThread?.items[selectedThread.items.length - 1]
+  const priorTurns = selectedThread ? selectedThread.items.slice(0, -1) : []
+  // Auto-follow the newest thread unless the user explicitly picked an older one.
   useEffect(() => {
-    if (latest && (selectedId == null || !agentRounds.some(r => r.id === selectedId))) setSelectedId(latest.id)
-  }, [latest?.id])  // eslint-disable-line react-hooks/exhaustive-deps
+    if (latestThread && (selectedId == null || !threads.some(t => t.rootId === selectedId))) setSelectedId(latestThread.rootId)
+  }, [latestThread?.rootId])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const a = selected?.agent ?? null
   const status = selected ? runStatus(selected) : null
   const latestThought = a?.thoughts[a.thoughts.length - 1]
   const anyLive = agentRounds.some(r => r.agent?.active)
   const hasRuns = agentRounds.length > 0
+  // A live run pulls the page to Agents — never let work stream invisibly behind the board.
+  useEffect(() => { if (anyLive) setView('agents') }, [anyLive])
 
   // Keep the workspace pinned to the newest activity while a run streams.
   useEffect(() => {
@@ -196,15 +237,18 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
     if (!d) return
     setBrief('')
     setSelectedId(null) // re-arm auto-follow so the new run takes the workspace
+    setView('agents')   // watch the run you just sent
     onLaunch(d)
   }
 
   const sendSteer = () => {
     const t = steer.trim()
-    if (!t) return
+    if (!t || !selected) return
     setSteer('')
-    if (a?.clarification && !a.clarification.answered) onReply(t)
-    else onLaunch(t)
+    // ALWAYS continue the selected thread — a follow-up is a reply into this nested
+    // convo, never a fresh launch (that was the disconnected-new-card bug). The anchor
+    // links the new round into the thread and sends the thread's own history with it.
+    onReply(t, selected.id)
   }
 
   const briefBox = (compact: boolean) => (
@@ -267,6 +311,22 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
           : hasRuns
             ? <StatusChip color="#4db89e">all quiet</StatusChip>
             : null}
+        {/* Overview | Agents segment — the board and the workspace are both first-class. */}
+        <div style={{ display: 'flex', gap: 2, marginLeft: 6, padding: 2, borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--c-hairline)' }}>
+          {(['overview', 'agents'] as const).map(v => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              style={{
+                fontSize: 10.5, fontWeight: 700, letterSpacing: '0.02em', fontFamily: 'inherit',
+                padding: '4px 11px', borderRadius: 8, cursor: 'pointer', border: 'none',
+                background: view === v ? 'rgba(124,124,248,0.16)' : 'transparent',
+                color: view === v ? '#b0b0f8' : 'var(--c-dim)',
+                transition: 'background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)',
+              }}
+            >{v === 'overview' ? 'Overview' : 'Agents'}</button>
+          ))}
+        </div>
         <div style={{ flex: 1 }} />
         <button onClick={onClose} aria-label="Close" title="Back to chat" style={{
           width: 30, height: 30, borderRadius: 9, border: '1px solid var(--c-hairline-strong)',
@@ -279,9 +339,21 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
         </button>
       </div>
 
-      {/* ── Empty state: hero composer + the assistant's recent unattended work ── */}
-      {!hasRuns ? (
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: scheduled.length ? 'flex-start' : 'center', padding: scheduled.length ? '32px 24px 24px' : '0 24px' }}>
+      {/* ── Overview: the customizable widget board + a launch box ── */}
+      {view === 'overview' ? (
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <div style={{ maxWidth: 940, margin: '0 auto', padding: '20px 22px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {briefBox(true)}
+            <MissionWidgets
+              onAsk={p => (onAsk ?? onFollowUp)?.(p)}
+              onOpenRun={setOpenRun}
+              onOpenConnections={() => onOpenConnections?.()}
+            />
+          </div>
+        </div>
+      ) : !hasRuns ? (
+        /* ── Agents, no runs yet: hero composer ── */
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 24px' }}>
           <div style={{ width: 'min(560px, 92%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
             <svg width="40" height="40" viewBox="0 0 48 48" fill="none" style={{ opacity: 0.5, marginBottom: 16 }}>
               <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="var(--c-text)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
@@ -294,15 +366,6 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
               The agent works out its own plan and you watch it happen here.
             </div>
             {briefBox(false)}
-            {scheduled.length > 0 && (
-              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 8, marginTop: 28 }}>
-                <SectionLabel>While you were away — scheduled runs</SectionLabel>
-                {scheduled.slice(0, 6).map((e, i) => (
-                  <ScheduledCard key={`${e.automationId}:${e.ts}:${i}`} e={e}
-                    onOpen={() => setOpenRun({ automationId: e.automationId, ts: e.ts, name: e.name })} />
-                ))}
-              </div>
-            )}
           </div>
         </div>
       ) : (
@@ -321,8 +384,15 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
             </div>
             <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
               <SectionLabel style={{ padding: '0 2px 2px' }}>Your agents</SectionLabel>
-              {[...agentRounds].reverse().map(r => (
-                <AgentCard key={r.id} r={r} active={r.id === selected?.id} onSelect={() => setSelectedId(r.id)} />
+              {[...threads].reverse().map(t => (
+                <AgentCard
+                  key={t.rootId}
+                  r={t.items[t.items.length - 1]}
+                  title={t.items[0].userMessage}
+                  turns={t.items.length}
+                  active={t.rootId === selectedThread?.rootId}
+                  onSelect={() => setSelectedId(t.rootId)}
+                />
               ))}
               {scheduled.length > 0 && (
                 <>
@@ -341,6 +411,32 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
             <div ref={workScrollRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
               {!selected || !a ? null : (
                 <div style={{ padding: '18px 22px 24px', display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 860 }}>
+
+                  {/* Conversation trail — the thread's earlier turns, compact: what was
+                      asked, what the agent answered. The follow-up you send lands HERE,
+                      under the same card, not as a new disconnected run. */}
+                  {priorTurns.map(pt => (
+                    <div key={pt.id} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                        <span style={{ flexShrink: 0, marginTop: 3, width: 6, height: 6, borderRadius: '50%', background: 'var(--c-dim-deep)' }} />
+                        <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-dim)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                          {pt.userMessage}
+                        </span>
+                      </div>
+                      {(pt.agent?.final || pt.synthesis) && (
+                        <div style={{
+                          fontSize: 'var(--t-ui)', lineHeight: 1.6, color: '#a8a8bc',
+                          whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+                          maxHeight: 180, overflowY: 'auto', padding: '10px 12px',
+                          background: 'rgba(255,255,255,0.025)', border: '1px solid var(--c-hairline)',
+                          borderRadius: 10,
+                        }}>{pt.agent?.final || pt.synthesis}</div>
+                      )}
+                    </div>
+                  ))}
+                  {priorTurns.length > 0 && (
+                    <div style={{ height: 1, background: 'var(--c-hairline)', margin: '2px 0' }} />
+                  )}
 
                   {/* Run header */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -449,9 +545,9 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
 
                   {a.error && <div style={{ fontSize: 'var(--t-ui)', color: '#fca5a5' }}>{a.error}</div>}
 
-                  {/* Clarification */}
+                  {/* Clarification — the answer continues THIS thread, same as steer. */}
                   {a.clarification && !a.active && (
-                    <ClarificationCard clarification={a.clarification} onReply={onReply} />
+                    <ClarificationCard clarification={a.clarification} onReply={t => onReply(t, selected.id)} />
                   )}
 
                   {/* Answer */}
@@ -468,20 +564,24 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
               )}
             </div>
 
-            {/* Steer / reply — talk to the selected agent, same loop as chat. */}
+            {/* Steer / reply — continues the SELECTED thread, same loop as chat. While a
+                run streams, send() drops input on the floor — so the box is honestly
+                disabled instead of pretending to accept a message it will discard. */}
             <div style={{ flexShrink: 0, padding: '10px 22px 14px', borderTop: '1px solid var(--c-hairline)', display: 'flex', gap: 8, maxWidth: 904 }}>
               <input
                 value={steer}
                 onChange={e => setSteer(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') sendSteer() }}
-                placeholder={a?.clarification && !a.clarification.answered ? 'Answer your agent…' : thinking ? 'Steer the agent…' : 'Follow up with the agent…'}
+                disabled={thinking}
+                placeholder={a?.clarification && !a.clarification.answered ? 'Answer your agent…' : thinking ? 'Agent is working — it will take your follow-up when it finishes' : 'Follow up with the agent…'}
                 style={{
                   flex: 1, minWidth: 0, background: 'rgba(255,255,255,0.04)',
                   border: '1px solid var(--c-hairline-strong)', borderRadius: 12,
                   padding: '10px 14px', fontSize: 'var(--t-ui)', color: '#d0d0e0', outline: 'none', fontFamily: 'inherit',
+                  opacity: thinking ? 0.55 : 1,
                 }}
               />
-              <GhostButton onClick={sendSteer} title="Send">
+              <GhostButton onClick={sendSteer} title={thinking ? 'Wait for the agent to finish' : 'Send'}>
                 <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
                   <path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>

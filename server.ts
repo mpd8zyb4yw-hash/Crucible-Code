@@ -34,7 +34,7 @@ import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/to
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
 import { runAgentLoop } from './src/CrucibleEngine/agent/loop'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
-import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages } from './src/CrucibleEngine/agent/taskSession'
+import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages, clearAllSessions } from './src/CrucibleEngine/agent/taskSession'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
 import { foldAttachmentContext } from './src/CrucibleEngine/agent/attachmentContext'
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
@@ -1549,6 +1549,67 @@ app.delete('/api/conversations/:id', (req: express.Request, res: express.Respons
   const user = getAuthUser(req)
   deleteConversationById(user?.id ?? null, String(req.params.id))
   res.json({ ok: true })
+})
+
+// ── Delete ALL chats + reset learned user memories ────────────────────────────
+// The user-facing contract (2026-07-21 direction): "delete all chats" is a FORGET-ME,
+// not just a history clear. Wiping the visible conversations while keeping the model's
+// learned facts about the user (world model, entity graph, episodes, preference weights,
+// feedback text, query clusters) would be silently lying about what was deleted — the
+// assistant would keep "remembering" things the user explicitly asked to erase. So this
+// endpoint clears BOTH roots the audit found:
+//   · server-cwd .crucible/  — chats + per-user analytics + learned preferences
+//   · ~/.crucible/           — cross-session world/entity/episode/decision memories
+// Deliberately NOT touched: google-tokens-*.json / users.json / push-subscriptions.json
+// (account + connection auth — deleting chats must not disconnect Gmail), and pure
+// engine caches (corpus, indexes, benchmarks) which hold no user-derived text.
+app.delete('/api/conversations', (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)
+  const uid = user?.id ?? null
+  const cwdDir = path.join(process.cwd(), '.crucible')
+  const homeDir = path.join(os.homedir(), '.crucible')
+  const cleared: string[] = []
+  const failed: string[] = []
+  const rm = (p: string) => {
+    try {
+      if (!fs.existsSync(p)) return
+      fs.rmSync(p, { recursive: true, force: true })
+      cleared.push(path.basename(p))
+    } catch { failed.push(path.basename(p)) }
+  }
+  // 1) Chats — this user's conversation store, loose round history, resume blob.
+  //    Per-user files are found by naming convention (audit: paths must be globbed,
+  //    not computed — stale per-user files from older sessions linger on disk).
+  const userSuffix = uid ?? 'anon'
+  rm(path.join(cwdDir, `conversations-${userSuffix}.json`))
+  rm(path.join(cwdDir, `history-${uid ?? 'default'}.json`))
+  rm(path.join(cwdDir, `active-session-${userSuffix}.json`))
+  // Postgres history rows when configured — file wipe alone would miss them.
+  if (pgPool) {
+    pgPool.query('DELETE FROM history WHERE user_id IS NOT DISTINCT FROM $1', [uid])
+      .then(() => console.log('[Reset] Postgres history cleared'))
+      .catch((e: any) => console.error('[Reset] Postgres history clear failed:', e.message))
+  }
+  // 2) Learned user memories — server cwd root.
+  for (const f of ['feedback.json', 'feedback-samples.json', 'preference-weights.json', 'query-clusters.json', 'session-summaries.json', 'contradiction-log.json']) {
+    rm(path.join(cwdDir, f))
+  }
+  rm(path.join(cwdDir, 'task-graph'))
+  // Anima truths are conversation-derived (schema-anonymous, but the user asked for
+  // "not storing memories about things I no longer want stored" — they go too).
+  // POSIX unlink of an open SQLite file is safe: a live handle keeps writing to the
+  // unlinked inode and the next server start gets a fresh, empty db.
+  rm(path.join(cwdDir, 'anima'))
+  // 3) Learned user memories — HOME root (cross-session stores; both world.md files
+  //    exist and are written by DIFFERENT modules — the audit confirmed both are live).
+  for (const f of ['world.md', 'world', 'entity-graph.json', 'episodes.json', 'decisions.json', 'causal-memory.json', 'session-summaries.json', 'contradiction-log.json']) {
+    rm(path.join(homeDir, f))
+  }
+  // 4) In-memory: accumulated agent-session messages (the "model is still thinking
+  //    about the old chats" half) — abort in-flight tasks and drop every session.
+  const droppedSessions = clearAllSessions()
+  console.log(`[Reset] delete-all: ${cleared.length} stores cleared, ${droppedSessions} sessions dropped${failed.length ? `, FAILED: ${failed.join(', ')}` : ''}`)
+  res.json({ ok: failed.length === 0, cleared, failed, droppedSessions })
 })
 
 // ── Passive SSE stream for cross-device broadcast (Task 3) ────────────────────

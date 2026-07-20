@@ -226,7 +226,15 @@ function TriggerEditor({ value, onChange }: { value: Trigger; onChange: (t: Trig
   const [time, setTime] = useState(value.kind === 'daily' || value.kind === 'weekly' ? value.time : '08:00')
   const [day, setDay] = useState(value.kind === 'weekly' ? value.day : 1)
   const [minutes, setMinutes] = useState(value.kind === 'interval' ? value.minutes : 120)
-  const [onceAt, setOnceAt] = useState('')
+  // Editing an existing 'once' trigger must seed the datetime field — an empty init
+  // emitted null and Row.save() silently dropped the trigger patch (the "my edit
+  // didn't stick" bug). datetime-local wants local time, not the UTC ISO string.
+  const [onceAt, setOnceAt] = useState(() => {
+    if (value.kind !== 'once') return ''
+    const d = new Date(value.at)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  })
 
   useEffect(() => {
     if (kind === 'interval') onChange(minutes >= 1 ? { kind, minutes } : null)

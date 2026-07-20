@@ -1933,6 +1933,62 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21c (cont.91 — UI overhaul: widget board on Mission Control, clean splash, chat deletion + forget-me, agent follow-up threading)
+User direction: widgets belong on Mission Control (interactable, add/remove/rearrange), NOT the
+splash; splash must be clean; "follow up with agent" must continue the nested convo instead of
+spawning a memory-less new chat; chats need per-chat delete + a confirmed delete-all that also
+resets learned user memories. All five landed, browser-verified live (vite :5180 + the running
+backend, test-user JWT — never the real account).
+- **Mission Control widget board** (`src/MissionWidgets.tsx`, mounted in `AgentMissionControl.tsx`
+  behind a new Overview | Agents header segment): inbox / calendar / open-PRs / automation-results /
+  scheduled widgets, each differentiated (color, per-widget ask chip that prefills chat), reorder
+  via ◂ ▸, remove via X, add-chips for absent widgets, layout persisted (`crucible_mc_widgets`
+  localStorage; verified across reload). Honest empty states point to Connections. Polls every 45s
+  (Home's fetch-once staleness bug does not carry over). Gmail rows open the in-app reader; PR rows
+  are real links now (`ConnectionWidgets.tsx` — p.url was dead data, rows unclickable).
+- **Clean splash** (`HomeSurface.tsx` rewrite): greeting + date + (only when live) the agents-working
+  card + one quiet "Your day is on Mission Control" door. All tiles/digest/schedule REMOVED from the
+  empty-chat page. First-run identity splash unchanged.
+- **Agent follow-up threading** (`AgentMissionControl.tsx`, `App.tsx`, `chat/core.tsx`): new
+  `Round.followUpOf` links a steer/clarification reply into the followed-up round's thread. Mission
+  Control now groups rounds into THREADS — one roster card per thread ("N turns" meta), workspace
+  stacks the whole exchange (compact prior turns + full latest), `sendSteer` ALWAYS continues the
+  selected thread (`onReply(t, anchorId)`) — the old behavior called onLaunch() and spawned a
+  disconnected card. send() builds the follow-up's history by walking the followUpOf chain
+  (agent.final fallback for clarification turns), and anchored follow-ups bypass the 4-char floor
+  ("yes"/"ok" no longer silently dropped). Steer input is honestly DISABLED while a run streams
+  (send() drops input when thinking — the old placeholder pretended otherwise). Live-verified:
+  3-turn thread stayed one card ("2 turns · …" → 3 turns), auto-switch to Agents on live runs.
+- **Chat deletion + forget-me** (`HistoryTabView.tsx`, `SidebarRail.tsx`, `ui.tsx` ConfirmModal,
+  `server.ts`, `taskSession.ts`): hover-X per chat row (desktop rail swaps the timestamp slot; the
+  existing DELETE /api/conversations/:id finally has UI), red "Delete all chats" bubble + centered
+  confirm modal (shared ConfirmModal primitive). NEW `DELETE /api/conversations`: clears this
+  user's conversations/history/active-session files + Postgres history rows, the learned-user
+  stores in the server-cwd `.crucible` (feedback, preference-weights, feedback-samples,
+  query-clusters, session-summaries, contradiction-log, task-graph, anima) AND the HOME
+  `~/.crucible` cross-session memories (both world.md roots, entity-graph, episodes, decisions,
+  causal-memory) — per the 17-store audit, only conversations had ANY delete path before. Also
+  `clearAllSessions()` drops in-memory agent-session messages (aborting in-flight tasks).
+  google-tokens / users.json / push-subscriptions deliberately untouched (deleting chats must not
+  disconnect accounts). Live-verified end-to-end with a test user (real memories backed up +
+  restored; UI resets to first-run splash, "No conversations yet").
+- **Engine: noncode follow-ups get history** (`agent/synthDriver.ts`): the offline driver's
+  `solveNonCodeTurn` call site dropped the thread — a bare "why?" follow-up reached the research
+  DAG as a context-free keyword and retrieved a Wikipedia disambiguation dump of songs titled
+  "Why" (live repro). solveNonCodeTurn always HAD full history plumbing; the prior turns are now
+  paired out of `messages` and passed. (tsc-verified; live routing to that path is nondeterministic.)
+- **Page sweep fixes**: Connections' Gmail rows now open the reader (were inert only on that page);
+  "0 active" chip no longer shows a healthy green dot when nothing is connected; AutomationsView
+  TriggerEditor seeds the datetime field when editing an existing 'once' trigger (empty init emitted
+  null → Row.save() silently dropped the trigger patch).
+- **KNOWN (new repro, engine-side, NOT fixed here)**: on the swapped qwen head, trivial Q&A through
+  the Layer-2 ReAct loop can ship tool noise as the answer — "Answer in one sentence: what is a
+  crucible?" ran one `run` tool and finished with literally "exit 0". The loop-reliability /
+  implicit-intent planner item now has a concrete minimal repro.
+- Deployment note discovered while verifying: the LIVE backend's cwd is
+  `~/Library/Application Support/crucible-local` (Electron), not the repo — per-user data lives
+  THERE; the repo `.crucible` only serves dev runs. The reset endpoint correctly uses process.cwd().
+
 ### 2026-07-21b (cont.90 — HEAD MODEL SWAP: Apple FM → qwen2.5-1.5b, and the dylib bug that hid it)
 The user's standing decision (cont.87, 2026-07-16: "Apple FM path paused — more debugging overhead
 than value") had been benched but never actually wired: qwen2.5-1.5b was proven (cont.89) to beat

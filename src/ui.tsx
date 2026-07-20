@@ -78,6 +78,63 @@ export function GhostButton({ children, onClick, title, active, style }: {
   )
 }
 
+/** Centered destructive-action confirmation — fixed overlay, blur backdrop, red confirm.
+ *  One shared primitive so History (mobile) and the sidebar rail (desktop) render the
+ *  exact same "Are you sure?" instead of drifting copies. */
+export function ConfirmModal({ title, body, confirmLabel, busy, onConfirm, onCancel }: {
+  title: string
+  body: string
+  confirmLabel: string
+  /** True while the destructive call is in flight — disables both buttons. */
+  busy?: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  return (
+    <div
+      onClick={() => !busy && onCancel()}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 400, display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'rgba(8,8,12,0.6)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)',
+        animation: 'fadeIn 0.16s var(--ease)',
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: 'min(400px, calc(100% - 48px))', borderRadius: 18, padding: '22px 22px 18px',
+          background: '#16161e', border: '1px solid rgba(255,255,255,0.09)',
+          boxShadow: '0 24px 80px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column', gap: 10,
+          animation: 'panelUp 0.2s var(--ease)',
+        }}
+      >
+        <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--c-text)' }}>{title}</span>
+        <span style={{ fontSize: 12, color: 'var(--c-dim)', lineHeight: 1.55 }}>{body}</span>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            style={{
+              flex: 1, padding: '10px 0', borderRadius: 12, cursor: busy ? 'default' : 'pointer', fontFamily: 'inherit',
+              background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.09)',
+              color: '#c8c8da', fontSize: 12.5, fontWeight: 600,
+            }}
+          >Cancel</button>
+          <button
+            onClick={onConfirm}
+            disabled={busy}
+            style={{
+              flex: 1, padding: '10px 0', borderRadius: 12, cursor: busy ? 'default' : 'pointer', fontFamily: 'inherit',
+              background: 'rgba(248,113,113,0.16)', border: '1px solid rgba(248,113,113,0.45)',
+              color: '#fca5a5', fontSize: 12.5, fontWeight: 700,
+            }}
+          >{busy ? 'Deleting…' : confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Tiny status chip: dot + label. */
 export function StatusChip({ color, children, pulse }: { color: string; children: ReactNode; pulse?: boolean }) {
   return (

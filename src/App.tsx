@@ -14,7 +14,6 @@ import AgentMissionControl from './AgentMissionControl'
 import AutomationsView from './AutomationsView'
 import ConnectionsView from './ConnectionsView'
 import HomeSurface from './HomeSurface'
-import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
@@ -76,8 +75,6 @@ export default function App() {
   // as Mission Control: chat stays mounted and streaming underneath.
   const [automationsOpen, setAutomationsOpen] = useState(false)
   const [connectionsOpen, setConnectionsOpen] = useState(false)
-  // Run detail opened from the Home surface (page overlays own their own instance).
-  const [homeOpenRun, setHomeOpenRun] = useState<RunRef | null>(null)
   const [composerExpandOpen, setComposerExpandOpen] = useState(false)
   // ── Composer attachments — files the user uploads into the workspace sandbox via the
   // paperclip button. Each send prepends a note referencing them so the agent knows they
@@ -510,13 +507,30 @@ export default function App() {
   // the composer with the run's context, and hand focus to the user. Prefill, not send —
   // acting on the assistant's output stays a user decision.
   const followUpInChat = useCallback((text: string) => {
-    setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false); setHomeOpenRun(null)
+    setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false)
     setTab('chat')
     setInput(text)
     requestAnimationFrame(() => {
       const el = textareaRef.current
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
     })
+  }, [])
+  // A chat was deleted from History/the rail — drop its rounds; if it's the open
+  // panel, hand the user a fresh conversation instead of a ghost of the deleted one.
+  const handleChatDeleted = useCallback((id: string) => {
+    setAllRounds(prev => prev.filter(r => (r.convId ?? conversationIdRef.current) !== id))
+    if (conversationIdRef.current === id) {
+      setConversationId('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))
+    }
+    setHistRefresh(x => x + 1)
+  }, [])
+  // Delete-all (chats + learned memories, server-side) — reset the client to first-run
+  // shape: no rounds, fresh conversation, no resumable-task pointers.
+  const handleAllChatsDeleted = useCallback(() => {
+    setAllRounds([])
+    setConversationId('conv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8))
+    try { localStorage.removeItem('crucible_active_task'); localStorage.removeItem('crucible_has_sent') } catch {}
+    setHistRefresh(x => x + 1)
   }, [])
   // Ref holds the lock synchronously — never stale inside effects or rAF callbacks.
   // State is only for showing/hiding the scroll-to-bottom button (UI only).
@@ -1123,12 +1137,14 @@ export default function App() {
     } catch { if (voiceModeRef.current) exitVoiceMode(); haptic('heavy') }   // mic permission denied / no device
   }
 
-  const send = async (overrideMessage?: string, modeOverride?: string, ensembleConfirmed = false, displayText?: string) => {
+  const send = async (overrideMessage?: string, modeOverride?: string, ensembleConfirmed = false, displayText?: string, opts?: { followUpOf?: string }) => {
     // In Remote Brain mode every send goes straight to the Mac agent loop.
     if (remoteBrain && !modeOverride) modeOverride = 'agent'
     if (thinking) return
     const typed = (overrideMessage ?? input).trim()
-    if (!typed || typed.length < 4) return
+    // The 4-char floor blocks accidental garbage sends, but a follow-up to an agent is
+    // often legitimately tiny ("yes", "ok") — an anchored follow-up only needs to be non-empty.
+    if (!typed || (typed.length < 4 && !opts?.followUpOf)) return
     // Fold any workspace attachments into the message the SERVER sees (so the agent knows the
     // files exist and where to read them) while keeping the VISIBLE transcript text clean.
     const attachNote = attachments.length
@@ -1161,8 +1177,8 @@ export default function App() {
     prewarmTokenRef.current = null
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
     const attachedNames = attachments.map(a => a.name)   // closure value — unaffected by setAttachments([]) above
-    const nextRounds = [...rounds, emptyRound(roundId, visibleText, convId, attachedNames)]
-    setAllRounds(prev => [...prev, emptyRound(roundId, visibleText, convId, attachedNames)])
+    const nextRounds = [...rounds, emptyRound(roundId, visibleText, convId, attachedNames, opts?.followUpOf)]
+    setAllRounds(prev => [...prev, emptyRound(roundId, visibleText, convId, attachedNames, opts?.followUpOf)])
     // Record this as the active server-owned task so that if the tab is backgrounded /
     // reloaded mid-run, we can reconnect to its buffered stream and replay on return.
     // Store the DISPLAY text — reconnect rebuilds the visible round from this, and the raw
@@ -1213,10 +1229,33 @@ export default function App() {
           // BYOK: user-supplied provider keys, sent only when actually running ensemble.
           // The server uses these INSTEAD of any bundled/env key for the external fan-out.
           byokKeys: (modeOverride ?? mode) === 'quorum' ? ensemble.keyPayload : undefined,
-          history: rounds.slice(-6).filter(r => r.synthesis).map(r => ({
-            user: r.userMessage,
-            assistant: r.synthesis
-          }))
+          // Anchored follow-up (Mission Control steer): history is the FOLLOWED-UP thread —
+          // walk the followUpOf chain back to its root so the agent gets exactly the
+          // conversation being continued, not whatever happens to be the last 6 rounds.
+          // Agent rounds fall back to agent.final for turns whose synthesis was suppressed
+          // (clarification turns keep the answer only in the agent state).
+          history: (() => {
+            if (opts?.followUpOf) {
+              const byId = new Map(rounds.map(r => [r.id, r]))
+              const chain: typeof rounds = []
+              let cur = byId.get(opts.followUpOf)
+              const seen = new Set<string>()
+              while (cur && !seen.has(cur.id)) {
+                seen.add(cur.id)
+                chain.unshift(cur)
+                cur = cur.followUpOf ? byId.get(cur.followUpOf) : undefined
+              }
+              const threaded = chain
+                .map(r => ({ user: r.userMessage, assistant: r.synthesis || r.agent?.final || '' }))
+                .filter(h => h.assistant)
+                .slice(-6)
+              if (threaded.length > 0) return threaded
+            }
+            return rounds.slice(-6).filter(r => r.synthesis).map(r => ({
+              user: r.userMessage,
+              assistant: r.synthesis
+            }))
+          })()
         }),
         signal: abortRef.current[convId]!.signal,
       })
@@ -2050,6 +2089,8 @@ export default function App() {
               setTab('chat')
             }}
             onRestore={restoreConversation}
+            onDeleted={handleChatDeleted}
+            onDeletedAll={handleAllChatsDeleted}
             refreshKey={histRefresh}
             // Mission Control has its own run list — collapse to an icon rail so the
             // workspace gets the screen instead of a redundant history column.
@@ -2167,7 +2208,7 @@ export default function App() {
                 <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
               </svg>
             </button>
-            <HistoryTabView onRestore={restoreConversation} />
+            <HistoryTabView onRestore={restoreConversation} onDeleted={handleChatDeleted} onDeletedAll={handleAllChatsDeleted} />
           </div>
         </>
       )}
@@ -2184,9 +2225,13 @@ export default function App() {
           // Force the real agent loop (tools, verify, artifacts) — a plain chat send can
           // answer a "create X" brief with hallucinated prose and zero tool calls.
           onLaunch={text => { void send(text, 'agent') }}
-          onReply={text => { void send(text, 'agent') }}
+          // Anchored reply: continues the selected agent's thread (followUpOf links the new
+          // round into the same Mission Control card and threads the run's own history).
+          onReply={(text, anchorRoundId) => { void send(text, 'agent', false, undefined, anchorRoundId ? { followUpOf: anchorRoundId } : undefined) }}
           onClose={() => setAgentsOpen(false)}
           onFollowUp={followUpInChat}
+          onAsk={followUpInChat}
+          onOpenConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(true) }}
         />
       )}
 
@@ -2198,15 +2243,6 @@ export default function App() {
       {/* Connections — external capability cards with live service widgets. */}
       {connectionsOpen && (
         <ConnectionsView onClose={() => setConnectionsOpen(false)} onFollowUp={followUpInChat} />
-      )}
-
-      {/* Run detail opened from the Home surface (the page overlays render their own). */}
-      {homeOpenRun && (
-        <RunDetailOverlay
-          runRef={homeOpenRun}
-          onClose={() => setHomeOpenRun(null)}
-          onFollowUp={t => { setHomeOpenRun(null); followUpInChat(t) }}
-        />
       )}
 
       <>
@@ -2720,14 +2756,11 @@ export default function App() {
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           paddingBottom: Math.min(inputBarHeight + 24, 120), animation: 'fadeIn 0.5s ease', overflow: 'hidden auto',
         }}>
-          {/* Home: the assistant's day (digest, live runs, schedule) when there is one;
-              HomeSurface falls back to the identity splash below on a truly empty account. */}
+          {/* Home: clean greeting + one door to Mission Control (the day's widgets live
+              THERE now); HomeSurface falls back to the identity splash below on first run. */}
           <HomeSurface
             allRounds={allRounds}
             onOpenAgents={() => setAgentsOpen(true)}
-            onOpenAutomations={() => setAutomationsOpen(true)}
-            onOpenRun={setHomeOpenRun}
-            onAsk={followUpInChat}
             splash={
           <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
           {/* Quiet branded splash: the vessel mark over a slow ember glow — the product's

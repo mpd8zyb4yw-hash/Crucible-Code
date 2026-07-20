@@ -164,6 +164,10 @@ export interface Round {
    *  streaming while another is displayed); the UI renders the convId-filtered view. */
   convId?: string
   userMessage: string
+  /** Round id this turn follows up on (Mission Control steer box). Links agent rounds into
+   *  one visible thread: the roster shows a single card per thread and the workspace stacks
+   *  the whole exchange, instead of every follow-up spawning a disconnected new card. */
+  followUpOf?: string
   /** File names attached by the user this turn — rendered as chips on the sent bubble so an
    *  attachment turn is visually distinct from a plain message. */
   attachments?: string[]
@@ -358,9 +362,9 @@ export function agentReducer(state: AgentState | null | undefined, ev: any): Age
   }
 }
 
-export function emptyRound(id: string, userMessage: string, convId?: string, attachments?: string[]): Round {
+export function emptyRound(id: string, userMessage: string, convId?: string, attachments?: string[], followUpOf?: string): Round {
   return {
-    id, convId, userMessage, attachments,
+    id, convId, userMessage, attachments, followUpOf,
     models: [], synthesisModelId: '', promptType: '', complexity: 'complex', cached: false,
     responses: {}, done: {}, scores: {},
     expandedModel: null,

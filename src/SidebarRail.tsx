@@ -5,7 +5,8 @@
 // full-screen history drawer (this component is never mounted when isMobile).
 
 import { memo, useEffect, useMemo, useState } from 'react'
-import { apiFetch } from './api'
+import { API_BASE, apiFetch } from './api'
+import { ConfirmModal } from './ui'
 import type { CrucibleTab } from './NavRail'
 
 export type HistorySession = { id: string; title: string; mode: string; snippet: string; updatedAt: number; roundCount: number }
@@ -24,12 +25,16 @@ const MODE_COLOR: Record<string, string> = { local: 'var(--c-on-device)', code: 
 
 // One history row. The reference primitive for the rail's visual language:
 // 13px title, single-line ellipsis, hover lift via the shared .rail-sliver rule,
-// active = filled bg + accent edge (see index.css).
-function Sliver({ session, active, onClick }: { session: HistorySession; active: boolean; onClick: () => void }) {
+// active = filled bg + accent edge (see index.css). Hover swaps the timestamp for
+// a quiet delete X — same slot, so rows never jump.
+function Sliver({ session, active, onClick, onDelete }: { session: HistorySession; active: boolean; onClick: () => void; onDelete?: () => void }) {
+  const [hover, setHover] = useState(false)
   return (
     <div
       className={`rail-sliver${active ? ' rail-sliver-active' : ''}`}
       onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
       title={session.snippet || session.title}
     >
       <span style={{ width: 5, height: 5, borderRadius: '50%', background: MODE_COLOR[session.mode] ?? 'var(--c-dim-deep)', flexShrink: 0 }} />
@@ -38,11 +43,28 @@ function Sliver({ session, active, onClick }: { session: HistorySession; active:
         color: active ? 'var(--c-text)' : '#c2c2d4',
         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>{session.title || 'Untitled'}</span>
-      <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
-        {new Date(session.updatedAt).toDateString() === new Date().toDateString()
-          ? new Date(session.updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-          : new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-      </span>
+      {hover && onDelete ? (
+        <button
+          aria-label={`Delete "${session.title || 'Untitled'}"`}
+          title="Delete this chat"
+          onClick={e => { e.stopPropagation(); onDelete() }}
+          style={{
+            width: 18, height: 18, borderRadius: 6, flexShrink: 0, cursor: 'pointer', padding: 0,
+            background: 'rgba(248,113,113,0.10)', border: '1px solid rgba(248,113,113,0.3)', color: '#f87171',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <svg width="9" height="9" viewBox="0 0 14 14" fill="none">
+            <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+        </button>
+      ) : (
+        <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+          {new Date(session.updatedAt).toDateString() === new Date().toDateString()
+            ? new Date(session.updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+            : new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+        </span>
+      )}
     </div>
   )
 }
@@ -63,7 +85,7 @@ function NavRow({ active, label, onClick, children, title, iconOnly }: {
   )
 }
 
-function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen, onToggleAutomations, connectionsOpen, onToggleConnections, conversationId, onNewChat, onRestore, refreshKey, collapsed }: {
+function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen, onToggleAutomations, connectionsOpen, onToggleConnections, conversationId, onNewChat, onRestore, onDeleted, onDeletedAll, refreshKey, collapsed }: {
   tab: CrucibleTab
   setTab: (t: CrucibleTab) => void
   agentsOpen: boolean
@@ -75,6 +97,10 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen,
   conversationId: string
   onNewChat: () => void
   onRestore: (session: HistorySession) => void
+  /** A single chat was deleted — App drops its rounds/panel if it's open. */
+  onDeleted?: (id: string) => void
+  /** Everything was deleted (chats + learned memories) — App resets to a fresh state. */
+  onDeletedAll?: () => void
   // Bumped by App when a round finishes saving, so the list picks up new titles.
   refreshKey: number
   /** Slim icon-only mode — used while Mission Control is open, whose own run list makes
@@ -82,6 +108,8 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen,
   collapsed?: boolean
 }) {
   const [sessions, setSessions] = useState<HistorySession[]>([])
+  const [confirmAll, setConfirmAll] = useState(false)
+  const [wiping, setWiping] = useState(false)
 
   useEffect(() => {
     let dead = false
@@ -91,6 +119,24 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen,
       .catch(() => {})
     return () => { dead = true }
   }, [refreshKey])
+
+  const deleteOne = (id: string) => {
+    setSessions(prev => prev.filter(s => s.id !== id))
+    apiFetch(`${API_BASE}/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE', credentials: 'include' })
+      .catch(() => {})
+    onDeleted?.(id)
+  }
+
+  const deleteAll = async () => {
+    setWiping(true)
+    try {
+      await apiFetch(`${API_BASE}/api/conversations`, { method: 'DELETE', credentials: 'include' })
+      setSessions([])
+      onDeletedAll?.()
+    } catch { /* server logs the failure; the list refetches on next refreshKey bump */ }
+    setWiping(false)
+    setConfirmAll(false)
+  }
 
   const now = Date.now()
   const buckets = useMemo(() => {
@@ -181,11 +227,39 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen,
               textTransform: 'uppercase', padding: '6px 8px 3px',
             }}>{bucket.label}</span>
             {bucket.items.map(s => (
-              <Sliver key={s.id} session={s} active={s.id === conversationId} onClick={() => onRestore(s)} />
+              <Sliver key={s.id} session={s} active={s.id === conversationId} onClick={() => onRestore(s)} onDelete={() => deleteOne(s.id)} />
             ))}
           </div>
         ))}
+        {/* Delete-all — quiet red row at the end of history; always confirms first. */}
+        {sessions.length > 0 && (
+          <button
+            onClick={() => setConfirmAll(true)}
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+              margin: '2px 2px 6px', padding: '9px 0', borderRadius: 12, cursor: 'pointer', fontFamily: 'inherit',
+              background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.28)',
+              color: '#f1a0a0', fontSize: 11.5, fontWeight: 700, flexShrink: 0,
+              transition: 'background var(--dur-fast) var(--ease)',
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.14)' }}
+            onMouseLeave={e => { e.currentTarget.style.background = 'rgba(248,113,113,0.08)' }}
+          >
+            Delete all chats
+          </button>
+        )}
       </div>
+      )}
+
+      {confirmAll && (
+        <ConfirmModal
+          title="Delete all chats?"
+          body="Every conversation is permanently deleted, and the assistant forgets what it learned about you from them — preferences, remembered facts, and feedback. This can't be undone."
+          confirmLabel="Delete everything"
+          busy={wiping}
+          onConfirm={deleteAll}
+          onCancel={() => setConfirmAll(false)}
+        />
       )}
 
       {/* Bottom: settings */}

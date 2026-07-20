@@ -1423,8 +1423,26 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
       // No TS/JS file in goal — route through the offline intelligence stack:
       // research DAG → FM ReAct (tool-using) → FM direct answer.
       // Only escalates if Apple FM daemon is down entirely.
-      debugBus.emit('agent', 'offline_noncode_attempt', { goal: goal.slice(0, 80) }, { severity: 'info' })
-      const answer = await solveNonCodeTurn(goal, projectPath)
+      //
+      // THREAD THE HISTORY (2026-07-21): solveNonCodeTurn has full history plumbing —
+      // back-reference detection, history-aware grounding/ReAct/direct — but this call
+      // site dropped it, so a Mission Control follow-up like a bare "why?" reached the
+      // research DAG as a context-free keyword and retrieved garbage (the live repro:
+      // a Wikipedia disambiguation dump of songs titled "Why"). The prior turns are
+      // sitting right here in `messages`; pair them up and pass them through.
+      const priorTurns: ConvTurn[] = []
+      let pendingUser: string | null = null
+      for (const m of messages) {
+        const role = (m as { role?: string }).role
+        const content = String((m as { content?: unknown }).content ?? '')
+        if (role === 'user') pendingUser = content
+        else if (role === 'assistant' && pendingUser !== null && content.trim()) {
+          priorTurns.push({ user: pendingUser, assistant: content })
+          pendingUser = null
+        }
+      }
+      debugBus.emit('agent', 'offline_noncode_attempt', { goal: goal.slice(0, 80), priorTurns: priorTurns.length }, { severity: 'info' })
+      const answer = await solveNonCodeTurn(goal, projectPath, priorTurns.slice(-6))
       return { text: answer, toolCalls: [] }
     }
 

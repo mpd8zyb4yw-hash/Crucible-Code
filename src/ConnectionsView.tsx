@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Card, SectionLabel, GhostButton, PrimaryButton, StatusChip } from './ui'
 import { API_BASE, apiFetch, loginUrl } from './api'
 import { GmailWidget, CalendarWidget, GithubWidget, type GooglePreview, type GithubPreview } from './ConnectionWidgets'
+import EmailReader, { type MessageStub } from './EmailReader'
 
 interface Connection {
   id: string
@@ -33,7 +34,7 @@ const TRY_PROMPTS: Record<string, { label: string; prompt: string }> = {
   'mac': { label: 'Check this Mac', prompt: 'How much free disk space and memory does this Mac have right now? Anything worth cleaning up?' },
 }
 
-function ConnectionCard({ c, onChanged, onTry }: { c: Connection; onChanged: () => void; onTry?: (prompt: string) => void }) {
+function ConnectionCard({ c, onChanged, onTry, onOpenMessage }: { c: Connection; onChanged: () => void; onTry?: (prompt: string) => void; onOpenMessage?: (m: NonNullable<GooglePreview['gmail']>[number]) => void }) {
   const st = STATE_META[c.authState]
   const [testing, setTesting] = useState(false)
   const [checks, setChecks] = useState<Record<string, { ok: boolean; detail: string }> | null>(null)
@@ -107,7 +108,9 @@ function ConnectionCard({ c, onChanged, onTry }: { c: Connection; onChanged: () 
           ))}
         </div>
       )}
-      {preview?.gmail && <GmailWidget items={preview.gmail} />}
+      {/* Rows open the in-app reader here too — they were inert on this page while the
+          same widget opened messages on Home (now Mission Control); no silent dead rows. */}
+      {preview?.gmail && <GmailWidget items={preview.gmail} onOpenMessage={onOpenMessage} />}
       {preview?.calendar && <CalendarWidget items={preview.calendar} />}
       {ghPreview?.prs && <GithubWidget items={ghPreview.prs} />}
       {onTry && c.authState === 'connected' && TRY_PROMPTS[c.id] && (
@@ -153,6 +156,7 @@ export default function ConnectionsView({ onClose, onFollowUp }: {
 }) {
   const [list, setList] = useState<Connection[]>([])
   const [loaded, setLoaded] = useState(false)
+  const [reading, setReading] = useState<MessageStub | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -181,9 +185,12 @@ export default function ConnectionsView({ onClose, onFollowUp }: {
         borderBottom: '1px solid var(--c-hairline)',
       }}>
         <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--c-text)' }}>Connections</span>
-        {loaded && (
-          <StatusChip color="#4db89e">{list.filter(c => c.authState === 'connected').length} active</StatusChip>
-        )}
+        {loaded && (() => {
+          // A green dot next to "0 active" reads as healthy when nothing is connected —
+          // neutral gray until at least one connection is actually live.
+          const n = list.filter(c => c.authState === 'connected').length
+          return <StatusChip color={n > 0 ? '#4db89e' : '#55556a'}>{n} active</StatusChip>
+        })()}
         <div style={{ flex: 1 }} />
         <GhostButton onClick={onClose} title="Back to chat">Close</GhostButton>
       </div>
@@ -198,7 +205,7 @@ export default function ConnectionsView({ onClose, onFollowUp }: {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SectionLabel>Accounts & devices</SectionLabel>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(340px, 100%), 1fr))', gap: 12 }}>
-                {heroes.map(c => <ConnectionCard key={c.id} c={c} onChanged={() => void refresh()} onTry={onFollowUp} />)}
+                {heroes.map(c => <ConnectionCard key={c.id} c={c} onChanged={() => void refresh()} onTry={onFollowUp} onOpenMessage={setReading} />)}
               </div>
             </div>
           )}
@@ -230,6 +237,10 @@ export default function ConnectionsView({ onClose, onFollowUp }: {
           )}
         </div>
       </div>
+
+      {reading && (
+        <EmailReader stub={reading} onClose={() => setReading(null)} onDraftReply={onFollowUp} />
+      )}
     </div>
   )
 }
