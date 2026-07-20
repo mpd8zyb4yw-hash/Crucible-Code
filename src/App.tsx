@@ -2395,16 +2395,23 @@ export default function App() {
         WebkitAppRegion: 'drag',
       } as any}>
         {/* Wordmark lives in the sidebar rail on desktop — only mobile shows it here. */}
-        {isMobile && <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '-0.01em', color: '#e4e4ee', flexShrink: 0 }}>Crucible</span>}
         {/* Mobile navigation — the desktop left rail is hidden on phones, so its tabs
-            live here as a compact icon row (same handlers, edge-to-edge chat below). */}
+            live here as a compact icon row (same handlers, edge-to-edge chat below).
+            The "Crucible" wordmark is dropped on mobile: with Automations + Connections now
+            in the row too, the icons themselves carry the identity and the label only crowded
+            the bar (the exact complaint). Automations/Connections were previously unreachable
+            on a phone — they now toggle the same overlays SidebarRail drives on desktop. */}
         {isMobile && (
           <NavRail
             orientation="horizontal"
             tab={tab}
-            setTab={t => { if (t !== 'chat') setAgentsOpen(false); setTab(t) }}
+            setTab={t => { if (t !== 'chat') { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false) } setTab(t) }}
             agentsOpen={agentsOpen}
-            onToggleAgents={() => setAgentsOpen(o => { if (!o) setTab('chat'); return !o })}
+            onToggleAgents={() => { setAutomationsOpen(false); setConnectionsOpen(false); setAgentsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            automationsOpen={automationsOpen}
+            onToggleAutomations={() => { setAgentsOpen(false); setConnectionsOpen(false); setAutomationsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            connectionsOpen={connectionsOpen}
+            onToggleConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(o => { if (!o) setTab('chat'); return !o }) }}
           />
         )}
         {/* Top-bar overlap fix: on mobile widths this pill's full label plus the New Chat

@@ -37,11 +37,18 @@ function NavButton({ active, title, onClick, size = 38, children }: {
 // every keystroke anyway because it's a child of the same App component tree that owns
 // `input`. React.memo keeps it from re-rendering unless `tab`/`setTab` actually change —
 // a small, safe piece of the "typing latency" fix without touching the input wiring itself.
-function NavRail({ tab, setTab, agentsOpen, onToggleAgents, orientation = 'vertical' }: {
+function NavRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen, onToggleAutomations, connectionsOpen, onToggleConnections, orientation = 'vertical' }: {
   tab: CrucibleTab
   setTab: (t: CrucibleTab) => void
   agentsOpen: boolean
   onToggleAgents: () => void
+  // Automations + Connections are overlay surfaces (like Agents). On desktop they live in
+  // SidebarRail; on mobile the top-bar NavRail is the ONLY nav, so without these two the pages
+  // were simply unreachable on a phone. Optional so the desktop vertical rail is unchanged.
+  automationsOpen?: boolean
+  onToggleAutomations?: () => void
+  connectionsOpen?: boolean
+  onToggleConnections?: () => void
   // 'vertical' = the desktop 56px left rail. 'horizontal' = a compact icon row
   // embedded in the mobile top bar (no full-height chrome, no logo/spacer), so
   // phones get edge-to-edge chat with navigation up top instead of a left bar.
@@ -87,6 +94,22 @@ function NavRail({ tab, setTab, agentsOpen, onToggleAgents, orientation = 'verti
           <circle cx="8" cy="2.2" r="0.9" fill="currentColor" />
         </svg>
       </NavButton>
+      {onToggleAutomations && (
+        <NavButton size={btn} active={!!automationsOpen} title="Automations" onClick={onToggleAutomations}>
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
+            <path d="M8.5 1.5 3 9h4l-.5 5.5L13 7H9l-.5-5.5Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
+          </svg>
+        </NavButton>
+      )}
+      {onToggleConnections && (
+        <NavButton size={btn} active={!!connectionsOpen} title="Connections" onClick={onToggleConnections}>
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
+            <circle cx="4" cy="4" r="2" stroke="currentColor" strokeWidth="1.4" />
+            <circle cx="12" cy="12" r="2" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M5.5 5.5 10.5 10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+        </NavButton>
+      )}
       <NavButton size={btn} active={tab === 'history'} title="History" onClick={go('history')}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
           <circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.4" />
