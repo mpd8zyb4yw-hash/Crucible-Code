@@ -544,6 +544,8 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
   ]
 
   const toolsUsed: string[] = []
+  /** Tool calls actually executed this turn, keyed by tool + exact args → first result. */
+  const attempted = new Map<string, string>()
   let rounds = 0
 
   while (rounds < maxRounds) {
@@ -577,8 +579,25 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     const args = parsed.args ?? {}
     const tool = toolMap.get(toolName)
 
+    // Repeated-call guard. The weak head gets stuck re-issuing the SAME call when a tool comes
+    // back empty: live 2026-07-21, a run fired the identical `search {"query":"\"sum of 17 and
+    // 4\""}` six times, every one `search_all_backends_empty`, before finally answering from
+    // reasoning. The answer was right; six network round-trips and six of the eight rounds were
+    // burned re-asking a question that had already failed. Re-running a call whose args are
+    // byte-identical cannot produce new information within one turn, so replay the first result
+    // and tell the model plainly to change approach or answer.
+    const callKey = `${toolName}:${JSON.stringify(args)}`
+    const priorResult = attempted.get(callKey)
+
     let toolResult: string
-    if (!tool) {
+    if (priorResult !== undefined) {
+      debugBus.emit('agent', 'fm_react_repeat', { tool: toolName, args: JSON.stringify(args).slice(0, 100), rounds }, { severity: 'warn' })
+      toolResult =
+        `You ALREADY ran this exact call earlier in this turn and got:\n${priorResult.slice(0, 1200)}\n\n` +
+        'Repeating it cannot produce a different result. Either use a DIFFERENT tool, or the same ' +
+        'tool with MEANINGFULLY different arguments, or — if you already have what you need, or ' +
+        'the tool simply has nothing on this — give FINAL_ANSWER now using your own reasoning.'
+    } else if (!tool) {
       toolResult = `Error: Unknown tool "${toolName}". Available: ${[...toolMap.keys()].join(', ')}`
     } else {
       try {
@@ -589,6 +608,8 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
         toolResult = `Tool error: ${e?.message ?? e}`
       }
     }
+    // Record only REAL executions, so the replay text above is always a genuine tool result.
+    if (priorResult === undefined) attempted.set(callKey, toolResult)
 
     // Feed result back to FM
     messages.push({ role: 'assistant', content: rawResponse })
