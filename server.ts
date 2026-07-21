@@ -3765,6 +3765,29 @@ app.post('/api/chat', async (req, res) => {
     try {
     let handled = false
 
+    // ── W1 loop-entry forensics (GAP_CLOSURE.md) ───────────────────────────────
+    // Every terminal-or-fall-through decision between task receipt and the first
+    // model-driven proposal emits a structured, reason-coded event. Bail-without-reason
+    // is the single most repeated defect in this codebase; the coding bench reads these
+    // so an `iters: 0` outcome is always attributable to a NAMED stage+reason instead
+    // of being a silent mystery. Reasons follow the W1 vocabulary: no-spec,
+    // spec-extract-failed, no-acceptance-cases, budget-exhausted, threw — plus the
+    // terminal non-loop outcomes (certified-no-iterate, best-effort-draft-no-write,
+    // catalog-no-iterate) and the success case `entered`.
+    const loopEntry = (stage: string, reason: string, detail?: string) => {
+      try { send({ type: 'loop_entry', stage, reason, detail: detail?.slice(0, 200) }) } catch { /* stream gone */ }
+      debugBus.emit('agent', 'loop_entry', { stage, reason, detail: detail?.slice(0, 200) }, { severity: 'info' })
+    }
+    // Map a VGR abstain onto the W1 reason vocabulary from its status+detail.
+    const vgrReason = (status: string, detail: string): string => {
+      const d = detail.toLowerCase()
+      if (status === 'aborted') return 'budget-exhausted'
+      if (/no spec|no goal|unparseable|could not extract/.test(d)) return 'no-spec'
+      if (/no.*(case|example|test)|case.*(none|zero)/.test(d)) return 'no-acceptance-cases'
+      if (/spec/.test(d)) return 'spec-extract-failed'
+      return status // abstained | declined | decompose-failed — honest pass-through
+    }
+
     // ── PURE-CODE SYNTHESIS FAST-PATH — "Crucible IS the model" ────────────────
     // Before invoking ANY model (free pool or on-device), try to produce the deliverable
     // with PURE CODE and ZERO model inference, via the no-model cascade:
@@ -3808,6 +3831,7 @@ app.post('/api/chat', async (req, res) => {
           if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
           historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-synth', models: ['crucible-synth'], synthesis: answer })
           handled = true
+          loopEntry('synth', 'catalog-no-iterate', `verified via ${how} — zero model inference; the iterate loop was correctly never entered`)
         }
 
         // Phase F — honest-escalation UX: tell the client WHY we're falling through.
@@ -3835,6 +3859,7 @@ app.post('/api/chat', async (req, res) => {
         }
       } catch (synthErr: any) {
         debugBus.emit('agent', 'synth_error', { error: String(synthErr?.message ?? synthErr).slice(0, 120) }, { severity: 'warn' })
+        loopEntry('synth', 'threw', String(synthErr?.message ?? synthErr))
         // fall through to the model-driven loop
       }
     }
@@ -3898,6 +3923,7 @@ app.post('/api/chat', async (req, res) => {
                 if (outcome.historyType) historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: outcome.historyType, models: [`crucible-${outcome.kind}`], synthesis: outcome.answer })
               }
               handled = true
+              loopEntry('refactor', 'certified-no-iterate', `deterministic ${outcome.kind} refactor — the iterate loop was correctly never entered`)
             }
           }
         }
@@ -3999,6 +4025,7 @@ app.post('/api/chat', async (req, res) => {
               if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
               historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr-multifile', models: ['crucible-vgr'], synthesis: answer })
               handled = true
+              loopEntry('vgr-multifile', 'certified-no-iterate', `certified ${rels.length}-file graph — the iterate loop was correctly never entered`)
             }
           } else {
             send({ type: 'thought', text: `VGR multi-file could not certify (${mf.status}) — trying single-file, then handing off.` })
@@ -4150,6 +4177,7 @@ app.post('/api/chat', async (req, res) => {
           if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
           historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr', models: ['crucible-vgr'], synthesis: answer })
           handled = true
+          loopEntry('vgr', 'certified-no-iterate', `certified ${rel} — the iterate loop was correctly never entered`)
         } else if (vgr) {
           // ── KEEP-K best-effort tier ────────────────────────────────────────────────────
           // Nothing certified. Before falling through, ask the verifier what the best kept
@@ -4185,13 +4213,18 @@ app.post('/api/chat', async (req, res) => {
             if (chatSessionId) completeTask(chatSessionId, answer.slice(0, 200), [])
             historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'agent-vgr-best-effort', models: ['crucible-vgr'], synthesis: answer })
             handled = true
+            // TERMINAL WITHOUT A WRITE — the classic silent-iters:0 shape the bench used
+            // to report as an unexplained failure (W1's original three ghosts).
+            loopEntry('vgr', 'best-effort-draft-no-write', `draft shown (${cov}), nothing written, iterate loop never entered`)
           } else {
             // Honest: could not CERTIFY a solution → do not ship a guess; fall through.
             send({ type: 'thought', text: `VGR could not certify a solution (${vgr.status}: ${vgr.detail}) — handing off without shipping unverified code.` })
+            loopEntry('vgr', vgrReason(vgr.status, vgr.detail ?? ''), `${vgr.status}: ${vgr.detail ?? ''} — falling through to the model-driven loop`)
           }
         }
       } catch (vgrErr: any) {
         debugBus.emit('agent', 'vgr_error', { error: String(vgrErr?.message ?? vgrErr).slice(0, 120) }, { severity: 'warn' })
+        loopEntry('vgr', 'threw', String(vgrErr?.message ?? vgrErr))
         // fall through to the model-driven loop — never blocks the request
       }
     }
@@ -4259,6 +4292,7 @@ app.post('/api/chat', async (req, res) => {
           finally { _consultDepth-- }
         }
         send({ type: 'agent_meta', event: 'router_start' })
+        loopEntry('meta-router', 'entered', 'decomposing into a specialist DAG; subtask loops iterate from here')
         debugBus.emit('agent', 'metarouter_route', { goal: message.slice(0, 80) }, { severity: 'info' })
         const metaResult = await runMetaRouter({
           goal: message, projectPath, taskId: metaTaskId,
@@ -4310,6 +4344,7 @@ app.post('/api/chat', async (req, res) => {
             if (fmAns) return fmAns
             return driverComplete(msgs, cls)
           }
+      loopEntry('planned', 'entered')
       const result = await runPlannedTask({
         goal,
         projectPath,
@@ -4346,6 +4381,7 @@ app.post('/api/chat', async (req, res) => {
       patchActiveSessionRound(chatUser, chatRoundId, { synthesis: finalText, synthesisDone: true, synthStreaming: false })
     } else {
       const verifier = makeVerifier({ command: req.body.verifyCommand, goal: agentGoal })
+      loopEntry('loop', 'entered')
       const result = await runAgentLoop({
         goal: agentGoal,
         projectPath,

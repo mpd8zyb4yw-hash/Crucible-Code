@@ -25,6 +25,9 @@ import os from 'os'
 import crypto from 'crypto'
 import { spawnSync } from 'child_process'
 import { fileURLToPath } from 'url'
+import { toBenchTasks } from './coding-bench-ext'
+import { toMinedBenchTasks, auditMinedCandidate } from './coding-bench-ext/minedHarness'
+import { formatRate, minDetectableDelta } from './benchStats'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CODE_DIR = path.resolve(HERE, '../..')          // crucible-local root (has tsx/tsc)
@@ -603,6 +606,16 @@ adds several transactions across categories, and asserts balance() and categoryT
   },
 ]
 
+// ── W42 enrollment: the certified extended corpus + the git-mined tasks ────────────
+// This is the two-line enrollment GAP_CLOSURE.md/W1 gates the first honest baseline on.
+// Ext tasks audit exactly like the originals (hidden suite synced to coding-bench/<id>.hidden.ts
+// by __taskcorpus_bench.ts). Mined tasks are audited by auditMinedCandidate instead —
+// the agent-edited target file is verified against the pinned historical suite, staged
+// on the parent-commit snapshot (see minedHarness.ts).
+TASKS.push(...toBenchTasks())
+TASKS.push(...toMinedBenchTasks())
+const MINED_IDS = new Set(toMinedBenchTasks().map(t => t.id))
+
 // ── SSE fire: send the task to the live agent, collect the outcome ─────────────────
 interface FireResult {
   done: boolean; finalText: string; agentError: string | null
@@ -612,14 +625,21 @@ interface FireResult {
   // A task can only ever be a valid signal on generative capability when this is 'generated' —
   // 'catalog' GREENs prove catalog coverage, not the offline agent's ability to write new code.
   synthPath: 'catalog' | 'generated' | null
+  // W1 loop-entry forensics: every reason-coded stage event the server emitted between
+  // task receipt and the first proposal. An iters:0 outcome MUST be explained by one of
+  // these — an empty list on a zero-iteration failure is itself a named defect.
+  loopEntries: Array<{ stage: string; reason: string; detail?: string }>
+  timedOut: boolean
 }
 async function fireTask(task: Task, dir: string, token: string): Promise<FireResult> {
   const t0 = Date.now()
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), PER_TASK_TIMEOUT_MS)
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort() }, PER_TASK_TIMEOUT_MS)
   let done = false, finalText = '', agentError: string | null = null
   let iters = 0, events = 0, selfTestPassed: boolean | null = null
   let synthPath: 'catalog' | 'generated' | null = null
+  const loopEntries: Array<{ stage: string; reason: string; detail?: string }> = []
   try {
     const res = await fetch(`${API}/api/chat`, {
       method: 'POST',
@@ -627,7 +647,7 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
       body: JSON.stringify({ message: task.prompt, mode: 'agent', device: 'desktop', projectPath: dir, agentMode: true }),
       signal: ctrl.signal,
     })
-    if (!res.ok) { agentError = `HTTP ${res.status}`; return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0 } }
+    if (!res.ok) { agentError = `HTTP ${res.status}`; return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0, synthPath, loopEntries, timedOut } }
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -649,6 +669,13 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
           if (ev.type === 'final' && typeof ev.text === 'string') { finalText = ev.text; done = true }
           if (ev.type === 'synth_match') synthPath = 'catalog'
           if (ev.type === 'synth_miss') synthPath = 'generated'
+          if (ev.type === 'loop_entry' && typeof ev.stage === 'string' && typeof ev.reason === 'string') {
+            loopEntries.push({ stage: ev.stage, reason: ev.reason, detail: typeof ev.detail === 'string' ? ev.detail : undefined })
+            // A VGR/loop stage ran real model generation even when no synth_miss fired
+            // (e.g. the synthesis fast-path gate never opened). Only a catalog match may
+            // claim the catalog path.
+            if (synthPath === null && ev.reason !== 'catalog-no-iterate') synthPath = 'generated'
+          }
         } catch { /* keepalive / non-JSON */ }
       }
     }
@@ -656,7 +683,7 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
     if (e?.name !== 'AbortError') agentError = String(e?.message ?? e).slice(0, 200)
     else agentError = `timeout after ${(PER_TASK_TIMEOUT_MS / 1000).toFixed(0)}s`
   } finally { clearTimeout(timer) }
-  return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0, synthPath }
+  return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0, synthPath, loopEntries, timedOut }
 }
 
 // ── audit: checks the agent never saw ─────────────────────────────────────────────
@@ -688,6 +715,20 @@ function auditTask(task: Task, dir: string): AuditResult {
   const moduleAbs = path.join(dir, task.modulePath)
   const moduleExists = fs.existsSync(moduleAbs) && fs.statSync(moduleAbs).size > 0
   if (!moduleExists) return { moduleExists: false, compiled: false, compileDetail: 'module file missing/empty', hiddenPassed: false, hiddenDetail: 'skipped — no module' }
+
+  // Mined tasks (W42.2): the workspace's TARGET FILE ONLY is handed to the pinned
+  // historical oracle — suite + context stage from the parent-commit snapshot, so the
+  // agent's scratch project never influences what the suite sees. Gate A/B map onto
+  // the same compiled/hiddenPassed columns as the authored tasks.
+  if (MINED_IDS.has(task.id)) {
+    const v = auditMinedCandidate(task.id, fs.readFileSync(moduleAbs, 'utf8'))
+    return {
+      moduleExists: true,
+      compiled: v.gateA, compileDetail: v.gateA ? 'tsc clean (snapshot-scoped)' : v.detail.slice(0, 200),
+      hiddenPassed: v.accepted && v.ranAssertions,
+      hiddenDetail: v.ranAssertions ? v.detail.slice(0, 300) : `no assertions ran — ${v.detail.slice(0, 200)}`,
+    }
+  }
 
   const auditDir = path.join(dir, '__audit__')
   fs.mkdirSync(auditDir, { recursive: true })
@@ -754,6 +795,8 @@ interface TaskScore extends AuditResult {
   id: string; title: string; fired: boolean; agentError: string | null
   selfTestPassed: boolean | null; rubric: number | null; iters: number; elapsedMs: number
   synthPath: 'catalog' | 'generated' | null
+  loopEntries: Array<{ stage: string; reason: string; detail?: string }>
+  timedOut: boolean
 }
 
 async function serverUp(token: string): Promise<boolean> {
@@ -852,7 +895,7 @@ async function main() {
     const score: TaskScore = {
       id: task.id, title: task.title, fired: fire.done || !!audit.moduleExists, agentError: fire.agentError,
       selfTestPassed: fire.selfTestPassed, rubric, iters: fire.iters, elapsedMs: fire.elapsedMs,
-      synthPath: fire.synthPath, ...audit,
+      synthPath: fire.synthPath, loopEntries: fire.loopEntries, timedOut: fire.timedOut, ...audit,
     }
     scores.push(score)
     console.log(`  [HARD] module exists : ${audit.moduleExists ? 'PASS' : 'FAIL'}`)
@@ -861,6 +904,14 @@ async function main() {
     console.log(`  [SOFT] self-test     : ${score.selfTestPassed === null ? 'n/a' : score.selfTestPassed ? 'PASS' : 'FAIL'}`)
     console.log(`  [SOFT] LLM rubric    : ${rubric === null ? 'n/a' : rubric + '/100'}`)
     console.log(`  [INFO] synth path    : ${fire.synthPath ?? 'unknown'}${fire.synthPath === 'catalog' ? ' — proven-skill match, zero model inference; not a generative-capability signal' : ''}`)
+    if (fire.timedOut) console.log(`  [INFO] TIMED OUT at the ${(PER_TASK_TIMEOUT_MS / 1000).toFixed(0)}s cap — elapsed time is the cap, not convergence`)
+    // W1: attribute every zero-iteration outcome to a named stage+reason.
+    if (fire.loopEntries.length) {
+      const last = fire.loopEntries[fire.loopEntries.length - 1]
+      console.log(`  [W1]   loop entry    : ${fire.loopEntries.map(e => `${e.stage}:${e.reason}`).join(' → ')}${last.detail ? `  :: ${last.detail}` : ''}`)
+    } else if (fire.iters === 0) {
+      console.log(`  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)`)
+    }
   }
 
   // ── scorecard + regression check ────────────────────────────────────────────────
@@ -872,9 +923,18 @@ async function main() {
   for (const s of scores) {
     const hard = s.moduleExists && s.compiled && s.hiddenPassed
     const path = s.synthPath === 'catalog' ? 'catalog' : s.synthPath === 'generated' ? 'gen' : '?'
-    console.log(`  ${hard ? 'GREEN' : ' RED '}  ${s.id.padEnd(12)} compile=${s.compiled ? 'Y' : 'n'} hidden=${s.hiddenPassed ? 'Y' : 'n'} self=${s.selfTestPassed === null ? '-' : s.selfTestPassed ? 'Y' : 'n'} rubric=${s.rubric ?? '-'} path=${path.padEnd(7)} ${(s.elapsedMs / 1000).toFixed(0)}s`)
+    const entry = s.loopEntries.length ? s.loopEntries[s.loopEntries.length - 1] : null
+    const w1 = s.iters > 0 ? `iters=${s.iters}` : entry ? `${entry.stage}:${entry.reason}` : 'UNEXPLAINED-iters:0'
+    console.log(`  ${hard ? 'GREEN' : ' RED '}  ${s.id.padEnd(16)} compile=${s.compiled ? 'Y' : 'n'} hidden=${s.hiddenPassed ? 'Y' : 'n'} self=${s.selfTestPassed === null ? '-' : s.selfTestPassed ? 'Y' : 'n'} rubric=${s.rubric ?? '-'} path=${path.padEnd(7)} ${(s.elapsedMs / 1000).toFixed(0)}s${s.timedOut ? ' TIMEOUT' : ''} ${w1}`)
   }
   console.log(`\n  Claude-level (all HARD green): ${passedHard}/${scores.length} tasks`)
+  // W1: iters distribution + timeout column — a 480s "pass" pinned at the cap is not convergence.
+  const itersDist: Record<string, number> = {}
+  for (const s of scores) itersDist[String(s.iters)] = (itersDist[String(s.iters)] ?? 0) + 1
+  console.log(`  iters distribution: ${Object.entries(itersDist).sort((a, b) => Number(a[0]) - Number(b[0])).map(([k, v]) => `${k}×${v}`).join('  ')}   timed out: ${scores.filter(s => s.timedOut).length}/${scores.length}`)
+  const unexplained = scores.filter(s => s.iters === 0 && !s.loopEntries.length && !(s.moduleExists && s.compiled && s.hiddenPassed))
+  if (unexplained.length) console.log(`  W1 ACCEPTANCE VIOLATION — unexplained iters:0 failures: ${unexplained.map(s => s.id).join(', ')}`)
+  else console.log(`  W1 acceptance holds: every zero-iteration outcome is attributed to a named stage:reason`)
   // A 'catalog' GREEN proves proven-skill coverage, NOT that the offline agent can generate
   // new code — it never touched the model. Only 'generated' tasks stress real capability;
   // conflating the two is exactly what produced last session's misleading 4/5 "Claude-level"
@@ -883,8 +943,11 @@ async function main() {
   const genPassed = genScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
   const catScores = scores.filter(s => s.synthPath === 'catalog')
   const catPassed = catScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
-  console.log(`    of which via catalog-primitive match (zero inference): ${catPassed}/${catScores.length} green`)
-  console.log(`    of which via genuine model generation (real signal)  : ${genPassed}/${genScores.length} green`)
+  // Wilson 95% intervals (benchStats.ts): the HEADLINE is the generated rate, with its
+  // interval printed so a delta below the noise floor is never mistaken for progress.
+  console.log(`    of which via catalog-primitive match (zero inference): ${formatRate(catPassed, catScores.length)}`)
+  console.log(`    of which via genuine model generation (real signal)  : ${formatRate(genPassed, genScores.length)}`)
+  if (genScores.length) console.log(`    min detectable delta at n=${genScores.length}: ±${(minDetectableDelta(genScores.length) * 100).toFixed(0)} pts — smaller deltas are noise`)
   if (genScores.length === 0) console.log(`    ⚠ no task in this run exercised genuine generation — the summary above says nothing about offline-agent coding capability`)
 
   // Regression = a task that previously passed a HARD check now fails it.
