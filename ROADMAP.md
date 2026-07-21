@@ -1346,6 +1346,46 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21 — Research/navigation tools: `glob`, `fetch_url`, and the `web_search` URL bug
+
+**`web_search` never returned URLs — a broken contract, not a missing feature.** The parser
+captured the *inner text* of each result anchor and stripped all tags, so every `href` was
+discarded. Meanwhile the agent preamble (`server.ts:1806`) instructs: "use web_search to find
+the URL, then open_app", and the `search_youtube` guidance says "pick the best result URL from
+the live results." **Neither was possible.** Any time the agent appeared to follow that flow it
+was reconstructing a URL from training data — exactly the dead-link failure the preamble warns
+about. Fixed: capture the whole opening tag (attribute order is not guaranteed), pull `href`
+out separately, and unwrap DDG's `/l/?uddg=` redirector to the real target via
+`resolveDdgHref()`. DDG-internal/ad links resolve to `null` rather than being offered.
+
+**Two capability holes, both blocking read-only contexts specifically:**
+- **[x] `glob`** — there was *no* non-mutating way to find a file by name. `search` matches
+  contents, `list_dir` is shallow, and the shell workaround (`run`) is `mutates: true`, so any
+  context with `allowMutation: false` — including `callModelAgentic` — could not locate a file
+  at all. Supports `**`, `*`, `?`, `{a,b}`; sorted most-recently-modified first; reuses the
+  existing `SKIP_DIRS`; hidden dirs skipped unless the pattern names a dot-segment.
+- **[x] `fetch_url`** — reading a page previously required `download_file` (mutates the disk)
+  then `read_file`. Now direct, with `htmlToText()` reduction, its own 20s timeout so a hung
+  server cannot stall an agent turn, and `ctx.signal` cancellation honored in flight.
+
+Both are deliberately non-mutating, which is the whole point: research and navigation now work
+in the read-only paths where they previously dead-ended.
+
+**Caught by the bench, not by inspection:** `fetch_url` clamped `maxChars` to a 500 floor,
+silently overriding a smaller request. An argument the caller cannot tell was ignored is worse
+than no argument — floor removed, the value is now honored exactly (capped at 100k).
+
+**Verified:** `npx tsx src/CrucibleEngine/tools/test-research.ts` — 39/39, deterministic: real
+fs against a temp project and real HTTP against a **local** server (no external network, no
+model calls), including cancellation and HTTP-error paths. `test-taskplan.ts` 37/37,
+`test-tools.ts` ALL PASS, `tsc --noEmit` clean.
+
+**Still unverified live** for the same reason as below: this worktree's `.env.local` injects 0
+vars. `web_search`/DDG markup handling is proven against synthetic HTML only — the first
+session with network should fire one real `web_search` and confirm URLs come back, since DDG
+markup drift is exactly what strategies 2 and 3 exist to survive (note those fallbacks still
+yield titles without URLs).
+
 ### 2026-07-21 — Persistent task plan (`update_plan`): the long-horizon primitive
 
 **What was missing.** Every other piece of unattended autonomy was already built and wired

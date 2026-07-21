@@ -1,11 +1,5 @@
 [
   {
-    "hash": "dc2f935",
-    "message": "pre-write_file",
-    "timestamp": 1781302577591,
-    "projectPath": "/Users/justin/Desktop/Crucible/ore-probe-rive-probe"
-  },
-  {
     "hash": "0e873d6",
     "message": "pre-write_file",
     "timestamp": 1781303379401,
@@ -298,5 +292,11 @@
     "message": "pre-write_file",
     "timestamp": 1784640746166,
     "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-tools-yaRPSE"
+  },
+  {
+    "hash": "c00855e",
+    "message": "pre-write_file",
+    "timestamp": 1784641776355,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-tools-eszwv6"
   }
 ]

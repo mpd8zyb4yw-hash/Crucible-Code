@@ -178,6 +178,58 @@ function findBlock(lines: string[], block: string[], near: number): number {
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'release', 'server-dist', '.crucible', '.vite', 'app'])
 const BINARY_EXT = /\.(png|jpe?g|gif|ico|woff2?|ttf|eot|mp4|mov|zip|gz|pdf|lock)$/i
 
+/**
+ * Compile a glob to an anchored RegExp matching a POSIX-style relative path.
+ * Supports ** (any depth), * (within a segment), ? (one char), and {a,b} alternation.
+ * Everything else is escaped, so a pattern can never inject regex syntax.
+ */
+export function globToRegExp(pattern: string): RegExp {
+  const p = pattern.replace(/\\/g, '/').replace(/^\.\//, '')
+  let out = ''
+  for (let i = 0; i < p.length; i++) {
+    const c = p[i]
+    if (c === '*') {
+      if (p[i + 1] === '*') {
+        // `**/` may match zero directories, so "**/*.ts" also matches "a.ts".
+        if (p[i + 2] === '/') { out += '(?:.*/)?'; i += 2 } else { out += '.*'; i += 1 }
+      } else out += '[^/]*'
+    } else if (c === '?') out += '[^/]'
+    else if (c === '{') {
+      const close = p.indexOf('}', i)
+      if (close === -1) out += '\\{'
+      else {
+        const alts = p.slice(i + 1, close).split(',')
+        out += `(?:${alts.map(a => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`
+        i = close
+      }
+    } else out += c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  }
+  return new RegExp(`^${out}$`)
+}
+
+/** Reduce an HTML document to readable text: drop script/style/nav chrome, unwrap tags,
+ *  decode the common entities, and collapse the blank-line explosion that leaves behind. */
+export function htmlToText(html: string): string {
+  const decoded = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<(script|style|noscript|svg|head)\b[\s\S]*?<\/\1>/gi, '')
+    .replace(/<\/(p|div|section|article|li|tr|h[1-6]|br)\s*>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#x27;|&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+  return decoded
+    .split('\n')
+    .map(l => l.replace(/[ \t ]+/g, ' ').trim())
+    .filter((l, i, arr) => l !== '' || arr[i - 1] !== '')
+    .join('\n')
+    .trim()
+}
+
 function searchRipgrep(pattern: string, dir: string, max: number): Promise<string[] | null> {
   return new Promise(resolve => {
     const child = spawn('rg', ['-n', '--no-heading', '-m', String(max), '-e', pattern, '.'], { cwd: dir })
@@ -498,9 +550,30 @@ registry.register({
   },
 })
 
+/**
+ * DDG's HTML endpoint wraps every result in a redirector:
+ *   //duckduckgo.com/l/?uddg=<url-encoded target>&rut=...
+ * Return the real target so the agent gets a URL it can actually fetch or open.
+ * Non-redirector hrefs pass through with the protocol repaired.
+ */
+export function resolveDdgHref(href: string): string | null {
+  if (!href) return null
+  const raw = href.startsWith('//') ? `https:${href}` : href
+  try {
+    const u = new URL(raw, 'https://duckduckgo.com')
+    const target = u.searchParams.get('uddg')
+    const resolved = target ? decodeURIComponent(target) : u.href
+    // Drop DDG's own ad/internal links — they are never a useful destination.
+    if (/^https?:\/\/(duckduckgo\.com|[a-z]+\.duckduckgo\.com)\//i.test(resolved)) return null
+    return /^https?:\/\//i.test(resolved) ? resolved : null
+  } catch {
+    return null
+  }
+}
+
 registry.register({
   name: 'web_search',
-  description: 'Search the web using DuckDuckGo. Use for current events, weather, prices, news, facts, or anything requiring up-to-date information. For location-dependent queries like weather, infer the location from context or conversation history.',
+  description: 'Search the web using DuckDuckGo. Returns ranked results with their URLs. Use for current events, weather, prices, news, facts, or anything requiring up-to-date information. For location-dependent queries like weather, infer the location from context or conversation history. To read a result in full, pass its URL to fetch_url; to open it for the user, pass it to open_app.',
   params: {
     type: 'object',
     properties: {
@@ -520,12 +593,18 @@ registry.register({
       const strip = (s: string) => s.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#x27;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').trim()
       const titles: string[] = []
       const snippets: string[] = []
+      const urls: (string | null)[] = []
 
-      // Strategy 1: standard DDG classes
-      const titleRe1 = /<a class="result__a"[^>]*>([\s\S]*?)<\/a>/g
+      // Strategy 1: standard DDG classes. Capture the whole opening tag rather than just
+      // its inner text — the href is what makes a result actionable (fetch_url / open_app),
+      // and attribute order is not guaranteed, so pull href out of the tag separately.
+      const titleRe1 = /<a\b([^>]*\bclass="[^"]*result__a[^"]*"[^>]*)>([\s\S]*?)<\/a>/g
       const snippetRe1 = /<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
       let m
-      while ((m = titleRe1.exec(html)) !== null && titles.length < 5) titles.push(strip(m[1]))
+      while ((m = titleRe1.exec(html)) !== null && titles.length < 5) {
+        titles.push(strip(m[2]))
+        urls.push(resolveDdgHref(/\bhref="([^"]*)"/.exec(m[1])?.[1] ?? ''))
+      }
       while ((m = snippetRe1.exec(html)) !== null && snippets.length < 5) snippets.push(strip(m[1]))
 
       // Strategy 2: data-result blocks
@@ -545,8 +624,10 @@ registry.register({
       }
 
       if (titles.length === 0) return { ok: false, output: 'No results found. DDG may have changed their markup or blocked the request.' }
-      const output = titles.map((t, i) => `${i + 1}. ${t}${snippets[i] ? '\n   ' + snippets[i] : ''}`).join('\n\n')
-      return { ok: true, output }
+      const output = titles.map((t, i) =>
+        `${i + 1}. ${t}${urls[i] ? '\n   ' + urls[i] : ''}${snippets[i] ? '\n   ' + snippets[i] : ''}`,
+      ).join('\n\n')
+      return { ok: true, output, meta: { urls: urls.filter(Boolean) } }
     } catch (e: any) {
       return { ok: false, output: `Search failed: ${e?.message ?? e}` }
     }
@@ -1479,5 +1560,128 @@ registry.register({
     }
     ctx.emit?.({ type: 'plan', goal: plan.goal, steps: plan.steps, done: progress.done })
     return { ok: true, output: rendered, meta: { total: progress.total, completed: progress.completed, done: progress.done } }
+  },
+})
+
+// Finding a file by *name* had no non-mutating path: `search` matches contents, `list_dir`
+// is shallow, and the shell workaround (`run`) is gated by allowMutation. A read-only
+// context therefore could not locate a file at all. glob closes that hole.
+registry.register({
+  name: 'glob',
+  description:
+    'Find files by path pattern. Supports * (within a segment), ** (any depth), ? and {a,b} alternation — e.g. "src/**/*.test.ts" or "**/{README,LICENSE}*". ' +
+    'Use this to locate files by name; use search to match file contents. Results are sorted by most recently modified first.',
+  params: {
+    type: 'object',
+    properties: {
+      pattern: { type: 'string', description: 'Glob pattern, relative to the search directory' },
+      dir: { type: 'string', description: 'Directory to search from (default: project root)' },
+      maxResults: { type: 'number', description: 'Max paths to return (default 100, cap 500)' },
+    },
+    required: ['pattern'],
+  },
+  async run(args, ctx) {
+    const pattern = String(args.pattern ?? '').trim()
+    if (!pattern) return { ok: false, output: 'A non-empty "pattern" is required, e.g. "src/**/*.ts".' }
+    const root = resolveSafe(String(args.dir ?? '.'), ctx, { allowOutside: true })
+    if (!fs.existsSync(root)) return { ok: false, output: `Directory not found: ${root}` }
+    const maxResults = Math.min(Math.max(Number(args.maxResults ?? 100), 1), 500)
+
+    let re: RegExp
+    try { re = globToRegExp(pattern) } catch (e: any) { return { ok: false, output: `Invalid pattern: ${e?.message ?? e}` } }
+
+    // Hidden directories are skipped by default (matching `search`), but a pattern that
+    // explicitly names a dot-segment — ".github/**" — clearly wants them.
+    const wantsHidden = /(^|\/|\{)\./.test(pattern)
+
+    const hits: Array<{ rel: string; mtime: number }> = []
+    const walk = (dir: string, depth: number) => {
+      if (hits.length >= maxResults || depth > 12) return
+      let entries: fs.Dirent[]
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        if (hits.length >= maxResults) return
+        if (SKIP_DIRS.has(e.name)) continue
+        const abs = path.join(dir, e.name)
+        if (e.isDirectory()) {
+          if (!wantsHidden && e.name.startsWith('.')) continue
+          walk(abs, depth + 1); continue
+        }
+        if (!e.isFile()) continue
+        const rel = path.relative(root, abs)
+        if (!re.test(rel)) continue
+        let mtime = 0
+        try { mtime = fs.statSync(abs).mtimeMs } catch {}
+        hits.push({ rel, mtime })
+      }
+    }
+    walk(root, 0)
+    if (!hits.length) {
+      return { ok: true, output: `(no files match ${pattern} under ${root})`, meta: { count: 0 } }
+    }
+    hits.sort((a, b) => b.mtime - a.mtime)
+    const { output, truncated } = capOutput(hits.map(h => h.rel).join('\n'))
+    return {
+      ok: true,
+      output,
+      truncated: truncated || hits.length >= maxResults,
+      meta: { count: hits.length, root },
+    }
+  },
+})
+
+// Reading a specific page previously required download_file (which mutates the disk) then
+// read_file. fetch_url reads directly, so research works in read-only contexts too.
+registry.register({
+  name: 'fetch_url',
+  description:
+    'Fetch a web page or API endpoint and return its text content, with HTML reduced to readable text. ' +
+    'Use after web_search to read a specific result in full, or to read documentation/JSON APIs directly.',
+  params: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'Absolute http(s) URL' },
+      maxChars: { type: 'number', description: 'Max characters of text to return (default 20000)' },
+    },
+    required: ['url'],
+  },
+  async run(args, ctx) {
+    const url = String(args.url ?? '').trim()
+    if (!/^https?:\/\//i.test(url)) return { ok: false, output: 'A absolute http(s) "url" is required.' }
+    // Honor exactly what was asked (capped): silently substituting a floor would make the
+    // argument a lie, and the caller has no way to see it was overridden.
+    const requested = Number(args.maxChars)
+    const maxChars = Math.min(Number.isFinite(requested) && requested > 0 ? requested : 20_000, 100_000)
+    // Own timeout so a hung server cannot stall the whole agent turn.
+    const ac = new AbortController()
+    const timer = setTimeout(() => ac.abort(), 20_000)
+    const onAbort = () => ac.abort()
+    ctx.signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      const res = await fetch(url, {
+        redirect: 'follow',
+        signal: ac.signal,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+      })
+      const type = res.headers.get('content-type') ?? ''
+      const body = await res.text()
+      const text = /html/i.test(type) ? htmlToText(body) : body
+      const out = text.slice(0, maxChars)
+      if (!res.ok) {
+        return { ok: false, output: `HTTP ${res.status} ${res.statusText} from ${url}\n${out.slice(0, 2000)}`, meta: { status: res.status } }
+      }
+      return {
+        ok: true,
+        output: out || '(page returned no readable text)',
+        truncated: text.length > maxChars,
+        meta: { status: res.status, contentType: type, chars: text.length },
+      }
+    } catch (e: any) {
+      const msg = e?.name === 'AbortError' ? 'timed out after 20s' : (e?.message ?? String(e))
+      return { ok: false, output: `Fetch failed for ${url}: ${msg}` }
+    } finally {
+      clearTimeout(timer)
+      ctx.signal?.removeEventListener('abort', onAbort)
+    }
   },
 })
