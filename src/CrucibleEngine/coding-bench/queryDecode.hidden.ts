@@ -18,6 +18,13 @@ check('percent decodes', parseQuery('k=%20').k === ' ')
 check('multibyte utf8 sequence', parseQuery('k=%C3%A9').k === '\u00e9')
 check('invalid percent left literal', parseQuery('k=%ZZx').k === '%ZZx')
 check('trailing lone percent literal', parseQuery('k=ab%').k === 'ab%')
+check('malformed utf8 bytes yield replacement char', parseQuery('k=%C3%28').k === '\uFFFD(')
+check('dangling utf8 lead byte yields replacement char', parseQuery('k=%C3').k === '\uFFFD')
+check('truncated 3-byte sequence is one replacement char', parseQuery('k=%E2%82').k === '\uFFFD')
+check('raw non-ascii literal passes through', parseQuery('k=\u00e9x').k === '\u00e9x')
+check('never throws on hostile percent soup', ['%', '%%', '%2', '%C3%C3', '%E2%82x', '%ZZ%C3%28+%'].every(s => {
+  try { parseQuery(s); parseQuery('k=' + s); return true } catch { return false }
+}))
 const rep = parseQuery('a=1&a=2&a=3')
 check('repeated key becomes array in order', Array.isArray(rep.a) && (rep.a as string[]).join(',') === '1,2,3')
 check('no equals means empty value', parseQuery('flag').flag === '')

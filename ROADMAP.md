@@ -1933,6 +1933,73 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21n (gap-soundness — human skim closed out: 3 boundary defects fixed, posix oracle unwrapped, adversarial reading institutionalized)
+
+The one-time human skim of `CONTRACTS_REVIEW.md` — the single check machine validation
+structurally cannot do — came back: **M1–M3 mined prompts confirmed faithful; 3 defects +
+2 advisories in the authored 22.** Every defect had the identical shape: *contract precise
+on the happy path, silent or self-contradictory at a boundary the suite tests; ref, suite,
+AND differential oracle all encode the same reading of the same ambiguous prose, so no
+machine check fires.* None are wrong semantics — they are places a correct-per-contract
+agent implementation FAILS the hidden suite, converting real capability into measured
+failure: the exact thing the corpus validator exists to prevent and cannot see.
+Ref/suite/oracle correlation isn't only misunderstanding risk — it's shared
+under-specification risk. All fixed in the shards, each boundary verified against node
+ground truth BEFORE pinning (scratch experiments, not guesses):
+
+- **D1 `queryDecode` — "never throw" was unsatisfiable as read.** Validity is syntactic
+  (two hex digits) but decoding is semantic: `%C3%28` passes the contract's own validity
+  rule and `decodeURIComponent` throws `URIError` on it — a fully reasonable
+  implementation fails an untested boundary. Contract now pins the byte-level rule:
+  malformed UTF-8 percent-bytes decode with the standard U+FFFD replacement rule (the
+  TextDecoder/URLSearchParams behavior; explicit decodeURIComponent warning), and raw
+  non-ASCII literals pass through verbatim. Suite +5 checks (`%C3%28` → U+FFFD + "(",
+  dangling lead byte, truncated 3-byte sequence, raw-literal pass-through, never-throws
+  soup). Oracle upgraded: the generator now injects raw malformed ASCII junk and
+  URLSearchParams must still agree — fuzz-verified first (2744 combos: ref ≡ USP on the
+  whole ASCII domain; raw non-ASCII is where USP's byte-isomorphic parsing deliberately
+  diverges from the contract's pass-through rule, so it stays out of the generator and is
+  pinned by the fixed suite instead).
+- **D2 `retryDelays` — exact float equality without pinning the computation.**
+  `Math.pow(f, i)` and iterated multiplication are BOTH faithful readings of
+  "baseMs * factor^i" and disagree in the last bit (measured: factor 1.1 diverges from
+  i=4 on — …006 iterated vs …004 pow). A coin-flip failure with zero relationship to
+  capability. Contract now pins the RECURRENCE (d0 = baseMs, d(i+1) = d(i) * factor, one
+  IEEE-754 multiply per step) and states outright that Math.pow fails the audit; the
+  suite pins the divergent literals `[1, 1.1, 1.2100000000000002, 1.3310000000000004,
+  1.4641000000000006, 1.6105100000000008]`; the refdiff factor pool gains 1.1 (its
+  closed-form oracle is tolerance-based — unaffected, and now exercises the divergence
+  region).
+- **D3 `posixResolve` — the oracle was shadow-strength ranked as foreign-strength.** The
+  contract dropped trailing slashes; `path.posix.normalize` preserves them ("/a/" →
+  "/a/"), so the refdiff oracle was node WRAPPED in a same-session `stripTrail` adapter —
+  the adapter re-encoded this session's contract reading, which is exactly the
+  correlation the oracle exists to break. Contract/ref/suite now match node EXACTLY
+  (trailing slash preserved except root collapse, "//" roots collapse, "a/../" → "./");
+  the replacement ref was diffed against node over 1405 exhaustive inputs (all agree)
+  before shipping; the oracle is now literally `path.posix.normalize(input)` — unwrapped,
+  the "//" input carve-out deleted, generator widened with empty-segment atoms. A
+  genuinely free foreign oracle, recovered.
+- **A1 `wordWrap`** — overlong-word-met-mid-line was under-determined (fill the remaining
+  space vs. flush first; both defensible, suite tested one). Contract pins flush-first
+  with the discriminating example; suite +1 ("xx abcde" @ 4 → "xx"/"abcd"/"e", never
+  "xx a"/"bcde"). **A2 `fractionAdd`** — exactness ceiling now stated: every input and
+  intermediate cross-product stays within MAX_SAFE_INTEGER; beyond is out of contract,
+  BigInt not required.
+- **Systemic, the cheap mitigation that catches this whole class: the ADVERSARIAL READING
+  is now institutional.** "What is the most reasonable implementation that would FAIL
+  this suite?" is model-answerable and found all three defects. It now lives in the shard
+  authoring-discipline header and is generated per-task into `CONTRACTS_REVIEW.md` as a
+  second checkbox.
+
+Re-certified after the edits: taskcorpus **22/22** catalog-free + hermetically certified,
+refdiff **ALL PASS** (posix unwrapped, queryDecode junk-injected), minedcorpus **3/3**
+doubly certified; n=35 stands. The skim's verdict on the mined shard confirms the scaling
+priority: M1–M3's decorrelation is BY CONSTRUCTION (ref and suite authored months apart
+against live behavior) — D1–D3 are direct evidence that hand-authored contracts carry a
+defect rate the machinery cannot catch, so grow the mined shard before authoring more
+synthetic tasks.
+
 ### 2026-07-21m (gap-soundness — W42.2: git-mined tasks, pilot corpus certified)
 
 The generated-path bench now grows from the repo's own bug history — the one task source

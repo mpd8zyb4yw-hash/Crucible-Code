@@ -7,6 +7,13 @@
 > expectation — edit the shard file (`src/CrucibleEngine/coding-bench-ext/tasks-*.ts`),
 > then rerun `npm run taskcorpus:bench` and `npx tsx .../__refdiff_bench.ts`.
 > Mark each task done by ticking its box. This file is GENERATED — edit shards, not this.
+>
+> For every task ALSO run the ADVERSARIAL READING: "what is the most reasonable
+> implementation that would FAIL this suite?" If one exists, the contract is silent or
+> self-contradictory at a boundary the suite tests — a correct-per-contract agent
+> would be scored as a failure, which the machine checks structurally cannot see
+> (ref, suite, and oracle share the same reading of the same prose). The 2026-07-21
+> skim found all three corpus defects with exactly this question.
 
 Corpus: 22 tasks. Review pass: [ ] not started / in progress / complete
 
@@ -15,6 +22,7 @@ Corpus: 22 tasks. Review pass: [ ] not started / in progress / complete
 ## 1. `templateExpand` — Dot-path template expansion with escapes
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -59,6 +67,7 @@ Semantics:
 ## 2. `csvLine` — Single-line CSV field parser with quoting
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -101,6 +110,7 @@ Semantics (RFC-4180 style, one line):
 ## 3. `wordWrap` — Greedy word wrap with hard-break for overlong words
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -114,7 +124,12 @@ Semantics:
 - Greedy fill: pack as many words onto a line as fit in width characters, counting the
   single spaces between them; break before the word that would overflow.
 - Runs of spaces collapse to a single space; lines never begin or end with a space.
-- A single word longer than width is hard-split into width-sized chunks.
+- A single word longer than width is hard-split into width-sized chunks. When such a word
+  is met mid-line the current line is flushed FIRST — the overlong word never fills the
+  remainder of the current line; its chunks always start at the word's own first
+  character ("xx abcde" at width 4 is "xx"/"abcd"/"e", never "xx a"/"bcde"). Its final
+  short chunk opens a new current line that following words may join ("x abcdefg y" at
+  width 3 ends with the line "g y").
 - Existing newline characters in the input are hard breaks: each input line wraps
   independently, and empty input lines are preserved as empty output lines.
 - Error contract: if width < 1 or not an integer, throw a RangeError.
@@ -128,6 +143,7 @@ Semantics:
 - one over boundary wraps
 - overlong word hard-split
 - overlong word mid-text
+- overlong word never fills the remainder
 - spaces collapse
 - leading/trailing spaces dropped
 - existing newlines are hard breaks
@@ -143,6 +159,7 @@ Semantics:
 ## 4. `dedentText` — Common-indentation stripper
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -183,6 +200,7 @@ Semantics:
 ## 5. `queryDecode` — Query-string decoder with UTF-8 percent sequences
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -198,7 +216,15 @@ Semantics:
 - "+" decodes to a space in both keys and values.
 - Valid percent sequences decode as UTF-8 bytes (so multi-byte sequences like %C3%A9
   decode to a single character). An INVALID percent sequence (not followed by two hex
-  digits) is left in the output literally — never throw.
+  digits) is left in the output literally.
+- parseQuery NEVER throws, on any input string. Percent-decoded bytes that do not form
+  valid UTF-8 decode with the standard replacement-character rule (one U+FFFD per maximal
+  malformed subsequence — the same rule TextDecoder and URLSearchParams apply): "%C3%28"
+  decodes to U+FFFD followed by "(", and a dangling lead byte "%C3" decodes to U+FFFD
+  alone. Beware: decodeURIComponent THROWS a URIError on exactly these syntactically
+  valid but malformed-UTF-8 sequences, so it cannot implement this rule directly.
+- Any character that is not "+" and not part of a percent sequence passes through
+  verbatim, including raw non-ASCII characters.
 - A key that appears once maps to its string; a key that appears multiple times maps to an
   array of its values in order of appearance.
 - The empty string (or just "?") returns {}.
@@ -214,6 +240,11 @@ Semantics:
 - multibyte utf8 sequence
 - invalid percent left literal
 - trailing lone percent literal
+- malformed utf8 bytes yield replacement char
+- dangling utf8 lead byte yields replacement char
+- truncated 3-byte sequence is one replacement char
+- raw non-ascii literal passes through
+- never throws on hostile percent soup
 - repeated key becomes array in order
 - no equals means empty value
 - equals in value survives
@@ -226,6 +257,7 @@ Semantics:
 ## 6. `intervalMerge` — Merge overlapping and adjacent integer intervals
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -265,6 +297,7 @@ Semantics:
 ## 7. `intervalSubtract` — Subtract one set of intervals from another
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -308,6 +341,7 @@ Semantics:
 ## 8. `ringBuffer` — Fixed-capacity ring buffer that overwrites oldest
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -354,6 +388,7 @@ Semantics:
 ## 9. `minStack` — Stack with O(1) minimum tracking
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -399,6 +434,7 @@ Semantics:
 ## 10. `bitsetRange` — Fixed-size bitset over Uint32Array with range popcount
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -450,6 +486,7 @@ Semantics:
 ## 11. `slidingWindowMax` — Sliding-window maximum via monotonic deque
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -491,6 +528,7 @@ Semantics:
 ## 12. `tableMachine` — Table-driven finite state machine with history
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -545,6 +583,7 @@ Semantics:
 ## 13. `retryDelays` — Deterministic exponential backoff schedule
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -555,9 +594,14 @@ Export exactly:
   export function retryDelays(attempts: number, baseMs: number, capMs: number, factor: number): number[]
 
 Semantics:
-- Returns the delay before each retry: attempt i (0-based) waits baseMs * factor^i,
-  capped at capMs. Purely deterministic — no randomness, no jitter.
-- Results are exact numbers (no rounding); attempts = 0 returns [].
+- Returns the delay before each retry. The schedule is the RECURRENCE d0 = baseMs,
+  d(i+1) = d(i) * factor — one IEEE-754 double multiplication per step, in that order;
+  entry i (0-based) is min(d(i), capMs). Purely deterministic — no randomness, no jitter.
+- Results are exact doubles compared with strict equality (no rounding, no tolerance).
+  The recurrence IS the spec: Math.pow(factor, i) rounds differently in the last bit for
+  some factors (at factor 1.1 the two disagree from i = 4 on) and fails the audit —
+  compute by iterated multiplication, not exponentiation.
+- attempts = 0 returns [].
 - Once the cap is reached every later entry equals capMs exactly.
 - Error contract (throw RangeError): attempts not a non-negative integer; baseMs <= 0;
   capMs < baseMs; factor < 1.
@@ -572,6 +616,7 @@ Semantics:
 - zero attempts empty
 - single attempt is base
 - fractional factor allowed above 1
+- recurrence pins iterated multiplication, not Math.pow
 - cap equal to base collapses
 - deterministic across calls
 - negative attempts throws
@@ -585,6 +630,7 @@ Semantics:
 ## 14. `deepEqualCyc` — Structural deep equality with cycle detection
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -632,6 +678,7 @@ Semantics:
 ## 15. `jsonPointerGet` — RFC 6901 JSON Pointer resolution
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -678,6 +725,7 @@ Semantics (RFC 6901):
 ## 16. `runLength` — Run-length encode/decode with strict grammar
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -726,6 +774,7 @@ Semantics:
 ## 17. `posixResolve` — POSIX path normalizer without the fs module
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -736,21 +785,26 @@ Do NOT import node's "path" or "fs" modules — this is a pure string algorithm.
 Export exactly:
   export function normalizePath(p: string): string
 
-Semantics:
-- Collapse repeated slashes; resolve "." segments away; resolve ".." against the previous
-  real segment.
+Semantics (identical to node's path.posix.normalize — the audit holds you to exact
+agreement with it, reimplemented by hand):
+- Collapse repeated slashes (a leading "//" collapses too: "//a/b" -> "/a/b"); resolve
+  "." segments away; resolve ".." against the previous real segment.
 - Absolute paths (leading "/"): ".." at the root is clamped ("/../a" -> "/a").
 - Relative paths: leading ".." segments that cannot be resolved are preserved
   ("../../a" stays "../../a"; "a/../../b" -> "../b").
-- A trailing slash is dropped except for the root itself ("/a/" -> "/a", "/" -> "/").
+- A trailing slash on the input is PRESERVED on the output ("/a/" -> "/a/",
+  "a/b/" -> "a/b/", "a/../../b/" -> "../b/") — except that a path which collapses to
+  the root alone is just "/" ("/" -> "/", "/a/../" -> "/").
 - The empty string and "." both normalize to "."; a relative path that fully cancels
-  ("a/..") normalizes to ".".
+  ("a/..") normalizes to "." — and with a trailing slash it keeps it: "a/../" -> "./",
+  "./" -> "./".
 ```
 
 **What the hidden suite will hold it to:**
 
 - already normal
 - collapse repeated slashes
+- double-slash root collapses
 - dot segments removed
 - dotdot resolves
 - dotdot chain
@@ -761,9 +815,14 @@ Semantics:
 - relative full cancel is dot
 - empty is dot
 - dot is dot
-- trailing slash dropped
+- trailing slash preserved
 - root stays root
-- relative trailing slash dropped
+- collapse to root drops the trailing slash
+- relative trailing slash preserved
+- full cancel with trailing slash is dot-slash
+- dot-slash stays dot-slash
+- dotdot keeps trailing slash
+- relative overflow keeps trailing slash
 - dotdot after real segments
 - mixed mess
 - no path module used
@@ -773,6 +832,7 @@ Semantics:
 ## 18. `bankersRound` — Half-to-even (bankers) rounding at a decimal place
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -827,6 +887,7 @@ Semantics:
 ## 19. `baseConvert` — Arbitrary-length base conversion 2..36
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -874,6 +935,7 @@ Semantics:
 ## 20. `fractionAdd` — Exact rational addition with normalization
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -890,6 +952,10 @@ Semantics:
   carries its sign on the numerator ([1,-2] is the same number as [-1,2]).
 - Zero normalizes to [0,1] regardless of the input denominators.
 - Inputs are not mutated. Integer inputs only.
+- Exactness domain: plain number arithmetic suffices. The audit keeps every input and
+  every intermediate cross-product (a[0]*b[1], b[0]*a[1], a[1]*b[1], and the numerator
+  sum) within Number.MAX_SAFE_INTEGER in magnitude; behavior beyond that magnitude is
+  out of contract, and BigInt is not required.
 - Error contract: throw a RangeError if any denominator is 0; throw a TypeError if any
   entry is not an integer (this includes NaN and Infinity).
 ```
@@ -917,6 +983,7 @@ Semantics:
 ## 21. `dateRangeDays` — Inclusive overlap in days between two ISO date ranges
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 
@@ -962,6 +1029,7 @@ Semantics:
 ## 22. `matrixRotate` — Rotate a rectangular matrix 90 degrees clockwise
 
 - [ ] semantics confirmed by a human
+- [ ] adversarial reading: no reasonable implementation of this contract fails this suite (or the boundary is now pinned in the prompt)
 
 **Contract handed to the agent:**
 

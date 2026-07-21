@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21p (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21q (gap-soundness) (REPLACE THIS EVERY SESSION)
 
 > **TWO-IMPLEMENTER SPLIT IN EFFECT (user-confirmed 2026-07-21).** Per `GAP_CLOSURE.md` +
 > `GAP_CLOSURE_ADDENDUM.md`:
@@ -32,45 +32,54 @@
 >   wiring line.
 > - Re-verify any ownership claim with `git log -1 -- <file>` before treating it as a blocker.
 
-**Shipped just now (W42.2 pilot — git-mined tasks, ALL PASS; ROADMAP 2026-07-21m):**
-`coding-bench-ext/{tasks-mined,minedHarness,__minedcorpus_bench}.ts` +
-`npm run minedcorpus:bench`. Three REAL historical bugs are now certified bench tasks
-(`cfede63` aliased-import propagation, `450cab6` move default/namespace imports, `3265f94`
-apifaith vocabulary): ref = the actual fix, suite = the subsystem's own bench pinned at the
-fix commit, decorrelated by construction. Each task is DOUBLY certified through the real
-hermetic oracle: the fix passes AND the parent bug is rejected by the suite's own assertions
-(vacuity is the mining failure mode — `cab4b7b` dropped for exactly that, recorded in
-`DROPPED_COMMITS`). Prompt no-leak is mechanical (no fix-diff added line may appear).
-Two live finds are encoded in `minedHarness.ts`: historical trees carry pre-existing tsc
-errors (deferred via `changeSetScope`; candidate errors stay fatal) and ESM `'./x.js'`
-imports need `.ts` resolution at staging. Generated-path n: 32 → 35.
+**Shipped just now (human skim closed out; ROADMAP 2026-07-21n):** the one-time
+`CONTRACTS_REVIEW.md` skim returned — M1–M3 mined prompts confirmed faithful; 3 defects +
+2 advisories in the authored 22, ALL now fixed in the shards and re-certified (taskcorpus
+22/22, refdiff ALL PASS, minedcorpus 3/3). All three defects shared one shape: contract
+precise on the happy path, silent at a boundary the suite tests, with ref/suite/oracle
+sharing the same reading so no machine check can fire — a correct-per-contract agent
+would have been scored as failing. D1 `queryDecode`: decodeURIComponent throws on
+malformed-UTF-8 the contract's own validity rule admits → byte-level U+FFFD rule pinned,
+suite +5, oracle now injects malformed ASCII junk (ref ≡ URLSearchParams fuzz-verified on
+that domain). D2 `retryDelays`: Math.pow vs iterated multiplication under exact equality
+→ recurrence pinned as the spec, divergent factor-1.1 literals in the suite. D3
+`posixResolve`: contract dropped trailing slashes where node preserves them → contract/
+ref/suite now match node exactly (ref diffed against node over 1405 exhaustive inputs);
+the same-session `stripTrail` adapter is deleted and the oracle is `path.posix.normalize`
+UNWRAPPED — real foreign strength recovered. A1 `wordWrap` flush-first pinned; A2
+`fractionAdd` exactness ceiling stated. The ADVERSARIAL READING ("what is the most
+reasonable implementation that would FAIL this suite?") found all three and is now
+institutional: shard authoring header + a per-task checkbox in the generated review.
 
 **OPEN, in order:**
-1. **W42.2 scale-out:** sweep the 113-commit inventory (20+ fix-shaped; next candidates
-   `79583e1` executionVerify timer globals, `a0bdd2a` contractVerify refill clamp,
-   `781fbba`/`23d1305` feedback-loop fixes, `1fb3971` retrieval tie-breaker) toward
-   n≈100 (±10-pt floor). Machinery exists; per-task cost ~4–34s. Selection rule stays:
-   fix commit touches exactly one engine file + its paired bench; certifier decides.
-2. **HUMAN SKIM (one-time, now 25 boxes): `CONTRACTS_REVIEW.md`** — 22 authored contracts
-   + M1–M3 mined (prompt-vs-commit: does the symptom prompt match what the commit fixed,
-   without dictating the patch?). Edit shards on disagreement; rerun
-   `npm run taskcorpus:bench` + `npm run refdiff:bench` + `npm run minedcorpus:bench`.
-3. **Track A enrollment (one additive line each):** `TASKS.push(...toBenchTasks())` and
-   `TASKS.push(...toMinedBenchTasks())` in `coding-benchmarks.ts`; mined audit routes
-   through `auditMinedCandidate(taskId, editedTargetContent)` (workspace's target file
-   ONLY; suite+context stage from the pinned snapshot). Then the first honest baseline
-   over n=35 with `formatRate()`.
-4. **W32 verifier fault-injection:** the 22 authored refs + 3 mined parents are ready-made
-   mutation targets; mutants that still certify expose vacuous suites.
-5. **W20 held-out acceptance cases** in the iterate prompt builder — still sequenced behind
-   Track A's W3 to avoid colliding in the same functions.
+1. **Track A enrollment + FIRST HONEST BASELINE (deferred four cycles — now the only
+   thing between us and knowing where Crucible actually stands):** one additive line
+   each in `coding-benchmarks.ts` — `TASKS.push(...toBenchTasks())` and
+   `TASKS.push(...toMinedBenchTasks())`; the mined audit routes through
+   `auditMinedCandidate(taskId, editedTargetContent)` (workspace's target file ONLY;
+   suite+context stage from the pinned snapshot). Then the first live baseline over
+   n=35, reported with `formatRate()`; deltas below `minDetectableDelta(35)` (±16pts)
+   are noise.
+2. **W42.2 scale-out toward n≈100 (±10-pt floor), prioritized OVER authoring more
+   synthetic tasks** — mined decorrelation is by construction, and D1–D3 are direct
+   evidence hand-authored contracts carry a defect rate the machinery cannot catch.
+   Next candidates: `79583e1` executionVerify timer globals, `a0bdd2a` contractVerify
+   refill clamp, `781fbba`/`23d1305` feedback-loop fixes, `1fb3971` retrieval
+   tie-breaker. Selection rule stays: fix touches exactly one engine file + its paired
+   bench; the certifier decides.
+3. **W32 verifier fault-injection:** the 22 authored refs + 3 mined parents are
+   ready-made mutation targets; any mutant that still certifies exposes a vacuous suite.
+4. **W20 held-out acceptance cases** in the iterate prompt builder — still sequenced
+   behind Track A's W3 to avoid colliding in the same functions.
 
-**Standing (one commit back, still load-bearing):** W31 `__refdiff_bench.ts` — independent
-oracle per authored ref (~9k seeded cases; forced the bankersRound semantics reversal,
-ROADMAP 2026-07-21l). W42 core — 22-task authored corpus + Wilson intervals; report rates
-with `formatRate()`, treat deltas below `minDetectableDelta(n)` as noise. W30 — hermetic
-Gate B (scrubbed env, frozen clock, seeded PRNG, net denial, double-run determinism),
-`__hermetic_bench.ts` 18/18. All three re-verified green this session.
+**Standing (still load-bearing):** W31 `__refdiff_bench.ts` — independent oracle per
+authored ref (~9k seeded cases; posixResolve now unwrapped node, queryDecode fuzzes
+malformed junk; forced the bankersRound reversal, ROADMAP 2026-07-21l). W42 core —
+22-task authored corpus + Wilson intervals; report rates with `formatRate()`, treat
+deltas below `minDetectableDelta(n)` as noise. W42.2 — 3 git-mined tasks, doubly
+certified. W30 — hermetic Gate B (scrubbed env, frozen clock, seeded PRNG, net denial,
+double-run determinism), `__hermetic_bench.ts` 18/18. Human skim of all 25 contracts
+COMPLETE 2026-07-21. Everything re-verified green this session.
 
 > Previous state (cont.98, still current for its files): cont.96 owns
 > `fmReact.ts` + `server.ts` + the automation follow-up path. cont.98 touched **only**

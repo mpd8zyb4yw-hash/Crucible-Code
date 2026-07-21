@@ -17,6 +17,8 @@ check('factor 1 is constant', eq(retryDelays(3, 250, 1000, 1), [250, 250, 250]))
 check('zero attempts empty', eq(retryDelays(0, 100, 1000, 2), []))
 check('single attempt is base', eq(retryDelays(1, 7, 100, 3), [7]))
 check('fractional factor allowed above 1', eq(retryDelays(3, 100, 1000, 1.5), [100, 150, 225]))
+check('recurrence pins iterated multiplication, not Math.pow',
+  eq(retryDelays(6, 1, 10, 1.1), [1, 1.1, 1.2100000000000002, 1.3310000000000004, 1.4641000000000006, 1.6105100000000008]))
 check('cap equal to base collapses', eq(retryDelays(3, 100, 100, 2), [100, 100, 100]))
 check('deterministic across calls', eq(retryDelays(4, 100, 10000, 2), retryDelays(4, 100, 10000, 2)))
 const throws = (fn: () => void): boolean => {

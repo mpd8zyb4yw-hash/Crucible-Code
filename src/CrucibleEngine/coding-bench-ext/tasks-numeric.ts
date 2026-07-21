@@ -213,6 +213,10 @@ Semantics:
   carries its sign on the numerator ([1,-2] is the same number as [-1,2]).
 - Zero normalizes to [0,1] regardless of the input denominators.
 - Inputs are not mutated. Integer inputs only.
+- Exactness domain: plain number arithmetic suffices. The audit keeps every input and
+  every intermediate cross-product (a[0]*b[1], b[0]*a[1], a[1]*b[1], and the numerator
+  sum) within Number.MAX_SAFE_INTEGER in magnitude; behavior beyond that magnitude is
+  out of contract, and BigInt is not required.
 - Error contract: throw a RangeError if any denominator is 0; throw a TypeError if any
   entry is not an integer (this includes NaN and Infinity).`,
     ref: `export type Fraction = [number, number]

@@ -13,7 +13,9 @@
 // Honest weakness ranking, weakest first: tableMachine (shadow is a trivial
 // reimplementation of the same table lookup — low decorrelation), templateExpand (alt
 // mechanism, same author). Strongest: bankersRound (Intl halfEven — an entirely foreign
-// implementation), queryDecode (URLSearchParams), posixResolve (node path.posix),
+// implementation), queryDecode (URLSearchParams), posixResolve (node path.posix,
+// UNWRAPPED since 2026-07-21 — the earlier stripTrail adapter re-encoded this session's
+// contract reading and made it shadow-strength; the contract now matches node exactly),
 // deepEqual (node assert), baseConvert (BigInt/Number.toString), point-set interval
 // models, by-construction jsonPointer.
 //
@@ -336,19 +338,22 @@ const J = (v: unknown): string => JSON.stringify(v)
   check('dedent satisfies suffix/zero-min/uniform-strip invariants (400 rounds)', div === '', div)
 }
 
-// ── posixResolve vs node path.posix.normalize ───────────────────────────────
+// ── posixResolve vs node path.posix.normalize — UNWRAPPED ───────────────────
+// Since 2026-07-21 the contract matches node exactly (trailing slash preserved, "//"
+// roots collapse), so the oracle is the foreign implementation itself with NO
+// same-author adapter in between. The old stripTrail wrapper made this shadow-strength,
+// not foreign-strength (flagged by the human skim); any wrapper here would re-encode
+// this session's reading of the contract.
 {
-  const stripTrail = (p: string): string => (p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p)
   let div = ''
   for (let round = 0; round < 600 && !div; round++) {
-    const segs = Array.from({ length: rint(0, 7) }, () => pick(['a', 'b', 'c', '.', '..', 'dir9']))
-    let input = (rand() < 0.5 ? '/' : '') + segs.join('/') + (rand() < 0.3 ? '/' : '')
-    if (input.startsWith('//')) input = input.slice(1) // double-slash roots are impl-defined in POSIX; out of contract
+    const segs = Array.from({ length: rint(0, 7) }, () => pick(['a', 'b', 'c', '.', '..', 'dir9', '']))
+    const input = (rand() < 0.5 ? '/' : '') + segs.join('/') + (rand() < 0.3 ? '/' : '')
     const got = mods.posixResolve.normalizePath(input)
-    const want = stripTrail(path.posix.normalize(input === '' ? '.' : input))
+    const want = path.posix.normalize(input)
     if (got !== want) div = `input=${J(input)} got=${J(got)} node=${J(want)}`
   }
-  check('posixResolve agrees with path.posix.normalize (600 rounds)', div === '', div)
+  check('posixResolve agrees with path.posix.normalize unwrapped (600 rounds)', div === '', div)
 }
 
 // ── runLength vs a regex-run encoder + round-trip ───────────────────────────
@@ -374,7 +379,13 @@ const J = (v: unknown): string => JSON.stringify(v)
     ])
     const qs = pairs.map(([k, v]) => {
       const enc = (s: string) => (rand() < 0.5 ? encodeURIComponent(s) : encodeURIComponent(s).replace(/%20/g, '+'))
-      return enc(k) + '=' + enc(v)
+      // Raw malformed percent junk (ASCII only — on the ASCII domain ref and
+      // URLSearchParams provably share the U+FFFD replacement rule; raw non-ASCII
+      // literals are where URLSearchParams's byte-isomorphic parsing deliberately
+      // diverges from the contract's pass-through rule, so they stay out of the
+      // generator and in the fixed suite).
+      const junk = rand() < 0.3 ? pick(['%C3', '%E2%82', '%ZZ', '%', '%C3%28']) : ''
+      return enc(k) + '=' + enc(v) + junk
     }).join('&')
     const usp = new URLSearchParams(qs)
     const mine = mods.queryDecode.parseQuery(qs)
@@ -472,7 +483,7 @@ const J = (v: unknown): string => JSON.stringify(v)
     const attempts = rint(0, 8)
     const baseMs = rint(1, 500)
     const capMs = baseMs + rint(0, 5000)
-    const factor = pick([1, 1.25, 1.5, 2, 3])
+    const factor = pick([1, 1.1, 1.25, 1.5, 2, 3])
     const got = mods.retryDelays.retryDelays(attempts, baseMs, capMs, factor)
     if (got.length !== attempts) { div = `length ${got.length} want ${attempts}`; continue }
     for (let i = 0; i < attempts; i++) {

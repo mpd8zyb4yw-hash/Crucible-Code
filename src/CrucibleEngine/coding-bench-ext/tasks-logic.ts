@@ -135,9 +135,14 @@ Export exactly:
   export function retryDelays(attempts: number, baseMs: number, capMs: number, factor: number): number[]
 
 Semantics:
-- Returns the delay before each retry: attempt i (0-based) waits baseMs * factor^i,
-  capped at capMs. Purely deterministic — no randomness, no jitter.
-- Results are exact numbers (no rounding); attempts = 0 returns [].
+- Returns the delay before each retry. The schedule is the RECURRENCE d0 = baseMs,
+  d(i+1) = d(i) * factor — one IEEE-754 double multiplication per step, in that order;
+  entry i (0-based) is min(d(i), capMs). Purely deterministic — no randomness, no jitter.
+- Results are exact doubles compared with strict equality (no rounding, no tolerance).
+  The recurrence IS the spec: Math.pow(factor, i) rounds differently in the last bit for
+  some factors (at factor 1.1 the two disagree from i = 4 on) and fails the audit —
+  compute by iterated multiplication, not exponentiation.
+- attempts = 0 returns [].
 - Once the cap is reached every later entry equals capMs exactly.
 - Error contract (throw RangeError): attempts not a non-negative integer; baseMs <= 0;
   capMs < baseMs; factor < 1.`,
@@ -173,6 +178,8 @@ check('factor 1 is constant', eq(retryDelays(3, 250, 1000, 1), [250, 250, 250]))
 check('zero attempts empty', eq(retryDelays(0, 100, 1000, 2), []))
 check('single attempt is base', eq(retryDelays(1, 7, 100, 3), [7]))
 check('fractional factor allowed above 1', eq(retryDelays(3, 100, 1000, 1.5), [100, 150, 225]))
+check('recurrence pins iterated multiplication, not Math.pow',
+  eq(retryDelays(6, 1, 10, 1.1), [1, 1.1, 1.2100000000000002, 1.3310000000000004, 1.4641000000000006, 1.6105100000000008]))
 check('cap equal to base collapses', eq(retryDelays(3, 100, 100, 2), [100, 100, 100]))
 check('deterministic across calls', eq(retryDelays(4, 100, 10000, 2), retryDelays(4, 100, 10000, 2)))
 const throws = (fn: () => void): boolean => {
@@ -484,20 +491,25 @@ Do NOT import node's "path" or "fs" modules — this is a pure string algorithm.
 Export exactly:
   export function normalizePath(p: string): string
 
-Semantics:
-- Collapse repeated slashes; resolve "." segments away; resolve ".." against the previous
-  real segment.
+Semantics (identical to node's path.posix.normalize — the audit holds you to exact
+agreement with it, reimplemented by hand):
+- Collapse repeated slashes (a leading "//" collapses too: "//a/b" -> "/a/b"); resolve
+  "." segments away; resolve ".." against the previous real segment.
 - Absolute paths (leading "/"): ".." at the root is clamped ("/../a" -> "/a").
 - Relative paths: leading ".." segments that cannot be resolved are preserved
   ("../../a" stays "../../a"; "a/../../b" -> "../b").
-- A trailing slash is dropped except for the root itself ("/a/" -> "/a", "/" -> "/").
+- A trailing slash on the input is PRESERVED on the output ("/a/" -> "/a/",
+  "a/b/" -> "a/b/", "a/../../b/" -> "../b/") — except that a path which collapses to
+  the root alone is just "/" ("/" -> "/", "/a/../" -> "/").
 - The empty string and "." both normalize to "."; a relative path that fully cancels
-  ("a/..") normalizes to ".".`,
+  ("a/..") normalizes to "." — and with a trailing slash it keeps it: "a/../" -> "./",
+  "./" -> "./".`,
     ref: `export function normalizePath(p: string): string {
+  if (p === '') return '.'
   const absolute = p.startsWith('/')
-  const parts = p.split('/')
+  const trailing = p.endsWith('/')
   const out: string[] = []
-  for (const part of parts) {
+  for (const part of p.split('/')) {
     if (part === '' || part === '.') continue
     if (part === '..') {
       if (out.length > 0 && out[out.length - 1] !== '..') out.pop()
@@ -506,9 +518,10 @@ Semantics:
     }
     out.push(part)
   }
-  if (absolute) return '/' + out.join('/')
-  if (out.length === 0) return '.'
-  return out.join('/')
+  let body = out.join('/')
+  if (body === '') return absolute ? '/' : trailing ? './' : '.'
+  if (trailing) body += '/'
+  return absolute ? '/' + body : body
 }
 `,
     suite: `// HIDDEN adversarial suite for a NOVEL task (no matching primitive) — posixResolve.
@@ -523,6 +536,7 @@ function check(name: string, cond: boolean) {
 
 check('already normal', normalizePath('/a/b') === '/a/b')
 check('collapse repeated slashes', normalizePath('/a//b///c') === '/a/b/c')
+check('double-slash root collapses', normalizePath('//a/b') === '/a/b')
 check('dot segments removed', normalizePath('/a/./b/.') === '/a/b')
 check('dotdot resolves', normalizePath('/a/b/../c') === '/a/c')
 check('dotdot chain', normalizePath('/a/b/c/../../d') === '/a/d')
@@ -533,11 +547,16 @@ check('relative overflow becomes dotdot', normalizePath('a/../../b') === '../b')
 check('relative full cancel is dot', normalizePath('a/..') === '.')
 check('empty is dot', normalizePath('') === '.')
 check('dot is dot', normalizePath('.') === '.')
-check('trailing slash dropped', normalizePath('/a/') === '/a')
+check('trailing slash preserved', normalizePath('/a/') === '/a/')
 check('root stays root', normalizePath('/') === '/')
-check('relative trailing slash dropped', normalizePath('a/b/') === 'a/b')
+check('collapse to root drops the trailing slash', normalizePath('/a/../') === '/')
+check('relative trailing slash preserved', normalizePath('a/b/') === 'a/b/')
+check('full cancel with trailing slash is dot-slash', normalizePath('a/../') === './')
+check('dot-slash stays dot-slash', normalizePath('./') === './')
+check('dotdot keeps trailing slash', normalizePath('../') === '../')
+check('relative overflow keeps trailing slash', normalizePath('a/../../b/') === '../b/')
 check('dotdot after real segments', normalizePath('a/b/../c') === 'a/c')
-check('mixed mess', normalizePath('./a//./b/../c/') === 'a/c')
+check('mixed mess', normalizePath('./a//./b/../c/') === 'a/c/')
 check('no path module used', !String(normalizePath).includes('require'))
 
 console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')

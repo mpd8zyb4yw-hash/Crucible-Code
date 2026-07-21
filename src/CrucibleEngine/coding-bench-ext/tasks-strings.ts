@@ -13,6 +13,14 @@
 //
 // Authoring discipline: embedded code contains no backticks and no dollar-brace so it can
 // live inside these template literals verbatim.
+//
+// Adversarial-reading rule (from the 2026-07-21 human skim): before shipping a task,
+// answer "what is the most REASONABLE implementation that would FAIL this suite?" If one
+// exists, the contract is silent or self-contradictory at a boundary the suite tests —
+// pin that boundary in the prompt. Every defect the skim found had exactly this shape
+// (queryDecode: decodeURIComponent throws on malformed UTF-8 the contract's own validity
+// rule admits; retryDelays: Math.pow vs iterated multiplication under exact comparison;
+// posixResolve: trailing slash dropped where node path.posix preserves it).
 
 export interface ExtTask {
   id: string
@@ -220,7 +228,12 @@ Semantics:
 - Greedy fill: pack as many words onto a line as fit in width characters, counting the
   single spaces between them; break before the word that would overflow.
 - Runs of spaces collapse to a single space; lines never begin or end with a space.
-- A single word longer than width is hard-split into width-sized chunks.
+- A single word longer than width is hard-split into width-sized chunks. When such a word
+  is met mid-line the current line is flushed FIRST — the overlong word never fills the
+  remainder of the current line; its chunks always start at the word's own first
+  character ("xx abcde" at width 4 is "xx"/"abcd"/"e", never "xx a"/"bcde"). Its final
+  short chunk opens a new current line that following words may join ("x abcdefg y" at
+  width 3 ends with the line "g y").
 - Existing newline characters in the input are hard breaks: each input line wraps
   independently, and empty input lines are preserved as empty output lines.
 - Error contract: if width < 1 or not an integer, throw a RangeError.`,
@@ -269,6 +282,7 @@ check('exact fit boundary', wrap('aaa bb', 6) === 'aaa bb')
 check('one over boundary wraps', wrap('aaa bbb', 6) === 'aaa\\nbbb')
 check('overlong word hard-split', wrap('abcdefgh', 3) === 'abc\\ndef\\ngh')
 check('overlong word mid-text', wrap('x abcdefg y', 3) === 'x\\nabc\\ndef\\ng y')
+check('overlong word never fills the remainder', wrap('xx abcde', 4) === 'xx\\nabcd\\ne')
 check('spaces collapse', wrap('a    b', 10) === 'a b')
 check('leading/trailing spaces dropped', wrap('  a b  ', 10) === 'a b')
 check('existing newlines are hard breaks', wrap('ab\\ncd', 10) === 'ab\\ncd')
@@ -356,7 +370,15 @@ Semantics:
 - "+" decodes to a space in both keys and values.
 - Valid percent sequences decode as UTF-8 bytes (so multi-byte sequences like %C3%A9
   decode to a single character). An INVALID percent sequence (not followed by two hex
-  digits) is left in the output literally — never throw.
+  digits) is left in the output literally.
+- parseQuery NEVER throws, on any input string. Percent-decoded bytes that do not form
+  valid UTF-8 decode with the standard replacement-character rule (one U+FFFD per maximal
+  malformed subsequence — the same rule TextDecoder and URLSearchParams apply): "%C3%28"
+  decodes to U+FFFD followed by "(", and a dangling lead byte "%C3" decodes to U+FFFD
+  alone. Beware: decodeURIComponent THROWS a URIError on exactly these syntactically
+  valid but malformed-UTF-8 sequences, so it cannot implement this rule directly.
+- Any character that is not "+" and not part of a percent sequence passes through
+  verbatim, including raw non-ASCII characters.
 - A key that appears once maps to its string; a key that appears multiple times maps to an
   array of its values in order of appearance.
 - The empty string (or just "?") returns {}.`,
@@ -416,6 +438,13 @@ check('percent decodes', parseQuery('k=%20').k === ' ')
 check('multibyte utf8 sequence', parseQuery('k=%C3%A9').k === '\\u00e9')
 check('invalid percent left literal', parseQuery('k=%ZZx').k === '%ZZx')
 check('trailing lone percent literal', parseQuery('k=ab%').k === 'ab%')
+check('malformed utf8 bytes yield replacement char', parseQuery('k=%C3%28').k === '\\uFFFD(')
+check('dangling utf8 lead byte yields replacement char', parseQuery('k=%C3').k === '\\uFFFD')
+check('truncated 3-byte sequence is one replacement char', parseQuery('k=%E2%82').k === '\\uFFFD')
+check('raw non-ascii literal passes through', parseQuery('k=\\u00e9x').k === '\\u00e9x')
+check('never throws on hostile percent soup', ['%', '%%', '%2', '%C3%C3', '%E2%82x', '%ZZ%C3%28+%'].every(s => {
+  try { parseQuery(s); parseQuery('k=' + s); return true } catch { return false }
+}))
 const rep = parseQuery('a=1&a=2&a=3')
 check('repeated key becomes array in order', Array.isArray(rep.a) && (rep.a as string[]).join(',') === '1,2,3')
 check('no equals means empty value', parseQuery('flag').flag === '')
