@@ -909,6 +909,10 @@ async function main() {
     if (fire.loopEntries.length) {
       const last = fire.loopEntries[fire.loopEntries.length - 1]
       console.log(`  [W1]   loop entry    : ${fire.loopEntries.map(e => `${e.stage}:${e.reason}`).join(' → ')}${last.detail ? `  :: ${last.detail}` : ''}`)
+    } else if (fire.iters === 0 && fire.timedOut) {
+      // The client cap expired while a pre-loop stage (synth/VGR) was still mid-flight —
+      // no event could have been sent yet. Attributable: the cap is the reason.
+      console.log(`  [W1]   loop entry    : timeout-before-loop — the ${(PER_TASK_TIMEOUT_MS / 1000).toFixed(0)}s cap expired inside a pre-loop stage (budget-exhausted)`)
     } else if (fire.iters === 0) {
       console.log(`  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)`)
     }
@@ -932,7 +936,7 @@ async function main() {
   const itersDist: Record<string, number> = {}
   for (const s of scores) itersDist[String(s.iters)] = (itersDist[String(s.iters)] ?? 0) + 1
   console.log(`  iters distribution: ${Object.entries(itersDist).sort((a, b) => Number(a[0]) - Number(b[0])).map(([k, v]) => `${k}×${v}`).join('  ')}   timed out: ${scores.filter(s => s.timedOut).length}/${scores.length}`)
-  const unexplained = scores.filter(s => s.iters === 0 && !s.loopEntries.length && !(s.moduleExists && s.compiled && s.hiddenPassed))
+  const unexplained = scores.filter(s => s.iters === 0 && !s.loopEntries.length && !s.timedOut && !(s.moduleExists && s.compiled && s.hiddenPassed))
   if (unexplained.length) console.log(`  W1 ACCEPTANCE VIOLATION — unexplained iters:0 failures: ${unexplained.map(s => s.id).join(', ')}`)
   else console.log(`  W1 acceptance holds: every zero-iteration outcome is attributed to a named stage:reason`)
   // A 'catalog' GREEN proves proven-skill coverage, NOT that the offline agent can generate
