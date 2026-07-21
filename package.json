@@ -21,6 +21,7 @@
     "plananswer:bench": "tsx src/CrucibleEngine/agent/__plananswer_bench.ts",
     "fmplanscope:bench": "tsx src/CrucibleEngine/agent/__fmplan_scope_bench.ts",
     "harden:bench": "tsx src/CrucibleEngine/agent/__localHardenCheck_bench.ts",
+    "hermetic:bench": "tsx src/CrucibleEngine/synth/__hermetic_bench.ts",
     "contract:bench": "tsx src/CrucibleEngine/synth/__contractGate_bench.ts",
     "lintgate:bench": "tsx src/CrucibleEngine/synth/__lintGate_bench.ts",
     "repair:bench": "tsx src/CrucibleEngine/synth/__repairProposers_bench.ts",

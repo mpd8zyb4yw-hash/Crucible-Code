@@ -28,6 +28,7 @@ import type { SynthFile } from './synthEngine'
 import { lintCandidates } from './lintGate'
 import { checkDuplicateExports } from './dupSymbolGate'
 import { checkContract } from './contractGate'
+import { runHermeticSync, runHermeticAsync, firstDivergence } from './hermetic'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CODE_DIR = path.resolve(HERE, '../../..')   // repo root (has tsx/tsc + @types/node)
@@ -234,7 +235,22 @@ export function verifyCandidate(
     const cv = checkContract(opts.spec ?? '', files)
     if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
-    const tb = run('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
+    // W30: Gate B runs hermetically — scrubbed env (no inherited API keys), frozen clock,
+    // seeded PRNG, pinned TZ, network denied, SIGKILL reap, heap cap. See hermetic.ts.
+    const tb = runHermeticSync(testAbs, scratch, opts.runTimeoutMs ?? 30_000)
+    if (tb.ok) {
+      // Accept-side determinism gate: a flaky ACCEPT is recorded as truth and consumed by
+      // cache/flywheel/curriculum — asymmetrically worse than a flaky reject, so only
+      // accepts pay for a second run. Identical seed: any divergence is real entropy.
+      const tb2 = runHermeticSync(testAbs, scratch, opts.runTimeoutMs ?? 30_000)
+      if (!tb2.ok || tb2.out !== tb.out) {
+        return {
+          accepted: false, gateA: true, gateB: false,
+          detail: `NONDETERMINISTIC: two identical runs disagreed — not certifiable (${firstDivergence(tb.out, tb2.out)})`,
+          ranAssertions: true,
+        }
+      }
+    }
     return {
       accepted: tb.ok, gateA: true, gateB: tb.ok,
       detail: tb.timedOut ? 'behavioral test TIMED OUT (candidate reaped)' : (testTail(tb.out) || tb.out.slice(0, 200)),
@@ -271,7 +287,18 @@ export async function verifyCandidateAsync(
     const cv = checkContract(opts.spec ?? '', files)
     if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
-    const tb = await runAsync('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
+    // W30: hermetic Gate B + accept-side determinism gate — see the sync twin for rationale.
+    const tb = await runHermeticAsync(testAbs, scratch, opts.runTimeoutMs ?? 30_000)
+    if (tb.ok) {
+      const tb2 = await runHermeticAsync(testAbs, scratch, opts.runTimeoutMs ?? 30_000)
+      if (!tb2.ok || tb2.out !== tb.out) {
+        return {
+          accepted: false, gateA: true, gateB: false,
+          detail: `NONDETERMINISTIC: two identical runs disagreed — not certifiable (${firstDivergence(tb.out, tb2.out)})`,
+          ranAssertions: true,
+        }
+      }
+    }
     return {
       accepted: tb.ok, gateA: true, gateB: tb.ok,
       detail: tb.timedOut ? 'behavioral test TIMED OUT (candidate reaped)' : (testTail(tb.out) || tb.out.slice(0, 200)),

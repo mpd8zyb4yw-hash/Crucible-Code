@@ -1933,7 +1933,64 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
-### 2026-07-21i (cont.98 — certification caching + near-neighbour conflation repair)
+### 2026-07-21j (gap-soundness — W30: hermetic, deterministic, secret-free Gate B)
+
+> Branch `claude/gap-soundness` (off `crucible-northstar-sessions`), Track B of the
+> two-implementer split: this session owns the soundness workstreams (W30, W20, W32, W33,
+> W35, W36, W48 from `GAP_CLOSURE_ADDENDUM.md`); the parallel session owns Track A
+> (W1/W2/W3). New files only, plus a scoped Gate-B diff in `oracle.ts` — see the ownership
+> note in `NEXT_SESSION.md`.
+
+**W30 landed.** Gate B — the one place model-generated code executes — now runs hermetically.
+New `synth/hermetic.ts` + `synth/hermetic-prelude.cjs`, wired at both Gate-B call sites in
+`oracle.ts` (`verifyCandidate`/`verifyCandidateAsync`); `synth/__hermetic_bench.ts` (18
+checks, model-free) is the gate.
+
+What recon corrected in the addendum's claims: execution was already OUT of process (scratch
+dir + `tsx` + timeout) — better than assumed. The real verified gaps, each now closed:
+
+- **`env: process.env` handed every API key on the box to model-generated code**, whose
+  output flows back into retry prompts → the model context. The child now gets an explicit
+  allowlist (`PATH`/`HOME`/`TMPDIR` + pinned `TZ=UTC`/locale + hermetic controls). Proven by
+  a canary-env probe.
+- **Live clock / unseeded `Math.random` / inherited TZ ⇒ flaky certification.** Prelude
+  freezes the clock (fixed epoch + monotonic tick, so polling loops still terminate), seeds
+  `Math.random` (mulberry32, seed injectable), pins TZ/locale. Clock/random-USING candidates
+  become certifiable rather than flaky — the negative half the bench weighs hardest.
+- **Accept-side double-run.** Certification = two identical runs with byte-identical output.
+  Residual entropy the prelude cannot freeze (`crypto.randomBytes` probe) is caught and
+  named `NONDETERMINISTIC` instead of being recorded as truth. Rejects stay single-run — a
+  flaky reject costs an iteration; a flaky ACCEPT poisons cache/flywheel/curriculum.
+- **Network denial at the method surface** (`http`/`https`/`http2`/`tls`/`dgram`/`dns`
+  clients + `fetch`/`WebSocket`), because ESM imports bypass require hooks and — found live —
+  a `Module._load` deny kills tsx's own runtime (`node:net` for loader IPC). Unix-socket
+  connects pass through (local IPC, not network); TCP shapes throw a greppable
+  `HERMETIC_NET_DENIED`. The doctrine's "0 external APIs" is now machine-enforced at
+  certification time, not aspirational.
+- **SIGKILL reaping + 512MB heap cap.** SIGTERM cannot stop a busy loop (node only runs JS
+  signal handlers between ticks); proven with a SIGTERM-immune spinner. A memory bomb dies
+  at the cap instead of pressuring the 8GB box that also holds the resident model.
+
+**The mechanism validated itself on first contact:** the double-run caught the harness's own
+nondeterminism — tsx's transform cache made run 1 (cold compile) and run 2 (cache hit) read
+the frozen clock a different number of times, shifting candidate-visible tick values. Fix:
+`--no-cache` in the hermetic spawn, so both runs share identical process history. Exactly the
+hidden-cross-run-state class W30 exists to kill, found by the gate it built.
+
+Also fixed en route: the hermetic spawn is `node → tsx/cli` direct, not `npx tsx` — npx
+requires `http` internally and NODE_OPTIONS reaches every process in the chain (the prelude
+arms only in the process whose `argv[1]` is the candidate entry). Removes ~300ms of npx
+startup per Gate-B run as a side effect.
+
+Regression: `__contractGate_bench` 10/10, `__lintGate_bench` 12/12, `__repairProposers_bench`
+22/22, `prove-all` (all catalog skills through the changed oracle) — see commit. Known cost:
+an accepted candidate now pays 2 cold runs (rejects unchanged); determinism is worth it and
+the cold-run delta is measured in the bench.
+
+Honest limits: defends against incompetent candidates, not adversarial ones (a candidate can
+unpatch globals); fs writes outside scratch are not yet confined (needs `--permission`
+compat measurement with tsx — queued in W30's notes); `os`-level entropy (uptime/freemem)
+is unfrozen and left to the double-run to catch.
 
 > Continued alongside cont.96 (which owns `server.ts` / `fmReact.ts`). This session touched
 > ONLY `synthDriver.ts`, chosen deliberately so the two sessions cannot collide. The one

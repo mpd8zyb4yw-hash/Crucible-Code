@@ -17,9 +17,31 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21i (cont.98) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21m (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> Ran CONCURRENTLY with cont.96 (separate harness, same working tree). cont.96 owns
+> **TWO-IMPLEMENTER SPLIT IN EFFECT (user-confirmed 2026-07-21).** Per `GAP_CLOSURE.md` +
+> `GAP_CLOSURE_ADDENDUM.md`:
+> - **Track A (parallel session, `crucible-northstar-sessions`):** W1 loop-entry forensics,
+>   W2 GBNF grammars, W3 prefix caching — owns `fmReact.ts`, `fmQueue.ts`, the llama-server
+>   client, the iterate/loop-entry path, `grammars/`, `server.ts`.
+> - **Track B (branch `claude/gap-soundness`):** soundness workstreams W30 → W20 → W32 →
+>   W33 → W35 → W36 → W48 — owns `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
+>   `synth/__hermetic_bench.ts`, and the Gate-B call sites inside `oracle.ts`'s
+>   `verifyCandidate`/`verifyCandidateAsync` (that scoped diff only — W7's gate reordering in
+>   the same file stays Track A's). Future Track-B work arrives as NEW files + one wiring line.
+> - Re-verify any ownership claim with `git log -1 -- <file>` before treating it as a blocker.
+
+**Shipped 2026-07-21m (gap-soundness, W30):** Gate B is hermetic. Scrubbed child env (the
+`env: process.env` API-key exposure to model-generated code is closed), frozen clock + seeded
+PRNG + pinned TZ (clock/random-using candidates certify deterministically instead of flaking),
+method-surface network denial (`HERMETIC_NET_DENIED` — "0 external APIs" now machine-enforced
+at certification), SIGKILL reaping + 512MB heap cap, and an accept-side double-run that
+rejects as `NONDETERMINISTIC` anything two identical runs disagree on (proven on
+`crypto.randomBytes`; also caught tsx's transform cache shifting the frozen clock — fixed with
+`--no-cache` in the hermetic spawn). `__hermetic_bench.ts`: 18/18, model-free. Details in
+ROADMAP change log 2026-07-21j.
+
+> Previous state (cont.98, still current for its files): cont.96 owns
 > `fmReact.ts` + `server.ts` + the automation follow-up path. cont.98 touched **only**
 > `synthDriver.ts` — work was selected specifically to avoid that session's files.
 
