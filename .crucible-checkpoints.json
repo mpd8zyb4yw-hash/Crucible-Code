@@ -1,11 +1,5 @@
 [
   {
-    "hash": "bd92bfc",
-    "message": "pre-write_file",
-    "timestamp": 1784488226485,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/clamp-upper-bound"
-  },
-  {
     "hash": "bb8bdf8",
     "message": "pre-write_file",
     "timestamp": 1784488235787,
@@ -297,6 +291,12 @@
     "hash": "d6d6953",
     "message": "pre-write_file",
     "timestamp": 1784613078352,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "9fac4dd",
+    "message": "pre-write_file",
+    "timestamp": 1784613498558,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
