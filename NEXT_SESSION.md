@@ -79,21 +79,35 @@
   **Live-verified on a pinned server:** `layer2_fm_residue` fires, the run escalates, final is
   `"The sum of 17 and 4 is 21."` `__plananswer_bench.ts` 29/29.
 
+- **Layer 2 mis-planning is CLOSED (was cont.96 #1, and cont.94's `localFmPlanner` implicit-intent
+  item).** `localFmPlan` is a macOS AUTOMATION planner with no tool that answers "what is 17 + 4";
+  handed one it reached for `shell_exec` rather than abstaining. New `PURE_REASONING` guard returns
+  null BEFORE the FM round-trip (saves a model call too), gated on `!desktopIntent` — and without
+  desktop intent the GUI tools are already stripped, so such a goal has no tool that could answer
+  it there anyway. Deliberately NOT keyed on "no action verb": in-scope goals like "screenshot the
+  screen" match neither `ACTION_VERB` nor `DESKTOP_ACTION` (`^`-anchored) and must still pass.
+  Also new `stripPreamble` — an unattended run arrives as `[Standing automation …]\n\n<brief>`, so
+  the real request does not start at index 0 and **every `^`-anchored guard in this module was
+  being silently bypassed on scheduled runs**. `__fmplan_scope_bench.ts` 27/27
+  (`npm run fmplanscope:bench`; the fake synth asserts out-of-scope goals bail BEFORE the FM).
+  Live: no `layer2_fm_*` events at all, no `tool_call`/`tool_result`, final still correct.
+- **Repeated identical tool calls are CLOSED (was cont.96 #2).** `fmReact` fired the same
+  `search {"query":"\"sum of 17 and 4\""}` six times, all empty, burning six of eight rounds. It
+  now replays the first result for a byte-identical call and tells the model to change tool,
+  change args, or answer (`fm_react_repeat` event); only REAL executions are recorded, so the
+  replay is always a genuine result. Live: `fm_react_tool` fires ONCE (was 6×), `toolsUsed`
+  collapses from six entries to one, final still correct.
+
 **Open items / risks (priority order) — ADDITIVE to cont.95's list below, which still stands:**
-- **#1 — `localFmPlan` routes non-agentic questions to `shell_exec`.** The residue fix makes the
-  OUTCOME honest (escalate instead of shipping "exit 0"), but the fast path is still mis-planning:
-  a pure arithmetic question produced a 1-2 step `shell_exec` plan, and `intent_classified` logged
-  `conversational_reply` with **low** confidence while `isAgenticIntent` was nonetheless true. Every
-  such request now pays the fast path AND the full loop. Fix the gate (an agentic intent should
-  not be inferred from a low-confidence conversational classification) or teach `localFmPlan` to
-  return null for goals with no action verb — this is cont.94's still-open `localFmPlanner`
-  implicit-intent item, now with a concrete repro.
-- **The escalated path web-searches arithmetic 6× before answering.** After escalation the run went
-  `solveNonCodeTurn` → research DAG → abstain → `fmReact`, which issued the SAME query
-  `"sum of 17 and 4"` six times, every one `search_all_backends_empty`, before finally answering
-  correctly from reasoning. Correct answer, badly wasted work: no dedup of identical failed
-  queries, and no short-circuit for a question the system can just compute. Worth a repeated-query
-  guard in `fmReact` (the 6 identical calls are the cheap catch).
+- **#1 — the head still LOOPS on a failed tool call; only the cost was removed.** After the dedup
+  guard the model kept re-issuing the identical search for five more rounds despite an explicit
+  correction telling it to stop — it just no longer executes. So a turn that should end in 2 rounds
+  still burns the full budget. The honest fix is to treat N consecutive intercepted repeats as a
+  terminal signal (force FINAL_ANSWER, or abstain) rather than letting the budget drain.
+  `fm_react_repeat` is already emitted per occurrence, so the hit-rate is measurable now.
+- **`fmReact`'s loop is not unit-testable.** It calls module-scope `callFm` directly, so the dedup
+  guard could only be proven live. Injecting the model call (as `runFmPlan` already does with its
+  `exec` callback) would make this and the residue/refusal guards benchable offline.
 - **The dev environment fights live verification.** The tsx-watch server on :3001 restarted
   repeatedly mid-request (ECONNREFUSED / "terminated" mid-SSE), pid churning 47583 → 48366 → 48817
   within minutes, because the checkpointer/autocommit keeps touching watched files. **What worked:**

@@ -1986,10 +1986,18 @@ out of `synthDriver.ts` to avoid colliding mid-write. Both landed independently.
   **Live-verified on a pinned server** (port 3011, no watcher): `layer2_fm_residue` fires with
   summary `exit 0`, the run escalates, and the final is `"The sum of 17 and 4 is 21."` — correct.
   `__plananswer_bench.ts` 29/29; tsc clean.
-- **Two new findings from that trace, handed off (NEXT_SESSION cont.96 #1/#2):** `localFmPlan`
-  mis-plans non-agentic questions into `shell_exec` (so every such request now pays the fast path
-  AND the full loop — the outcome is honest, the routing is not), and the escalated path issued the
-  SAME failing web search `"sum of 17 and 4"` six times before answering correctly from reasoning.
+- **Both follow-ons from that trace also FIXED in this session.**
+  (a) **Layer 2 mis-planning** — `localFmPlan` has no tool that answers "what is 17 + 4" and reached
+  for `shell_exec` instead of abstaining. New `PURE_REASONING` guard bails BEFORE the FM
+  round-trip, gated on `!desktopIntent`; deliberately not keyed on "no action verb" so in-scope
+  goals like "screenshot the screen" (matching neither `ACTION_VERB` nor the `^`-anchored
+  `DESKTOP_ACTION`) still pass. Also found and fixed a latent hole: an unattended run arrives as
+  `[Standing automation …]\n\n<brief>`, so **every `^`-anchored guard in that module was being
+  silently bypassed on scheduled runs** — new `stripPreamble`. `__fmplan_scope_bench.ts` 27/27.
+  (b) **Repeated identical tool calls** — `fmReact` now replays the first result for a
+  byte-identical call within a turn instead of re-executing it (`fm_react_repeat` event). Live:
+  6 real searches → 1, `toolsUsed` six entries → one, answer still correct. Cost removed; the
+  head's underlying looping behaviour remains and is handed off as cont.96 #1.
 - **Noted, not fixed:** the verification run exposed step-label leakage in agent finals
   (`"perform addition → The sum of 17 and 4 is 21.\ndisplay result → 17 + 17 = 34"` — labels in
   the answer plus a fabricated contradicting line). Now user-visible in the chat transcript
