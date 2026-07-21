@@ -666,6 +666,29 @@ export function subjectHeadNoun(goal: string): string | null {
   return head.replace(/(?:ie)?s$/, m => (m === 'ies' ? 'y' : '')) || head
 }
 
+/**
+ * Does this one-line Wikipedia description assert the page IS an instance of the category?
+ *
+ * Testing whether the head noun appears ANYWHERE in the description is too weak: "Praetorian
+ * Guard — Bodyguards of the Roman emperors" contains "emperor" and shipped inside a list of
+ * emperors. The description's own HEAD phrase is the discriminator, so only the part before the
+ * first " of " is tested:
+ *
+ *   "Roman emperor from 27 BC to AD 14"  → "Roman emperor"  → IS an emperor        (keep)
+ *   "Bodyguards of the Roman emperors"   → "Bodyguards"     → is not one           (drop)
+ *   "First period of the Roman Empire"   → "First period"   → is not one           (drop)
+ *   "Italian breed of sighthound"        → "Italian breed"  → IS a breed           (keep)
+ *   "Italian dog association"            → (no " of ")      → lacks "breed"        (drop)
+ *
+ * Stem-compared for the same reason certification stems qualifiers — "emperor" must match
+ * "emperors", "breed" must match "breeds".
+ */
+export function descAssertsInstance(desc: string | null | undefined, head: string): boolean {
+  if (!desc) return false
+  const headPhrase = desc.toLowerCase().split(/\s+of\s+/)[0]
+  return headPhrase.includes(head.slice(0, Math.max(4, head.length)))
+}
+
 /** Certify proposed items against Wikipedia. Fails OPEN (keeps the item) on any network or
  *  parse error — a flaky lookup must not silently empty the user's collection — but drops an
  *  item whose article demonstrably does not mention the goal's qualifier, or whose one-line
@@ -735,6 +758,129 @@ function saveWikiStore(key: string, d: Record<string, unknown> | null): void {
   } catch { /* a read-only cwd must not break the run */ }
 }
 
+/**
+ * One-line descriptions for MANY names, 50 per request.
+ *
+ * This is what makes the "List of X" tier affordable. It was rejected in cont.97 because
+ * `List of Roman emperors` exposes ~650 links and certifying them meant ~650 individual summary
+ * requests against an API that had already rate-limited us. `action=query&prop=description`
+ * accepts up to 50 titles per call, turning that into ~13 requests — the objection was to the
+ * request COUNT, and batching removes it outright.
+ *
+ * Kept in a SEPARATE cache from `wikiSummary`. A description-only record must never be written
+ * into the summary cache: `groundItemDoc` reads `extract` from that cache, and a partial entry
+ * would silently look like "this page has no extract" and suppress the grounded reference on
+ * every item the list tier touched.
+ */
+/**
+ * Wikipedia fetch with 429-aware backoff.
+ *
+ * Rate limiting is the dominant failure mode of every tier here, and it does not announce
+ * itself: a 429 arrives as a plain non-ok response, so code that tested `!res.ok` and gave up
+ * reported "no list article for this subject" when the truth was "we asked too fast". Measured
+ * directly — three consecutive cold runs of the emperors plan, and runs 2 and 3 died on
+ * `search-http status 429` while run 1 succeeded, making a working tier look broken and
+ * silently handing the answer back to the FM (which proposed Charlemagne as a Roman emperor).
+ *
+ * `Retry-After` is honoured when present, because guessing shorter than the server's stated
+ * interval is what earns a longer ban.
+ */
+async function wikiFetch(url: string, timeoutMs = 12000, tries = 3): Promise<Response | null> {
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' },
+        signal: AbortSignal.timeout(timeoutMs),
+      })
+      if (res.ok) return res
+      if (res.status === 404) return res // a real answer, not a failure to retry
+      const ra = Number(res.headers.get('retry-after'))
+      const waitMs = Number.isFinite(ra) && ra > 0 ? ra * 1000 : 700 * Math.pow(2, attempt)
+      if (attempt < tries - 1) await new Promise(r => setTimeout(r, waitMs))
+    } catch {
+      if (attempt < tries - 1) await new Promise(r => setTimeout(r, 700 * Math.pow(2, attempt)))
+    }
+  }
+  return null
+}
+
+interface WikiMeta { desc: string | null }
+const _WIKI_DESC_CACHE = new Map<string, WikiMeta>()
+const _WIKI_DESC_STORE = path.join(process.cwd(), '.crucible', 'wiki-meta.json')
+let _descLoaded = false
+
+function loadDescStore(): void {
+  if (_descLoaded) return
+  _descLoaded = true
+  try {
+    const raw = JSON.parse(fs.readFileSync(_WIKI_DESC_STORE, 'utf-8')) as Record<string, WikiMeta>
+    for (const [k, v] of Object.entries(raw)) {
+      if (!_WIKI_DESC_CACHE.has(k) && v && typeof v === 'object') _WIKI_DESC_CACHE.set(k, v)
+    }
+  } catch { /* absent or corrupt store is an empty one */ }
+}
+
+function saveDescStore(): void {
+  try {
+    fs.mkdirSync(path.dirname(_WIKI_DESC_STORE), { recursive: true })
+    fs.writeFileSync(_WIKI_DESC_STORE, JSON.stringify(Object.fromEntries(_WIKI_DESC_CACHE)), 'utf-8')
+  } catch { /* read-only cwd must not break the run */ }
+}
+
+async function wikiDescriptions(names: string[]): Promise<Map<string, WikiMeta>> {
+  loadDescStore()
+  const out = new Map<string, WikiMeta>()
+  const missing: string[] = []
+  for (const n of names) {
+    const k = n.trim().toLowerCase()
+    const hit = _WIKI_DESC_CACHE.get(k)
+    if (hit) out.set(k, hit)
+    else missing.push(n)
+  }
+  let fetched = 0
+  let failedBatches = 0
+  for (let i = 0; i < missing.length; i += 50) {
+    const batch = missing.slice(i, i + 50)
+    try {
+      // Descriptions only. `prop=pageviews` was tried here as a prominence signal and REMOVED:
+      // the API silently returns pageviews for just 5 pages per request while happily returning
+      // descriptions for all 50, with no warning field to detect the truncation. In a 50-title
+      // batch that gave 45 items views:0, so ranking put whichever 5 happened to be served
+      // first on top — Augustus scored 0 and fell out of the cut entirely. Batching pageviews
+      // properly would mean ~110 requests for one list, which reinstates the cost objection
+      // this tier exists to avoid. Prominence now comes from the list article's own document
+      // order instead, which is free and, for chronological lists, more meaningful.
+      const url = 'https://en.wikipedia.org/w/api.php?action=query&format=json&prop=description&titles=' +
+        encodeURIComponent(batch.join('|'))
+      // RETRY, don't silently skip. A bare `continue` here made a failed batch indistinguishable
+      // from a batch of pages that genuinely have no description — and since a missing
+      // description means DROP in the list tier, a few failures quietly deleted dozens of real
+      // candidates. Measured: one run fetched only 300 descriptions for 557 links and the tier
+      // fell through to the FM, which then proposed Charlemagne as a Roman emperor.
+      const res = await wikiFetch(url)
+      if (!res?.ok) { failedBatches++; continue }
+      const pages = ((await res.json()) as any)?.query?.pages ?? {}
+      for (const p of Object.values(pages) as any[]) {
+        const title = String(p?.title ?? '')
+        if (!title) continue
+        const desc = typeof p?.description === 'string' ? p.description : null
+        const meta: WikiMeta = { desc }
+        _WIKI_DESC_CACHE.set(title.toLowerCase(), meta)
+        out.set(title.toLowerCase(), meta)
+        fetched++
+      }
+    } catch { failedBatches++ /* one failed batch must not abort the rest */ }
+    // Be a good citizen between batches — this tier exists precisely because we were
+    // rate-limited before, and 13 rapid-fire requests is what triggers that.
+    if (i + 50 < missing.length) await new Promise(r => setTimeout(r, 250))
+  }
+  if (fetched) saveDescStore()
+  debugBus.emit('agent', 'wiki_descriptions_batch',
+    { asked: names.length, cached: names.length - missing.length, fetched, failedBatches },
+    { severity: failedBatches ? 'warn' : 'info' })
+  return out
+}
+
 async function wikiSummary(name: string): Promise<Record<string, unknown> | null | undefined> {
   loadWikiStore()
   const key = name.trim().toLowerCase()
@@ -786,10 +932,12 @@ export async function certifyAssetItems(goal: string, items: AssetItem[]): Promi
       // permissive — the kennel club's article talks about breeds at length, so testing the
       // extract would re-admit exactly what this check exists to remove. Skipped entirely when
       // the page has no description (fail open rather than guess).
-      const desc = String(d?.description ?? '').toLowerCase()
-      const isInstance = !head || !desc
-        ? true
-        : desc.includes(head.slice(0, Math.max(4, head.length)))
+      const desc = String(d?.description ?? '')
+      // Same instance test the list tier uses, so the two tiers cannot disagree about what
+      // counts as a member. Skipped entirely when the page has no description (fail open rather
+      // than guess) — unlike the list tier, where a missing description means drop, because
+      // there the candidate pool is unvetted and enormous.
+      const isInstance = !head || !desc ? true : descAssertsInstance(desc, head)
 
       return { it, keep: topical && isInstance }
     } catch { return { it, keep: true } }
@@ -888,7 +1036,21 @@ export async function planAssetCollection(goal: string): Promise<AssetItem[]> {
     _assetPlans.set(goal, certified)
     return certified
   }
-  debugBus.emit('agent', 'offline_asset_plan', { via: 'fm-proposal', retrievedRejected: retrieved.length }, { severity: 'info' })
+  // TIER 2: the "List of X" article. Many subjects have no usable category but a curated list —
+  // Category:Roman emperors is nearly all about-the-office pages, while List of Roman emperors
+  // is the actual enumeration. Still grounded, so it outranks the FM (doctrine), and it is
+  // tried BEFORE spending model samples. Same >=5 floor as the category tier: a small result
+  // means the filter found little real enumeration, which is not evidence worth trusting.
+  const listed = await retrieveListItems(subject, subjectHeadNoun(goal))
+  if (listed.length >= 5) {
+    debugBus.emit('agent', 'offline_asset_plan', { via: 'wikipedia-list', n: listed.length }, { severity: 'info' })
+    const certified = await certifyAssetItems(goal, listed.slice(0, 10))
+    _assetPlans.set(goal, certified)
+    return certified
+  }
+
+  debugBus.emit('agent', 'offline_asset_plan',
+    { via: 'fm-proposal', retrievedRejected: retrieved.length, listedRejected: listed.length }, { severity: 'info' })
 
   // STOP ON CONVERGENCE, not on luck. The old rule was `attempt < 3 && bySlug.size < 5`, which
   // made the result a function of sample ORDER: a lucky first sample returning 8 items stopped
@@ -1022,6 +1184,127 @@ export async function sampleUntilConvergence(
     ((votes.get(b.slug) ?? 0) - (votes.get(a.slug) ?? 0)) ||
     ((order.get(a.slug) ?? 0) - (order.get(b.slug) ?? 0)))
   return { items, converged: dry >= dryStreak, samples }
+}
+
+/**
+ * Retrieve instances from a Wikipedia "List of X" article.
+ *
+ * The second grounded tier, between the category graph and the FM. Many subjects have no clean
+ * category but a curated list article — `Category:Roman emperors` is almost entirely
+ * about-the-office pages, while `List of Roman emperors` is the actual enumeration.
+ *
+ * cont.97 investigated and REJECTED this tier on cost: the list exposes ~650 links, and vetting
+ * them meant ~650 individual requests against an already rate-limiting API. Two things changed:
+ * `wikiDescriptions()` vets 50 names per request (~13 calls), and the disk evidence store makes
+ * even that a ONE-TIME cost rather than per-run. The original objection was to request COUNT,
+ * and it no longer holds.
+ *
+ * Filtering is the same instance test certification uses, applied to the batched descriptions:
+ * a link is kept only if its one-line description contains the subject's HEAD NOUN. That is
+ * what separates "Augustus — Roman emperor from 27 BC" from "Principate — First period of the
+ * Roman Empire" and "Julio-Claudian dynasty — Roman imperial dynasty", which is exactly the
+ * concept-page noise that made the raw link list unusable. Links with no description are
+ * DROPPED here rather than kept: on a 650-link page the default must be exclusion, or the
+ * noise this tier exists to remove comes straight back.
+ */
+/** Keep only links whose description asserts instancehood, preserving DOCUMENT order. A link
+ *  with no description is dropped rather than kept: on a 500-link page the default has to be
+ *  exclusion, or the concept-page noise this tier exists to remove comes straight back. */
+function filterInstances(links: string[], metas: Map<string, WikiMeta>, head: string): AssetItem[] {
+  const bySlug = new Map<string, AssetItem>()
+  for (const t of links) {
+    if (!descAssertsInstance(metas.get(t.toLowerCase())?.desc, head)) continue
+    const name = t.replace(/\s*\([^)]*\)\s*$/, '').trim().slice(0, 60)
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    if (slug && !bySlug.has(slug)) bySlug.set(slug, { name, slug })
+  }
+  return [...bySlug.values()]
+}
+
+async function retrieveListItems(subject: string, head: string | null): Promise<AssetItem[]> {
+  // Every exit path reports WHY. An earlier version returned [] silently from five different
+  // places, so a tier that was working on one run and dead on the next was indistinguishable
+  // from a subject that simply has no list article — the failure looked like a policy decision.
+  const bail = (why: string, extra: Record<string, unknown> = {}): AssetItem[] => {
+    debugBus.emit('agent', 'offline_asset_list_bail', { why, subject, ...extra }, { severity: 'info' })
+    return []
+  }
+  if (!head) return bail('no-head-noun') // no head noun means no instance test, and no filter
+
+  // Resolved lists are persisted per subject. A list article's membership changes on the scale
+  // of months, so re-searching and re-downloading a 200KB page on every run buys nothing and
+  // spends exactly the request budget that gets us rate-limited. Same principle as the evidence
+  // store: keep what we proved, treat the network as an accelerator.
+  const listStore = path.join(process.cwd(), '.crucible', 'wiki-lists.json')
+  const subjKey = subject.trim().toLowerCase()
+  let cachedList: { title: string; links: string[] } | null = null
+  try { cachedList = (JSON.parse(fs.readFileSync(listStore, 'utf-8')) as any)[subjKey] ?? null } catch { /* empty store */ }
+
+  try {
+    if (cachedList?.links?.length) {
+      const metas = await wikiDescriptions(cachedList.links)
+      const items = filterInstances(cachedList.links, metas, head)
+      debugBus.emit('agent', 'offline_asset_list_tier',
+        { title: cachedList.title, links: cachedList.links.length, kept: items.length, via: 'cached-list' },
+        { severity: 'info' })
+      return items
+    }
+    // Find the list article rather than assuming its exact title ("List of Roman emperors",
+    // but "List of dog breeds" — pluralisation and phrasing vary).
+    const sRes = await wikiFetch(
+      'https://en.wikipedia.org/w/api.php?action=query&format=json&list=search&srlimit=5&srsearch=' +
+      encodeURIComponent(`intitle:"List of" ${subject}`), 10000)
+    if (!sRes?.ok) return bail('search-http', { status: sRes?.status ?? 'no-response' })
+    // Scan the top hits for the first ACTUAL list article instead of trusting rank 1. Even with
+    // intitle:"List of", relevance ranking puts a plain article first — searching for roman
+    // emperors returns "Holy Roman Emperor" above "List of Roman emperors", so taking only the
+    // top hit made this tier bail out silently on the very subject it was built for.
+    const hits = (((await sRes.json()) as any)?.query?.search ?? []) as any[]
+    const title = hits.map(h => String(h?.title ?? '')).find(t => /^lists? of\b/i.test(t)) ?? ''
+    if (!title) return bail('no-list-article', { hits: hits.map((h: any) => String(h?.title ?? '')) })
+
+    // Read the article's WIKITEXT rather than its link list. `prop=links` returns titles
+    // ALPHABETICALLY, which destroys the only free prominence signal available: a top-10 cut of
+    // "Roman emperors" then shipped Aemilianus and Alexios V Doukas — correct instances, useless
+    // as an answer — while Augustus never made it. The wikitext preserves DOCUMENT order, and a
+    // list article is ordered the way a reader would want it (chronologically, for emperors), so
+    // the first N links are the answer a person actually means. It is also ONE request for the
+    // whole page instead of several paginated link calls.
+    const pRes = await wikiFetch(
+      'https://en.wikipedia.org/w/api.php?action=parse&format=json&prop=wikitext&page=' + encodeURIComponent(title), 15000)
+    if (!pRes?.ok) return bail('parse-http', { status: pRes?.status ?? 'no-response', title })
+    const wikitext = String(((await pRes.json()) as any)?.parse?.wikitext?.['*'] ?? '')
+    if (!wikitext) return bail('empty-wikitext', { title })
+
+    const seen = new Set<string>()
+    const links: string[] = []
+    for (const m of wikitext.matchAll(/\[\[([^\]|#]+)(?:\|[^\]]*)?\]\]/g)) {
+      const t = m[1].trim()
+      // Namespaced links (File:, Category:, Template:) are never instances.
+      if (!t || t.includes(':') || _META_TITLE_RX.test(t)) continue
+      const k = t.toLowerCase()
+      if (seen.has(k)) continue // keep FIRST occurrence, so document order is preserved
+      seen.add(k)
+      links.push(t)
+    }
+    if (!links.length) return bail('no-links', { title })
+
+    // Persist the resolved list BEFORE filtering, so the expensive part (search + 200KB parse)
+    // is never repeated even if the description pass is degraded by rate limiting this run.
+    try {
+      fs.mkdirSync(path.dirname(listStore), { recursive: true })
+      let all: Record<string, unknown> = {}
+      try { all = JSON.parse(fs.readFileSync(listStore, 'utf-8')) } catch { /* start fresh */ }
+      all[subjKey] = { title, links, at: Date.now() }
+      fs.writeFileSync(listStore, JSON.stringify(all), 'utf-8')
+    } catch { /* read-only cwd must not break the run */ }
+
+    const metas = await wikiDescriptions(links)
+    const items = filterInstances(links, metas, head)
+    debugBus.emit('agent', 'offline_asset_list_tier',
+      { title, links: links.length, kept: items.length }, { severity: 'info' })
+    return items
+  } catch (e: any) { return bail('threw', { error: String(e?.message ?? e).slice(0, 120) }) }
 }
 
 /** One FM sample of candidate item names for a category. Returns [] on any parse failure. */
