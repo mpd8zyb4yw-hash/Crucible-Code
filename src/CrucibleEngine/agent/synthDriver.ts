@@ -651,10 +651,15 @@ export async function certifyAssetItems(goal: string, items: AssetItem[]): Promi
 async function planAssetCollection(goal: string): Promise<AssetItem[]> {
   const cached = _assetPlans.get(goal)
   if (cached) return cached
-  const sys = 'You list the items a file collection should contain. Reply with ONE line of strict ' +
-    'JSON and nothing else: {"items": ["<name>", ...]}. Give between 3 and 10 real, specific item ' +
-    'names drawn from the request\'s subject. Names only — no descriptions, no numbering.'
-  const raw = await _callLocalFm(sys, `REQUEST:\n${goal}`, 12000)
+  // Prompt with the SUBJECT, never the raw goal. Given the whole request the FM echoed the
+  // request's own nouns back as items — a live run planned "Dog Breeds", "Photos" and
+  // "Descriptions", producing descriptions.md and photos.jpg instead of actual breeds.
+  const subject = assetCollectionSlug(goal).replace(/-/g, ' ')
+  const sys = 'You name specific real EXAMPLES of a category. Reply with ONE line of strict JSON ' +
+    'and nothing else: {"items": ["<name>", ...]}. Give between 3 and 10 items. Each must be the ' +
+    'proper name of ONE specific real instance of the category — never the category itself, never ' +
+    'a generic word like "photos", "descriptions" or "files". Names only, no explanations.'
+  const raw = await _callLocalFm(sys, `CATEGORY: ${subject}\n\nName specific examples of this category.`, 12000)
   let items: AssetItem[] = []
   const m = raw.match(/\{[\s\S]*\}/)
   if (m) {
@@ -669,6 +674,15 @@ async function planAssetCollection(goal: string): Promise<AssetItem[]> {
             return { name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }
           })
           .filter((it: AssetItem) => it.slug)
+          // Deterministic backstop for the same failure the prompt above addresses: an item
+          // that IS the category (contained in the subject) or is one of the request's own
+          // container words is never a real instance, whatever the FM claims.
+          .filter((it: AssetItem) => {
+            const n = it.name.toLowerCase().trim()
+            if (/^(photos?|images?|pictures?|pics|descriptions?|files?|notes?|folder|directory|readme|overview|index)$/.test(n)) return false
+            if (subject.includes(n)) return false
+            return true
+          })
         // The FM repeats itself ("Italian Greyhound" three times in the live dog-breeds
         // run). Duplicates collapse to one path, so they showed up only as repeated
         // README links — dedupe on slug so the index matches the files on disk.
