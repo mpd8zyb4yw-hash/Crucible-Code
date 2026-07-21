@@ -2003,6 +2003,49 @@ out of `synthDriver.ts` to avoid colliding mid-write. Both landed independently.
   the answer plus a fabricated contradicting line). Now user-visible in the chat transcript
   rather than buried in a digest blurb. See NEXT_SESSION cont.96 open items.
 
+### 2026-07-21h (cont.97 — photos for asset collections + a retrieval-grounded item plan)
+
+Finished what cont.95 started: the dog-breeds request is now satisfied in full, photos included.
+Live end-to-end run produced `~/Desktop/dog-breeds-from-italy/` = README index + 9 real Italian
+breeds, each with a grounded `.md` and a validated image (10 docs, 9 photos, formats correct).
+
+- **`registry.ts` — `image_search` was entirely non-functional and is rewritten.** The
+  third-party ddg proxy it called is dead and the DDG-HTML fallback does not serve image
+  results, so the tool answered "No image URLs found." to EVERY query: any agent that asked for
+  a picture got nothing, silently, because both tiers failed quietly. New source order is
+  Wikipedia lead image → Wikimedia Commons file search → the legacy DDG scrape. Wikimedia is
+  also the correct LICENCE answer (CC/public-domain with provenance) rather than hotlinking
+  arbitrary results, which matters as soon as images land in a user's folder.
+- **Item plans are grounded in retrieval; the FM is demoted to fallback.**
+  `retrieveCategoryItems()` maps the subject onto a Wikipedia category and reads its members —
+  deterministic across runs, where the on-device FM returned 0, 1, 2, 5 and 10 items on
+  identical repeats of the same goal. Two guards make it safe: a member whose title restates the
+  category's own head noun is an about-the-category page rather than an instance (this is what
+  keeps Category:Roman emperors, which is nearly all meta-articles, from beating a correct FM
+  list), and a retrieval set of fewer than 5 items is discarded outright rather than blended,
+  since a thin set is evidence the matched category was wrong.
+- **`certifyAssetItems()` applies propose→verify→drop to the plan itself.** The FM proposed
+  "Basenji" — a Central African breed — for an ITALIAN breeds goal, i.e. exactly the oracle-trust
+  the doctrine forbids. Every proposed item is now checked against its own Wikipedia summary for
+  the goal's proper-noun qualifier. The match is on the STEM ("italy" → "ital"), because a place
+  qualifier appears in articles adjectivally: exact matching dropped Cane Corso, whose summary
+  says "Italian breed of mastiff" and never says "Italy". Measured on a fixed list: keeps
+  Italian Greyhound / Cane Corso / Lagotto Romagnolo, drops Basenji / Akita / Shiba Inu. It
+  retries once on a transient lookup failure — a burst of rate-limited requests made every check
+  fail open at once and admitted "Border Collie", the precise failure certification exists for.
+- Photo targets are attempted ONCE each (a failed download writes no file and would otherwise be
+  re-picked forever), `download_file`'s existing magic-byte + size validation is the verifier,
+  and files are named for their real format after a Wikimedia PNG shipped as `cane-corso.jpg`.
+- Also rejected at the planner: items echoing the prompt's literal `<name>` placeholder, and
+  items that merely repeat the request's own nouns (one run planned "Photos" and "Descriptions",
+  producing `photos.md` and `descriptions.jpg`).
+- HONEST RESIDUE: the Italian-breeds category also yields "Ente Nazionale della Cinofilia
+  Italiana", a kennel-club organisation rather than a breed, and it passes certification because
+  its article does mention Italy. Certification tests topical membership, not instance-of-head-
+  noun. Logged as the top follow-up rather than papered over.
+
+Ran concurrently with cont.96 (fmReact/server.ts) on the same working tree; no shared files.
+
 ### 2026-07-21f (cont.95 — asset-collection routing: file-CREATION goals finally create files)
 
 Closed cont.94's #1 BINDING open item. A goal whose deliverable is a FOLDER OF FILES ("make a

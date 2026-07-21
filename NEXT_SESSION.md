@@ -17,7 +17,59 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21g (cont.96) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21h (cont.97) (REPLACE THIS EVERY SESSION)
+
+> Ran CONCURRENTLY with cont.96 (separate harness, same working tree). cont.96 owned
+> `fmReact.ts` + `server.ts` + the automation follow-up path; this session owned
+> `synthDriver.ts` + `registry.ts` (asset collections) and touched nothing else. Both are
+> landed and non-overlapping. The cont.96 block below is preserved and still current.
+
+**Shipped 2026-07-21h (cont.97 — photos + a retrieval-grounded item plan):**
+- **The dog-breeds request is now fully satisfied, photos included.** Live end-to-end:
+  `~/Desktop/dog-breeds-from-italy/` = README index + 9 real Italian breeds, each with a
+  grounded `.md` and a validated photo (10 docs, 9 images, formats correct on disk).
+- **`image_search` (`registry.ts`) was completely broken and is fixed.** Its ddg-proxy tier is
+  dead and the DDG-HTML fallback serves no images, so the tool returned "No image URLs found."
+  for EVERY query — any agent asking for a picture silently got nothing, and nothing surfaced
+  that because both tiers fail quietly. Now Wikipedia lead image → Wikimedia Commons file
+  search → the old DDG scrape. Wikimedia is also the right licence answer (CC/PD) versus
+  arbitrary hotlinked web results.
+- **Item plans are retrieval-grounded, FM only as fallback.** `retrieveCategoryItems()` resolves
+  the subject to a Wikipedia category and takes its members. A member whose title restates the
+  category's head noun is treated as an about-page, not an instance — this is what stops
+  Category:Roman emperors (nearly all meta-articles) from outranking a correct FM list. A
+  retrieval set below 5 items is discarded outright, never blended.
+- **`certifyAssetItems()` — propose→verify→drop.** The FM planned "Basenji" (Central African)
+  for an ITALIAN breeds goal. Items are now checked against their Wikipedia summary for the
+  goal's proper-noun qualifier, stem-matched ("italy"→"ital", so "Italian breed of mastiff"
+  verifies). Measured: keeps Italian Greyhound/Cane Corso/Lagotto Romagnolo, drops
+  Basenji/Akita/Shiba Inu. Retries once — a rate-limit burst had made certification fail open
+  and admit "Border Collie".
+- Also fixed: FM echoing the prompt's literal `<name>` placeholder as an item; FM naming the
+  request's own words ("Photos", "Descriptions") as items; downloads now carry their REAL
+  extension (a Wikimedia PNG was being saved as `cane-corso.jpg`).
+
+**Open items / risks (priority order):**
+- **Category-member precision is imperfect.** The Italian-breeds category yields "Ente Nazionale
+  della Cinofilia Italiana" — a kennel-club ORG, not a breed — and it survives certification
+  because its article does mention Italy. Certification checks topical membership, not that the
+  item is an INSTANCE OF THE HEAD NOUN ("is a dog breed").
+- **`planAssetCollection` still degrades to the FM for subjects with no clean category**, where
+  output stays run-to-run unstable (emperors runs returned 8, then 10, then 0 items).
+  Retrieval-first made the dog case deterministic; it did not fix the fallback path.
+- **No licence/attribution recorded per photo.** Images come from Wikimedia (CC/PD) and the
+  README warns to check licences, but each image's specific licence and author are not captured.
+  Commons' `imageinfo` can return `extmetadata` with both.
+- **Item descriptions can conflate near-neighbours** — an earlier `italian-greyhound.md` said it
+  "resembles the Greyhound and the smaller Italian Greyhound". Grounding-quality issue in
+  `solveNonCodeTurn`'s research DAG, not routing.
+- **The checkpoint auto-committer sweeps the whole working tree**, so this session's
+  `registry.ts` fix first landed inside a "crucible: pre-write_file" commit. With two harnesses
+  live on one tree that is an active hazard, not a cosmetic one.
+
+**Previous (cont.96) state below:**
+
+## CURRENT STATE — last updated 2026-07-21g (cont.96) (superseded by cont.97 above)
 
 > Ran CONCURRENTLY with cont.95 (separate harness, same working tree). cont.95 owned
 > `synthDriver.ts` (asset-collection routing); this session owned `fmReact.ts` + the automation
