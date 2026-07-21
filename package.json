@@ -17,6 +17,7 @@
     "validate:batch": "tsx src/CrucibleEngine/synth/validate-batch.ts",
     "prove:all": "npm run harden:bench && npm run fuzz:bench && npm run stakes:bench && npm run contract:bench && npm run lintgate:bench && npm run repair:bench && tsx src/CrucibleEngine/synth/prove-all.ts",
     "fuzz:bench": "tsx src/CrucibleEngine/agent/__fuzz_bench.ts",
+    "toolargs:bench": "tsx src/CrucibleEngine/agent/__toolargs_bench.ts",
     "harden:bench": "tsx src/CrucibleEngine/agent/__localHardenCheck_bench.ts",
     "contract:bench": "tsx src/CrucibleEngine/synth/__contractGate_bench.ts",
     "lintgate:bench": "tsx src/CrucibleEngine/synth/__lintGate_bench.ts",

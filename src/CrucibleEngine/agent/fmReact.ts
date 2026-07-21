@@ -390,9 +390,62 @@ function looksLikeProtocol(text: string): boolean {
   return /^\s*(?:\*{0,3}|#{1,6}\s*)?TOOL:\s*\w+/im.test(text) || /FINAL_ANSWER:/i.test(text)
 }
 
-export function parseResponse(raw: string): ParsedResponse {
+/**
+ * Name of a tool's FIRST declared param — its "primary" one. `params` is a human-readable
+ * spec string (`'query: the search query string'`), so the leading `word:` is the param the
+ * model is most likely to be supplying when it emits a bare positional value.
+ */
+export function primaryParamOf(tool: FmReactTool): string | undefined {
+  return tool.params.match(/^\s*(\w+)\s*:/)?.[1]
+}
+
+/**
+ * Build the primary-param lookup `parseResponse` needs to rescue positional args.
+ * Exported so benches can construct one without standing up the whole loop.
+ */
+export function primaryParamLookup(tools: FmReactTool[]): (toolName: string) => string | undefined {
+  const byName = new Map(tools.map(t => [t.name, primaryParamOf(t)]))
+  return (n) => byName.get(n)
+}
+
+export function parseResponse(
+  raw: string,
+  /** Maps a tool name to its primary param, so a BARE positional arg can be rescued. */
+  primaryParam?: (toolName: string) => string | undefined,
+): ParsedResponse {
   const text = undecorate(raw)
-  const toolMatch = text.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
+  // A weak model routinely emits the tool call in function-call form on the TOOL: line
+  // itself — `TOOL: run("mkdir", "dog_breeds_italy")` or `TOOL: search(query="…")` —
+  // instead of the documented `TOOL: name\nkey: value` block. The old regex required a
+  // NEWLINE after the tool name, so these matched nothing (or matched with an empty arg
+  // body), and the tool ran with no args: `run` got `{"0":"mkdir","1":"dog_breeds_italy"}`
+  // shaped garbage downstream, `search` got an empty `query`. Normalize the call form into
+  // the block form up front so a single arg parser handles both.
+  const normalized = text.replace(
+    /^(\s*TOOL:\s*\w+)\s*\(([^)\n]*)\)\s*$/im,
+    (_m, head: string, inner: string) => `${head}\n${splitCallArgs(inner).join('\n')}`,
+  )
+  const toolMatch = normalized.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
+  return parseNormalized(normalized, toolMatch, primaryParam)
+}
+
+/** Split a function-call arg list into one line per arg, preserving `key=value` pairs. */
+function splitCallArgs(inner: string): string[] {
+  return inner
+    .split(/,(?=(?:[^"']*(?:"[^"]*"|'[^']*'))*[^"']*$)/)   // commas outside quotes
+    .map(a => a.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean)
+    .map(a => {
+      const kv = a.match(/^(\w+)\s*=\s*(.*)$/)
+      return kv ? `${kv[1]}: ${kv[2].replace(/^["']|["']$/g, '')}` : a
+    })
+}
+
+function parseNormalized(
+  text: string,
+  toolMatch: RegExpMatchArray | null,
+  primaryParam?: (toolName: string) => string | undefined,
+): ParsedResponse {
   const finalMatch = text.match(/FINAL_ANSWER:\s*\n?([\s\S]+)/i)
 
   // A weak/local model routinely ignores "use at most one tool per response" and
@@ -413,6 +466,7 @@ export function parseResponse(raw: string): ParsedResponse {
     const toolName = toolMatch[1].trim()
     const rest = toolMatch[2].trim()
     const args: Record<string, string> = {}
+    const positional: string[] = []
     for (const line of rest.split('\n')) {
       // Stop at the next hallucinated TOOL:/FINAL_ANSWER: block — without this, a
       // multi-block fabrication bleeds unrelated key:value lines from LATER
@@ -421,7 +475,20 @@ export function parseResponse(raw: string): ParsedResponse {
       // real create_tool call as if it were one of create_tool's own params.
       if (/^TOOL:/i.test(line) || /^FINAL_ANSWER:/i.test(line)) break
       const m = line.match(/^(\w+):\s*(.+)$/)
-      if (m) args[m[1]] = m[2].trim()
+      if (m) { args[m[1]] = m[2].trim(); continue }
+      // Not `key: value` — a BARE positional value. The model emits these constantly
+      // ("TOOL: run\nmkdir dog_breeds_italy"), and silently dropping them handed the tool
+      // an empty arg set, which is exactly how `run` ended up with no command and
+      // `search` with an empty query. Keep them for the primary-param rescue below.
+      const bare = line.trim().replace(/^["']|["']$/g, '')
+      if (bare) positional.push(bare)
+    }
+    // Rescue: the model supplied a value but not the param NAME. Bind the positional text
+    // to the tool's first declared param — the only param a single bare value can mean.
+    // Only when nothing named was parsed, so a well-formed call is never overwritten.
+    if (!Object.keys(args).length && positional.length) {
+      const key = primaryParam?.(toolName)
+      if (key) args[key] = positional.join(' ')
     }
     return { type: 'tool', toolName, args }
   }
@@ -469,6 +536,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
   const tools = [...makeDefaultTools(projectPath, noSearch), ...extraTools]
   const toolMap = new Map(tools.map(t => [t.name, t]))
   const system = buildSystemPrompt(tools)
+  const primaryParam = primaryParamLookup(tools)
 
   const messages: FmMessage[] = [
     ...historyToMessages(history),
@@ -493,7 +561,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
       throw new Error('FM returned empty response')
     }
 
-    const parsed = parseResponse(rawResponse)
+    const parsed = parseResponse(rawResponse, primaryParam)
 
     if (parsed.type === 'final') {
       return {
@@ -538,7 +606,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
 
   try {
     const lastResponse = await callFm(system, messages, FM_TIMEOUT_MS)
-    const parsed = parseResponse(lastResponse)
+    const parsed = parseResponse(lastResponse, primaryParam)
     return {
       answer: stripAgentScaffold(parsed.answer ?? lastResponse),
       rounds,
