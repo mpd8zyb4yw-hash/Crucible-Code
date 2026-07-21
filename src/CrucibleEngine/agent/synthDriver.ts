@@ -504,6 +504,98 @@ export function isWebArtifactGoal(goal: string): boolean {
   return ARTIFACT_RX.test(m) || WEB_RX.test(m)
 }
 
+// ── Asset-collection goals (folder of researched files) ──────────────────────
+// "make a folder on my desktop with photos and descriptions of dog breeds from Italy"
+// names no code file and is not a single-file web artifact, so it fell through to
+// solveNonCodeTurn — whose toolset is research-only (search/fetch/read). It therefore
+// either REFUSED ("I don't have the capability to create a folder") or dumped raw search
+// hits. Both are wrong: the request is a FILE-CREATION goal, and the write tools exist.
+// This is the same shape of fix as isWebArtifactGoal above — gate on the SHAPE of the
+// request (creation verb + a container noun + a destination) and route it to a real write
+// loop, rather than letting the research solver answer a build request in prose.
+//
+// Content still comes from retrieval (solveNonCodeTurn per item), never from parametric
+// FM memory — the loop-not-oracle rule applies to the descriptions too.
+const CONTAINER_RX = /\b(folder|directory|collection|set of files|files|notes?|dossiers?|write-?ups?|profiles?)\b/
+const DESTINATION_RX = /\b(desktop|downloads|documents)\b/
+
+/** Creation goal whose deliverable is a FOLDER OF FILES rather than one code/web file. */
+export function isAssetCollectionGoal(goal: string): boolean {
+  const m = (goal || '').toLowerCase()
+  if (!CREATION_RX.test(m)) return false
+  if (isWebArtifactGoal(goal)) return false
+  if (NON_BROWSER_RX.test(m)) return false
+  // Needs BOTH a container noun and a user-folder destination. Requiring the destination
+  // is what keeps "write a set of tests" and "create a module" out of this path.
+  return CONTAINER_RX.test(m) && DESTINATION_RX.test(m)
+}
+
+/** Slug for the collection folder, derived from the goal's subject. */
+function assetCollectionSlug(goal: string): string {
+  const m = goal.toLowerCase()
+  // Everything after the LAST topic preposition is the subject ("…descriptions OF dog
+  // breeds from italy"). Only of/about/regarding qualify — "on"/"for" also introduce the
+  // DESTINATION ("a folder ON my desktop"), and matching those grabbed the boilerplate
+  // instead of the topic. Last match wins so "descriptions of X" beats an earlier "of".
+  const topics = [...m.matchAll(/\b(?:of|about|regarding|featuring)\s+([a-z0-9][a-z0-9 \-]{2,60})/g)]
+  const subject = (topics.length ? topics[topics.length - 1][1] : m)
+    .replace(/\b(a|an|the|my|me|please|folder|directory|desktop|downloads|documents|with|and|in|on|of|some|photos?|images?|pictures?|descriptions?|describing|containing|notes?|files?|make|create|build|write|generate)\b/g, ' ')
+    .trim()
+  // Truncate on a word boundary — a mid-word cut ("…from-it") reads as a typo in a folder
+  // name the user actually sees.
+  const words = subject.replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean)
+  let slug = ''
+  for (const w of words) {
+    const next = slug ? `${slug}-${w}` : w
+    if (next.length > 48) break
+    slug = next
+  }
+  return slug || 'collection'
+}
+
+/** Absolute-ish destination directory for an asset-collection goal (write_file expands ~). */
+export function assetCollectionDir(goal: string): string {
+  const m = goal.toLowerCase()
+  const root = /\bdownloads\b/.test(m) ? 'Downloads' : /\bdocuments\b/.test(m) ? 'Documents' : 'Desktop'
+  return `~/${root}/${assetCollectionSlug(goal)}`
+}
+
+/** One planned item in the collection. */
+interface AssetItem { name: string; slug: string }
+
+// Planning is one FM call per goal; cache so the per-item write turns agree on the plan.
+const _assetPlans = new Map<string, AssetItem[]>()
+
+/** Ask the FM to enumerate the collection's items. Returns [] on any failure — the caller
+ *  degrades to a single grounded overview file rather than fabricating an item list. */
+async function planAssetCollection(goal: string): Promise<AssetItem[]> {
+  const cached = _assetPlans.get(goal)
+  if (cached) return cached
+  const sys = 'You list the items a file collection should contain. Reply with ONE line of strict ' +
+    'JSON and nothing else: {"items": ["<name>", ...]}. Give between 3 and 10 real, specific item ' +
+    'names drawn from the request\'s subject. Names only — no descriptions, no numbering.'
+  const raw = await _callLocalFm(sys, `REQUEST:\n${goal}`, 12000)
+  let items: AssetItem[] = []
+  const m = raw.match(/\{[\s\S]*\}/)
+  if (m) {
+    try {
+      const v = JSON.parse(m[0])
+      if (Array.isArray(v.items)) {
+        items = v.items
+          .filter((s: unknown) => typeof s === 'string' && s.trim().length > 1)
+          .slice(0, 10)
+          .map((s: string) => {
+            const name = s.trim().slice(0, 60)
+            return { name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }
+          })
+          .filter((it: AssetItem) => it.slug)
+      }
+    } catch { /* fall through to [] */ }
+  }
+  _assetPlans.set(goal, items)
+  return items
+}
+
 function extractHtmlDoc(raw: string): string {
   const fence = raw.match(/```(?:html)?\s*([\s\S]*?)```/i)
   let s = (fence ? fence[1] : raw).trim()
@@ -1182,7 +1274,11 @@ function parseCurrentState(messages: Array<Record<string, unknown>>, explicitGoa
           ? JSON.parse(tc.function.arguments || '{}')
           : (tc.function?.arguments ?? {})
         const p = String(args.path ?? args.file_path ?? '')
-        if (p && /\.(ts|tsx|js|mjs|html)$/.test(p)) {
+        // Extension filter, NOT a code filter: asset-collection goals write .md/.txt/.json
+        // deliverables, and until those were listed here writtenPaths stayed empty for them
+        // — so the collection branch below re-picked the same "next unwritten" file every
+        // turn and rewrote README.md until the iteration budget ran out.
+        if (p && /\.(ts|tsx|js|mjs|html|md|txt|json|csv)$/.test(p)) {
           if (name === 'read_file') lastReadPath = p
           if (name === 'write_file' || name === 'create_file') {
             if (!writtenPaths.includes(p)) writtenPaths.push(p)
@@ -1418,6 +1514,54 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     const primaryPath = goalPaths[0] ?? null
     const unwrittenPaths = goalPaths.filter(p => !writtenPaths.includes(p))
     const allWritten = goalPaths.length > 0 && unwrittenPaths.length === 0
+
+    // ── Asset-collection goals: a FOLDER OF FILES is the deliverable ─────────
+    // Routed here instead of solveNonCodeTurn because that solver has only read-only
+    // research tools and must refuse a file-creation request. One file per turn, tracked
+    // through writtenPaths exactly like S1, so the loop keeps its normal write cadence.
+    if (goalPaths.length === 0 && isAssetCollectionGoal(goal)) {
+      const dir = assetCollectionDir(goal)
+      const items = await planAssetCollection(goal)
+      const readme = `${dir}/README.md`
+      const targets = [readme, ...(items.length
+        ? items.map(it => `${dir}/${it.slug}.md`)
+        : [`${dir}/overview.md`])]
+      const nextPath = targets.find(p => !writtenPaths.includes(p))
+
+      if (!nextPath) {
+        debugBus.emit('agent', 'offline_asset_done', { dir, files: writtenPaths.length }, { severity: 'info' })
+        return {
+          text: `Wrote ${writtenPaths.length} file(s) to ${dir} — one per item plus README.md. ` +
+            `Descriptions are retrieval-grounded. Images are NOT included: downloading third-party ` +
+            `photos is not something this loop does, so the files are text only.`,
+          toolCalls: [],
+        }
+      }
+
+      let content: string
+      if (nextPath === readme) {
+        const list = items.length
+          ? items.map(it => `- [${it.name}](${it.slug}.md)`).join('\n')
+          : '- [overview](overview.md)'
+        content = `# ${assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n` +
+          `Requested: ${goal.trim()}\n\n## Contents\n\n${list}\n\n` +
+          `_Text only — photos are not downloaded by this process._\n`
+      } else {
+        const item = items.find(it => nextPath === `${dir}/${it.slug}.md`)
+        const query = item ? `${item.name} — in the context of: ${goal.trim()}` : goal.trim()
+        content = `# ${item?.name ?? assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n${await solveNonCodeTurn(query, projectPath)}\n`
+      }
+
+      debugBus.emit('agent', 'offline_asset_write', { path: nextPath, planned: targets.length }, { severity: 'info' })
+      return {
+        text: '',
+        toolCalls: [{
+          id: `offline_asset_${Date.now()}`,
+          name: 'write_file',
+          args: { path: nextPath, content },
+        }],
+      }
+    }
 
     if (!primaryPath) {
       // No TS/JS file in goal — route through the offline intelligence stack:
