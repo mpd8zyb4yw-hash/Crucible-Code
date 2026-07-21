@@ -40,6 +40,9 @@ export interface ToolDef {
   params: Record<string, unknown>
   /** Marks tools that mutate state — gated by ctx.allowMutation. */
   mutates?: boolean
+  /** A precondition the tool cannot run without. Used to avoid advertising tools that are
+   *  guaranteed to fail in the current context (see scopeTools). */
+  requires?: 'googleAuth'
   run: (args: Record<string, unknown>, ctx: ToolCtx) => Promise<ToolResult>
 }
 
@@ -80,6 +83,34 @@ export function fromGeminiFunctionCalls(calls: Array<{ name: string; args: objec
 }
 
 // ── Fence-mode (fallback) ─────────────────────────────────────────────────────
+
+export interface ToolScope {
+  /** Mirrors ToolCtx.allowMutation. When false, mutating tools are dropped. */
+  allowMutation?: boolean
+  /** Mirrors ToolCtx.userId. When absent, googleAuth tools are dropped. */
+  userId?: string
+}
+
+/**
+ * Restrict a tool list to those that could actually succeed in the given context.
+ *
+ * This is correctness, not a heuristic: `registry.exec` refuses a mutating tool when
+ * allowMutation is false, and every googleAuth tool returns "requires an authenticated
+ * user session" without a userId. Advertising them anyway costs twice — the schemas eat
+ * context the model needs for the actual question, and offering an unusable tool invites
+ * the model to plan around it and burn a turn discovering it cannot.
+ *
+ * Deliberately no relevance/keyword ranking: guessing which tools a request "needs" can
+ * hide one the model genuinely required, and the preconditions above already remove most
+ * of the weight without ever being wrong.
+ */
+export function scopeTools(defs: ToolDef[], scope: ToolScope): ToolDef[] {
+  return defs.filter(d => {
+    if (d.mutates && scope.allowMutation === false) return false
+    if (d.requires === 'googleAuth' && !scope.userId) return false
+    return true
+  })
+}
 
 export function fenceProtocolPrompt(defs: ToolDef[]): string {
   const list = defs.map(d =>

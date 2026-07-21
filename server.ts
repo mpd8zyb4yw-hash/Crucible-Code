@@ -22,7 +22,7 @@ import { registry } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
-import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
+import { fenceProtocolPrompt, parseFenceToolCall, scopeTools } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
 import { runAgentLoop } from './src/CrucibleEngine/agent/loop'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
@@ -918,15 +918,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
 // ── Agentic tool-call loop (fence protocol via tool registry) ────────────────
 async function callModelAgentic(model: SelectedModel, messages: { role: string; content: string }[], maxIterations = 3): Promise<string> {
   const ctx: ToolCtx = { projectPath: process.cwd(), allowMutation: false }
+  // Only advertise tools that can actually succeed here: this context is read-only and has
+  // no authenticated user, so mutating and Google tools would refuse if called. Dropping
+  // them frees a large slice of context on free-tier models with small windows.
+  const usableTools = scopeTools(registry.list(), ctx)
   const agenticMessages = [...messages]
   if (agenticMessages[0]?.role === 'system') {
-    agenticMessages[0] = { ...agenticMessages[0], content: agenticMessages[0].content + fenceProtocolPrompt(registry.list()) }
+    agenticMessages[0] = { ...agenticMessages[0], content: agenticMessages[0].content + fenceProtocolPrompt(usableTools) }
   }
   for (let i = 0; i < maxIterations; i++) {
     const response = await callModel(model, agenticMessages)
     // Pass the real tool names so alias-tolerant parsing cannot mistake ordinary JSON
     // in a final answer for a tool call.
-    const toolCall = parseFenceToolCall(response, { knownTools: registry.list().map(t => t.name) })
+    const toolCall = parseFenceToolCall(response, { knownTools: usableTools.map(t => t.name) })
     if (!toolCall) return response  // no tool call — final response
     console.log(`[Agentic] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args)})`)
     const result = await registry.exec(toolCall, ctx)

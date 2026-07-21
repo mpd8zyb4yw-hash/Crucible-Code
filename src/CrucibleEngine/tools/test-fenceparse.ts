@@ -5,7 +5,8 @@
 // model's final answer, so the raw JSON ships to the user. Strictness costs answers.
 // Deterministic: pure functions. No model calls, no network.
 // Run: npx tsx src/CrucibleEngine/tools/test-fenceparse.ts
-import { parseFenceToolCall, repairParseJSON } from './protocol'
+import { parseFenceToolCall, repairParseJSON, scopeTools } from './protocol'
+import { registry } from './registry'
 
 let failures = 0
 const check = (label: string, cond: boolean, detail = '') => {
@@ -79,6 +80,37 @@ const call = (t: string, o = KNOWN) => parseFenceToolCall(t, o)
     bare('{"name":"read_file","arguments":{"path":"a.ts"}}')?.name === 'read_file')
   check('without knownTools, a bare {"name": ...} object is NOT a tool call',
     bare('{"name":"Alice","role":"admin"}') === null)
+}
+
+// ── scopeTools: dropping tools that could not have succeeded anyway ──────────
+{
+  const all = registry.list()
+  const readOnly = scopeTools(all, { allowMutation: false })
+  const authed = scopeTools(all, { allowMutation: false, userId: 'u1' })
+  const full = scopeTools(all, { allowMutation: true, userId: 'u1' })
+
+  check('an unrestricted context keeps every tool', full.length === all.length, `${full.length}/${all.length}`)
+  check('read-only drops the mutating tools', !readOnly.some(t => t.mutates))
+  check('read-only without a user drops the google tools', !readOnly.some(t => t.requires === 'googleAuth'))
+  check('supplying a userId restores the google tools', authed.some(t => t.requires === 'googleAuth'))
+  check('scoping actually removes meaningful weight', readOnly.length < all.length / 2, `${readOnly.length}/${all.length}`)
+
+  // The core invariant: nothing was hidden that the model could have used. Every tool
+  // dropped for read-only must be one registry.exec would refuse — and it refuses BEFORE
+  // invoking run(), so this check has no side effects.
+  const droppedMutators = all.filter(t => t.mutates && !readOnly.includes(t))
+  let allRefused = true
+  for (const t of droppedMutators) {
+    const r = await registry.exec({ id: 'x', name: t.name, args: {} }, { projectPath: '/tmp', allowMutation: false } as any)
+    if (r.ok || !/not permitted/.test(r.output)) { allRefused = false; console.log(`   ${t.name} -> ${r.output.slice(0, 60)}`) }
+  }
+  check(`every dropped mutating tool would have been refused (${droppedMutators.length} checked)`, allRefused)
+
+  // Read-only must retain the tools that make the path useful at all.
+  const names = new Set(readOnly.map(t => t.name))
+  check('read-only keeps the research/navigation core',
+    ['read_file', 'search', 'glob', 'list_dir', 'web_search', 'fetch_url', 'update_plan'].every(n => names.has(n)),
+    [...names].join(','))
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)

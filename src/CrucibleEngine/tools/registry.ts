@@ -989,6 +989,7 @@ registry.register({
 
 registry.register({
   name: 'gmail_search',
+  requires: 'googleAuth',
   description: 'Search the user\'s Gmail inbox. Returns subject, sender, date, and snippet for each match. Use for finding emails, checking messages, reading correspondence.',
   params: {
     type: 'object',
@@ -1020,6 +1021,7 @@ registry.register({
 
 registry.register({
   name: 'gmail_read',
+  requires: 'googleAuth',
   description: 'Read the full body of a specific Gmail message by ID. Get the message ID from gmail_search first.',
   params: {
     type: 'object',
@@ -1051,6 +1053,7 @@ registry.register({
 
 registry.register({
   name: 'gmail_send',
+  requires: 'googleAuth',
   description: 'Send an email via Gmail. Use only when explicitly asked by the user to send an email.',
   mutates: true,
   params: {
@@ -1091,6 +1094,7 @@ registry.register({
 
 registry.register({
   name: 'calendar_list',
+  requires: 'googleAuth',
   description: 'List upcoming Google Calendar events. Returns title, time, location, and description.',
   params: {
     type: 'object',
@@ -1123,6 +1127,7 @@ registry.register({
 
 registry.register({
   name: 'calendar_create',
+  requires: 'googleAuth',
   description: 'Create a Google Calendar event. Use when the user asks to schedule, book, or add something to their calendar.',
   mutates: true,
   params: {
@@ -1160,6 +1165,7 @@ registry.register({
 
 registry.register({
   name: 'drive_search',
+  requires: 'googleAuth',
   description: 'Search Google Drive for files. Returns file names, types, and links.',
   params: {
     type: 'object',
@@ -1186,6 +1192,7 @@ registry.register({
 
 registry.register({
   name: 'drive_read',
+  requires: 'googleAuth',
   description: 'Read the text content of a Google Drive file. Works for Google Docs, Sheets (as CSV), and plain text files. Get the file ID from drive_search.',
   params: {
     type: 'object',
@@ -1216,6 +1223,7 @@ registry.register({
 
 registry.register({
   name: 'contacts_search',
+  requires: 'googleAuth',
   description: 'Search the user\'s Google Contacts. Returns names, emails, and phone numbers.',
   params: {
     type: 'object',
@@ -1246,6 +1254,7 @@ registry.register({
 
 registry.register({
   name: 'youtube_search_api',
+  requires: 'googleAuth',
   description: 'Search YouTube using the official API — more reliable than scraping. Returns video titles, channels, and URLs. Use in preference to search_youtube when the user has signed in with Google.',
   params: {
     type: 'object',
@@ -1275,6 +1284,7 @@ registry.register({
 
 registry.register({
   name: 'fitness_activity',
+  requires: 'googleAuth',
   description: 'Get the user\'s Google Fit activity data — steps, calories, distance, active minutes.',
   params: {
     type: 'object',
@@ -1323,6 +1333,7 @@ registry.register({
 
 registry.register({
   name: 'analytics_report',
+  requires: 'googleAuth',
   description: 'Run a Google Analytics 4 report. Returns page views, sessions, and user metrics for a given date range.',
   params: {
     type: 'object',
@@ -1449,6 +1460,7 @@ registry.register({
 
 registry.register({
   name: 'google_services_status',
+  requires: 'googleAuth',
   description: 'Check which Google services are connected and available for this session. Call this before using any google_* tool if unsure.',
   params: { type: 'object', properties: {} },
   async run(_args, ctx) {

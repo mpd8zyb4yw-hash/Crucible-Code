@@ -1346,6 +1346,46 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21 — `scopeTools`: stop advertising tools that cannot succeed (−47% tool prompt)
+
+**Measured, not assumed.** `fenceProtocolPrompt` emitted all 41 tools with full JSON schemas
+on *every* call in the fence path: **18,050 chars ≈ 4,513 tokens**. Many free-tier models have
+an 8k window, so more than half the context was spent before the user's question was read.
+This is the free-tier speed/quality tax that no amount of prompt tuning fixes.
+
+**The fix is correctness, not compression.** `registry.exec` refuses a mutating tool when
+`allowMutation` is false, and all 12 Google tools return "requires an authenticated user
+session" without a `ctx.userId`. `callModelAgentic` runs read-only with no user — so 23 of its
+41 advertised tools **could not possibly have succeeded**. Advertising them cost twice: the
+schemas ate the context, and offering an unusable tool invites the model to plan around it and
+burn a turn discovering it cannot. (Same shape as the `localFmPlan` → `shell_exec` mis-plan:
+a model handed an inapplicable tool will reach for it.)
+
+Added `ToolDef.requires?: 'googleAuth'` and tagged the 12 Google tools — derived by scanning
+for `ctx.userId` usage rather than hand-listing names, so the tag cannot drift from reality.
+
+| context | tools | tool prompt |
+|---|---|---|
+| all (before) | 41 | ~4,513 tok |
+| read-only, no user (`callModelAgentic`) | 18 | ~2,375 tok |
+| read-only + authed user | 28 | ~3,281 tok |
+| full agent | 41 | ~4,513 tok |
+
+**−2,138 tokens (47%) on the read-only path, with zero capability lost.**
+
+**Deliberately no keyword/relevance ranking.** Guessing which tools a request "needs" can hide
+one the model genuinely required — a silent, hard-to-debug failure. The precondition filters
+above remove most of the weight while being *provably* never wrong, which is the better trade.
+
+**The invariant is tested, not asserted:** the bench executes every tool dropped for read-only
+and confirms `registry.exec` refuses it — and since that refusal happens *before* `run()` is
+invoked, the check has no side effects. 13/13 refused. It also asserts the research core
+(`read_file`, `search`, `glob`, `list_dir`, `web_search`, `fetch_url`, `update_plan`) survives
+scoping, so the path stays useful.
+
+**Verified:** `test-fenceparse.ts` 36/36 (parser + scope). Sweep green: `test-research` 39/39,
+`test-taskplan` 37/37, `test-tools` ALL PASS, `tsc --noEmit` clean.
+
 ### 2026-07-21 — Fence tool-call parser hardening (free-tier philosophy, applied literally)
 
 **Why this is high leverage, and not merely tidy:** in fence mode a failed parse is *not* a
