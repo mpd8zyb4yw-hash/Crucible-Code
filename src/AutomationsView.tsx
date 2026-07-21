@@ -401,7 +401,7 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
 export default function AutomationsView({ onClose, onFollowUp }: {
   onClose: () => void
   /** Prefill the chat composer with text and return to chat — wired by App. */
-  onFollowUp?: (text: string) => void
+  onFollowUp?: (text: string, convId?: string) => void
 }) {
   const [list, setList] = useState<Automation[]>([])
   const [digest, setDigest] = useState<DigestEntry[]>([])
@@ -557,7 +557,7 @@ export default function AutomationsView({ onClose, onFollowUp }: {
         <RunDetailOverlay
           runRef={openRun}
           onClose={() => setOpenRun(null)}
-          onFollowUp={onFollowUp ? t => { setOpenRun(null); onFollowUp(t) } : undefined}
+          onFollowUp={onFollowUp ? (t, c) => { setOpenRun(null); onFollowUp(t, c) } : undefined}
         />
       )}
     </div>

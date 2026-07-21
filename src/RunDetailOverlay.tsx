@@ -27,9 +27,11 @@ function fmtFull(ts: number): string {
 export default function RunDetailOverlay({ runRef, onClose, onFollowUp }: {
   runRef: RunRef
   onClose: () => void
-  /** Prefill the chat composer with a follow-up grounded in this run and close every
-   *  overlay above the chat — wired by App. Send stays a user decision. */
-  onFollowUp?: (text: string) => void
+  /** Continue this run in chat, closing every overlay above it — wired by App. Send stays a
+   *  user decision. When `convId` is given, App adopts that stored conversation so the next
+   *  message THREADS onto the run with real history; `text` is the legacy paste-the-answer
+   *  prefill, used only as a fallback when no stored thread exists. */
+  onFollowUp?: (text: string, convId?: string) => void
 }) {
   const [detail, setDetail] = useState<RunDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -122,8 +124,9 @@ export default function RunDetailOverlay({ runRef, onClose, onFollowUp }: {
             <PrimaryButton
               onClick={() => onFollowUp(
                 `About the "${detail!.name}" run from ${fmtFull(run.ts)} — here is its result:\n\n${body.slice(0, 1500)}\n\nFollow-up: `,
+                `automation-${runRef.automationId}`,
               )}
-              title="Prefill the chat composer with this result so you can ask about it or act on it"
+              title="Open this automation's thread in chat so you can ask about it or act on it"
             >Continue in chat</PrimaryButton>
           )}
           <GhostButton onClick={rerun} title="Run this automation's brief through the agent loop again now">

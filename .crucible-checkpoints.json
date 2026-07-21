@@ -1,11 +1,5 @@
 [
   {
-    "hash": "a454ddb",
-    "message": "pre-write_file",
-    "timestamp": 1784487754540,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/validate-email-domain"
-  },
-  {
     "hash": "d8a1b08",
     "message": "pre-write_file",
     "timestamp": 1784487796487,
@@ -297,6 +291,12 @@
     "hash": "3a728e6",
     "message": "pre-write_file",
     "timestamp": 1784606939978,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "633671b",
+    "message": "pre-write_file",
+    "timestamp": 1784607009633,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]

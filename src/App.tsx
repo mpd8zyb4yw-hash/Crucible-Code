@@ -431,19 +431,23 @@ export default function App() {
   // in-memory pool. Used by the sidebar slivers, the mobile history drawer, and the
   // Settings HistoryBinder. Deliberately does NOT adopt conversation.mode — restoring
   // an old ensemble ('quorum') thread must never silently re-arm the external pipeline.
-  const restoreConversation = useCallback((summary: { id: string }) => {
-    apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
+  // Resolves TRUE when a stored conversation was actually adopted. Callers that thread into a
+  // specific conversation (automation follow-ups) need to know, so they can fall back to a
+  // plain prefill rather than stranding the user in an empty thread.
+  const restoreConversation = useCallback((summary: { id: string }): Promise<boolean> => {
+    return apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
       .then(r => r.json())
       .then(({ conversation }) => {
-        if (!conversation?.rounds) return
+        if (!conversation?.rounds?.length) return false
         setConversationId(conversation.id)
         setAllRounds(prev => [
           ...prev.filter(r => r.convId !== conversation.id),
           ...conversation.rounds.map((r: Round) => ({ ...r, convId: conversation.id })),
         ])
         setTab('chat')
+        return true
       })
-      .catch(() => {})
+      .catch(() => false)
   }, [])
 
   // ── Active-conversation view (F panels: parallel chats) ────────────────────
@@ -506,15 +510,27 @@ export default function App() {
   // "Continue in chat" from a run-detail overlay: close every full-page overlay, prefill
   // the composer with the run's context, and hand focus to the user. Prefill, not send —
   // acting on the assistant's output stays a user decision.
-  const followUpInChat = useCallback((text: string) => {
+  const followUpInChat = useCallback((text: string, convId?: string) => {
     setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false)
     setTab('chat')
-    setInput(text)
-    requestAnimationFrame(() => {
+    const focus = () => requestAnimationFrame(() => {
       const el = textareaRef.current
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
     })
-  }, [])
+    // Threaded follow-up: adopt the run's OWN conversation so the next message continues it
+    // with real history, instead of pasting the answer back in as pseudo-context. The composer
+    // then starts EMPTY — the transcript above it already shows the run, so re-pasting it would
+    // just be noise the user has to delete.
+    if (convId) {
+      void restoreConversation({ id: convId }).then(ok => {
+        setInput(ok ? '' : text)   // no stored thread (e.g. a run from before this shipped) ⇒ old prefill
+        focus()
+      })
+      return
+    }
+    setInput(text)
+    focus()
+  }, [restoreConversation])
   // A chat was deleted from History/the rail — drop its rounds; if it's the open
   // panel, hand the user a fresh conversation instead of a ghost of the deleted one.
   const handleChatDeleted = useCallback((id: string) => {

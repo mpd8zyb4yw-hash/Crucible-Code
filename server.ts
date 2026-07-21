@@ -971,6 +971,39 @@ async function runAutomationNow(a: AutomationRecord): Promise<AutomationRunRecor
     if (offBrief) {
       return { ts: t0, status: 'failed', summary: `off-brief answer (${offBrief}): ${answer.slice(0, 400)}`, ms: Date.now() - t0 }
     }
+    // Persist the run as a REAL conversation round under `automation-${a.id}` so the user can
+    // CONTINUE it in chat instead of restarting cold. Until now the only writer of a stored
+    // conversation was POST /api/conversations/save, which only the BROWSER client calls — an
+    // automation run is a server-internal fetch with no client, so the conversationId it sends
+    // (line ~934) never had a conversation behind it. That is why "Continue in chat" could only
+    // paste the answer back into the composer as pseudo-context: there was nothing to thread
+    // into. Writing the round here is what makes real threading possible.
+    //
+    // Appends to the existing thread (successive runs of a standing automation are turns of one
+    // ongoing conversation), and the round is shaped like a client-authored one so the normal
+    // restore path renders it with no special-casing.
+    try {
+      const convId = `automation-${a.id}`
+      const priorRounds = getConversationById(a.userId, convId)?.rounds ?? []
+      saveConversationEntry(a.userId, {
+        id: convId,
+        mode: 'agent',
+        rounds: [...priorRounds, {
+          id: `${t0}`,
+          convId,
+          // The user-visible prompt is the BRIEF, not the internal preamble — the preamble is
+          // scheduling scaffolding and would read as noise in a chat transcript.
+          userMessage: a.brief,
+          synthesis: answer,
+          synthesisDone: true,
+          synthStreaming: false,
+          automationName: a.name,
+        }],
+      })
+    } catch (e: any) {
+      // Persistence is a convenience for follow-ups; never fail a good run over it.
+      debugBus.emit('agent', 'automation_conv_save_failed', { id: a.id, error: String(e?.message ?? e) }, { severity: 'warn' })
+    }
     // summary = card blurb; answer = the full result (the product). Truncating to 2000 made
     // every digest entry a dead end — the run detail view needs the whole thing.
     return { ts: t0, status: 'ok', summary: answer.slice(0, 2000), answer: answer.slice(0, 24_000), ms: Date.now() - t0 }

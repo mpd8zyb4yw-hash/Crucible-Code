@@ -589,6 +589,12 @@ async function planAssetCollection(goal: string): Promise<AssetItem[]> {
             return { name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }
           })
           .filter((it: AssetItem) => it.slug)
+        // The FM repeats itself ("Italian Greyhound" three times in the live dog-breeds
+        // run). Duplicates collapse to one path, so they showed up only as repeated
+        // README links — dedupe on slug so the index matches the files on disk.
+        const bySlug = new Map<string, AssetItem>()
+        for (const it of items) if (!bySlug.has(it.slug)) bySlug.set(it.slug, it)
+        items = [...bySlug.values()]
       }
     } catch { /* fall through to [] */ }
   }
@@ -1548,7 +1554,14 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
           `_Text only — photos are not downloaded by this process._\n`
       } else {
         const item = items.find(it => nextPath === `${dir}/${it.slug}.md`)
-        const query = item ? `${item.name} — in the context of: ${goal.trim()}` : goal.trim()
+        // Ask a pure FACTUAL question about the item. Passing the raw goal as context made
+        // the research solver answer the CONTAINING REQUEST instead — the live run's
+        // italian-mastiff.md opened with "To create a folder on your desktop… 1. Identify
+        // the Breeds", i.e. instructions for the task rather than a description of the dog.
+        const subject = assetCollectionSlug(goal).replace(/-/g, ' ')
+        const query = item
+          ? `What is ${item.name}? Describe its history, appearance, temperament and size.`
+          : `Give an overview of ${subject}.`
         content = `# ${item?.name ?? assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n${await solveNonCodeTurn(query, projectPath)}\n`
       }
 

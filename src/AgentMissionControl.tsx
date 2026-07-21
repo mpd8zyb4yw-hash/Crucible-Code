@@ -134,7 +134,7 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
   onReply: (text: string, anchorRoundId?: string) => void
   onClose: () => void
   /** Prefill the chat composer (run-detail “Continue in chat”) — wired by App. */
-  onFollowUp?: (text: string) => void
+  onFollowUp?: (text: string, convId?: string) => void
   /** Widget-board ask action — prefill the chat composer with a grounded prompt. */
   onAsk?: (prompt: string) => void
   /** Widget empty states point here when a source isn't connected. */
@@ -595,7 +595,7 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
         <RunDetailOverlay
           runRef={openRun}
           onClose={() => setOpenRun(null)}
-          onFollowUp={onFollowUp ? t => { setOpenRun(null); onFollowUp(t) } : undefined}
+          onFollowUp={onFollowUp ? (t, c) => { setOpenRun(null); onFollowUp(t, c) } : undefined}
         />
       )}
     </div>
