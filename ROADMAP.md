@@ -1965,6 +1965,39 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
   Measured on the live failure string plus a sibling-bleed case: both offending sentences
   dropped, clean prose untouched, reference appended in all three cases.
 
+### 2026-07-21k (cont.98c — convergence sampling, empty-checkpoint visibility, offline evidence)
+
+- **FM item plans stop on CONVERGENCE, not on luck.** The rule was `attempt < 3 && union.size
+  < 5`, which made the plan a function of sample ORDER rather than of the subject: a lucky
+  first sample returning 8 stopped at 8, an unlucky 2+2+1 stopped at 5, and three failed calls
+  stopped at 0 — the 8/10/0 swing across identical runs. `sampleUntilConvergence()` samples
+  until two consecutive samples add nothing new, and treats an EMPTY sample as a failed call
+  rather than proof of exhaustion — the direct cause of 0-item plans for subjects with obvious
+  members. Results are ordered by how many independent samples named each item, so truncation
+  keeps consensus rather than arrival order; ties keep insertion order, so it is deterministic
+  given the same samples. The sampler is INJECTED so the stopping rule is testable without a
+  live FM daemon — the rule was the broken part and must not require the model to verify.
+  Measured: the 3-failed-calls case yields 3 items instead of 0; vote ordering correct; a
+  throwing sampler degrades to empty without hanging; identical output across 10 runs.
+  **Explicitly NOT fixed:** run-to-run item COUNT still varies when the samples genuinely differ
+  — no stopping rule can invent names the model never proposed.
+- **Empty checkpoints are no longer silent.** `createCheckpoint` commits with `--allow-empty`,
+  so a checkpoint that staged nothing returned a hash indistinguishable from a real snapshot: a
+  scope bug degraded the safety net invisibly and a later rollback would restore nothing while
+  reporting success. This was not hypothetical — cont.97's absolute-path bug did exactly this.
+  Checkpoints now carry the staged file list and warn when it is empty (legitimate for writes
+  outside the repo; the point is that it is visible rather than inferred). The field is optional
+  so pre-existing records aren't misread as having captured nothing.
+- **Verification evidence is now persisted, and certification runs OFFLINE.** The in-memory
+  cache only helped within a run; every cold start re-fetched everything, so an offline or
+  rate-limited machine made the entire asset pipeline fail open and ship unverified output.
+  Successful lookups and confirmed 404s go to `.crucible/wiki-evidence.json` (gitignored);
+  transient failures are never written, so an outage cannot be frozen into the store as fact.
+  **This is the 0-external-API goal applied to verification: the API is an accelerator for
+  evidence we keep, not a live dependency.** Verified end-to-end — run 1 online persists 6
+  names in 2.4KB; run 2 in a FRESH process with `globalThis.fetch` throwing returns an
+  IDENTICAL kept set, still dropping Border Collie and the kennel club.
+
 ### 2026-07-21j (cont.98b — checkpoint scoping closed out, with one deliberate non-change)
 
 - **`/api/file/write` (`server.ts` ~7336) is now scoped** to the file being written. It was the

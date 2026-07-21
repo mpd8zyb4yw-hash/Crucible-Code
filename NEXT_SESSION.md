@@ -34,13 +34,19 @@
   (from the cache, zero extra requests) as an attributable floor. Fixes the live
   `italian-greyhound.md` that claimed the breed "resembles ... the smaller Italian Greyhound".
 
+**Also shipped 2026-07-21k (cont.98c):** `sampleUntilConvergence()` (FM plans stop on dryness,
+not on a lucky count — 0-item collapse fixed); empty checkpoints now record their staged files
+and warn; **verification evidence persisted to `.crucible/wiki-evidence.json`, so certification
+now runs fully offline** (proven on a fresh process with `fetch` throwing).
+
 **Open items / risks (priority order):**
-1. **`planAssetCollection`'s FM fallback is unstable** — subjects with no clean Wikipedia
-   category return 8, 10, or 0 items across identical runs. A "List of X" retrieval tier was
-   investigated and REJECTED: `List of Roman emperors` exposes 649 links headed entirely by
-   concept pages ("Principate", "Julio-Claudian dynasty"), so reaching actual emperors means
-   hundreds of lookups against an API that already rate-limited us. Needs a cheaper candidate
-   filter, not more lookups. The summary cache above lowers the cost of any future attempt.
+1. **FM fallback item COUNT still varies run to run** — the 0-item collapse and the arbitrary
+   early stop are fixed, but when samples genuinely differ the union differs, and no stopping
+   rule can invent unproposed names. The remaining lever is sample QUALITY, not the loop. A
+   "List of X" retrieval tier was investigated and REJECTED: `List of Roman emperors` exposes
+   649 links headed entirely by concept pages, so reaching actual emperors means hundreds of
+   lookups. With the disk evidence store those lookups are now a ONE-TIME cost rather than
+   per-run, which materially changes that tradeoff — worth reconsidering.
 2. **~~`server.ts`'s `createCheckpoint` call sites~~ — CLOSED in cont.98, and the item as
    written was WRONG.** It said to scope *both* sites; scoping both would have been a
    regression. `/api/file/write` (~7336) writes one known file and is now scoped. But
@@ -55,9 +61,12 @@
    concurrent cont.96 session owned it. That belief was never re-checked and had expired —
    `git log` showed the file untouched for 7.5 hours with a clean tree. Re-verify ownership
    claims against `git log`/`git status` before treating them as blockers.
-3. **Every asset-collection quality gain depends on Wikipedia being reachable.** Certification,
-   licensing, and now `groundItemDoc` all fail open on network error. Caching narrows the
-   window but does not remove the dependency; there is no offline evidence tier.
+3. **~~Everything depends on Wikipedia being reachable~~ — LARGELY CLOSED in cont.98c.** The
+   disk evidence store means a name verified ONCE stays verified offline forever. The residual
+   gap is genuinely NEW names on a cold, offline machine: those still fail open, because there
+   is no local corpus to check them against. A first-run-must-be-online caveat, not a
+   per-run dependency. Consider warming the store for common subjects, and marking items
+   certified-from-cache vs. certified-live in the generated README.
 4. **Re-bench the swapped qwen head** — carried from cont.93/94/95, still open.
    `residue_terminal`/`refusal_terminal` rates now sit behind several changed routing paths.
 
