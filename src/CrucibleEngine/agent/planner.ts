@@ -140,10 +140,17 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
   const { goal, projectPath, driveTurn, planModel, emit, signal, onPersist } = opts
   let steps: Step[]
   const completedSummaries: string[] = []
+  // Same steps as completedSummaries, but the RESULT ONLY (no `<intent> → ` prefix) and
+  // uncompressed — this is what the user actually asked for. Kept parallel rather than derived
+  // so the answer isn't limited to the ledger's 300-char compression.
+  const completedResults: string[] = []
   if (opts.resume) {
     // Rehydrate: re-run only the unfinished steps.
     steps = opts.resume.steps
     completedSummaries.push(...opts.resume.completedSummaries)
+    // A resumed run only has the persisted ledger, so recover the results by stripping the
+    // label back off. Lossy (already compressed) but far better than re-labelling the answer.
+    completedResults.push(...stripLedgerLabels(opts.resume.completedSummaries, opts.resume.steps))
     emit({ type: 'plan', steps: publicSteps(steps), resumed: true })
   } else {
     steps = await plan(goal, planModel)
@@ -256,6 +263,7 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
     if (result.ok && !doneCheckFailed) {
       step.status = 'done'
       completedSummaries.push(`${step.intent} → ${compressObservation(result.finalText, 300)}`)
+      completedResults.push(result.finalText.trim())
       emit({ type: 'step_status', id: step.id, status: 'done', intent: step.intent })
       onPersist?.(steps, completedSummaries, 'running')   // checkpoint after each step
       continue
@@ -290,7 +298,44 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
   const summary = completedSummaries.join('\n')
   emit({ type: 'plan_done', ok: true })
   onPersist?.(steps, completedSummaries, 'done')
-  return { ok: true, steps, summary }
+  return { ok: true, steps, summary, answer: composeAnswer(completedResults) }
+}
+
+/**
+ * Recover step RESULTS from a persisted `<intent> → <result>` ledger.
+ * Only strips the prefix when it matches a real step intent, so a result that merely happens
+ * to contain " → " is left intact.
+ */
+export function stripLedgerLabels(summaries: string[], steps: Step[]): string[] {
+  const intents = new Set(steps.map(s => s.intent))
+  return summaries.map(line => {
+    const i = line.indexOf(' → ')
+    return i > 0 && intents.has(line.slice(0, i)) ? line.slice(i + 3).trim() : line.trim()
+  })
+}
+
+/**
+ * Build the user-facing answer from the completed steps' results.
+ *
+ * Deterministic and additive-only: it never invents text and never calls a model — it drops the
+ * agent's internal plan labels and de-duplicates repeated step output. One step (the common case
+ * for a simple goal) yields that step's text verbatim, so a plain question gets a plain answer
+ * instead of a one-line ledger.
+ */
+export function composeAnswer(results: string[]): string {
+  const seen = new Set<string>()
+  const parts: string[] = []
+  for (const r of results) {
+    const t = r.trim()
+    if (!t) continue
+    // Steps commonly restate the previous step's conclusion ("display result" after
+    // "perform addition"); emitting it twice reads as the agent contradicting itself.
+    const key = t.replace(/\s+/g, ' ').toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    parts.push(t)
+  }
+  return parts.join('\n\n')
 }
 
 const publicSteps = (steps: Step[]) => steps.map(s => ({ id: s.id, intent: s.intent, status: s.status, doneCheck: s.doneCheck }))

@@ -4324,8 +4324,13 @@ app.post('/api/chat', async (req, res) => {
         const cp = readCheckpoint(projectPath)
         if (cp) writeCheckpoint(projectPath, { ...cp, failureReason: result.summary.slice(0, 200) })
       }
-      send({ type: 'final', text: result.summary })
-      patchActiveSessionRound(chatUser, chatRoundId, { synthesis: result.summary, synthesisDone: true, synthStreaming: false })
+      // Prefer the composed answer over `summary` — summary is the INTERNAL plan ledger
+      // (`<step intent> → <result>` per line) and shipping it verbatim put the agent's own
+      // scaffolding in front of the user ("perform addition → The sum of 17 and 4 is 21.").
+      // Falls back to summary on the failure paths, where summary IS the honest status text.
+      const finalText = result.answer?.trim() || result.summary
+      send({ type: 'final', text: finalText })
+      patchActiveSessionRound(chatUser, chatRoundId, { synthesis: finalText, synthesisDone: true, synthStreaming: false })
     } else {
       const verifier = makeVerifier({ command: req.body.verifyCommand, goal: agentGoal })
       const result = await runAgentLoop({
