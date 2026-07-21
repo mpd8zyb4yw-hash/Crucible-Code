@@ -8,7 +8,7 @@ import os from 'os'
 import path from 'path'
 import { registry } from '../tools/registry'
 import {
-  applyPlanUpdate, clearPlan, getPlan, mergePreservingProgress,
+  applyPlanUpdate, buildPlanContext, clearPlan, getPlan, mergePreservingProgress,
   normalizeSteps, planProgress, renderPlan,
 } from './taskPlan'
 
@@ -142,6 +142,21 @@ const check = (label: string, cond: boolean, detail = '') => {
   check('on-disk plan carries statuses for a cold resume',
     onDisk.steps[0].status === 'completed' && onDisk.steps[1].status === 'in_progress',
     JSON.stringify(onDisk.steps))
+  fs.rmSync(work, { recursive: true, force: true })
+}
+
+// ── preamble injection (this is what server.ts appends) ─────────────────────
+{
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'crucible-plan-'))
+  check('no plan yields empty context, so callers can append unconditionally',
+    buildPlanContext(work) === '', JSON.stringify(buildPlanContext(work)))
+
+  applyPlanUpdate(work, { goal: 'Ship the fix', steps: [{ step: 'Read parser.ts', status: 'completed' }, { step: 'Patch it' }] })
+  const ctxText = buildPlanContext(work)
+  check('plan context names the tool that maintains it', ctxText.includes('update_plan'), ctxText)
+  check('plan context carries the goal and current step',
+    ctxText.includes('Ship the fix') && ctxText.includes('Patch it'), ctxText)
+  check('plan context shows completed work as completed', ctxText.includes('[x] Read parser.ts'), ctxText)
   fs.rmSync(work, { recursive: true, force: true })
 }
 
