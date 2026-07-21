@@ -12,6 +12,7 @@
 // i.e. the agent's own plan labels in front of the user. `answer` (composeAnswer) is the
 // user-facing text: results only, de-duplicated, never model-generated.
 import { composeAnswer, stripLedgerLabels } from './planner'
+import { isAllToolResidue } from './loop'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -77,6 +78,23 @@ console.log('\n== tool residue never becomes the answer ==')
   check('bare number kept', composeAnswer(['21']) === '21')
   check('bare decimal kept', composeAnswer(['3.5']) === '3.5')
   check('negative number kept', composeAnswer(['-4']) === '-4')
+}
+
+console.log('\n== isAllToolResidue: JOINED tool output (Layer 2 FM plan path) ==')
+{
+  // The live repro: a two-step shell plan whose summary is the joined raw output. Pure residue,
+  // but matches no single-token rule — this is what shipped "exit 0\n\nexit 0" as the answer.
+  check('two joined "exit 0"s are residue', isAllToolResidue('exit 0\n\nexit 0'))
+  check('single "exit 0" still residue', isAllToolResidue('exit 0'))
+  check('three mixed status lines are residue', isAllToolResidue('exit 0\nDone.\nCommand executed successfully.'))
+  check('empty string is not residue', !isAllToolResidue(''))
+  check('whitespace only is not residue', !isAllToolResidue('   \n  '))
+}
+{
+  // A REAL answer must survive even when one of its lines looks like an acknowledgement.
+  check('real answer with a "Done." line is kept', !isAllToolResidue('The sum of 17 and 4 is 21.\nDone.'))
+  check('real prose kept', !isAllToolResidue('The sum of 17 and 4 is 21.'))
+  check('answer ending in a bare number kept', !isAllToolResidue('The total is:\n21\nwhich is correct.'))
 }
 
 console.log('\n== the live regression, end to end ==')

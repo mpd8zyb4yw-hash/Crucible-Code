@@ -217,6 +217,21 @@ export function isToolResidue(text: string): boolean {
   )
 }
 
+/**
+ * True when EVERY non-empty line of `text` is tool residue.
+ *
+ * `isToolResidue` tests a single token, which is right for one model final but misses a summary
+ * built by JOINING several tool outputs: a two-step shell plan produced "exit 0\n\nexit 0", which
+ * is pure residue yet matches no single-token rule (reproduced live 2026-07-21 on the Layer 2 FM
+ * plan path). Requiring ALL lines to be residue keeps a real answer that merely contains a "Done."
+ * line from being discarded.
+ */
+export function isAllToolResidue(text: string): boolean {
+  const lines = text.split(/\n+/).map(l => l.trim()).filter(Boolean)
+  if (!lines.length) return false
+  return lines.every(isToolResidue)
+}
+
 export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult> {
   const {
     goal, projectPath, driveTurn, emit, signal,

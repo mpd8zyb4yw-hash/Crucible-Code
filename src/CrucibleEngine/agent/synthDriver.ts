@@ -620,10 +620,22 @@ export async function certifyAssetItems(goal: string, items: AssetItem[]): Promi
   if (!quals.length || !items.length) return items
   const checked = await Promise.all(items.map(async it => {
     try {
-      const res = await fetch(
+      // One retry on a transient failure. Without it, a burst of lookups that trips
+      // Wikipedia's rate limiting makes every check fail open at once — observed live, where
+      // "Border Collie" and "Shih Tzu" survived certification for an ITALIAN breeds goal
+      // purely because the network hiccuped, which is the exact failure certification exists
+      // to prevent.
+      let res = await fetch(
         `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(it.name.replace(/\s+/g, '_'))}`,
         { headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' }, signal: AbortSignal.timeout(8000) },
       )
+      if (!res.ok && res.status !== 404) {
+        await new Promise(r => setTimeout(r, 600))
+        res = await fetch(
+          `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(it.name.replace(/\s+/g, '_'))}`,
+          { headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' }, signal: AbortSignal.timeout(8000) },
+        )
+      }
       if (!res.ok) return { it, keep: true }
       const d = await res.json() as any
       const hay = `${String(d?.title ?? '')} ${String(d?.description ?? '')} ${String(d?.extract ?? '')}`.toLowerCase()
@@ -648,18 +660,127 @@ export async function certifyAssetItems(goal: string, items: AssetItem[]): Promi
 
 /** Ask the FM to enumerate the collection's items. Returns [] on any failure — the caller
  *  degrades to a single grounded overview file rather than fabricating an item list. */
-async function planAssetCollection(goal: string): Promise<AssetItem[]> {
+export async function planAssetCollection(goal: string): Promise<AssetItem[]> {
   const cached = _assetPlans.get(goal)
   if (cached) return cached
   // Prompt with the SUBJECT, never the raw goal. Given the whole request the FM echoed the
   // request's own nouns back as items — a live run planned "Dog Breeds", "Photos" and
   // "Descriptions", producing descriptions.md and photos.jpg instead of actual breeds.
   const subject = assetCollectionSlug(goal).replace(/-/g, ' ')
+
+  // SAMPLE AND UNION rather than trusting one call. A single sample from the on-device FM is
+  // wildly unstable on this task — consecutive live runs on the SAME goal returned 5 items,
+  // then 2, then 10, then 1, then none. That variance is a property of a ~1.5B model, not
+  // something a better prompt fixes, so spend a few cheap calls and take the union: recall
+  // rises fast, and precision is protected downstream by certifyAssetItems, which drops
+  // anything the union picked up that retrieval can't confirm.
+  const bySlug = new Map<string, AssetItem>()
+
+  // Retrieval FIRST — grounding is the default, the FM is the fallback (doctrine). When the
+  // category graph yields a real list, skip the model entirely: it is both more accurate and
+  // deterministic across runs (the Italian-breeds category returns the same 9 correct breeds
+  // every time, where the FM returned a different answer on every call).
+  //
+  // A SMALL retrieval set is evidence the matched category was meta rather than a list of
+  // instances, so it loses outright instead of being blended in: Category:Roman emperors is
+  // almost entirely about-the-office articles, and the 3 obscure survivors of the meta filter
+  // ("Tetrarchy", a Latin epigram) would otherwise have outranked the FM's correct list of
+  // actual emperors. Below the threshold the retrieval candidates are DISCARDED, not unioned.
+  const retrieved = await retrieveCategoryItems(subject)
+  if (retrieved.length >= 5) {
+    debugBus.emit('agent', 'offline_asset_plan', { via: 'wikipedia-category', n: retrieved.length }, { severity: 'info' })
+    const certified = await certifyAssetItems(goal, retrieved.slice(0, 10))
+    _assetPlans.set(goal, certified)
+    return certified
+  }
+  debugBus.emit('agent', 'offline_asset_plan', { via: 'fm-proposal', retrievedRejected: retrieved.length }, { severity: 'info' })
+
+  for (let attempt = 0; attempt < 3 && bySlug.size < 5; attempt++) {
+    // Later samples must EXCLUDE what we already have. Plain resampling is near-useless here:
+    // the FM runs at temperature 0.3, so three bare calls returned the identical single item
+    // ("Italian Greyhound") and the union stayed at size 1. Naming the exclusions turns each
+    // extra call into new information instead of a repeat.
+    const have = [...bySlug.values()].map(it => it.name)
+    for (const it of await _proposeAssetItems(subject, have)) {
+      if (!bySlug.has(it.slug)) bySlug.set(it.slug, it)
+    }
+  }
+  let items = [...bySlug.values()].slice(0, 10)
+
+  // The FM only PROPOSED this list — certify it against retrieval before anything is written.
+  items = await certifyAssetItems(goal, items)
+  _assetPlans.set(goal, items)
+  return items
+}
+
+// ── Retrieval-sourced candidates (preferred over FM proposal) ────────────────
+// Wikipedia's category graph already contains the exact list these goals ask for
+// ("Category:Dog breeds originating in Italy" has 12 members, all real breeds). Retrieval is
+// both more accurate and more STABLE than sampling a 1.5B model whose output on this task
+// swung between 0 and 10 items across identical runs. FM proposal stays as the fallback for
+// subjects with no usable category.
+const _META_TITLE_RX = /^(list|lists|outline|index|timeline|family tree|history|glossary|comparison)\s+of\b|\(disambiguation\)|\(title\)/i
+
+/** Wikipedia category members for the subject, filtered to plausible INSTANCES. */
+async function retrieveCategoryItems(subject: string): Promise<AssetItem[]> {
+  const UA = 'crucible-local/1.0 (on-device agent)'
+  // Connectors defeat the category search — "dog breeds FROM italy" finds nothing while
+  // "dog breeds italy" finds the right category on the first hit.
+  const q = subject.replace(/\b(from|in|of|the|a|an)\b/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!q) return []
+  try {
+    const catRes = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}` +
+      `&srnamespace=14&srlimit=1&format=json`,
+      { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) },
+    )
+    if (!catRes.ok) return []
+    const cat = (await catRes.json() as any)?.query?.search?.[0]?.title
+    if (typeof cat !== 'string' || !cat) return []
+
+    const memRes = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&list=categorymembers&cmtitle=${encodeURIComponent(cat)}` +
+      `&cmnamespace=0&cmlimit=20&format=json`,
+      { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(8000) },
+    )
+    if (!memRes.ok) return []
+    const members: string[] = ((await memRes.json() as any)?.query?.categorymembers ?? [])
+      .map((m: any) => String(m?.title ?? ''))
+      .filter(Boolean)
+
+    // A member whose title RESTATES the category's own head noun ("Roman emperor", "Five Good
+    // Emperors", "Barracks emperor" under Category:Roman emperors) is an about-the-category
+    // page, not an instance of it. Real instances are proper names and don't repeat the noun.
+    // This is what stops the emperors category — which is almost entirely meta-articles —
+    // from being mistaken for a usable item list, so it correctly falls through to the FM.
+    const heads = q.split(' ')
+      .filter(w => w.length > 3)
+      .map(w => w.replace(/s$/, ''))
+    const items = members
+      .filter(t => !_META_TITLE_RX.test(t))
+      .filter(t => {
+        const lt = t.toLowerCase()
+        return !heads.some(h => lt.includes(h))
+      })
+      .map(t => {
+        // Strip Wikipedia's disambiguating parenthetical: "Bolognese (dog breed)" → "Bolognese".
+        const name = t.replace(/\s*\([^)]*\)\s*$/, '').trim().slice(0, 60)
+        return { name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }
+      })
+      .filter(it => it.slug)
+    return items.slice(0, 10)
+  } catch { return [] }
+}
+
+/** One FM sample of candidate item names for a category. Returns [] on any parse failure. */
+async function _proposeAssetItems(subject: string, exclude: string[] = []): Promise<AssetItem[]> {
   const sys = 'You name specific real EXAMPLES of a category. Reply with ONE line of strict JSON ' +
     'and nothing else: {"items": ["<name>", ...]}. Give between 3 and 10 items. Each must be the ' +
     'proper name of ONE specific real instance of the category — never the category itself, never ' +
     'a generic word like "photos", "descriptions" or "files". Names only, no explanations.'
-  const raw = await _callLocalFm(sys, `CATEGORY: ${subject}\n\nName specific examples of this category.`, 12000)
+  const usr = `CATEGORY: ${subject}\n\nName specific examples of this category.` +
+    (exclude.length ? `\n\nDo NOT include any of these, they are already listed — name DIFFERENT ones: ${exclude.join(', ')}.` : '')
+  const raw = await _callLocalFm(sys, usr, 12000)
   let items: AssetItem[] = []
   const m = raw.match(/\{[\s\S]*\}/)
   if (m) {
@@ -679,22 +800,22 @@ async function planAssetCollection(goal: string): Promise<AssetItem[]> {
           // container words is never a real instance, whatever the FM claims.
           .filter((it: AssetItem) => {
             const n = it.name.toLowerCase().trim()
+            // The FM sometimes echoes the prompt's own JSON template back verbatim — a live
+            // run planned a single item literally named "<name>", which passed every other
+            // filter and would have created "<name>.md" in the user's folder.
+            if (/[<>{}]/.test(it.name) || /^(name|item|example|category)s?$/.test(n)) return false
             if (/^(photos?|images?|pictures?|pics|descriptions?|files?|notes?|folder|directory|readme|overview|index)$/.test(n)) return false
             if (subject.includes(n)) return false
             return true
           })
-        // The FM repeats itself ("Italian Greyhound" three times in the live dog-breeds
-        // run). Duplicates collapse to one path, so they showed up only as repeated
-        // README links — dedupe on slug so the index matches the files on disk.
-        const bySlug = new Map<string, AssetItem>()
-        for (const it of items) if (!bySlug.has(it.slug)) bySlug.set(it.slug, it)
-        items = [...bySlug.values()]
+        // The FM repeats itself ("Italian Greyhound" three times in one live run). Dedupe
+        // within the sample; the caller dedupes again across samples.
+        const seen = new Map<string, AssetItem>()
+        for (const it of items) if (!seen.has(it.slug)) seen.set(it.slug, it)
+        items = [...seen.values()]
       }
     } catch { /* fall through to [] */ }
   }
-  // The FM only PROPOSED this list — certify it against retrieval before anything is written.
-  items = await certifyAssetItems(goal, items)
-  _assetPlans.set(goal, items)
   return items
 }
 

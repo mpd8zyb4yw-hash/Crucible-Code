@@ -32,7 +32,7 @@ import { resolveNamedTools, resolveImplicitPersonalTools, renderPersonalData } f
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
-import { runAgentLoop } from './src/CrucibleEngine/agent/loop'
+import { runAgentLoop, isAllToolResidue } from './src/CrucibleEngine/agent/loop'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
 import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages, clearAllSessions } from './src/CrucibleEngine/agent/taskSession'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
@@ -3647,7 +3647,20 @@ app.post('/api/chat', async (req, res) => {
           }
           let fmStepIdx = 0
           const { ok, summary } = await runFmPlan(fmPlan, (call) => registry.exec(fmStepToToolCall(call, fmStepIdx++), toolCtx))
-          if (ok) {
+          // runFmPlan's `summary` is the joined RAW tool output (localFmPlanner.ts:199). When the
+          // plan's last tool is a shell/exec step that printed nothing, that output is just its
+          // status line — so an "ok" fast-path run shipped `exit 0` as the entire answer
+          // (reproduced live 2026-07-21 for the brief "State the sum of 17 and 4, and nothing
+          // else", which this planner routed to shell_exec). cont.93's residue guard lives in
+          // loop.ts and is never reached on this path.
+          //
+          // A residue summary means the fast path did not actually ANSWER, so treat it exactly
+          // like the `!ok` case below: fall through to the fuller agent loop rather than shipping
+          // tool scaffolding as the answer.
+          if (ok && isAllToolResidue(summary)) {
+            debugBus.emit('agent', 'layer2_fm_residue', { intent: fmPlan.intent, summary: summary.slice(0, 80) }, { severity: 'warn' })
+            console.warn(`[Agent] Layer 2 FM plan returned tool residue ("${summary.slice(0, 40)}") — escalating to full agent loop`)
+          } else if (ok) {
             send({ type: 'final', text: summary })
             patchActiveSessionRound(chatUser, chatRoundId, { synthesis: summary, synthesisDone: true, synthStreaming: false })
             debugBus.emit('agent', 'layer2_fm_done', { intent: fmPlan.intent, ok: true }, { severity: 'info' })

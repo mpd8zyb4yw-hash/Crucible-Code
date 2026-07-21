@@ -1,11 +1,5 @@
 [
   {
-    "hash": "bf4bd74",
-    "message": "pre-write_file",
-    "timestamp": 1784488135211,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/extract-duplicated-discount"
-  },
-  {
     "hash": "bd92bfc",
     "message": "pre-write_file",
     "timestamp": 1784488226485,
@@ -297,6 +291,12 @@
     "hash": "7ebb28e",
     "message": "pre-write_file",
     "timestamp": 1784613021963,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "d6d6953",
+    "message": "pre-write_file",
+    "timestamp": 1784613078352,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
