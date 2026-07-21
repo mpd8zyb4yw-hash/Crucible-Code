@@ -1,11 +1,5 @@
 [
   {
-    "hash": "bb8bdf8",
-    "message": "pre-write_file",
-    "timestamp": 1784488235787,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/average-empty-array"
-  },
-  {
     "hash": "a0b232b",
     "message": "pre-write_file",
     "timestamp": 1784488246837,
@@ -297,6 +291,12 @@
     "hash": "9fac4dd",
     "message": "pre-write_file",
     "timestamp": 1784613498558,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "7b839ad",
+    "message": "pre-write_file",
+    "timestamp": 1784613622989,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
