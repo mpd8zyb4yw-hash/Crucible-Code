@@ -17,56 +17,60 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21m (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21p (gap-soundness) (REPLACE THIS EVERY SESSION)
 
 > **TWO-IMPLEMENTER SPLIT IN EFFECT (user-confirmed 2026-07-21).** Per `GAP_CLOSURE.md` +
 > `GAP_CLOSURE_ADDENDUM.md`:
 > - **Track A (parallel session, `crucible-northstar-sessions`):** W1 loop-entry forensics,
 >   W2 GBNF grammars, W3 prefix caching — owns `fmReact.ts`, `fmQueue.ts`, the llama-server
->   client, the iterate/loop-entry path, `grammars/`, `server.ts`.
+>   client, the iterate/loop-entry path, `grammars/`, `server.ts`, `coding-benchmarks.ts`.
 > - **Track B (branch `claude/gap-soundness`):** soundness workstreams W30 → W20 → W32 →
 >   W33 → W35 → W36 → W48 — owns `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
->   `synth/__hermetic_bench.ts`, and the Gate-B call sites inside `oracle.ts`'s
->   `verifyCandidate`/`verifyCandidateAsync` (that scoped diff only — W7's gate reordering in
->   the same file stays Track A's). Future Track-B work arrives as NEW files + one wiring line.
+>   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, and the Gate-B call sites inside
+>   `oracle.ts`'s `verifyCandidate`/`verifyCandidateAsync` (that scoped diff only — W7's gate
+>   reordering in the same file stays Track A's). Track-B work arrives as NEW files + one
+>   wiring line.
 > - Re-verify any ownership claim with `git log -1 -- <file>` before treating it as a blocker.
 
-**Shipped 2026-07-21o (gap-soundness, W31 on the corpus):** `__refdiff_bench.ts` gives every
-corpus reference an INDEPENDENT oracle (point-set models, shadow structures, node builtins,
-by-construction inputs; ~9k seeded cases) — the machine answer to "ref and suite share an
-author". It immediately caught a real semantics error: bankersRound now uses
-shortest-decimal-representation semantics (Intl halfEven equivalent; 9.95@1 → 10),
-REVERSING the prior float-true decision — evidence and ruling in ROADMAP 2026-07-21l.
-Catalog gray zone (0.35–0.50) now printed by the validator: currently empty.
-**AWAITING HUMAN (one-time): skim `CONTRACTS_REVIEW.md` (22 contracts, generated)** — the
-residual risk no machine check covers is a misread contract; tick boxes there, edit shards
-on disagreement, rerun `npm run taskcorpus:bench` + `__refdiff_bench.ts`.
-**NEXT UNIT (moved up, user-directed): W42.2 git-mined tasks** — probe found 113
-single-engine-file commits in the last 500, 20+ fix-shaped (`cab4b7b`, `cfede63`,
-`450cab6` are the pilot candidates); shape = parent-commit file + real fix as ref + paired
-`__*_bench` as suite, staged via the oracle's `projectPath`/`contextFiles` machinery.
+**Shipped just now (W42.2 pilot — git-mined tasks, ALL PASS; ROADMAP 2026-07-21m):**
+`coding-bench-ext/{tasks-mined,minedHarness,__minedcorpus_bench}.ts` +
+`npm run minedcorpus:bench`. Three REAL historical bugs are now certified bench tasks
+(`cfede63` aliased-import propagation, `450cab6` move default/namespace imports, `3265f94`
+apifaith vocabulary): ref = the actual fix, suite = the subsystem's own bench pinned at the
+fix commit, decorrelated by construction. Each task is DOUBLY certified through the real
+hermetic oracle: the fix passes AND the parent bug is rejected by the suite's own assertions
+(vacuity is the mining failure mode — `cab4b7b` dropped for exactly that, recorded in
+`DROPPED_COMMITS`). Prompt no-leak is mechanical (no fix-diff added line may appear).
+Two live finds are encoded in `minedHarness.ts`: historical trees carry pre-existing tsc
+errors (deferred via `changeSetScope`; candidate errors stay fatal) and ESM `'./x.js'`
+imports need `.ts` resolution at staging. Generated-path n: 32 → 35.
 
-**Shipped 2026-07-21n (gap-soundness, W42 core):** the bench can now tell progress from
-luck. `coding-bench-ext/` adds 22 catalog-free tasks (generated-path n 10 → 32, noise floor
-±26 → ±16 pts), each with a reference solution certified through the hermetic oracle and a
-hidden suite synced to `coding-bench/`. `benchStats.ts` adds Wilson intervals —
-**standing rule: report rates with formatRate(), and treat any delta below
-minDetectableDelta(n) as noise.** Corpus validator: `npm run taskcorpus:bench` (model-free).
-**HANDOFF to Track A:** when W1 touches `coding-benchmarks.ts`, enrollment is one line —
-`TASKS.push(...toBenchTasks())` from `coding-bench-ext` — and the generated/catalog split
-should print via `formatRate()`. The 22 suites are already at `coding-bench/<id>.hidden.ts`
-(inert until enrolled). Do not hand-edit generated suites; edit the shard and re-run the
-validator.
+**OPEN, in order:**
+1. **W42.2 scale-out:** sweep the 113-commit inventory (20+ fix-shaped; next candidates
+   `79583e1` executionVerify timer globals, `a0bdd2a` contractVerify refill clamp,
+   `781fbba`/`23d1305` feedback-loop fixes, `1fb3971` retrieval tie-breaker) toward
+   n≈100 (±10-pt floor). Machinery exists; per-task cost ~4–34s. Selection rule stays:
+   fix commit touches exactly one engine file + its paired bench; certifier decides.
+2. **HUMAN SKIM (one-time, now 25 boxes): `CONTRACTS_REVIEW.md`** — 22 authored contracts
+   + M1–M3 mined (prompt-vs-commit: does the symptom prompt match what the commit fixed,
+   without dictating the patch?). Edit shards on disagreement; rerun
+   `npm run taskcorpus:bench` + `npm run refdiff:bench` + `npm run minedcorpus:bench`.
+3. **Track A enrollment (one additive line each):** `TASKS.push(...toBenchTasks())` and
+   `TASKS.push(...toMinedBenchTasks())` in `coding-benchmarks.ts`; mined audit routes
+   through `auditMinedCandidate(taskId, editedTargetContent)` (workspace's target file
+   ONLY; suite+context stage from the pinned snapshot). Then the first honest baseline
+   over n=35 with `formatRate()`.
+4. **W32 verifier fault-injection:** the 22 authored refs + 3 mined parents are ready-made
+   mutation targets; mutants that still certify expose vacuous suites.
+5. **W20 held-out acceptance cases** in the iterate prompt builder — still sequenced behind
+   Track A's W3 to avoid colliding in the same functions.
 
-**Shipped 2026-07-21m (gap-soundness, W30):** Gate B is hermetic. Scrubbed child env (the
-`env: process.env` API-key exposure to model-generated code is closed), frozen clock + seeded
-PRNG + pinned TZ (clock/random-using candidates certify deterministically instead of flaking),
-method-surface network denial (`HERMETIC_NET_DENIED` — "0 external APIs" now machine-enforced
-at certification), SIGKILL reaping + 512MB heap cap, and an accept-side double-run that
-rejects as `NONDETERMINISTIC` anything two identical runs disagree on (proven on
-`crypto.randomBytes`; also caught tsx's transform cache shifting the frozen clock — fixed with
-`--no-cache` in the hermetic spawn). `__hermetic_bench.ts`: 18/18, model-free. Details in
-ROADMAP change log 2026-07-21j.
+**Standing (one commit back, still load-bearing):** W31 `__refdiff_bench.ts` — independent
+oracle per authored ref (~9k seeded cases; forced the bankersRound semantics reversal,
+ROADMAP 2026-07-21l). W42 core — 22-task authored corpus + Wilson intervals; report rates
+with `formatRate()`, treat deltas below `minDetectableDelta(n)` as noise. W30 — hermetic
+Gate B (scrubbed env, frozen clock, seeded PRNG, net denial, double-run determinism),
+`__hermetic_bench.ts` 18/18. All three re-verified green this session.
 
 > Previous state (cont.98, still current for its files): cont.96 owns
 > `fmReact.ts` + `server.ts` + the automation follow-up path. cont.98 touched **only**

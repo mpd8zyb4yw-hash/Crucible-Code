@@ -1933,6 +1933,54 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21m (gap-soundness — W42.2: git-mined tasks, pilot corpus certified)
+
+The generated-path bench now grows from the repo's own bug history — the one task source
+where ref and suite are decorrelated BY CONSTRUCTION: the fix commit's engine file (the
+reference) and the subsystem's regression bench (the suite) were written in separate
+sessions against live behavior, never against each other. New, all in `coding-bench-ext/`:
+
+- **`tasks-mined.ts`** — a mined task is four git pins (parentSha / fixSha / targetPath /
+  benchPath; git objects are content-addressed, so nothing is embedded) plus a SYMPTOM-ONLY
+  prompt. `DROPPED_COMMITS` keeps rejected candidates visible with reasons — a mined corpus
+  that silently skips inconvenient commits is selecting on ease.
+- **`minedHarness.ts`** — materializes the parent commit's `src/` into a cached snapshot
+  (git archive, node_modules symlinked), pre-stages the suite's FULL import closure as
+  `contextFiles` with tsx-style `'./x.js'` → `x.ts` resolution (found live: the oracle's own
+  walker takes the `.js` literally and the file silently never stages), and defers
+  historical-context tsc errors via `changeSetScope` (found live: that era carried hundreds
+  of pre-existing tsc errors — its benches ran under tsx, which never typechecks; the
+  candidate file's own errors stay fatal). `runMinedCandidate()` is the whole audit:
+  candidate in, real-oracle Verdict out (hermetic W30 Gate B, double-run determinism).
+  Enrollment surface for Track A: `toMinedBenchTasks()` (scaffold = buggy file + 1-hop
+  imports at parentSha) + `auditMinedCandidate()` — one additive wiring line in
+  coding-benchmarks.ts; the audit takes ONLY the agent's target file from the workspace,
+  everything else from the pinned snapshot, so editing siblings cannot game the suite.
+- **`__minedcorpus_bench.ts`** (`npm run minedcorpus:bench`) — certification with a stage
+  the authored corpus cannot have: **DISCRIMINATION — the parent commit's buggy file must
+  be REJECTED BY THE SUITE'S OWN ASSERTIONS** (gateA clean, gateB red). A mined task whose
+  suite passes the bug is vacuous: it would award a green for shipping the bug back.
+  Plus: pin integrity (parentSha is the fix's recorded parent), commit shape (fix touched
+  nothing but target+bench ⇒ parent tree + ref overlay ≡ fix tree), prompt no-leak (no
+  added fix-diff line may appear in the prompt — else the task measures transcription, not
+  debugging; bench-added-line overlap prints as a WARN), catalog-freedom, scaffold sanity.
+
+**Pilot result — ALL PASS: 3/3 reference-certified hermetically, 3/3 discrimination-proven.**
+`cfede63` (aliased-import propagation hole), `450cab6` (move refactor missing
+default/namespace import deps), `3265f94` (apifaith vocabulary: false-certify AND
+false-reject). Discrimination evidence is the fix commits' own regression checks failing on
+the parent: "aliased importer (pad as p) → call sites under the ALIAS are trimmed, not
+skipped", "move ABSTAINS when the def uses a DEFAULT import", "canonical import { z } from
+zod certifies (was REJECTED)". `cab4b7b` (arrow-param arity) DROPPED as vacuous — its era's
+retrieval bench asserts the bare-arrow fn is extracted but never its arity, so the suite
+cannot tell parent from fix; recorded in DROPPED_COMMITS, printed every run. Cost: ~34s per
+vgr-suite task, ~4s per apifaith task ⇒ scaling over the 20+ remaining fix-shaped commits
+in the 113-commit inventory is practical. Generated-path n: 32 → 35 (±16pts floor; ±10 at
+n=100). `CONTRACTS_REVIEW.md` regenerated with a prompt-vs-commit skim section (M1–M3,
+now 25 checkboxes): for mined tasks the one human question is whether the symptom prompt
+truthfully describes what the commit fixed without dictating the patch. Standing
+certifications re-run green: taskcorpus 22/22, refdiff ALL PASS.
+
 ### 2026-07-21l (gap-soundness — W31 on the corpus: independent oracles, and a semantics reversal they forced)
 
 **User-flagged, correctly: ref and suite share an author, so agreement-in-error is

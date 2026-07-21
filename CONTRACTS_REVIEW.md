@@ -995,3 +995,155 @@ Semantics:
 - input not mutated
 - outer array not aliased
 - ragged input throws RangeError
+
+---
+
+# Git-mined tasks (W42.2) — prompt-vs-commit skim
+
+> For each task: read the symptom prompt, then the real fix commit it was derived
+> from (command given per task). Confirm the prompt (a) states the symptom the diff
+> actually fixes, (b) states the full expected contract the pinned bench enforces,
+> and (c) never dictates the mechanism of the patch.
+
+---
+
+## M1. `mined-aliased-import-propagation` — Whole-tree signature propagation skips aliased importers (real bug, 2026-07-12)
+
+- [ ] prompt matches the commit, human-confirmed
+
+Real fix: `cfede63b463f` — “Fix aliased-import hole in whole-tree signature propagation” (view: `git show cfede63b463f`)
+
+**Symptom prompt handed to the agent:**
+
+```
+Bug report for src/CrucibleEngine/reasoning/emitPlan.ts. This is a BUG-FIX task in an existing TypeScript codebase. The workspace already contains the target file plus its immediate imports. Fix the bug by EDITING the target file ONLY — do not create, rename, or modify any other file. Preserve the file's existing exports and all unrelated behavior: an automated audit runs the subsystem's full regression bench (which you cannot see) against your edited file, and it fails if anything else regressed.
+
+SYMPTOM — whole-tree signature propagation silently ships broken aliased importers.
+When planEmitTree propagates a changed function signature across the tree, a sibling
+file that imports the entry function UNDER AN ALIAS is left untouched. Example: the
+entry 'fmt' in src/fmt.ts gains a parameter, and a sibling reads
+
+  import { fmt as f } from './fmt'
+  export const banner = f('hi', 10)
+
+Siblings importing { fmt } by its original name get their call sites reconciled to the
+new signature, but the aliased sibling above comes back unchanged — reported as already
+fitting — because its call sites are written f(...), and they were searched under the
+name 'fmt'. The emitted tree is broken at exactly the aliased call sites. This violates
+the planner's all-or-nothing guarantee: every importer is reconciled, or the whole edit
+is refused with a note.
+
+EXPECTED — a sibling that binds the entry under any local alias has those aliased call
+sites found and reconciled exactly as if it imported the original name; when an aliased
+call cannot absorb the new signature, the whole edit is refused, same as the non-aliased
+path. A file importing the entry under several local names has all of them handled. A
+sibling that both imports the entry and shadows it locally keeps its current
+too-ambiguous refusal. Behavior for non-aliased importers must not change.
+```
+
+**Discriminating checks the fix commit added to the pinned bench:**
+
+- aliased importer (`pad as p`) → call sites under the ALIAS are trimmed, not skipped
+- aliased importer with an unabsorbable REQUIRED param → whole edit downgrades to fresh file
+
+---
+
+## M2. `mined-move-default-namespace-import` — Move refactor misses default/namespace import deps (real bug, 2026-07-13)
+
+- [ ] prompt matches the commit, human-confirmed
+
+Real fix: `450cab67e0f5` — “Fix silent-break hole in move refactor: detect default/namespace import use” (view: `git show 450cab67e0f5`)
+
+**Symptom prompt handed to the agent:**
+
+```
+Bug report for src/CrucibleEngine/reasoning/emitPlan.ts. This is a BUG-FIX task in an existing TypeScript codebase. The workspace already contains the target file plus its immediate imports. Fix the bug by EDITING the target file ONLY — do not create, rename, or modify any other file. Preserve the file's existing exports and all unrelated behavior: an automated audit runs the subsystem's full regression bench (which you cannot see) against your edited file, and it fails if anything else regressed.
+
+SYMPTOM — the move-function refactor silently breaks the destination when the moved
+definition depends on a default or namespace import. planMoveTree must refuse to move
+(abstain) when the definition is not self-contained — its body uses local bindings
+introduced by the source file's import statements — unless the dependency is carried
+along. That detection currently sees NAMED imports only. A definition using a default
+import:
+
+  import yaml from 'some-yaml-lib'
+  export function readCfg(p: string) { return yaml.parse(p) }
+
+or a namespace import:
+
+  import * as os from 'os'
+  export function tmpFor(name: string) { return os.tmpdir() + '/' + name }
+
+is judged self-contained, so it is moved WITHOUT its dependency and the destination
+file references a name that does not exist there — a silent break, invisible to the
+transform because cross-file resolution is outside its view.
+
+EXPECTED — the self-containment check sees every local binding an import statement
+introduces: named bindings (including renamed ones), the default-import binding, and
+the namespace binding. A moved definition using any of them is treated exactly like one
+using a named import today (carried when possible, otherwise the move abstains).
+Unrelated imports the definition never uses must NOT cause a false abstain: moving a
+definition that touches no imported names still succeeds even when the source file has
+default or namespace imports at the top.
+```
+
+**Discriminating checks the fix commit added to the pinned bench:**
+
+- move ABSTAINS when the def uses a DEFAULT import (would lose it — transform cannot resolve)
+- move ABSTAINS when the def uses a NAMESPACE import
+- move does NOT falsely abstain on unrelated imports the def never uses
+
+---
+
+## M3. `mined-apifaith-vocabulary` — API-faithfulness vocabulary bug: false certify AND false reject (real bug, 2026-07-16)
+
+- [ ] prompt matches the commit, human-confirmed
+
+Real fix: `3265f947da14` — “Fix the prose-vocabulary bug: it false-CERTIFIED and false-REJECTED” (view: `git show 3265f947da14`)
+
+**Symptom prompt handed to the agent:**
+
+```
+Bug report for src/CrucibleEngine/reasoning/apiFaithfulness.ts. This is a BUG-FIX task in an existing TypeScript codebase. The workspace already contains the target file plus its immediate imports. Fix the bug by EDITING the target file ONLY — do not create, rename, or modify any other file. Preserve the file's existing exports and all unrelated behavior: an automated audit runs the subsystem's full regression bench (which you cannot see) against your edited file, and it fails if anything else regressed.
+
+CONTEXT — documentedIdentifiers(evidence) harvests the vocabulary of identifier names
+that a retrieved documentation text actually documents; the faithfulness verifier then
+flags generated code whose library identifiers are absent from that vocabulary as
+fabricated. One vocabulary bug currently fires in BOTH directions:
+
+FALSE REJECT (the worse direction) — the harvester refuses single-character
+identifiers, so 'z' can never be documented. With evidence plainly containing
+'const ipv4 = z.ipv4();', code that writes the canonical zod import of z is reported
+as fabricating 'z', and the repair loop is told to fix correct code. Single-character
+namespace bindings such as z, _ and $ are the norm for popular libraries, not noise.
+
+FALSE CERTIFY — the member-access harvesting rule tolerates whitespace between the dot
+and the following name, so a prose sentence boundary reads as member access. Evidence
+prose ending one sentence with 'addresses.' and starting the next line with 'Zod v4'
+admits 'Zod' into the vocabulary, and fabricated code importing Zod (capital Z, a name
+the library never exports) certifies green. Real member access never separates the dot
+from the member name with whitespace; prose sentence boundaries do.
+
+EXPECTED — both directions close at the harvester, and every consumer of the shared
+vocabulary inherits the fix. The single-character floor is gone: any identifier that
+genuinely appears called, dotted, or imported in evidence is documentable regardless of
+length. Prose across a sentence boundary no longer enters the vocabulary. Dotted usage
+in evidence documents both sides of the dot (the namespace root and the member), and a
+chained member call starting its own line — a dot-leading line continuing a builder
+chain — still documents that member. Ambiguity resolves toward abstain-side safety:
+harvest generously from real code shapes, exclude only what is provably prose.
+```
+
+**Discriminating checks the fix commit added to the pinned bench:**
+
+- [REAL] fabricated `import { Zod }` → violations (was CERTIFIED)
+- [REAL] names Zod as the offender
+- [REAL] canonical `import { z } from zod` certifies (was REJECTED)
+- sentence boundary `addresses.\\nZod` does not document Zod
+- sentence boundary `instantly. Perfect` does not document Perfect
+- namespace root `z` in `z.ipv4()` IS documented
+- member `ipv4` in `z.ipv4()` IS documented
+- chained `\\n  .min(` still documents min
+- chained `.trim()` still documents trim
+- chained evidence still documents the root z
+- single-char namespace `_` (lodash) certifies
