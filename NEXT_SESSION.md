@@ -31,6 +31,18 @@
 >   the same file stays Track A's). Future Track-B work arrives as NEW files + one wiring line.
 > - Re-verify any ownership claim with `git log -1 -- <file>` before treating it as a blocker.
 
+**Shipped 2026-07-21n (gap-soundness, W42 core):** the bench can now tell progress from
+luck. `coding-bench-ext/` adds 22 catalog-free tasks (generated-path n 10 → 32, noise floor
+±26 → ±16 pts), each with a reference solution certified through the hermetic oracle and a
+hidden suite synced to `coding-bench/`. `benchStats.ts` adds Wilson intervals —
+**standing rule: report rates with formatRate(), and treat any delta below
+minDetectableDelta(n) as noise.** Corpus validator: `npm run taskcorpus:bench` (model-free).
+**HANDOFF to Track A:** when W1 touches `coding-benchmarks.ts`, enrollment is one line —
+`TASKS.push(...toBenchTasks())` from `coding-bench-ext` — and the generated/catalog split
+should print via `formatRate()`. The 22 suites are already at `coding-bench/<id>.hidden.ts`
+(inert until enrolled). Do not hand-edit generated suites; edit the shard and re-run the
+validator.
+
 **Shipped 2026-07-21m (gap-soundness, W30):** Gate B is hermetic. Scrubbed child env (the
 `env: process.env` API-key exposure to model-generated code is closed), frozen clock + seeded
 PRNG + pinned TZ (clock/random-using candidates certify deterministically instead of flaking),

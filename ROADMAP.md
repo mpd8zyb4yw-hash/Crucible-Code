@@ -1933,6 +1933,43 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21k (gap-soundness — W42 core: the bench can now tell progress from luck)
+
+**The problem, stated by the user and confirmed by the math:** at n=14 (n=10 generated), a
+pass-rate delta under ~26 points is indistinguishable from luck at 95% — every workstream
+would have been tuned against noise until the bench grew. So the bench grew first.
+
+**New `coding-bench-ext/` corpus: 22 tasks, generated-path n 10 → 32** (strings/parsing,
+data structures, logic/state, numeric/date; noise floor ±26 → ±16 points). Every task ships
+(a) an agent-facing prompt with exact path + exact API + a mechanical error contract, (b) a
+bench-side REFERENCE solution, (c) a hidden adversarial suite (≥10 assertions), synced by
+the validator to `coding-bench/<id>.hidden.ts` — the exact location the live harness reads.
+Suites are inert until enrollment, which is ONE additive line in `coding-benchmarks.ts`
+(Track A owns that file): `TASKS.push(...toBenchTasks())` — see `coding-bench-ext/index.ts`.
+
+**The corpus is itself verified** (`__taskcorpus_bench.ts`, `npm run taskcorpus:bench`,
+model-free, ~3 min): every reference must certify against its own hidden suite through the
+REAL hermetic oracle (W30 double-run included), every task must be catalog-free per
+`synthesize()` (floor 0.5, the live path's own threshold), plus prompt/suite hygiene floors.
+Propose→verify applied to the benchmark itself — a bench task with a broken suite converts
+real capability into measured failure and persists forever.
+
+**It caught four authoring bugs before they could judge anything:** `globToRegex` was
+catalog-claimed by `regex-engine` at 0.80 (dropped — rewording to dodge the matcher would
+poison the measurement); the ringBuffer suite's interleaved-ops expectation was wrong
+(hand-trace: pop-from-full then two pushes is 4,5,6); bankersRound's 9.95 expectation
+contradicted IEEE float-true semantics (9.95 is stored below the half → 9.9, matching
+Python; the contract now states this explicitly); and a float `=== 1` equality in the
+Wilson self-test. Four-for-four is the validator earning its keep.
+
+**New `benchStats.ts`:** Wilson intervals, `formatRate()` ("4/10 (40%, 95% CI 17–69%)"),
+`minDetectableDelta(n)`, and `isSignificant()` (non-overlapping intervals, deliberately
+conservative). The corpus bench prints the noise-floor table on every run:
+n=10 ±26pts | n=14 ±23pts | n=32 ±16pts | n=100 ±10pts. **Standing rule: a before/after
+delta smaller than the floor at the current n is noise, not progress — report rates with
+`formatRate()`, never bare percentages.** Path to ±10 is ~100 tasks; the shard structure
+makes additions mechanical and the validator gates every future task the same way.
+
 ### 2026-07-21j (gap-soundness — W30: hermetic, deterministic, secret-free Gate B)
 
 > Branch `claude/gap-soundness` (off `crucible-northstar-sessions`), Track B of the
