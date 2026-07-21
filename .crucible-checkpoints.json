@@ -1,11 +1,5 @@
 [
   {
-    "hash": "a0b232b",
-    "message": "pre-write_file",
-    "timestamp": 1784488246837,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/add-titlecase"
-  },
-  {
     "hash": "47ef307",
     "message": "pre-write_file",
     "timestamp": 1784488259811,
@@ -297,6 +291,12 @@
     "hash": "7b839ad",
     "message": "pre-write_file",
     "timestamp": 1784613622989,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "4922df9",
+    "message": "pre-write_file",
+    "timestamp": 1784613688086,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
