@@ -1,11 +1,5 @@
 [
   {
-    "hash": "2e33365",
-    "message": "pre-write_file",
-    "timestamp": 1784488286786,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/cart-remove"
-  },
-  {
     "hash": "d592e5a",
     "message": "pre-write_file",
     "timestamp": 1784488294389,
@@ -297,6 +291,12 @@
     "hash": "d281d05",
     "message": "pre-write_file",
     "timestamp": 1784614752121,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "30699c2",
+    "message": "pre-write_file",
+    "timestamp": 1784614814813,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
