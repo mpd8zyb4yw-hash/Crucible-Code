@@ -576,6 +576,44 @@ function markImageAttempted(goal: string, p: string): void {
   _imageAttempts.set(goal, s)
 }
 
+// ── Photo attribution ────────────────────────────────────────────────────────
+// Images land in the user's own folder, so they need to arrive with their licence attached —
+// a CC BY file is only usable if the user can see it is CC BY and who made it. Commons'
+// extmetadata carries both; collected per download and written out as CREDITS.md.
+interface PhotoCredit { item: string; file: string; licence: string; artist: string; source: string }
+const _photoCredits = new Map<string, PhotoCredit[]>()
+
+function stripHtml(s: string): string {
+  return s.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim()
+}
+
+/** Licence + author for a Wikimedia upload URL. Returns null for non-Wikimedia URLs (the DDG
+ *  fallback tier) or any lookup failure — the credits file then records the source URL alone
+ *  and says the licence is unknown, which is honest and still actionable. */
+async function fetchImageCredit(url: string): Promise<{ licence: string; artist: string } | null> {
+  try {
+    if (!/upload\.wikimedia\.org/.test(url)) return null
+    // Both plain (…/commons/5/5d/NAME.jpg) and thumbnail (…/thumb/5/5d/NAME.jpg/330px-NAME.jpg)
+    // forms appear; in the thumb form the real file name is the second-to-last segment.
+    const parts = url.split('/').filter(Boolean)
+    const file = decodeURIComponent(/\/thumb\//.test(url) ? parts[parts.length - 2] : parts[parts.length - 1])
+    if (!file) return null
+    const res = await fetch(
+      `https://commons.wikimedia.org/w/api.php?action=query&titles=${encodeURIComponent('File:' + file)}` +
+      `&prop=imageinfo&iiprop=extmetadata&format=json`,
+      { headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' }, signal: AbortSignal.timeout(8000) },
+    )
+    if (!res.ok) return null
+    const pages = (await res.json() as any)?.query?.pages ?? {}
+    const meta = (Object.values(pages)[0] as any)?.imageinfo?.[0]?.extmetadata
+    if (!meta) return null
+    return {
+      licence: stripHtml(String(meta?.LicenseShortName?.value ?? '')) || 'unknown',
+      artist: stripHtml(String(meta?.Artist?.value ?? '')) || 'unknown',
+    }
+  } catch { return null }
+}
+
 /** Find one direct image URL for an item via the existing image_search tool. Returns null on
  *  any failure — the collection then ships text-only for that item and says so, rather than
  *  stalling the whole run over a picture. */
@@ -1803,10 +1841,14 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
       const wantsPhotos = /\b(photos?|images?|pictures?|pics)\b/.test(goal.toLowerCase())
       const attempted = _imageAttempts.get(goal) ?? new Set<string>()
       // Interleave description then photo per item, so an aborted run still leaves whole items.
+      const credits = _photoCredits.get(goal) ?? []
+      const creditsPath = `${dir}/CREDITS.md`
       const targets = items.length
         ? [readme, ...items.flatMap(it => wantsPhotos
             ? [`${dir}/${it.slug}.md`, `${dir}/${it.slug}.jpg`]
-            : [`${dir}/${it.slug}.md`])]
+            : [`${dir}/${it.slug}.md`]),
+           // Written LAST — it can only be assembled once every photo has been attempted.
+           ...(wantsPhotos && credits.length ? [creditsPath] : [])]
         : [readme, `${dir}/overview.md`]
       // An image target is DONE once attempted, whether or not the download succeeded — a
       // failed download writes no file, and a writtenPaths-only test would re-pick it forever.
@@ -1845,6 +1887,16 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
         // cane-corso.jpg that `file` reported as PNG data, which some viewers refuse to open.
         const ext = (url.match(/\.(jpe?g|png|webp|gif)(?:\?|$)/i)?.[1] ?? 'jpg').toLowerCase()
         const dest = nextPath.replace(/\.jpg$/, `.${ext === 'jpeg' ? 'jpg' : ext}`)
+        const credit = await fetchImageCredit(url)
+        const credits = _photoCredits.get(goal) ?? []
+        credits.push({
+          item: item?.name ?? 'overview',
+          file: dest.split('/').pop() ?? dest,
+          licence: credit?.licence ?? 'unknown — verify before reuse',
+          artist: credit?.artist ?? 'unknown',
+          source: url,
+        })
+        _photoCredits.set(goal, credits)
         debugBus.emit('agent', 'offline_asset_photo', { path: dest, url: url.slice(0, 80) }, { severity: 'info' })
         return {
           text: '',
@@ -1853,14 +1905,21 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
       }
 
       let content: string
-      if (nextPath === readme) {
+      if (nextPath === creditsPath) {
+        content = `# Image credits\n\n` +
+          `Every photo in this folder came from Wikimedia Commons. Licences below are as reported\n` +
+          `by Commons at download time — check the source page before republishing.\n\n` +
+          credits.map(c =>
+            `## ${c.item}\n\n- File: \`${c.file}\`\n- Licence: ${c.licence}\n- Author: ${c.artist}\n- Source: ${c.source}\n`
+          ).join('\n')
+      } else if (nextPath === readme) {
         const list = items.length
           ? items.map(it => `- [${it.name}](${it.slug}.md)${wantsPhotos ? ` — photo: \`${it.slug}.*\`` : ''}`).join('\n')
           : '- [overview](overview.md)'
         content = `# ${assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n` +
           `Requested: ${goal.trim()}\n\n## Contents\n\n${list}\n\n` +
           (wantsPhotos
-            ? `_Descriptions are retrieval-grounded. Photos are downloaded from web image search and\nvalidated as real image files; an item whose \`.jpg\` is missing is one where no usable image\nwas found. Check the licence of any photo before reusing it._\n`
+            ? `_Descriptions are retrieval-grounded. Photos come from Wikimedia Commons and are\nvalidated as real image files; an item with no image file is one where no usable photo was\nfound. Per-photo licence and author are recorded in \`CREDITS.md\`._\n`
             : `_Descriptions are retrieval-grounded. Text only._\n`)
       } else {
         const item = items.find(it => nextPath === `${dir}/${it.slug}.md`)

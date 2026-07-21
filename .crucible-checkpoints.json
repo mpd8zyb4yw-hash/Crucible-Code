@@ -1,11 +1,5 @@
 [
   {
-    "hash": "47ef307",
-    "message": "pre-write_file",
-    "timestamp": 1784488259811,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/cross-file-currency"
-  },
-  {
     "hash": "8577ae7",
     "message": "pre-write_file",
     "timestamp": 1784488273259,
@@ -297,6 +291,12 @@
     "hash": "4922df9",
     "message": "pre-write_file",
     "timestamp": 1784613688086,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "63e46d6",
+    "message": "pre-write_file",
+    "timestamp": 1784613783926,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
