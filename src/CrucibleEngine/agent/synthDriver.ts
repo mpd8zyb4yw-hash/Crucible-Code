@@ -757,6 +757,55 @@ export async function certifyAssetItems(goal: string, items: AssetItem[]): Promi
   return kept.length ? kept : items
 }
 
+/** Repair near-neighbour conflation in a generated per-item document.
+ *
+ *  The research DAG retrieves by NAME, and for closely-related entities the retrieved set is
+ *  contaminated by the item's neighbours — a live run's `italian-greyhound.md` asserted the
+ *  breed "resembles the Greyhound and the smaller Italian Greyhound", i.e. it described the
+ *  subject as a third party by blending two entities' sources into one paragraph. Prose that
+ *  confuses which animal it is about is worse than shorter prose that doesn't.
+ *
+ *  Two deterministic repairs, no extra model call:
+ *
+ *  1. SELF-REFERENCE. A sentence that refers to the subject with a distancing comparative
+ *     ("resembles/compared to/unlike ... the smaller <own name>") is describing the subject as
+ *     if it were something else. That sentence is dropped outright — it cannot be salvaged
+ *     without knowing which half is true.
+ *  2. SIBLING BLEED. A sentence naming a DIFFERENT planned item is dropped. Sibling items are
+ *     exactly the near neighbours retrieval confuses, and a per-item doc has no legitimate
+ *     reason to make claims about its siblings.
+ *
+ *  Then the item's own Wikipedia extract is appended as a grounded, attributable floor, so a
+ *  doc gutted by the filters still says something true rather than going empty. The extract is
+ *  served from `_WIKI_SUMMARY_CACHE` — certification already fetched this exact page during
+ *  planning, so in the normal path this costs ZERO additional requests. */
+export async function groundItemDoc(item: AssetItem, all: AssetItem[], body: string): Promise<string> {
+  const own = item.name.toLowerCase()
+  const siblings = all.filter(o => o.slug !== item.slug).map(o => o.name.toLowerCase())
+  const sentences = body.split(/(?<=[.!?])\s+/)
+  const kept = sentences.filter(s => {
+    const t = s.toLowerCase()
+    if (/\b(resembl\w*|compared to|unlike|similar to|smaller|larger)\b[^.]*\b(the|a)\s+(smaller|larger|standard)?\s*/.test(t) && t.includes(own) && /\bthe\s+(smaller|larger|standard)\s+/.test(t)) return false
+    return !siblings.some(sib => t.includes(sib))
+  })
+
+  let out = kept.join(' ').trim()
+  const summary = await wikiSummary(item.name)
+  const extract = String((summary as any)?.extract ?? '').trim()
+  if (extract && !out.toLowerCase().includes(extract.slice(0, 40).toLowerCase())) {
+    out = out
+      ? `${out}\n\n## Reference\n\n${extract}\n\n_Source: [Wikipedia](https://en.wikipedia.org/wiki/${encodeURIComponent(item.name.replace(/\s+/g, '_'))})_`
+      : `${extract}\n\n_Source: [Wikipedia](https://en.wikipedia.org/wiki/${encodeURIComponent(item.name.replace(/\s+/g, '_'))})_`
+  }
+  if (kept.length !== sentences.length) {
+    debugBus.emit('agent', 'offline_item_doc_conflation_repaired',
+      { item: item.name, dropped: sentences.length - kept.length }, { severity: 'info' })
+  }
+  // Never return empty: a filtered-to-nothing doc with no extract falls back to the original
+  // text, which is wrong-but-present rather than a zero-byte file the user can't diagnose.
+  return out || body
+}
+
 /** Ask the FM to enumerate the collection's items. Returns [] on any failure — the caller
  *  degrades to a single grounded overview file rather than fabricating an item list. */
 export async function planAssetCollection(goal: string): Promise<AssetItem[]> {
@@ -1955,7 +2004,9 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
         const query = item
           ? `What is ${item.name}? Describe its history, appearance, temperament and size.`
           : `Give an overview of ${subject}.`
-        content = `# ${item?.name ?? assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n${await solveNonCodeTurn(query, projectPath)}\n`
+        let body = await solveNonCodeTurn(query, projectPath)
+        if (item) body = await groundItemDoc(item, items, body)
+        content = `# ${item?.name ?? assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n${body}\n`
       }
 
       debugBus.emit('agent', 'offline_asset_write', { path: nextPath, planned: targets.length }, { severity: 'info' })
