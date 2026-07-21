@@ -843,17 +843,22 @@ export async function planAssetCollection(goal: string): Promise<AssetItem[]> {
   }
   debugBus.emit('agent', 'offline_asset_plan', { via: 'fm-proposal', retrievedRejected: retrieved.length }, { severity: 'info' })
 
-  for (let attempt = 0; attempt < 3 && bySlug.size < 5; attempt++) {
-    // Later samples must EXCLUDE what we already have. Plain resampling is near-useless here:
-    // the FM runs at temperature 0.3, so three bare calls returned the identical single item
-    // ("Italian Greyhound") and the union stayed at size 1. Naming the exclusions turns each
-    // extra call into new information instead of a repeat.
-    const have = [...bySlug.values()].map(it => it.name)
-    for (const it of await _proposeAssetItems(subject, have)) {
-      if (!bySlug.has(it.slug)) bySlug.set(it.slug, it)
-    }
-  }
-  let items = [...bySlug.values()].slice(0, 10)
+  // STOP ON CONVERGENCE, not on luck. The old rule was `attempt < 3 && bySlug.size < 5`, which
+  // made the result a function of sample ORDER: a lucky first sample returning 8 items stopped
+  // immediately at 8, an unlucky 2+2+1 stopped at 5, and three failed samples stopped at 0 —
+  // the observed 8/10/0 swing across IDENTICAL runs. Neither bound is a statement about the
+  // collection; they are statements about which sample happened to come back first.
+  //
+  // Loop until the union goes DRY (two consecutive samples contribute nothing new), which is a
+  // property of the subject rather than of sampling order, and let a sample that returns
+  // nothing be retried rather than counted as evidence of exhaustion. `votes` records how many
+  // samples independently named each item — self-consistency, used below to break ties without
+  // spending a network lookup.
+  const union = await sampleUntilConvergence(have => _proposeAssetItems(subject, have))
+  debugBus.emit('agent', 'offline_asset_fm_union',
+    { n: union.items.length, converged: union.converged, samples: union.samples }, { severity: 'info' })
+  for (const it of union.items) bySlug.set(it.slug, it)
+  let items = union.items.slice(0, 10)
 
   // The FM only PROPOSED this list — certify it against retrieval before anything is written.
   items = await certifyAssetItems(goal, items)
@@ -918,6 +923,58 @@ async function retrieveCategoryItems(subject: string): Promise<AssetItem[]> {
       .filter(it => it.slug)
     return items.slice(0, 10)
   } catch { return [] }
+}
+
+/**
+ * Union repeated FM samples until the result CONVERGES, ordered by self-consistency.
+ *
+ * Takes the sampler as a parameter so the stopping rule can be tested without the on-device
+ * model — the rule is the part that was broken, and it must not need a working FM daemon to
+ * verify.
+ *
+ * The old rule was `attempt < 3 && union.size < 5`, which made the outcome a function of sample
+ * ORDER rather than of the subject: a lucky first sample returning 8 stopped immediately at 8,
+ * an unlucky 2+2+1 stopped at 5, and three failed calls stopped at 0 — the observed 8/10/0
+ * swing across IDENTICAL runs. Both bounds describe the sampling, not the collection.
+ *
+ * Two changes make the stop a property of the subject:
+ *  - DRYNESS, not a count: keep sampling until two consecutive samples contribute nothing new.
+ *  - An EMPTY sample is a failed call, not evidence of exhaustion. Counting empties as dry is
+ *    exactly how three unlucky calls yielded a 0-item plan for a subject with obvious members;
+ *    only a sample that actually returned names can attest that the well is dry.
+ *
+ * Results are ordered by how many independent samples named each item (self-consistency), so a
+ * caller that truncates keeps what several samples agreed on rather than whatever arrived
+ * first. Ties keep insertion order, so the function is deterministic given the same samples.
+ */
+export async function sampleUntilConvergence(
+  sample: (exclude: string[]) => Promise<AssetItem[]>,
+  opts: { maxSamples?: number; dryStreak?: number; cap?: number } = {},
+): Promise<{ items: AssetItem[]; converged: boolean; samples: number }> {
+  const { maxSamples = 6, dryStreak = 2, cap = 12 } = opts
+  const bySlug = new Map<string, AssetItem>()
+  const votes = new Map<string, number>()
+  const order = new Map<string, number>()
+  let dry = 0
+  let samples = 0
+  for (; samples < maxSamples && dry < dryStreak && bySlug.size < cap; samples++) {
+    // Later samples must EXCLUDE what we already have. Plain resampling is near-useless here:
+    // the FM runs at temperature 0.3, so three bare calls returned the identical single item
+    // ("Italian Greyhound") and the union stayed at size 1. Naming the exclusions turns each
+    // extra call into new information instead of a repeat.
+    let got: AssetItem[] = []
+    try { got = await sample([...bySlug.values()].map(it => it.name)) } catch { got = [] }
+    let added = 0
+    for (const it of got) {
+      votes.set(it.slug, (votes.get(it.slug) ?? 0) + 1)
+      if (!bySlug.has(it.slug)) { bySlug.set(it.slug, it); order.set(it.slug, order.size); added++ }
+    }
+    if (got.length) dry = added ? 0 : dry + 1
+  }
+  const items = [...bySlug.values()].sort((a, b) =>
+    ((votes.get(b.slug) ?? 0) - (votes.get(a.slug) ?? 0)) ||
+    ((order.get(a.slug) ?? 0) - (order.get(b.slug) ?? 0)))
+  return { items, converged: dry >= dryStreak, samples }
 }
 
 /** One FM sample of candidate item names for a category. Returns [] on any parse failure. */
