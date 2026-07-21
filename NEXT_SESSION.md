@@ -17,7 +17,69 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21f (cont.95) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21g (cont.96) (REPLACE THIS EVERY SESSION)
+
+> Ran CONCURRENTLY with cont.95 (separate harness, same working tree). cont.95 owned
+> `synthDriver.ts` (asset-collection routing); this session owned `fmReact.ts` + the automation
+> follow-up path and deliberately stayed out of `synthDriver.ts` to avoid colliding mid-write.
+> Both are landed. Their shipped/open items are preserved in the cont.95 block below and are
+> still current unless contradicted here.
+
+**Shipped 2026-07-21g (cont.96 — fmReact positional tool args + automation follow-up threading):**
+- **cont.94's #2 (fmReact arg mangling) is CLOSED.** `parseResponse` only accepted
+  `key: value` lines, so the two shapes a weak head actually emits — a bare value
+  (`TOOL: run` / `mkdir dog_breeds_italy`) and function-call form
+  (`TOOL: run("mkdir", "dog_breeds_italy")`) — both yielded an EMPTY arg set: `run` executed
+  with no command, `search` with an empty query. That is the source of the mangled
+  `https://www.dog breeds italy.com` hits. Fix: normalize call-form into block-form up front,
+  collect bare lines as positional args, bind them to the tool's FIRST declared param
+  (new exported `primaryParamOf` / `primaryParamLookup`) — and only when no named arg parsed,
+  so a well-formed call is never clobbered. New `__toolargs_bench.ts` (16/16),
+  `npm run toolargs:bench`; `fuzz:bench` 31/31 and `harden:bench` 16/16 still green.
+- **Automation follow-ups now THREAD (cont.93 open item closed).** The item was written as a UI
+  task, but the fault was a layer down: the only writer of a stored conversation was
+  `POST /api/conversations/save`, which ONLY the browser client calls. An automation run is a
+  server-internal fetch with no client, so the `conversationId` it has always sent
+  (`automation-<id>`, server.ts:934) never had a conversation behind it — there was nothing to
+  thread into, which is why the feature was stuck at prefill-only.
+  `server.ts`: `runAutomationNow` persists each successful run as a real round under
+  `automation-<id>`, APPENDING so successive runs of a standing automation read as one
+  conversation; the BRIEF (not the scheduling preamble) is the `userMessage`; try/catch so
+  persistence never fails an otherwise-good run. `App.tsx`: `restoreConversation` resolves
+  true/false so callers can detect an absent thread; `followUpInChat(text, convId?)` adopts the
+  conversation and leaves the composer EMPTY (the transcript already shows the run), falling
+  back to the old paste-prefill for runs predating this. `RunDetailOverlay` /
+  `AgentMissionControl` / `AutomationsView` pass `convId` through.
+  **Live-verified** (running server, TEST user, far-future `once` trigger so only the manual run
+  fired, automation deleted after): before, `GET /api/conversations/automation-<id>` was 404 with
+  0 rounds; after a real run it returns 1 round with the brief as `userMessage`,
+  `synthesisDone: true`, correct `convId`. `tsc --noEmit` clean.
+
+**Open items / risks (priority order) — ADDITIVE to cont.95's list below, which still stands:**
+- **Agent answer quality on trivial briefs is visibly bad.** The verification run's brief was
+  "State the sum of 17 and 4, and nothing else" and the stored answer was
+  `"perform addition → The sum of 17 and 4 is 21.\ndisplay result → 17 + 17 = 34"` — internal
+  step LABELS leaked into the final text AND a fabricated second line contradicts the first.
+  Unrelated to the threading fix (the round was persisted faithfully), but it is now USER-VISIBLE
+  in the chat transcript rather than buried in a digest blurb, so it matters more than it did.
+  Suspect the same step-label leakage `stripAgentScaffold`/`isToolResidue` already fight.
+- **Automation conversations are never pruned.** A standing automation on a short interval
+  appends a round per run forever, into one conversation file with no cap. Consider a
+  keep-last-N when appending in `runAutomationNow`.
+- **Only SUCCESSFUL runs are persisted.** A failed/off-brief run leaves no round, so "Continue in
+  chat" on a failed run still falls back to the paste-prefill. Probably correct, but it is a
+  deliberate asymmetry worth revisiting rather than an oversight.
+- **Correction to cont.95's last bullet:** the "another session's" `App.tsx` /
+  `AgentMissionControl.tsx` / `AutomationsView.tsx` / `RunDetailOverlay.tsx` / `server.ts` edits
+  swept into `9913d93`/`01e734e` were THIS session's automation-threading work — they are
+  complete and live-verified, not stray. Attribution commits: `fdd9040` (threading),
+  `79810a9` (fmReact args, committed cleanly), `cdedb2e` (earlier sources-footer fix).
+  cont.95's underlying point stands: the checkpointer should stage only the file it is about to
+  write, because it is now twice produced commits whose message describes none of their content.
+
+**Previous (cont.95) state below — its open items are NOT superseded:**
+
+## CURRENT STATE — last updated 2026-07-21f (cont.95) (superseded by cont.96 above)
 
 **Shipped 2026-07-21f (cont.95 — asset-collection routing; THE dog-breeds fix):**
 - **cont.94's #1 BINDING item is CLOSED and live-verified end-to-end.** `synthDriver.ts`:

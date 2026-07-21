@@ -1933,6 +1933,41 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21g (cont.96 — fmReact positional tool args + automation follow-up threading)
+Ran CONCURRENTLY with cont.95 in the same working tree (separate harness). cont.95 owned
+`synthDriver.ts`; this session owned `fmReact.ts` + the automation follow-up path and stayed
+out of `synthDriver.ts` to avoid colliding mid-write. Both landed independently.
+- **fmReact ran tools with EMPTY args — FIXED (cont.94 open item #2).** `parseResponse` only
+  accepted `key: value` lines, but the local head emits two other shapes constantly: a bare
+  value line (`TOOL: run` / `mkdir dog_breeds_italy`) and function-call form
+  (`TOOL: run("mkdir", "dog_breeds_italy")`). Both parsed to `{}`, so `run` executed with no
+  command and `search` with an empty query — the source of the mangled
+  `https://www.dog breeds italy.com` hits. Fix: normalize call-form into the documented block
+  form up front; collect bare lines as positional args and bind them to the tool's FIRST
+  declared param (new exported `primaryParamOf` / `primaryParamLookup`), ONLY when no named arg
+  parsed so a well-formed call is never clobbered. New `__toolargs_bench.ts` 16/16
+  (`npm run toolargs:bench`); `fuzz:bench` 31/31 and `harden:bench` 16/16 still green.
+- **Automation "Continue in chat" now threads onto the run — FIXED (cont.93 open item).** The
+  item read as a UI task; the fault was a layer down. The only writer of a stored conversation
+  was `POST /api/conversations/save`, which ONLY the browser client calls — an automation run is
+  a server-internal fetch with no client, so the `conversationId` it has always sent
+  (`automation-<id>`, server.ts:934) never had a conversation behind it. There was nothing to
+  thread into, which is why the feature was stuck pasting the run's own answer into the composer
+  as pseudo-context. `server.ts` now persists each successful run as a real round under
+  `automation-<id>`, appending so successive runs of a standing automation read as one
+  conversation (the BRIEF, not the scheduling preamble, is the `userMessage`; try/catch so
+  persistence never fails a good run). `App.tsx`: `restoreConversation` resolves true/false;
+  `followUpInChat(text, convId?)` adopts the conversation and leaves the composer EMPTY, falling
+  back to the old prefill for runs predating this. `RunDetailOverlay` / `AgentMissionControl` /
+  `AutomationsView` pass `convId` through. Live-verified against the running server with a TEST
+  user (far-future `once` trigger, automation deleted after): before, the conversation was 404
+  with 0 rounds; after a real run, 1 round with the brief as `userMessage`, `synthesisDone`, and
+  the correct `convId`. `tsc --noEmit` clean.
+- **Noted, not fixed:** the verification run exposed step-label leakage in agent finals
+  (`"perform addition → The sum of 17 and 4 is 21.\ndisplay result → 17 + 17 = 34"` — labels in
+  the answer plus a fabricated contradicting line). Now user-visible in the chat transcript
+  rather than buried in a digest blurb. See NEXT_SESSION cont.96 open items.
+
 ### 2026-07-21f (cont.95 — asset-collection routing: file-CREATION goals finally create files)
 
 Closed cont.94's #1 BINDING open item. A goal whose deliverable is a FOLDER OF FILES ("make a
