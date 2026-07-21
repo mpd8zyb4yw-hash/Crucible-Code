@@ -1965,6 +1965,25 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
   Measured on the live failure string plus a sibling-bleed case: both offending sentences
   dropped, clean prose untouched, reference appended in all three cases.
 
+### 2026-07-21j (cont.98b — checkpoint scoping closed out, with one deliberate non-change)
+
+- **`/api/file/write` (`server.ts` ~7336) is now scoped** to the file being written. It was the
+  last unscoped agent-write checkpoint: `git add -A` committed every unrelated dirty file under
+  "crucible: before edit", the mechanism that buried two concurrent sessions' work.
+- **`/api/checkpoint` (~7563) is deliberately LEFT unscoped**, contradicting the earlier
+  roadmap item that said to scope both call sites — that item was wrong and following it would
+  have been a regression. This endpoint is an explicit user-requested snapshot of the whole
+  project, not a pre-write guard for one known file; whole-tree staging is its purpose, and
+  scoping it would quietly narrow what a rollback can restore. Commented in place so a future
+  session does not "fix" it.
+- **Bug found and fixed in cont.97's own scope rule.** `registry.ts` classified every ABSOLUTE
+  path as external and passed `[]` ("snapshot nothing"), so an agent writing an in-project file
+  by absolute path received NO pre-write snapshot at all — the checkpoint silently no-opped for
+  precisely the edits it exists to protect. Containment is now a resolved path-prefix test in a
+  shared `checkpointScopeFor()` (`checkpoint.ts`), with a separator guard so `/a/proj-backup`
+  cannot match `/a/proj`. Verified on a scratch repo across all six path classes, plus
+  end-to-end: a concurrent dirty file stays dirty, an external write commits zero files.
+
 ### 2026-07-21g (cont.96 — fmReact positional tool args + automation follow-up threading)
 Ran CONCURRENTLY with cont.95 in the same working tree (separate harness). cont.95 owned
 `synthDriver.ts`; this session owned `fmReact.ts` + the automation follow-up path and stayed

@@ -41,11 +41,20 @@
    concept pages ("Principate", "Julio-Claudian dynasty"), so reaching actual emperors means
    hundreds of lookups against an API that already rate-limited us. Needs a cheaper candidate
    filter, not more lookups. The summary cache above lowers the cost of any future attempt.
-2. **`server.ts`'s two `createCheckpoint` call sites (~7336, ~7563) are still unscoped** — they
-   pass no path and keep the whole-tree `git add -A`. The mechanism supports scoping now
-   (`checkpoint.ts` takes an optional path scope; `[]` is meaningfully distinct from
-   `undefined`). NOT DONE BECAUSE `server.ts` is owned by the concurrent cont.96 session —
-   editing it risks destroying their uncommitted work. Do this once cont.96 has landed.
+2. **~~`server.ts`'s `createCheckpoint` call sites~~ — CLOSED in cont.98, and the item as
+   written was WRONG.** It said to scope *both* sites; scoping both would have been a
+   regression. `/api/file/write` (~7336) writes one known file and is now scoped. But
+   `/api/checkpoint` (~7563) is an explicit user-requested project snapshot — whole-tree
+   `git add -A` is the entire point there, and narrowing it would quietly reduce what a
+   rollback can restore. It is now commented in place as intentionally unscoped.
+   Also fixed en route: `registry.ts`'s scope rule treated every ABSOLUTE path as external, so
+   an in-project absolute write got `[]` and therefore NO snapshot — the checkpoint silently
+   no-opped for exactly the edits it exists to protect. Containment is now a resolved
+   path-prefix test in the shared `checkpointScopeFor()` (`checkpoint.ts`).
+   **Process note:** this session initially refused to touch `server.ts` on the belief that the
+   concurrent cont.96 session owned it. That belief was never re-checked and had expired —
+   `git log` showed the file untouched for 7.5 hours with a clean tree. Re-verify ownership
+   claims against `git log`/`git status` before treating them as blockers.
 3. **Every asset-collection quality gain depends on Wikipedia being reachable.** Certification,
    licensing, and now `groundItemDoc` all fail open on network error. Caching narrows the
    window but does not remove the dependency; there is no offline evidence tier.
