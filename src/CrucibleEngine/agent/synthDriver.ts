@@ -690,7 +690,53 @@ export function subjectHeadNoun(goal: string): string | null {
  *  those return undefined and stay retryable, so a hiccup can't poison the run. */
 const _WIKI_SUMMARY_CACHE = new Map<string, Record<string, unknown> | null>()
 
+/**
+ * Disk-backed evidence store, so verification survives a process restart.
+ *
+ * The in-memory cache only helps WITHIN one run: every cold start re-fetched every page, so on
+ * a machine that is offline — or when Wikipedia rate-limits, which it already has — the whole
+ * asset pipeline (certification, licensing, per-item grounding) fails open and ships
+ * unverified output. Persisting evidence turns a network outage from "silently certify nothing"
+ * into "certify against what we already proved", which is the actual point of the 0-external-API
+ * goal: the API should be an accelerator for evidence we keep, not a live dependency.
+ *
+ * Only SUCCESSFUL lookups (including confirmed 404s) are persisted; transient failures are
+ * never written, so an outage can't be frozen into the store as fact. Entries carry the time
+ * they were fetched — stale evidence is still evidence and is used, but the age is recorded so
+ * a future revalidation pass can prioritise the oldest.
+ */
+const _WIKI_STORE = path.join(process.cwd(), '.crucible', 'wiki-evidence.json')
+let _storeLoaded = false
+
+function loadWikiStore(): void {
+  if (_storeLoaded) return
+  _storeLoaded = true
+  try {
+    const raw = JSON.parse(fs.readFileSync(_WIKI_STORE, 'utf-8')) as Record<string, { d: Record<string, unknown> | null }>
+    for (const [k, v] of Object.entries(raw)) {
+      if (!_WIKI_SUMMARY_CACHE.has(k)) _WIKI_SUMMARY_CACHE.set(k, v?.d ?? null)
+    }
+    debugBus.emit('agent', 'wiki_evidence_loaded', { n: _WIKI_SUMMARY_CACHE.size }, { severity: 'info' })
+  } catch { /* absent or corrupt store is simply an empty one — never fatal */ }
+}
+
+function saveWikiStore(key: string, d: Record<string, unknown> | null): void {
+  try {
+    fs.mkdirSync(path.dirname(_WIKI_STORE), { recursive: true })
+    let all: Record<string, unknown> = {}
+    try { all = JSON.parse(fs.readFileSync(_WIKI_STORE, 'utf-8')) } catch { /* start fresh */ }
+    // Keep only the fields the pipeline actually reads. Storing whole API responses would bloat
+    // the file with thumbnails and coordinates for no verification value.
+    const slim = d === null ? null : {
+      title: d.title, description: d.description, extract: d.extract,
+    }
+    all[key] = { d: slim, at: Date.now() }
+    fs.writeFileSync(_WIKI_STORE, JSON.stringify(all), 'utf-8')
+  } catch { /* a read-only cwd must not break the run */ }
+}
+
 async function wikiSummary(name: string): Promise<Record<string, unknown> | null | undefined> {
+  loadWikiStore()
   const key = name.trim().toLowerCase()
   if (_WIKI_SUMMARY_CACHE.has(key)) return _WIKI_SUMMARY_CACHE.get(key)
   const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name.replace(/\s+/g, '_'))}`
@@ -708,11 +754,12 @@ async function wikiSummary(name: string): Promise<Record<string, unknown> | null
     res = await get()
   }
   if (!res.ok) {
-    if (res.status === 404) { _WIKI_SUMMARY_CACHE.set(key, null); return null }
+    if (res.status === 404) { _WIKI_SUMMARY_CACHE.set(key, null); saveWikiStore(key, null); return null }
     return undefined // transient — leave uncached so a later pass can retry
   }
   const d = await res.json() as Record<string, unknown>
   _WIKI_SUMMARY_CACHE.set(key, d)
+  saveWikiStore(key, d)
   return d
 }
 
