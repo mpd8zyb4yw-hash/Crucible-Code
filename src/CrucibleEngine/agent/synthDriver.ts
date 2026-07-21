@@ -612,12 +612,38 @@ export function goalQualifiers(goal: string): string[] {
   return [...new Set(caps.map(w => w.toLowerCase()))].filter(w => !_CAP_STOP.has(w))
 }
 
+/** The category's principal noun — "dog breeds from Italy" → "breed", "roman emperors" →
+ *  "emperor". Taken as the LAST subject token that is neither a connector nor a qualifier,
+ *  then de-pluralised. Used to test that an item is an INSTANCE of the category rather than
+ *  merely a page about it. */
+export function subjectHeadNoun(goal: string): string | null {
+  const quals = new Set(goalQualifiers(goal))
+  const subject = assetCollectionSlug(goal).replace(/-/g, ' ')
+  const toks = subject.split(' ')
+    .filter(Boolean)
+    .filter(w => !/^(from|in|of|the|a|an|and|with|about)$/.test(w))
+    .filter(w => !quals.has(w) && w.length > 2)
+  const head = toks[toks.length - 1]
+  if (!head) return null
+  return head.replace(/(?:ie)?s$/, m => (m === 'ies' ? 'y' : '')) || head
+}
+
 /** Certify proposed items against Wikipedia. Fails OPEN (keeps the item) on any network or
  *  parse error — a flaky lookup must not silently empty the user's collection — but drops an
- *  item whose article demonstrably does not mention the goal's qualifier. */
+ *  item whose article demonstrably does not mention the goal's qualifier, or whose one-line
+ *  Wikipedia description shows it is not an INSTANCE of the category.
+ *
+ *  The instance test exists because the qualifier test alone is not sufficient: the Italian
+ *  dog-breeds category contains "Ente Nazionale della Cinofilia Italiana", a kennel-club
+ *  ORGANISATION whose article naturally mentions Italy, so it passed topical certification and
+ *  shipped as if it were a breed. Wikipedia's `description` field is the discriminator — real
+ *  breeds read "Italian breed of sighthound"/"Italian breed of mastiff", the club reads
+ *  "Italian dog association". Note this must test the HEAD noun ("breed"), not every subject
+ *  word: the club's description contains "dog" too. */
 export async function certifyAssetItems(goal: string, items: AssetItem[]): Promise<AssetItem[]> {
   const quals = goalQualifiers(goal)
-  if (!quals.length || !items.length) return items
+  const head = subjectHeadNoun(goal)
+  if ((!quals.length && !head) || !items.length) return items
   const checked = await Promise.all(items.map(async it => {
     try {
       // One retry on a transient failure. Without it, a burst of lookups that trips
@@ -645,7 +671,18 @@ export async function certifyAssetItems(goal: string, items: AssetItem[]): Promi
       // "Italy" — so an exact "italy" test dropped genuinely correct items (measured: it kept
       // only 1 of 3 real Italian breeds). Comparing on the stem ("ital") accepts
       // italy/italian/italiano while still rejecting Basenji's "Central Africa".
-      return { it, keep: quals.some(q => hay.includes(q.slice(0, Math.max(4, q.length - 2)))) }
+      const topical = !quals.length || quals.some(q => hay.includes(q.slice(0, Math.max(4, q.length - 2))))
+
+      // Instance test, run against the one-line description only. The full extract is far too
+      // permissive — the kennel club's article talks about breeds at length, so testing the
+      // extract would re-admit exactly what this check exists to remove. Skipped entirely when
+      // the page has no description (fail open rather than guess).
+      const desc = String(d?.description ?? '').toLowerCase()
+      const isInstance = !head || !desc
+        ? true
+        : desc.includes(head.slice(0, Math.max(4, head.length)))
+
+      return { it, keep: topical && isInstance }
     } catch { return { it, keep: true } }
   }))
   const kept = checked.filter(c => c.keep).map(c => c.it)
