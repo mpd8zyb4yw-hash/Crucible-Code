@@ -678,30 +678,54 @@ export function subjectHeadNoun(goal: string): string | null {
  *  breeds read "Italian breed of sighthound"/"Italian breed of mastiff", the club reads
  *  "Italian dog association". Note this must test the HEAD noun ("breed"), not every subject
  *  word: the club's description contains "dog" too. */
+/** Wikipedia summaries by page name, shared across every certification pass in the process.
+ *  Certification previously did one uncached lookup per item PER PASS, and a plan runs it at
+ *  least twice (retrieval path, then again on the FM union) — a single collection goal could
+ *  issue 20+ requests for ~10 distinct names. That burst is what tripped Wikipedia's rate
+ *  limiting live, and rate limiting makes every check fail OPEN, which is how "Border Collie"
+ *  shipped as an Italian breed. Caching is therefore a CORRECTNESS fix, not a speed one.
+ *
+ *  `null` (page genuinely absent / unusable) is cached too — re-asking for a 404 is exactly
+ *  the wasted request that pushes the burst over the limit. Transient FAILURES are not cached:
+ *  those return undefined and stay retryable, so a hiccup can't poison the run. */
+const _WIKI_SUMMARY_CACHE = new Map<string, Record<string, unknown> | null>()
+
+async function wikiSummary(name: string): Promise<Record<string, unknown> | null | undefined> {
+  const key = name.trim().toLowerCase()
+  if (_WIKI_SUMMARY_CACHE.has(key)) return _WIKI_SUMMARY_CACHE.get(key)
+  const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name.replace(/\s+/g, '_'))}`
+  const get = () => fetch(url, {
+    headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' },
+    signal: AbortSignal.timeout(8000),
+  })
+  // One retry on a transient failure. Without it, a burst of lookups that trips Wikipedia's
+  // rate limiting makes every check fail open at once — observed live, where "Border Collie"
+  // and "Shih Tzu" survived certification for an ITALIAN breeds goal purely because the
+  // network hiccuped, which is the exact failure certification exists to prevent.
+  let res = await get()
+  if (!res.ok && res.status !== 404) {
+    await new Promise(r => setTimeout(r, 600))
+    res = await get()
+  }
+  if (!res.ok) {
+    if (res.status === 404) { _WIKI_SUMMARY_CACHE.set(key, null); return null }
+    return undefined // transient — leave uncached so a later pass can retry
+  }
+  const d = await res.json() as Record<string, unknown>
+  _WIKI_SUMMARY_CACHE.set(key, d)
+  return d
+}
+
 export async function certifyAssetItems(goal: string, items: AssetItem[]): Promise<AssetItem[]> {
   const quals = goalQualifiers(goal)
   const head = subjectHeadNoun(goal)
   if ((!quals.length && !head) || !items.length) return items
   const checked = await Promise.all(items.map(async it => {
     try {
-      // One retry on a transient failure. Without it, a burst of lookups that trips
-      // Wikipedia's rate limiting makes every check fail open at once — observed live, where
-      // "Border Collie" and "Shih Tzu" survived certification for an ITALIAN breeds goal
-      // purely because the network hiccuped, which is the exact failure certification exists
-      // to prevent.
-      let res = await fetch(
-        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(it.name.replace(/\s+/g, '_'))}`,
-        { headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' }, signal: AbortSignal.timeout(8000) },
-      )
-      if (!res.ok && res.status !== 404) {
-        await new Promise(r => setTimeout(r, 600))
-        res = await fetch(
-          `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(it.name.replace(/\s+/g, '_'))}`,
-          { headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' }, signal: AbortSignal.timeout(8000) },
-        )
-      }
-      if (!res.ok) return { it, keep: true }
-      const d = await res.json() as any
+      const d = await wikiSummary(it.name) as any
+      // undefined = transient failure (uncached, retryable); null = page absent. Both fail
+      // OPEN — a flaky lookup must not silently empty the user's collection.
+      if (!d) return { it, keep: true }
       const hay = `${String(d?.title ?? '')} ${String(d?.description ?? '')} ${String(d?.extract ?? '')}`.toLowerCase()
       if (!hay.trim()) return { it, keep: true }
       // Stem-match, not exact-match. A place qualifier almost always appears in the article
