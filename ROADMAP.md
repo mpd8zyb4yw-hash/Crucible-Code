@@ -500,7 +500,7 @@ the experience.* Crucible is bottom-up (agency layer first), which is the differ
 - [x] **Gap 2 — Tool acquisition:** `src/CrucibleEngine/tools/dynamicTools.ts` — agent calls `create_tool` with a name, description, params schema, and JS body; body compiled via `vm.Script` (syntax error caught immediately), then `AsyncFunction` with `require` injected; registered live in current session + persisted to `.crucible/dynamic-tools/<name>.json`; loaded back at every server start via `loadDynamicToolsInto()`. `list_dynamic_tools` lets the agent inspect its earned toolkit. `tool_created` event surfaced in agent UI. Agent preamble tells it when and how to use it.
 - [x] **Gap 3 — Persistent world model:** `src/CrucibleEngine/state/codebaseIndex.ts` — walks project on first agent run, extracts symbols + imports deterministically (no model calls), persists to `.crucible/codebase-index.json`. Incremental on subsequent runs (mtime-gated). Top-K relevant files retrieved by cosine similarity and injected into every agent system preamble. `reindexFiles()` called from `write_file`/`edit_file`/`apply_patch` via `onFileMutated` hook so the index stays live as the agent mutates files. `GET /api/debug/codebase?q=<query>` for inspection. 58 files indexed on Crucible itself in <50ms.
 - [x] **Gap 4 — Meta-learning:** `triumvirate.ts` extended with `recordTriumvirateOutcome()`, `runMetaLearning()`, `effectiveThresholds()`. After each `autoImprove` pass, quality snapshots + approval/rejection counts are recorded; `runMetaLearning()` correlates outcomes with decisions: approvals preceding quality drops → tighten weight_change multiplier; near-total rejection with flat quality → relax knowledge_pattern multiplier; quality trending up → restore toward baseline. 3h cooldown prevents thrashing. `GET /api/autonomous/meta` exposes full state + effective thresholds. Verified: tighten and relax scenarios both fire correctly.
-- [ ] **"Goal, not prompt" demo:** e.g. "Make my API 3x faster" → index, find bottlenecks, plan, execute, benchmark, verify, commit, write PR, post — zero prompts after the first. Missing pieces: autonomous goal decomposition + codebase-indexing trigger.
+- [~] **"Goal, not prompt" demo:** e.g. "Make my API 3x faster" → index, find bottlenecks, plan, execute, benchmark, verify, commit, write PR, post — zero prompts after the first. Missing pieces: autonomous goal decomposition + codebase-indexing trigger. *(2026-07-21: the persistent task-plan primitive now exists — `agent/taskPlan.ts` + the `update_plan` tool, incl. the completion signal that lets a run know it is finished. Still to wire: plan context into the agent preamble and `progress.done` as a loop-termination condition.)*
 
 ---
 
@@ -1345,6 +1345,61 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*  *(newest first — append a dated entry per working session)*
+
+### 2026-07-21 — Persistent task plan (`update_plan`): the long-horizon primitive
+
+**What was missing.** Every other piece of unattended autonomy was already built and wired
+(goal engine, dynamic tool creation, codebase index, meta-learning, verify/self-heal,
+context compaction). The gap was the primitive Claude Code and Codex both center long runs
+on: an explicit, persistent, model-updatable **task list**. `taskScratchpad.ts` stores
+*facts* a task has learned; nothing stored the *plan*. Without it a long run has no way to
+keep the thread across dozens of turns and — the expensive part — **no way to know it is
+finished**, so it drains its turn budget instead of stopping.
+
+**Built:** `src/CrucibleEngine/agent/taskPlan.ts` + an `update_plan` tool in the registry.
+
+Free-tier philosophy applied literally: every invariant is enforced deterministically in
+client code, never by asking a weak model to be disciplined. A sloppy plan still normalizes
+into a well-formed one.
+- At most one step `in_progress` (later actives demote); blanks dropped; case/punctuation
+  duplicates collapsed; bogus status values fall back to `pending`; if nothing is active and
+  work remains, the first pending step is promoted — an unattended run always has an
+  unambiguous current step.
+- `mergePreservingProgress()` — a mid-run replan carries forward the status of any step whose
+  text still matches. Without this, a careless replan that re-sends everything as `pending`
+  silently resets completed work and the agent redoes it. That is the classic long-horizon
+  failure and it is now structurally impossible.
+- **Completion signal.** When no step is pending/in_progress, the rendered plan tells the
+  model "give your final answer now; do not call more tools." If any step is `blocked`, it
+  instead says "do not claim success" — a blocked plan must never render as a win.
+- `blocked` always wins a merge, even over `completed`, so a late-discovered regression can
+  reopen a finished step rather than being silently hidden. *(Caught by the bench, not by
+  inspection — the first implementation swallowed it.)*
+
+**Zero-conflict by construction.** `loop.ts:143` already calls `registry.list()`, so
+registering a tool reaches the agent with **no edit to `loop.ts`, `localFmPlanner.ts`, or
+`fmReact.ts`** — the files a parallel session owns. Deliberately *not* marked `mutates`: the
+plan is the agent's own working state, not the user's project, and gating it behind
+`allowMutation` would leave read-only contexts (e.g. `callModelAgentic`, which runs with
+`allowMutation: false`) unable to plan at all — exactly where a weak model most needs the
+structure.
+
+**Deliberately not done:** the `run` tool returns a bare `exit 0` when a command produces no
+stdout, which is the upstream source of the tool-residue-as-answer class. Fixing it here
+would have been one line, but a parallel session's `isAllToolResidue` guard pattern-matches
+that exact string — changing the format would silently blind their detector. Left alone;
+should be coordinated, not raced.
+
+**Verified:** `npx tsx src/CrucibleEngine/agent/test-taskplan.ts` — 33/33, deterministic (pure
+functions + real tool exec against a temp project, no model calls). `npx tsc --noEmit` clean.
+`tools/test-tools.ts` still ALL PASS. `tools/test-protocol.ts` fails to start in this
+worktree for an unrelated pre-existing reason: `.env.local` injects 0 vars, so its live Groq
+call has no `GROQ_API_KEY`.
+
+**Next (not built):** inject `buildPlanContext(projectPath)` into the agent system preamble
+and treat `progress.done` as a loop-termination condition — both are one-liners in `loop.ts`,
+left for whoever owns that file. Until then the plan is available to the model and persists
+across restarts, but does not yet auto-terminate the loop.
 
 ### 2026-06-15 — Track O Layer 1 + Remote Brain fixes (stream size, send button, semantic corpus)
 

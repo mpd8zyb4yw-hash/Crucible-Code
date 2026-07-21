@@ -1,11 +1,5 @@
 [
   {
-    "hash": "4a24528",
-    "message": "pre-write_file",
-    "timestamp": 1781302499028,
-    "projectPath": "/Users/justin/Desktop/Crucible/ore-probe-rive-probe"
-  },
-  {
     "hash": "dc2f935",
     "message": "pre-write_file",
     "timestamp": 1781302577591,
@@ -298,5 +292,11 @@
     "message": "pre-write_file",
     "timestamp": 1781421879792,
     "projectPath": "/Users/justin/Desktop/Crucible/sage-crust-step-zinc"
+  },
+  {
+    "hash": "932cb67",
+    "message": "pre-write_file",
+    "timestamp": 1784640746166,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-tools-yaRPSE"
   }
 ]

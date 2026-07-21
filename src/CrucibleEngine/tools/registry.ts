@@ -11,6 +11,7 @@ import { appendGlobalMemory } from '../state/session'
 import { buildGraphDigest, findEntities, upsertEntity, touchEntities } from '../entityGraph'
 import { gFetch, googleServicesStatus } from './googleApis'
 import { getUITree, clickElement, typeText } from '../macTools'
+import { applyPlanUpdate, getPlan, renderPlan } from '../agent/taskPlan'
 
 const tools = new Map<string, ToolDef>()
 
@@ -1431,5 +1432,52 @@ registry.register({
   async run(args) {
     const result = await typeText(String(args.text ?? ''))
     return { ok: !result.startsWith('Type failed'), output: result }
+  },
+})
+
+// Not marked `mutates` on purpose: the plan is the agent's own working state, not the
+// user's project. Gating it behind allowMutation would leave read-only contexts unable
+// to plan at all, which is exactly where a weak model most needs the structure.
+registry.register({
+  name: 'update_plan',
+  description:
+    'Create or update your step-by-step plan for the current task, and track progress through it. ' +
+    'Call this once early with the full list of steps, then again each time a step\'s status changes. ' +
+    'Pass the complete step list every time — statuses of steps you already finished are preserved automatically. ' +
+    'Mark exactly one step in_progress. Returns the current plan; when every step is complete you are done and should give your final answer.',
+  params: {
+    type: 'object',
+    properties: {
+      goal: { type: 'string', description: 'One-line statement of the overall goal (optional after the first call)' },
+      steps: {
+        type: 'array',
+        description: 'The complete ordered list of steps',
+        items: {
+          type: 'object',
+          properties: {
+            step: { type: 'string', description: 'Short imperative description of the step' },
+            status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'blocked'], description: 'Defaults to pending' },
+            note: { type: 'string', description: 'Why it is blocked, or what completing it produced' },
+          },
+          required: ['step'],
+        },
+      },
+    },
+    required: ['steps'],
+  },
+  async run(args, ctx) {
+    const rawSteps = Array.isArray(args.steps) ? (args.steps as Array<Record<string, unknown>>) : null
+    if (!rawSteps) {
+      return { ok: false, output: 'update_plan requires a "steps" array. Current plan:\n' + renderPlan(getPlan(ctx.projectPath)) }
+    }
+    const { plan, rendered, progress } = applyPlanUpdate(ctx.projectPath, {
+      goal: args.goal == null ? undefined : String(args.goal),
+      steps: rawSteps.map(s => ({ step: String(s?.step ?? ''), status: s?.status as any, note: s?.note == null ? undefined : String(s.note) })),
+    })
+    if (!plan.steps.length) {
+      return { ok: false, output: 'No usable steps were provided — every entry was empty. Provide at least one non-empty step.' }
+    }
+    ctx.emit?.({ type: 'plan', goal: plan.goal, steps: plan.steps, done: progress.done })
+    return { ok: true, output: rendered, meta: { total: progress.total, completed: progress.completed, done: progress.done } }
   },
 })
