@@ -120,7 +120,14 @@ export interface PlannedTaskOpts {
 export interface PlannedTaskResult {
   ok: boolean
   steps: Step[]
+  /** INTERNAL ledger — `<step intent> → <compressed result>` per completed step. Used for
+   *  checkpointing/resume and debug. NOT user-facing: shipping it verbatim put the agent's own
+   *  plan labels in front of the user ("perform addition → …\ndisplay result → …"). */
   summary: string
+  /** User-facing answer: the completed steps' results with the internal intent labels stripped.
+   *  Present on success; callers should prefer it over `summary` and fall back when absent
+   *  (the failure returns below have no step results, and their `summary` IS the honest text). */
+  answer?: string
   /** Set only when the stop reason is a clarification with an enumerable answer set
    *  (see AgentLoopResult.clarificationOptions) — a plain-language MC list the caller
    *  can render instead of a free-text prompt. Absent for open-ended clarifications. */

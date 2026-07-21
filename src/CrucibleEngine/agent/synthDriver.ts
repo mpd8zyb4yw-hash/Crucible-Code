@@ -38,6 +38,7 @@ import { synthesizeUniversal } from '../synth/universal'
 import { enqueueFm } from './fmQueue'
 import { buildEditSpec, parseSectionPatches, applyPatch, isSectionPatchOutput } from '../synth/editExtract'
 import { ensureIndex } from '../state/codebaseIndex'
+import { registry } from '../tools/registry'
 import { debugBus } from '../debug/bus'
 import type { DriveTurn, DriveTurnResult } from './loop'
 import { retrieveForTask, namesExternalLibrary } from '../retrieval/retrievalLayer'
@@ -562,6 +563,33 @@ export function assetCollectionDir(goal: string): string {
 
 /** One planned item in the collection. */
 interface AssetItem { name: string; slug: string }
+
+// Photo attempts are capped at ONE per item, tracked here rather than through writtenPaths.
+// A failed download writes no file, so a writtenPaths-only check would re-pick the same image
+// target every turn and spin until the iteration budget died — the same failure mode the
+// .md extension gap caused for descriptions. Keyed by goal, valued by image path attempted.
+const _imageAttempts = new Map<string, Set<string>>()
+
+function markImageAttempted(goal: string, p: string): void {
+  const s = _imageAttempts.get(goal) ?? new Set<string>()
+  s.add(p)
+  _imageAttempts.set(goal, s)
+}
+
+/** Find one direct image URL for an item via the existing image_search tool. Returns null on
+ *  any failure — the collection then ships text-only for that item and says so, rather than
+ *  stalling the whole run over a picture. */
+async function findImageUrl(query: string, projectPath: string): Promise<string | null> {
+  try {
+    const res = await registry.exec(
+      { id: `img_${Date.now()}`, name: 'image_search', args: { query, count: 5 } } as any,
+      { projectPath } as any,
+    )
+    if (!res.ok) return null
+    const url = res.output.split('\n').map(s => s.trim()).find(s => /^https?:\/\//.test(s))
+    return url ?? null
+  } catch { return null }
+}
 
 // Planning is one FM call per goal; cache so the per-item write turns agree on the plan.
 const _assetPlans = new Map<string, AssetItem[]>()
@@ -1242,6 +1270,10 @@ function parseCurrentState(messages: Array<Record<string, unknown>>, explicitGoa
   let selfTestRan = false
   let lastReadPath: string | null = null
   let lastWritePath: string | null = null
+  // download_file is recorded RESULT-GATED (unlike write_file, which cannot partially fail):
+  // a download that 404s or returns a non-image writes nothing, and counting it as written
+  // would make the collection summary claim photos that are not on disk.
+  let pendingDownload: string | null = null
 
   for (const msg of messages) {
     const content = String(msg.content ?? '')
@@ -1268,6 +1300,13 @@ function parseCurrentState(messages: Array<Record<string, unknown>>, explicitGoa
       if (lastReadPath && !content.startsWith('Error') && content.length > 10) {
         existingFileContent = content
       }
+      if (pendingDownload) {
+        // download_file's success output is "Downloaded valid image to <path> (<n>KB)".
+        if (/^Downloaded valid image/.test(content) && !writtenPaths.includes(pendingDownload)) {
+          writtenPaths.push(pendingDownload)
+        }
+        pendingDownload = null
+      }
       lastReadPath = null
       lastWritePath = null
     }
@@ -1291,6 +1330,10 @@ function parseCurrentState(messages: Array<Record<string, unknown>>, explicitGoa
             writeCycles++
             lastWritePath = p
           }
+        }
+        if (name === 'download_file') {
+          const dest = String(args.dest ?? '')
+          if (dest) { pendingDownload = dest; lastWritePath = dest }
         }
         if (name === 'run_command') {
           lastWritePath = null  // next tool result is from run_command
@@ -1529,29 +1572,65 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
       const dir = assetCollectionDir(goal)
       const items = await planAssetCollection(goal)
       const readme = `${dir}/README.md`
-      const targets = [readme, ...(items.length
-        ? items.map(it => `${dir}/${it.slug}.md`)
-        : [`${dir}/overview.md`])]
-      const nextPath = targets.find(p => !writtenPaths.includes(p))
+      // Photos only when the goal actually asked for them — "a folder of notes about X" should
+      // not silently start pulling third-party images off the web.
+      const wantsPhotos = /\b(photos?|images?|pictures?|pics)\b/.test(goal.toLowerCase())
+      const attempted = _imageAttempts.get(goal) ?? new Set<string>()
+      // Interleave description then photo per item, so an aborted run still leaves whole items.
+      const targets = items.length
+        ? [readme, ...items.flatMap(it => wantsPhotos
+            ? [`${dir}/${it.slug}.md`, `${dir}/${it.slug}.jpg`]
+            : [`${dir}/${it.slug}.md`])]
+        : [readme, `${dir}/overview.md`]
+      // An image target is DONE once attempted, whether or not the download succeeded — a
+      // failed download writes no file, and a writtenPaths-only test would re-pick it forever.
+      const nextPath = targets.find(p => !writtenPaths.includes(p) && !attempted.has(p))
 
       if (!nextPath) {
-        debugBus.emit('agent', 'offline_asset_done', { dir, files: writtenPaths.length }, { severity: 'info' })
+        const wrote = writtenPaths.filter(p => p.startsWith(dir))
+        const photos = wrote.filter(p => p.endsWith('.jpg')).length
+        const docs = wrote.filter(p => p.endsWith('.md')).length
+        const photoNote = !wantsPhotos
+          ? ''
+          : photos > 0
+            ? ` ${photos} photo(s) downloaded and validated as real images; any item without a .jpg is one where no usable image was found.`
+            : ` No photos could be retrieved — every image search or download failed, so this collection is text only.`
+        debugBus.emit('agent', 'offline_asset_done', { dir, docs, photos }, { severity: 'info' })
         return {
-          text: `Wrote ${writtenPaths.length} file(s) to ${dir} — one per item plus README.md. ` +
-            `Descriptions are retrieval-grounded. Images are NOT included: downloading third-party ` +
-            `photos is not something this loop does, so the files are text only.`,
+          text: `Wrote ${docs} document(s)${photos ? ` and ${photos} photo(s)` : ''} to ${dir} — ` +
+            `README.md index plus one file per item. Descriptions are retrieval-grounded.${photoNote}`,
           toolCalls: [],
+        }
+      }
+
+      // ── Photo target: search for a URL, then download through the validating tool ──
+      if (nextPath.endsWith('.jpg')) {
+        markImageAttempted(goal, nextPath)
+        const item = items.find(it => nextPath === `${dir}/${it.slug}.jpg`)
+        const url = await findImageUrl(`${item?.name ?? assetCollectionSlug(goal)} photo`, projectPath)
+        if (!url) {
+          // No usable URL — fall through to the next target on the following turn rather than
+          // failing the run. The final summary reports which items ended up without a photo.
+          debugBus.emit('agent', 'offline_asset_no_image', { path: nextPath }, { severity: 'info' })
+          return { text: '', toolCalls: [{ id: `offline_noop_${Date.now()}`, name: 'read_file', args: { path: readme } }] }
+        }
+        debugBus.emit('agent', 'offline_asset_photo', { path: nextPath, url: url.slice(0, 80) }, { severity: 'info' })
+        return {
+          text: '',
+          toolCalls: [{ id: `offline_photo_${Date.now()}`, name: 'download_file', args: { url, dest: nextPath } }],
         }
       }
 
       let content: string
       if (nextPath === readme) {
         const list = items.length
-          ? items.map(it => `- [${it.name}](${it.slug}.md)`).join('\n')
+          ? items.map(it => `- [${it.name}](${it.slug}.md)${wantsPhotos ? ` — photo: \`${it.slug}.jpg\`` : ''}`).join('\n')
           : '- [overview](overview.md)'
         content = `# ${assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n` +
           `Requested: ${goal.trim()}\n\n## Contents\n\n${list}\n\n` +
-          `_Text only — photos are not downloaded by this process._\n`
+          (wantsPhotos
+            ? `_Descriptions are retrieval-grounded. Photos are downloaded from web image search and\nvalidated as real image files; an item whose \`.jpg\` is missing is one where no usable image\nwas found. Check the licence of any photo before reusing it._\n`
+            : `_Descriptions are retrieval-grounded. Text only._\n`)
       } else {
         const item = items.find(it => nextPath === `${dir}/${it.slug}.md`)
         // Ask a pure FACTUAL question about the item. Passing the raw goal as context made
