@@ -1963,6 +1963,20 @@ out of `synthDriver.ts` to avoid colliding mid-write. Both landed independently.
   user (far-future `once` trigger, automation deleted after): before, the conversation was 404
   with 0 rounds; after a real run, 1 round with the brief as `userMessage`, `synthesisDone`, and
   the correct `convId`. `tsc --noEmit` clean.
+- **Agent finals no longer ship the internal plan ledger.** `runPlannedTask`'s `summary` is the
+  INTERNAL `<step intent> → <compressed result>` ledger and server.ts sent it verbatim as the
+  final answer. New `answer` field built by `composeAnswer` — step results only, labels stripped,
+  restatements de-duplicated, fully deterministic (no model call, never invents text); a single
+  step returns its text verbatim. `stripLedgerLabels` recovers results on resume and strips a
+  prefix only when it matches a real step intent. `isResidueResult` keeps "exit 0"/"Done." out of
+  the answer while DELIBERATELY keeping bare numbers (right rule for a whole-task final, wrong for
+  a step legitimately answering "21" — never discard what could be the real answer). All-residue
+  yields an honest "no reportable result" line instead of falling back to the ledger.
+  `__plananswer_bench.ts` 21/21; toolargs 16/16, fuzz 31/31, harden 16/16 green; tsc clean.
+- **Found, NOT fixed (handed off as cont.96 open item #1):** the same brief still returns
+  `"exit 0"` as the entire answer on the NON-planner (`runAgentLoop`) path, where cont.93's
+  residue guard is not firing. Reproducible; tracing was defeated by the tsx-watch server
+  restarting mid-request, not by the bug.
 - **Noted, not fixed:** the verification run exposed step-label leakage in agent finals
   (`"perform addition → The sum of 17 and 4 is 21.\ndisplay result → 17 + 17 = 34"` — labels in
   the answer plus a fabricated contradicting line). Now user-visible in the chat transcript

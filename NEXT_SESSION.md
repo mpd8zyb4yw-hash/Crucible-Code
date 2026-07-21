@@ -55,14 +55,30 @@
   0 rounds; after a real run it returns 1 round with the brief as `userMessage`,
   `synthesisDone: true`, correct `convId`. `tsc --noEmit` clean.
 
+- **Step-label leakage in agent finals is CLOSED.** `runPlannedTask`'s `summary` is the INTERNAL
+  ledger (`<step intent> → <compressed result>` per line) and server.ts shipped it verbatim, so a
+  live run returned `"perform addition → The sum of 17 and 4 is 21.\ndisplay result → 17 + 17 = 34"`
+  — plan labels plus a fabricated contradicting line, in front of the user. New `answer` field on
+  `PlannedTaskResult` built by `composeAnswer` (labels stripped, restatements de-duplicated,
+  deterministic, no model call); `stripLedgerLabels` recovers results on resume, stripping a prefix
+  only when it matches a real step intent. `isResidueResult` keeps "exit 0"/"Done." out of the
+  answer but DELIBERATELY keeps bare numbers (that rule is right for a whole-task final, wrong for
+  a step legitimately answering "21"). All-residue ⇒ an honest "no reportable result" line rather
+  than falling back to the ledger. `__plananswer_bench.ts` 21/21, `npm run plananswer:bench`.
+
 **Open items / risks (priority order) — ADDITIVE to cont.95's list below, which still stands:**
-- **Agent answer quality on trivial briefs is visibly bad.** The verification run's brief was
-  "State the sum of 17 and 4, and nothing else" and the stored answer was
-  `"perform addition → The sum of 17 and 4 is 21.\ndisplay result → 17 + 17 = 34"` — internal
-  step LABELS leaked into the final text AND a fabricated second line contradicts the first.
-  Unrelated to the threading fix (the round was persisted faithfully), but it is now USER-VISIBLE
-  in the chat transcript rather than buried in a digest blurb, so it matters more than it did.
-  Suspect the same step-label leakage `stripAgentScaffold`/`isToolResidue` already fight.
+- **#1 — "exit 0" still ships as the whole answer on the NON-planner agent path.** UNRESOLVED and
+  reproducible: brief "State the sum of 17 and 4, and nothing else" through a real automation run
+  returns `synthesis: "exit 0"` (8-11s, `status: ok`). This is NOT the ledger bug just fixed and
+  NOT the planner path — `needsPlan()` is false for this goal, so it takes the `runAgentLoop`
+  branch, and cont.93's residue guard (`loop.ts:612`, `isToolResidue` + bounded bounce) evidently
+  is NOT firing there, or the final is emitted by a path that bypasses it entirely. Next session:
+  find which emitter produces this final. Attempted tracing via `/api/debug/history` was defeated
+  by the environment (below), not by the bug being hard — a direct `/api/chat` trace is the move.
+- **The dev environment fights live verification.** The tsx-watch server on :3001 restarted
+  repeatedly mid-request (ECONNREFUSED / "terminated" mid-SSE), pid churning 47583 → 48366 → 48817
+  within minutes, because the checkpointer/autocommit keeps touching watched files. Budget for
+  retries, or run a pinned server on an alternate port for tracing.
 - **Automation conversations are never pruned.** A standing automation on a short interval
   appends a round per run forever, into one conversation file with no cap. Consider a
   keep-last-N when appending in `runAutomationNow`.
