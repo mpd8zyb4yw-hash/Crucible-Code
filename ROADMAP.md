@@ -1346,6 +1346,42 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21 — Fence tool-call parser hardening (free-tier philosophy, applied literally)
+
+**Why this is high leverage, and not merely tidy:** in fence mode a failed parse is *not* a
+retry. `callModelAgentic` treats "no tool call" as "this is the final answer", so an
+unrecognized tool-call shape is shipped to the user as raw JSON. Strictness here does not cost
+a round-trip — it costs a garbage answer. This is the same residue class as `exit 0`, one
+layer upstream, and it is exactly the case where the free-tier rule applies: weak output ⇒
+more client-side processing.
+
+The old parser accepted only `{"tool", "args"}`, took the **first** JSON object that parsed
+(so a leading `{"thought": ...}` object killed the call), and read only the first fence.
+Now it:
+- accepts the aliases models actually emit — `name`/`tool_name`/`action`/nested
+  `function:{name,arguments}`, and `arguments`/`parameters`/`input`/`action_input`, including
+  `arguments` delivered as a JSON *string*;
+- scans every fence and then the raw text, yielding each balanced object until one actually
+  *looks like* a tool call rather than merely parsing;
+- repairs near-JSON cumulatively (trailing commas, `True`/`False`/`None`, unquoted keys,
+  single-quoted strings) — only ever after a strict parse has already failed, so a bad repair
+  cannot corrupt a valid call.
+
+**The risk this introduces, and the guard.** Permissive aliases could misread ordinary JSON in
+a final answer (`{"name": "Alice", "role": "admin"}`) as a tool call — a *new* failure mode
+traded for the old one. Two mitigations: `parseFenceToolCall` now takes an optional
+`knownTools` list (passed from `server.ts`, so an invented tool name is rejected outright),
+and with no list it requires corroboration — the canonical `tool` key, or an explicit args
+key. A bare `{"name": ...}` object is never a tool call.
+
+`loop.ts` does **not** call this — it uses native tool calling — so the blast radius is
+`server.ts:927` only. Verified by grep before changing the signature.
+
+**Verified:** `npx tsx src/CrucibleEngine/tools/test-fenceparse.ts` — 26/26, deterministic,
+covering every alias shape, each repair, the scan-past-non-call cases, and a dedicated
+false-positive block. Full sweep green: `test-research` 39/39, `test-taskplan` 37/37,
+`test-tools` ALL PASS, `tsc --noEmit` clean.
+
 ### 2026-07-21 — Research/navigation tools: `glob`, `fetch_url`, and the `web_search` URL bug
 
 **`web_search` never returned URLs — a broken contract, not a missing feature.** The parser

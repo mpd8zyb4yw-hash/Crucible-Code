@@ -924,7 +924,9 @@ async function callModelAgentic(model: SelectedModel, messages: { role: string; 
   }
   for (let i = 0; i < maxIterations; i++) {
     const response = await callModel(model, agenticMessages)
-    const toolCall = parseFenceToolCall(response)
+    // Pass the real tool names so alias-tolerant parsing cannot mistake ordinary JSON
+    // in a final answer for a tool call.
+    const toolCall = parseFenceToolCall(response, { knownTools: registry.list().map(t => t.name) })
     if (!toolCall) return response  // no tool call — final response
     console.log(`[Agentic] Tool call: ${toolCall.name}(${JSON.stringify(toolCall.args)})`)
     const result = await registry.exec(toolCall, ctx)

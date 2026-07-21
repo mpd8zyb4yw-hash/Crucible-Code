@@ -94,30 +94,92 @@ ${list}
 After you receive the tool result, continue. When you have the final answer, reply normally with NO json fence.`
 }
 
+// Free models are inconsistent about the *shape* of a tool call even when the intent is
+// unambiguous. Every unrecognized shape used to parse as "no tool call", which means the
+// loop treated the raw JSON as the model's final answer and shipped it to the user. So the
+// cost of being strict here is not a retry — it is a garbage answer. Hence the aliases.
+const NAME_KEYS = ['tool', 'name', 'tool_name', 'toolName', 'function', 'action']
+const ARG_KEYS = ['args', 'arguments', 'parameters', 'params', 'input', 'tool_input', 'action_input']
+/** Tool names are identifiers. Anything else is prose that happened to sit in a JSON object. */
+const NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/
+
+export interface ParseFenceOptions {
+  /** When supplied, a parsed name must be a real tool. This is what makes permissive
+   *  parsing safe: without it we cannot tell a tool call from a model quoting JSON. */
+  knownTools?: string[]
+}
+
 /**
- * Extract a single {"tool","args"} call from model text.
- * Strategy: find a \`\`\`json fence (or any fence) — else the first '{' — then take
- * the balanced-brace JSON object from there. Tolerant of prose around the fence.
+ * Extract a single tool call from model text.
+ * Scans every fenced block (then the raw text) for balanced JSON objects, accepts the
+ * common name/args aliases, and falls back to repairing near-JSON. Returns the first
+ * object that actually looks like a tool call — not merely the first object that parses.
  */
-export function parseFenceToolCall(text: string): ToolCall | null {
-  const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/)
-  const candidates: string[] = []
-  if (fence) candidates.push(fence[1])
-  candidates.push(text)
-  for (const src of candidates) {
-    const obj = extractBalancedJSON(src)
-    if (obj && typeof obj.tool === 'string') {
-      return { id: 'fence_0', name: obj.tool, args: (obj.args as Record<string, unknown>) ?? {} }
+export function parseFenceToolCall(text: string, opts: ParseFenceOptions = {}): ToolCall | null {
+  if (!text) return null
+  const known = opts.knownTools?.length ? new Set(opts.knownTools) : null
+  const sources: string[] = []
+  // All fences, in order — a model may emit an illustrative code block before the real call.
+  const fenceRe = /```(?:[a-zA-Z0-9_-]*)\s*\n?([\s\S]*?)```/g
+  for (let m; (m = fenceRe.exec(text)) !== null;) sources.push(m[1])
+  sources.push(text)
+
+  for (const src of sources) {
+    for (const obj of balancedJSONObjects(src)) {
+      const call = toToolCall(obj, known)
+      if (call) return call
     }
   }
   return null
 }
 
-/** First balanced top-level {...} in the string, JSON-parsed; null if none parses. */
-function extractBalancedJSON(src: string): Record<string, unknown> | null {
+/** Interpret a parsed object as a tool call, or null if it is not one. */
+function toToolCall(obj: Record<string, unknown>, known: Set<string> | null): ToolCall | null {
+  let nameRaw: unknown
+  let argsRaw: unknown
+  /** True for shapes that cannot plausibly be anything but a tool call. */
+  let unambiguous = false
+
+  for (const k of NAME_KEYS) {
+    const v = obj[k]
+    // OpenAI-ish nesting: {"function": {"name": "x", "arguments": "{...}"}}
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const inner = v as Record<string, unknown>
+      const innerName = NAME_KEYS.map(nk => inner[nk]).find(x => typeof x === 'string')
+      if (typeof innerName === 'string') {
+        nameRaw = innerName
+        argsRaw = ARG_KEYS.map(ak => inner[ak]).find(x => x !== undefined)
+        unambiguous = true
+        break
+      }
+    }
+    if (typeof v === 'string') { nameRaw = v; unambiguous = k === 'tool'; break }
+  }
+  if (typeof nameRaw !== 'string') return null
+
+  const name = nameRaw.trim()
+  if (!NAME_RE.test(name)) return null
+  if (known && !known.has(name)) return null
+
+  if (argsRaw === undefined) argsRaw = ARG_KEYS.map(k => obj[k]).find(x => x !== undefined)
+
+  // Permissive aliases would otherwise misread ordinary JSON in a final answer — a
+  // {"name": "Alice", "role": "admin"} object is not a tool call. Require corroboration:
+  // the canonical "tool" key, an explicit args key, or a name we know is a real tool.
+  if (!unambiguous && argsRaw === undefined && !known?.has(name)) return null
+  // `arguments` frequently arrives as a JSON *string* rather than an object.
+  if (typeof argsRaw === 'string') argsRaw = safeParseJSON(argsRaw) ?? repairParseJSON(argsRaw)
+  const args = argsRaw && typeof argsRaw === 'object' && !Array.isArray(argsRaw)
+    ? (argsRaw as Record<string, unknown>)
+    : {}
+  return { id: 'fence_0', name, args }
+}
+
+/** Yield every balanced top-level {...} in the string that parses (strictly, then repaired). */
+function* balancedJSONObjects(src: string): Generator<Record<string, unknown>> {
   let start = src.indexOf('{')
   while (start !== -1) {
-    let depth = 0, inStr = false, esc = false
+    let depth = 0, inStr = false, esc = false, end = -1
     for (let i = start; i < src.length; i++) {
       const ch = src[i]
       if (esc) { esc = false; continue }
@@ -125,16 +187,33 @@ function extractBalancedJSON(src: string): Record<string, unknown> | null {
       if (ch === '"') { inStr = !inStr; continue }
       if (inStr) continue
       if (ch === '{') depth++
-      else if (ch === '}') {
-        depth--
-        if (depth === 0) {
-          const parsed = safeParseJSON(src.slice(start, i + 1))
-          if (parsed) return parsed
-          break
-        }
-      }
+      else if (ch === '}') { depth--; if (depth === 0) { end = i; break } }
     }
+    if (end === -1) return  // unterminated — nothing further can balance either
+    const slice = src.slice(start, end + 1)
+    const parsed = safeParseJSON(slice) ?? repairParseJSON(slice)
+    if (parsed) yield parsed
     start = src.indexOf('{', start + 1)
+  }
+}
+
+/**
+ * Last-resort parse of near-JSON. Only ever called after a strict parse has already
+ * failed, so a bad repair cannot corrupt an otherwise-valid call.
+ */
+export function repairParseJSON(s: string): Record<string, unknown> | null {
+  const attempts = [
+    (x: string) => x.replace(/,(\s*[}\]])/g, '$1'),                          // trailing commas
+    (x: string) => x.replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false').replace(/\bNone\b/g, 'null'),
+    (x: string) => x.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3'),  // unquoted keys
+    (x: string) => x.replace(/'([^'\\]*)'/g, '"$1"'),                        // single-quoted strings
+  ]
+  // Apply cumulatively — a broken payload usually has more than one of these defects.
+  let cur = s
+  for (const fix of attempts) {
+    cur = fix(cur)
+    const parsed = safeParseJSON(cur)
+    if (parsed) return parsed
   }
   return null
 }
