@@ -108,8 +108,31 @@ const HALLUCINATED_MEDIA_URL = /(youtube\.com\/watch|youtu\.be\/|\/watch\?v=|vim
 
 // Multi-step / sequenced requests ("open settings, set brightness, then play a video") exceed
 // Layer 2's 1–3 simple-step scope — hand them to the LLM loop which can truly plan + iterate.
+// Pure reasoning / knowledge / arithmetic requests. This module is a macOS AUTOMATION planner —
+// there is no tool here that answers "what is 17 + 4", so when the weak on-device planner is
+// handed one it does not abstain, it reaches for the nearest tool it can see: live 2026-07-21,
+// the automation brief "State the sum of 17 and 4, and nothing else" produced a 1-2 step
+// shell_exec plan whose entire output was "exit 0". Same failure mode the GUI_CONTROL_TOOLS gate
+// above was added for, one tool over.
+//
+// Bailing here (BEFORE the FM call, so it also saves a model round-trip) is strictly better than
+// letting the plan run and rejecting it afterwards. Gated on !desktopIntent so a genuine
+// desktop question still reaches Layer 2 — and note that when desktopIntent is false the
+// GUI-control tools are already stripped, so such a goal has no tool that could answer it here
+// anyway. Deliberately NOT keyed on "no action verb": in-scope goals like "screenshot the
+// screen" match neither ACTION_VERB nor DESKTOP_ACTION (which is ^-anchored) and must still pass.
+const PURE_REASONING = /^(?:state|calculate|compute|work out|figure out|what|which|who|whom|whose|when|why|how|define|explain|describe|summari[sz]e|translate|is|are|was|were|does|do|did|can|could|would|should)\b/i
+
 const MULTI_STEP = /\b(?:then|after that|and then)\b/i
 const ACTION_VERB = /\b(?:open|turn|set|play|show|find|search|close|launch|go to|put on|click|type|increase|decrease|adjust|mute|change|switch)\b/gi
+
+/**
+ * Drop a leading bracketed scaffolding block so ^-anchored guards see the ACTUAL request.
+ * Exported for the bench: the automation preamble is what let a pure-reasoning brief through.
+ */
+export function stripPreamble(text: string): string {
+  return text.replace(/^\s*\[[^\]]*\]\s*/, '').trim()
+}
 
 export type LocalSynth = (system: string, user: string) => Promise<string>
 
@@ -125,6 +148,10 @@ export async function localFmPlan(
   const q = (message ?? '').trim()
   if (q.length < 4 || q.length > MAX_INPUT_CHARS) return null
   if (HARD_PASS.test(q)) return null
+  // An unattended automation run arrives as "[Standing automation "name" — …] \n\n <brief>", so the
+  // real request does not start at index 0. Strip a leading bracketed preamble before any
+  // ^-anchored test, or every scheduled run silently bypasses those guards.
+  if (PURE_REASONING.test(stripPreamble(q)) && !opts.desktopIntent) return null
   // Compound / sequenced request → exceeds Layer 2's simple-step scope; let the LLM loop plan it.
   if (MULTI_STEP.test(q) || (q.match(ACTION_VERB)?.length ?? 0) >= 3) return null
 
