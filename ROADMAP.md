@@ -1396,10 +1396,21 @@ functions + real tool exec against a temp project, no model calls). `npx tsc --n
 worktree for an unrelated pre-existing reason: `.env.local` injects 0 vars, so its live Groq
 call has no `GROQ_API_KEY`.
 
-**Next (not built):** inject `buildPlanContext(projectPath)` into the agent system preamble
-and treat `progress.done` as a loop-termination condition — both are one-liners in `loop.ts`,
-left for whoever owns that file. Until then the plan is available to the model and persists
-across restarts, but does not yet auto-terminate the loop.
+**Preamble injection — done.** The agent `systemPreamble` turns out to be assembled in
+`server.ts:1807` and passed *into* the loop, so `buildPlanContext(projectPath)` was appended
+there — the plan is live with still no edit to `loop.ts`. It returns `''` when no plan
+exists, so ordinary requests pay nothing; a resumed run restores goal, completed steps, and
+current step from disk. Bench 37/37.
+
+**Next (not built):** treat `planProgress().done` as a loop-termination condition. That one
+is genuinely inside `loop.ts`, so it is left for whoever owns that file. Until then the model
+is *told* to stop when the plan is complete but is not *forced* to — the same
+budget-drain shape as the `fmReact` repeat loop, and worth pairing with that fix.
+
+**Not verified live.** This worktree's `.env.local` injects 0 vars, so no model call can
+authenticate here and no end-to-end agent run was possible. Everything above is proven by
+deterministic bench + typecheck only. First session with working creds should fire one real
+agent task and confirm `plan_update` events appear on the debug bus.
 
 ### 2026-06-15 — Track O Layer 1 + Remote Brain fixes (stream size, send button, semantic corpus)
 
