@@ -1,11 +1,5 @@
 [
   {
-    "hash": "e5d8c0c",
-    "message": "pre-write_file",
-    "timestamp": 1784487809852,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/dedupe-preserve-order"
-  },
-  {
     "hash": "91536ac",
     "message": "pre-write_file",
     "timestamp": 1784487837707,
@@ -297,6 +291,12 @@
     "hash": "01e734e",
     "message": "pre-write_file",
     "timestamp": 1784607101994,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "490b428",
+    "message": "pre-write_file",
+    "timestamp": 1784607189992,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]

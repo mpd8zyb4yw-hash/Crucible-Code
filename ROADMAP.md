@@ -1933,6 +1933,37 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21f (cont.95 — asset-collection routing: file-CREATION goals finally create files)
+
+Closed cont.94's #1 BINDING open item. A goal whose deliverable is a FOLDER OF FILES ("make a
+folder on my desktop with photos and descriptions of dog breeds from Italy") names no code file
+and is not a single-file web artifact, so `makeOfflineDriveTurn` fell through to
+`solveNonCodeTurn` — a solver with read-only research tools that can only refuse a creation
+request or dump raw search hits. Fixed with the same fix-shape the repo already uses for games
+and apps (`isWebArtifactGoal`): gate on the SHAPE of the request, then route to a real write loop.
+
+- `synthDriver.ts`: `isAssetCollectionGoal()` = creation verb + container noun (folder/directory/
+  collection/notes/files) + user-folder destination (desktop/downloads/documents), minus
+  web-artifact and named-non-browser-runtime goals. Requiring the DESTINATION is what keeps
+  "write a set of tests" and "create a module" on the code path. `assetCollectionDir()` derives
+  `~/<root>/<slug>` (subject taken from the LAST of/about/regarding — matching "on"/"for" grabbed
+  "on my desktop" instead of the topic; truncation is word-boundary, not mid-word).
+- New branch in `makeOfflineDriveTurn` ahead of the `!primaryPath` fallthrough: one `write_file`
+  per turn (README.md index + one .md per planned item), progress tracked through `writtenPaths`
+  exactly like S1, terminating with an honest summary. Item content comes from
+  `solveNonCodeTurn` per item (retrieval-grounded), never parametric FM memory.
+- `parseCurrentState` recorded writes only for `.ts|tsx|js|mjs|html`; `.md|txt|json|csv` added.
+  Without this `writtenPaths` stayed empty for the new branch and it rewrote README.md every turn.
+- Per-item queries are pure factual questions. Passing the raw goal as context made the research
+  solver answer the CONTAINING REQUEST — the first live run's `italian-mastiff.md` began "To
+  create a folder on your desktop… 1. Identify the Breeds". Plan items deduped by slug.
+- LIVE-VERIFIED end-to-end against the real FM, real retrieval and the real `write_file` tool:
+  the dog-breeds goal produced `~/Desktop/dog-breeds-from-italy/` with a README index and
+  substantive grounded breed descriptions, then terminated. Test folder deleted after the run.
+- HONEST LIMIT, stated in the README and the final answer rather than silently dropped: photos
+  are NOT downloaded — the deliverable is text only. That needs an image-fetch tool and a
+  licence decision, and is now the top follow-up in NEXT_SESSION.md.
+
 ### 2026-07-21e (cont.94 — email draft-reply routing fix + false-capability-refusal honesty guard)
 - **"Draft a reply … Read the full message first with gmail_read" fabricated a draft with ZERO
   tool calls — FIXED + LIVE-VERIFIED.** Two-part root cause: (1) the big agent-path gate in

@@ -17,7 +17,48 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21e (cont.94) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21f (cont.95) (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-21f (cont.95 — asset-collection routing; THE dog-breeds fix):**
+- **cont.94's #1 BINDING item is CLOSED and live-verified end-to-end.** `synthDriver.ts`:
+  new `isAssetCollectionGoal()` (creation verb + container noun + user-folder destination,
+  excluding web-artifact and non-browser-runtime goals) + `assetCollectionDir()` +
+  `planAssetCollection()`. `makeOfflineDriveTurn` now has a dedicated branch AHEAD of the
+  `!primaryPath` fallthrough that writes one file per turn into `~/Desktop|Documents|Downloads/<slug>/`
+  — README.md index plus one grounded .md per planned item — instead of handing the goal to
+  the research-only `solveNonCodeTurn`. Same fix-shape as the existing `isWebArtifactGoal` gate.
+- **`parseCurrentState` extension filter was the hidden blocker:** it recorded writes only for
+  `.ts|tsx|js|mjs|html`, so `.md` deliverables never entered `writtenPaths` and the new branch
+  rewrote README.md every turn until the iteration budget died. Now also `md|txt|json|csv`.
+- **Per-item research query no longer leaks the containing request.** Passing the raw goal as
+  context made the retrieval solver answer the TASK — the first live run's `italian-mastiff.md`
+  opened with "To create a folder on your desktop… 1. Identify the Breeds". Items are now asked
+  a pure factual question; plan items are deduped by slug (the FM emitted "Italian Greyhound" 3x).
+- **Live verification** (real FM + retrieval, executed through the real `write_file`): the goal
+  "make a folder on my desktop with photos and descriptions of dog breeds from Italy" produced
+  `~/Desktop/dog-breeds-from-italy/{README.md, italian-greyhound.md, italian-spinone.md}` with
+  substantive retrieval-grounded prose, then terminated cleanly. Test folder removed afterward.
+
+**Open items / risks (priority order):**
+- **Photos are still not delivered.** The branch writes TEXT ONLY and says so in both README.md
+  and the final answer (honest-abstain rather than silent omission), but the dog-breeds request
+  literally asked for photos. Closing this needs an image-fetch tool (search → download_file into
+  the collection dir) plus a licence/provenance decision — do NOT hotwire arbitrary hotlinking.
+- **Plan size is FM-nondeterministic and sometimes thin** — `planAssetCollection` asks for 3-10
+  items; consecutive live runs returned 5 and then 2. Consider retrying the plan call when it
+  yields <3 items, or seeding it from a retrieval pass instead of parametric FM memory.
+- **Retrieval conflation in per-item descriptions** — the verified `italian-greyhound.md` said it
+  "resembles the Greyhound and the smaller Italian Greyhound", i.e. the research DAG blended the
+  two breeds' sources. This is a grounding-quality issue in `solveNonCodeTurn`, not routing.
+- **The checkpoint auto-committer swept up unrelated in-flight work.** Commits `9913d93`/`01e734e`
+  ("crucible: pre-write_file") contain this session's `synthDriver.ts` changes AND uncommitted
+  `App.tsx` / `AgentMissionControl.tsx` / `AutomationsView.tsx` / `RunDetailOverlay.tsx` /
+  `server.ts` edits from another session, under a meaningless message. Worth making the
+  checkpointer stage only the file it is about to write.
+
+**Previous (cont.94) state below:**
+
+## CURRENT STATE — last updated 2026-07-21e (cont.94) (superseded by cont.95 above)
 
 **Shipped 2026-07-21e (cont.94 — email draft-reply routing + false-refusal honesty):**
 - **Email agent "fabricated a draft with 0 tool calls" FIXED + live-verified.** `server.ts`:
