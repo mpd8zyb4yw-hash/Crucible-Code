@@ -53,6 +53,11 @@ const check = (label: string, cond: boolean, detail = '') => {
 }
 
 // ── per-task certification ──────────────────────────────────────────────────
+// The 0.5 catalog cutoff is a line, not physics (user-flagged): a task scoring 0.49 passes
+// the gate yet is still half-retrieved. Anything in the gray zone below gets a visible
+// NEAR-CATALOG warning so the line is watched, not trusted.
+const NEAR_CATALOG_FLOOR = 0.35
+const nearCatalog: string[] = []
 let catalogFree = 0
 let certified = 0
 for (const task of EXT_TASKS) {
@@ -75,6 +80,10 @@ for (const task of EXT_TASKS) {
   const free = match.matched === null
   if (free) catalogFree++
   check(`${task.id}: not catalog-solvable`, free, `matched=${match.matched?.id} conf=${match.confidence.toFixed(2)} top=${top?.id}:${top?.score.toFixed(2)}`)
+  if (free && top && top.score >= NEAR_CATALOG_FLOOR) {
+    nearCatalog.push(`${task.id} (top=${top.id}:${top.score.toFixed(2)})`)
+    console.log(`NEAR-CATALOG — ${task.id}: closest skill ${top.id} scores ${top.score.toFixed(2)} — under the 0.5 gate but partially retrieved; watch it`)
+  }
 
   // 4. Suite sync to the live harness location (generated header marks provenance).
   const suitePath = path.join(HIDDEN_DIR, `${task.id}.hidden.ts`)
@@ -100,6 +109,9 @@ for (const task of EXT_TASKS) {
   const nNew = nOld + EXT_TASKS.length
   console.log('')
   console.log(`corpus: ${EXT_TASKS.length} tasks, ${catalogFree} catalog-free, ${certified} reference-certified`)
+  console.log(nearCatalog.length
+    ? `near-catalog gray zone (${NEAR_CATALOG_FLOOR}-0.50): ${nearCatalog.join('; ')}`
+    : `near-catalog gray zone (${NEAR_CATALOG_FLOOR}-0.50): none`)
   console.log(`generated-path bench: n=${nOld} -> n=${nNew}`)
   const pts = (x: number) => `±${Math.round(x * 100)}pts`
   console.log(`95% noise floor at ~50% pass rate: n=10 ${pts(minDetectableDelta(10))} | n=14 ${pts(minDetectableDelta(14))} | n=${nNew} ${pts(minDetectableDelta(nNew))} | n=100 ${pts(minDetectableDelta(100))}`)

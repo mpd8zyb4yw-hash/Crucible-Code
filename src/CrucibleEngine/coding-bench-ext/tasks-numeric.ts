@@ -24,37 +24,47 @@ Semantics:
   (2.5 -> 2, 3.5 -> 4 at decimals = 0).
 - Non-halfway values round normally (2.6 -> 3). Negative values mirror positives
   (-2.5 -> -2). decimals may be 0 or positive.
-- Values are interpreted exactly as IEEE doubles (float-true semantics): 0.125 is exact
-  and is a true half, so at 2 decimals it goes to the even neighbour 0.12; but 9.95 is
-  stored as 9.9499... which is BELOW the half, so at 1 decimal it rounds to 9.9 — do NOT
-  "correct" for the decimal literal the user typed.
+- The value is interpreted through its SHORTEST decimal representation — exactly the
+  digits String(value) prints (the same semantics as Intl.NumberFormat halfEven). So
+  String(9.95) is "9.95", a true half at 1 decimal, and it rounds to the even neighbour
+  10. String(0.125) is "0.125", a true half at 2 decimals, rounding to 0.12. Do NOT
+  operate on the raw binary expansion (9.95 is stored as 9.9499...; that expansion is
+  irrelevant here).
 - Error contract: throw a RangeError unless decimals is an integer 0..12; throw a
   TypeError if value is NaN or not finite.`,
-    ref: `export function bankersRound(value: number, decimals: number): number {
+    ref: `// Shortest-decimal-representation semantics: operate on the digits String(x) prints,
+// never on the binary expansion. Matches Intl.NumberFormat roundingMode halfEven.
+function decimalString(x: number): string {
+  const s = String(x)
+  const m = /^(\\d+)(?:\\.(\\d+))?e([+-]\\d+)$/.exec(s)
+  if (!m) return s
+  const ip = m[1]
+  const fp = m[2] ?? ''
+  const exp = Number(m[3])
+  const digits = ip + fp
+  const point = ip.length + exp
+  if (point <= 0) return '0.' + '0'.repeat(-point) + digits
+  if (point >= digits.length) return digits + '0'.repeat(point - digits.length)
+  return digits.slice(0, point) + '.' + digits.slice(point)
+}
+
+export function bankersRound(value: number, decimals: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('value must be finite')
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 12) throw new RangeError('decimals must be an integer 0..12')
   const neg = value < 0
-  const abs = Math.abs(value)
-  // Work on the decimal string representation to sidestep binary-float scaling errors.
-  const fixed = abs.toFixed(15)
-  const dot = fixed.indexOf('.')
-  const digits = fixed.slice(0, dot) + fixed.slice(dot + 1)
-  const intLen = dot
-  const keep = intLen + decimals
-  const head = digits.slice(0, keep).padStart(1, '0')
-  const tail = digits.slice(keep).replace(/0+$/, '')
-  let rounded = BigInt(head === '' ? '0' : head)
-  if (tail.length > 0) {
-    const first = tail[0]
-    const rest = tail.slice(1)
-    const isHalf = first === '5' && rest === ''
-    if (isHalf) {
-      if (rounded % 2n === 1n) rounded += 1n
-    } else if (Number(first) >= 5) {
-      rounded += 1n
-    }
-  }
-  const scaled = Number(rounded) / Math.pow(10, decimals)
+  const s = decimalString(Math.abs(value))
+  const dot = s.indexOf('.')
+  const intPart = dot === -1 ? s : s.slice(0, dot)
+  const fracPart = dot === -1 ? '' : s.slice(dot + 1)
+  if (fracPart.length <= decimals) return neg && value !== 0 ? value : Math.abs(value)
+  const keep = fracPart.slice(0, decimals)
+  const tail = fracPart.slice(decimals)
+  let unit = BigInt(intPart + keep)
+  const first = tail[0]
+  const rest = tail.slice(1).replace(/0+$/, '')
+  const isHalf = first === '5' && rest === ''
+  if (isHalf ? unit % 2n === 1n : Number(first) >= 5) unit += 1n
+  const scaled = Number(unit) / Math.pow(10, decimals)
   return neg && scaled !== 0 ? -scaled : scaled
 }
 `,
@@ -78,10 +88,11 @@ check('negative mirrors positive half', bankersRound(-2.5, 0) === -2)
 check('negative non-half', bankersRound(-2.6, 0) === -3)
 check('two decimals half to even', bankersRound(0.125, 2) === 0.12)
 check('two decimals half to even up', bankersRound(0.135, 2) === 0.14)
+check('shortest-repr: 24.6765 is a true half at 3 decimals', bankersRound(24.6765, 3) === 24.676)
 check('two decimals normal', bankersRound(0.126, 2) === 0.13)
 check('integer passthrough', bankersRound(7, 0) === 7)
 check('already at precision', bankersRound(1.23, 2) === 1.23)
-check('float-true: 9.95 is below the half', bankersRound(9.95, 1) === 9.9)
+check('shortest-repr: 9.95 is a true half, even neighbour is 10', bankersRound(9.95, 1) === 10)
 check('carry across digits', bankersRound(9.96, 1) === 10)
 check('zero stays zero', bankersRound(0, 2) === 0)
 const throwsRange = (fn: () => void): boolean => {

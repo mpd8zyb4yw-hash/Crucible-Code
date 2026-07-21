@@ -1933,6 +1933,55 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21l (gap-soundness — W31 on the corpus: independent oracles, and a semantics reversal they forced)
+
+**User-flagged, correctly: ref and suite share an author, so agreement-in-error is
+invisible to the corpus validator** — it proves self-consistency, not correctness of
+intent. Three answers landed:
+
+**1. `__refdiff_bench.ts` — an independent oracle per task (W31).** Each encodes the
+contract through a DIFFERENT formalism than the ref: point-set models for the interval
+tasks ("covers exactly the integer points", taken literally), shadow structures
+(ringBuffer/minStack/bitset), brute-force rescan (slidingWindowMax), the contract's own
+index formula (matrixRotate), node builtins (`assert.deepStrictEqual`, `path.posix`,
+`URLSearchParams`, BigInt literals, `Number.toString`, `Intl.NumberFormat halfEven`),
+by-construction pointers (jsonPointer), closed forms (retryDelays), algebraic invariants
+(fractionAdd cross-multiply, dedent/wordWrap properties, rle round-trip). ~9,000 seeded
+fuzz cases, deterministic, model-free. Honest weakness ranking in the header —
+tableMachine's shadow is a near-reimplementation (low decorrelation); Intl/URLSearchParams/
+path.posix are fully foreign implementations (highest).
+
+**2. It immediately forced a real reversal — the user's predicted failure mode, found by
+the machinery built in response.** `Intl halfEven` diverged from the bankersRound ref at
+`v=24.6765, d=3`: ref said 24.677, Intl said 24.676. Evidence: the double is stored ABOVE
+the half (24.67650000000000076…), so the previous entry's "float-true" semantics round up —
+while Intl rounds the SHORTEST representation ("24.6765" — a true half → even → down).
+Ruling: **shortest-decimal-representation semantics adopted**, reversing 2026-07-21k's
+float-true decision, on three grounds: (a) the old ref was not even truly float-true
+(`toFixed(15)` truncates the real expansion — it implemented a third, accidental
+semantics); (b) shortest-repr has a zero-exclusion foreign oracle (Intl), float-true has
+none; (c) it is what a person typing money values means (9.95 at 1 decimal → 10, not 9.9).
+Ref rewritten on `String(value)` digits (with exponent-notation expansion), contract
+rewritten to name the semantics and its Intl equivalence, suite updated (9.95→10,
+24.6765→24.676), corpus re-certified, refdiff fully green (800-round Intl agreement).
+
+**3. The 0.5 catalog cutoff is a line, not physics (user-flagged).** The validator now
+prints a NEAR-CATALOG warning for anything scoring 0.35–0.50 and a gray-zone summary line.
+Current state: the zone is EMPTY — every task's closest skill scores below 0.35.
+
+**Also: `CONTRACTS_REVIEW.md` (generated, 22 contracts)** — the one-time human skim the
+user asked for, covering the residual machine-unreachable risk (the contract's plain
+language itself misread). Generated from the shards by `gen-contracts-review.ts`; edit
+shards, never the .md. **Status: awaiting the human pass.**
+
+**W42.2 moved up (user-directed): mine real bug-fix commits from this repo's history.**
+Feasibility probe done: **113 single-engine-file commits in the last 500**, 20+ clearly
+fix-shaped (e.g. `cab4b7b` bare-identifier arrow params counted as arity 1, `cfede63`
+aliased-import hole in signature propagation, `450cab6` silent-break hole in move
+refactor). Task shape: parent-commit file + real fix as reference + the file's paired
+`__*_bench` as the suite — decorrelated by construction because past sessions authored
+both sides against live behavior. Next session's build.
+
 ### 2026-07-21k (gap-soundness — W42 core: the bench can now tell progress from luck)
 
 **The problem, stated by the user and confirmed by the math:** at n=14 (n=10 generated), a

@@ -31,6 +31,21 @@
 >   the same file stays Track A's). Future Track-B work arrives as NEW files + one wiring line.
 > - Re-verify any ownership claim with `git log -1 -- <file>` before treating it as a blocker.
 
+**Shipped 2026-07-21o (gap-soundness, W31 on the corpus):** `__refdiff_bench.ts` gives every
+corpus reference an INDEPENDENT oracle (point-set models, shadow structures, node builtins,
+by-construction inputs; ~9k seeded cases) — the machine answer to "ref and suite share an
+author". It immediately caught a real semantics error: bankersRound now uses
+shortest-decimal-representation semantics (Intl halfEven equivalent; 9.95@1 → 10),
+REVERSING the prior float-true decision — evidence and ruling in ROADMAP 2026-07-21l.
+Catalog gray zone (0.35–0.50) now printed by the validator: currently empty.
+**AWAITING HUMAN (one-time): skim `CONTRACTS_REVIEW.md` (22 contracts, generated)** — the
+residual risk no machine check covers is a misread contract; tick boxes there, edit shards
+on disagreement, rerun `npm run taskcorpus:bench` + `__refdiff_bench.ts`.
+**NEXT UNIT (moved up, user-directed): W42.2 git-mined tasks** — probe found 113
+single-engine-file commits in the last 500, 20+ fix-shaped (`cab4b7b`, `cfede63`,
+`450cab6` are the pilot candidates); shape = parent-commit file + real fix as ref + paired
+`__*_bench` as suite, staged via the oracle's `projectPath`/`contextFiles` machinery.
+
 **Shipped 2026-07-21n (gap-soundness, W42 core):** the bench can now tell progress from
 luck. `coding-bench-ext/` adds 22 catalog-free tasks (generated-path n 10 → 32, noise floor
 ±26 → ±16 pts), each with a reference solution certified through the hermetic oracle and a
