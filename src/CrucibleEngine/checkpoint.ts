@@ -55,6 +55,27 @@ export function ensureGitRepo(projectPath: string): void {
  * still gives a restorable pre-write snapshot of the thing being changed, which is all the
  * checkpoint is for.
  */
+/**
+ * Derive a `createCheckpoint` path scope for a mutation whose target file is known.
+ *
+ * Returns `[target]` when the file lives inside the project, `[]` ("snapshot nothing") when it
+ * demonstrably does not, and `undefined` only when the target is unknown — the sole case where
+ * a whole-tree `git add -A` is still the honest answer.
+ *
+ * The containment test is a resolved path-prefix check, not a string test on `isAbsolute`. An
+ * earlier version treated EVERY absolute path as external, which was wrong in the common
+ * direction: an agent writing `/Users/me/proj/src/x.ts` inside `/Users/me/proj` got `[]` and so
+ * received NO pre-write snapshot at all — the checkpoint silently became a no-op for exactly
+ * the edits it exists to protect. The `sep` guard stops `/a/proj-backup` matching `/a/proj`.
+ */
+export function checkpointScopeFor(projectPath: string, target: string | undefined): string[] | undefined {
+  if (target === undefined) return undefined
+  if (target.startsWith('~')) return []
+  const root = path.resolve(projectPath)
+  const abs = path.resolve(root, target)
+  return abs === root || abs.startsWith(root + path.sep) ? [abs] : []
+}
+
 export function createCheckpoint(projectPath: string, message: string, paths?: string[]): Checkpoint | null {
   try {
     ensureGitRepo(projectPath)

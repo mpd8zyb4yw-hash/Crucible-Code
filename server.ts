@@ -20,7 +20,7 @@ import { createServer } from 'http'
 import { WebSocketServer as WsServer } from 'ws'
 import webpush from 'web-push'
 import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-context'
-import { createCheckpoint, rollbackToCheckpoint, getCheckpoints } from './src/CrucibleEngine/checkpoint'
+import { createCheckpoint, rollbackToCheckpoint, getCheckpoints, checkpointScopeFor } from './src/CrucibleEngine/checkpoint'
 import { registry } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
 import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun, offBriefReason } from './src/CrucibleEngine/automations/store'
@@ -7333,7 +7333,10 @@ app.post('/api/file/write', (req, res) => {
   try {
     const dir = path.dirname(filePath)
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-    if (projectPath) createCheckpoint(projectPath, message || 'before edit')
+    // Scope the snapshot to the file being written. Unscoped, this endpoint's checkpoint runs
+    // `git add -A` and commits every unrelated dirty file under "crucible: before edit" — the
+    // mechanism that buried two concurrent sessions' work in meaningless commits on 2026-07-21.
+    if (projectPath) createCheckpoint(projectPath, message || 'before edit', checkpointScopeFor(projectPath, filePath))
     fs.writeFileSync(filePath, content, 'utf-8')
     console.log(`[FileWrite] ${filePath}`)
     // Keep codebase index fresh after every write
@@ -7560,6 +7563,10 @@ app.post('/api/studio/plan', async (req, res) => {
 app.post('/api/checkpoint', (req, res) => {
   const { projectPath, message } = req.body
   if (!projectPath) return res.status(400).json({ error: 'projectPath required' })
+  // INTENTIONALLY UNSCOPED — do not "fix" this to match /api/file/write. This endpoint is an
+  // explicit user-requested snapshot of the project, not a pre-write guard for one known file:
+  // whole-tree `git add -A` is the point, and scoping it would quietly narrow what a later
+  // rollback can restore.
   const checkpoint = createCheckpoint(projectPath, message || 'manual checkpoint')
   res.json({ success: !!checkpoint, checkpoint })
 })

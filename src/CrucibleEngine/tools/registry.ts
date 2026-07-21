@@ -5,7 +5,7 @@ import fs from 'fs'
 import path from 'path'
 import { spawn, execFile } from 'child_process'
 import type { ToolCall, ToolCtx, ToolDef, ToolResult } from './protocol'
-import { createCheckpoint } from '../checkpoint'
+import { createCheckpoint, checkpointScopeFor } from '../checkpoint'
 import { compileTool, saveDynamicTool, listDynamicTools, recordToolSuccess, type DynamicToolRecord } from './dynamicTools'
 import { appendGlobalMemory } from '../state/session'
 import { buildGraphDigest, findEntities, upsertEntity, touchEntities } from '../entityGraph'
@@ -34,9 +34,9 @@ function checkpointBeforeMutation(toolName: string, ctx: ToolCtx, args?: Record<
   // other whitelisted roots, and `git add` on those would fail (or worse, hit another repo).
   // A known-but-external target passes [] — "snapshot nothing" — rather than undefined, which
   // would fall back to staging the whole tree for a write that does not touch this repo at all.
-  const scope = target === undefined
-    ? undefined
-    : (!path.isAbsolute(target) && !target.startsWith('~')) ? [target] : []
+  // Containment is decided by checkpointScopeFor: the old test here treated every ABSOLUTE path
+  // as external, so an in-project absolute write silently got no snapshot at all.
+  const scope = checkpointScopeFor(ctx.projectPath, target)
   try {
     createCheckpoint(ctx.projectPath, `pre-${toolName}`, scope)
   } catch { /* non-fatal */ }
