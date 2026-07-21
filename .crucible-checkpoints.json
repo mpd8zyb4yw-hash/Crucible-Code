@@ -1,11 +1,5 @@
 [
   {
-    "hash": "d592e5a",
-    "message": "pre-write_file",
-    "timestamp": 1784488294389,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/chunk-off-by-one"
-  },
-  {
     "hash": "34f3af9",
     "message": "pre-write_file",
     "timestamp": 1784488329618,
@@ -297,6 +291,12 @@
     "hash": "30699c2",
     "message": "pre-write_file",
     "timestamp": 1784614814813,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "286f960",
+    "message": "pre-write_file",
+    "timestamp": 1784614880151,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
