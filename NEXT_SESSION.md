@@ -39,14 +39,19 @@ not on a lucky count — 0-item collapse fixed); empty checkpoints now record th
 and warn; **verification evidence persisted to `.crucible/wiki-evidence.json`, so certification
 now runs fully offline** (proven on a fresh process with `fetch` throwing).
 
+**Also shipped 2026-07-21l (cont.98d):** the **"List of X" retrieval tier** — the item rejected
+twice on cost — now ships as tier 2 of the grounded path. Roman emperors, the subject that
+defeated every earlier tier, now plans to Augustus/Diocletian/Constantine deterministically:
+4 consecutive runs byte-identical, and identical again with `fetch` severed. Also added
+`wikiFetch()` (429-aware backoff), `descAssertsInstance()` (shared instance test that finally
+drops "Praetorian Guard"), and a bail-reason event on every early return.
+
 **Open items / risks (priority order):**
-1. **FM fallback item COUNT still varies run to run** — the 0-item collapse and the arbitrary
-   early stop are fixed, but when samples genuinely differ the union differs, and no stopping
-   rule can invent unproposed names. The remaining lever is sample QUALITY, not the loop. A
-   "List of X" retrieval tier was investigated and REJECTED: `List of Roman emperors` exposes
-   649 links headed entirely by concept pages, so reaching actual emperors means hundreds of
-   lookups. With the disk evidence store those lookups are now a ONE-TIME cost rather than
-   per-run, which materially changes that tradeoff — worth reconsidering.
+1. **The FM fallback is now rarely reached, but is unchanged when it is.** Item COUNT still
+   varies run to run for subjects with neither a category nor a list article; the 0-item
+   collapse and arbitrary early stop are fixed, but no stopping rule can invent unproposed
+   names. Lower priority than before precisely because two grounded tiers now precede it —
+   the remaining lever is sample QUALITY, not the loop.
 2. **~~`server.ts`'s `createCheckpoint` call sites~~ — CLOSED in cont.98, and the item as
    written was WRONG.** It said to scope *both* sites; scoping both would have been a
    regression. `/api/file/write` (~7336) writes one known file and is now scoped. But

@@ -1965,6 +1965,45 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
   Measured on the live failure string plus a sibling-bleed case: both offending sentences
   dropped, clean prose untouched, reference appended in all three cases.
 
+### 2026-07-21l (cont.98d — the "List of X" retrieval tier, previously rejected, now shipped)
+
+Tier 2 of the grounded plan path, between the category graph and the FM: many subjects have no
+usable category but a curated list article (`Category:Roman emperors` is nearly all
+about-the-office pages; `List of Roman emperors` is the actual enumeration). cont.97 rejected
+this on cost — ~650 individual lookups. Removed by batching descriptions 50/request, persisting
+the resolved list per subject, and the cont.98c evidence store making vetting one-time.
+
+Every design choice below came from a MEASURED failure, not a preference:
+- **Reads the article WIKITEXT, not `prop=links`.** The links API returns titles alphabetically,
+  so a top-10 cut shipped "Aemilianus" and "Alexios V Doukas" — correct instances, useless as an
+  answer — while Augustus never made the cut. Wikitext preserves DOCUMENT order, which for a
+  list article is the order a reader wants (chronological, here), and is one request rather than
+  several paginated calls.
+- **`prop=pageviews` was tried as a prominence signal and REMOVED.** The API silently returns
+  pageviews for only 5 pages per request while returning descriptions for all 50, with no
+  warning field to detect the truncation — 45 of 50 items got `views: 0`, Augustus among them.
+  Batching it properly meant ~110 requests, reinstating the cost objection. Document order does
+  the job for free.
+- **Search scans the top 5 hits for a real list article** instead of trusting rank 1: even with
+  `intitle:"List of"`, "Holy Roman Emperor" outranks "List of Roman emperors", so the top-hit
+  version bailed silently on the exact subject the tier was built for.
+- **`descAssertsInstance()` tests the head noun in the description's own HEAD phrase** (before
+  the first " of "). "Praetorian Guard — Bodyguards of the Roman emperors" contains "emperor"
+  and shipped inside a list of emperors. Now SHARED with `certifyAssetItems` so the two tiers
+  cannot disagree about membership. 9/9 on cases spanning emperors and dog breeds.
+- **`wikiFetch()` retries with 429-aware backoff honouring `Retry-After`.** Rate limiting was
+  the dominant failure mode and does not announce itself: cold runs 2 and 3 died on a search
+  429 and reported "no list article", silently handing the answer to the FM — which proposed
+  **Charlemagne** as a Roman emperor. Every bail path now emits a reason; the tier previously
+  returned `[]` silently from five different places, so "broken" and "no list exists for this
+  subject" were indistinguishable.
+
+Measured: 4 consecutive runs byte-identical (`kept` rose 119 → 199 once backoff recovered
+batches that had been failing silently); dog breeds unregressed at 8 real Italian breeds via the
+category tier; and **the emperors plan produces IDENTICAL output with `globalThis.fetch`
+severed** — list cache + description store mean the whole grounded pipeline runs offline once
+warmed.
+
 ### 2026-07-21k (cont.98c — convergence sampling, empty-checkpoint visibility, offline evidence)
 
 - **FM item plans stop on CONVERGENCE, not on luck.** The rule was `attempt < 3 && union.size
