@@ -2046,6 +2046,42 @@ breeds, each with a grounded `.md` and a validated image (10 docs, 9 photos, for
 
 Ran concurrently with cont.96 (fmReact/server.ts) on the same working tree; no shared files.
 
+**Later in the same session — the three follow-ups above were then closed:**
+
+- **Instance certification.** The qualifier test alone was topical, so "Ente Nazionale della
+  Cinofilia Italiana" (a kennel club) passed as an Italian dog BREED. `subjectHeadNoun()` derives
+  the category's principal noun — "dog breeds from Italy" → "breed", "roman emperors" →
+  "emperor" — as the last subject token that is neither connector nor qualifier, de-pluralised.
+  Certification now also requires that noun in the item's one-line Wikipedia `description`. That
+  field is the discriminator and the full extract is NOT: real breeds read "Italian breed of
+  sighthound", the club reads "Italian dog association", but the club's article body discusses
+  breeds at length. Side benefit: goals with no proper-noun qualifier (lowercase "roman
+  emperors") previously skipped certification altogether and admitted "Tetrarchy" and "Kjárr";
+  they are now certified on the head noun alone. Measured: keeps 4/4 real breeds while dropping
+  the club, Basenji and Akita; keeps Augustus/Trajan/Hadrian while dropping Tetrarchy/Kjárr.
+- **Photo licensing.** `fetchImageCredit()` maps an upload URL back to its Commons `File:` page
+  (handling plain and `/thumb/` forms, where the real name is the second-to-last segment) and
+  reads `LicenseShortName` + `Artist` from `extmetadata`, stripping the HTML those fields carry.
+  Credits accumulate per download and ship as `CREDITS.md`, sequenced last because it cannot be
+  assembled until every photo has been attempted. Non-Wikimedia URLs and failed lookups degrade
+  to "unknown — verify before reuse" rather than asserting a licence. Live: 8/8 photos credited
+  with real licences (CC BY 3.0, CC BY-SA 3.0, …) and named authors, zero unknowns.
+- **Checkpoint scoping (`checkpoint.ts` + `registry.ts`).** `createCheckpoint` ran `git add -A`,
+  so every checkpoint committed all unrelated dirty files under "crucible: pre-<tool>" — which,
+  with two agent harnesses live on one working tree, repeatedly merged one session's UI work
+  with another's engine changes into commits describing neither. It now accepts an optional
+  `paths` scope and `registry.ts` passes the mutation's target. An empty array is deliberately
+  distinct from undefined ("nothing here to snapshot"), because `write_file` legitimately targets
+  `~/Desktop` and treating that as unscoped is precisely how the dog-breeds runs polluted this
+  history. `server.ts`'s two call sites are untouched. Verified on a scratch repo with a
+  simulated concurrent edit, and in production: the final dog-breeds run's checkpoint commits
+  contain zero files.
+
+Residual, logged not hidden: the FM fallback path (subjects with no clean category) is still
+run-to-run unstable, and a "List of X" retrieval tier was investigated and rejected for now —
+`List of Roman emperors` exposes 649 links headed entirely by concept pages, so reaching the
+actual emperors would cost hundreds of lookups against an API that already rate-limited us once.
+
 ### 2026-07-21f (cont.95 — asset-collection routing: file-CREATION goals finally create files)
 
 Closed cont.94's #1 BINDING open item. A goal whose deliverable is a FOLDER OF FILES ("make a

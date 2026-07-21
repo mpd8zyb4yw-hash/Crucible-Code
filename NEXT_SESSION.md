@@ -54,18 +54,43 @@
   della Cinofilia Italiana" — a kennel-club ORG, not a breed — and it survives certification
   because its article does mention Italy. Certification checks topical membership, not that the
   item is an INSTANCE OF THE HEAD NOUN ("is a dog breed").
-- **`planAssetCollection` still degrades to the FM for subjects with no clean category**, where
-  output stays run-to-run unstable (emperors runs returned 8, then 10, then 0 items).
-  Retrieval-first made the dog case deterministic; it did not fix the fallback path.
-- **No licence/attribution recorded per photo.** Images come from Wikimedia (CC/PD) and the
-  README warns to check licences, but each image's specific licence and author are not captured.
-  Commons' `imageinfo` can return `extmetadata` with both.
+  → **CLOSED later in cont.97.** `subjectHeadNoun()` derives the category's principal noun
+  ("breed", "emperor") and certification now also requires it in the item's one-line Wikipedia
+  `description` — the discriminator, since real breeds read "Italian breed of sighthound" while
+  the club reads "Italian dog association" (testing the full extract is useless: the club's
+  article discusses breeds at length). This also made certification effective for goals with NO
+  proper-noun qualifier (lowercase "roman emperors"), which previously skipped it entirely and
+  admitted "Tetrarchy"/"Kjárr". Live: the dog plan is now 8 items, all genuine breeds.
+- **No licence/attribution recorded per photo.**
+  → **CLOSED in cont.97.** `fetchImageCredit()` resolves an upload URL back to its Commons
+  `File:` page (plain and `/thumb/` forms) and reads `LicenseShortName` + `Artist` from
+  `extmetadata`, stripping their embedded HTML; credits are written as `CREDITS.md`, sequenced
+  last since it can only be assembled after every photo is attempted. Live: 8/8 photos credited
+  with real licences and named authors, zero unknowns.
+- **The checkpoint auto-committer sweeps the whole working tree.**
+  → **CLOSED in cont.97.** `createCheckpoint(projectPath, message, paths?)` now takes a scope;
+  `registry.ts` passes the mutation's target file. An empty array is DISTINCT from undefined and
+  means "nothing in this repo to snapshot" — required because `write_file` legitimately targets
+  `~/Desktop`, and treating that as unscoped is exactly how the dog-breeds runs (which only ever
+  wrote outside the repo) polluted this history. `server.ts`'s two call sites are untouched and
+  keep the old `-A` behaviour. Verified on a scratch repo AND in production: the final
+  dog-breeds run's three checkpoint commits contain ZERO files where they would previously have
+  swept the whole tree.
+
+**Open items / risks (priority order):**
+- **`planAssetCollection` still degrades to the FM for subjects with no clean Wikipedia
+  category**, where output stays run-to-run unstable (emperors runs returned 8, then 10, then 0
+  items). Retrieval-first made the dog case deterministic; it did not fix the fallback path. A
+  "List of X" article tier was investigated and REJECTED for now: `List of Roman emperors`
+  yields 649 links whose head is all concept pages ("Principate", "Julio-Claudian dynasty"), so
+  certifying enough of them to reach the real emperors means hundreds of Wikipedia requests —
+  and certification already rate-limits at ~40 parallel lookups. Needs a cheaper filter first.
 - **Item descriptions can conflate near-neighbours** — an earlier `italian-greyhound.md` said it
   "resembles the Greyhound and the smaller Italian Greyhound". Grounding-quality issue in
   `solveNonCodeTurn`'s research DAG, not routing.
-- **The checkpoint auto-committer sweeps the whole working tree**, so this session's
-  `registry.ts` fix first landed inside a "crucible: pre-write_file" commit. With two harnesses
-  live on one tree that is an active hazard, not a cosmetic one.
+- **Certification is a fixed ~1 lookup per item with no cache**, so a large plan re-fetches on
+  every planning pass and has already tripped Wikipedia rate limiting once (which made checks
+  fail open and admit "Border Collie"). A per-name cache would remove the main failure mode.
 
 **Previous (cont.96) state below:**
 
