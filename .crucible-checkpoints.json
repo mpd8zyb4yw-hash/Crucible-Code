@@ -1,11 +1,5 @@
 [
   {
-    "hash": "3aa5330",
-    "message": "pre-write_file",
-    "timestamp": 1784487700768,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/cart-remove"
-  },
-  {
     "hash": "1d50d6f",
     "message": "pre-write_file",
     "timestamp": 1784487715118,
@@ -298,5 +292,11 @@
     "message": "pre-write_file",
     "timestamp": 1784493128808,
     "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/16901/live/extract-duplicated-discount"
+  },
+  {
+    "hash": "9913d93",
+    "message": "pre-write_file",
+    "timestamp": 1784606840791,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
