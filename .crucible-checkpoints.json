@@ -1,11 +1,5 @@
 [
   {
-    "hash": "5c79a36",
-    "message": "pre-write_file",
-    "timestamp": 1784487962148,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/rename-field-across-layers"
-  },
-  {
     "hash": "27c245e",
     "message": "pre-write_file",
     "timestamp": 1784488026984,
@@ -297,6 +291,12 @@
     "hash": "bf9640d",
     "message": "pre-write_file",
     "timestamp": 1784612766024,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "85a775e",
+    "message": "pre-write_file",
+    "timestamp": 1784612933604,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]
