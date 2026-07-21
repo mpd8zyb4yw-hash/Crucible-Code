@@ -3267,8 +3267,18 @@ app.post('/api/chat', async (req, res) => {
   // ever ROUTES a personal-data question to real tools — it never triggers on prose/code asks.
   const implicitPersonalData = !isCreativeProse(message ?? '') && resolveImplicitPersonalTools(message ?? '') !== null
 
+  // A message that EXPLICITLY names a registry tool ("Read the full message first with
+  // gmail_read") must enter the agent block so the named-tool executor runs it for REAL
+  // data — otherwise it falls to the synthesis pipeline, which fabricated "I have drafted a
+  // reply" with zero tool calls (Schwab draft-reply debug report 2026-07-20). detectAgentTask
+  // does NOT catch these (no build/file/desktop verbs), and resolveImplicitPersonalTools bails
+  // on the "draft"/"reply" mutation verb — so an explicit tool name was the one agentic signal
+  // with no route in. resolveNamedTools only fires on literal snake_case registry names (never
+  // present in ordinary prose) and its whitelist is read-only, so this can only ROUTE correctly.
+  const explicitNamedTool = resolveNamedTools(message ?? '') !== null
+
   // ── Agent mode — sustained tool loop instead of the synthesis pipeline ─────
-  if (buildTurn.action === 'build' || slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || implicitPersonalData || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
+  if (buildTurn.action === 'build' || slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || implicitPersonalData || explicitNamedTool || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -3489,7 +3499,13 @@ app.post('/api/chat', async (req, res) => {
       // fall through to the prose pipeline, which fabricated "your inbox is empty" with zero
       // tool calls and shipped it verifier-stamped (debug report 2026-07-20). An answer about
       // personal external data comes from a tool or is an honest failure — never invented.
-      const explicit = isAgenticIntent ? resolveNamedTools(message ?? '') : null
+      // No isAgenticIntent gate on EXPLICIT names (dropped 2026-07-21): a message that
+      // names a snake_case registry tool ("Read the full message first with gmail_read")
+      // IS the intent — resolveNamedTools returns null for everything else, and its
+      // whitelist is read-only by construction. The gate is exactly what sent the
+      // EmailReader draft-reply prompt to the prose pipeline, which fabricated
+      // "I have drafted a reply" with zero tool calls (debug report 2026-07-20).
+      const explicit = resolveNamedTools(message ?? '')
       const named = (explicit && explicit.calls.length) ? explicit : resolveImplicitPersonalTools(message ?? '')
       if (named && named.calls.length) {
         const implicit = named !== explicit
@@ -3531,9 +3547,25 @@ app.post('/api/chat', async (req, res) => {
             // phrase it, but never invent — and fall back to the lossless render (then raw)
             // so an empty FM reply can never become an empty answer.
             const dataBlock = outputs.map(o => `### ${o.tool} (${o.ok ? 'ok' : 'error'})\n${o.output.slice(0, 3000)}`).join('\n\n')
-            const sys = 'You are a precise assistant. You are given REAL output from tools that already ran. Using ONLY that output, complete the user\'s request. Do not invent data not present in the tool output. If a tool returned nothing, say so plainly. Plain text, concise, no preamble.'
+            const sys = 'You are a precise assistant. You are given REAL output from tools that already ran. Using ONLY that output, complete the user\'s request. Do not invent data not present in the tool output. If a tool returned nothing, say so plainly. ' +
+              'If the request asks you to DRAFT or WRITE something (a reply, an email, a message), your response must CONTAIN the full drafted text itself — never a claim that you drafted it. Plain text, concise, no preamble.'
             const usr = `Request:\n${message}\n\nTool output (this is real, already-fetched data):\n${dataBlock}`
-            try { summary = stripThink(await callLocalModel(sys, usr, 30000)) } catch { /* fall back below */ }
+            // Deliverable check (2026-07-20 Schwab report): the model answered a draft-reply
+            // request with "I have read the full message and drafted a reply." — a claim with
+            // no deliverable. Deterministic rejection + one retry: a drafting request whose
+            // answer is short and content-free is not an answer.
+            const wantsDraft = /\b(draft|compose|write)\b[\s\S]{0,40}\b(reply|response|email|message|answer)\b/i.test(message ?? '')
+            const claimsWithoutContent = (s: string) =>
+              wantsDraft && (s.length < 120 || /\b(I have|I've)\s+(read|drafted|written|composed|prepared)\b[\s\S]{0,80}$/i.test(s.trim()))
+            for (let attempt = 0; attempt < 2 && !summary.trim(); attempt++) {
+              try {
+                const corrective = attempt === 0 ? usr
+                  : usr + '\n\nYOUR PREVIOUS ANSWER WAS REJECTED: it claimed a draft exists without including it. Output the complete draft text now, starting directly with the drafted reply.'
+                const cand = stripThink(await callLocalModel(sys, corrective, 30000))
+                if (!claimsWithoutContent(cand)) summary = cand
+                else debugBus.emit('agent', 'draft_claim_rejected', { attempt, text: cand.slice(0, 120) }, { severity: 'warn' })
+              } catch { /* fall back below */ }
+            }
             if (!summary.trim()) {
               summary = rendered ?? outputs.map(o => `${o.tool}:\n${o.output}`).join('\n\n')
             }

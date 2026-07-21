@@ -17,7 +17,38 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21d (cont.93) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21e (cont.94) (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-21e (cont.94 — email draft-reply routing + false-refusal honesty):**
+- **Email agent "fabricated a draft with 0 tool calls" FIXED + live-verified.** `server.ts`:
+  new `explicitNamedTool` signal routes any literal registry-tool mention into the agent path
+  (the gate previously had no branch for it → synthesis pipeline invented "I drafted a reply").
+  `namedToolRouter.ts`: `harvestProseArg()` pulls a Gmail message id out of PROSE so `gmail_read`
+  isn't skipped for a "missing" messageId; dropped the isAgenticIntent gate on explicit names;
+  added a draft-deliverable reject+retry. Verified via curl/SSE: `gmail_read` executes (honest
+  "no Google token" error for the test user, real draft path for a connected user).
+- **`loop.ts` refusal-bounce regex broadened** to catch "don't have the capability"/"not able to"
+  — the dog-breeds refusal was being stamped `final ok:true`; now bounced then honestly stalled.
+
+**Open items / risks (priority order):**
+- **#1 BINDING — file/asset-CREATION tasks are mis-routed and cannot succeed.** "make a folder on
+  the desktop with photos + descriptions" has no .ts/.js path, so `makeOfflineDriveTurn`
+  (`synthDriver.ts`) sends it to `solveNonCodeTurn`, whose `fmReact` toolset is RESEARCH-ONLY
+  (search/fetch/read_file/read-only run — NO write_file, NO real mkdir). Result: it refuses or
+  returns raw web-search hits (with mangled args like `https://www.dog breeds italy.com`), never
+  creating files. FIX: route no-code creation/desktop-action goals to a real action-tool loop
+  (write_file + mutating run) with a capability-affirming prompt — OR make `localFmPlan` produce a
+  plan for these (it returns null today → falls to the research solver). This is THE dog-breeds fix.
+- **fmReact arg parsing mangles positional args** (`{"0":"mkdir","1":"dog_breeds_italy"}` for
+  `run`; empty `query` for `web_search`) — the `TOOL:\n<key>: <val>` parser in
+  `fmReact.ts:parseResponse` doesn't handle the model emitting bare positional args. Fix the
+  parser to map a bare arg line to the tool's primary param.
+- Re-bench the swapped head; bench synthDriver history fix; automation follow-ups prefill-only
+  (all carried from cont.93, unchanged).
+
+**Previous (cont.93) state below:**
+
+## CURRENT STATE — last updated 2026-07-21d (cont.93) (superseded by cont.94 above)
 
 **Shipped 2026-07-21d (cont.93 — "exit 0" residue guard, FM-503 root fix, splash finalized):**
 - **FM HTTP 503 on agent launch FIXED at the root:** the deployed backend runs with cwd

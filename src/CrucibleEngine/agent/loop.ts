@@ -583,7 +583,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     // live 2026-07-07 from the online pool on a /control_mac task. One hard correction;
     // if it refuses again we accept it (it may be genuinely impossible).
     if (toolCallCount === 0 &&
-        /\b(I\s+(cannot|can't|am unable to|don't have the ability)|as an AI|external tasks?)\b/i.test(turn.text)) {
+        /\b(I\s+(cannot|can't|am unable to|don't have the (ability|capability)|am not able to|do not have the (ability|capability))|as an AI|external tasks?)\b/i.test(turn.text)) {
       if (refusalBounces < 1) {
         refusalBounces++
         debugBus.emit('agent', 'refusal_bounced', { iter, text: turn.text.slice(0, 160) }, { severity: 'warn' })

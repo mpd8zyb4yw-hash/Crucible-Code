@@ -69,6 +69,22 @@ function extractInlineArgs(message: string, tool: string): Record<string, unknow
   return args
 }
 
+// Harvest a required arg stated in PROSE rather than in a parenthesised arg list. Live
+// failure (debug report 2026-07-20, Schwab draft-reply turn): EmailReader's canned prompt
+// says `(Gmail message id 19f5c92ef39e60c2). Read the full message first with gmail_read`
+// — the id never sits inside `gmail_read(...)`, so gmail_read was skipped for a "missing"
+// messageId and the turn fell to the prose pipeline, which fabricated "I have drafted a
+// reply" with zero tool calls. Deterministic extraction, tool-specific, no guessing: a
+// Gmail message id is a long hex token and never occurs in ordinary prose.
+function harvestProseArg(message: string, tool: string, key: string): string | null {
+  if (tool === 'gmail_read' && key === 'messageId') {
+    const m = message.match(/\b(?:message|msg)\s*id[:#\s]*([0-9a-f]{10,20})\b/i)
+      ?? message.match(/\b(?:id)[:#\s]+([0-9a-f]{14,20})\b/i)
+    return m?.[1] ?? null
+  }
+  return null
+}
+
 /**
  * Resolve every name-triggerable tool mentioned in `message` into an executable
  * ToolCall, in the order they appear. Returns null when no such tool is named — the
@@ -93,6 +109,12 @@ export function resolveNamedTools(message: string): NamedToolResolution | null {
   for (const { tool } of found) {
     const inline = extractInlineArgs(msg, tool)
     const args = { ...(DEFAULT_ARGS[tool] ?? {}), ...inline }
+    for (const k of REQUIRED_NO_DEFAULT[tool] ?? []) {
+      if (!(k in args)) {
+        const harvested = harvestProseArg(msg, tool, k)
+        if (harvested) args[k] = harvested
+      }
+    }
     const missing = (REQUIRED_NO_DEFAULT[tool] ?? []).filter(k => !(k in args))
     if (missing.length) { skipped.push(tool); continue }
     calls.push({ id: `named_${i++}`, name: tool, args })

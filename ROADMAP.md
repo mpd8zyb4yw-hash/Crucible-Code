@@ -1933,6 +1933,29 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21e (cont.94 — email draft-reply routing fix + false-capability-refusal honesty guard)
+- **"Draft a reply … Read the full message first with gmail_read" fabricated a draft with ZERO
+  tool calls — FIXED + LIVE-VERIFIED.** Two-part root cause: (1) the big agent-path gate in
+  `server.ts` had no branch for an EXPLICIT registry-tool mention, so `detectAgentTask` (no
+  build/file verb) and `resolveImplicitPersonalTools` (bails on the "draft" mutation verb) both
+  said no and the turn fell to the synthesis pipeline, which invented "I have drafted a reply."
+  New `explicitNamedTool = resolveNamedTools(msg) !== null` routes any literal snake_case tool
+  name into the agent block. (2) `namedToolRouter.ts` skipped `gmail_read` for a "missing"
+  messageId because the id sits in PROSE ("Gmail message id 19f5c92ef39e60c2"), not in a
+  `gmail_read(...)` arg list — new `harvestProseArg()` extracts the hex id deterministically.
+  Also dropped the `isAgenticIntent` gate on explicit names (read-only whitelist, the name IS
+  the intent) and added a draft-deliverable check + retry in the named-tool summarizer (a
+  drafting request whose answer is short/content-free is rejected). Live: `gmail_read` now
+  actually executes; with no Google token it returns an HONEST error instead of a fake draft.
+- **False-capability refusal no longer stamped as success (`loop.ts`).** The dog-breeds task
+  ("folder on the desktop with photos") has no code path, so the offline driver routes it to
+  `solveNonCodeTurn`, whose fmReact has RESEARCH-ONLY tools (search/fetch/read) — it genuinely
+  can't create files and refused "I don't have the capability to create a folder," which was
+  accepted as `stopped:final ok:true`. The refusal-bounce regex only matched "the ability", not
+  "the capability"/"not able to" — broadened so this hallucinated refusal is bounced once then
+  honestly `stalled`. NOTE: this makes the failure HONEST, it does NOT make the task succeed —
+  file/asset-CREATION goals still need real routing to an action-tool loop (see NEXT_SESSION).
+
 ### 2026-07-21d (cont.93 — agent "exit 0" residue guard + sidecar root fix for the FM HTTP 503)
 - **FM HTTP 503 on every agent launch — ROOT-CAUSED AND FIXED.** The deployed backend's cwd is
   `~/Library/Application Support/crucible-local`, not the repo, so `bonsaiSidecar.ts`'s
