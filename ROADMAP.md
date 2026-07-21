@@ -1933,6 +1933,38 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-21i (cont.98 — certification caching + near-neighbour conflation repair)
+
+> Continued alongside cont.96 (which owns `server.ts` / `fmReact.ts`). This session touched
+> ONLY `synthDriver.ts`, chosen deliberately so the two sessions cannot collide. The one
+> remaining follow-up that requires `server.ts` (scoping its two `createCheckpoint` call sites)
+> was left UNDONE for exactly that reason — see the open items.
+
+- **Wikipedia summaries are cached per name across certification passes.** `certifyAssetItems`
+  did one uncached lookup per item PER PASS, and a plan runs it at least twice (retrieval path,
+  then again over the FM union), so ~10 distinct names cost 20+ requests. That burst is what
+  tripped Wikipedia's rate limiting live — and rate limiting makes every check fail OPEN, which
+  is precisely how "Border Collie" shipped inside an ITALIAN breeds collection. **This is a
+  correctness fix, not a performance one:** the verifier is only as sound as its ability to
+  reach its evidence. 404s are cached too (re-asking for a known-absent page is the wasted
+  request that pushes a burst over the limit); transient failures are deliberately NOT cached,
+  so a hiccup stays retryable instead of poisoning the rest of the run. Measured: pass 2 issues
+  **0** requests and returns a byte-identical kept set (real breeds kept; Border Collie and the
+  kennel club still dropped).
+- **Per-item docs no longer conflate near neighbours.** The research DAG retrieves by NAME, so
+  for closely-related entities the retrieved set is contaminated by the item's neighbours: a
+  live `italian-greyhound.md` asserted the breed "resembles the Greyhound and the smaller
+  Italian Greyhound" — describing its own subject as a third party by blending two entities'
+  sources. New `groundItemDoc()` applies two deterministic repairs with no extra model call:
+  it drops a sentence that refers to the subject with a distancing comparative against the
+  subject's OWN name, and drops a sentence naming a DIFFERENT planned item (siblings are
+  exactly the near neighbours retrieval confuses, and a per-item doc has no legitimate reason
+  to make claims about them). It then appends the item's own Wikipedia extract as an
+  attributable floor — served from the summary cache above, so the normal path costs zero
+  additional requests — and falls back to the original text if filtering would empty the doc.
+  Measured on the live failure string plus a sibling-bleed case: both offending sentences
+  dropped, clean prose untouched, reference appended in all three cases.
+
 ### 2026-07-21g (cont.96 — fmReact positional tool args + automation follow-up threading)
 Ran CONCURRENTLY with cont.95 in the same working tree (separate harness). cont.95 owned
 `synthDriver.ts`; this session owned `fmReact.ts` + the automation follow-up path and stayed

@@ -17,7 +17,44 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21h (cont.97) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-21i (cont.98) (REPLACE THIS EVERY SESSION)
+
+> Ran CONCURRENTLY with cont.96 (separate harness, same working tree). cont.96 owns
+> `fmReact.ts` + `server.ts` + the automation follow-up path. cont.98 touched **only**
+> `synthDriver.ts` — work was selected specifically to avoid that session's files.
+
+**Shipped 2026-07-21i (cont.98):**
+- **Wikipedia summary cache (`_WIKI_SUMMARY_CACHE` / `wikiSummary()` in `synthDriver.ts`).**
+  Certification was doing ~1 uncached lookup per item per pass, ≥2 passes per plan. The
+  resulting burst tripped rate limiting live, and rate limiting makes certification fail OPEN —
+  the "Border Collie in an Italian breeds folder" failure. Measured: second pass = 0 requests,
+  identical results. 404s cached; transient failures left retryable.
+- **`groundItemDoc()` — near-neighbour conflation repair.** Drops self-referential comparative
+  sentences and sentences naming a sibling item, then appends the item's own Wikipedia extract
+  (from the cache, zero extra requests) as an attributable floor. Fixes the live
+  `italian-greyhound.md` that claimed the breed "resembles ... the smaller Italian Greyhound".
+
+**Open items / risks (priority order):**
+1. **`planAssetCollection`'s FM fallback is unstable** — subjects with no clean Wikipedia
+   category return 8, 10, or 0 items across identical runs. A "List of X" retrieval tier was
+   investigated and REJECTED: `List of Roman emperors` exposes 649 links headed entirely by
+   concept pages ("Principate", "Julio-Claudian dynasty"), so reaching actual emperors means
+   hundreds of lookups against an API that already rate-limited us. Needs a cheaper candidate
+   filter, not more lookups. The summary cache above lowers the cost of any future attempt.
+2. **`server.ts`'s two `createCheckpoint` call sites (~7336, ~7563) are still unscoped** — they
+   pass no path and keep the whole-tree `git add -A`. The mechanism supports scoping now
+   (`checkpoint.ts` takes an optional path scope; `[]` is meaningfully distinct from
+   `undefined`). NOT DONE BECAUSE `server.ts` is owned by the concurrent cont.96 session —
+   editing it risks destroying their uncommitted work. Do this once cont.96 has landed.
+3. **Every asset-collection quality gain depends on Wikipedia being reachable.** Certification,
+   licensing, and now `groundItemDoc` all fail open on network error. Caching narrows the
+   window but does not remove the dependency; there is no offline evidence tier.
+4. **Re-bench the swapped qwen head** — carried from cont.93/94/95, still open.
+   `residue_terminal`/`refusal_terminal` rates now sit behind several changed routing paths.
+
+---
+
+## PRIOR STATE — cont.97 (historical; superseded by the block above)
 
 > Ran CONCURRENTLY with cont.96 (separate harness, same working tree). cont.96 owned
 > `fmReact.ts` + `server.ts` + the automation follow-up path; this session owned
