@@ -1,11 +1,5 @@
 [
   {
-    "hash": "235082f",
-    "message": "pre-write_file",
-    "timestamp": 1784487906235,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/56499/live/thread-tax-rate"
-  },
-  {
     "hash": "5c79a36",
     "message": "pre-write_file",
     "timestamp": 1784487962148,
@@ -297,6 +291,12 @@
     "hash": "ad62641",
     "message": "pre-write_file",
     "timestamp": 1784612678305,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "bf9640d",
+    "message": "pre-write_file",
+    "timestamp": 1784612766024,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
   }
 ]

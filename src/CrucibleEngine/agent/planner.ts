@@ -1,7 +1,7 @@
 // Planner — task decomposition into a compact JSON todo list, executed step-by-step
 // by the agent loop. One strong-model call; no stored chain-of-thought.
 
-import { runAgentLoop, compressObservation, defaultSystemPreamble } from './loop'
+import { runAgentLoop, compressObservation, defaultSystemPreamble, isToolResidue } from './loop'
 import type { AgentLoopResult, DriveTurn, VerifyResult } from './loop'
 import { safeParseJSON } from '../tools/protocol'
 import type { ToolCtx } from '../tools/protocol'
@@ -298,7 +298,12 @@ export async function runPlannedTask(opts: PlannedTaskOpts): Promise<PlannedTask
   const summary = completedSummaries.join('\n')
   emit({ type: 'plan_done', ok: true })
   onPersist?.(steps, completedSummaries, 'done')
-  return { ok: true, steps, summary, answer: composeAnswer(completedResults) }
+  // Every step ran, but none produced reportable text (all tool residue). Say so plainly rather
+  // than letting the caller fall back to the internal ledger — an honest "no result" beats
+  // shipping "exit 0" or the agent's own plan labels as if they were the answer.
+  const answer = composeAnswer(completedResults)
+    || 'The plan ran to completion, but no step produced a reportable result.'
+  return { ok: true, steps, summary, answer }
 }
 
 /**
@@ -315,6 +320,21 @@ export function stripLedgerLabels(summaries: string[], steps: Step[]): string[] 
 }
 
 /**
+ * A step result that is only tool residue ("exit 0", "Done.", "Command executed successfully").
+ *
+ * Reuses loop.ts's `isToolResidue` but DELIBERATELY keeps bare numbers: that rule is right for a
+ * whole-task final, where "21" alone is almost certainly a leaked exit code, and wrong here,
+ * where a step answering "what is 17 + 4" legitimately produces exactly that. Never discard
+ * something that could be the actual answer — a residue-looking answer is recoverable by the
+ * caller, a discarded correct one is not.
+ */
+export function isResidueResult(text: string): boolean {
+  const bare = text.trim().replace(/[`*_#>\s]+/g, ' ').trim()
+  if (/^-?\d+(?:\.\d+)?$/.test(bare)) return false
+  return isToolResidue(text)
+}
+
+/**
  * Build the user-facing answer from the completed steps' results.
  *
  * Deterministic and additive-only: it never invents text and never calls a model — it drops the
@@ -328,6 +348,7 @@ export function composeAnswer(results: string[]): string {
   for (const r of results) {
     const t = r.trim()
     if (!t) continue
+    if (isResidueResult(t)) continue
     // Steps commonly restate the previous step's conclusion ("display result" after
     // "perform addition"); emitting it twice reads as the agent contradicting itself.
     const key = t.replace(/\s+/g, ' ').toLowerCase()

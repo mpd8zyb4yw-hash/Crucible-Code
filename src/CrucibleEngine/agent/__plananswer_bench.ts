@@ -62,6 +62,23 @@ console.log('\n== stripLedgerLabels recovers results from a persisted ledger =='
   check('unknown prefix left intact', out[0] === 'not a step intent → keep this whole line', JSON.stringify(out[0]))
 }
 
+console.log('\n== tool residue never becomes the answer ==')
+{
+  check('"exit 0" dropped', composeAnswer(['exit 0']) === '', JSON.stringify(composeAnswer(['exit 0'])))
+  check('decorated "`exit 0`" dropped', composeAnswer(['`exit 0`']) === '')
+  check('"Done." dropped', composeAnswer(['Done.']) === '')
+  check('"Command executed successfully." dropped', composeAnswer(['Command executed successfully.']) === '')
+  const mixed = composeAnswer(['exit 0', 'The sum of 17 and 4 is 21.'])
+  check('residue dropped, real result kept', mixed === 'The sum of 17 and 4 is 21.', JSON.stringify(mixed))
+}
+{
+  // A bare number is residue for a WHOLE-TASK final but is a legitimate STEP answer — never
+  // discard something that could be the actual result.
+  check('bare number kept', composeAnswer(['21']) === '21')
+  check('bare decimal kept', composeAnswer(['3.5']) === '3.5')
+  check('negative number kept', composeAnswer(['-4']) === '-4')
+}
+
 console.log('\n== the live regression, end to end ==')
 {
   const s = steps('perform addition', 'display result')

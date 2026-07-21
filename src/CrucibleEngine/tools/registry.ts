@@ -701,17 +701,50 @@ registry.register({
     const query = String(args.query ?? '').trim()
     const count = Math.min(Number(args.count ?? 5), 20)
     if (!query) return { ok: false, output: 'A non-empty "query" is required.' }
+    // ── Source order: Wikipedia lead image → Wikimedia Commons → DDG scrape ──────
+    // Rewritten 2026-07-21 (cont.95) after a live check showed this tool returned
+    // "No image URLs found." for EVERY query: the third-party ddg proxy below is dead, and
+    // the DDG HTML fallback does not serve image results at that endpoint, so both tiers
+    // failed silently and any agent asking for a picture got nothing. Wikimedia is the right
+    // primary anyway — no API key, stable, and the images carry explicit CC/public-domain
+    // licensing rather than being arbitrary hotlinked web results.
+    const UA = 'crucible-local/1.0 (on-device agent; contact: local user)'
+    const wikiTitle = query.replace(/\b(photo|photos|image|images|picture|pictures|pic|pics)\b/gi, '').trim()
     try {
-      const url = `https://ddg-webapp-aagd.vercel.app/image?q=${encodeURIComponent(query)}&o=json&l=us-en`
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
-      })
-      if (res.ok) {
-        const data = await res.json() as any[]
-        const urls = data.slice(0, count).map((r: any) => r.image).filter(Boolean)
-        if (urls.length > 0) return { ok: true, output: urls.join('\n') }
+      // Tier 1: the Wikipedia article's lead image — for a named entity this is almost always
+      // the single most representative picture, already editorially chosen.
+      if (wikiTitle) {
+        const res = await fetch(
+          `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikiTitle.replace(/\s+/g, '_'))}`,
+          { headers: { 'User-Agent': UA } },
+        )
+        if (res.ok) {
+          const d = await res.json() as any
+          const lead = d?.originalimage?.source ?? d?.thumbnail?.source
+          if (typeof lead === 'string' && lead) return { ok: true, output: lead }
+        }
       }
-      // Fallback: scrape DDG images HTML
+    } catch { /* fall through to Commons */ }
+    try {
+      // Tier 2: Wikimedia Commons file search — works for subjects with no article of their own.
+      if (wikiTitle) {
+        const res = await fetch(
+          `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(wikiTitle)}` +
+          `&gsrnamespace=6&gsrlimit=${count}&prop=imageinfo&iiprop=url&format=json`,
+          { headers: { 'User-Agent': UA } },
+        )
+        if (res.ok) {
+          const d = await res.json() as any
+          const urls = Object.values(d?.query?.pages ?? {})
+            .map((p: any) => p?.imageinfo?.[0]?.url)
+            .filter((u: any) => typeof u === 'string' && /\.(jpg|jpeg|png|webp)$/i.test(u))
+            .slice(0, count)
+          if (urls.length > 0) return { ok: true, output: urls.join('\n') }
+        }
+      }
+    } catch { /* fall through to DDG */ }
+    try {
+      // Tier 3 (legacy): scrape DDG images HTML
       const fallback = await fetch(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query + ' filetype:jpg')}&iax=images&ia=images`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' }
       })

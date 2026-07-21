@@ -594,6 +594,58 @@ async function findImageUrl(query: string, projectPath: string): Promise<string 
 // Planning is one FM call per goal; cache so the per-item write turns agree on the plan.
 const _assetPlans = new Map<string, AssetItem[]>()
 
+// ── Item certification (propose → verify → drop) ─────────────────────────────
+// planAssetCollection is the FM PROPOSING from parametric memory, and it hallucinates:
+// the first live dog-breeds run listed "Basenji", a Central African breed, among Italian
+// ones. Doctrine says the model may only propose — so every proposed item is certified
+// against retrieval here, and anything that fails to verify is DROPPED rather than shipped
+// as a confidently-wrong file in the user's folder.
+//
+// The constraint is derived from the PROPER NOUNS in the goal ("…dog breeds from Italy" →
+// "italy"): those are the qualifiers that make an item belong in this collection at all.
+// Common words can't serve — "Basenji" is genuinely a "dog" and a "breed", and only the
+// "Italy" constraint distinguishes it from a correct item.
+const _CAP_STOP = new Set(['i', 'a', 'the', 'my', 'me', 'please', 'make', 'create', 'build', 'write', 'desktop', 'downloads', 'documents', 'folder'])
+
+export function goalQualifiers(goal: string): string[] {
+  const caps = goal.match(/\b[A-Z][a-z]{2,}\b/g) ?? []
+  return [...new Set(caps.map(w => w.toLowerCase()))].filter(w => !_CAP_STOP.has(w))
+}
+
+/** Certify proposed items against Wikipedia. Fails OPEN (keeps the item) on any network or
+ *  parse error — a flaky lookup must not silently empty the user's collection — but drops an
+ *  item whose article demonstrably does not mention the goal's qualifier. */
+export async function certifyAssetItems(goal: string, items: AssetItem[]): Promise<AssetItem[]> {
+  const quals = goalQualifiers(goal)
+  if (!quals.length || !items.length) return items
+  const checked = await Promise.all(items.map(async it => {
+    try {
+      const res = await fetch(
+        `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(it.name.replace(/\s+/g, '_'))}`,
+        { headers: { 'User-Agent': 'crucible-local/1.0 (on-device agent)' }, signal: AbortSignal.timeout(8000) },
+      )
+      if (!res.ok) return { it, keep: true }
+      const d = await res.json() as any
+      const hay = `${String(d?.title ?? '')} ${String(d?.description ?? '')} ${String(d?.extract ?? '')}`.toLowerCase()
+      if (!hay.trim()) return { it, keep: true }
+      // Stem-match, not exact-match. A place qualifier almost always appears in the article
+      // in its ADJECTIVAL form — Cane Corso's summary says "Italian breed of mastiff", never
+      // "Italy" — so an exact "italy" test dropped genuinely correct items (measured: it kept
+      // only 1 of 3 real Italian breeds). Comparing on the stem ("ital") accepts
+      // italy/italian/italiano while still rejecting Basenji's "Central Africa".
+      return { it, keep: quals.some(q => hay.includes(q.slice(0, Math.max(4, q.length - 2)))) }
+    } catch { return { it, keep: true } }
+  }))
+  const kept = checked.filter(c => c.keep).map(c => c.it)
+  const dropped = checked.filter(c => !c.keep).map(c => c.it.name)
+  if (dropped.length) {
+    debugBus.emit('agent', 'offline_asset_item_rejected', { dropped, quals }, { severity: 'info' })
+  }
+  // If certification rejected EVERYTHING the qualifier is probably not an article-level term
+  // (or the whole lookup misfired) — keep the original list rather than shipping an empty folder.
+  return kept.length ? kept : items
+}
+
 /** Ask the FM to enumerate the collection's items. Returns [] on any failure — the caller
  *  degrades to a single grounded overview file rather than fabricating an item list. */
 async function planAssetCollection(goal: string): Promise<AssetItem[]> {
@@ -626,6 +678,8 @@ async function planAssetCollection(goal: string): Promise<AssetItem[]> {
       }
     } catch { /* fall through to [] */ }
   }
+  // The FM only PROPOSED this list — certify it against retrieval before anything is written.
+  items = await certifyAssetItems(goal, items)
   _assetPlans.set(goal, items)
   return items
 }
