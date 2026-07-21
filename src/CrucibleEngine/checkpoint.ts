@@ -42,10 +42,36 @@ export function ensureGitRepo(projectPath: string): void {
   }
 }
 
-export function createCheckpoint(projectPath: string, message: string): Checkpoint | null {
+/**
+ * Snapshot the project so an agent edit can be rolled back.
+ *
+ * `paths` scopes what gets staged, and callers that know which file they are about to touch
+ * SHOULD pass it. The unscoped `git add -A` fallback stages the entire working tree, which
+ * means a checkpoint sweeps up every unrelated in-flight edit — another session's work, or the
+ * user's own uncommitted changes — and buries it under a "crucible: pre-<tool>" message. That
+ * is not hypothetical: on 2026-07-21 two agent harnesses ran against this one working tree and
+ * a single write_file checkpoint committed a second session's UI work plus this session's
+ * engine changes together, under a message describing neither. Staging only the target file
+ * still gives a restorable pre-write snapshot of the thing being changed, which is all the
+ * checkpoint is for.
+ */
+export function createCheckpoint(projectPath: string, message: string, paths?: string[]): Checkpoint | null {
   try {
     ensureGitRepo(projectPath)
-    exec('git add -A', projectPath)
+    if (paths) {
+      // An EMPTY array is meaningful and distinct from undefined: it means the caller knows
+      // the mutation touches nothing inside this repo (write_file targeting ~/Desktop), so
+      // there is nothing here to snapshot. Falling back to -A in that case is precisely how
+      // the dog-breeds runs — which only ever wrote to the Desktop — ended up committing
+      // unrelated engine and UI work under "crucible: pre-write_file".
+      if (paths.length) {
+        // -- terminates flags so a path can never be read as one; each path is quoted.
+        const spec = paths.map(p => `'${p.replace(/'/g, "'\\''")}'`).join(' ')
+        exec(`git add -- ${spec}`, projectPath)
+      }
+    } else {
+      exec('git add -A', projectPath)
+    }
     const result = exec(`git commit -m "crucible: ${message}" --allow-empty`, projectPath)
     const hash = exec('git rev-parse --short HEAD', projectPath)
     const checkpoint: Checkpoint = {

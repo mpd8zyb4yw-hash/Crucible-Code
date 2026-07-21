@@ -19,12 +19,27 @@ const tools = new Map<string, ToolDef>()
 // Checkpoint before file mutations, at most once per minute per project.
 const FILE_MUTATORS = new Set(['write_file', 'edit_file', 'apply_patch'])
 const lastCheckpoint = new Map<string, number>()
-function checkpointBeforeMutation(toolName: string, ctx: ToolCtx) {
+function checkpointBeforeMutation(toolName: string, ctx: ToolCtx, args?: Record<string, unknown>) {
   if (!FILE_MUTATORS.has(toolName)) return
   const now = Date.now()
   if (now - (lastCheckpoint.get(ctx.projectPath) ?? 0) < 60_000) return
   lastCheckpoint.set(ctx.projectPath, now)
-  try { createCheckpoint(ctx.projectPath, `pre-${toolName}`) } catch { /* non-fatal */ }
+  // Scope the snapshot to the file being mutated. Unscoped, the checkpoint's `git add -A`
+  // commits every unrelated dirty file in the tree under a "pre-<tool>" message — which on
+  // 2026-07-21 merged two concurrent agent sessions' work into single meaningless commits.
+  const target = typeof args?.path === 'string' ? args.path
+    : typeof args?.file_path === 'string' ? args.file_path
+    : undefined
+  // Only paths INSIDE the project can be staged; write_file legitimately targets Desktop and
+  // other whitelisted roots, and `git add` on those would fail (or worse, hit another repo).
+  // A known-but-external target passes [] — "snapshot nothing" — rather than undefined, which
+  // would fall back to staging the whole tree for a write that does not touch this repo at all.
+  const scope = target === undefined
+    ? undefined
+    : (!path.isAbsolute(target) && !target.startsWith('~')) ? [target] : []
+  try {
+    createCheckpoint(ctx.projectPath, `pre-${toolName}`, scope)
+  } catch { /* non-fatal */ }
 }
 
 export const registry = {
@@ -44,7 +59,7 @@ export const registry = {
       return { ok: false, output: `Tool ${call.name} mutates state and is not permitted in this context.` }
     }
     if (ctx.signal?.aborted) return { ok: false, output: 'Cancelled.' }
-    checkpointBeforeMutation(call.name, ctx)
+    checkpointBeforeMutation(call.name, ctx, call.args as Record<string, unknown> | undefined)
     ctx.emit?.({ type: 'tool_call', id: call.id, tool: call.name, args: call.args })
     try {
       const result = await def.run(call.args, ctx)
