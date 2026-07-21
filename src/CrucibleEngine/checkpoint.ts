@@ -7,6 +7,11 @@ export interface Checkpoint {
   message: string
   timestamp: number
   projectPath: string
+  /** Files this checkpoint actually staged. An empty array means rolling back to it restores
+   *  NOTHING — legitimate when the mutation targeted a path outside this repo, a bug otherwise.
+   *  Optional because checkpoints written before this field existed do not carry it, and absent
+   *  must not be read as "captured nothing". */
+  files?: string[]
 }
 
 const CHECKPOINT_LOG = path.join(process.cwd(), '.crucible-checkpoints.json')
@@ -93,13 +98,28 @@ export function createCheckpoint(projectPath: string, message: string, paths?: s
     } else {
       exec('git add -A', projectPath)
     }
-    const result = exec(`git commit -m "crucible: ${message}" --allow-empty`, projectPath)
+    // Record whether this checkpoint actually CAPTURED anything before committing. Because the
+    // commit is --allow-empty, a checkpoint that staged nothing succeeds and returns a hash
+    // that looks exactly like a real snapshot — so a scope bug degrades the safety net silently
+    // and a later rollback restores nothing while reporting success. That is not hypothetical:
+    // registry.ts classified every absolute path as external and passed [], so in-project
+    // absolute writes got no snapshot at all, and nothing surfaced it.
+    const staged = exec('git diff --cached --name-only', projectPath).split('\n').filter(Boolean)
+    exec(`git commit -m "crucible: ${message}" --allow-empty`, projectPath)
     const hash = exec('git rev-parse --short HEAD', projectPath)
     const checkpoint: Checkpoint = {
       hash,
       message,
       timestamp: Date.now(),
       projectPath,
+      files: staged,
+    }
+    if (!staged.length) {
+      // Expected when the caller passed [] on purpose (a write outside this repo); a real
+      // problem when it did not. Either way it must be visible rather than inferred.
+      console.warn(`[Checkpoint] EMPTY — "${message}" captured no files` +
+        `${paths === undefined ? ' (unscoped git add -A found nothing to stage)' : ''}. ` +
+        'Rolling back to it will restore nothing.')
     }
     const checkpoints = loadCheckpoints()
     checkpoints.push(checkpoint)
