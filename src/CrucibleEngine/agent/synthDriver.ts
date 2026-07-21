@@ -1777,12 +1777,12 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
 
       if (!nextPath) {
         const wrote = writtenPaths.filter(p => p.startsWith(dir))
-        const photos = wrote.filter(p => p.endsWith('.jpg')).length
+        const photos = wrote.filter(p => /\.(jpg|png|webp|gif)$/.test(p)).length
         const docs = wrote.filter(p => p.endsWith('.md')).length
         const photoNote = !wantsPhotos
           ? ''
           : photos > 0
-            ? ` ${photos} photo(s) downloaded and validated as real images; any item without a .jpg is one where no usable image was found.`
+            ? ` ${photos} photo(s) downloaded from Wikimedia and validated as real image files; any item without an image file is one where no usable photo was found.`
             : ` No photos could be retrieved — every image search or download failed, so this collection is text only.`
         debugBus.emit('agent', 'offline_asset_done', { dir, docs, photos }, { severity: 'info' })
         return {
@@ -1803,17 +1803,22 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
           debugBus.emit('agent', 'offline_asset_no_image', { path: nextPath }, { severity: 'info' })
           return { text: '', toolCalls: [{ id: `offline_noop_${Date.now()}`, name: 'read_file', args: { path: readme } }] }
         }
-        debugBus.emit('agent', 'offline_asset_photo', { path: nextPath, url: url.slice(0, 80) }, { severity: 'info' })
+        // Name the file after its REAL format. The target is planned as .jpg before the URL
+        // is known, and Wikimedia serves plenty of PNG/WebP — a live run produced a
+        // cane-corso.jpg that `file` reported as PNG data, which some viewers refuse to open.
+        const ext = (url.match(/\.(jpe?g|png|webp|gif)(?:\?|$)/i)?.[1] ?? 'jpg').toLowerCase()
+        const dest = nextPath.replace(/\.jpg$/, `.${ext === 'jpeg' ? 'jpg' : ext}`)
+        debugBus.emit('agent', 'offline_asset_photo', { path: dest, url: url.slice(0, 80) }, { severity: 'info' })
         return {
           text: '',
-          toolCalls: [{ id: `offline_photo_${Date.now()}`, name: 'download_file', args: { url, dest: nextPath } }],
+          toolCalls: [{ id: `offline_photo_${Date.now()}`, name: 'download_file', args: { url, dest } }],
         }
       }
 
       let content: string
       if (nextPath === readme) {
         const list = items.length
-          ? items.map(it => `- [${it.name}](${it.slug}.md)${wantsPhotos ? ` — photo: \`${it.slug}.jpg\`` : ''}`).join('\n')
+          ? items.map(it => `- [${it.name}](${it.slug}.md)${wantsPhotos ? ` — photo: \`${it.slug}.*\`` : ''}`).join('\n')
           : '- [overview](overview.md)'
         content = `# ${assetCollectionSlug(goal).replace(/-/g, ' ')}\n\n` +
           `Requested: ${goal.trim()}\n\n## Contents\n\n${list}\n\n` +
