@@ -66,19 +66,40 @@
   a step legitimately answering "21"). All-residue ⇒ an honest "no reportable result" line rather
   than falling back to the ledger. `__plananswer_bench.ts` 21/21, `npm run plananswer:bench`.
 
+- **"exit 0" as the whole answer is CLOSED — and it was a THIRD agent path.** Not the ledger bug,
+  not `runPlannedTask`, not `runAgentLoop`: `/api/debug/history` traced it to the **Layer 2 FM
+  plan fast path** (`server.ts` ~3640). `localFmPlan` routed "State the sum of 17 and 4" to
+  `shell_exec`, and `runFmPlan`'s `summary` is the joined RAW tool output
+  (`localFmPlanner.ts:199`) sent straight to `final`; cont.93's guard lives in `loop.ts` and is
+  never reached there. Fix: when the fast path returns `ok` but the summary is ALL residue, fall
+  through to the full agent loop like the existing `!ok` escalation (new `layer2_fm_residue`
+  event). Needed a new `isAllToolResidue` in `loop.ts` — `isToolResidue` tests a single token and
+  a two-step shell plan produced `"exit 0\n\nexit 0"`, pure residue matching no single-token rule;
+  requiring EVERY line to be residue keeps a real answer containing a "Done." line.
+  **Live-verified on a pinned server:** `layer2_fm_residue` fires, the run escalates, final is
+  `"The sum of 17 and 4 is 21."` `__plananswer_bench.ts` 29/29.
+
 **Open items / risks (priority order) — ADDITIVE to cont.95's list below, which still stands:**
-- **#1 — "exit 0" still ships as the whole answer on the NON-planner agent path.** UNRESOLVED and
-  reproducible: brief "State the sum of 17 and 4, and nothing else" through a real automation run
-  returns `synthesis: "exit 0"` (8-11s, `status: ok`). This is NOT the ledger bug just fixed and
-  NOT the planner path — `needsPlan()` is false for this goal, so it takes the `runAgentLoop`
-  branch, and cont.93's residue guard (`loop.ts:612`, `isToolResidue` + bounded bounce) evidently
-  is NOT firing there, or the final is emitted by a path that bypasses it entirely. Next session:
-  find which emitter produces this final. Attempted tracing via `/api/debug/history` was defeated
-  by the environment (below), not by the bug being hard — a direct `/api/chat` trace is the move.
+- **#1 — `localFmPlan` routes non-agentic questions to `shell_exec`.** The residue fix makes the
+  OUTCOME honest (escalate instead of shipping "exit 0"), but the fast path is still mis-planning:
+  a pure arithmetic question produced a 1-2 step `shell_exec` plan, and `intent_classified` logged
+  `conversational_reply` with **low** confidence while `isAgenticIntent` was nonetheless true. Every
+  such request now pays the fast path AND the full loop. Fix the gate (an agentic intent should
+  not be inferred from a low-confidence conversational classification) or teach `localFmPlan` to
+  return null for goals with no action verb — this is cont.94's still-open `localFmPlanner`
+  implicit-intent item, now with a concrete repro.
+- **The escalated path web-searches arithmetic 6× before answering.** After escalation the run went
+  `solveNonCodeTurn` → research DAG → abstain → `fmReact`, which issued the SAME query
+  `"sum of 17 and 4"` six times, every one `search_all_backends_empty`, before finally answering
+  correctly from reasoning. Correct answer, badly wasted work: no dedup of identical failed
+  queries, and no short-circuit for a question the system can just compute. Worth a repeated-query
+  guard in `fmReact` (the 6 identical calls are the cheap catch).
 - **The dev environment fights live verification.** The tsx-watch server on :3001 restarted
   repeatedly mid-request (ECONNREFUSED / "terminated" mid-SSE), pid churning 47583 → 48366 → 48817
-  within minutes, because the checkpointer/autocommit keeps touching watched files. Budget for
-  retries, or run a pinned server on an alternate port for tracing.
+  within minutes, because the checkpointer/autocommit keeps touching watched files. **What worked:**
+  a pinned server with no watcher —
+  `PORT=3011 CRUCIBLE_ENV_PATH=<repo>/.env.local npx tsx server.ts` — which held connections for
+  full multi-minute agent runs. Use that for any live tracing.
 - **Automation conversations are never pruned.** A standing automation on a short interval
   appends a round per run forever, into one conversation file with no cap. Consider a
   keep-last-N when appending in `runAutomationNow`.

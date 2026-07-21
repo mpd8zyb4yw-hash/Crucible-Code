@@ -1973,10 +1973,23 @@ out of `synthDriver.ts` to avoid colliding mid-write. Both landed independently.
   a step legitimately answering "21" — never discard what could be the real answer). All-residue
   yields an honest "no reportable result" line instead of falling back to the ledger.
   `__plananswer_bench.ts` 21/21; toolargs 16/16, fuzz 31/31, harden 16/16 green; tsc clean.
-- **Found, NOT fixed (handed off as cont.96 open item #1):** the same brief still returns
-  `"exit 0"` as the entire answer on the NON-planner (`runAgentLoop`) path, where cont.93's
-  residue guard is not firing. Reproducible; tracing was defeated by the tsx-watch server
-  restarting mid-request, not by the bug.
+- **"exit 0" as the entire answer — ROOT-CAUSED AND FIXED, on a THIRD agent path.** Not the ledger
+  bug, not `runPlannedTask`, not `runAgentLoop`. `/api/debug/history` traced it to the **Layer 2 FM
+  plan fast path** (`server.ts` ~3640): `localFmPlan` routed "State the sum of 17 and 4" to
+  `shell_exec`, and `runFmPlan`'s `summary` is the joined RAW tool output
+  (`localFmPlanner.ts:199`) sent straight to `final` — cont.93's residue guard lives in `loop.ts`
+  and is never reached there. Fix: an `ok` result whose summary is ALL residue now falls through to
+  the full agent loop like the existing `!ok` escalation (new `layer2_fm_residue` debug event).
+  Required a new `isAllToolResidue` in `loop.ts`: `isToolResidue` tests a SINGLE token, and a
+  two-step shell plan produced `"exit 0\n\nexit 0"` — pure residue that matches no single-token
+  rule. Requiring EVERY line to be residue keeps a genuine answer containing a "Done." line.
+  **Live-verified on a pinned server** (port 3011, no watcher): `layer2_fm_residue` fires with
+  summary `exit 0`, the run escalates, and the final is `"The sum of 17 and 4 is 21."` — correct.
+  `__plananswer_bench.ts` 29/29; tsc clean.
+- **Two new findings from that trace, handed off (NEXT_SESSION cont.96 #1/#2):** `localFmPlan`
+  mis-plans non-agentic questions into `shell_exec` (so every such request now pays the fast path
+  AND the full loop — the outcome is honest, the routing is not), and the escalated path issued the
+  SAME failing web search `"sum of 17 and 4"` six times before answering correctly from reasoning.
 - **Noted, not fixed:** the verification run exposed step-label leakage in agent finals
   (`"perform addition → The sum of 17 and 4 is 21.\ndisplay result → 17 + 17 = 34"` — labels in
   the answer plus a fabricated contradicting line). Now user-visible in the chat transcript
