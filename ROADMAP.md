@@ -93,6 +93,12 @@ audit is the first time the real pipeline has actually run end-to-end on a real 
   Candidate providers to add: Together AI, Cerebras, Cohere, Perplexity API, Fireworks AI, Deep
   Infra. *(This session: 5 providers wired into the registry + a generic OpenAI-compatible
   transport. Automatic rebalancing-on-trip not yet built.)*
+- **[~] `npm run bench`** *(2026-07-21)* — one command runs every **deterministic, creds-free**
+  bench plus `tsc --noEmit`, and exits non-zero on the first failure, so it can gate a session:
+  `test-tools`, `test-research` (39), `test-fenceparse` (36), `test-taskplan` (37). Distinct
+  from `npm run smoke`, which calls real models and needs a healthy provider pool — `bench`
+  runs anywhere, including a worktree with no API keys. Still not *automatic*; wiring it to a
+  session hook remains open below.
 - **[~] Automated smoke-test CI** — run the benchmark suite automatically at the start/end of every
   significant implementation session, before marking any track complete. This audit found a
   pipeline-breaking TDZ bug that sat undetected for hours; a 2-minute smoke test after each session

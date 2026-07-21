@@ -1,17 +1,5 @@
 [
   {
-    "hash": "b977807",
-    "message": "pre-apply_patch",
-    "timestamp": 1781303580723,
-    "projectPath": "/Users/justin/Desktop/Crucible/gale-vast-pure-stem"
-  },
-  {
-    "hash": "cdac97f",
-    "message": "pre-write_file",
-    "timestamp": 1781303641936,
-    "projectPath": "/Users/justin/Desktop/Crucible/gale-vast-pure-stem"
-  },
-  {
     "hash": "be72657",
     "message": "pre-write_file",
     "timestamp": 1781315201165,
@@ -298,5 +286,17 @@
     "message": "pre-write_file",
     "timestamp": 1784642187262,
     "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-tools-6oEcIq"
+  },
+  {
+    "hash": "61eb5c6",
+    "message": "pre-write_file",
+    "timestamp": 1784642244192,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-tools-KGjhSy"
+  },
+  {
+    "hash": "84aa47a",
+    "message": "pre-write_file",
+    "timestamp": 1784642248903,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/crucible-tools-1xDPZF"
   }
 ]
