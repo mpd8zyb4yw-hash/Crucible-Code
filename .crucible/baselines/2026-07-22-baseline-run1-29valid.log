@@ -1,0 +1,505 @@
+
+> crucible@0.0.0 smoke:code
+> tsx src/CrucibleEngine/coding-benchmarks.ts
+
+Crucible CODING stress-test & audit harness
+Target: http://localhost:3001   Tasks: kvstore, ratelimiter, scheduler, regex, filterModule, sortModule, summaryModule, clampModule, leaderboardModule, usernameModule, tagSetModule, caseCompareModule, bugfixCsv, multiFileLedger, templateExpand, csvLine, wordWrap, dedentText, queryDecode, intervalMerge, intervalSubtract, ringBuffer, minStack, bitsetRange, slidingWindowMax, tableMachine, retryDelays, deepEqualCyc, jsonPointerGet, runLength, posixResolve, bankersRound, baseConvert, fractionAdd, dateRangeDays, matrixRotate, mined-aliased-import-propagation, mined-move-default-namespace-import, mined-apifaith-vocabulary   Timeout/task: 480s
+Live server offline mode: strict (offline-only, no external fallback)
+
+=== kvstore — Persistent LRU+TTL key-value store with WAL crash-recovery ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/kvstore)
+  agent: done=true iters=0 self-test=true elapsed=0s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : PASS  ::   PASS — delete returns false for a missing key |   PASS — overwriting an existing key updates the value |   PASS — WAL replay recovers committed entries on a fresh instance |   PASS — a deleted key stays deleted after WAL replay |   PASS — an entry whose TTL lapsed before reopen is not resurrected by replay |   ALL PASS
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 87/100
+  [INFO] synth path    : catalog — proven-skill match, zero model inference; not a generative-capability signal
+  [W1]   loop entry    : synth:catalog-no-iterate  :: verified via verified 'lru-ttl-wal-store' primitive — zero model inference; the iterate loop was correctly never entered
+
+=== ratelimiter — Token-bucket + sliding-window rate limiter (injectable clock) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/ratelimiter)
+  agent: done=true iters=0 self-test=true elapsed=0s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : PASS  ::   PASS — window allows the 2nd request |   PASS — window blocks the 3rd request within the window |   PASS — a different key is isolated (own quota) |   PASS — still blocked partway through the window |   PASS — window admits again once the oldest request slides out |   ALL PASS
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 90/100
+  [INFO] synth path    : catalog — proven-skill match, zero model inference; not a generative-capability signal
+  [W1]   loop entry    : synth:catalog-no-iterate  :: verified via verified 'rate-limiter' primitive — zero model inference; the iterate loop was correctly never entered
+
+=== scheduler — Topological-sort task scheduler with cycle detection ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/scheduler)
+  agent: done=true iters=0 self-test=true elapsed=0s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : PASS  ::   PASS — a node with no edges is still included in the order |   PASS — topoSort throws on a 2-node cycle |   PASS — findCycle returns a non-empty path for a 3-node cycle |   PASS — findCycle returns null for an acyclic graph |   PASS — findCycle detects a self-loop |   ALL PASS
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 90/100
+  [INFO] synth path    : catalog — proven-skill match, zero model inference; not a generative-capability signal
+  [W1]   loop entry    : synth:catalog-no-iterate  :: verified via verified 'graph-topology' primitive — zero model inference; the iterate loop was correctly never entered
+
+=== regex — Mini regex engine (full-match) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/regex)
+  agent: done=true iters=0 self-test=true elapsed=0s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : PASS  ::   PASS — [a-z]+ matches a lowercase range |   PASS — [a-z]+ rejects an out-of-range char |   PASS — \. matches a literal dot |   PASS — \. rejects a non-dot |   PASS — \* matches a literal star |   ALL PASS
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 85/100
+  [INFO] synth path    : catalog — proven-skill match, zero model inference; not a generative-capability signal
+  [W1]   loop entry    : synth:catalog-no-iterate  :: verified via verified 'regex-engine' primitive — zero model inference; the iterate loop was correctly never entered
+
+=== filterModule — Add filterUsers to an existing user-management module (repo-context task) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/filterModule)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 0/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== sortModule — Add sortProducts to an existing catalog module (repo-context, multi-key sort + tie-break) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/sortModule)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 100/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== summaryModule — Add summarizeByAccount to an existing transaction log (repo-context, group-by aggregation) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/summaryModule)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 0/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== clampModule — Add clampVolume to an existing audio-settings module (repo-context, number-transform-clamp family) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/clampModule)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 100/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== leaderboardModule — Add sortScoresAscending to an existing leaderboard module (repo-context, sort family) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/leaderboardModule)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 100/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== usernameModule — Add isValidUsername to a new module (standalone, validator family) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/usernameModule)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== tagSetModule — Add unionTags/intersectTags to an existing article module (repo-context, set-op family) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/tagSetModule)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 100/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== caseCompareModule — Add compareCaseInsensitive to a new module (standalone, string-typed comparator family) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/caseCompareModule)
+  agent: done=true iters=0 self-test=true elapsed=419s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : PASS  ::   PASS — equal same case |   PASS — "Apple" vs "banana" — a before b |   PASS — "Banana" vs "apple" — b after a (case-insensitive) |   PASS — antisymmetric sign flip |   PASS — returns a number | 6 checks — ALL PASS
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 90/100
+  [INFO] synth path    : generated
+  [W1]   loop entry    : vgr:certified-no-iterate  :: certified src/caseCompare.ts — the iterate loop was correctly never entered
+
+=== bugfixCsv — Fix a quoted-field bug in an existing RFC-4180 CSV parser (bug-fix-in-repo task) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/bugfixCsv)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : FAIL  ::   FAIL — embedded newline in quotes |   FAIL — empty quoted field |   PASS — trailing newline |   PASS — no trimming of unquoted |   PASS — CRLF rows | 9 checks — 5 FAILURE(s)
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 0/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== multiFileLedger — Create two interdependent modules (ledger + report) in an existing repo (multi-file task) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/multiFileLedger)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : 100/100
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== templateExpand — Dot-path template expansion with escapes ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/templateExpand)
+  agent: done=false iters=1 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== csvLine — Single-line CSV field parser with quoting ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/csvLine)
+  agent: done=true iters=0 self-test=true elapsed=360s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : FAIL  ::   FAIL — quoted field then empty |   FAIL — unterminated quote throws |   FAIL — quote inside unquoted throws |   FAIL — junk after closing quote throws |   FAIL — newline in input throws | 11 FAILURE(S)
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 40/100
+  [INFO] synth path    : generated
+  [W1]   loop entry    : vgr:certified-no-iterate  :: certified src/csvLine.ts — the iterate loop was correctly never entered
+
+=== wordWrap — Greedy word wrap with hard-break for overlong words ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/wordWrap)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== dedentText — Common-indentation stripper ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/dedentText)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== queryDecode — Query-string decoder with UTF-8 percent sequences ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/queryDecode)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== intervalMerge — Merge overlapping and adjacent integer intervals ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/intervalMerge)
+  agent: done=true iters=3 self-test=true elapsed=465s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : FAIL  ::   FAIL — point intervals |   PASS — negative coordinates |   PASS — empty input |   FAIL — input array not mutated |   FAIL — inverted interval throws RangeError | 5 FAILURE(S)
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 90/100
+  [INFO] synth path    : generated
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== intervalSubtract — Subtract one set of intervals from another ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/intervalSubtract)
+  agent: done=true iters=2 self-test=null elapsed=351s error="[offline-escalate] no oracle-passing code for src/intervalSubtract.ts: out-of-depth tripwire: oracle rejected 3 consecutive candidates with an identical failure shape (typecheck: ../../../../../../../"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== ringBuffer — Fixed-capacity ring buffer that overwrites oldest ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/ringBuffer)
+  agent: done=true iters=2 self-test=null elapsed=412s error="[offline-escalate] no oracle-passing code for src/ringBuffer.ts: FM could not produce an oracle-passing candidate in 3 rounds — escalating honestly"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== minStack — Stack with O(1) minimum tracking ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/minStack)
+  agent: done=true iters=1 self-test=null elapsed=268s error="[offline-escalate] no oracle-passing code for src/minStack.ts: FM could not produce an oracle-passing candidate in 3 rounds — escalating honestly"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== bitsetRange — Fixed-size bitset over Uint32Array with range popcount ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/bitsetRange)
+  agent: done=false iters=1 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== slidingWindowMax — Sliding-window maximum via monotonic deque ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/slidingWindowMax)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== tableMachine — Table-driven finite state machine with history ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/tableMachine)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== retryDelays — Deterministic exponential backoff schedule ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/retryDelays)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== deepEqualCyc — Structural deep equality with cycle detection ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/deepEqualCyc)
+  agent: done=true iters=0 self-test=true elapsed=0s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : FAIL  ::   FAIL — dates by timestamp |   PASS — date vs number unequal |   PASS — sibling references are not cycles |   PASS — repeated non-cyclic subtree ok |   FAIL — cycle throws TypeError instead of hanging | 3 FAILURE(S)
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 85/100
+  [INFO] synth path    : catalog — proven-skill match, zero model inference; not a generative-capability signal
+  [W1]   loop entry    : synth:catalog-no-iterate  :: verified via verified 'deepEqual' primitive — zero model inference; the iterate loop was correctly never entered
+
+=== jsonPointerGet — RFC 6901 JSON Pointer resolution ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/jsonPointerGet)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== runLength — Run-length encode/decode with strict grammar ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/runLength)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== posixResolve — POSIX path normalizer without the fs module ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/posixResolve)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== bankersRound — Half-to-even (bankers) rounding at a decimal place ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/bankersRound)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== baseConvert — Arbitrary-length base conversion 2..36 ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/baseConvert)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== fractionAdd — Exact rational addition with normalization ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/fractionAdd)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== dateRangeDays — Inclusive overlap in days between two ISO date ranges ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/dateRangeDays)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== matrixRotate — Rotate a rectangular matrix 90 degrees clockwise ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/matrixRotate)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== mined-aliased-import-propagation — Whole-tree signature propagation skips aliased importers (real bug, 2026-07-12) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/mined-aliased-import-propagation)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+[gate-telemetry] fail-open gate 'gateA3_contract' SKIPPED (no "Exact public API" block in spec) — it is providing no protection this session
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean (snapshot-scoped)
+  [HARD] hidden suite  : FAIL  ::   ✓ single-shot ships an answer that FAILS ground-truth execution — score -3: case sumEvens #0 → got 10, expected 6 |   ✗ aliased importer (`pad as p`) → call sites under the ALIAS are trimmed, not skipped |   ✗ aliased importer with an unabsorbable REQUIRED param → whole edit downgrades to fresh fi
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== mined-move-default-namespace-import — Move refactor misses default/namespace import deps (real bug, 2026-07-13) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/mined-move-default-namespace-import)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean (snapshot-scoped)
+  [HARD] hidden suite  : FAIL  ::   ✓ single-shot ships an answer that FAILS ground-truth execution — score -3: case sumEvens #0 → got 10, expected 6 |   ✗ move ABSTAINS when the def uses a DEFAULT import (would lose it — transform cannot resolve) |   ✗ move ABSTAINS when the def uses a NAMESPACE import | FAIL — 158 passed, 2 failed
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== mined-apifaith-vocabulary — API-faithfulness vocabulary bug: false certify AND false reject (real bug, 2026-07-16) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/mined-apifaith-vocabulary)
+  agent: done=false iters=0 self-test=null elapsed=0s error="HTTP 401"
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean (snapshot-scoped)
+  [HARD] hidden suite  : FAIL  ::   FAIL [REAL] fabricated `import { Zod }` → violations (was CERTIFIED) — all zod identifiers appear in the evidence |   FAIL [REAL] names Zod as the offender |   FAIL [REAL] canonical `import { z } from zod` certifies (was REJECTED) — 1 zod identifier does not appear in the evidence: z |   FAIL sent
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : unknown
+  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)
+
+=== SCORECARD ===
+  GREEN  kvstore          compile=Y hidden=Y self=Y rubric=87 path=catalog 0s synth:catalog-no-iterate
+  GREEN  ratelimiter      compile=Y hidden=Y self=Y rubric=90 path=catalog 0s synth:catalog-no-iterate
+  GREEN  scheduler        compile=Y hidden=Y self=Y rubric=90 path=catalog 0s synth:catalog-no-iterate
+  GREEN  regex            compile=Y hidden=Y self=Y rubric=85 path=catalog 0s synth:catalog-no-iterate
+   RED   filterModule     compile=n hidden=n self=- rubric=0 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   sortModule       compile=n hidden=n self=- rubric=100 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   summaryModule    compile=n hidden=n self=- rubric=0 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   clampModule      compile=n hidden=n self=- rubric=100 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   leaderboardModule compile=n hidden=n self=- rubric=100 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   usernameModule   compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   tagSetModule     compile=n hidden=n self=- rubric=100 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+  GREEN  caseCompareModule compile=Y hidden=Y self=Y rubric=90 path=gen     419s vgr:certified-no-iterate
+   RED   bugfixCsv        compile=Y hidden=n self=- rubric=0 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   multiFileLedger  compile=n hidden=n self=- rubric=100 path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   templateExpand   compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT iters=1
+   RED   csvLine          compile=Y hidden=n self=Y rubric=40 path=gen     360s vgr:certified-no-iterate
+   RED   wordWrap         compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   dedentText       compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   queryDecode      compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   intervalMerge    compile=Y hidden=n self=Y rubric=90 path=gen     465s iters=3
+   RED   intervalSubtract compile=n hidden=n self=- rubric=- path=gen     351s iters=2
+   RED   ringBuffer       compile=n hidden=n self=- rubric=- path=gen     412s iters=2
+   RED   minStack         compile=n hidden=n self=- rubric=- path=gen     268s iters=1
+   RED   bitsetRange      compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT iters=1
+   RED   slidingWindowMax compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   tableMachine     compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   retryDelays      compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   deepEqualCyc     compile=Y hidden=n self=Y rubric=85 path=catalog 0s synth:catalog-no-iterate
+   RED   jsonPointerGet   compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   runLength        compile=n hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   posixResolve     compile=n hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   bankersRound     compile=n hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   baseConvert      compile=n hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   fractionAdd      compile=n hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   dateRangeDays    compile=n hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   matrixRotate     compile=n hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   mined-aliased-import-propagation compile=Y hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   mined-move-default-namespace-import compile=Y hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+   RED   mined-apifaith-vocabulary compile=Y hidden=n self=- rubric=- path=?       0s UNEXPLAINED-iters:0
+
+  Claude-level (all HARD green): 5/39 tasks
+  iters distribution: 0×33  1×3  2×2  3×1   timed out: 18/39
+  W1 ACCEPTANCE VIOLATION — unexplained iters:0 failures: filterModule, sortModule, summaryModule, clampModule, leaderboardModule, usernameModule, tagSetModule, bugfixCsv, multiFileLedger, wordWrap, dedentText, queryDecode, slidingWindowMax, tableMachine, retryDelays, jsonPointerGet, runLength, posixResolve, bankersRound, baseConvert, fractionAdd, dateRangeDays, matrixRotate, mined-aliased-import-propagation, mined-move-default-namespace-import, mined-apifaith-vocabulary
+    of which via catalog-primitive match (zero inference): 4/5 (80%, 95% CI 38%–96%)
+    of which via genuine model generation (real signal)  : 1/24 (4%, 95% CI 1%–20%)
+    min detectable delta at n=24: ±19 pts — smaller deltas are noise
+
+(First run — baseline recorded. Re-run after each change to track the delta.)

@@ -1933,6 +1933,96 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22 (gap-soundness — W1 landed + THE FIRST HONEST LIVE BASELINE: the W2/W3 "before" floor)
+
+**This is the number every future coding workstream is measured against. Read the label
+before the number.** It is a *pre-optimization floor*, captured on purpose: strict on-device
+mode (`CRUCIBLE_OFFLINE=strict`, zero external model calls — the doctrine's real bar), the
+current 480s/task cap, and — critically — **before W2 (GBNF) and W3 (KV-cache prefix reuse +
+batching) exist.** Per-proposal latency is ~90s on the Apple FM, so the loop is *starved*, not
+*weak*. Do not quote this as "Crucible's coding ability." Quote it as "the floor W2/W3 have to
+beat." The next full run after W2/W3 land, same harness, same cap, is the honest delta.
+
+**THE BASELINE (n=39, merged from two token-disjoint slices — see the token-bug note below):**
+
+| path | n | HARD-green | 95% Wilson CI |
+|---|---|---|---|
+| `catalog` (proven-skill match, 0 inference) | 6 | 4/6 (67%) | ~30%–90% |
+| **`generated` (the only real capability signal)** | **33** | **1/33 (3%)** | **~1%–15%** |
+
+The single generated GREEN was `caseCompareModule` (VGR-certified at 419s). Min detectable
+delta at n=33 is ~±16 pts, so **any post-W2/W3 generated rate below ~19% is statistically
+indistinguishable from this floor** — the fix has to clear that bar to count as real progress,
+which is exactly why throughput (W3) is sequenced first.
+
+**W1 loop-entry forensics (landed this session) turned the failures from silent into
+diagnosable — and the diagnosis reorders the roadmap:**
+
+1. **Latency starvation is the dominant failure. 26/39 timed out at the 480s cap.** Mechanism,
+   now visible in the `loop_entry` stream: (a) every task's prompt ends with "write a self-test
+   in src/index.ts", which trips `isMultiFileRequest` and routes it into a 3-attempt *multi-file*
+   VGR ladder BEFORE the single-file ladder; (b) each attempt costs ~90s on the FM. The budget
+   is gone before the iterate loop is reachable. **This is a wiring + throughput problem, not a
+   model-quality problem** — the exact thesis of the doctrine, now with a measurement behind it.
+2. **Spec acquisition — not search — is the top *generated* failure reason.** Task after task
+   attributed to `vgr:no-acceptance-cases` / `vgr:spec-extract-failed → planned:entered`: VGR
+   cannot pull worked examples out of contract-style prose, abstains, and the planned loop then
+   burns the remaining budget without shipping a module. This is the addendum's "spec acquisition
+   is the actual ground truth" hole, now measured rather than asserted.
+3. **Certified/​catalog-but-WRONG exists and must be treated as a soundness bug, not a miss:**
+   - `csvLine` — VGR-*certified* in 360s, fails **11** hidden checks.
+   - `matrixRotate` — VGR-*certified* in 37s, yet the hidden suite throws `rotate90 is not a
+     function`: VGR certified against its OWN chosen entry name, not the exact export the audit
+     imports. Certification scope excludes the API-name contract.
+   - `posixResolve` — a *catalog* `path-utils` primitive matched (0 inference) and still fails
+     **14** hidden checks (trailing-slash semantics); `deepEqualCyc` likewise. **A catalog GREEN
+     is not proof of correctness for the requesting spec.**
+   These are the live justification for W20 (held-out acceptance cases) and a
+   certification-scope fix, and they outrank throughput on *soundness* grounds even though
+   throughput outranks them on *pass-rate* grounds.
+
+**What shipped this session (all committed on `claude/gap-soundness`):**
+- **W1 loop-entry forensics** (`server.ts`): a reason-coded `loop_entry` SSE event at every
+  terminal-or-fall-through decision between task receipt and the first proposal — `no-spec`,
+  `spec-extract-failed`, `no-acceptance-cases`, `budget-exhausted`, `threw`, plus the
+  non-loop terminal outcomes (`catalog-no-iterate`, `certified-no-iterate`,
+  `best-effort-draft-no-write`) and `entered` at the three loop entry points. Bail-without-reason
+  was the single most repeated defect class in this codebase; it is now structurally impossible
+  on this path.
+- **n=39 corpus enrollment** (`coding-benchmarks.ts`): the two deferred lines —
+  `TASKS.push(...toBenchTasks())` (22 certified ext) + `TASKS.push(...toMinedBenchTasks())`
+  (3 git-mined). Mined tasks audit through `auditMinedCandidate` (workspace target file only;
+  suite + context staged from the pinned parent-commit snapshot). Verified live: the mined
+  historical suites executed (158-case runs), and the audit routing held.
+- **Honest reporting**: real `timedOut` flag, iters distribution, Wilson CIs via `formatRate()`,
+  min-detectable-delta line, and a W1 acceptance check that flags any *unexplained* iters:0
+  (zero-iteration, non-timeout, no reason code) as a defect in its own right.
+- **Token-expiry fix** — *why this baseline is a merge of two runs.* The first full run minted
+  ONE 3h JWT for the whole sweep; a strict-mode n=39 run exceeds 3h, so its last 10 tasks
+  silently got HTTP 401 and scored as 0s failures **without ever reaching the server**. Diagnosed
+  live (server + llama sidecar both healthy — only the token had expired). Fix: re-mint per task
+  in the loop + a 12h ceiling. The 10 tasks were re-run with the fix (zero 401s) and merged in;
+  the two slices are token-disjoint and both valid, so the n=39 table above is sound.
+
+**THE FIX LIST (priority order — throughput first for pass-rate, soundness in parallel):**
+1. **W3 — KV-cache prefix reuse + continuous batching** (llama-server client). ~90s/proposal is
+   the ceiling under everything else; nothing moves until proposals are cheap. Stable-prefix /
+   volatile-suffix prompts + K concurrent proposals. *The* order-of-magnitude lever.
+2. **Multi-file misroute fix** (`server.ts` VGR gate): a prompt whose only second file is a
+   self-test harness is a single-module task — it must not enter the 3×90s multi-file ladder.
+   Cheap, and it reclaims most of the timed-out budget immediately.
+3. **W2 — GBNF grammar-constrained decoding**: makes malformed proposals structurally impossible;
+   compounds with W3 once proposals are fast.
+4. **Certification-scope fix (soundness, do NOT wait on throughput)**: VGR must certify against
+   the EXACT exported API name + path the audit imports (the `matrixRotate` `rotate90` gap), and
+   a catalog match must re-verify against the requesting spec's cases before claiming GREEN (the
+   `posixResolve`/`deepEqualCyc` gap).
+5. **W20 — held-out acceptance cases** in the iterate prompt builder: the `csvLine` certified-but-
+   11-hidden-fails case is the direct evidence the self-extracted spec is too weak to certify on.
+6. **Re-run the full n=39 under the fixed harness after W2/W3** for a single clean scorecard file;
+   the delta vs this floor (must clear ~+16 pts on the generated rate) is the first real progress
+   signal the project has ever had.
+
 ### 2026-07-21n (gap-soundness — human skim closed out: 3 boundary defects fixed, posix oracle unwrapped, adversarial reading institutionalized)
 
 The one-time human skim of `CONTRACTS_REVIEW.md` — the single check machine validation

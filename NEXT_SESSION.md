@@ -17,69 +17,78 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21q (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22 (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **TWO-IMPLEMENTER SPLIT IN EFFECT (user-confirmed 2026-07-21).** Per `GAP_CLOSURE.md` +
-> `GAP_CLOSURE_ADDENDUM.md`:
-> - **Track A (parallel session, `crucible-northstar-sessions`):** W1 loop-entry forensics,
->   W2 GBNF grammars, W3 prefix caching — owns `fmReact.ts`, `fmQueue.ts`, the llama-server
->   client, the iterate/loop-entry path, `grammars/`, `server.ts`, `coding-benchmarks.ts`.
-> - **Track B (branch `claude/gap-soundness`):** soundness workstreams W30 → W20 → W32 →
->   W33 → W35 → W36 → W48 — owns `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
->   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, and the Gate-B call sites inside
->   `oracle.ts`'s `verifyCandidate`/`verifyCandidateAsync` (that scoped diff only — W7's gate
->   reordering in the same file stays Track A's). Track-B work arrives as NEW files + one
->   wiring line.
-> - Re-verify any ownership claim with `git log -1 -- <file>` before treating it as a blocker.
+> **THE FIRST HONEST LIVE BASELINE EXISTS. This is the "before" number.** Full write-up:
+> ROADMAP.md CHANGE LOG 2026-07-22. Read the label before quoting the number: it is the
+> **pre-W2/W3 floor** — strict on-device mode (zero external calls), 480s cap, and BEFORE
+> GBNF (W2) and prefix-caching (W3) exist. Per-proposal latency is ~90s, so the loop is
+> STARVED, not weak. Do not quote it as "Crucible's coding ability"; quote it as "the floor
+> W2/W3 must beat."
+>
+> **BASELINE (n=39, strict offline, 480s cap):** `generated` (the only real signal)
+> **1/33 = 3%, 95% CI ~1–15%**; `catalog` 4/6. Min detectable delta at this n ≈ ±16 pts, so
+> **any post-W2/W3 generated rate below ~19% is noise** — the fix must clear that to count.
 
-**Shipped just now (human skim closed out; ROADMAP 2026-07-21n):** the one-time
-`CONTRACTS_REVIEW.md` skim returned — M1–M3 mined prompts confirmed faithful; 3 defects +
-2 advisories in the authored 22, ALL now fixed in the shards and re-certified (taskcorpus
-22/22, refdiff ALL PASS, minedcorpus 3/3). All three defects shared one shape: contract
-precise on the happy path, silent at a boundary the suite tests, with ref/suite/oracle
-sharing the same reading so no machine check can fire — a correct-per-contract agent
-would have been scored as failing. D1 `queryDecode`: decodeURIComponent throws on
-malformed-UTF-8 the contract's own validity rule admits → byte-level U+FFFD rule pinned,
-suite +5, oracle now injects malformed ASCII junk (ref ≡ URLSearchParams fuzz-verified on
-that domain). D2 `retryDelays`: Math.pow vs iterated multiplication under exact equality
-→ recurrence pinned as the spec, divergent factor-1.1 literals in the suite. D3
-`posixResolve`: contract dropped trailing slashes where node preserves them → contract/
-ref/suite now match node exactly (ref diffed against node over 1405 exhaustive inputs);
-the same-session `stripTrail` adapter is deleted and the oracle is `path.posix.normalize`
-UNWRAPPED — real foreign strength recovered. A1 `wordWrap` flush-first pinned; A2
-`fractionAdd` exactness ceiling stated. The ADVERSARIAL READING ("what is the most
-reasonable implementation that would FAIL this suite?") found all three and is now
-institutional: shard authoring header + a per-task checkbox in the generated review.
+> **TWO-IMPLEMENTER SPLIT (user-confirmed 2026-07-21).** NOTE: this session (on
+> `claude/gap-soundness`) executed the Track-A-labeled W1 + enrollment work directly in
+> `server.ts` + `coding-benchmarks.ts`, because those were the exact files gating the
+> deferred baseline and the parallel session had not landed them. Re-verify ownership with
+> `git log -1 -- <file>` before treating any claim here as a blocker.
+> - **Track A (`crucible-northstar-sessions`):** W2 GBNF grammars, W3 prefix caching —
+>   `fmReact.ts`, `fmQueue.ts`, the llama-server client, `grammars/`. (W1 loop-entry: DONE
+>   this session, see below.)
+> - **Track B (`claude/gap-soundness`):** soundness workstreams W30 → W20 → W32 → W33 →
+>   W35 → W36 → W48 — `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
+>   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
+>   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
 
-**OPEN, in order:**
-1. **Track A enrollment + FIRST HONEST BASELINE (deferred four cycles — now the only
-   thing between us and knowing where Crucible actually stands):** one additive line
-   each in `coding-benchmarks.ts` — `TASKS.push(...toBenchTasks())` and
-   `TASKS.push(...toMinedBenchTasks())`; the mined audit routes through
-   `auditMinedCandidate(taskId, editedTargetContent)` (workspace's target file ONLY;
-   suite+context stage from the pinned snapshot). Then the first live baseline over
-   n=35, reported with `formatRate()`; deltas below `minDetectableDelta(35)` (±16pts)
-   are noise.
-2. **W42.2 scale-out toward n≈100 (±10-pt floor), prioritized OVER authoring more
-   synthetic tasks** — mined decorrelation is by construction, and D1–D3 are direct
-   evidence hand-authored contracts carry a defect rate the machinery cannot catch.
-   Next candidates: `79583e1` executionVerify timer globals, `a0bdd2a` contractVerify
-   refill clamp, `781fbba`/`23d1305` feedback-loop fixes, `1fb3971` retrieval
-   tie-breaker. Selection rule stays: fix touches exactly one engine file + its paired
-   bench; the certifier decides.
-3. **W32 verifier fault-injection:** the 22 authored refs + 3 mined parents are
-   ready-made mutation targets; any mutant that still certifies exposes a vacuous suite.
-4. **W20 held-out acceptance cases** in the iterate prompt builder — still sequenced
-   behind Track A's W3 to avoid colliding in the same functions.
+**Shipped this session (all committed on `claude/gap-soundness`):**
+- **W1 loop-entry forensics** (`server.ts`): reason-coded `loop_entry` SSE events at every
+  early return before the first proposal. Bail-without-reason is now structurally impossible
+  on this path; the bench attributes every zero-iteration outcome to a named `stage:reason`.
+- **n=39 enrollment** (`coding-benchmarks.ts`): `toBenchTasks()` (22 certified ext) +
+  `toMinedBenchTasks()` (3 mined, audited via `auditMinedCandidate` — target file only,
+  suite+context from the pinned parent snapshot). Verified live (158-case mined suites ran).
+- **Honest reporting**: `timedOut` flag, iters distribution, Wilson CIs via `formatRate()`,
+  W1 acceptance check for unexplained iters:0.
+- **Token-expiry fix**: the first run's last 10 tasks silently HTTP-401'd (one 3h JWT for a
+  >3h sweep). Fix = per-task re-mint + 12h ceiling; the 10 were re-run (0 × 401) and merged.
 
-**Standing (still load-bearing):** W31 `__refdiff_bench.ts` — independent oracle per
-authored ref (~9k seeded cases; posixResolve now unwrapped node, queryDecode fuzzes
-malformed junk; forced the bankersRound reversal, ROADMAP 2026-07-21l). W42 core —
-22-task authored corpus + Wilson intervals; report rates with `formatRate()`, treat
-deltas below `minDetectableDelta(n)` as noise. W42.2 — 3 git-mined tasks, doubly
-certified. W30 — hermetic Gate B (scrubbed env, frozen clock, seeded PRNG, net denial,
-double-run determinism), `__hermetic_bench.ts` 18/18. Human skim of all 25 contracts
-COMPLETE 2026-07-21. Everything re-verified green this session.
+**What the baseline DIAGNOSED (this reorders the fix list — throughput first):**
+1. **Latency starvation dominates — 26/39 timed out.** `loop_entry` shows the mechanism: the
+   "write a self-test in src/index.ts" clause trips `isMultiFileRequest` → a 3×~90s multi-file
+   VGR ladder runs BEFORE the single-file ladder → budget gone before the loop is reachable.
+2. **Spec acquisition is the top *generated* failure reason** (`vgr:no-acceptance-cases` /
+   `spec-extract-failed → planned:entered`): VGR can't extract worked examples from
+   contract prose, abstains, planned loop then times out. The addendum's ground-truth hole,
+   now measured.
+3. **Certified/catalog-but-WRONG (soundness, do not defer behind throughput):** `csvLine`
+   VGR-certified yet fails 11 hidden; `matrixRotate` certified yet `rotate90 is not a function`
+   (VGR certified its own entry name, not the audit's required export); `posixResolve` /
+   `deepEqualCyc` catalog hits that fail 14 / several hidden checks.
+
+**OPEN — THE FIX LIST (priority order):**
+1. **W3 prefix-cache + batching** (llama-server client) — ~90s/proposal is the ceiling;
+   nothing moves until proposals are cheap. Stable-prefix/volatile-suffix + K concurrent.
+2. **Multi-file misroute fix** (`server.ts` VGR gate): a self-test-only second file must NOT
+   enter the multi-file ladder. Cheap; reclaims most of the timed-out budget.
+3. **W2 GBNF** grammar-constrained decoding — malformed proposals impossible; compounds w/ W3.
+4. **Certification-scope fix (soundness):** VGR must certify against the EXACT exported API
+   name+path the audit imports (`matrixRotate` gap); a catalog match must re-verify against
+   the requesting spec's cases before claiming GREEN (`posixResolve` gap).
+5. **W20 held-out acceptance cases** — `csvLine` is the live evidence the self-extracted spec
+   is too weak to certify on.
+6. **Re-run full n=39 under the fixed harness after W2/W3** — one clean scorecard file; the
+   generated-rate delta vs this floor (must clear ~+16 pts) is the first real progress signal.
+7. **W42.2 scale toward n≈100 (±10-pt floor)** — mined candidates `79583e1`, `a0bdd2a`,
+   `781fbba`/`23d1305`, `1fb3971`; fix touches one engine file + its paired bench.
+8. **W32 verifier fault-injection** — 22 authored refs + 3 mined parents as mutation targets.
+
+**Standing (still load-bearing):** W31 `__refdiff_bench.ts` independent oracle per authored ref
+(~9k cases; posixResolve unwrapped node, queryDecode fuzzes malformed junk). W30 hermetic
+Gate B (`__hermetic_bench.ts` 18/18). Human skim of all 25 contracts COMPLETE 2026-07-21.
+Report rates with `formatRate()`; treat deltas below `minDetectableDelta(n)` as noise.
 
 > Previous state (cont.98, still current for its files): cont.96 owns
 > `fmReact.ts` + `server.ts` + the automation follow-up path. cont.98 touched **only**

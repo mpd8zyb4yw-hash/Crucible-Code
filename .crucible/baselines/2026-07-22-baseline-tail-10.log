@@ -1,0 +1,143 @@
+Crucible CODING stress-test & audit harness
+Target: http://localhost:3001   Tasks: runLength, posixResolve, bankersRound, baseConvert, fractionAdd, dateRangeDays, matrixRotate, mined-aliased-import-propagation, mined-move-default-namespace-import, mined-apifaith-vocabulary   Timeout/task: 480s
+Live server offline mode: strict (offline-only, no external fallback)
+
+=== runLength — Run-length encode/decode with strict grammar ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/runLength)
+  agent: done=false iters=1 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== posixResolve — POSIX path normalizer without the fs module ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/posixResolve)
+  agent: done=true iters=0 self-test=true elapsed=0s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : FAIL  ::   FAIL — dotdot keeps trailing slash |   FAIL — relative overflow keeps trailing slash |   PASS — dotdot after real segments |   FAIL — mixed mess |   PASS — no path module used | 14 FAILURE(S)
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 90/100
+  [INFO] synth path    : catalog — proven-skill match, zero model inference; not a generative-capability signal
+  [W1]   loop entry    : synth:catalog-no-iterate  :: verified via verified 'path-utils' primitive — zero model inference; the iterate loop was correctly never entered
+
+=== bankersRound — Half-to-even (bankers) rounding at a decimal place ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/bankersRound)
+  agent: done=false iters=1 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : vgr:no-acceptance-cases → planned:entered
+
+=== baseConvert — Arbitrary-length base conversion 2..36 ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/baseConvert)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : timeout-before-loop — the 480s cap expired inside a pre-loop stage (budget-exhausted)
+
+=== fractionAdd — Exact rational addition with normalization ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/fractionAdd)
+  agent: done=false iters=1 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : vgr:spec-extract-failed → planned:entered
+
+=== dateRangeDays — Inclusive overlap in days between two ISO date ranges ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/dateRangeDays)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : FAIL
+  [HARD] compiles clean: FAIL  :: module file missing/empty
+  [HARD] hidden suite  : FAIL  :: skipped — no module
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : timeout-before-loop — the 480s cap expired inside a pre-loop stage (budget-exhausted)
+
+=== matrixRotate — Rotate a rectangular matrix 90 degrees clockwise ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/matrixRotate)
+  agent: done=true iters=0 self-test=true elapsed=37s
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean
+  [HARD] hidden suite  : FAIL  :: TypeError: (0 , import_matrixRotate.rotate90) is not a function
+  [SOFT] self-test     : PASS
+  [SOFT] LLM rubric    : 90/100
+  [INFO] synth path    : generated
+  [W1]   loop entry    : vgr:certified-no-iterate  :: certified src/matrixRotate.ts — the iterate loop was correctly never entered
+
+=== mined-aliased-import-propagation — Whole-tree signature propagation skips aliased importers (real bug, 2026-07-12) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/mined-aliased-import-propagation)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+[gate-telemetry] fail-open gate 'gateA3_contract' SKIPPED (no "Exact public API" block in spec) — it is providing no protection this session
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean (snapshot-scoped)
+  [HARD] hidden suite  : FAIL  ::   ✓ single-shot ships an answer that FAILS ground-truth execution — score -3: case sumEvens #0 → got 10, expected 6 |   ✗ aliased importer (`pad as p`) → call sites under the ALIAS are trimmed, not skipped |   ✗ aliased importer with an unabsorbable REQUIRED param → whole edit downgrades to fresh fi
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : timeout-before-loop — the 480s cap expired inside a pre-loop stage (budget-exhausted)
+
+=== mined-move-default-namespace-import — Move refactor misses default/namespace import deps (real bug, 2026-07-13) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/mined-move-default-namespace-import)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean (snapshot-scoped)
+  [HARD] hidden suite  : FAIL  ::   ✓ single-shot ships an answer that FAILS ground-truth execution — score -3: case sumEvens #0 → got 10, expected 6 |   ✗ move ABSTAINS when the def uses a DEFAULT import (would lose it — transform cannot resolve) |   ✗ move ABSTAINS when the def uses a NAMESPACE import | FAIL — 158 passed, 2 failed
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : timeout-before-loop — the 480s cap expired inside a pre-loop stage (budget-exhausted)
+
+=== mined-apifaith-vocabulary — API-faithfulness vocabulary bug: false certify AND false reject (real bug, 2026-07-16) ===
+  firing… (project: /Users/justin/Desktop/crucible-bench/mined-apifaith-vocabulary)
+  agent: done=false iters=0 self-test=null elapsed=480s error="timeout after 480s"
+  [HARD] module exists : PASS
+  [HARD] compiles clean: PASS  :: tsc clean (snapshot-scoped)
+  [HARD] hidden suite  : FAIL  ::   FAIL [REAL] fabricated `import { Zod }` → violations (was CERTIFIED) — all zod identifiers appear in the evidence |   FAIL [REAL] names Zod as the offender |   FAIL [REAL] canonical `import { z } from zod` certifies (was REJECTED) — 1 zod identifier does not appear in the evidence: z |   FAIL sent
+  [SOFT] self-test     : n/a
+  [SOFT] LLM rubric    : n/a
+  [INFO] synth path    : generated
+  [INFO] TIMED OUT at the 480s cap — elapsed time is the cap, not convergence
+  [W1]   loop entry    : timeout-before-loop — the 480s cap expired inside a pre-loop stage (budget-exhausted)
+
+=== SCORECARD ===
+   RED   runLength        compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT iters=1
+   RED   posixResolve     compile=Y hidden=n self=Y rubric=90 path=catalog 0s synth:catalog-no-iterate
+   RED   bankersRound     compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT iters=1
+   RED   baseConvert      compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   fractionAdd      compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT iters=1
+   RED   dateRangeDays    compile=n hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   matrixRotate     compile=Y hidden=n self=Y rubric=90 path=gen     37s vgr:certified-no-iterate
+   RED   mined-aliased-import-propagation compile=Y hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   mined-move-default-namespace-import compile=Y hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+   RED   mined-apifaith-vocabulary compile=Y hidden=n self=- rubric=- path=gen     480s TIMEOUT UNEXPLAINED-iters:0
+
+  Claude-level (all HARD green): 0/10 tasks
+  iters distribution: 0×7  1×3   timed out: 8/10
+  W1 acceptance holds: every zero-iteration outcome is attributed to a named stage:reason
+    of which via catalog-primitive match (zero inference): 0/1 (0%, 95% CI 0%–79%)
+    of which via genuine model generation (real signal)  : 0/9 (0%, 95% CI 0%–30%)
+    min detectable delta at n=9: ±27 pts — smaller deltas are noise
+
+No regressions vs the previous scorecard.
