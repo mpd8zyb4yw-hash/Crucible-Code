@@ -80,7 +80,7 @@ export interface LocalizeOpts {
 // probe. This lowers resolution on terse code but never misattributes across
 // functions. Callers wanting maximal resolution should brace their bodies.
 
-function instrument(source: string): { code: string } | { error: string } {
+export function instrument(source: string): { code: string } | { error: string } {
   let sf: ts.SourceFile
   try {
     sf = ts.createSourceFile('candidate.ts', source, ts.ScriptTarget.ES2020, /*setParentNodes*/ true, ts.ScriptKind.TS)
@@ -185,7 +185,7 @@ function instrument(source: string): { code: string } | { error: string } {
 }
 
 // ── Deterministic deep-equal (no deps; mirrors the verifier's semantics) ─────────
-function deepEqual(a: unknown, b: unknown): boolean {
+export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true
   if (typeof a !== typeof b) return false
   if (a === null || b === null) return a === b
@@ -296,6 +296,55 @@ export function localizeFault(source: string, entry: string, cases: LocCase[], o
   ranked.sort((a, b) => b.score - a.score || a.line - b.line)
 
   return { status: 'localized', ranked: ranked.slice(0, topK), totalFail, totalPass }
+}
+
+// ── Reusable coverage harness ────────────────────────────────────────────────────
+// Load an instrumented candidate ONCE and call its entry many times, returning per-call
+// line coverage. Powers coverage-guided fuzzing (coverageFuzz.ts). Deliberately load-once
+// (unlike localizeFault's per-case fresh load): fuzzing targets pure/stateless functions and
+// re-instrumenting per input would dominate cost. Stateful entries are out of scope here.
+
+export interface CoverageCall {
+  ok: boolean
+  value?: unknown
+  threw?: string
+  /** Source lines executed by THIS call (module-load coverage excluded). */
+  covered: Set<number>
+}
+
+export interface CoverageHarness {
+  call(entry: string, args: unknown[]): CoverageCall
+  hasEntry(entry: string): boolean
+}
+
+export function createCoverageHarness(source: string, opts: { timeoutMs?: number } = {}): CoverageHarness | { error: string } {
+  const timeoutMs = opts.timeoutMs ?? 3000
+  const inst = instrument(source)
+  if ('error' in inst) return { error: inst.error }
+
+  const hit = new Set<number>()
+  const { sandbox, moduleObj } = makeSandbox(line => { hit.add(line) })
+  const context = vm.createContext(sandbox)
+  try {
+    new vm.Script(inst.code).runInContext(context, { timeout: timeoutMs })
+  } catch (e: any) {
+    return { error: `candidate failed to load: ${e?.message ?? e}` }
+  }
+
+  return {
+    hasEntry: (entry: string) => typeof moduleObj.exports[entry] === 'function',
+    call(entry: string, args: unknown[]): CoverageCall {
+      const fn = moduleObj.exports[entry]
+      if (typeof fn !== 'function') return { ok: false, threw: `entry '${entry}' is not an exported function`, covered: new Set() }
+      hit.clear()
+      try {
+        const value = (fn as (...a: unknown[]) => unknown)(...args)
+        return { ok: true, value, covered: new Set(hit) }
+      } catch (e: any) {
+        return { ok: false, threw: String(e?.message ?? e), covered: new Set(hit) }
+      }
+    },
+  }
 }
 
 /**

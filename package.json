@@ -51,6 +51,7 @@
     "agentic:refcheck": "tsx src/CrucibleEngine/agent/__agentic_refcheck.ts",
     "fault:bench": "tsx src/CrucibleEngine/reasoning/__fault_bench.ts",
     "fault:localize:bench": "tsx src/CrucibleEngine/reasoning/__faultlocalize_bench.ts",
+    "fuzz:coverage:bench": "tsx src/CrucibleEngine/reasoning/__coveragefuzz_bench.ts",
     "fault:live": "tsx src/CrucibleEngine/reasoning/__fault_live.ts",
     "fault:h2h": "tsx src/CrucibleEngine/reasoning/__fault_headtohead.ts",
     "keepk:bench": "tsx src/CrucibleEngine/reasoning/__keepK_bench.ts",

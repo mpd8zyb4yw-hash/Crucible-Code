@@ -1933,6 +1933,29 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22b (W12 — coverage-guided differential/property fuzzing; and W8+ brace-less instrumentation)
+
+**W12 shipped.** `src/CrucibleEngine/reasoning/coverageFuzz.ts` — the two things the existing
+property / differential / metamorphic tiers did NOT do: (1) **coverage-guided** input generation
+(reuses faultLocalize's `__cov` probes via the new `createCoverageHarness`; an input that reaches a
+source line no prior input reached is kept in the corpus and mutated further, so the search drills
+into unexplored branches) and (2) **counterexample minimization** (generic delta-debug shrinker:
+drop array elements, shrink numbers toward 0, empty strings). Two oracle modes: **differential**
+(disagreement candidate≠reference is a bug with a witness, no labels) and **property** (invariant
+on every output; a throw is a crash counterexample). Deterministic — seeded mulberry32 PRNG, no
+Math.random. Abstains honestly on won't-load / missing-entry / no-oracle.
+
+Self-verified: `__coveragefuzz_bench.ts` (`npm run fuzz:coverage:bench`) — **5/5** trials: clean
+code stays clean (no false positive, 5 distinct lines covered), an off-by-parity bug shrinks to
+`[1]`, a bug hidden behind a rare `x===7` branch shrinks to `[7]` (the case that justifies coverage
+guidance over random testing), an empty-input crash to `[]`, and a property violation to `[1]`.
+
+**W8+ shipped.** faultLocalize now normalizes brace-less `if/else`, `for/for-in/for-of/while/do`
+bodies and concise arrow bodies into probed blocks, so each gets its own coverage probe instead of
+folding into the enclosing block. Lifted localization from ±1-only to **92% exact / 100% within-±1**
+across 12 detected mutations. `faultLocalize` also now exports `instrument`, `deepEqual`, and
+`createCoverageHarness` for reuse (localizeFault's per-case fresh-load semantics unchanged).
+
 ### 2026-07-22 (W8 — spectrum-based fault localization; non-colliding lane while a parallel session ran W3 / the VGR multi-file misroute / certification-scope / W20 / n=39 rerun)
 
 **What shipped.** `src/CrucibleEngine/reasoning/faultLocalize.ts` — deterministic, model-free
