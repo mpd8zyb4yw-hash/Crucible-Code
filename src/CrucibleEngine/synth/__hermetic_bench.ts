@@ -10,6 +10,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { execSync } from 'child_process'
 import { runHermeticSync, DEFAULT_SEED } from './hermetic'
 import { verifyCandidate } from './oracle'
 
@@ -100,12 +101,20 @@ const deniedAtProbe = (r: { ok: boolean; out: string }) =>
 
 // ── a SIGTERM-immune busy loop is still reaped, within the cap ──────────────
 {
-  const p = probe('spin.ts', `process.on('SIGTERM', () => {})\nfor (;;) { /* busy */ }`)
+  // Unique marker in the entry path so pgrep can find a survivor by name only.
+  const p = probe(`spin-${DEFAULT_SEED.toString(16)}-orphanprobe.ts`, `process.on('SIGTERM', () => {})\nfor (;;) { /* busy */ }`)
   const t0 = Date.now()
   const r = runHermeticSync(p, dir, 3_000)
   const elapsed = Date.now() - t0
   check('busy loop is killed (SIGKILL, not SIGTERM)', !r.ok && r.timedOut, r.out)
   check('and within the cap plus startup slack', elapsed < 15_000, `elapsed=${elapsed}ms`)
+  // REGRESSION GUARD (2026-07-22g): the tsx-CLI vector double-forked and orphaned the real
+  // worker to PID 1, where a SIGTERM-immune busy loop survived a 3s cap for 13h. Prove the
+  // in-process vector leaves NO process still running the probe after the reap.
+  let survivors = ''
+  try { survivors = execSync(`pgrep -f orphanprobe.ts || true`, { encoding: 'utf8' }).trim() }
+  catch { survivors = '' }
+  check('no orphaned worker survives the reap (single-process vector)', survivors === '', `surviving pids: ${survivors}`)
 }
 
 // ── a memory bomb dies at the heap cap instead of taking the box ────────────

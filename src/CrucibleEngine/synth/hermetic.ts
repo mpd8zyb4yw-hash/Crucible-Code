@@ -21,7 +21,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { spawnSync, spawn } from 'child_process'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import { createRequire } from 'module'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -38,6 +38,32 @@ const CODE_DIR = path.resolve(HERE, '../../..')
  */
 const TSX_CLI: string | null = (() => {
   try { return createRequire(path.join(CODE_DIR, 'package.json')).resolve('tsx/cli') } catch { return null }
+})()
+
+/**
+ * The tsx loader as IN-PROCESS flags, not the `tsx` CLI wrapper.
+ *
+ * REAPING BUG (found live 2026-07-22g): `node tsx/cli entry.ts` is a DOUBLE FORK — the tsx
+ * CLI re-spawns a second node process (the real loader worker) as its child, then execs the
+ * candidate there. When the timeout SIGKILLs the process we spawned (the CLI wrapper), the
+ * worker is orphaned to PID 1 and keeps running FOREVER — a SIGTERM-immune `for(;;){}` probe
+ * from a 3s-capped run was found still busy-looping 13h later, four of them pinning four cores
+ * and starving the live bench. SIGKILL cannot be ignored, so the reaper was correct; it was
+ * aimed at the wrapper, not the worker.
+ *
+ * Fix: inject tsx's own loader flags (`--require preflight.cjs --import loader.mjs`) — exactly
+ * what the CLI would have injected into its worker — directly onto OUR node invocation, so the
+ * candidate runs in the single process we spawned and its pid IS the reap target. Absolute
+ * paths, because the child's cwd is the candidate temp dir where bare `tsx` will not resolve.
+ * Determinism's `--no-cache` becomes the loader-honored `TSX_DISABLE_CACHE=1` (see hermeticEnv).
+ */
+const TSX_INPROC: string[] | null = (() => {
+  try {
+    const req = createRequire(path.join(CODE_DIR, 'package.json'))
+    const preflight = req.resolve('tsx/preflight')     // CJS require hook
+    const loader = pathToFileURL(req.resolve('tsx')).href // ESM loader (dist/loader.mjs)
+    return ['--require', preflight, '--import', loader]
+  } catch { return null }
 })()
 
 /** Absolute path to the prelude. NODE_OPTIONS cannot quote paths containing spaces, so
@@ -75,6 +101,11 @@ export function hermeticEnv(entryAbs: string, seed: number = DEFAULT_SEED): Node
     // The prelude arms only in the process whose argv carries this entry path — tooling
     // processes in the chain (npx fallback, npm) stay untouched.
     CRUCIBLE_HERMETIC_ENTRY: entryAbs,
+    // The in-process tsx loader honors this instead of the `--no-cache` CLI flag we dropped
+    // when we stopped shelling out through the tsx wrapper (see TSX_INPROC). Load-bearing for
+    // determinism: a cache hit reads the frozen clock fewer times than a cold compile, so the
+    // two accept-side runs would diverge. Both cold ⇒ identical history ⇒ identical output.
+    TSX_DISABLE_CACHE: '1',
     NODE_OPTIONS: `--require ${PRELUDE} --max-old-space-size=${HEAP_MB}`,
   }
 }
@@ -89,9 +120,13 @@ export function hermeticEnv(entryAbs: string, seed: number = DEFAULT_SEED): Node
  * history ⇒ identical output.
  */
 function spawnVector(entryAbs: string): { cmd: string; args: string[] } {
-  return TSX_CLI
-    ? { cmd: process.execPath, args: [TSX_CLI, '--no-cache', entryAbs] }
-    : { cmd: 'npx', args: ['tsx', '--no-cache', entryAbs] }
+  // Preferred: single-process, in-process tsx loader — the candidate runs in the node we
+  // spawn, so its pid is the reap target (see TSX_INPROC). --no-cache → TSX_DISABLE_CACHE env.
+  if (TSX_INPROC) return { cmd: process.execPath, args: [...TSX_INPROC, entryAbs] }
+  // Fallbacks still shell out through a wrapper that may double-fork; the async path spawns
+  // them detached and group-kills to reap the worker regardless (see runHermeticAsync).
+  if (TSX_CLI) return { cmd: process.execPath, args: [TSX_CLI, '--no-cache', entryAbs] }
+  return { cmd: 'npx', args: ['tsx', '--no-cache', entryAbs] }
 }
 
 /** Blocking hermetic run of a tsx entrypoint — Gate B's synchronous path. */
@@ -116,9 +151,16 @@ export function runHermeticAsync(entryAbs: string, cwd: string, timeoutMs: numbe
     let out = ''
     let timedOut = false
     const { cmd, args } = spawnVector(entryAbs)
-    const child = spawn(cmd, args, { cwd, env: hermeticEnv(entryAbs, seed) })
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL') }, timeoutMs)
-    const cap = (d: Buffer) => { out += d.toString('utf8'); if (out.length > 8 * 1024 * 1024) child.kill('SIGKILL') }
+    // detached: the child leads its own process group, so a group-kill reaps any worker it
+    // forked (the tsx-wrapper fallbacks double-fork). The primary in-process vector is a single
+    // process, so the group is just itself — group-kill is a strict superset of child.kill.
+    const child = spawn(cmd, args, { cwd, env: hermeticEnv(entryAbs, seed), detached: true })
+    const reap = () => {
+      try { if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL') } catch { /* already gone */ }
+      child.kill('SIGKILL') // belt-and-suspenders if the group send raced the exit
+    }
+    const timer = setTimeout(() => { timedOut = true; reap() }, timeoutMs)
+    const cap = (d: Buffer) => { out += d.toString('utf8'); if (out.length > 8 * 1024 * 1024) reap() }
     child.stdout?.on('data', cap)
     child.stderr?.on('data', cap)
     child.on('error', e => { clearTimeout(timer); resolve({ ok: false, out: `${out}${String(e)}`, timedOut }) })
