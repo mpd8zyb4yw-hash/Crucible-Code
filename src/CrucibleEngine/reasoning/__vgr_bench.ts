@@ -1018,6 +1018,30 @@ async function run() {
     ok('co-gate REJECTS a clamp that ignores the upper bound', !noHi.pass, noHi.signals[0])
   }
 
+  // csvRoundtrip: the parse∘serialize=id invariant on the exact GREEN-yet-wrong csvLine case. The
+  // reference RFC-4180 parser must PASS; a permissive comma-split (the shape a weak consensus would
+  // certify) must be REJECTED — it mis-splits quoted-comma fields and never throws on malformed input.
+  const sCsv = supplementalPropertySpec('Implement parseCsvLine(line) — a single-line CSV field parser with quoting.')
+  ok('supplementalPropertySpec resolves the `csvRoundtrip` family (exact-name-gated)',
+    !!sCsv && sCsv.family === 'csvRoundtrip' && sCsv.entry === 'parseCsvLine', sCsv?.family)
+  if (sCsv) {
+    const acc = { goal: '', domain: 'code' as const, acceptance: { entry: sCsv.entry, family: sCsv.family, assertions: sCsv.assertions } as any }
+    const refCsv = `export function parseCsvLine(line){
+  if (/[\\r\\n]/.test(line)) throw new SyntaxError('single line')
+  const fields=[]; let i=0
+  for(;;){ let f=''
+    if(line[i]==='"'){ i++; let closed=false
+      while(i<line.length){ if(line[i]==='"'){ if(line[i+1]==='"'){ f+='"'; i+=2 } else { i++; closed=true; break } } else { f+=line[i]; i++ } }
+      if(!closed) throw new SyntaxError('unterminated'); if(i<line.length && line[i]!==',') throw new SyntaxError('after quote')
+    } else { while(i<line.length && line[i]!==','){ if(line[i]==='"') throw new SyntaxError('quote in unquoted'); f+=line[i]; i++ } }
+    fields.push(f); if(i>=line.length) break; i++; if(i===line.length){ fields.push(''); break } }
+  return fields }`
+    const good = await verifyByProperty({ value: refCsv, fingerprint: 'g' }, acc)
+    ok('co-gate ACCEPTS the correct RFC-4180 parser (parse∘serialize=id)', good.pass, good.signals[0])
+    const naive = await verifyByProperty({ value: `export function parseCsvLine(line){return line.split(',')}`, fingerprint: 'b' }, acc)
+    ok('co-gate REJECTS a permissive comma-split (mis-splits quoted commas, never throws)', !naive.pass, naive.signals[0])
+  }
+
   // Domain from prose: a bare "sort" is numeric (the FM's (a,b)=>a-b comparator must PASS);
   // string inputs join the battery only when the prose says so. (Live gap found cont.59: the
   // string battery failed a correct numeric sort → fell to differential, which certified the

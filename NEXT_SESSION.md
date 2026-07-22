@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22 (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22d (gap-soundness) (REPLACE THIS EVERY SESSION)
 
 > **THE FIRST HONEST LIVE BASELINE EXISTS. This is the "before" number.** Full write-up:
 > ROADMAP.md CHANGE LOG 2026-07-22. Read the label before quoting the number: it is the
@@ -42,6 +42,16 @@
 >   W35 → W36 → W48 — `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
 >   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
 >   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
+
+**Shipped 2026-07-22d (this continuation, on `claude/gap-soundness`) — csvLine residual CLOSED:**
+- `csvRoundtrip` supplemental property family (`reasoning/propertyVerifier.ts` `SUPP_FAMILIES`):
+  the parse∘serialize=id invariant for `parseCsvLine`-class format parsers. A canonical
+  always-quoting RFC-4180 serializer is built model-free in the assertion; `parse(serialize(fs))`
+  must deep-equal `fs` for all field arrays (incl. embedded commas/quotes), plus split/trailing-
+  empty/quoted-comma checks and two throw-contract checks. Auto-picked-up by `invariantGate`,
+  `supplementalPropertySpec`, `propertyForFunction` (all iterate `SUPP_FAMILIES` — no whitelist).
+  +3 bench proofs: accepts the correct parser (6/6), rejects a permissive comma-split. Bench 222/0,
+  tsc clean. Closes the one measured GREEN-yet-wrong csvLine-class case the W20 gate left uncovered.
 
 **Shipped 2026-07-22c (this continuation, on `claude/gap-soundness`) — fix-list item 5 (W20) DONE:**
 - W20 independent held-out invariant co-gate (`reasoning/solve.ts`): `supplementalPropertySpec`'s
@@ -108,10 +118,10 @@
    invariant is the held-out ground truth: `supplementalPropertySpec`'s ~30 exact-name-gated
    families now co-gate every lower-tier solve in `reasoning/solve.ts`
    (`invariantGate = metaGate ∧ suppGate`). Proposer still drives on the cases; a candidate that
-   overfits weak cases yet violates a real invariant is rejected. Bench 219/0. RESIDUAL: `csvLine`
-   itself (parseCsvLine) is a FORMAT PARSER — no supp family covers parser-roundtrip yet, so it is
-   still uncovered. Next soundness follow-up: add a `parser-roundtrip` supp family (parse∘serialize
-   = id against a canonical serializer) so csvLine-class specs get an independent gate too.
+   overfits weak cases yet violates a real invariant is rejected. Bench 219/0. RESIDUAL CLOSED
+   2026-07-22d: the `csvRoundtrip` supp family now covers `parseCsvLine`-class format parsers —
+   parse∘serialize=id against a canonical always-quoting RFC-4180 serializer + throw-contract
+   checks. Accepts the correct parser (6/6 props), rejects a permissive comma-split. Bench 222/0.
 6. **Re-run full n=39 under the fixed harness after W2/W3** — one clean scorecard file; the
    generated-rate delta vs this floor (must clear ~+16 pts) is the first real progress signal.
    The 2026-07-22b misroute + cert-scope fixes should already move the *timed-out* and

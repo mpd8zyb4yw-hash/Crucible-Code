@@ -335,6 +335,25 @@ const SUPP_FAMILIES: SuppFamily[] = [
       `prop('${E} fixed point at -40', Math.abs(${E}(-40) - (-40)) < 1e-9)`,
     ],
   },
+  {
+    // parseCsvLine(line): the parse ∘ serialize = id invariant. We build a CANONICAL always-quoting
+    // RFC-4180 serializer here (independent of the candidate — this file has no model), so for ANY
+    // field array `fs`, `parse(serialize(fs))` must deep-equal `fs`. A naive comma-split parser fails
+    // the moment a field contains a comma or an embedded quote; a parser that mishandles doubled-quote
+    // escaping fails the quote samples. This is the one measured GREEN-yet-wrong csvLine-class case the
+    // metamorphic/consensus tiers could not discriminate. We also assert the throw-contract, which no
+    // permissive split parser honours. `ser` and the deep-eq are inlined so the assertion is
+    // self-contained in the sandbox (no closures leak across prop() calls).
+    family: 'csvRoundtrip', test: e => /^(parseCsvLine|parseCsv|parseCSV|csvParse|parseCsvRow|splitCsvLine|csvLine)$/i.test(e),
+    assertions: E => [
+      `prop('${E} parse∘serialize=id (canonical always-quoting)', (() => { const ser = fs => fs.map(f => '"' + String(f).replace(/"/g, '""') + '"').join(','); const cases = [['a','b','c'],[''],['',''],['x,y','z'],['a"b'],['he said ""hi""'],['hello, world','2',' spaced '],['','mid',''],['only'],['tab\\there','end']]; return cases.every(fs => JSON.stringify(${E}(ser(fs))) === JSON.stringify(fs)) })())`,
+      `prop('${E} simple unquoted split', JSON.stringify(${E}('a,b,c')) === JSON.stringify(['a','b','c']))`,
+      `prop('${E} trailing empty field', JSON.stringify(${E}('a,b,')) === JSON.stringify(['a','b','']))`,
+      `prop('${E} quoted field with comma', JSON.stringify(${E}('"a,b",c')) === JSON.stringify(['a,b','c']))`,
+      `prop('${E} rejects quote in unquoted field', (() => { try { ${E}('a"b'); return false } catch { return true } })())`,
+      `prop('${E} rejects unterminated quote', (() => { try { ${E}('"abc'); return false } catch { return true } })())`,
+    ],
+  },
 ]
 
 /** Best-effort entry-name extraction for supplemental gating (extractFeatures, else first call). */

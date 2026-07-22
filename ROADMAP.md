@@ -1933,6 +1933,29 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22d (gap-soundness — csvLine residual closed: `csvRoundtrip` supp family)
+
+Re-confirmed non-interference: the parallel `crucible-northstar-sessions` session has advanced to
+W12 (coverage-guided fuzzing — `coverageFuzz.ts`, `__coveragefuzz_bench.ts`) but remains isolated
+in the fault-localization + fuzzing subsystem; my files (`propertyVerifier.ts`, `__vgr_bench.ts`)
+were CLEAR of its commits. Only `ROADMAP.md`/`package.json` overlap (append-only).
+
+- **`csvRoundtrip` supplemental property family (`reasoning/propertyVerifier.ts`).** The one
+  measured GREEN-yet-wrong case the W20 invariant co-gate did NOT cover was `parseCsvLine` — a
+  format PARSER, and no supp family expressed a parser invariant. Added the **parse∘serialize=id**
+  family: a canonical always-quoting RFC-4180 serializer is built model-free inside the assertion,
+  so for any field array `fs` (including fields with embedded commas and doubled quotes),
+  `parse(serialize(fs))` must deep-equal `fs`. Plus direct split / trailing-empty / quoted-comma
+  checks and two throw-contract checks (rejects a quote in an unquoted field; rejects an
+  unterminated quote) — discriminators no permissive comma-split honours. Name-gated exactly
+  (`parseCsvLine|parseCsv|csvParse|parseCsvRow|splitCsvLine|csvLine`), so it is auto-picked-up by
+  `invariantGate`, `supplementalPropertySpec`, and `propertyForFunction` (all iterate
+  `SUPP_FAMILIES`; no hardcoded whitelist).
+- **Proof it has teeth (`__vgr_bench.ts`, +3 assertions).** Resolves the family by name; ACCEPTS
+  the correct RFC-4180 reference parser (6/6 properties held); REJECTS a permissive
+  `line.split(',')` (fails the first roundtrip property — mis-splits quoted-comma fields and never
+  throws). Bench **222 passed / 0 failed**, tsc clean.
+
 ### 2026-07-22c (gap-soundness — W20 independent held-out invariant co-gate)
 
 Confirmed non-interference first: the parallel `crucible-northstar-sessions` session is isolated
