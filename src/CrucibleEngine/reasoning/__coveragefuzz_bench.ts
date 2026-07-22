@@ -218,6 +218,6 @@ for (const t of TRIALS) {
 }
 
 const ok = pass === TRIALS.length
-console.log(`\n  ${ok ? 'PASS' : 'FAIL'} — ${pass}/${TRIALS.length} trials`)
+console.log(`\n  ${ok ? 'PASS' : 'FAIL'} — ${pass}/${TRIALS.length} checks passed`)
 if (fails.length) console.log(`  failing: ${fails.join('; ')}`)
 process.exit(ok ? 0 : 1)

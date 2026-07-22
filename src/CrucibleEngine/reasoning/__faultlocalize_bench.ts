@@ -186,4 +186,7 @@ console.log(
   `\n  ${ok ? 'PASS' : 'FAIL'} — exact ${(exactRate * 100).toFixed(0)}% (gate ${EXACT_GATE * 100}%), ` +
     `within-±1 ${(within1Rate * 100).toFixed(0)}% (gate ${WITHIN1_GATE * 100}%), n=${detected}`,
 )
+// Machine-readable line for the bench:all aggregate (parseCounts): count = within-±1 localizations,
+// which only grows as detection improves and both gates must hold for `ok`, so it cannot mask a gate fail.
+console.log(`  ${ok ? hitWithin1 : 0}/${detected} checks passed`)
 process.exit(ok ? 0 : 1)

@@ -1933,6 +1933,37 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22d (W12→ladder wiring, W5 typed feedback, W7 verifier ladder, scorecard registration)
+
+Five-item run, all in files this session owns or created (zero overlap with the parallel
+fm-client / server-routing / certification-match / iterate-prompt / bench-harness work):
+
+1. **Stage-5 fuzz gate wired (W12→ladder).** New `fuzzResearch.ts` — `makeFuzzResearchFn` /
+   `makeCanonicalFuzzResearch` build a coverage-guided differential fuzz **`ResearchFn`** (the
+   sanctioned sound injection point in `iterate.ts` — no core edit). On a stall it fuzzes the best
+   candidate against the trusted `metamorphicSpec` canonical reference; a minimized disagreement
+   becomes a NEW acceptance case whose `expected` is the reference's value (sound — reference is
+   the oracle), closing the "certified-but-edge-case-wrong" hole. Composed onto the base research
+   in `solve.ts` `iterateCodeTask` via `composeResearchFns`; no canonical reference → base research
+   unchanged.
+2. **W5 typed feedback.** The injected case carries proposer grounding: the minimized witness AND
+   the top Ochiai suspect line (from `faultLocalize`, run on the witness vs reference-valued seeds
+   so the spectrum isolates the buggy branch — verified to point at the real faulty `if`, not a
+   declaration). Bench `fuzz:research:bench` proves the gate on filter(even) `[0]`, uppercase `"á"`,
+   and dedupe `[1,0,1]` bugs (7/7).
+3. **W7 verifier ladder.** New `verifierLadder.ts` — `runLadder`/`ladderVerifier` order gates
+   cheapest-first (parse→tsc→acceptance→property→fuzz→mutation), short-circuit on first hard
+   failure (a parse error never pays for a fuzz campaign), support advisory (soft) gates, and
+   report a per-stage trace. Bench `verifier:ladder:bench` 10/10.
+4. **Mutator harness against real references** — `fuzz:research:bench` exercises `stringMutator`
+   and NL→canonical resolution end-to-end against actual `canonicalImpl` references, not synthetic
+   sources.
+5. **Scorecard registration.** `fault:localize:bench`, `fuzz:coverage:bench`, `fuzz:research:bench`,
+   `verifier:ladder:bench` added to `bench:all`'s aggregate no-regression gate; each bench now
+   emits a `parseCounts`-readable `N/N checks passed` line (W8/W12 lift now visible in the ledger).
+
+Full `tsc` clean; `vgr:bench` 208/208, `vgr:iterate` 12/12, `vgr:coderesearch` 22/22 — no regression.
+
 ### 2026-07-22c (W12+ — mutator library expansion beyond numeric arrays)
 
 Grew `coverageFuzz.ts`'s mutator library from the single `intArrayMutator` to cover the

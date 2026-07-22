@@ -57,6 +57,14 @@ const SUITES = [
   // drives the real stochastic FM (300s, ±4pt noise); it is a tracked metric, not a gate.
   'keepk:bench',
   'fault:bench',
+  // W8/W12 tier (cont.98e): deterministic spectrum-localization + coverage-guided fuzz + the
+  // fuzz-research differential gate + the cheapest-first verifier ladder. All were runnable only
+  // by hand, so a regression in the debug/recovery path could not fail this aggregate. Registered
+  // here after confirming each emits a parseCounts-readable "N/N checks passed" line.
+  'fault:localize:bench',
+  'fuzz:coverage:bench',
+  'fuzz:research:bench',
+  'verifier:ladder:bench',
   // cont.79c audit: these were deterministic and passing but registered NOWHERE, so nothing
   // failed CI when they broke. Verified individually before adding (all <2s except html:bench).
   'vgr:iterate',

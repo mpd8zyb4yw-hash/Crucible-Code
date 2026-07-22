@@ -26,6 +26,7 @@ import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
 import { makeMutationRepairProposer } from './mutationRepair'
+import { makeCanonicalFuzzResearch, composeResearchFns } from './fuzzResearch'
 import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 /**
@@ -185,7 +186,15 @@ export async function iterateCodeTask(
     ? (async () => proactiveRef) as (query: string) => Promise<string | null>
     : input.webGround
   const proposer = withRetrieval(base, input.entry, input.nl ?? input.goal, input.cases, retrievalSource, buildCodeSearchQuery(input.nl ?? input.goal, input.entry), opts.emit)
-  const research = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal, webGround: input.webGround })
+  // Stage-5 fuzz gate (W12→ladder): when the request maps to a canonical family with a trusted
+  // reference, compose a coverage-guided differential fuzz ResearchFn onto the base research. On a
+  // stall it hunts the "certified-but-edge-case-wrong" inputs the fixed cases miss and, on a
+  // minimized disagreement with the reference, tightens the verifier with that case (sound: the
+  // reference is the oracle) plus witness/suspect-line proposer feedback (W5). No canonical
+  // reference → returns the base research unchanged (no behavioural change off the canonical path).
+  const baseResearch = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal, webGround: input.webGround })
+  const fuzzResearch = makeCanonicalFuzzResearch(input.nl ?? input.goal, input.entry)
+  const research = fuzzResearch ? composeResearchFns(baseResearch, fuzzResearch) : baseResearch
   return iterate(spec, proposer, verifyCode, {
     mergeAcceptance: mergeCodeAcceptance,
     ...opts,
