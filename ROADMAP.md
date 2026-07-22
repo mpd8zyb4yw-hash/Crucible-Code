@@ -1933,6 +1933,31 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22 (W8 — spectrum-based fault localization; non-colliding lane while a parallel session ran W3 / the VGR multi-file misroute / certification-scope / W20 / n=39 rerun)
+
+**What shipped.** `src/CrucibleEngine/reasoning/faultLocalize.ts` — deterministic, model-free
+Ochiai fault localization. It AST-instruments a candidate (a `__cov(line)` probe before every
+block-bodied statement, original line numbers baked in so downstream transpile shifts don't
+matter), runs each acceptance case in the same network-denied vm sandbox the execution verifier
+uses, records per-line coverage for passing vs failing runs, and ranks lines by
+`fail(s)/sqrt(totalFail*(fail(s)+pass(s)))`. Replaces the doctrine-banned "ask a 1.5B which line
+is wrong" (oracle-trust) with a coverage spectrum that IS ground truth. Abstains honestly when it
+can't build a spectrum (won't-load / missing entry export / no failing case).
+
+**Wired live** into the recovery loop: `faultInject.ts` runFaultTrial now folds the localization
+block into the repair context (`solveCodeTask` `context`), so the proposer is pointed at the
+suspect line instead of scanning the whole file. Silent-abstain keeps the fallback to plain
+buggy-code framing — never fabricates a location.
+
+**Self-verified, no human labels.** `__faultlocalize_bench.ts` (`npm run fault:localize:bench`)
+injects known faults via faultInject's `MUTATIONS`, then asserts the injected line ranks top-K.
+Result: **9/9 detected mutations localized, 100% top-K exact-line (and within-±1), gate 80%.**
+The 3 applicable-but-undetected mutations are honest equivalent/non-discriminating mutants.
+
+**Deliberately NOT wired** into the iterate prompt builder — that surface was owned by the
+parallel session (W20). `renderLocalizationBlock()` is the clean opt-in seam for later loop
+integration. Maps to GAP_CLOSURE W8.
+
 ### 2026-07-21i (cont.98 — certification caching + near-neighbour conflation repair)
 
 > Continued alongside cont.96 (which owns `server.ts` / `fmReact.ts`). This session touched

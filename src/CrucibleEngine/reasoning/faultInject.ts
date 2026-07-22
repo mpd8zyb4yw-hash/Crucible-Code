@@ -21,6 +21,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { verifyCode, type CodeAcceptance } from './codeVerifier'
+import { localizeFault, renderLocalizationBlock } from './faultLocalize'
 import { solveCodeTask } from './solve'
 import type { Proposer, SearchResult, TaskSpec } from './types'
 import type { SearchOpts } from './search'
@@ -142,9 +143,16 @@ export async function runFaultTrial(
     return { target: t.id, mutation: mutation.name, applicable: true, detected: false, recovered: false, modelCalls: 0, status: 'undetected', detail: 'equivalent mutant — case set cannot see this fault (coverage gap)' }
   }
 
+  // Spectrum-based localization (W8): deterministically point the proposer at the suspect line(s)
+  // from the passing/failing coverage spectrum, instead of asking a weak model to scan the whole
+  // file. Pure infra — no model call — and it abstains silently if it can't produce a spectrum, so
+  // the context degrades to plain buggy-code framing rather than fabricating a location.
+  const loc = localizeFault(mutated, t.entry, t.cases)
+  const locBlock = loc.status === 'localized' ? `\n\n${renderLocalizationBlock(loc)}` : ''
+
   // Recovery: the standard repair framing — buggy code as context, same cases as ground truth.
   const result = await solveCodeTask(
-    { goal: repairGoal(t), entry: t.entry, cases: t.cases, context: `Buggy current implementation:\n\`\`\`\n${mutated}\n\`\`\``, buggyCode: mutated },
+    { goal: repairGoal(t), entry: t.entry, cases: t.cases, context: `Buggy current implementation:\n\`\`\`\n${mutated}\n\`\`\`${locBlock}`, buggyCode: mutated },
     { maxModelCalls: opts.maxModelCalls ?? 6, ...opts },
     opts.proposer,
   )
