@@ -12,7 +12,14 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { fmComplete } from '../agent/fmReact'
+import { fencedCodeGrammar } from '../agent/grammars'
 import type { Candidate, ProposeContext } from './types'
+
+// W2: every proposal must be exactly one fenced TypeScript block. Constraining the sampler to
+// this grammar makes a malformed-shape proposal (prose around the code, missing/doubled fence)
+// unreachable, so `extractCode` never fails and the model spends its ~90s call on being correct,
+// not on being well-formed. A backend without grammar support ignores it — extractCode still runs.
+const CODE_GRAMMAR = fencedCodeGrammar('typescript')
 
 /** Deterministic fingerprint for anti-thrash dedup (normalizes whitespace). */
 export function fingerprintCode(code: string): string {
@@ -107,7 +114,7 @@ export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidat
   const { system, user, temperature } = buildProposalPrompt(ctx)
   const raw = await fmComplete(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
-    { temperature },
+    { temperature, gbnf: CODE_GRAMMAR },
   )
   if (!raw || !raw.trim()) return null
   const code = extractCode(raw)

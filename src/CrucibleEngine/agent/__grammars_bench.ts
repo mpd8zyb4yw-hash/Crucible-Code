@@ -22,7 +22,8 @@ async function main() {
   const fc = fencedCodeGrammar('typescript')
   check('fenced grammar has a root rule', /^root ::= /m.test(fc))
   check('fenced grammar opens with a triple-backtick + lang literal', fc.includes('\\u0060\\u0060\\u0060typescript'))
-  check('fenced grammar body forbids a backtick (unambiguous close)', fc.includes('body ::= [^\\u0060]*'))
+  check('fenced grammar body admits ≤2 backticks (template literals reachable, triple = close only)',
+    fc.includes('"\\u0060" [^\\u0060]') && fc.includes('"\\u0060\\u0060" [^\\u0060]') && !/body ::= \[\^\\u0060\]\*/.test(fc))
   check('fenced grammar sanitizes an unsafe lang to typescript', fencedCodeGrammar('js; rm -rf').includes('\\u0060\\u0060\\u0060typescript'))
 
   // ── jsonObjectGrammar ──

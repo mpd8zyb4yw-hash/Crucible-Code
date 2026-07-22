@@ -236,6 +236,10 @@ export interface BonsaiOpts {
   think?: boolean
   timeoutMs?: number
   signal?: AbortSignal
+  /** W2 constrained decoding: a GBNF grammar string. llama-server (which this sidecar speaks to)
+   *  honours `grammar` in the completion body, masking every token to the grammar so malformed
+   *  output is unreachable. Ignored by a backend that doesn't support it — safe either way. */
+  gbnf?: string
 }
 
 /**
@@ -257,6 +261,8 @@ export async function bonsaiComplete(
         temperature: opts.temperature ?? 0.2,
       }
       if (!opts.think) body.chat_template_kwargs = { enable_thinking: false }
+      if (opts.gbnf) body.grammar = opts.gbnf   // W2: constrain the sampler to a GBNF grammar
+
       // Generation is minutes-long in background mode, so the timeout must be generous AND
       // explicit: Node's undici kills a non-streaming request at 300s by default, which reads
       // as "fetch failed" while the model is healthy and mid-generation (cont.88).

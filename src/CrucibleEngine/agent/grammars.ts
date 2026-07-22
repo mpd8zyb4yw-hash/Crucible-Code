@@ -19,18 +19,23 @@
  * `\`\`\`lang\n …code… \`\`\`` with no prose before or after. This is what makes the code
  * proposer's `extractCode()` infallible: there is always exactly one block to lift.
  *
- * The body forbids a literal backtick, which guarantees the closing fence is unambiguous and
- * the generation always terminates at it (GBNF has no negative-lookahead to spell "any run not
- * containing ```"). Generated code effectively never needs a backtick, so this is a safe
- * over-constraint; a future refinement can allow single/double backticks that are not a fence.
+ * The body admits any character INCLUDING one or two consecutive backticks as long as they are
+ * followed by a non-backtick — so TypeScript template literals (`` `Hello ${x}` ``) and even a
+ * doubled backtick remain reachable, but a run of THREE backticks can only be the closing fence.
+ * This avoids the correctness hazard of a backtick-forbidding body (which would make any
+ * template-literal solution unsamplable) while still guaranteeing an unambiguous, terminating
+ * close — GBNF has no negative-lookahead to spell "any run not containing ```" directly, and this
+ * ≤2-consecutive-backtick encoding is the standard llama.cpp idiom for it.
  */
 export function fencedCodeGrammar(lang = 'typescript'): string {
   // `lang` is a fixed literal in the opening fence — no need to let the model choose it.
   const langLit = /^[a-zA-Z0-9_+-]*$/.test(lang) ? lang : 'typescript'
+  const BT = '\\u0060'
   return [
-    `root ::= "\\u0060\\u0060\\u0060${langLit}\\n" body "\\u0060\\u0060\\u0060" "\\n"?`,
-    // body: any character that is not a backtick, any number of times.
-    `body ::= [^\\u0060]*`,
+    `root ::= "${BT}${BT}${BT}${langLit}\\n" body "${BT}${BT}${BT}" "\\n"?`,
+    // body: any non-backtick, or one/two backticks that are followed by a non-backtick. Three
+    // consecutive backticks are therefore never matchable inside body → only the closing fence.
+    `body ::= ( [^${BT}] | "${BT}" [^${BT}] | "${BT}${BT}" [^${BT}] )*`,
   ].join('\n')
 }
 
