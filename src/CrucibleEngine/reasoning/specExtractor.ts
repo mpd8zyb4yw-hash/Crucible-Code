@@ -209,7 +209,7 @@ export interface MultiFunctionSpec { entry: string; entries: string[]; cases: Co
 export async function extractMultiFunctionSpec(
   nl: string,
   fns: string[],
-  opts: { samples?: number; complete?: Completer } = {},
+  opts: { samples?: number; complete?: Completer; signal?: AbortSignal } = {},
 ): Promise<{ ok: boolean; spec?: MultiFunctionSpec; detail?: string; reason?: string }> {
   const targets = fns.filter(f => IDENT_RX.test(f))
   if (targets.length < 2) return { ok: false, reason: 'fewer than 2 named functions — use the single-function path' }
@@ -219,6 +219,11 @@ export async function extractMultiFunctionSpec(
 
   const proposals: CodeCase[][] = []
   for (let i = 0; i < samples; i++) {
+    // Honor the caller's time-box: each `complete` is a slow FM call, and without this check the
+    // sampling loop ignores an abort and runs all `samples` past the deadline — the exact
+    // unbounded phase that starved the synth write path on sortModule (VGR ate ~200s of a 480s
+    // task before the loop could inherit the budget).
+    if (opts.signal?.aborted) break
     let raw: string
     try {
       raw = await complete(
@@ -320,7 +325,7 @@ function normalizeCases(raw: RawSpec): { entry: string; cases: CodeCase[] } {
  */
 export async function extractCodeSpec(
   nl: string,
-  opts: { samples?: number; minCases?: number; complete?: Completer } = {},
+  opts: { samples?: number; minCases?: number; complete?: Completer; signal?: AbortSignal } = {},
 ): Promise<ExtractResult> {
   const samples = Math.max(1, opts.samples ?? 3)
   const minCases = opts.minCases ?? 2
@@ -333,6 +338,8 @@ export async function extractCodeSpec(
 
   const proposals: Array<{ entry: string; cases: CodeCase[] }> = []
   for (let i = 0; i < samples; i++) {
+    // Honor the caller's time-box (see extractMultiFunctionSpec) — stop sampling once aborted.
+    if (opts.signal?.aborted) break
     let raw: string
     try {
       raw = await complete(

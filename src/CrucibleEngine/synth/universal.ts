@@ -340,8 +340,21 @@ export async function synthesizeUniversal(
             ? 'goal-example'
             : `property (${(effectiveDerived as any).family ?? 'unknown'})`
     // Full behavioral oracle: tsc + spec-derived test.
+    // Family-specific engineering hints: the base prompt is generic, but the weak on-device FM
+    // reliably trips two mechanical traps on `fn(items, opts)` sort/transform shapes — it mutates
+    // the input (Array.prototype.sort sorts in place) and it ignores the documented default when a
+    // field is omitted. Both are exactly what the opts-transform-smoke oracle rejects (measured on
+    // sortModule: "does not mutate input" + "sorted ascending when direction omitted" fail every
+    // round). Naming the traps up front costs nothing on other tasks and gives the FM its best shot
+    // at the one gate it must clear before the module is ever written. Same closed-world discipline
+    // as the compile-gate filter hint below — guidance on HOW to code cleanly, never the answer.
+    const familyStr = (effectiveDerived as any)?.family ?? ''
+    const isTransformFamily = /opts-transform|sort/.test(String(familyStr))
+    const transformHint = isTransformFamily
+      ? ' This function takes (items, opts) and returns a NEW array. Rules the on-device model routinely breaks: (1) A .sort() comparator MUST return a NUMBER — negative, 0, or positive — NEVER a boolean. Write `return a < b ? -1 : a > b ? 1 : 0`, never `return a < b`. (2) Never mutate the input: copy first with [...items] BEFORE .sort() in EVERY branch (including the non-grouped path — do not call items.sort() directly). (3) Apply every documented default (an omitted direction means ascending). (4) Break ties by the documented secondary key (e.g. id ascending) ALWAYS ascending, regardless of the primary direction.'
+      : ''
     for (let r = 0; r < rounds; r++) {
-      const system = 'You are a precise TypeScript engineer. Output ONLY the complete contents of the requested .ts file — no prose, no markdown fences, no explanations. It must compile under strict-off TypeScript and export EXACTLY the requested symbols.'
+      const system = 'You are a precise TypeScript engineer. Output ONLY the complete contents of the requested .ts file — no prose, no markdown fences, no explanations. It must compile under strict-off TypeScript and export EXACTLY the requested symbols.' + transformHint
       const user = priorError
         ? `Your previous attempt was REJECTED by the test oracle with:\n${priorError}\n\nFix it. Re-output the COMPLETE corrected file for ${modulePath}.\n\nSPEC:\n${sigBlock}`
         : `Write the complete file ${modulePath} implementing this spec exactly:\n\n${sigBlock}`

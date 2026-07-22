@@ -52,7 +52,11 @@ function traceTurn(inner: import('./src/CrucibleEngine/agent/loop').DriveTurn): 
     try {
       const r = await inner(messages, tools, signal, turnClass)
       const calls = (r.toolCalls ?? []).map(c => c.name).join(',') || '(final)'
-      process.stderr.write(`[TURN_TRACE] #${i} class=${turnClass ?? 'code'} ms=${Date.now() - t0} calls=${calls} textLen=${(r.text ?? '').length}\n`)
+      const writes = (r.toolCalls ?? [])
+        .filter(c => c.name === 'write_file' || c.name === 'create_file')
+        .map(c => String((c.args as any)?.path ?? (c.args as any)?.file_path ?? '?'))
+      const writeNote = writes.length ? ` writes=[${writes.join('|')}]` : ''
+      process.stderr.write(`[TURN_TRACE] #${i} class=${turnClass ?? 'code'} ms=${Date.now() - t0} calls=${calls}${writeNote} textLen=${(r.text ?? '').length}\n`)
       return r
     } catch (e: any) {
       process.stderr.write(`[TURN_TRACE] #${i} class=${turnClass ?? 'code'} ms=${Date.now() - t0} THREW=${e?.name ?? e}\n`)
@@ -3898,6 +3902,7 @@ app.post('/api/chat', async (req, res) => {
         // tasks (which were abstaining anyway) are cut short — pure upside for them.
         const vgrBudgetSignal = AbortSignal.timeout(Number(process.env.CRUCIBLE_VGR_AGENT_MS ?? 45_000))
         const vgrSignal = AbortSignal.any([ac.signal, vgrBudgetSignal])
+        if (process.env.CRUCIBLE_TURN_TRACE) process.stderr.write(`[ROUTE_TRACE] VGR block enter (t+${Date.now() - t0}ms) multiFile=${isMultiFileRequest(message ?? '')}\n`)
 
         // ── Deterministic refactors (move / prune / delete / move-file / rename) ──
         // Detection + planning + refusal-messaging live in src/server/refactorRoutes.ts (pure,
@@ -4238,6 +4243,7 @@ app.post('/api/chat', async (req, res) => {
     // subtask with the best archetype (researcher/coder/critic/strategist) in
     // topological waves, then critic-audit and strategist-synthesise. Falls back
     // to the single loop on any failure so it can never regress baseline behavior.
+    if (process.env.CRUCIBLE_TURN_TRACE) process.stderr.write(`[ROUTE_TRACE] post-VGR (t+${Date.now() - t0}ms) handled=${handled} metaRouter=${shouldUseMetaRouter(message)} codeImpl=${isCodeImplementationTask(message ?? '')}\n`)
     if (!handled && !resumable && !iterCheckpoint && shouldUseMetaRouter(message)) {
       try {
         const metaTaskId = chatSessionId || newSessionId(t0)
@@ -4333,6 +4339,7 @@ app.post('/api/chat', async (req, res) => {
           // Run escalated off-device — flip the badge/pill so ON-DEVICE never lies.
           send({ type: 'agent_start', driver: currentDriverLabel(), projectPath, resumed: false }))
 
+    if (process.env.CRUCIBLE_TURN_TRACE) process.stderr.write(`[ROUTE_TRACE] single-loop (t+${Date.now() - t0}ms) needsPlan=${needsPlan(agentGoal)}\n`)
     if (resumable || needsPlan(agentGoal)) {
       const goal = resumable?.goal ?? agentGoal
       const sessionId = resumable?.id ?? newSessionId(t0)

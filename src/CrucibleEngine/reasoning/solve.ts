@@ -717,7 +717,7 @@ export async function solveCodingRequest(
   }
 
   // 4) Last resort — model-invented consensus cases (bias-prone; used only when nothing better).
-  const extraction = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete })
+  const extraction = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete, signal: opts.signal })
   if (extraction.ok && extraction.spec) {
     const { entry, cases } = extraction.spec
     const conv = await tryConverge(entry, cases, extraction.detail)
