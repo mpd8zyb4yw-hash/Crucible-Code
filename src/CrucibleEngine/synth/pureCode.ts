@@ -18,7 +18,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { synthesize, extractFeatures, registerSkill, listSkills, type SynthFile } from './index'
-import { deriveTests } from './derive'
+import { deriveTests, derivePropertyTests } from './derive'
 import { verifyCandidate, verifyCandidateAsync } from './oracle'
 import { synthesizeEnumerative } from './proposers/enumerative'
 import { ensureLibraryLoaded } from './loadLibrary'
@@ -71,26 +71,39 @@ export async function synthesizePureCode(spec: string, opts: PureCodeOpts = {}):
   // ── L0: exact primitive (instant). Re-verify against derived tests if the spec pins any down. ──
   const prim = synthesize(spec, { minConfidence: opts.minConfidence })
   if (prim.matched) {
+    // CERTIFICATION-SCOPE SOUNDNESS (2026-07-22): a catalog GREEN is only honest if the emitted
+    // deliverable IS the one the request (and any external audit) will import — the EXACT export
+    // names AT the declared module path. A keyword-matched primitive that lands at its own default
+    // path, or exports a near-neighbour name, passes behavior yet fails the audit's
+    // `import { rotate90 } from '../src/matrixRotate'` with "rotate90 is not a function". So every
+    // L0 ship below is now gated on identity (path + declared-export superset), not just behavior.
+    const identityOK = satisfiesRequestedIdentity(prim.files, feats.exports, feats.modulePath)
     if (derived) {
+      // Behavioral ground truth exists. It must pass AND the deliverable's identity must match the
+      // request — a primitive whose behavior satisfies the derived cases but whose file lands at
+      // the wrong path (so the audit imports an absent module) is NOT a certified solve.
       const v = await verify(prim.files, derived.testFile)
-      if (v.accepted) return ok(prim.files, 'primitive', testsDerived, `primitive ${prim.matched.id} ✓ ${testsDerived} derived tests`, prim.matched.id)
-      // primitive doesn't satisfy THIS spec variant → fall through to enumerative search
-    } else {
-      // No behavioral test to re-run. To ship at L0 we need POSITIVE evidence the match fits
-      // the request — a bare keyword hit is not enough. Require that the spec explicitly
-      // declares exports AND the emitted module is a superset of them. This closes two holes:
-      //   1. A no-export prose spec (e.g. "build a React signup form with email validation")
-      //      must NOT ship a keyword-matched primitive (is-email) — there is no declared API to
-      //      satisfy, so we have no evidence of intent → fall through and escalate honestly.
-      //   2. A wrong-API match (topoSort.ts emitting kahnSort when the spec asks for
-      //      topologicalSort) is rejected by the shape superset check.
-      // Specs with no declared exports and no examples are routed to L2's property-gated path,
-      // which ships only on verified family-contract behavior — never on keywords alone.
-      if (feats.exports.length > 0 && satisfiesExportShape(prim.files, feats.exports)) {
-        return ok(prim.files, 'primitive', 0, `primitive ${prim.matched.id} (library-verified, shape-checked)`, prim.matched.id)
+      if (v.accepted && identityOK) return ok(prim.files, 'primitive', testsDerived, `primitive ${prim.matched.id} ✓ ${testsDerived} derived tests, identity-matched`, prim.matched.id)
+      // wrong behavior OR wrong identity → fall through to enumerative search
+    } else if (feats.exports.length > 0 && identityOK) {
+      // No behavioral test to re-run, but the spec pins an API and the primitive emits exactly it
+      // at the declared path. A keyword+shape hit alone is NOT proof of THIS spec's semantics
+      // (measured: a `deepEqual` primitive shipping GREEN for a `deepEqualCyc` request that needs
+      // cycle handling; a `posixResolve` catalog hit failing 14 hidden edge cases). So before
+      // claiming a verified GREEN, try to derive a PROPERTY family from the spec and gate on it —
+      // family-contract behavior (roundtrip, sorted-permutation, clamp bounds…) is real ground
+      // truth, no examples required. Only ship shape-only when NO property family is derivable
+      // (the honest floor: a library-verified primitive matching the declared API exactly).
+      const propTests = derivePropertyTests(spec, modulePath)
+      if (propTests) {
+        const v = await verify(prim.files, propTests.testFile)
+        if (v.accepted) return ok(prim.files, 'primitive', propTests.count, `primitive ${prim.matched.id} ✓ ${propTests.count} ${propTests.family} property checks, identity-matched`, prim.matched.id)
+        // primitive fails this spec's property contract → fall through, escalate honestly
+      } else {
+        return ok(prim.files, 'primitive', 0, `primitive ${prim.matched.id} (library-verified, identity-matched; no example/property gate available)`, prim.matched.id)
       }
-      // no declared exports, or shape mismatch — fall through to L1/L2
     }
+    // no declared exports, identity mismatch, or failed gate — fall through to L1/L2
   }
 
   // ── L1: pure-code enumerative search. Needs derivable behavioral tests to be oracle-gated. ──
@@ -149,6 +162,28 @@ function satisfiesExportShape(files: SynthFile[], requested: string[]): boolean 
   if (!requested.length) return true
   const emitted = new Set(files.flatMap(f => emittedExportNames(f.content)))
   return requested.every(e => emitted.has(e))
+}
+
+/** Normalize a module path for identity comparison — strip a leading "./" and the code
+ *  extension so `src/matrixRotate.ts` and `src/matrixRotate` (as the audit imports it) match. */
+function normModulePath(p: string): string {
+  return p.replace(/^\.\//, '').replace(/\.(?:tsx?|jsx?|mjs|cjs)$/, '')
+}
+
+/**
+ * True when the emitted file set is the deliverable the REQUEST asked for — the certification
+ * scope must equal the audit's import target, not merely be behaviourally similar:
+ *   (a) every declared export name is emitted (superset — extra helpers are fine), AND
+ *   (b) when the spec declares a module path, some emitted file lands at exactly that path.
+ * If the spec declares no path (loose prose) the path clause is vacuous — behavior/shape alone
+ * governs, as before. This is what stops a keyword-matched primitive from shipping GREEN at its
+ * own default path while the audit imports an absent module ("rotate90 is not a function").
+ */
+function satisfiesRequestedIdentity(files: SynthFile[], requested: string[], modulePath: string | null): boolean {
+  if (!satisfiesExportShape(files, requested)) return false
+  if (!modulePath) return true
+  const want = normModulePath(modulePath)
+  return files.some(f => normModulePath(f.path) === want)
 }
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))

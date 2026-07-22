@@ -28,7 +28,7 @@ import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectPruneImportsAll, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
-import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
+import { declaredExportedNames, detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, selfTestHarnessFiles, solveMultiFileRequest } from './multiFile'
 import type { CandidateFile } from './codeVerifier'
 import type { Candidate, ProposeContext } from './types'
@@ -174,6 +174,23 @@ async function run() {
   ok('a single USER-stated example forms a trustworthy spec (no model consensus needed)',
     userEx.ok === true && userEx.spec?.entry === 'initials' && userEx.spec.cases.length >= 1,
     userEx.ok ? userEx.detail : userEx.reason)
+
+  // CERTIFICATION-SCOPE: a request that declares its exact export overrides a MIS-VOTED entry.
+  // The model here proposes cases naming `matrixRotate`, but the spec says "Export exactly:
+  // export function rotate90(...)". We must certify+emit `rotate90` — the audit's import target —
+  // never the model's guessed name (the live "rotate90 is not a function" GREEN-yet-wrong bug).
+  const declEx = await extractCodeSpec(
+    'Implement matrix rotation at src/matrixRotate.ts.\nExport exactly:\n  export function rotate90<T>(matrix: T[][]): T[][]',
+    { samples: 3, complete: async () => JSON.stringify({ entry: 'matrixRotate', cases: [
+      { args: [[[1, 2], [3, 4]]], expected: [[3, 1], [4, 2]], name: 'matrixRotate' },
+      { args: [[[1]]], expected: [[1]], name: 'matrixRotate' },
+    ] }) })
+  ok('the declared export name OVERRIDES a mis-voted entry (certify the audit\'s import identity)',
+    declEx.ok === true && declEx.spec?.entry === 'rotate90', declEx.ok ? declEx.detail : declEx.reason)
+  ok('declaredExportedNames reads only genuine export declarations',
+    JSON.stringify(declaredExportedNames('Export exactly:\n  export function rotate90<T>(m: T[][]): T[][]')) === '["rotate90"]')
+  ok('declaredExportedNames returns both for a two-export spec (routes to multi-fn, no override)',
+    declaredExportedNames('export class TokenBucket {} and export class SlidingWindowLimiter {}').length === 2)
 
   // Vague request → the model can't name a concrete spec → HONEST ABSTAIN, not a guess.
   const vague = await extractCodeSpec('make it better somehow', { samples: 2,

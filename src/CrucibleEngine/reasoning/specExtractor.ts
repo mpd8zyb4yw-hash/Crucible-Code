@@ -164,6 +164,23 @@ export function harvestExplicitExamples(nl: string): Harvested {
 const IDENT_RX = /^[A-Za-z_$][\w$]*$/
 const NON_FN_WORDS = new Set(['if', 'for', 'while', 'return', 'function', 'const', 'let', 'var', 'switch', 'catch'])
 
+/**
+ * The exact function names the request DECLARES as exports via a real signature —
+ * `export function rotate90<T>(matrix: T[][]): T[][]` or an "Export exactly:" block. This is the
+ * audit's import identity (`import { rotate90 } from '../src/matrixRotate'`), and it is
+ * AUTHORITATIVE over any name the model's proposed examples happen to call. Narrower on purpose
+ * than detectDeclaredFunctions (which also grabs any call-shaped token): only a genuine
+ * `export function NAME` / `export const NAME =` declaration counts, so this can safely override
+ * a mis-voted entry without swallowing prose. First-seen order preserved.
+ */
+export function declaredExportedNames(nl: string): string[] {
+  const names = new Set<string>()
+  for (const m of nl.matchAll(/\bexport\s+(?:async\s+)?(?:function\s+|const\s+|class\s+)([A-Za-z_$][\w$]*)/g)) {
+    if (IDENT_RX.test(m[1]) && !NON_FN_WORDS.has(m[1].toLowerCase())) names.add(m[1])
+  }
+  return [...names]
+}
+
 /** Function names the request explicitly asks to export/define (identifier before `(`). */
 export function detectDeclaredFunctions(nl: string): string[] {
   const names = new Set<string>()
@@ -358,7 +375,16 @@ export async function extractCodeSpec(
   const entryVotes = new Map<string, number>()
   for (const p of proposals) if (p.entry && IDENT.test(p.entry)) entryVotes.set(p.entry, (entryVotes.get(p.entry) ?? 0) + 1)
   const harvestedEntry = IDENT.test(harvested.entry) ? harvested.entry : ''
-  const entry = harvestedEntry || ([...entryVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '')
+  let entry = harvestedEntry || ([...entryVotes.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '')
+  // CERTIFICATION-SCOPE SOUNDNESS (2026-07-22): when the request DECLARES an exact exported API
+  // (`Export exactly: export function rotate90<T>(…)`), that name is the audit's import identity
+  // and OVERRIDES a mis-voted entry. Without this, a prose-only request ("matrix rotation") whose
+  // model-proposed examples call the wrong name (`matrixRotate`) certifies + emits that symbol,
+  // and the external audit's `import { rotate90 }` then hits "rotate90 is not a function". Only
+  // override on an UNAMBIGUOUS single declared export the current entry doesn't already match —
+  // multi-export specs route through extractMultiFunctionSpec and are left untouched.
+  const declaredExports = declaredExportedNames(nl)
+  if (declaredExports.length === 1 && entry !== declaredExports[0]) entry = declaredExports[0]
   if (!entry) return { ok: false, reason: 'could not name a concrete entry function (no valid identifier — request too vague or path-shaped; abstaining)' }
 
   // Consensus over cases: group every proposed case by argsKey; for each arg-set, the
