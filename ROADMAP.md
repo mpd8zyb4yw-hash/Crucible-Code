@@ -1933,6 +1933,39 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22b (gap-soundness — multi-file misroute fix + certification-scope soundness)
+
+Three landings, all committed on `claude/gap-soundness`, all bench-verified (VGR bench 214/0;
+synth:prove 4/4; tsc clean). Track A's W3/W2 and the W2/W3-dependent re-bench were left untouched
+per the two-implementer split.
+
+- **Multi-file misroute fix (`reasoning/multiFile.ts`).** A prompt whose only second file is a
+  runnable self-test harness ("Write a self-test (src/index.ts, runnable with `npx tsx …`)") was
+  tripping `isMultiFileRequest`, sending 26/39 baseline tasks into a 3×~90s multi-file ladder
+  before the single-file loop was ever reachable. New `selfTestHarnessFiles()` /
+  `deliverableRequestedFiles()` strip self-test clauses and route on the deliverable file count;
+  genuine cross-file requests, and a harness path that is ALSO a real deliverable, still route
+  multi-file. This reclaims most of the timed-out budget the baseline diagnosed as the #1 loss.
+- **Certification-scope soundness #1 — VGR entry identity (`reasoning/specExtractor.ts`).** A
+  prose-only request declaring "Export exactly: export function rotate90(...)" whose model-proposed
+  cases mis-voted the name (`matrixRotate`) certified + emitted the WRONG symbol; the audit's
+  `import { rotate90 }` then hit "rotate90 is not a function". New `declaredExportedNames()` makes
+  a single declared export authoritative — it overrides a mis-voted entry so we always certify the
+  audit's real import target. Multi-export specs (≥2 declared) are untouched (they route through
+  `extractMultiFunctionSpec`).
+- **Certification-scope soundness #2 — pureCode L0 catalog ship (`synth/pureCode.ts`).** A
+  keyword+shape hit could claim a verified GREEN on semantics it never checked (deepEqual for a
+  deepEqualCyc request; posixResolve failing hidden edge cases). Every L0 ship is now gated on
+  `satisfiesRequestedIdentity` (declared exports emitted AT the declared module path), and the
+  no-example branch must pass a derived PROPERTY family before claiming GREEN — shape-only is the
+  honest floor only when no example/property gate is derivable.
+
+**Deferred with reason:** W20 held-out acceptance cases (item 4) needs a richer, INDEPENDENT case
+source first — splitting today's 2–3-case model-consensus pool into proposer-visible + held-out
+just starves the proposer without adding real ground truth (the csvLine weakness is spec strength,
+not a proposer-overfit that holding out would catch). Co-develop it with property/adversarial case
+generation, not blind.
+
 ### 2026-07-22 (gap-soundness — W1 landed + THE FIRST HONEST LIVE BASELINE: the W2/W3 "before" floor)
 
 **This is the number every future coding workstream is measured against. Read the label

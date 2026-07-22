@@ -43,7 +43,15 @@
 >   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
 >   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
 
-**Shipped this session (all committed on `claude/gap-soundness`):**
+**Shipped 2026-07-22b (this continuation, on `claude/gap-soundness`) — fix-list items 2 & 4 DONE:**
+- Multi-file misroute fix (`reasoning/multiFile.ts`): self-test-harness clauses discounted from
+  the multi-file trigger — reclaims the 3×~90s ladder that starved 26/39 baseline tasks.
+- Certification-scope soundness (`specExtractor.ts` + `synth/pureCode.ts`): certify against the
+  audit's exact import identity — declared-export override for VGR entry, identity+property gate
+  for the pureCode L0 catalog ship. VGR bench 214/0, synth:prove 4/4, tsc clean. See ROADMAP
+  CHANGE LOG 2026-07-22b and the FIX LIST below (items 2 & 4 struck through).
+
+**Shipped earlier 2026-07-22 (all committed on `claude/gap-soundness`):**
 - **W1 loop-entry forensics** (`server.ts`): reason-coded `loop_entry` SSE events at every
   early return before the first proposal. Bail-without-reason is now structurally impossible
   on this path; the bench attributes every zero-iteration outcome to a named `stage:reason`.
@@ -71,16 +79,30 @@
 **OPEN — THE FIX LIST (priority order):**
 1. **W3 prefix-cache + batching** (llama-server client) — ~90s/proposal is the ceiling;
    nothing moves until proposals are cheap. Stable-prefix/volatile-suffix + K concurrent.
-2. **Multi-file misroute fix** (`server.ts` VGR gate): a self-test-only second file must NOT
-   enter the multi-file ladder. Cheap; reclaims most of the timed-out budget.
+   (Track A — llama-server client / `fmReact.ts`.)
+2. **~~Multi-file misroute fix~~ — DONE 2026-07-22b.** The gate no longer routes on raw file
+   count: `reasoning/multiFile.ts` now strips self-test-harness clauses
+   (`selfTestHarnessFiles()` / `deliverableRequestedFiles()`) and routes on the deliverable
+   count, so a runnable `src/index.ts` self-test no longer trips the 3×~90s multi-file ladder.
+   VGR bench 214/0. Re-bench (item 6) will confirm the reclaimed budget in the live n=39.
 3. **W2 GBNF** grammar-constrained decoding — malformed proposals impossible; compounds w/ W3.
-4. **Certification-scope fix (soundness):** VGR must certify against the EXACT exported API
-   name+path the audit imports (`matrixRotate` gap); a catalog match must re-verify against
-   the requesting spec's cases before claiming GREEN (`posixResolve` gap).
+   (Track A — `grammars/`.)
+4. **~~Certification-scope fix (soundness)~~ — DONE 2026-07-22b.** Both gaps closed +
+   bench-locked: (a) `specExtractor.declaredExportedNames()` makes a single declared export
+   authoritative, overriding a mis-voted VGR entry (`matrixRotate`→`rotate90` gap); (b)
+   `pureCode` L0 now gates every ship on `satisfiesRequestedIdentity` (declared exports emitted
+   AT the declared path) AND, in the no-example branch, on a passing derived PROPERTY family
+   before claiming GREEN (`posixResolve`/`deepEqualCyc` gap). Residual: shape-only remains the
+   honest floor when NO example/property gate is derivable — a library-verified primitive
+   matching the declared API exactly, behavior unverified. That residual is item 5's target.
 5. **W20 held-out acceptance cases** — `csvLine` is the live evidence the self-extracted spec
-   is too weak to certify on.
+   is too weak to certify on. BLOCKED on a richer, INDEPENDENT case source: holding out from
+   today's 2–3-case model-consensus pool just starves the proposer (the weakness is spec
+   STRENGTH, not proposer overfit). Co-develop with property/adversarial case generation.
 6. **Re-run full n=39 under the fixed harness after W2/W3** — one clean scorecard file; the
    generated-rate delta vs this floor (must clear ~+16 pts) is the first real progress signal.
+   The 2026-07-22b misroute + cert-scope fixes should already move the *timed-out* and
+   *catalog-but-wrong* counts even before W2/W3.
 7. **W42.2 scale toward n≈100 (±10-pt floor)** — mined candidates `79583e1`, `a0bdd2a`,
    `781fbba`/`23d1305`, `1fb3971`; fix touches one engine file + its paired bench.
 8. **W32 verifier fault-injection** — 22 authored refs + 3 mined parents as mutation targets.
