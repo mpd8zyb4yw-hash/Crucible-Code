@@ -3862,6 +3862,23 @@ app.post('/api/chat', async (req, res) => {
       try {
         send({ type: 'thought', text: 'Verification-guided reasoning: proposing candidates, certifying each by execution…' })
 
+        // ── VGR TIME BUDGET (cont.100) ────────────────────────────────────────────
+        // The NON-agentic triage VGR path (below) is time-boxed to 40s precisely so a
+        // non-certifiable function "fails FAST to the FM rather than burning the full
+        // budget". The AGENTIC path here was NOT boxed — its solve calls carried only
+        // `ac.signal` (client-disconnect / harness 480s). MEASURED (2026-07-22, offline
+        // filterModule): a task with an API contract but no worked f(args)===output pins
+        // cannot form a checkable spec, so every VGR attempt exhausts the differential +
+        // extraction sampling and ABSTAINS after ~82s (attempt 1) + ~52s (attempt 2) + a
+        // 3rd attempt ≈ 200s of dead time — then hands to runAgentLoop with the budget
+        // nearly gone, so the loop never completes an iteration (iters=0, module never
+        // written). Box the WHOLE VGR phase (all attempts, single- and multi-file) so it
+        // abstains fast and the loop inherits the remaining ~435s. A genuinely certifiable
+        // task converges in a handful of calls, well inside this box; only the no-spec
+        // tasks (which were abstaining anyway) are cut short — pure upside for them.
+        const vgrBudgetSignal = AbortSignal.timeout(Number(process.env.CRUCIBLE_VGR_AGENT_MS ?? 45_000))
+        const vgrSignal = AbortSignal.any([ac.signal, vgrBudgetSignal])
+
         // ── Deterministic refactors (move / prune / delete / move-file / rename) ──
         // Detection + planning + refusal-messaging live in src/server/refactorRoutes.ts (pure,
         // testable). All run BEFORE the multi-file branch: several name two paths and would else be
@@ -3925,21 +3942,21 @@ app.post('/api/chat', async (req, res) => {
           // proposer is nondeterministic and multi-file certification abstains honestly, so a
           // fresh attempt is pure upside (never a wrong write). Bounded + abort-aware.
           const MF_MAX_ATTEMPTS = Math.max(1, Number(process.env.CRUCIBLE_VGR_ATTEMPTS ?? 3))
-          let mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: ac.signal })
+          let mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: vgrSignal })
           // Escalation for the multi-file path (mirrors the single-file ladder): once the first
           // attempt fails, fold a WEB reference approach into the proposer's grounding context on
           // retries. Fetched once (retrieveForTask caches), best-effort. Certification unchanged —
           // the multi-file verifier still executes the whole bundled graph against the spec.
           let mfWebGrounded: string | undefined
-          for (let attempt = 2; attempt <= MF_MAX_ATTEMPTS && !(mf.status === 'solved' && mf.files?.length) && !ac.signal.aborted; attempt++) {
-            if (attempt === 2 && webGroundOrNull && !ac.signal.aborted) {
+          for (let attempt = 2; attempt <= MF_MAX_ATTEMPTS && !(mf.status === 'solved' && mf.files?.length) && !vgrSignal.aborted; attempt++) {
+            if (attempt === 2 && webGroundOrNull && !vgrSignal.aborted) {
               try {
                 const ref = await webGroundOrNull(message ?? '')
                 if (ref) { mfWebGrounded = `${mfContext ? mfContext + '\n\n' : ''}### Web reference (adapt to the spec — NOT trusted; the file graph is executed against hidden cases):\n${ref}`; send({ type: 'thought', text: 'VGR multi-file · folded a web reference approach into the proposer context' }) }
               } catch { /* best-effort */ }
             }
             send({ type: 'thought', text: `VGR multi-file · attempt ${attempt - 1}/${MF_MAX_ATTEMPTS} did not certify (${mf.status}) — escalating${mfWebGrounded ? ' with web grounding' : ''}` })
-            mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfWebGrounded ?? mfContext, signal: ac.signal })
+            mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfWebGrounded ?? mfContext, signal: vgrSignal })
             if (mf.status === 'solved' && mf.files?.length) send({ type: 'thought', text: `VGR multi-file · certified on attempt ${attempt}/${MF_MAX_ATTEMPTS}` })
           }
           debugBus.emit('agent', 'vgr_multifile_result', { status: mf.status, files: mf.files?.map(f => f.path), calls: mf.search?.modelCalls }, { severity: 'info' })
@@ -4055,7 +4072,7 @@ app.post('/api/chat', async (req, res) => {
         const keptAttempts: Attempt<string>[] = []
         const keptSeen = new Set<string>()
         for (let attempt = 1; !handled && attempt <= VGR_MAX_ATTEMPTS; attempt++) {
-          if (ac.signal.aborted) break
+          if (vgrSignal.aborted) break
           // Escalate effort per attempt: attempt 1 is the FAST path (deterministic tiers + a
           // single-shot FM) — most tasks certify here with no network, no extra epochs. Once
           // attempt 1 fails, the task is demonstrably HARD, so attempts 2+ engage "try hard" mode:
@@ -4067,7 +4084,7 @@ app.post('/api/chat', async (req, res) => {
           if (tryHard) send({ type: 'thought', text: `VGR · escalating to convergence${webGroundOrNull ? ' + web reference lookup' : ''} for this harder task…` })
           vgr = await solveCodingRequest(vgrGoal, {
             maxModelCalls: 8, beamWidth: 2,
-            signal: ac.signal,
+            signal: vgrSignal,
             buggyCode: repairSeed,
             converge: process.env.CRUCIBLE_CONVERGE === '1' || tryHard,
             webGround: tryHard ? webGroundOrNull : undefined,

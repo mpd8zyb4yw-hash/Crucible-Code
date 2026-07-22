@@ -1933,6 +1933,33 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22g (cont.100 — agentic VGR time-box: the pre-loop stall that starved runAgentLoop)
+- **Root cause, MEASURED.** `npm run smoke:code:offline` gen-path was 0/10. Every gen task
+  reported `iters=0 … timeout after 480s` — the agent loop NEVER ran. `iter_progress` is emitted
+  at the TOP of `runAgentLoop` (loop.ts:429) before the first `driveTurn`, so `iters=0` means the
+  480s was spent BEFORE the loop, in the `/api/chat` agentic branch. Traced it to the
+  single-/multi-file VGR block (server.ts:3859+): its `solveCodingRequest`/`solveMultiFileRequest`
+  calls carried only `ac.signal` (client-disconnect / harness 480s) — NO time box, unlike the
+  non-agentic triage VGR path which is boxed to 40s. Isolated `filterModule` offline: VGR abstains
+  after ~82s (attempt 1) + ~52s (attempt 2) + a 3rd attempt ≈ ~200s because these tasks give an API
+  contract + prose rules but NO `f(args)===output` worked examples, so the differential+extraction
+  tiers exhaust their sampling and can't form a checkable spec. That ~200s left the loop no budget →
+  nothing written → `module exists: FAIL`.
+- **Fix.** One shared `AbortSignal.timeout(CRUCIBLE_VGR_AGENT_MS ?? 45_000)` combined with
+  `ac.signal` (`vgrSignal`), threaded into every agentic VGR solve call + both retry-loop abort
+  checks. VGR now fails fast and `runAgentLoop` inherits the remaining ~435s. A genuinely
+  certifiable task converges in a handful of calls well inside 45s; the no-spec tasks (which were
+  abstaining anyway) are just cut short — pure upside. Mirrors the triage path's existing box.
+- **MEASURED RESULT (offline harness, this session, own server on :3099, strict).**
+  Gen-path (real signal) **0/10 → 7/10**; total **4/14 → 11/14**. No regressions (4/4 catalog
+  greens held). Newly green: filterModule, summaryModule, clampModule, leaderboardModule,
+  usernameModule, caseCompareModule, multiFileLedger. Still RED: sortModule (compile fail),
+  tagSetModule (compile fail), bugfixCsv (hidden suite 5 fails — genuine CSV quoting logic bug).
+- **Surfaced, NOT fixed (next target).** Certified tasks still run to the 480s wall
+  (`done=false`) — each offline `driveTurn` on the 1.5B is ~160s (full tool-schema prefill) and
+  `hardenFinal`/`groundFinal` add post-completion model calls. That's the latency ceiling; needs
+  its own measured cycle.
+
 ### 2026-07-22f (cont.99 — consensus-fuzz no-reference gate; live head terminal-rate re-bench; ledger fold)
 - **Consensus-fuzz: the fuzz gate for ARBITRARY (non-canonical) functions.** New
   `reasoning/consensusFuzz.ts`. `makeCanonicalFuzzStage` only fired for families with a single

@@ -17,7 +17,45 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22f (cont.99, VGR/reasoning track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22g (cont.100, agentic-latency/routing track) (REPLACE THIS EVERY SESSION)
+
+> This track owns `server.ts` (the `/api/chat` agentic branch — VGR routing/time-boxing) and
+> the offline coding-benchmark loop. It did NOT touch `src/CrucibleEngine/reasoning/*` (cont.99's
+> files). One measured fix landed; the loop-latency ceiling is documented and open.
+
+**Shipped 2026-07-22g (cont.100):**
+- **Agentic VGR time-box — the pre-loop stall that made gen-path 0/10.** MEASURED: every gen
+  task timed out at 480s with `iters=0`, meaning `runAgentLoop` never ran. Cause: the agentic VGR
+  block (`server.ts:3859+`) had no time box (only `ac.signal`), unlike the triage path's 40s box.
+  On a no-worked-examples task (API contract + prose rules) VGR exhausts its differential/extraction
+  sampling and abstains after ~200s across 3 attempts, starving the loop of budget. Fix: shared
+  `AbortSignal.timeout(CRUCIBLE_VGR_AGENT_MS ?? 45_000)` (`vgrSignal`) on every agentic VGR solve
+  call + retry-loop abort checks. `tsc` clean.
+- **MEASURED (offline harness, own server :3099, strict, this session):** gen-path **0/10 → 7/10**,
+  total **4/14 → 11/14**, no regressions. The concurrent session's server on :3001 was left
+  untouched (own instance on :3099, killed after the run).
+
+**Open items / risks (this track, priority order):**
+1. **Loop does not terminate after certification — the real latency ceiling.** filterModule/
+   summaryModule/clampModule/multiFileLedger certify correctly but run to the 480s wall
+   (`done=false`). Each offline `driveTurn` on qwen2.5-1.5b is ~160s (full tool-schema prefill),
+   and `hardenFinal`/`groundFinal` (server.ts:4359) add post-completion model calls. Target:
+   task emits `final`/`[DONE]` in <120s. Look at `agent/loop.ts` completion path + `synthDriver.ts`
+   `makeOfflineDriveTurn`. THIS is the user's actual ask ("480s is unusable").
+2. **sortModule + tagSetModule: `compile=n` on the gen path.** Both write a module that fails
+   `tsc` (tagSetModule oddly passes the hidden suite anyway, at 44s — so it wrote SOMETHING that
+   ran but doesn't typecheck). Inspect what the loop emitted for these two; likely a type error the
+   verify gate didn't catch before writing.
+3. **bugfixCsv: `compile=Y hidden=n` (5/9 hidden checks fail).** A genuine logic bug — the RFC-4180
+   fix doesn't handle embedded newlines in quotes and empty quoted fields. This is a real
+   reasoning gap, not a routing one; needs the fix-in-repo path to localize + repair those cases.
+4. **Trim offline tool-schema prefill for code tasks** (feeds item 1): `driveTurn` ships the full
+   tool catalog to the 1.5B each iteration (~160s/iter). A code task needs write_file/read/run/edit,
+   not the whole registry — smaller schema = less prefill = faster turns.
+
+---
+
+## CURRENT STATE — last updated 2026-07-22f (cont.99, VGR/reasoning track) (SUPERSEDED — see block above)
 
 > This track owns ONLY `src/CrucibleEngine/reasoning/*` (+ additive edits to `__bench_all.ts`,
 > `package.json`). This session closed all four cont.99e open items: the live head re-bench,
