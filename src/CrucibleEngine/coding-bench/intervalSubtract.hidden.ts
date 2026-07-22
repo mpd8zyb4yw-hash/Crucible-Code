@@ -24,6 +24,14 @@ check('disjoint removal ignored', eq(subtractIntervals([[1, 3]], [[10, 20]]), [[
 check('unsorted overlapping inputs', eq(subtractIntervals([[6, 9], [1, 3]], [[7, 8], [2, 2]]), [[1, 1], [3, 3], [6, 6], [9, 9]]))
 check('empty base', eq(subtractIntervals([], [[1, 2]]), []))
 check('negative coordinates', eq(subtractIntervals([[-10, -1]], [[-5, -3]]), [[-10, -6], [-2, -1]]))
+// Adjacent integer intervals must coalesce into the minimal form — [1,2] and [3,4] touch at
+// the 2..3 boundary, so the canonical result is [[1,4]], not two pieces. Guards the
+// merge boundary s <= last-end + 1 (a lt-for-le or a plus-for-one off-by-one leaves them split).
+check('adjacent intervals coalesce (minimal form)', eq(subtractIntervals([[1, 2], [3, 4]], []), [[1, 4]]))
+// A nested interval whose end-order differs from its start-order — [2,3] ends before [1,10]
+// but starts after it. Only a start-keyed sort yields [[1,10]]; an end-keyed sort would drop
+// point 1. Guards the start-then-end sort comparator against an or-to-and collapse.
+check('nested interval keeps start-order sort', eq(subtractIntervals([[1, 10], [2, 3]], []), [[1, 10]]))
 let threw = false
 try { subtractIntervals([[1, 2]], [[5, 4]]) } catch (e) { threw = e instanceof RangeError }
 check('inverted remove interval throws', threw)

@@ -24,7 +24,7 @@
 
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
-import { parsePlan, parseSubFunctionPlan } from './fmPlanner'
+import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner } from './fmPlanner'
 import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, type SubFunctionPlanner } from './solve'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
@@ -288,6 +288,48 @@ async function main() {
   check('10d rejects invalid identifiers',
     parseSubFunctionPlan('[{"name":"2bad","examples":[{"args":[1],"expected":2}]}]').length === 0)
   check('10e non-JSON prose yields nothing', parseSubFunctionPlan('just try harder').length === 0)
+
+  // ── 11. PRECEDENCE-AWARE TEMPLATE — the algorithm-shaped carve for the arithmetic class. ──
+  // The live probe (2026-07-22k) proved the FM planner re-bakes basicCalculator's whole
+  // precedence problem into one un-certifiable helper. The template forces the textbook
+  // two-pass carve instead. These checks are hermetic (no FM): they verify the CLASS DETECTOR
+  // fires only where it should, the plan has the right shape, and — critically — that the three
+  // helper interfaces COMPOSE to a correct calculator on the 5 adversarial cases, so the plan
+  // the decomposer proposes is genuinely solvable (soundness is owned by re-verify regardless).
+  const calcGoal =
+    'Write basicCalculator(s: string): number evaluating an arithmetic expression string ' +
+    'containing non-negative integers and the operators + - * / with standard precedence ' +
+    '(* and / before + and -) and no parentheses. Division truncates toward zero.'
+  check('11 class detector fires on the calculator goal', isArithmeticExprGoal(calcGoal, 'basicCalculator'))
+  check('11b class detector fires on a parenless "order of operations" phrasing',
+    isArithmeticExprGoal('evaluate the expression respecting order of operations for + - * /', 'evalExpr'))
+  check('11c class detector does NOT fire on an unrelated goal',
+    !isArithmeticExprGoal('reverse a linked list in place', 'reverseList') &&
+    !isArithmeticExprGoal('return the sum of an array of numbers', 'sumArray'))
+  const tpl = precedenceTemplatePlan()
+  const NAMES = 'tokenizeExpr,parseTokens,foldMulDiv,foldAddSub'
+  check('11d template proposes the four-helper carve tokenize/parseTokens/foldMulDiv/foldAddSub',
+    tpl.length === 4 && tpl.map((h) => h.name).join(',') === NAMES, tpl.map((h) => h.name).join(','))
+  check('11e default sub-function planner returns the template for the calculator class (0 model calls)',
+    (await makeFmSubFunctionPlanner()(calcGoal, 'basicCalculator', [], undefined))?.map((h) => h.name).join(',') === NAMES)
+  // Reference impls following each helper's declared NATURAL-TYPED interface EXACTLY.
+  type Tok = number | string
+  const refTok = (s: string): string[] => s.replace(/\s+/g, '').match(/\d+|[-+*/]/g) ?? []
+  const refParse = (tok: string[]): Tok[] => tok.map((t) => ('+-*/'.includes(t) ? t : Number(t)))
+  const refMD = (it: Tok[]): Tok[] => { const o: Tok[] = [it[0]]; for (let i = 1; i < it.length; i += 2) { const op = it[i], b = it[i + 1] as number; if (op === '*') o[o.length - 1] = (o[o.length - 1] as number) * b; else if (op === '/') o[o.length - 1] = Math.trunc((o[o.length - 1] as number) / b); else { o.push(op); o.push(b) } } return o }
+  const refAS = (it: Tok[]): number => { let a = it[0] as number; for (let i = 1; i < it.length; i += 2) { a = it[i] === '+' ? a + (it[i + 1] as number) : a - (it[i + 1] as number) } return a }
+  const eqj = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  // Each helper's SEED cases must be satisfiable by a correct impl of that helper (else the rung
+  // is impossible to certify and the template is broken).
+  const implFor: Record<string, (...a: unknown[]) => unknown> = {
+    tokenizeExpr: refTok as never, parseTokens: refParse as never, foldMulDiv: refMD as never, foldAddSub: refAS as never,
+  }
+  const seedOk = tpl.every((h) => h.cases.every((c) => eqj(implFor[h.name](...c.args), c.expected)))
+  check('11f every template seed case is satisfied by a correct impl of that helper', seedOk)
+  // COMPOSITION: foldAddSub(foldMulDiv(parseTokens(tokenizeExpr(s)))) must equal the calculator.
+  const compCases: [string, number][] = [['3+2*2', 7], [' 3/2 ', 1], ['3+5 / 2', 5], ['14-3*2', 8], ['2*3+4*5', 26], ['6/2*3', 9], ['2+3*4-6/2', 11]]
+  const compOk = compCases.every(([s, e]) => refAS(refMD(refParse(refTok(s)))) === e)
+  check('11g the four helpers compose to a correct calculator on all adversarial cases', compOk)
 
   console.log(`\n${fail === 0 ? '✅' : '❌'} decompose bench: ${pass} passed, ${fail} failed\n`)
   if (fail > 0) process.exit(1)

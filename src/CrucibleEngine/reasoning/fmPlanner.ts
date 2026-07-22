@@ -74,6 +74,12 @@ export interface FmPlannerOpts {
   temperature?: number
   maxTokens?: number
   timeoutMs?: number
+  /**
+   * Set false to DISABLE the deterministic precedence-aware template fast-path (see
+   * `precedenceTemplatePlan`) and always ask the model. Default on — the template is the
+   * whole lever for the arithmetic/parser class the FM planner can't carve itself.
+   */
+  template?: boolean
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -153,11 +159,132 @@ export function parseSubFunctionPlan(raw: string): PlannedSubFunction[] {
   return out
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// PRECEDENCE-AWARE TEMPLATE — the algorithm-shaped carve for the arithmetic/parser class
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The live probe (2026-07-22k) found the FM sub-function planner USELESS on basicCalculator
+// (evaluate `3+2*2`=7, */ before +-, no parens): it re-bakes the whole precedence problem
+// into ONE un-nameable "evaluator" helper the 1.5B still can't one-shot → decompose-failed at
+// −4. But for this class the correct carve is KNOWN — the textbook two-pass fold:
+//     tokenize  →  fold * and / left-to-right  →  fold + and - left-to-right
+// each pass a helper the weak model CAN one-shot. So for this class we SKIP the model planner
+// and emit a deterministic ALGORITHM-shaped plan (0 model calls).
+//
+// SOUNDNESS UNCHANGED. This plan is UNTRUSTED like every plan (decompose.ts): the example I/O
+// below only SEEDS each rung's verifier, and the composed whole is re-verified against the
+// ORIGINAL cases. A wrong template can only waste budget — it can never certify a wrong answer.
+// It changes the PATH the planner proposes, never the TRUTH the verifier owns.
+//
+// THE CARVE IS FOUR helpers, chosen so each rung works WITH the 1.5B's natural grain rather
+// than against it — the key lesson from two live probes (2026-07-22k/l):
+//   1. `tokenizeExpr(s): string[]`            regex split → ALL STRING tokens
+//   2. `parseTokens(t: string[]): (num|str)[]` map Number over the digit tokens
+//   3. `foldMulDiv(items): (num|str)[]`        collapse * and / (operands already numeric)
+//   4. `foldAddSub(items): number`            numeric left-to-right fold → the answer
+// WHY FOUR, NOT THREE. Tokenizing naturally yields STRINGS (the canonical
+// `s.replace(/\s+/g,'').match(/\d+|[-+*/]/g)` idiom); arithmetic naturally yields NUMBERS. The
+// first probe used unquoted-number tokens → tokenizeExpr's every draw was all-strings → failed
+// JSON-stringify equality → never certified. The second used all-STRING tokens → tokenizeExpr
+// certified in ONE call, but then foldMulDiv had to compute 3*2=6 and re-STRINGIFY it, which the
+// model kept forgetting → stalled. Splitting out `parseTokens` gives each helper a single
+// natural-typed job: tokenize stays string-only, the folds stay number-only, and the one type
+// conversion is its own trivial `.map(Number)` rung. Composition = foldAddSub(foldMulDiv(
+// parseTokens(tokenizeExpr(s)))). Sound regardless: seeds only SEED verifiers; the whole is
+// re-verified against the ORIGINAL cases.
+
+/** Heuristic: does this goal look like "evaluate an arithmetic expression with * / + - precedence"? */
+export function isArithmeticExprGoal(goal: string, entry: string): boolean {
+  const g = (goal ?? '').toLowerCase()
+  const e = (entry ?? '').toLowerCase()
+  const nameHit = /(calc|calculat|evalexpr|evaluate|arithmetic|expression|shunt|infix)/.test(e)
+  // Operator set + precedence/expression language. Require BOTH an arithmetic-operator signal
+  // and an expression/precedence signal so we don't fire on unrelated "add"/"multiply" tasks.
+  const hasOps = /[*/].*[+\-]|[+\-].*[*/]|\*\s*and\s*\/|multiplication|division/.test(g)
+  const exprLang = /(precedence|arithmetic expression|expression string|evaluate .*expression|operator|no parentheses|without parentheses|order of operations)/.test(g)
+  const strongGoal = /precedence/.test(g) && /[+\-]/.test(g) && /[*/]/.test(g)
+  return strongGoal || (nameHit && (hasOps || exprLang)) || (hasOps && exprLang)
+}
+
+/**
+ * The deterministic four-helper carve for the arithmetic-expression class, each rung typed to the
+ * 1.5B's natural grain: tokenize (→strings), parseTokens (→numbers), foldMulDiv, foldAddSub.
+ * Composition wires them as `foldAddSub(foldMulDiv(parseTokens(tokenizeExpr(s))))`. Pure, 0 model
+ * calls, class-generic example I/O. See the block above for why FOUR rather than three.
+ */
+export function precedenceTemplatePlan(): PlannedSubFunction[] {
+  return [
+    {
+      name: 'tokenizeExpr',
+      goal:
+        'Split an arithmetic expression string of non-negative integers and the operators + - * / ' +
+        'into a flat array of STRING tokens, in order, ignoring every space. Each multi-digit ' +
+        'integer is ONE string token; each operator is a one-character string token. ' +
+        '(The idiom `s.replace(/\\s+/g, "").match(/\\d+|[-+*/]/g)` does exactly this.)',
+      cases: [
+        { args: ['3+2*2'], expected: ['3', '+', '2', '*', '2'] },
+        { args: [' 3/2 '], expected: ['3', '/', '2'] },
+        { args: ['14 - 3*2'], expected: ['14', '-', '3', '*', '2'] },
+        { args: ['2*3+4*5'], expected: ['2', '*', '3', '+', '4', '*', '5'] },
+      ],
+    },
+    {
+      name: 'parseTokens',
+      goal:
+        'Given an array of string tokens, return a new array where every NUMBER token (all digits) ' +
+        'is converted to a number with Number(), and every OPERATOR token (+ - * /) is left as its ' +
+        'one-character string. Order is preserved. (Idiom: tokens.map(t => "+-*/".includes(t) ? t : Number(t)).)',
+      cases: [
+        { args: [['3', '+', '2', '*', '2']], expected: [3, '+', 2, '*', 2] },
+        { args: [['14', '-', '3']], expected: [14, '-', 3] },
+        { args: [['5']], expected: [5] },
+      ],
+    },
+    {
+      name: 'foldMulDiv',
+      goal:
+        'Given an array whose elements alternate NUMBER, operator-string, NUMBER, … collapse every ' +
+        '* and / LEFT TO RIGHT (integer division truncates toward zero with Math.trunc), returning ' +
+        'a SHORTER array of the same shape (numbers separated by operator strings) that contains ' +
+        'only + and - operators. Leave + and - untouched. Computed values stay NUMBERS. ' +
+        'Idiom: `const out=[items[0]]; for(let i=1;i<items.length;i+=2){const op=items[i],b=items[i+1]; ' +
+        "if(op==='*')out[out.length-1]*=b; else if(op==='/')out[out.length-1]=Math.trunc(out[out.length-1]/b); " +
+        'else out.push(op,b);} return out;`',
+      cases: [
+        { args: [[3, '+', 2, '*', 2]], expected: [3, '+', 4] },
+        { args: [[3, '/', 2]], expected: [1] },
+        { args: [[3, '+', 5, '/', 2]], expected: [3, '+', 2] },
+        { args: [[2, '*', 3, '+', 4, '*', 5]], expected: [6, '+', 20] },
+      ],
+    },
+    {
+      name: 'foldAddSub',
+      goal:
+        'Given an array whose elements alternate NUMBER, operator-string, NUMBER, … containing only ' +
+        '+ and - operators, evaluate it LEFT TO RIGHT and return the resulting NUMBER. A single-number ' +
+        'array returns that number. ' +
+        "Idiom: `let acc=items[0]; for(let i=1;i<items.length;i+=2){acc=items[i]==='+'?acc+items[i+1]:acc-items[i+1];} return acc;`",
+      cases: [
+        { args: [[3, '+', 4]], expected: 7 },
+        { args: [[1]], expected: 1 },
+        { args: [[14, '-', 6]], expected: 8 },
+        { args: [[6, '+', 20]], expected: 26 },
+      ],
+    },
+  ]
+}
+
 /** Build a sub-function planner. Returns null when it can't propose ≥1 checkable helper. */
 export function makeFmSubFunctionPlanner(opts: FmPlannerOpts = {}): (
   goal: string, entry: string, sampleCases: unknown[], signal?: AbortSignal,
 ) => Promise<PlannedSubFunction[] | null> {
   return async (goal, entry, sampleCases, signal) => {
+    // ALGORITHM-SHAPED FAST-PATH: for the arithmetic-expression class the correct carve is known,
+    // and the FM planner provably re-bakes it into one un-certifiable helper. Emit the two-pass
+    // template (0 model calls) instead. Still fully verifier-gated downstream — see the block above.
+    if (opts.template !== false && isArithmeticExprGoal(goal, entry)) {
+      return precedenceTemplatePlan()
+    }
     const raw = await fmComplete(
       [
         { role: 'system', content: SUBFN_SYSTEM },

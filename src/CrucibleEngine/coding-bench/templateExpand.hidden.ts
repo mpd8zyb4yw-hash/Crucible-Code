@@ -23,6 +23,16 @@ check('boolean renders', expand('{k}', { k: false }) === 'false')
 check('array index via dot', expand('{items.1}', { items: ['a', 'b'] }) === 'b')
 check('escaped brace is literal', expand('\\{name}', { name: 'Ada' }) === '{name}')
 check('escaped backslash', expand('\\\\{name}', { name: 'Ada' }) === '\\Ada')
+// Escape handling at the tail boundary — kills off-by-one on the escape look-ahead guard
+// (i + 1 -> i + 2): an escaped char that is the final char must still be emitted unescaped.
+check('escaped char at end of template', expand('x\\a', {}) === 'xa')
+// A lone trailing backslash has no next char to escape, so it is literal output — kills
+// plus->minus on the same guard (i + 1 -> i - 1, which would read template[-1] === undefined).
+check('lone trailing backslash is literal', expand('a\\', {}) === 'a\\')
+// Empty placeholder {} with an empty-string property key must still be verbatim — kills
+// and->or on the initial ok guard (parts.length > 0 && inner.trim() !== ''): under || the
+// empty inner would resolve ctx[''] and emit its value instead of leaving {} in place.
+check('empty placeholder ignores empty-string key', expand('{}', { '': 'X' }) === '{}')
 check('unterminated brace is literal', expand('a {oops', { oops: 1 }) === 'a {oops')
 check('adjacent placeholders', expand('{a}{b}', { a: 1, b: 2 }) === '12')
 check('empty template', expand('', {}) === '')

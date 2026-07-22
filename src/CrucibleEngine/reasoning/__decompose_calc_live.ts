@@ -48,9 +48,21 @@ async function main(): Promise<void> {
 
   process.stdout.write('sub-function decomposition (the smaller-step lever) … ')
   const t1 = Date.now()
+  // Per-rung iterate budget knobs — a medium helper (foldMulDiv) needs more than the 8-call/120s
+  // default to get a fair number of independent draws. The server path threads larger budgets in
+  // through opts.iterate too, so this measures what the loop CAN do, not just the probe's default.
+  const rungIterate = {
+    globalModelCalls: Number(process.env.CALC_RUNG_CALLS || 24),
+    wallClockMs: Number(process.env.CALC_RUNG_TIMEOUT || 240_000),
+    maxEpochs: Number(process.env.CALC_RUNG_EPOCHS || 6),
+  }
   const d = await decomposeCodeBySubFunction(
     { goal: GOAL, nl: GOAL, entry: ENTRY, cases: CASES },
-    { planAttempts: Number(process.env.CALC_PLAN_ATTEMPTS || 3), emit: (e: any) => { if (e?.type === 'thought') console.log(`\n    · ${e.text}`) } },
+    {
+      planAttempts: Number(process.env.CALC_PLAN_ATTEMPTS || 3),
+      iterate: rungIterate,
+      emit: (e: any) => { if (e?.type === 'thought') console.log(`\n    · ${e.text}`) },
+    },
   )
   console.log(`\n\n# RESULT: ${d.status} — ${d.detail}`)
   console.log(`# ${d.helpers.length} helper(s): ${d.helpers.map(h => h.name).join(', ') || '(none)'}`)

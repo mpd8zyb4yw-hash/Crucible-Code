@@ -30,6 +30,11 @@ const throwsRange = (fn: () => void): boolean => {
   try { fn(); return false } catch (e) { return e instanceof RangeError }
 }
 check('base 1 throws', throwsRange(() => convertBase('1', 1, 10)))
+// fromBase < 2 must be rejected up front even when every digit is individually valid for it
+// ('0' is a legal base-1 digit). Kills or->and on the first range guard
+// (!Number.isInteger(fromBase) || fromBase < 2 || ...): under && the fromBase<2 branch is
+// dropped and convertBase('0', 1, 10) would return '0' instead of throwing.
+check('fromBase below 2 rejected with otherwise-valid digit', throwsRange(() => convertBase('0', 1, 10)))
 check('base 37 throws', throwsRange(() => convertBase('1', 10, 37)))
 check('digit invalid for base throws', throwsRange(() => convertBase('2', 2, 10)))
 check('letter beyond base throws', throwsRange(() => convertBase('g', 16, 10)))

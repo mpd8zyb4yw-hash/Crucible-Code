@@ -450,4 +450,75 @@ console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
 process.exit(failures === 0 ? 0 : 1)
 `,
   },
+  {
+    id: 'basicCalculator',
+    title: 'Evaluate an arithmetic expression with precedence, no parentheses',
+    modulePath: 'src/basicCalculator.ts',
+    prompt: `Implement an arithmetic expression evaluator in TypeScript at src/basicCalculator.ts. ${CONTRACT}
+
+Export exactly:
+  export function basicCalculator(expr: string): number
+
+Semantics:
+- Evaluate an arithmetic expression string of non-negative integers and the binary
+  operators + - * / with STANDARD PRECEDENCE (* and / bind tighter than + and -) and NO
+  parentheses. Same-precedence operators associate LEFT TO RIGHT.
+- Division is INTEGER division truncating TOWARD ZERO (10/3 -> 3, exactly Math.trunc).
+- Spaces may appear anywhere and are ignored ("3 + 5 / 2" is "3+5/2").
+- Examples: "3+2*2" -> 7, "3+5/2" -> 5, "14-3*2" -> 8, "2*3+4*5" -> 26, "6/2*3" -> 9,
+  "100" -> 100, "7-2-1" -> 4.
+- This is the classic precedence-without-parentheses evaluation: the reliable route is a
+  two-pass fold — tokenize, collapse every * and / left to right, then collapse + and -.`,
+    ref: `export function basicCalculator(expr: string): number {
+  const tokens = expr.replace(/\\s+/g, '').match(/\\d+|[-+*/]/g)
+  if (!tokens) return 0
+  // Pass 1: fold * and / left-to-right (integer division truncates toward zero).
+  const reduced: string[] = [tokens[0]]
+  for (let i = 1; i < tokens.length; i += 2) {
+    const op = tokens[i], b = Number(tokens[i + 1])
+    if (op === '*') reduced[reduced.length - 1] = String(Number(reduced[reduced.length - 1]) * b)
+    else if (op === '/') reduced[reduced.length - 1] = String(Math.trunc(Number(reduced[reduced.length - 1]) / b))
+    else { reduced.push(op); reduced.push(String(b)) }
+  }
+  // Pass 2: fold + and - left-to-right.
+  let acc = Number(reduced[0])
+  for (let i = 1; i < reduced.length; i += 2) {
+    acc = reduced[i] === '+' ? acc + Number(reduced[i + 1]) : acc - Number(reduced[i + 1])
+  }
+  return acc
+}
+`,
+    suite: `// HIDDEN adversarial suite for a NOVEL task (precedence-without-parens) — basicCalculator.
+// Run: npx tsx __audit__/basicCalculator.hidden.ts   (imports ../src/basicCalculator)
+import { basicCalculator } from '../src/basicCalculator'
+
+let failures = 0
+function check(name: string, cond: boolean) {
+  console.log((cond ? '  PASS — ' : '  FAIL — ') + name)
+  if (!cond) failures++
+}
+
+check('precedence: mul before add', basicCalculator('3+2*2') === 7)
+check('single division truncates', basicCalculator(' 3/2 ') === 1)
+check('precedence: div before add', basicCalculator('3+5 / 2') === 5)
+check('precedence: mul before sub', basicCalculator('14-3*2') === 8)
+check('two products summed', basicCalculator('2*3+4*5') === 26)
+check('bare integer', basicCalculator('100') === 100)
+check('chained multiply', basicCalculator('2*3*4') === 24)
+check('division truncates toward zero', basicCalculator('10/3') === 3)
+check('subtraction is left-associative', basicCalculator('7-2-1') === 4)
+check('long addition chain', basicCalculator('1+2+3+4') === 10)
+check('zero product then add', basicCalculator('0*5+3') === 3)
+check('surrounding spaces ignored', basicCalculator('  42  ') === 42)
+check('same-precedence div and mul left-to-right', basicCalculator('6/2*3') === 9)
+check('mixed precedence with div', basicCalculator('2+3*4-6/2') === 11)
+check('subtraction can go negative', basicCalculator('3-5') === -2)
+check('chained division left-to-right', basicCalculator('8/2/2') === 2)
+check('multi-digit operands', basicCalculator('12*12+1') === 145)
+check('interior spaces ignored', basicCalculator('1 0 + 5') === 15)
+
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
+process.exit(failures === 0 ? 0 : 1)
+`,
+  },
 ]
