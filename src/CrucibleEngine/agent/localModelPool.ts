@@ -101,17 +101,27 @@ export async function completeLocalModel(
   id: string,
   system: string,
   user: string,
-  opts: { maxTokens?: number; timeoutMs?: number } = {},
+  opts: { maxTokens?: number; timeoutMs?: number; gbnf?: string } = {},
 ): Promise<string> {
   const { model } = await loadModel(id)
-  const { LlamaChatSession } = await getLlama()
+  const llama = await getLlama()
+  const { LlamaChatSession } = llama
+  // W2 constrained decoding: when the caller supplies a GBNF grammar, build it once and hand it
+  // to the sampler so every token is masked to the grammar (malformed shape becomes unreachable).
+  // Best-effort — a grammar this runtime rejects must not hard-fail the generation, so we fall
+  // back to unconstrained decoding rather than throw.
+  let grammar: any
+  if (opts.gbnf) {
+    try { grammar = await (llama.getLlama ? (await llama.getLlama()).createGrammar({ grammar: opts.gbnf }) : undefined) }
+    catch { grammar = undefined }
+  }
   return serialize(id, async () => {
     let context: any
     try {
       context = await model.createContext({ contextSize: 4096 })
       const session = new LlamaChatSession({ contextSequence: context.getSequence() })
       const prompt = system ? `${system}\n\n${user}` : user
-      const gen = session.prompt(prompt, { maxTokens: opts.maxTokens ?? 700, ...ANTI_REPEAT })
+      const gen = session.prompt(prompt, { maxTokens: opts.maxTokens ?? 700, ...(grammar ? { grammar } : {}), ...ANTI_REPEAT })
       const out = await Promise.race([
         gen,
         new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`${id} generation timed out`)), opts.timeoutMs ?? 20_000)),

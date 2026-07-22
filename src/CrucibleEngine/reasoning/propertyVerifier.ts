@@ -354,6 +354,43 @@ const SUPP_FAMILIES: SuppFamily[] = [
       `prop('${E} rejects unterminated quote', (() => { try { ${E}('"abc'); return false } catch { return true } })())`,
     ],
   },
+  {
+    // base64 ENCODER: matches the platform reference (Buffer base64) at sampled inputs — an
+    // independent derivation, never a memorized value. A codec that pads wrong, uses the URL
+    // alphabet by mistake, or mishandles multibyte UTF-8 diverges immediately. `Buffer` is a node
+    // global in the verifier sandbox, so the reference is available without an import.
+    family: 'base64Encode', test: e => /^(base64Encode|encodeBase64|toBase64|b64Encode|btoaUtf8)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches Buffer base64 reference', ['','f','fo','foo','foob','fooba','foobar','hello world','Ā日本語','\\u0000\\u0001\\u0002'].every(s => ${E}(s) === Buffer.from(s, 'utf8').toString('base64')))`,
+      `prop('${E}("")=""', ${E}('') === '')`,
+    ],
+  },
+  {
+    // base64 DECODER: the inverse — decode∘(reference encode) = id over arbitrary strings.
+    family: 'base64Decode', test: e => /^(base64Decode|decodeBase64|fromBase64|b64Decode|atobUtf8)$/i.test(e),
+    assertions: E => [
+      `prop('${E} inverts Buffer base64 (decode∘encode=id)', ['','f','fo','foo','foobar','hello world','Ā日本語'].every(s => ${E}(Buffer.from(s, 'utf8').toString('base64')) === s))`,
+    ],
+  },
+  {
+    // hex ENCODER: matches the platform reference (Buffer hex). Lowercase, two chars per byte.
+    family: 'hexEncode', test: e => /^(hexEncode|toHex|encodeHex|bytesToHex|stringToHex)$/i.test(e),
+    assertions: E => [
+      `prop('${E} matches Buffer hex reference', ['','a','ab','abc','hello','Ā日本語','\\u0000\\u00ff'].every(s => String(${E}(s)).toLowerCase() === Buffer.from(s, 'utf8').toString('hex')))`,
+      `prop('${E}("")=""', ${E}('') === '')`,
+    ],
+  },
+  {
+    // query-string PARSER: parse∘(canonical serialize) = id. URLSearchParams is the reference
+    // serializer (a node global). A parser that forgets to decode %xx, mishandles '=' inside a
+    // value, or drops empty values diverges. Field values are simple (no repeated keys) so the map
+    // is well-defined; the reference builds the exact same canonical string the parser must invert.
+    family: 'parseQueryString', test: e => /^(parseQuery|parseQueryString|parseQs|queryToObject|parseSearchParams|qsParse)$/i.test(e),
+    assertions: E => [
+      `prop('${E} inverts URLSearchParams (parse∘serialize=id)', (() => { const cases = [{a:'1',b:'2'},{q:'hello world'},{k:'a=b'},{e:'',f:'x'},{u:'100%',pct:'a&b'},{one:'1'}]; return cases.every(obj => { const q = new URLSearchParams(obj).toString(); const got = ${E}(q); return Object.keys(obj).every(k => got[k] === obj[k]) && Object.keys(got).length === Object.keys(obj).length }) })())`,
+      `prop('${E} single pair', (() => { const g = ${E}('name=value'); return g.name === 'value' })())`,
+    ],
+  },
 ]
 
 /** Best-effort entry-name extraction for supplemental gating (extractFeatures, else first call). */

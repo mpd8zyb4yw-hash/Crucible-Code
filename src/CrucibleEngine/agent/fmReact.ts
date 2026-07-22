@@ -152,6 +152,12 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
       messages: [{ role: 'system', content: system }, ...messages],
       max_tokens: maxTokens,
       temperature,
+      // W3 prefix-cache hint: the proposal prompt is built stable-prefix-first (system + task
+      // goal are byte-identical across a search's iterations; only the trailing failure feedback
+      // grows — see codeProposer.buildProposalPrompt). A llama-server backend honours cache_prompt
+      // to reuse the KV cache for that shared prefix, so re-proposals only pay for the new suffix
+      // tokens. Unknown to the Apple FM daemon, which ignores the extra field — safe either way.
+      cache_prompt: true,
     }),
     signal: combined,
   }), { priority, label: priority === 'high' ? 'fmReact' : 'fmVerify' })

@@ -100,7 +100,20 @@ export async function synthesizePureCode(spec: string, opts: PureCodeOpts = {}):
         if (v.accepted) return ok(prim.files, 'primitive', propTests.count, `primitive ${prim.matched.id} ✓ ${propTests.count} ${propTests.family} property checks, identity-matched`, prim.matched.id)
         // primitive fails this spec's property contract → fall through, escalate honestly
       } else {
-        return ok(prim.files, 'primitive', 0, `primitive ${prim.matched.id} (library-verified, identity-matched; no example/property gate available)`, prim.matched.id)
+        // The synth-side families (derivePropertyTests) missed, but the VGR-side SUPPLEMENTAL
+        // families (~30: recurrences, reference derivations, roundtrips) cover many names synth
+        // does not. Cross-check the L0 catalog ship against them before falling back to the
+        // shape-only floor. Lazy import breaks the synth→reasoning→synth module cycle at load time
+        // (propertyVerifier statically imports this package). A matched family that PASSES lifts the
+        // ship from shape-only to behavior-verified; a matched family that FAILS forces an honest
+        // escalation (the primitive is the wrong semantics for THIS spec); no match → shape floor.
+        const suppVerdict = await verifyAgainstSupplemental(prim.files, feats.exports)
+        if (suppVerdict === 'pass') return ok(prim.files, 'primitive', 1, `primitive ${prim.matched.id} ✓ supplemental invariant family, identity-matched`, prim.matched.id)
+        if (suppVerdict === 'fail') {
+          // fall through to L1/L2 — the catalog hit violates a real invariant, so escalate honestly
+        } else {
+          return ok(prim.files, 'primitive', 0, `primitive ${prim.matched.id} (library-verified, identity-matched; no example/property gate available)`, prim.matched.id)
+        }
       }
     }
     // no declared exports, identity mismatch, or failed gate — fall through to L1/L2
@@ -134,6 +147,40 @@ export async function synthesizePureCode(spec: string, opts: PureCodeOpts = {}):
 
 function ok(files: SynthFile[], source: 'primitive' | 'enumerative', testsDerived: number, detail: string, skillId: string): PureCodeResult {
   return { files, source, verified: true, testsDerived, detail, skillId }
+}
+
+/**
+ * Cross-check an L0 primitive against the VGR-side SUPPLEMENTAL invariant families (the same
+ * ~30 exact-name-gated families the reasoning loop's W20 co-gate trusts). Returns:
+ *   'pass' — a declared export matched a family AND its assertions held (behavior-verified)
+ *   'fail' — a declared export matched a family but its assertions were VIOLATED (escalate honestly)
+ *   'none' — no declared export matched any supplemental family (fall back to the shape-only floor)
+ * Imported lazily so synth/pureCode → reasoning/propertyVerifier → synth/index is not a static
+ * cycle. Any loader/probe error is swallowed as 'none' — the co-gate can only ADD confidence, never
+ * regress the existing shape-only ship.
+ */
+export async function verifyAgainstSupplemental(files: SynthFile[], exports: string[]): Promise<'pass' | 'fail' | 'none'> {
+  if (!files.length || !exports.length) return 'none'
+  try {
+    const { propertyForFunction, verifyByProperty } = await import('../reasoning/propertyVerifier.js')
+    let matchedAny = false
+    for (const entry of exports) {
+      const spec = propertyForFunction(entry)
+      if (!spec) continue
+      matchedAny = true
+      // Pass the file that actually exports this entry (else the first file) as the candidate body;
+      // verifyByProperty concatenates it with an in-scope assertion harness.
+      const host = files.find(f => new RegExp(`\\bexport\\s+(?:async\\s+)?(?:function|const|class)\\s+${entry}\\b`).test(f.content)) ?? files[0]
+      const verdict = await verifyByProperty(
+        { value: host.content, fingerprint: 'l0-supp' },
+        { goal: '', domain: 'code', acceptance: { entry: spec.entry, family: spec.family, assertions: spec.assertions } } as any,
+      )
+      if (!verdict.pass) return 'fail'   // any matched family that fails is a hard escalation signal
+    }
+    return matchedAny ? 'pass' : 'none'
+  } catch {
+    return 'none'
+  }
 }
 
 /**

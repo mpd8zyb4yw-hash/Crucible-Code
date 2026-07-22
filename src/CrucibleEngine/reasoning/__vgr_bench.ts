@@ -21,7 +21,7 @@
 
 import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode, verifyMultiFileCode } from './codeVerifier'
-import { pickFeedbackAttempts } from './codeProposer'
+import { buildProposalPrompt, pickFeedbackAttempts } from './codeProposer'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
@@ -1041,6 +1041,56 @@ async function run() {
     const naive = await verifyByProperty({ value: `export function parseCsvLine(line){return line.split(',')}`, fingerprint: 'b' }, acc)
     ok('co-gate REJECTS a permissive comma-split (mis-splits quoted commas, never throws)', !naive.pass, naive.signals[0])
   }
+
+  // ── CODEC roundtrip families (base64 / hex / query-string) — reference-derivation co-gates ──
+  // Same shape as csvRoundtrip: an independent platform reference (Buffer / URLSearchParams) is the
+  // ground truth. A correct codec PASSES; a codec with the classic bug (wrong alphabet, missing
+  // decode) is REJECTED. Extends the parse∘serialize=id lever to the codec/parser task class.
+  const sB64 = supplementalPropertySpec('Write base64Encode(s) that encodes a string to base64.')
+  ok('supplementalPropertySpec resolves the `base64Encode` family', !!sB64 && sB64.family === 'base64Encode', sB64?.family)
+  if (sB64) {
+    const acc = { goal: '', domain: 'code' as const, acceptance: { entry: sB64.entry, family: sB64.family, assertions: sB64.assertions } as any }
+    const good = await verifyByProperty({ value: `export function base64Encode(s){return Buffer.from(s,'utf8').toString('base64')}`, fingerprint: 'g' }, acc)
+    ok('co-gate ACCEPTS a correct base64 encoder', good.pass, good.signals[0])
+    const urlAlpha = await verifyByProperty({ value: `export function base64Encode(s){return Buffer.from(s,'utf8').toString('base64url')}`, fingerprint: 'b' }, acc)
+    ok('co-gate REJECTS a base64url-alphabet encoder (wrong padding/chars)', !urlAlpha.pass, urlAlpha.signals[0])
+  }
+  const sHex = supplementalPropertySpec('Write toHex(s) that returns the hex encoding of the string.')
+  if (sHex) {
+    const acc = { goal: '', domain: 'code' as const, acceptance: { entry: sHex.entry, family: sHex.family, assertions: sHex.assertions } as any }
+    const good = await verifyByProperty({ value: `export function toHex(s){return Buffer.from(s,'utf8').toString('hex')}`, fingerprint: 'g' }, acc)
+    ok('co-gate ACCEPTS a correct hex encoder', good.pass, good.signals[0])
+    const b64 = await verifyByProperty({ value: `export function toHex(s){return Buffer.from(s,'utf8').toString('base64')}`, fingerprint: 'b' }, acc)
+    ok('co-gate REJECTS a base64 impl mislabelled as hex', !b64.pass, b64.signals[0])
+  }
+  const sQs = supplementalPropertySpec('Write parseQueryString(q) that parses a URL query string into an object.')
+  if (sQs) {
+    const acc = { goal: '', domain: 'code' as const, acceptance: { entry: sQs.entry, family: sQs.family, assertions: sQs.assertions } as any }
+    const good = await verifyByProperty({ value: `export function parseQueryString(q){const o={};for(const [k,v] of new URLSearchParams(q)) o[k]=v;return o}`, fingerprint: 'g' }, acc)
+    ok('co-gate ACCEPTS a correct query-string parser (parse∘serialize=id)', good.pass, good.signals[0])
+    const noDecode = await verifyByProperty({ value: `export function parseQueryString(q){const o={};for(const p of q.split('&')){const [k,v]=p.split('=');o[k]=v}return o}`, fingerprint: 'b' }, acc)
+    ok('co-gate REJECTS a parser that never percent-decodes values', !noDecode.pass, noDecode.signals[0])
+  }
+
+  // ── W3 prefix-cache PRECONDITION: the proposal prompt is stable-prefix-first ────────────────
+  // cache_prompt only helps if the shared prefix (system + task goal) is BYTE-IDENTICAL across a
+  // search's iterations and only the trailing failure feedback grows. Prove that structurally so a
+  // future prompt refactor that interleaves volatile feedback into the stable head fails loudly.
+  const baseCtx: any = {
+    spec: { goal: 'Write add(a,b) returning the sum.', acceptance: { entry: 'add' } },
+    history: [], diversify: false,
+  }
+  const withFeedback: any = {
+    spec: baseCtx.spec,
+    history: [{ candidate: { value: 'export function add(a,b){return a-b}', fingerprint: 'x' }, verdict: { score: -1, signals: ['add(1,2)=-1 expected 3'] } }],
+    diversify: false,
+  }
+  const pp0 = buildProposalPrompt(baseCtx)
+  const pp1 = buildProposalPrompt(withFeedback)
+  ok('W3: system prompt is byte-identical across iterations (cacheable prefix)', pp0.system === pp1.system)
+  const stableHead = `## Task\n${baseCtx.spec.goal}`
+  ok('W3: user prompt begins with the stable task head (volatile feedback is appended, not prepended)',
+    pp0.user.startsWith(stableHead) && pp1.user.startsWith(stableHead) && pp1.user.length > pp0.user.length, pp1.user.slice(0, 40))
 
   // Domain from prose: a bare "sort" is numeric (the FM's (a,b)=>a-b comparator must PASS);
   // string inputs join the battery only when the prose says so. (Live gap found cont.59: the
