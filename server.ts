@@ -4075,6 +4075,14 @@ app.post('/api/chat', async (req, res) => {
           }
         }
         let vgr = null
+        // W1 forensics: mark the VGR search as ENTERED before the attempt loop runs. The search
+        // itself makes multiple ~90s model proposals, and its exit-time loop_entry (certified /
+        // abstained / threw, below) is only sent once the whole attempt loop returns. So when the
+        // per-task cap fires MID-search, no loop_entry had been emitted yet and the bench mislabels
+        // the outcome "timeout-before-loop — nothing ran" — when in fact the VGR loop WAS running
+        // and consumed the budget. Emitting entry here attributes a mid-search timeout to `vgr:entered`
+        // (the honest cause: throughput-bound search), not to a phantom pre-loop stall.
+        loopEntry('vgr', 'entered', 'differential/consensus search started — proposals run from here')
         // KEEP-K: the retry loop below restarts search() from scratch each attempt and throws
         // away every non-certified candidate — discarding ranking the verifier already PAID to
         // compute. Retain the distinct ones across attempts so that if nothing certifies we can

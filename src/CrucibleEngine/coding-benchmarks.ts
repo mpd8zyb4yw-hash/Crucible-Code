@@ -917,9 +917,12 @@ async function main() {
       const last = fire.loopEntries[fire.loopEntries.length - 1]
       console.log(`  [W1]   loop entry    : ${fire.loopEntries.map(e => `${e.stage}:${e.reason}`).join(' → ')}${last.detail ? `  :: ${last.detail}` : ''}`)
     } else if (fire.iters === 0 && fire.timedOut) {
-      // The client cap expired while a pre-loop stage (synth/VGR) was still mid-flight —
-      // no event could have been sent yet. Attributable: the cap is the reason.
-      console.log(`  [W1]   loop entry    : timeout-before-loop — the ${(PER_TASK_TIMEOUT_MS / 1000).toFixed(0)}s cap expired inside a pre-loop stage (budget-exhausted)`)
+      // The client cap expired with ZERO loop_entry events. Since server.ts now emits `vgr:entered`
+      // before the differential/consensus search begins, this branch no longer covers a mid-VGR
+      // timeout (that shows `vgr:entered`). It now means the cap expired in a genuinely pre-VGR
+      // stage — synth cascade or repo-context build — before any search started. Attributable: the
+      // cap is the reason, and the stall is upstream of the model loop.
+      console.log(`  [W1]   loop entry    : timeout-before-loop — the ${(PER_TASK_TIMEOUT_MS / 1000).toFixed(0)}s cap expired in a pre-VGR stage (synth/repo-context; budget-exhausted)`)
     } else if (fire.iters === 0) {
       console.log(`  [W1]   loop entry    : UNEXPLAINED iters:0 — no loop_entry event received (W1 acceptance violation)`)
     }
