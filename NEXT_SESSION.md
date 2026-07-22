@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22d (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22e (gap-soundness) (REPLACE THIS EVERY SESSION)
 
 > **THE FIRST HONEST LIVE BASELINE EXISTS. This is the "before" number.** Full write-up:
 > ROADMAP.md CHANGE LOG 2026-07-22. Read the label before quoting the number: it is the
@@ -42,6 +42,35 @@
 >   W35 → W36 → W48 — `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
 >   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
 >   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
+
+**Shipped 2026-07-22e (this continuation, on `claude/gap-soundness`) — next-steps items 1,2,4,5 + item 3 launched:**
+NON-INTERFERENCE re-verified: the parallel `crucible-northstar-sessions` session is on W8→W12
+(fault-localization + coverage-guided fuzzing — `faultLocalize.ts`, `coverageFuzz.ts`, benches) and
+has NEVER touched `fmReact.ts`/`grammars.*` (`git log -1` on both confirms old/CLEAR provenance). So
+the Track-A-labeled W2/W3 files were unclaimed and taken directly here — same pattern the earlier
+session used for Track-A W1. tsc clean throughout.
+- **Item 5 — codec roundtrip supp families** (`reasoning/propertyVerifier.ts`): `base64Encode`,
+  `base64Decode`, `hexEncode`, `parseQueryString` — reference-derivation co-gates against `Buffer` /
+  `URLSearchParams` (node globals in the verifier sandbox). Extends the parse∘serialize=id lever to
+  the codec/parser class. +9 VGR proofs (accept correct, reject buggy). **VGR 231/0.**
+- **Item 4 — pureCode L0 supplemental co-gate** (`synth/pureCode.ts`): `verifyAgainstSupplemental`
+  lazily cross-imports the VGR-side SUPP families (breaks the synth→reasoning→synth static cycle) so a
+  catalog L0 hit is behavior-verified against ~30 invariant families before the shape-only floor. A
+  matched-and-passing family lifts the ship; a matched-and-failing one forces honest escalation.
+  New `__purecode_supp_bench` **6/6**; `synth:prove` **4/4** unchanged.
+- **Item 2 — W2 GBNF grammar builders** (`agent/grammars.ts` + `completeLocalModel({gbnf})`): pure
+  fenced-code / json-object / enum GBNF builders + optional constrained-decoding wiring (no-op without
+  the runtime). `__grammars_bench` **15/15**, INCLUDING live `node-llama-cpp` compile of all three —
+  the GGUF runtime IS installed, so constrained decoding is genuinely live-capable, not just offline.
+- **Item 1 — W3 prefix-cache groundwork** (`agent/fmReact.ts`): `cache_prompt` hint on the FM request
+  (honored by llama-server, ignored by Apple FM) + VGR preconditions proving the proposal prompt is
+  stable-prefix-first so a KV prefix cache actually hits. Continuous batching (K concurrent) stays
+  backend-gated by the single-session daemon — NOT faked; that half needs a llama-server backend swap.
+- **Item 3 — full n=39 live re-bench LAUNCHED (in-flight, not yet complete)**: harness smoke-verified
+  end-to-end (`csvLine` produced a clean scorecard; it timed out pre-loop at 210s, iters=0 — the exact
+  latency-starvation item 1 targets). Full sweep now running detached (nohup, default 480s/task cap,
+  ~hours); writes `.crucible/coding-bench-last.json`. NEXT SESSION: read that scorecard, diff vs the
+  3% generated floor (must clear ~19% to count as signal).
 
 **Shipped 2026-07-22d (this continuation, on `claude/gap-soundness`) — csvLine residual CLOSED:**
 - `csvRoundtrip` supplemental property family (`reasoning/propertyVerifier.ts` `SUPP_FAMILIES`):
@@ -95,16 +124,23 @@
    `deepEqualCyc` catalog hits that fail 14 / several hidden checks.
 
 **OPEN — THE FIX LIST (priority order):**
-1. **W3 prefix-cache + batching** (llama-server client) — ~90s/proposal is the ceiling;
-   nothing moves until proposals are cheap. Stable-prefix/volatile-suffix + K concurrent.
-   (Track A — llama-server client / `fmReact.ts`.)
+1. **W3 prefix-cache + batching — PREFIX-CACHE HALF DONE 2026-07-22e; BATCHING still open.**
+   `fmReact.ts` now sends `cache_prompt` and the proposal prompt is proven stable-prefix-first
+   (VGR W3 preconditions), so a llama-server backend's KV prefix cache hits on re-proposals. The
+   remaining lever — K CONCURRENT proposals (continuous batching) — is blocked by the single-session
+   Apple FM daemon (`enqueueFm` serializes it) and needs a llama-server backend swap to land. That
+   backend swap is the true ~90s/proposal ceiling-breaker and is still the top open item.
 2. **~~Multi-file misroute fix~~ — DONE 2026-07-22b.** The gate no longer routes on raw file
    count: `reasoning/multiFile.ts` now strips self-test-harness clauses
    (`selfTestHarnessFiles()` / `deliverableRequestedFiles()`) and routes on the deliverable
    count, so a runnable `src/index.ts` self-test no longer trips the 3×~90s multi-file ladder.
    VGR bench 214/0. Re-bench (item 6) will confirm the reclaimed budget in the live n=39.
-3. **W2 GBNF** grammar-constrained decoding — malformed proposals impossible; compounds w/ W3.
-   (Track A — `grammars/`.)
+3. **~~W2 GBNF grammar-constrained decoding~~ — BUILDERS DONE 2026-07-22e.** `agent/grammars.ts`
+   emits fenced-code / json-object / enum GBNF (pure, unit-tested 15/15, live `node-llama-cpp`
+   compile confirmed), wired optionally into `completeLocalModel({gbnf})`. REMAINING: pass the
+   fenced-code grammar from the actual proposal path (`codeProposer`/`fmReact`) when a GGUF head is
+   active so live proposals are shape-constrained — currently the grammar exists but nothing on the
+   hot path requests it. Compounds with W3 batching.
 4. **~~Certification-scope fix (soundness)~~ — DONE 2026-07-22b.** Both gaps closed +
    bench-locked: (a) `specExtractor.declaredExportedNames()` makes a single declared export
    authoritative, overriding a mis-voted VGR entry (`matrixRotate`→`rotate90` gap); (b)
@@ -112,7 +148,10 @@
    AT the declared path) AND, in the no-example branch, on a passing derived PROPERTY family
    before claiming GREEN (`posixResolve`/`deepEqualCyc` gap). Residual: shape-only remains the
    honest floor when NO example/property gate is derivable — a library-verified primitive
-   matching the declared API exactly, behavior unverified. That residual is item 5's target.
+   matching the declared API exactly, behavior unverified. RESIDUAL CLOSED 2026-07-22e: the L0
+   no-example branch now runs `verifyAgainstSupplemental` (lazy cross-import of the ~30 VGR SUPP
+   families) before the shape-only ship, so a name-matched catalog hit is behavior-verified or
+   escalated. `__purecode_supp_bench` 6/6; shape-only floor preserved only when NO family matches.
 5. **~~W20 held-out acceptance cases~~ — DONE 2026-07-22c (reframed to the SOUND design).**
    Splitting the thin consensus pool would starve the proposer, so instead the MODEL-FREE
    invariant is the held-out ground truth: `supplementalPropertySpec`'s ~30 exact-name-gated
@@ -122,10 +161,11 @@
    2026-07-22d: the `csvRoundtrip` supp family now covers `parseCsvLine`-class format parsers —
    parse∘serialize=id against a canonical always-quoting RFC-4180 serializer + throw-contract
    checks. Accepts the correct parser (6/6 props), rejects a permissive comma-split. Bench 222/0.
-6. **Re-run full n=39 under the fixed harness after W2/W3** — one clean scorecard file; the
-   generated-rate delta vs this floor (must clear ~+16 pts) is the first real progress signal.
-   The 2026-07-22b misroute + cert-scope fixes should already move the *timed-out* and
-   *catalog-but-wrong* counts even before W2/W3.
+6. **Re-run full n=39 — LAUNCHED (in-flight) 2026-07-22e; READ THE SCORECARD NEXT SESSION.**
+   Full sweep running detached (nohup, 480s/task, ~hours) → `.crucible/coding-bench-last.json`.
+   First action next session: read it, diff `generated` vs the 3% floor (must clear ~19% to count),
+   and check whether the 22b misroute + cert-scope fixes moved the *timed-out* (26/39) count. If the
+   process died, relaunch `tsx src/CrucibleEngine/coding-benchmarks.ts` (server on :3001, daemon up).
 7. **W42.2 scale toward n≈100 (±10-pt floor)** — mined candidates `79583e1`, `a0bdd2a`,
    `781fbba`/`23d1305`, `1fb3971`; fix touches one engine file + its paired bench.
 8. **W32 verifier fault-injection** — 22 authored refs + 3 mined parents as mutation targets.

@@ -1933,6 +1933,42 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22e (gap-soundness — next-steps items 1,2,4,5 landed; item 3 re-bench launched)
+
+User directive: "do all 5 tasks in one run." Non-interference re-verified — the parallel
+`crucible-northstar-sessions` session is on W8→W12 (fault-localization + coverage-guided fuzzing)
+and has never touched `fmReact.ts`/`grammars.*` (`git log -1` confirms), so the Track-A-labeled
+W2/W3 files were unclaimed and taken directly (same pattern the earlier session used for Track-A W1).
+
+- **Item 5 — codec roundtrip supp families (`reasoning/propertyVerifier.ts`).** `base64Encode`,
+  `base64Decode`, `hexEncode`, `parseQueryString` — reference-derivation co-gates against `Buffer`
+  and `URLSearchParams` (node globals in the verifier sandbox). Generalizes csvRoundtrip's
+  parse∘serialize=id lever to the codec/parser task class. +9 VGR proofs. **VGR 231/0.**
+- **Item 4 — pureCode L0 supplemental co-gate (`synth/pureCode.ts`).** New
+  `verifyAgainstSupplemental` lazily cross-imports the ~30 VGR-side SUPP families (a static import
+  would be a synth→reasoning→synth cycle) and runs them via `verifyByProperty` against a matched L0
+  catalog primitive BEFORE the shape-only floor. Matched+passing → behavior-verified ship;
+  matched+failing → honest escalation; no match → shape-only floor preserved. New
+  `__purecode_supp_bench` **6/6**; `synth:prove` **4/4** unchanged.
+- **Item 2 — W2 GBNF grammar builders (`agent/grammars.ts`).** Pure fenced-code / json-object /
+  enum GBNF string builders (input-validated, safely escaped) + optional constrained-decoding
+  wiring in `completeLocalModel({gbnf})` (best-effort, no-op without the runtime). `__grammars_bench`
+  **15/15** — including LIVE `node-llama-cpp` compile of all three grammars, since the GGUF runtime
+  is installed. So malformed-shape masking is genuinely live-capable, not merely offline scaffolding.
+- **Item 1 — W3 prefix-cache groundwork (`agent/fmReact.ts`).** `cache_prompt: true` on the FM
+  request body (honored by a llama-server backend's KV prefix cache; ignored by the Apple FM daemon)
+  + VGR preconditions proving the proposal prompt is stable-prefix-first (system + task goal
+  byte-identical across iterations; only trailing feedback grows). The other half — K concurrent
+  proposals — remains blocked by the single-session daemon and is NOT faked; it needs a llama-server
+  backend swap.
+- **Item 3 — full n=39 live re-bench LAUNCHED (in-flight).** Harness smoke-verified end-to-end
+  against the live `:3001` server (`csvLine` produced a clean scorecard, timing out pre-loop at 210s
+  with iters=0 — a direct demonstration of the latency starvation item 1 targets). Full sweep now
+  running detached (default 480s/task cap, ~hours) → `.crucible/coding-bench-last.json`. Reading that
+  scorecard and diffing `generated` vs the 3% floor is the first action next session.
+
+tsc clean across all changes.
+
 ### 2026-07-22d (gap-soundness — csvLine residual closed: `csvRoundtrip` supp family)
 
 Re-confirmed non-interference: the parallel `crucible-northstar-sessions` session has advanced to
