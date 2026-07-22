@@ -1933,6 +1933,43 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22k (gap-soundness — the four STARVED-loop levers implemented: batch sample-bump, sub-function decomposition escalation, multi-shot pass@k harness; measurement runs launched)
+
+**Acting on the 2026-07-22j finding (the generated loop is STARVED, not weak), this session implements
+the four durable OPEN next-steps and launches the two measurement runs. All code is verifier-gated and
+tsc-clean; the live "after" numbers are being measured as of this entry (see the FLAG at the end).**
+
+- **Item 3 — batch-path sample bump (`reasoning/solve.ts`).** New `batchBudget()` raises
+  `proposalsPerNode` 1→`CRUCIBLE_VGR_BATCH_PROPOSALS` (default 4) on the `CRUCIBLE_VGR_BATCH=1` path,
+  with a MATCHING `maxModelCalls` scale (multiplied by the same factor the draws-per-round grew by, so
+  the ROUND count is preserved — the search goes K× WIDER, never K× fewer rounds), hard-capped at
+  `CRUCIBLE_VGR_BATCH_MAXCALLS` (default 64). A caller that pinned `proposalsPerNode` itself wins
+  verbatim. The pass@k curve (pass@1 52.5%→pass@10 83.3%) says 4-8 draws/round is exactly where the
+  marginal draw still pays, and batching makes concurrent draws ~free. Accounting spot-checked; the
+  serial path is byte-identical to before (batch is opt-in). `searchbatch:bench` 11/11 unchanged.
+- **Item 2 — sub-function decomposition escalation (`reasoning/solve.ts` + `server.ts`).**
+  `solveCodingRequest` gains a `decompose` opt; new `tryDecompose()` runs `decomposeCodeBySubFunction`
+  as a LAST RESORT when a case-based tier's flat search AND its poisoned-case recovery both fail — the
+  lever for the `basicCalculator` precedence-without-parens ceiling that stayed 0% under pure resampling
+  (a smaller step, not a bigger model). SOUND: the composed whole is re-verified against the ORIGINAL
+  cases by decomposeCodeBySubFunction and still must clear `invariantGate`, so it can only certify a
+  genuinely-correct impl. Wired into tiers 3 (differential) and 4 (model-invents). `server.ts` passes
+  `decompose: tryHard` (attempt 2+) / `CRUCIBLE_DECOMPOSE=1`. New live probe
+  `npm run vgr:decompose:calc` (`__decompose_calc_live.ts`) runs it on exactly the ceiling task.
+- **Item 4 — multi-shot pass@k (`reasoning/__passk_bench.ts`).** `PASSK_MULTISHOT=1` (depth
+  `PASSK_SHOTS`, default 8) draws shots SEQUENTIALLY, threading each failed candidate's execution
+  verdict into the next proposal's history (the `buildProposalPrompt` feedback block), and prints the
+  loop's convergence lift — feedback-threaded solve-rate@k vs independent first-shot pass@k at equal k.
+  Quantifies "maximize information per model call" as an actual number.
+- **Non-regression:** tsc **0 errors**; `vgr:bench` 231/0, `searchbatch:bench` 11/11, `vgr:decompose`
+  35/0. Committed as `da0cf1e`.
+- **FLAG (measurement runs launched, results pending):** (1) `vgr:decompose:calc` (CALC_FLATFIRST=1)
+  live probe running to validate item 2 end-to-end on basicCalculator. (2) `MINEDFAULT_EXHAUSTIVE=1
+  minedfaultinject:bench` (item 5) running — note it still caps at `MINEDFAULT_MAX_MUTANTS` (default 8)
+  per task, so "exhaustive" here = no early-break-on-first-kill, not all 14 mutants; bump
+  MINEDFAULT_MAX_MUTANTS for a truly complete sweep. (3) The full generated scorecard with sig-pin live
+  (item 1) is the remaining headline "after" number — run once the model-bound probe frees :8080.
+
 ### 2026-07-22j (gap-soundness — W3 continuous-batch client + pass@k experiment: the loop is STARVED, not weak; +22.5pt pass@1 signature-pin lever)
 
 **The session's headline: a controlled pass@k experiment answered the central open question — is the

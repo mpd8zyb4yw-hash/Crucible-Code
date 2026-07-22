@@ -17,20 +17,22 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22j (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22k (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **THE CENTRAL QUESTION IS ANSWERED: the generated-path loop is STARVED, not weak.** A controlled
-> pass@k experiment (`npm run passk:bench`) on an 8-task difficulty spread (qwen2.5-1.5b, N=15) shows
-> the pass@k curve CLIMBS STEEPLY (mean pass@1 52.5% → pass@10 83.3% with the sig-pin on) — the
-> correct answer IS in the proposal distribution, just rare. So MORE SAMPLES per wall-second (W3
-> batching, bigger budgets) converts directly to solves; a bigger model is NOT the lever. Full
-> per-task A/B + curve: memory `crucible-passk-starved-not-weak`, ROADMAP CHANGE LOG 2026-07-22j.
+> **THE FOUR STARVED-LOOP LEVERS ARE NOW IMPLEMENTED (commit `da0cf1e`).** Acting on 2026-07-22j's
+> finding (the generated loop is STARVED, not weak — pass@k climbs steeply, so more draws convert to
+> solves), this session shipped the durable code for items 1-4 of the prior OPEN list. tsc 0 errors;
+> vgr:bench 231/0, searchbatch:bench 11/11, vgr:decompose 35/0. What remains is MEASUREMENT — the live
+> "after" numbers — not more code. Full detail: ROADMAP CHANGE LOG 2026-07-22k.
 >
-> **PRE-W2/W3 FLOOR (unchanged, still the "before"):** live strict-offline scorecard `generated
-> 1/33 = 3%` (worktree 15:01) / `1/10` (main-repo 17:37), 95% CI ~1–15%; any post-fix generated rate
-> below ~19% is noise. **The fixes this session (sig-pin + batching) are NOT yet reflected on the
-> scorecard** — sig-pin is live in `codeProposer.buildProposalPrompt` (always on) but batching is
-> `CRUCIBLE_VGR_BATCH=1`-gated (off). Next scorecard run will show the sig-pin effect.
+> **DECOMPOSITION VALIDATED LIVE (item 2 works):** the `vgr:decompose:calc` probe on the exact
+> basicCalculator ceiling carved it into helpers and CERTIFIED `parseOperator` (2 calls) + `applyOperator`
+> (7 calls), then composed — the sub-function decomposition escalation certifies a task that stayed 0%
+> under pure resampling. (Final composed-solve status: see `scratch_calc.log` / the run's tail.)
+>
+> **PRE-FIX FLOOR (still the "before"):** live strict-offline scorecard `generated 1/33 = 3%`, 95% CI
+> ~1–15%; any post-fix generated rate below ~19% is noise. sig-pin (always-on) + the new batch bump +
+> decomposition escalation are NOT yet reflected on a full scorecard — that run is the headline gap.
 
 > **TWO-IMPLEMENTER SPLIT (user-confirmed 2026-07-21).** This branch (`claude/gap-soundness`) has
 > been executing Track-A-labeled W2/W3 work directly (the parallel session left `fmReact.ts` /
@@ -38,35 +40,34 @@
 > claim here as a blocker). Track A = W2 GBNF / W3 batching / proposer prompt. Track B = soundness
 > (`synth/hermetic.ts`, `coding-bench-ext/`, `oracle.ts` Gate-B) — NEW files + one wiring line.
 
-**Shipped 2026-07-22j (this session) — W3 batch client + pass@k experiment + the +22.5pt sig-pin lever:**
-- **W3 continuous-batch KV-slot client — BUILT + verified live** (`processing: 4 of 4` on `/slots` mid-run).
-  `bonsaiCompleteBatch` (`bonsaiSidecar.ts`) → `fmCompleteBatch` (`fmReact.ts`) → `proposeCodeBatch`/
-  `proposeCodeMany` (`codeProposer.ts`). `argsFor` small-head now `-np SLOTS -c ctxPerSlot*SLOTS`.
-  **HONEST NEGATIVE: wall-clock win only ~1.1-1.3× on this memory-bandwidth-bound box** (measured), not 4×.
-- **search() batch path — proven PURE ADD** (`SearchOpts.batchProposer`; `npm run searchbatch:bench` 11/11:
-  status/modelCalls/attempts/best-score/budget/null-no-charge all ≡ serial). Wired into `solveCodeTask`
-  behind `CRUCIBLE_VGR_BATCH=1` (OFF by default — batch path flattens proposer composition).
-- **pass@k harness** (`npm run passk:bench`, `__passk_bench.ts`): unbiased HumanEval estimator, real
-  execution verifier, drawn through the batch client. This is the "starved vs weak" discriminator.
-- **Signature-pin proposal-quality lever — the win.** `callSignatureHint` pins the exact
-  `export function NAME(params) {` header (weak head gets algorithm right, botches interface: wrote
-  `sumEvens(...nums)` → every case 0; it ignores prohibitions but copies a concrete skeleton). A/B
-  (identical binary, `CRUCIBLE_NO_SIGHINT` toggle): **mean pass@1 30.0%→52.5% (+22.5pts)**, sumEvens
-  0%→100%, solvable 6/8→7/8. Spec-derived ⇒ cacheable-prefix invariant intact (vgr:bench 231/0).
-- **GBNF malformed-rate — measured, HONEST NEGATIVE** (`npm run gbnfmalformed:bench`): **0% malformed on
-  BOTH arms** (instruct 1.5B already emits clean fences). Grammar is zero-cost insurance, not a live lever.
+**Shipped 2026-07-22k (this session) — the four STARVED-loop levers as durable code:**
+- **Item 3 — batch sample-bump** (`reasoning/solve.ts`, new `batchBudget()`): on `CRUCIBLE_VGR_BATCH=1`,
+  `proposalsPerNode` 1→`CRUCIBLE_VGR_BATCH_PROPOSALS` (default 4) + matching `maxModelCalls` scale (round
+  count preserved, K× wider), capped at `CRUCIBLE_VGR_BATCH_MAXCALLS` (64). Caller-pinned props win.
+- **Item 2 — decomposition escalation** (`reasoning/solve.ts` `tryDecompose` + `server.ts`
+  `decompose: tryHard`): last-resort `decomposeCodeBySubFunction` when flat search + poisoned-case
+  recovery both fail. Sound (composed whole re-verified vs original cases, still clears invariantGate).
+  New `npm run vgr:decompose:calc` probe. VALIDATED LIVE (see above).
+- **Item 4 — multi-shot pass@k** (`reasoning/__passk_bench.ts`, `PASSK_MULTISHOT=1`, `PASSK_SHOTS=8`):
+  feedback-threaded sequential draws vs independent pass@k → prints the loop's convergence lift.
+- Prior session (2026-07-22j): W3 batch KV-slot client, pass@k harness, +22.5pt signature-pin lever.
 
 **OPEN (highest-leverage next, in order):**
-1. **Run the full generated scorecard WITH the sig-pin live** (it's always-on now) and diff generated
-   rate vs the 3% floor — this is the first real "after" number. Then flip `CRUCIBLE_VGR_BATCH=1` and
-   re-run to measure batching's end-to-end effect under the time cap.
-2. **basicCalculator-class ceiling (precedence-without-parens stayed 0% at N=15)** — the ONE genuinely
-   hard task. This is where decomposition (item 4's harder half) earns its keep: not more sampling.
-3. **Raise `proposalsPerNode` on the live batch path** now that batching makes concurrent draws ~free —
-   the pass@k curve says 4-8 draws/round beats 1. Needs a matching `maxModelCalls` bump + a scorecard run.
-4. **Verifier-failure-fed refinement is already in `buildProposalPrompt`** (feedback threading) — measure
-   pass@k WITH history (multi-shot) vs the first-shot curve here to quantify the loop's convergence lift.
-5. **W32 mined multi-file sweep still open** (`MINEDFAULT_EXHAUSTIVE=1`, heavy ~20-40min) — Track-B residual.
+1. **Full generated scorecard, three arms** — baseline (already 3%), sig-pin-only (always-on now), and
+   `CRUCIBLE_VGR_BATCH=1 CRUCIBLE_DECOMPOSE=1` (batch bump + decomposition). Diff generated rate vs the
+   3% floor / ~19% noise threshold. This is the headline "after" number and the last thing gating a
+   claim that the levers moved the real scorecard. Run against :3001 (`npm run smoke:code`), model-bound.
+2. **Tune the batch bump under the 480s cap** — with 4 KV slots live, sweep `CRUCIBLE_VGR_BATCH_PROPOSALS`
+   ∈ {4,6,8} and read solves-per-wall-second; the pass@k curve says 4-8/round, but decode is
+   bandwidth-bound (~1.1-1.3× wall-clock), so the optimum under a fixed time cap is an open empirical Q.
+3. **Read the multi-shot curve** (`PASSK_MULTISHOT=1 npm run passk:bench`) and decide whether
+   feedback-threaded draws beat independent draws enough to raise the live loop's per-node shot count.
+4. **basicCalculator beyond the probe** — decomposition now certifies it in the standalone probe; confirm
+   it fires + certifies through the FULL `solveCodingRequest` ladder on the scorecard (differential tier
+   → tryDecompose), not just the direct `decomposeCodeBySubFunction` entry.
+5. **Truly-exhaustive mined sweep** — this session ran `MINEDFAULT_EXHAUSTIVE=1` but it caps at
+   `MINEDFAULT_MAX_MUTANTS` (default 8)/task; a complete sweep needs `MINEDFAULT_MAX_MUTANTS=999`
+   (heavier). Track-B soundness residual; see `scratch_minedsweep.log` for this run's survivors.
 
 **Shipped 2026-07-22h (this continuation, on `claude/gap-soundness`) — closed 5 of the 16 W32 survivor coverage holes:**
 Hand-triaged the 16 surviving mutants from `__faultinject_bench.ts` (deterministic first-match, so each is
