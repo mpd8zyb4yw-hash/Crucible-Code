@@ -184,7 +184,7 @@ const LOCAL_SYNTH_TIMEOUT_MS = Number(
 /** Default proposer: the on-device Apple FM (offline). Injectable for tests / other backends. */
 async function defaultLocalSynth(system: string, user: string): Promise<string> {
   // Serialized through the FM queue (single-session daemon); synthesis is foreground → high.
-  const res = await enqueueFm(() => fetch(`${LOCAL_FM_URL}/v1/chat/completions`, {
+  const call = () => enqueueFm(() => fetch(`${LOCAL_FM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -193,7 +193,19 @@ async function defaultLocalSynth(system: string, user: string): Promise<string> 
     }),
     signal: AbortSignal.timeout(LOCAL_SYNTH_TIMEOUT_MS),
   }), { priority: 'high', label: 'universalSynth' })
-  if (!res.ok) throw new Error(`local FM ${res.status}`)
+  // Transient-5xx retry (cont.101): the single-session FM daemon returns 503 when it is warming
+  // or momentarily saturated (measured: sortModule died mid-suite on a bare "local FM 503" while
+  // other tasks kept the daemon busy). A 503 discards the ENTIRE synth round for zero output, so a
+  // bounded backoff-retry is pure upside — it can only turn a spurious infra reject into a
+  // candidate, never certify a wrong answer (the oracle still gates every returned candidate).
+  const TRANSIENT = new Set([502, 503, 504])
+  let res: Response | null = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await call()
+    if (res.ok || !TRANSIENT.has(res.status)) break
+    if (attempt < 2) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)))
+  }
+  if (!res || !res.ok) throw new Error(`local FM ${res?.status ?? 'no-response'}`)
   const data: any = await res.json()
   return String(data.choices?.[0]?.message?.content ?? '')
 }
