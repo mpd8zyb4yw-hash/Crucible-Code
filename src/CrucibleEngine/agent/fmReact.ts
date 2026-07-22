@@ -27,7 +27,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { spawn } from 'child_process'
 import { enqueueFm } from './fmQueue'
-import { bonsaiComplete, sidecarStream, isBonsaiInstalled, repairModelName } from '../localModels/bonsaiSidecar'
+import { bonsaiComplete, bonsaiCompleteBatch, sidecarStream, isBonsaiInstalled, repairModelName } from '../localModels/bonsaiSidecar'
 
 const FM_URL = process.env.LOCAL_INFERENCE_URL ?? 'http://127.0.0.1:11435'
 
@@ -843,6 +843,31 @@ export async function fmStream(
     }
     return full.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
   }, { priority: opts?.priority ?? 'high', label: 'fmStream' })
+}
+
+/**
+ * W3 batch completion — draw K INDEPENDENT completions CONCURRENTLY. On the local head this
+ * hits llama-server's KV slots (continuous batching) via bonsaiCompleteBatch; on the Apple FM
+ * daemon (single session) it falls back to Promise.all over fmComplete, which the fmQueue then
+ * re-serializes — correct, just no speedup there. Best-effort per slot: a failed draw is '', so
+ * one bad proposal never discards the rest. result[i] ↔ requests[i]. Never throws.
+ */
+export async function fmCompleteBatch(
+  requests: Array<Array<{ role: string; content: string }>>,
+  opts?: FmCallOpts,
+): Promise<string[]> {
+  if (requests.length === 0) return []
+  if (useLocalHead()) {
+    try {
+      return await bonsaiCompleteBatch(requests, {
+        maxTokens: opts?.maxTokens, temperature: opts?.temperature,
+        timeoutMs: opts?.timeoutMs ?? FM_TIMEOUT_MS, signal: opts?.signal, gbnf: opts?.gbnf,
+      })
+    } catch { /* sidecar down — fall through to the Apple FM path */ }
+  }
+  // Apple FM (or sidecar-unavailable) path: fmComplete already swallows errors to '' and the
+  // fmQueue serializes the single-session daemon, so Promise.all is safe and order-preserving.
+  return Promise.all(requests.map(m => fmComplete(m, opts)))
 }
 
 export async function fmComplete(

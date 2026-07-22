@@ -1933,6 +1933,50 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22j (gap-soundness — W3 continuous-batch client + pass@k experiment: the loop is STARVED, not weak; +22.5pt pass@1 signature-pin lever)
+
+**The session's headline: a controlled pass@k experiment answered the central open question — is the
+3% generated floor a STARVED LOOP or WEAK PROPOSALS? Answer: STARVED. And the highest-ROI fix of the
+whole northstar effort so far (a prompt-only signature pin, +22.5pts pass@1) fell straight out of it.**
+
+- **W3 continuous-batch KV-slot client (item 1) — BUILT + verified live.** New `bonsaiCompleteBatch`
+  (`bonsaiSidecar.ts`) fires K prompts CONCURRENTLY at llama-server's KV slots, bypassing the serial
+  `queue` (that queue exists to stop two 27B KV footprints from swap-death — inapplicable to the
+  GPU-resident 1.5B, which is exactly the safe-concurrency case). Threaded up as `fmCompleteBatch`
+  (`fmReact.ts`) → `proposeCodeBatch` / `proposeCodeMany` (`codeProposer.ts`). `argsFor` now launches
+  the small head with `-np SLOTS -c ctxPerSlot*SLOTS` (full per-slot context, not a 4096 split).
+  Proven live: `/slots` showed **`processing: 4 of 4`** mid-run. **HONEST NEGATIVE: measured wall-clock
+  win is only ~1.1-1.3×** on this memory-bandwidth-bound box (decode shares GPU bandwidth across slots),
+  NOT 4×. The value is "more draws per wall-second under the time cap", not raw speedup.
+- **search() batch path — proven a PURE ADD.** `SearchOpts.batchProposer` draws a whole round's
+  beam×proposalsPerNode proposals concurrently; new `__search_batch_bench` (`npm run searchbatch:bench`)
+  pins **11/11** that batch ≡ serial on status, modelCalls, attempt count, best score, budget bound,
+  and null-no-charge (incl. a bounded re-draw so an all-null round-0 outage recovers like serial's
+  in-place retry). Wired into `solveCodeTask` behind `CRUCIBLE_VGR_BATCH=1` (default OFF — the batch
+  path flattens proposer composition, so it stays opt-in until proven on the full scorecard).
+- **pass@k harness (item 2) — `npm run passk:bench`, `__passk_bench.ts`.** Draws N samples/task through
+  the batch client, verifies each with the REAL execution verifier, estimates every k with the unbiased
+  HumanEval estimator (draw N once). 8-task difficulty spread. **Result (N=15, qwen2.5-1.5b): the pass@k
+  curve CLIMBS STEEPLY → the answer is in the distribution, just rare → STARVED, not weak.**
+- **Signature-pin proposal-quality lever (item 4) — the +22.5pt win.** pass@k debugging exposed the
+  dominant failure: the 1.5B gets the ALGORITHM right but rewrites the INTERFACE (`sumEvens(...nums)`
+  rest-param where the harness calls `sumEvens([1,2,3,4])` → every case 0). It IGNORES "do not use rest
+  params" but COPIES a concrete positive skeleton. `callSignatureHint` (`codeProposer.ts`) now pins the
+  exact `export function NAME(params) {` header (author's param names parsed from the goal, else arity
+  `a0,a1,…`), spec-derived so the cacheable-prefix invariant holds (vgr:bench 231/0 unchanged). **A/B
+  (identical binary, `CRUCIBLE_NO_SIGHINT` toggle): mean pass@1 30.0%→52.5% (+22.5pts), pass@5
+  60→77%, pass@10 70→83%, solvable-tasks 6/8→7/8, sumEvens 0%→100%.** Zero extra model calls.
+- **GBNF malformed-rate (item 5) — measured, HONEST NEGATIVE.** `npm run gbnfmalformed:bench` (OFF vs ON
+  arms, identical prompt): **0% malformed on BOTH arms** (16/16 usable each; corroborated by 0/240 empty
+  across both pass@k runs). The instruct 1.5B already complies with "one fenced block, no prose", so the
+  grammar prevents a failure mode that isn't occurring — zero-cost insurance, not a live lever. The whole
+  gap is algorithmic + signature (now fixed) + sampling depth, NOT output shape.
+- **Item 3 (read the relaunched scorecard):** worktree `.crucible/coding-bench-last.json` (15:01) and the
+  partial main-repo one (17:37) BOTH still show `generated 1/33 = 3%` / `1/10` — still at the pre-W2/W3
+  floor, below the ~19% noise threshold, exactly as expected until batching+sig-pin land on the live path.
+- Per-task A/B and the full curve are in memory `crucible-passk-starved-not-weak`. tsc clean throughout;
+  benches green: vgr 231/0, keepk 15/15, fmreact 12/12, localpool 9/0, searchbatch 11/11.
+
 ### 2026-07-22i (gap-soundness — work done WHILE the coding bench re-runs: last 11 mutation survivors triaged; W32 mutation testing extended to the mined multi-file corpus)
 
 Relaunched the coding scorecard first: pid 29147 was already dead — its last `.crucible/coding-bench-last.json`

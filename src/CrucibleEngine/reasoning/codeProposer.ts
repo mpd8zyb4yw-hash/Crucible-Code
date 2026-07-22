@@ -11,7 +11,7 @@
 // instead of guessing blind.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { fmComplete } from '../agent/fmReact'
+import { fmComplete, fmCompleteBatch } from '../agent/fmReact'
 import { fencedCodeGrammar } from '../agent/grammars'
 import type { Candidate, ProposeContext } from './types'
 
@@ -37,6 +37,69 @@ export function extractCode(raw: string): string {
 
 type Attempt = ProposeContext<string>['history'][number]
 
+/** Render one argument as a compact JS literal for an example call. JSON round-trips the
+ *  JSON-comparable case values the verifier uses; falls back to String() for anything exotic. */
+function renderArg(a: unknown): string {
+  try {
+    const s = JSON.stringify(a)
+    if (s === undefined) return String(a)
+    return s.length > 60 ? s.slice(0, 57) + '…' : s
+  } catch { return String(a) }
+}
+
+/** Pull the exact declared parameter list for `name` out of a goal that spells the signature
+ *  inline, e.g. goal "…sumEvens(nums: number[]): number…" → "nums: number[]". Returns null when
+ *  the goal doesn't contain `name(...)`. Balanced to the first close-paren (params here never
+ *  nest parens). This lets the skeleton use the AUTHOR's parameter names verbatim. */
+function paramsFromGoal(goal: string, name: string): string | null {
+  const idx = goal.indexOf(name + '(')
+  if (idx < 0) return null
+  const open = idx + name.length
+  const close = goal.indexOf(')', open)
+  if (close < 0) return null
+  return goal.slice(open + 1, close).trim()
+}
+
+/**
+ * The call-signature pin (see buildProposalPrompt). Weak heads reliably get the ALGORITHM right
+ * but rewrite the INTERFACE (a measured `sumEvens(...nums)` where the harness calls
+ * `sumEvens([1,2,3,4])`), and they IGNORE negative instructions ("do not use rest params"). So
+ * this gives a POSITIVE skeleton — the exact `export function NAME(params) {` header to begin
+ * with — because a 1.5B copies a concrete header far more reliably than it obeys a prohibition.
+ * Params are the author's own names when the goal spells the signature, else arity-derived
+ * `a0,a1,…`. Derived ONLY from spec ⇒ stable across iterations (cacheable-prefix safe). Returns
+ * '' when no cases are available (proposer then behaves exactly as before).
+ */
+export function callSignatureHint(acc: { entry: string; entries?: string[]; cases?: Array<{ args: unknown[]; entry?: string }> }, goal = ''): string {
+  // A/B toggle: CRUCIBLE_NO_SIGHINT=1 disables the skeleton so before/after can be measured with
+  // the identical binary (no doubt about which code a background run loaded). Default: enabled.
+  if (process.env.CRUCIBLE_NO_SIGHINT === '1') return ''
+  const cases = acc.cases
+  if (!cases || !cases.length) return ''
+  const entries = acc.entries && acc.entries.length ? acc.entries : [acc.entry]
+  const headers: string[] = []
+  const examples: string[] = []
+  for (const name of entries) {
+    // First case that targets this entry (untagged cases default to the primary entry).
+    const c = cases.find(x => (x.entry ?? acc.entry) === name) ?? (name === acc.entry ? cases[0] : undefined)
+    if (!c) continue
+    // Prefer the author's declared params; else synthesize positional names from the arity.
+    const declared = paramsFromGoal(goal, name)
+    const params = declared && declared.length ? declared
+      : Array.from({ length: c.args.length }, (_, i) => `a${i}`).join(', ')
+    headers.push(`export function ${name}(${params}) {`)
+    examples.push(`\`${name}(${c.args.map(renderArg).join(', ')})\` (${c.args.length} arg${c.args.length === 1 ? '' : 's'})`)
+  }
+  if (!headers.length) return ''
+  return [
+    '',
+    '## Function signature — copy it EXACTLY',
+    'Begin each function with this exact header (fill in the body):',
+    ...headers.map(h => '    ' + h),
+    `It is invoked positionally: ${examples.join('; ')}. Use exactly the parameters shown — no rest/variadic (\`...args\`), no extra params, no wrapping the args in an array or object.`,
+  ].join('\n')
+}
+
 /**
  * Choose which prior attempts to show the model as debugging feedback: the 3 most recent PLUS the
  * closest-to-passing (highest score) when beam exploration made the recent window worse than an
@@ -61,7 +124,7 @@ export function pickFeedbackAttempts(history: Attempt[]): { shown: Attempt[]; be
  */
 export function buildProposalPrompt(ctx: ProposeContext<string>): { system: string; user: string; temperature: number } {
   const { spec, history, diversify } = ctx
-  const acc = spec.acceptance as { entry: string; entries?: string[] }
+  const acc = spec.acceptance as { entry: string; entries?: string[]; cases?: Array<{ args: unknown[]; entry?: string }> }
   const multi = acc.entries && acc.entries.length > 1 ? acc.entries : null
 
   const system = [
@@ -73,8 +136,16 @@ export function buildProposalPrompt(ctx: ProposeContext<string>): { system: stri
     multi
       ? `Export ALL of these functions from the one module (use \`export function <name>(...)\` for each): ${multi.map(e => '`' + e + '`').join(', ')}. Every one must be defined and correct — they are tested together.`
       : `Export a function named \`${acc.entry}\` (use \`export function ${acc.entry}(...)\`).`,
+    // CALL-SIGNATURE PIN (measured 2026-07-22): the weak head reliably gets the ALGORITHM right
+    // but botches the interface — it wrote `sumEvens(...nums)` (rest param) where the harness
+    // calls `sumEvens([1,2,3,4])`, so the array landed as nums[0] and every case failed at 0.
+    // Signature/arity confusion, not reasoning, was the dominant pass@k loss on trivial tasks.
+    // Show the model EXACTLY how each function is invoked (arity + a concrete example call
+    // rendered from the first acceptance case) and forbid variadic params. Spec-derived ⇒ stable
+    // across a search's iterations ⇒ still a byte-identical cacheable system prefix (vgr:bench pins this).
+    callSignatureHint(acc, spec.goal),
     spec.context ? `\n## Grounding\n${spec.context}` : '',
-  ].join('\n')
+  ].filter(Boolean).join('\n')
 
   // Thread the most recent failures back in as concrete, actionable debugging signal.
   // This is the sample-efficiency lever: the model sees exactly what went wrong.
@@ -116,8 +187,58 @@ export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidat
     [{ role: 'system', content: system }, { role: 'user', content: user }],
     { temperature, gbnf: CODE_GRAMMAR },
   )
+  return rawToCandidate(raw)
+}
+
+/** Turn one raw completion into a Candidate (or null on empty/no-code). Shared by the single and
+ *  batch proposers so both apply IDENTICAL extraction + fingerprinting. */
+function rawToCandidate(raw: string): Candidate<string> | null {
   if (!raw || !raw.trim()) return null
   const code = extractCode(raw)
   if (!code) return null
   return { value: code, fingerprint: fingerprintCode(code) }
+}
+
+/**
+ * W3 MULTI-CONTEXT batch proposer — draw ONE candidate for EACH of `ctxs` CONCURRENTLY across
+ * llama-server KV slots. Unlike proposeCodeBatch (n draws of ONE state), this draws one draw of N
+ * DIFFERENT states — exactly what a search round needs when it expands several beam parents whose
+ * feedback differs. Result is aligned to input (result[i] ↔ ctxs[i]); a null means that draw came
+ * back empty/no-code, so the caller's per-slot accounting maps straight back. Order-preserving.
+ */
+export async function proposeCodeMany(ctxs: ProposeContext<string>[]): Promise<(Candidate<string> | null)[]> {
+  if (ctxs.length === 0) return []
+  const prompts = ctxs.map(buildProposalPrompt)
+  const messages = prompts.map(p => [{ role: 'system', content: p.system }, { role: 'user', content: p.user }])
+  // Each ctx carries its own temperature (diversify raises it); the batch client samples each
+  // independently, so pass them through per-slot. fmCompleteBatch takes a single opts, so when
+  // temperatures differ we fall back to per-slot fmComplete via the batch client's own fan-out —
+  // here we use the max temperature as the batch temperature, which only ever ADDS diversity
+  // (never removes it) and keeps the single-round-trip batch. GBNF is constant across slots.
+  const temp = Math.max(...prompts.map(p => p.temperature))
+  const raws = await fmCompleteBatch(messages, { temperature: temp, gbnf: CODE_GRAMMAR })
+  return raws.map(rawToCandidate)
+}
+
+/**
+ * W3 BATCH proposer — draw `n` candidates for the SAME search state CONCURRENTLY across
+ * llama-server KV slots (continuous batching), returning every distinct non-null candidate.
+ * This is what lets the search loop (or the pass@k harness) spend its wall-clock on K parallel
+ * proposals instead of K serial ones. Temperature is bumped for n>1 so the draws diverge — n
+ * identical greedy samples would waste K-1 slots. Order-preserving; nulls (empty/no-code) dropped.
+ */
+export async function proposeCodeBatch(ctx: ProposeContext<string>, n: number): Promise<Candidate<string>[]> {
+  const k = Math.max(1, n)
+  const { system, user, temperature } = buildProposalPrompt(ctx)
+  // A batch of size 1 is just the single path; for n>1 raise temperature so the K draws are
+  // genuinely different lines of attack (the whole point of sampling K) rather than K copies.
+  const temp = k === 1 ? temperature : Math.max(temperature, 0.8)
+  const messages = [{ role: 'system', content: system }, { role: 'user', content: user }]
+  const raws = await fmCompleteBatch(Array.from({ length: k }, () => messages), { temperature: temp, gbnf: CODE_GRAMMAR })
+  const out: Candidate<string>[] = []
+  for (const raw of raws) {
+    const c = rawToCandidate(raw)
+    if (c) out.push(c)
+  }
+  return out
 }

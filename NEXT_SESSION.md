@@ -17,56 +17,56 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22i (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22j (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **THE FIRST HONEST LIVE BASELINE EXISTS. This is the "before" number.** Full write-up:
-> ROADMAP.md CHANGE LOG 2026-07-22. Read the label before quoting the number: it is the
-> **pre-W2/W3 floor** — strict on-device mode (zero external calls), 480s cap, and BEFORE
-> GBNF (W2) and prefix-caching (W3) exist. Per-proposal latency is ~90s, so the loop is
-> STARVED, not weak. Do not quote it as "Crucible's coding ability"; quote it as "the floor
-> W2/W3 must beat."
+> **THE CENTRAL QUESTION IS ANSWERED: the generated-path loop is STARVED, not weak.** A controlled
+> pass@k experiment (`npm run passk:bench`) on an 8-task difficulty spread (qwen2.5-1.5b, N=15) shows
+> the pass@k curve CLIMBS STEEPLY (mean pass@1 52.5% → pass@10 83.3% with the sig-pin on) — the
+> correct answer IS in the proposal distribution, just rare. So MORE SAMPLES per wall-second (W3
+> batching, bigger budgets) converts directly to solves; a bigger model is NOT the lever. Full
+> per-task A/B + curve: memory `crucible-passk-starved-not-weak`, ROADMAP CHANGE LOG 2026-07-22j.
 >
-> **BASELINE (n=39, strict offline, 480s cap):** `generated` (the only real signal)
-> **1/33 = 3%, 95% CI ~1–15%**; `catalog` 4/6. Min detectable delta at this n ≈ ±16 pts, so
-> **any post-W2/W3 generated rate below ~19% is noise** — the fix must clear that to count.
+> **PRE-W2/W3 FLOOR (unchanged, still the "before"):** live strict-offline scorecard `generated
+> 1/33 = 3%` (worktree 15:01) / `1/10` (main-repo 17:37), 95% CI ~1–15%; any post-fix generated rate
+> below ~19% is noise. **The fixes this session (sig-pin + batching) are NOT yet reflected on the
+> scorecard** — sig-pin is live in `codeProposer.buildProposalPrompt` (always on) but batching is
+> `CRUCIBLE_VGR_BATCH=1`-gated (off). Next scorecard run will show the sig-pin effect.
 
-> **TWO-IMPLEMENTER SPLIT (user-confirmed 2026-07-21).** NOTE: this session (on
-> `claude/gap-soundness`) executed the Track-A-labeled W1 + enrollment work directly in
-> `server.ts` + `coding-benchmarks.ts`, because those were the exact files gating the
-> deferred baseline and the parallel session had not landed them. Re-verify ownership with
-> `git log -1 -- <file>` before treating any claim here as a blocker.
-> - **Track A (`crucible-northstar-sessions`):** W2 GBNF grammars, W3 prefix caching —
->   `fmReact.ts`, `fmQueue.ts`, the llama-server client, `grammars/`. (W1 loop-entry: DONE
->   this session, see below.)
-> - **Track B (`claude/gap-soundness`):** soundness workstreams W30 → W20 → W32 → W33 →
->   W35 → W36 → W48 — `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
->   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
->   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
+> **TWO-IMPLEMENTER SPLIT (user-confirmed 2026-07-21).** This branch (`claude/gap-soundness`) has
+> been executing Track-A-labeled W2/W3 work directly (the parallel session left `fmReact.ts` /
+> `grammars.ts` / the llama-server client unclaimed — `git log -1 -- <file>` before treating any
+> claim here as a blocker). Track A = W2 GBNF / W3 batching / proposer prompt. Track B = soundness
+> (`synth/hermetic.ts`, `coding-bench-ext/`, `oracle.ts` Gate-B) — NEW files + one wiring line.
 
-**Shipped 2026-07-22i (this continuation, on `claude/gap-soundness`) — last 11 mutation survivors triaged; W32 extended to the mined corpus:**
-- **pid 29147 was NOT wedged — it had cleanly completed** (last scorecard write 15:01, `passedHard 4/14`, full
-  task array). Relaunched `tsx src/CrucibleEngine/coding-benchmarks.ts` live; it is walking the `generated` path
-  again (`.crucible/coding-bench-last.json` will refresh on completion).
-- **intervalSubtract (×3) — the ONLY real holes among the 11 — CLOSED.** Two asserts added to its hidden suite:
-  adjacent-interval coalesce `[[1,2],[3,4]]→[[1,4]]` (kills `le->lt` + `plus->minus` on the `s <= last-end+1`
-  merge boundary), and nested/end-order sort `[[1,10],[2,3]]→[[1,10]]` (kills `or->and` collapsing the sort
-  comparator). **11→8 survivors, kill rate 93.0%→94.9%**, suite-kills 101→104, all refs certify, corpus floor PASS.
-- **The remaining 8 survivors are EQUIVALENT mutants — diagnosed, left unkilled (killing = theater):** bankersRound
-  ×4 (all in the `decimalString` helper — unreachable sci-notation boundaries + early-return-uses-`Math.abs`),
-  bitsetRange `le->lt` (word-vs-bit popcount path, same count), slidingWindowMax `le->lt` (deque tie-break, same
-  max value), deepEqualCyc `and->or` (`isPlain` guard only reached on confirmed objects), dateRangeDays `or->and`
-  (subsumed by `Date.UTC` round-trip). See ROADMAP CHANGE LOG 2026-07-22i for the per-mutant reasoning.
-- **W32 extended to the mined multi-file corpus.** Factored operators into `coding-bench-ext/mutationOps.ts`
-  (shared by both injectors; `__faultinject_bench` re-verified green). New `__minedfaultinject_bench.ts` +
-  `npm run minedfaultinject:bench` mutates `minedRefContent` and stages each mutant through the REAL parent
-  snapshot + hermetic oracle (`runMinedCandidate`, now with an optional `runTimeoutMs` override). It is
-  EXPLORATORY, not a gate: the authoritative mined-teeth proof is `__minedcorpus_bench`'s parent-rejection, so
-  the only hard failure is a non-certifying baseline; teeth are TEETH/INCONCLUSIVE. Smoke-tested green on
-  `mined-apifaith-vocabulary` (baseline certifies, 6 mutants staged/classified, exit 0). OPEN: run the full
-  3-task sweep (`MINEDFAULT_EXHAUSTIVE=1` for the two 300s `emitPlan`/`__vgr_bench` tasks — heavy, ~20-40min).
-- **Grammar-on-hot-path (task 5): verified wired** — `bonsaiSidecar.ts:264` (`body.grammar=opts.gbnf`),
-  `localModelPool.ts:124` (`session.prompt({grammar})`). Live malformed-rate measurement still OPEN (needs a
-  local head active; deferred to avoid a third heavy concurrent model run).
+**Shipped 2026-07-22j (this session) — W3 batch client + pass@k experiment + the +22.5pt sig-pin lever:**
+- **W3 continuous-batch KV-slot client — BUILT + verified live** (`processing: 4 of 4` on `/slots` mid-run).
+  `bonsaiCompleteBatch` (`bonsaiSidecar.ts`) → `fmCompleteBatch` (`fmReact.ts`) → `proposeCodeBatch`/
+  `proposeCodeMany` (`codeProposer.ts`). `argsFor` small-head now `-np SLOTS -c ctxPerSlot*SLOTS`.
+  **HONEST NEGATIVE: wall-clock win only ~1.1-1.3× on this memory-bandwidth-bound box** (measured), not 4×.
+- **search() batch path — proven PURE ADD** (`SearchOpts.batchProposer`; `npm run searchbatch:bench` 11/11:
+  status/modelCalls/attempts/best-score/budget/null-no-charge all ≡ serial). Wired into `solveCodeTask`
+  behind `CRUCIBLE_VGR_BATCH=1` (OFF by default — batch path flattens proposer composition).
+- **pass@k harness** (`npm run passk:bench`, `__passk_bench.ts`): unbiased HumanEval estimator, real
+  execution verifier, drawn through the batch client. This is the "starved vs weak" discriminator.
+- **Signature-pin proposal-quality lever — the win.** `callSignatureHint` pins the exact
+  `export function NAME(params) {` header (weak head gets algorithm right, botches interface: wrote
+  `sumEvens(...nums)` → every case 0; it ignores prohibitions but copies a concrete skeleton). A/B
+  (identical binary, `CRUCIBLE_NO_SIGHINT` toggle): **mean pass@1 30.0%→52.5% (+22.5pts)**, sumEvens
+  0%→100%, solvable 6/8→7/8. Spec-derived ⇒ cacheable-prefix invariant intact (vgr:bench 231/0).
+- **GBNF malformed-rate — measured, HONEST NEGATIVE** (`npm run gbnfmalformed:bench`): **0% malformed on
+  BOTH arms** (instruct 1.5B already emits clean fences). Grammar is zero-cost insurance, not a live lever.
+
+**OPEN (highest-leverage next, in order):**
+1. **Run the full generated scorecard WITH the sig-pin live** (it's always-on now) and diff generated
+   rate vs the 3% floor — this is the first real "after" number. Then flip `CRUCIBLE_VGR_BATCH=1` and
+   re-run to measure batching's end-to-end effect under the time cap.
+2. **basicCalculator-class ceiling (precedence-without-parens stayed 0% at N=15)** — the ONE genuinely
+   hard task. This is where decomposition (item 4's harder half) earns its keep: not more sampling.
+3. **Raise `proposalsPerNode` on the live batch path** now that batching makes concurrent draws ~free —
+   the pass@k curve says 4-8 draws/round beats 1. Needs a matching `maxModelCalls` bump + a scorecard run.
+4. **Verifier-failure-fed refinement is already in `buildProposalPrompt`** (feedback threading) — measure
+   pass@k WITH history (multi-shot) vs the first-shot curve here to quantify the loop's convergence lift.
+5. **W32 mined multi-file sweep still open** (`MINEDFAULT_EXHAUSTIVE=1`, heavy ~20-40min) — Track-B residual.
 
 **Shipped 2026-07-22h (this continuation, on `claude/gap-soundness`) — closed 5 of the 16 W32 survivor coverage holes:**
 Hand-triaged the 16 surviving mutants from `__faultinject_bench.ts` (deterministic first-match, so each is

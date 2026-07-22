@@ -13,7 +13,7 @@
 // unverified guess (mission: abstain means abstain).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { proposeCode } from './codeProposer'
+import { proposeCode, proposeCodeMany } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
 import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROUND_MARK } from './codeResearch'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
@@ -128,7 +128,14 @@ export async function solveCodeTask(
     ? composeProposers(makeMutationRepairProposer(input.buggyCode), proposeCode)
     : (proposerOverride ?? proposeCode)
   const verifier: Verifier<string> = verifyCode
-  return search(spec, proposer, verifier, opts)
+  // W3 continuous batching on the LIVE path (opt-in via CRUCIBLE_VGR_BATCH=1). Only when the
+  // proposer is the PLAIN FM proposer — a composed proposer (mutation-repair fast-path, or a test
+  // override) has per-call ordering semantics the flat batch draw would flatten, so those keep the
+  // serial path. proposeCodeMany draws a whole round's slots across llama-server KV slots at once;
+  // search()'s batch path is proven accounting-identical to serial (see __search_batch_bench).
+  const useBatch = process.env.CRUCIBLE_VGR_BATCH === '1' && !opts.batchProposer && proposer === proposeCode
+  const searchOpts: SearchOpts<string> = useBatch ? { ...opts, batchProposer: proposeCodeMany } : opts
+  return search(spec, proposer, verifier, searchOpts)
 }
 
 /**

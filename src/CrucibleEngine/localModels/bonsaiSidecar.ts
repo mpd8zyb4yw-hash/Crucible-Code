@@ -64,6 +64,9 @@ const ROOT = resolveRoot()
 const BIN = process.env.CRUCIBLE_BONSAI_BIN || join(ROOT, '.crucible', 'prismml-bin', 'llama-server')
 const PORT = Number(process.env.CRUCIBLE_BONSAI_PORT || 8080)
 const BASE = `http://127.0.0.1:${PORT}`
+// W3: number of llama-server KV slots for the SMALL head, so K proposals continuous-batch. Only
+// applied to a small model (the 27B stays 1-slot — two concurrent KV footprints is swap-death).
+const SLOTS = Math.max(1, Number(process.env.CRUCIBLE_BONSAI_SLOTS || 4))
 
 /**
  * THE REPAIR SEAT GOES TO THE FASTEST MODEL THAT CAN ACTUALLY DO THE JOB — measured, not assumed.
@@ -139,7 +142,19 @@ function argsFor(m: BonsaiMode): string[] {
   // A SMALL model does not need the wired-memory tradeoff at all: qwen2.5-1.5b is ~1.1GB, so
   // GPU offload costs little wired memory and buys real speed. The -ngl 0 rule exists because
   // a 27B pins 6.6GB of an 8GB machine — that reasoning does not transfer to a 1.5B.
-  if (!IS_BIG) return [...common, '-ngl', '99', '-c', '4096']
+  //
+  // W3 continuous batching: give the small model N KV slots so K independent proposals (a search
+  // round's beam×proposalsPerNode) decode CONCURRENTLY under llama-server's continuous batching
+  // instead of serially through the Node queue. Each slot keeps a FULL per-slot context, so total
+  // -c is PER_SLOT_CTX×N (NOT 4096 split N ways — a split would truncate a proposal's feedback
+  // history). KV for qwen2.5-1.5b is ~28KB/token f16, so N=4 × 4096 = ~458MB on top of the 1.1GB
+  // model — safe on an 8GB box. MEASURED honest win on this memory-bandwidth-bound hardware is
+  // only ~1.1-1.3× (decode shares GPU bandwidth across slots), not N×; slots still let the loop
+  // draw more proposals per wall-second, which is the starvation lever. Env-tunable.
+  if (!IS_BIG) {
+    const ctxPerSlot = Number(process.env.CRUCIBLE_BONSAI_CTX_PER_SLOT || 4096)
+    return [...common, '-ngl', '99', '-np', String(SLOTS), '-c', String(ctxPerSlot * SLOTS)]
+  }
   return m === 'focus'
     ? [...common, '-ngl', '99', '-c', '4096']
     : [...common, '-ngl', '0', '-c', '2048', '-t', '4']
@@ -283,6 +298,94 @@ export async function bonsaiComplete(
   const next = queue.then(run, run)
   queue = next.then(() => undefined, () => undefined)
   return next
+}
+
+/** Live KV-slot count from the running server (`/props.total_slots`), cached. Falls back to the
+ *  configured SLOTS when the server can't be probed. Used to cap batch concurrency at what the
+ *  server can actually continuous-batch — firing more than `total_slots` just queues the excess. */
+let cachedSlots: number | null = null
+export async function serverSlots(): Promise<number> {
+  if (cachedSlots !== null) return cachedSlots
+  try {
+    const r = await fetch(`${BASE}/props`, { signal: AbortSignal.timeout(1500) })
+    const j = await r.json() as any
+    const n = Number(j?.total_slots)
+    cachedSlots = Number.isFinite(n) && n > 0 ? n : SLOTS
+  } catch { cachedSlots = SLOTS }
+  return cachedSlots
+}
+
+/**
+ * W3 CONTINUOUS-BATCH completion — fire K INDEPENDENT prompts CONCURRENTLY so llama-server
+ * decodes them across its KV slots in one batched loop, instead of serializing them through the
+ * single `queue` above. This is the KV-slot client the search loop uses to draw a whole round's
+ * beam×proposalsPerNode proposals at once.
+ *
+ * Contract, deliberately different from bonsaiComplete:
+ *   - BYPASSES the serial `queue` (that queue exists to stop TWO concurrent generations from
+ *     doubling memory pressure — but K slots of a SMALL GPU-resident model is exactly the case
+ *     where concurrency is safe and intended). For the BIG model there is no safe concurrency, so
+ *     this falls back to the serial queue (one at a time) — correctness preserved, no speedup.
+ *   - Best-effort PER SLOT: a slot that errors/times-out yields '' rather than rejecting the whole
+ *     batch, so one bad proposal never discards K-1 good ones. Order is preserved (result[i] ↔
+ *     requests[i]).
+ *   - Concurrency is capped at the server's live slot count; any excess is chunked so we never
+ *     fire more than the server can batch (excess would just head-of-line block).
+ *
+ * MEASURED (2026-07-22, qwen2.5-1.5b, this box): ~1.1-1.3× wall-clock vs serial for realistic
+ * proposal sizes — decode is memory-bandwidth bound so the slots mostly overlap prefill, not
+ * decode. The win is "more proposals per wall-second under a fixed time cap", not N×.
+ */
+export async function bonsaiCompleteBatch(
+  requests: Array<Array<{ role: string; content: string }>>,
+  opts: BonsaiOpts = {},
+): Promise<string[]> {
+  if (requests.length === 0) return []
+  // Big model: no safe concurrency — run each through the serial queue, order preserved.
+  if (IS_BIG || requests.length === 1) {
+    const out: string[] = []
+    for (const m of requests) {
+      try { out.push(await bonsaiComplete(m, opts)) } catch { out.push('') }
+    }
+    return out
+  }
+  if (!await ensureBonsai()) throw new Error('bonsai sidecar unavailable')
+  const cap = Math.max(1, Math.min(SLOTS, await serverSlots()))
+
+  // One direct (un-queued) completion. Best-effort: never throws — a failed slot is ''.
+  const oneDirect = async (messages: Array<{ role: string; content: string }>): Promise<string> => {
+    clearIdle()
+    try {
+      const body: Record<string, unknown> = {
+        model: 'bonsai',
+        messages,
+        max_tokens: opts.maxTokens ?? 700,
+        temperature: opts.temperature ?? 0.2,
+      }
+      if (!opts.think) body.chat_template_kwargs = { enable_thinking: false }
+      if (opts.gbnf) body.grammar = opts.gbnf
+      const res = await fetch(`${BASE}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: opts.signal ?? AbortSignal.timeout(opts.timeoutMs ?? 900_000),
+      })
+      if (!res.ok) return ''
+      const j = await res.json() as any
+      const msg = j?.choices?.[0]?.message ?? {}
+      return (msg.content || msg.reasoning_content || '').trim()
+    } catch { return '' }
+    finally { armIdle() }
+  }
+
+  // Chunk into waves of `cap` so we never exceed the batchable slot count.
+  const results: string[] = new Array(requests.length).fill('')
+  for (let i = 0; i < requests.length; i += cap) {
+    const slice = requests.slice(i, i + cap)
+    const settled = await Promise.all(slice.map(oneDirect))
+    for (let j = 0; j < settled.length; j++) results[i + j] = settled[j]
+  }
+  return results
 }
 
 /**

@@ -18,10 +18,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type {
-  Attempt, Candidate, Proposer, SearchResult, TaskSpec, Verdict, Verifier,
+  Attempt, Candidate, Proposer, ProposeContext, SearchResult, TaskSpec, Verdict, Verifier,
 } from './types'
 
-export interface SearchOpts {
+export interface SearchOpts<T = unknown> {
   /** How many candidate lines to keep alive between rounds. Width of exploration. */
   beamWidth?: number
   /** Hard ceiling on model calls — the scarce budget on serial-ANE hardware. */
@@ -33,9 +33,18 @@ export interface SearchOpts {
   signal?: AbortSignal
   /** Optional progress sink for SSE streaming. */
   emit?: (e: Record<string, unknown>) => void
+  /**
+   * W3 CONTINUOUS BATCHING. When supplied, a round draws ALL its proposals (every beam parent ×
+   * proposalsPerNode) CONCURRENTLY through this one call instead of `proposer` serially — the K
+   * draws decode across llama-server KV slots in one batched loop. Semantics are otherwise
+   * IDENTICAL: same budget accounting (each non-null draw = one model call), same dedup, same
+   * early-exit on the first certified candidate. result[i] must align to ctxs[i] (null = an
+   * empty/failed draw for that slot). Omit it and search() behaves exactly as before (serial).
+   */
+  batchProposer?: (ctxs: ProposeContext<T>[]) => Promise<(Candidate<T> | null)[]>
 }
 
-const DEFAULTS: Required<Omit<SearchOpts, 'signal' | 'emit'>> = {
+const DEFAULTS: Required<Omit<SearchOpts, 'signal' | 'emit' | 'batchProposer'>> = {
   beamWidth: 3,
   maxModelCalls: 12,
   proposalsPerNode: 1,
@@ -52,7 +61,7 @@ export async function search<T>(
   spec: TaskSpec,
   proposer: Proposer<T>,
   verifier: Verifier<T>,
-  opts: SearchOpts = {},
+  opts: SearchOpts<T> = {},
 ): Promise<SearchResult<T>> {
   const o = { ...DEFAULTS, ...opts }
   const emit = opts.emit ?? (() => {})
@@ -103,6 +112,92 @@ export async function search<T>(
     // context (history-only); later rounds expand each surviving beam member.
     const parents: Array<Attempt<T> | null> = round === 0 ? [null] : beam.slice()
     const fresh: Attempt<T>[] = []
+
+    // The context this round would build for a given parent+slot. Shared by both the serial and
+    // the batch path so they propose from byte-identical inputs.
+    const ctxFor = (parent: Attempt<T> | null): ProposeContext<T> => ({
+      spec,
+      history: parent ? [...attempts.filter(a => a !== parent), parent] : attempts.slice(),
+      diversify: stagnantRounds >= 1 || (parent != null && parent.verdict.score === bestScore && round > 1),
+      signal: opts.signal,
+    })
+
+    // Process ONE drawn candidate through the shared dedup → verify → record → accept pipeline.
+    // Returns the certified SearchResult to short-circuit on, or null to keep going. Used by both
+    // paths so the batch path can never drift from the serial path's accounting.
+    const consume = async (candidate: Candidate<T>): Promise<SearchResult<T> | null> => {
+      if (seen.has(candidate.fingerprint)) {
+        emit({ type: 'thought', text: `duplicate proposal (stuck) — will force a different approach` })
+        stagnantRounds++
+        return null
+      }
+      seen.add(candidate.fingerprint)
+      const verdict = await verifyOne(candidate)
+      const attempt: Attempt<T> = { candidate, verdict }
+      record(attempt)
+      fresh.push(attempt)
+      emit({ type: 'verify', pass: verdict.pass, score: verdict.score, signals: verdict.signals.slice(0, 4), modelCalls })
+      if (verdict.pass) {
+        return {
+          status: 'solved', solution: candidate, best: attempt, attempts, modelCalls,
+          detail: modelCalls === 0
+            ? `solved in 0 model call(s) — certified from ${freeProposals} mechanical proposal(s), no model involved`
+            : `solved in ${modelCalls} model call(s)`,
+        }
+      }
+      return null
+    }
+
+    // ── W3 BATCH PATH: draw the whole round's proposals concurrently (continuous batching) ──
+    if (o.batchProposer) {
+      // Every slot's context for this round, capped by the remaining model-call budget (a batch
+      // draw is always a model call — the batch proposer IS the model path). Never draw more than
+      // the budget allows, so the batch path bounds modelCalls exactly like the serial path.
+      const slotParents: Array<Attempt<T> | null> = []
+      for (const parent of parents) {
+        for (let k = 0; k < o.proposalsPerNode; k++) slotParents.push(parent)
+      }
+      const room = Math.max(0, o.maxModelCalls - modelCalls)
+      const drawParents = slotParents.slice(0, room)
+      // A round may be RE-DRAWN when every slot came back null AND the beam is empty — otherwise
+      // a total (transient) daemon outage on round 0 would leave no parent to expand and abstain
+      // prematurely, where the serial path retries the empty slot in place. Bounded by maxNulls
+      // (each null still counts toward the outage cap), so a genuinely-down daemon exits honestly.
+      let producedReal = false
+      while (drawParents.length && !producedReal) {
+        let candidates: (Candidate<T> | null)[] = []
+        try { candidates = await o.batchProposer(drawParents.map(ctxFor)) }
+        catch (e: any) { emit({ type: 'thought', text: `batch proposer error: ${String(e?.message ?? e)}` }) }
+        for (const candidate of candidates) {
+          if (opts.signal?.aborted) return finish('aborted', 'search aborted')
+          if (!candidate) {
+            // Empty/failed draw for this slot — an infra hiccup, not reasoning. Don't charge the
+            // reasoning budget; bounded by maxNulls so a dead daemon still exits honestly.
+            nullProposals++
+            emit({ type: 'thought', text: `empty proposal (transient FM failure ${nullProposals}/${maxNulls}) — not counted against the reasoning budget` })
+            if (nullProposals >= maxNulls) return finish('exhausted', `on-device model unavailable — ${nullProposals} empty responses (daemon overloaded or down)`)
+            continue
+          }
+          producedReal = true
+          // A batch candidate is always model-produced (the batch proposer is the FM path).
+          if (candidate.modelFree) freeProposals++
+          else modelCalls++
+          const solved = await consume(candidate)
+          if (solved) return solved
+        }
+        // Only retry the draw when NOTHING real landed AND there's no beam to fall back on —
+        // otherwise advance the round normally (a partially-null round still made progress).
+        if (!producedReal && (beam.length > 0 || fresh.length > 0)) break
+      }
+      // Fall through to the shared beam re-form / stagnation logic below.
+      beam = [...beam, ...fresh]
+        .sort((a, b) => b.verdict.score - a.verdict.score)
+        .slice(0, o.beamWidth)
+      if (fresh.length > 0 && fresh.every(a => a.verdict.score <= bestScore) && round > 0) stagnantRounds++
+      if (stagnantRounds >= o.patience) return finish('exhausted', `no improvement for ${o.patience} rounds — abstaining honestly`)
+      if (!beam.length && round > 0) return finish('abstained', 'no viable candidate — abstaining honestly')
+      continue
+    }
 
     for (const parent of parents) {
       for (let k = 0; k < o.proposalsPerNode && modelCalls < o.maxModelCalls && freeProposals < maxFree; k++) {
