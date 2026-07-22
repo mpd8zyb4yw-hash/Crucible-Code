@@ -1933,6 +1933,34 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22c (gap-soundness — W20 independent held-out invariant co-gate)
+
+Confirmed non-interference first: the parallel `crucible-northstar-sessions` session is isolated
+in the fault-localization subsystem (`faultLocalize.ts`, `faultInject.ts`,
+`__faultlocalize_bench.ts`); every file this work touches (`solve.ts`, `__vgr_bench.ts`) was
+CLEAR of its commits, and Track A's W2/W3 files (llama-server client, `fmReact.ts`, `grammars/`)
+were left untouched.
+
+- **W20 held-out invariant co-gate (`reasoning/solve.ts`).** The weak-example solve tiers
+  (differential consensus + model-invented cases) certified against outputs the system fuzzed or
+  the model guessed — a systematic bug shared across samples could slip a wrong impl past them
+  (the live `csvLine` shape: certified on a too-weak self-extracted spec, 11 hidden fails).
+  `supplementalPropertySpec` (~30 exact-name-gated invariant families — factorial, gcd, unique,
+  max, clamp, reverse, …) was DEFINED but never used to gate this path. It is now wired as an
+  independent co-gate alongside the existing metamorphic `metaGate`: every lower-tier solve must
+  clear BOTH `invariantGate = metaGate ∧ suppGate`. The proposer still drives on the cases (no
+  starvation — this is the sound alternative to splitting the thin consensus pool), but a
+  candidate that overfits weak cases yet violates a real model-free invariant is rejected. The
+  supp gate is entry-name-matched so it never runs assertions against an undefined export.
+  Bench: +5 assertions (accepts correct dedupe/clamp, rejects an identity "dedupe" and an
+  upper-bound-ignoring clamp); 219 passed / 0 failed; tsc clean.
+
+**Fix-list status after 22c:** items 2, 3, 4-cert-scope, 5 CLOSED (see 22b + 22c). Remaining:
+item 1 (W3 prefix-cache/batching) and item 3 (W2 GBNF) are Track A; the full n=39 re-bench is a
+live multi-hour run best executed once W2/W3 land. `csvLine` itself needs a parser-roundtrip
+supp family (no such family exists yet — the generic co-gate covers the 30 scalar/array families
+but not format parsers); logged as the next soundness follow-up.
+
 ### 2026-07-22b (gap-soundness — multi-file misroute fix + certification-scope soundness)
 
 Three landings, all committed on `claude/gap-soundness`, all bench-verified (VGR bench 214/0;

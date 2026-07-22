@@ -43,6 +43,14 @@
 >   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
 >   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
 
+**Shipped 2026-07-22c (this continuation, on `claude/gap-soundness`) — fix-list item 5 (W20) DONE:**
+- W20 independent held-out invariant co-gate (`reasoning/solve.ts`): `supplementalPropertySpec`'s
+  ~30 model-free invariant families now co-gate every weak-example (differential/consensus) solve
+  tier alongside the metamorphic gate (`invariantGate = metaGate ∧ suppGate`). A candidate that
+  overfits weak cases but violates a real invariant is now rejected; the proposer is NOT starved.
+  Bench 219/0, tsc clean. Non-interference verified vs the parallel fault-localization session.
+  RESIDUAL: parser families (csvLine) still need a `parser-roundtrip` supp family — see fix list.
+
 **Shipped 2026-07-22b (this continuation, on `claude/gap-soundness`) — fix-list items 2 & 4 DONE:**
 - Multi-file misroute fix (`reasoning/multiFile.ts`): self-test-harness clauses discounted from
   the multi-file trigger — reclaims the 3×~90s ladder that starved 26/39 baseline tasks.
@@ -95,10 +103,15 @@
    before claiming GREEN (`posixResolve`/`deepEqualCyc` gap). Residual: shape-only remains the
    honest floor when NO example/property gate is derivable — a library-verified primitive
    matching the declared API exactly, behavior unverified. That residual is item 5's target.
-5. **W20 held-out acceptance cases** — `csvLine` is the live evidence the self-extracted spec
-   is too weak to certify on. BLOCKED on a richer, INDEPENDENT case source: holding out from
-   today's 2–3-case model-consensus pool just starves the proposer (the weakness is spec
-   STRENGTH, not proposer overfit). Co-develop with property/adversarial case generation.
+5. **~~W20 held-out acceptance cases~~ — DONE 2026-07-22c (reframed to the SOUND design).**
+   Splitting the thin consensus pool would starve the proposer, so instead the MODEL-FREE
+   invariant is the held-out ground truth: `supplementalPropertySpec`'s ~30 exact-name-gated
+   families now co-gate every lower-tier solve in `reasoning/solve.ts`
+   (`invariantGate = metaGate ∧ suppGate`). Proposer still drives on the cases; a candidate that
+   overfits weak cases yet violates a real invariant is rejected. Bench 219/0. RESIDUAL: `csvLine`
+   itself (parseCsvLine) is a FORMAT PARSER — no supp family covers parser-roundtrip yet, so it is
+   still uncovered. Next soundness follow-up: add a `parser-roundtrip` supp family (parse∘serialize
+   = id against a canonical serializer) so csvLine-class specs get an independent gate too.
 6. **Re-run full n=39 under the fixed harness after W2/W3** — one clean scorecard file; the
    generated-rate delta vs this floor (must clear ~+16 pts) is the first real progress signal.
    The 2026-07-22b misroute + cert-scope fixes should already move the *timed-out* and
