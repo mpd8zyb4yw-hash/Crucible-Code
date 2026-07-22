@@ -17,46 +17,60 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22h (cont.100, agentic-latency/routing track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-23 (cont.101, agentic-routing + synth track) (REPLACE THIS EVERY SESSION)
 
-> This track owns `server.ts` (the `/api/chat` agentic branch — VGR routing/time-boxing) and
-> the offline coding-benchmark loop. It did NOT touch `src/CrucibleEngine/reasoning/*` (cont.99's
-> files). One measured fix landed; the loop-latency ceiling is documented and open.
+> This track owns `server.ts` (`/api/chat` agentic VGR routing/time-boxing), the offline
+> coding-benchmark loop, `synth/universal.ts`, and `reasoning/{multiFile,solve,specExtractor}.ts`.
 
-**Shipped 2026-07-22g (cont.100):**
-- **Agentic VGR time-box — the pre-loop stall that made gen-path 0/10.** MEASURED: every gen
-  task timed out at 480s with `iters=0`, meaning `runAgentLoop` never ran. Cause: the agentic VGR
-  block (`server.ts:3859+`) had no time box (only `ac.signal`), unlike the triage path's 40s box.
-  On a no-worked-examples task (API contract + prose rules) VGR exhausts its differential/extraction
-  sampling and abstains after ~200s across 3 attempts, starving the loop of budget. Fix: shared
-  `AbortSignal.timeout(CRUCIBLE_VGR_AGENT_MS ?? 45_000)` (`vgrSignal`) on every agentic VGR solve
-  call + retry-loop abort checks. `tsc` clean.
-- **MEASURED (offline harness, own server :3099, strict, this session):** gen-path **0/10 → 7/10**,
-  total **4/14 → 11/14**, no regressions. The concurrent session's server on :3001 was left
-  untouched (own instance on :3099, killed after the run).
+**MEASURED THIS SESSION (full offline suite, own server :3001, strict, 2026-07-23):**
+gen-path **7/10 → 8/10**, total **11/14 → 12/14** (4/4 catalog-debt + 8/10 real signal),
+**no regressions**. Both remaining gen-path REDs are `compile=Y hidden=n`.
 
-**Open items / risks (this track, priority order):**
-1. **sortModule RED — the coder writes 4× but `src/sort.ts` never lands (INSTRUMENTED this
-   session).** With `CRUCIBLE_TURN_TRACE=1` the trace shows write_file turns SUCCEEDING but the
-   target module missing afterward (`src/` holds only the scaffold). filterModule (identical shape:
-   scaffold + "add src/X.ts") lands its file fine, so this is sortModule-SPECIFIC path resolution in
-   the offline driver — start at `parseCurrentState` (goal→`goalPaths`) in `synthDriver.ts` and
-   confirm the write_file `path` arg the coder emits vs the expected `src/sort.ts`. THIS is the
-   fail→pass lever (11/14 → 12/14). NOT a loop-termination bug — the earlier "escalate retry loop"
-   hypothesis was tested and DISPROVEN/reverted (see ROADMAP 2026-07-22h).
-2. **Latency for GREEN tasks is CONTENTION, not a loop bug (MEASURED).** filterModule terminates in
-   ~137–241s in isolation on :3099; the 480s in the full suite comes from running under a loaded
-   8GB box (concurrent :3001 server + sequential pressure). Real lever: run ONE server at a time
-   / reduce concurrent memory pressure — no code fix needed for passing-task latency. If a code
-   lever is still wanted, the two `write_file` turns (~45s+65s on the 1.5B) dominate a clean run;
-   cutting the second write (module + self-test both regenerate) is the only sizeable one.
-3. **tagSetModule: `compile=n` on the gen path** (44s — writes something that runs but fails tsc).
-   Separate from sortModule (that one writes nothing). Inspect the emitted module's type error.
-4. **bugfixCsv: `compile=Y hidden=n` (5/9 hidden checks fail).** A genuine logic bug — the RFC-4180
-   fix doesn't handle embedded newlines in quotes and empty quoted fields. Real reasoning gap;
-   needs the fix-in-repo path to localize + repair those cases.
-5. **Diagnostic left in place:** `CRUCIBLE_TURN_TRACE=1` on the server logs per-turn
-   class/ms/calls to stderr (server.ts `traceTurn`). Use it to continue item 1.
+**Shipped 2026-07-23 (cont.101):**
+- **sortModule write-path root cause — it was NOT goalPaths extraction.** Disproved the prior
+  hypothesis: `extractGoalPaths`/`extractProtectedGoalPaths` are symmetric with filterModule and
+  correct (`[src/sort.ts]`). With `CRUCIBLE_TURN_TRACE=1` + new `ROUTE_TRACE` breadcrumbs, found
+  the real cause: the AGENTIC VGR **multi-file** path ignored its own 45s box because the SPEC
+  EXTRACTORS (`extractMultiFunctionSpec`/`extractCodeSpec`) ran their full sampling loops without
+  checking `opts.signal` — VGR burned ~200s (t+205ms→t+200s) before the synth write path ever ran,
+  starving it. FIX: thread the abort signal into both extractors + break the sampling loop on
+  abort; thread from `solveMultiFileRequest`/`solveCodingRequest`. MEASURED: VGR exit t+200s →
+  **t+89s**; the synth driveTurn now runs and writes `src/sort.ts`.
+- **sort-family FM hint (`universal.ts` L3 behavioral round).** The 1.5B then failed the
+  opts-transform-smoke oracle with two mechanical traps: a boolean-returning `.sort()` comparator
+  (TS2345) and mutating the input in the non-grouped branch. Added a sort/opts-transform system-
+  prompt hint naming both traps (family-gated; no effect on other tasks). MEASURED: sortModule
+  **compile=n (module missing) → compile=Y (written, tsc clean), self-test PASS**; leaderboardModule
+  (sort family) also clean.
+- **FM transient-5xx retry (`defaultLocalSynth`).** Measured mid-suite: sortModule died on a bare
+  `local FM 503` while the single-session daemon was saturated — a 503 discarded the whole synth
+  round for zero output. Added bounded backoff-retry (3×, 1.5s/3s) on 502/503/504; pure upside, the
+  oracle still gates every candidate.
+
+**Open items / risks (priority order):**
+1. **sortModule still RED — `compile=Y hidden=n` (6–8/13 hidden checks fail).** NOW a genuine 1.5B
+   CAPABILITY gap, not routing. The weak `opts-transform-smoke` oracle accepts code the hidden suite
+   rejects: the FM's non-grouped branch HARDCODES `by:'price'` (ignores `opts.by`, never sorts by
+   name) and mutates `opts.direction`. TRIED + REVERTED (did not flip): strengthening the
+   false≡omitted oracle check across `by`×`direction` combos — the FM just introduces a different
+   bug each round. Real lever: a stronger multi-property sort oracle (sorts-by-requested-key across
+   all `by`, grouping-order when inStockFirst:true, tie-break-by-id) for convergent feedback — risk
+   it never converges in 3 rounds → module missing. Needs a denser core / multi-session.
+2. **bugfixCsv RED — `compile=Y hidden=n` (5/9 fail).** RFC-4180 fix-in-repo: the 1.5B can't make a
+   naive comma-split parser handle escaped quotes (`""`→`"`), empty quoted fields (`""`→`''`), or
+   commas/newlines inside quotes. TRIED + REVERTED an RFC-4180 family hint (changed failure shape to
+   tsc errors, did not flip). Real lever: a deterministic RFC-4180 repair proposer.
+3. **The weak smoke oracle over-accepts (systemic, highest-leverage).** `opts-transform-smoke` is a
+   "does it run" gate that greenlights hidden-failing code, so the FM gets no convergent feedback on
+   the real semantics. Strengthening derivers (`deriveInvariant.ts`) is the top systemic lever, but
+   every change must be measured across the FULL suite (≈60–90 min/run) for regressions before
+   keeping — a stronger gate the FM can't clear regresses compile=Y→module-missing.
+4. **Recurring `src/index.ts` self-test tsc failure (filterModule, usernameModule).** MODULE
+   writes/compiles fine but the self-test escalates on tsc in 3 rounds. SOFT-only (module still HARD-
+   green), but wastes iterations. Low priority.
+5. **Diagnostics left in place (env-gated, zero-cost off):** `CRUCIBLE_TURN_TRACE=1` logs per-turn
+   class/ms/calls + write paths (`server.ts traceTurn`) AND `ROUTE_TRACE` breadcrumbs at the
+   VGR/meta-router/single-loop junctions. The tools for items 1–3.
 
 ---
 

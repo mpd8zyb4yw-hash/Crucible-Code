@@ -1933,6 +1933,33 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23 (cont.101 — sortModule write-path fixed at the ROUTING layer; gen-path 7/10→8/10)
+- **MEASURED (full offline suite, own server :3001, strict): gen-path 7/10 → 8/10, total 11/14 →
+  12/14 (4/4 catalog-debt + 8/10 real signal), no regressions.**
+- **sortModule write path — root cause was NOT goalPaths extraction (prior hypothesis disproved).**
+  `extractGoalPaths`/`extractProtectedGoalPaths` are symmetric with filterModule and correct
+  (`[src/sort.ts]`). The real cause (found via `CRUCIBLE_TURN_TRACE=1` + new `ROUTE_TRACE`
+  breadcrumbs): the agentic VGR **multi-file** path ignored its 45s box because the spec extractors
+  (`extractMultiFunctionSpec`/`extractCodeSpec`) looped their model-call sampling without checking
+  `opts.signal` — VGR burned ~200s (t+205ms→t+200s) before the synth write path ran, starving it.
+  FIX: thread the abort signal into both extractors + break the sampling loop on abort; thread from
+  `solveMultiFileRequest`/`solveCodingRequest`. MEASURED: VGR exit t+200s → **t+89s**.
+- **sort-family FM hint (`synth/universal.ts` L3 behavioral round).** The 1.5B then failed the
+  opts-transform-smoke oracle with a boolean-returning `.sort()` comparator (TS2345) + input
+  mutation in the non-grouped branch. Added a family-gated system-prompt hint naming both traps.
+  MEASURED: sortModule **compile=n (module missing) → compile=Y (written, tsc clean), self-test
+  PASS**; leaderboardModule (sort family) clean.
+- **FM transient-5xx retry (`defaultLocalSynth`).** A bare `local FM 503` under daemon saturation
+  discarded a whole synth round for zero output (killed sortModule mid-suite). Added bounded
+  backoff-retry (3×, 1.5s/3s) on 502/503/504; oracle still gates every candidate.
+- **TRIED + REVERTED (per doctrine rule #4 — did not flip a task):** (a) an RFC-4180 family hint for
+  bugfixCsv (changed the failure shape to tsc errors, still hidden=n); (b) strengthening the
+  false≡omitted smoke-oracle check across `by`×`direction` combos for sortModule (the FM just
+  introduces a different bug each round — its non-grouped branch hardcodes `by:'price'`).
+- **Both remaining gen-path REDs are `compile=Y hidden=n` capability gaps** (sortModule grouping/
+  by-key, bugfixCsv RFC-4180 quoting). The systemic lever is a stronger `deriveInvariant.ts` oracle;
+  every such change needs a full-suite regression measure before keeping. `tsc` clean.
+
 ### 2026-07-22h (cont.100 — offline agent latency INSTRUMENTED; sortModule root-caused; a wrong fix reverted)
 - **Added `CRUCIBLE_TURN_TRACE` diagnostic** (server.ts, env-gated, off by default, inert when
   unset — returns the inner driveTurn unchanged). Wraps the strict-offline `activeDriveTurn` and
