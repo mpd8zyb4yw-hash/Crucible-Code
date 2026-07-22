@@ -17,7 +17,46 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-21i (cont.98) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22d (cont.99, VGR/reasoning track) (REPLACE THIS EVERY SESSION)
+
+> Ran CONCURRENTLY with a second session on the same working tree. This track (cont.99) owns
+> ONLY `src/CrucibleEngine/reasoning/*` — new files (`coverageFuzz.ts`, `faultLocalize.ts`,
+> `fuzzResearch.ts`, `verifierLadder.ts`) plus additive edits to `solve.ts` and `__bench_all.ts`.
+> The concurrent session's five items (fm client, `server.ts` routing, certification-match,
+> iterate prompt builder, bench harness) were untouched. The cont.98 block below remains the
+> authority for the synth/asset-plan track.
+
+**Shipped this track (2026-07-22 b→d):**
+- **W8 spectrum fault localization** (`faultLocalize.ts`) + brace-less instrumentation:
+  92% exact-line / 100% within-±1 on n=12 detected mutations.
+- **W12 coverage-guided differential/property fuzzing** (`coverageFuzz.ts`) with delta-debug
+  shrinking; string/object/tuple mutators beyond numeric arrays.
+- **W12→ladder + W5 feedback** (`fuzzResearch.ts`): coverage-guided differential fuzz wired as a
+  sound `ResearchFn` (no `iterate.ts` core edit) — a minimized disagreement with a canonical
+  reference becomes a new acceptance case (reference=oracle) with witness + suspect-line proposer
+  feedback. Composed into `solve.ts` `iterateCodeTask`. Closes "certified-but-edge-case-wrong".
+- **W7 verifier ladder** (`verifierLadder.ts`): cheapest-gate-first, short-circuit, advisory gates.
+- **Scorecard**: `fault:localize`, `fuzz:coverage`, `fuzz:research`, `verifier:ladder` benches
+  registered in `bench:all`; all emit `parseCounts`-readable summary lines.
+- Verified: full `tsc` clean; `vgr:bench` 208/208, `vgr:iterate` 12/12, `vgr:coderesearch` 22/22,
+  new benches 7/7 + 10/10, no regression.
+
+**Open items / risks (this track, priority order):**
+1. **Wire `verifierLadder.runLadder` into an actual solve path.** It is built + bench-proven but
+   not yet the verifier `search()`/`iterate()` call with. Compose acceptance→property→fuzz as ladder
+   stages in `solve.ts` so the ordering/short-circuit is enforced in production, not just tested.
+2. **Fuzz gate only fires on the CONVERGE path** (`iterateCodeTask`, opt-in `converge`). The
+   single-shot `solveCodeTask` tiers in `solveCodingRequest` don't yet get a post-certification
+   fuzz pass — a certified single-shot answer can still be edge-case-wrong. Add a bounded fuzz
+   gate after a differential/model-invents tier certifies.
+3. **`objectMutator` has no bench against a real multi-field signature** — only string/tuple are
+   exercised end-to-end. Add a canonical object-shaped task when one exists in the generated surface.
+4. **Confirm the concurrent session's n=39 rerun actually picks up the four new suites** — they are
+   registered, but the ledger comparison is per-machine; a first run records a new baseline.
+
+---
+
+## CURRENT STATE — last updated 2026-07-21i (cont.98, synth/asset-plan track)
 
 > Ran CONCURRENTLY with cont.96 (separate harness, same working tree). cont.96 owns
 > `fmReact.ts` + `server.ts` + the automation follow-up path. cont.98 touched **only**
