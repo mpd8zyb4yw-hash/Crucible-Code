@@ -1933,6 +1933,33 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22h (cont.100 — offline agent latency INSTRUMENTED; sortModule root-caused; a wrong fix reverted)
+- **Added `CRUCIBLE_TURN_TRACE` diagnostic** (server.ts, env-gated, off by default, inert when
+  unset — returns the inner driveTurn unchanged). Wraps the strict-offline `activeDriveTurn` and
+  logs per turn: `turnClass`, wall-ms, tool-call names, and thrown errors. This is what made the
+  breakdown below measurable; leave it in for the next session.
+- **MEASURED where the per-task 480s goes** (own server :3099, strict, tasks run in isolation):
+  - `filterModule` (GREEN): **~137–241s in isolation**, not 480s. Cost is two `write_file` turns
+    (45s + 65s on the 1.5B), harden correctly escalates to the deterministic local fuzz fallback
+    (`critic` throws `OfflineEscalateError`, ~1ms), + two short `glue` finals (~27s). **So the 480s
+    seen for GREEN tasks in the full suite is CONTENTION (concurrent server + loaded 8GB box), not a
+    loop-termination bug.** Running one server at a time is the real latency lever for passing tasks.
+  - `sortModule` (RED): trace shows the coder **writes files 4× (writes SUCCEED) yet `src/sort.ts`
+    never lands** — after the run `src/` holds only the scaffold (catalog.ts, types.ts). It is NOT
+    escalate-looping; it is writing to the wrong place / not persisting the target module, then the
+    meta-router re-runs the whole wave 4× to the 480s wall. filterModule (identical task shape)
+    lands `src/filter.ts` fine, so this is sortModule-specific path resolution in the offline driver
+    (`parseCurrentState` goal→path, synthDriver.ts) — a REASONING/DRIVER bug, not a loop bug.
+- **Hypothesis tested and REVERTED (doctrine rule #4).** Hypothesized the wall was an
+  offline-escalate retry loop and added a fail-fast in `metaRouter.runSubtask` (skip the fallback
+  archetype on `[offline-escalate]`). Re-ran filter+sort on :3099: sortModule stayed RED, compile=n,
+  480s — **the number did not move**, so the change was reverted in full. The trace disproved the
+  hypothesis: sortModule does not abstain-loop, it mis-writes. metaRouter.ts is back to its
+  committed state; only the inert trace diagnostic remains.
+- **Net capability: unchanged at 11/14 (gen 7/10).** No regression (metaRouter reverted; diagnostic
+  inert). The real sortModule fix (make the coder write `src/sort.ts`) is the next lever and is
+  now precisely located — set `CRUCIBLE_TURN_TRACE=1` and watch the write_file target path.
+
 ### 2026-07-22g (cont.100 — agentic VGR time-box: the pre-loop stall that starved runAgentLoop)
 - **Root cause, MEASURED.** `npm run smoke:code:offline` gen-path was 0/10. Every gen task
   reported `iters=0 … timeout after 480s` — the agent loop NEVER ran. `iter_progress` is emitted

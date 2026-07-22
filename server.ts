@@ -40,6 +40,26 @@ import { foldAttachmentContext } from './src/CrucibleEngine/agent/attachmentCont
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
+// TEMP INSTRUMENTATION (cont.100, env-gated, off by default). CRUCIBLE_TURN_TRACE=1 logs
+// each driveTurn's turnClass + wall-ms + tool-call names to stderr, so we can see WHERE the
+// per-task 480s budget goes (write vs verify-heal vs harden vs post-certification calls).
+// Zero-cost when the env var is unset — safe to leave in.
+function traceTurn(inner: import('./src/CrucibleEngine/agent/loop').DriveTurn): import('./src/CrucibleEngine/agent/loop').DriveTurn {
+  if (!process.env.CRUCIBLE_TURN_TRACE) return inner
+  let n = 0
+  return async (messages, tools, signal, turnClass) => {
+    const i = ++n; const t0 = Date.now()
+    try {
+      const r = await inner(messages, tools, signal, turnClass)
+      const calls = (r.toolCalls ?? []).map(c => c.name).join(',') || '(final)'
+      process.stderr.write(`[TURN_TRACE] #${i} class=${turnClass ?? 'code'} ms=${Date.now() - t0} calls=${calls} textLen=${(r.text ?? '').length}\n`)
+      return r
+    } catch (e: any) {
+      process.stderr.write(`[TURN_TRACE] #${i} class=${turnClass ?? 'code'} ms=${Date.now() - t0} THREW=${e?.name ?? e}\n`)
+      throw e
+    }
+  }
+}
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
@@ -4228,7 +4248,7 @@ app.post('/api/chat', async (req, res) => {
         const _offlineDrive = makeOfflineDriveTurn(projectPath)
         const _offlineMode = requestOffline
         const activeDriveTurn = _offlineMode === 'strict'
-          ? _offlineDrive
+          ? traceTurn(_offlineDrive)
           : _offlineMode === '0'
           ? nativeDriveTurn
           : withOfflineFallback(_offlineDrive, nativeDriveTurn, () =>
@@ -4306,7 +4326,7 @@ app.post('/api/chat', async (req, res) => {
     const _offlineDriveSingle = makeOfflineDriveTurn(projectPath, agentGoal)
     const _offlineModeSingle = requestOffline
     const activeDriveTurn = _offlineModeSingle === 'strict'
-      ? _offlineDriveSingle
+      ? traceTurn(_offlineDriveSingle)
       : _offlineModeSingle === '0'
       ? nativeDriveTurn
       : withOfflineFallback(_offlineDriveSingle, nativeDriveTurn, () =>

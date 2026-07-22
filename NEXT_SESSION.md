@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22g (cont.100, agentic-latency/routing track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22h (cont.100, agentic-latency/routing track) (REPLACE THIS EVERY SESSION)
 
 > This track owns `server.ts` (the `/api/chat` agentic branch — VGR routing/time-boxing) and
 > the offline coding-benchmark loop. It did NOT touch `src/CrucibleEngine/reasoning/*` (cont.99's
@@ -36,22 +36,27 @@
   untouched (own instance on :3099, killed after the run).
 
 **Open items / risks (this track, priority order):**
-1. **Loop does not terminate after certification — the real latency ceiling.** filterModule/
-   summaryModule/clampModule/multiFileLedger certify correctly but run to the 480s wall
-   (`done=false`). Each offline `driveTurn` on qwen2.5-1.5b is ~160s (full tool-schema prefill),
-   and `hardenFinal`/`groundFinal` (server.ts:4359) add post-completion model calls. Target:
-   task emits `final`/`[DONE]` in <120s. Look at `agent/loop.ts` completion path + `synthDriver.ts`
-   `makeOfflineDriveTurn`. THIS is the user's actual ask ("480s is unusable").
-2. **sortModule + tagSetModule: `compile=n` on the gen path.** Both write a module that fails
-   `tsc` (tagSetModule oddly passes the hidden suite anyway, at 44s — so it wrote SOMETHING that
-   ran but doesn't typecheck). Inspect what the loop emitted for these two; likely a type error the
-   verify gate didn't catch before writing.
-3. **bugfixCsv: `compile=Y hidden=n` (5/9 hidden checks fail).** A genuine logic bug — the RFC-4180
-   fix doesn't handle embedded newlines in quotes and empty quoted fields. This is a real
-   reasoning gap, not a routing one; needs the fix-in-repo path to localize + repair those cases.
-4. **Trim offline tool-schema prefill for code tasks** (feeds item 1): `driveTurn` ships the full
-   tool catalog to the 1.5B each iteration (~160s/iter). A code task needs write_file/read/run/edit,
-   not the whole registry — smaller schema = less prefill = faster turns.
+1. **sortModule RED — the coder writes 4× but `src/sort.ts` never lands (INSTRUMENTED this
+   session).** With `CRUCIBLE_TURN_TRACE=1` the trace shows write_file turns SUCCEEDING but the
+   target module missing afterward (`src/` holds only the scaffold). filterModule (identical shape:
+   scaffold + "add src/X.ts") lands its file fine, so this is sortModule-SPECIFIC path resolution in
+   the offline driver — start at `parseCurrentState` (goal→`goalPaths`) in `synthDriver.ts` and
+   confirm the write_file `path` arg the coder emits vs the expected `src/sort.ts`. THIS is the
+   fail→pass lever (11/14 → 12/14). NOT a loop-termination bug — the earlier "escalate retry loop"
+   hypothesis was tested and DISPROVEN/reverted (see ROADMAP 2026-07-22h).
+2. **Latency for GREEN tasks is CONTENTION, not a loop bug (MEASURED).** filterModule terminates in
+   ~137–241s in isolation on :3099; the 480s in the full suite comes from running under a loaded
+   8GB box (concurrent :3001 server + sequential pressure). Real lever: run ONE server at a time
+   / reduce concurrent memory pressure — no code fix needed for passing-task latency. If a code
+   lever is still wanted, the two `write_file` turns (~45s+65s on the 1.5B) dominate a clean run;
+   cutting the second write (module + self-test both regenerate) is the only sizeable one.
+3. **tagSetModule: `compile=n` on the gen path** (44s — writes something that runs but fails tsc).
+   Separate from sortModule (that one writes nothing). Inspect the emitted module's type error.
+4. **bugfixCsv: `compile=Y hidden=n` (5/9 hidden checks fail).** A genuine logic bug — the RFC-4180
+   fix doesn't handle embedded newlines in quotes and empty quoted fields. Real reasoning gap;
+   needs the fix-in-repo path to localize + repair those cases.
+5. **Diagnostic left in place:** `CRUCIBLE_TURN_TRACE=1` on the server logs per-turn
+   class/ms/calls to stderr (server.ts `traceTurn`). Use it to continue item 1.
 
 ---
 
