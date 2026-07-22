@@ -48,13 +48,18 @@ function loadEnvLocal() {
 }
 loadEnvLocal()
 
-// Mint a short-lived JWT the same way the server's auth guard expects (HS256/JWT_SECRET).
+// Mint a JWT the same way the server's auth guard expects (HS256/JWT_SECRET).
+// Expiry is deliberately generous: a full n=39 strict-mode run at up to 480s/task can
+// exceed 5 hours, and the FIRST honest baseline (2026-07-22) had its last 10 tasks
+// silently HTTP-401 because a 3h token expired mid-run — the tasks scored as 0s
+// failures without ever reaching the server. The token is ALSO re-minted per task in
+// the main loop (belt-and-suspenders); this ceiling just has to outlast one task.
 function mintToken(): string {
   const secret = process.env.JWT_SECRET
   if (!secret) throw new Error('JWT_SECRET not found (set it or put it in .env.local) — cannot authenticate to /api/chat')
   const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString('base64url')
   const head = b64({ alg: 'HS256', typ: 'JWT' })
-  const body = b64({ id: 'coding-bench', email: 'bench@local', exp: Math.floor(Date.now() / 1000) + 3 * 3600 })
+  const body = b64({ id: 'coding-bench', email: 'bench@local', exp: Math.floor(Date.now() / 1000) + 12 * 3600 })
   const sig = crypto.createHmac('sha256', secret).update(`${head}.${body}`).digest('base64url')
   return `${head}.${body}.${sig}`
 }
@@ -886,7 +891,9 @@ async function main() {
     }
     console.log(`\n=== ${task.id} — ${task.title} ===`)
     console.log(`  firing… (project: ${dir})`)
-    const fire = await fireTask(task, dir, token)
+    // Re-mint per task: a long multi-hour sweep must never let one shared token expire
+    // mid-run and silently 401 the tail (see mintToken + the 2026-07-22 baseline note).
+    const fire = await fireTask(task, dir, mintToken())
     // Freeze the deliverable immediately (the agent may still be running post-disconnect).
     const frozen = snapshotProject(dir, task.id)
     console.log(`  agent: done=${fire.done} iters=${fire.iters} self-test=${fire.selfTestPassed} elapsed=${(fire.elapsedMs / 1000).toFixed(0)}s${fire.agentError ? ` error="${fire.agentError}"` : ''}`)
