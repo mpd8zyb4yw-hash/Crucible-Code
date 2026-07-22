@@ -26,6 +26,7 @@ import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './so
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
+import { supplementalPropertySpec } from './propertyVerifier'
 import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectPruneImportsAll, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { declaredExportedNames, detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
@@ -988,6 +989,33 @@ async function run() {
     ok('a correct reverse PASSES the metamorphic relation', rev.pass, rev.signals[0])
     const id = await verifyByProperty({ value: `export function flipOrder(s){return s}`, fingerprint: 'i' }, acc)
     ok('the identity function is REJECTED as a reverse (position-map fails)', !id.pass, id.signals[0])
+  }
+
+  // ── W20 SUPPLEMENTAL INVARIANT CO-GATE — the independent held-out ground truth ──────────────
+  // solveByExamples now co-gates every lower-tier (differential / model-consensus) certification
+  // through supplementalPropertySpec's ~30 exact-name-gated invariant families. This proves the
+  // gate has TEETH: for a name it recognizes it ACCEPTS a correct impl and REJECTS one that would
+  // sail through weak/poisoned consensus cases. This is the csvLine-class defense — an impl that
+  // overfits a too-weak self-extracted spec but violates a real invariant no longer certifies.
+  const sUnique = supplementalPropertySpec('write unique(xs) that removes duplicate values from the array')
+  ok('supplementalPropertySpec resolves the `unique` family (exact-name-gated)',
+    !!sUnique && sUnique.family === 'unique' && sUnique.entry === 'unique', sUnique?.family)
+  if (sUnique) {
+    const acc = { goal: '', domain: 'code' as const, acceptance: { entry: sUnique.entry, family: sUnique.family, assertions: sUnique.assertions } as any }
+    const good = await verifyByProperty({ value: `export function unique(xs){return [...new Set(xs)]}`, fingerprint: 'g' }, acc)
+    ok('co-gate ACCEPTS a correct dedupe', good.pass, good.signals[0])
+    // The identity function passes a weak spec that only tests already-distinct inputs, but the
+    // invariant (output has no duplicates) rejects it — exactly the held-out ground truth win.
+    const idish = await verifyByProperty({ value: `export function unique(xs){return xs}`, fingerprint: 'b' }, acc)
+    ok('co-gate REJECTS an identity "dedupe" that a distinct-only weak spec would have passed', !idish.pass, idish.signals[0])
+  }
+  const sClamp = supplementalPropertySpec('write clamp(x, lo, hi) that constrains x to the range')
+  if (sClamp) {
+    const acc = { goal: '', domain: 'code' as const, acceptance: { entry: sClamp.entry, family: sClamp.family, assertions: sClamp.assertions } as any }
+    const good = await verifyByProperty({ value: `export function clamp(x,lo,hi){return x<lo?lo:x>hi?hi:x}`, fingerprint: 'g' }, acc)
+    ok('co-gate ACCEPTS a correct clamp', good.pass, good.signals[0])
+    const noHi = await verifyByProperty({ value: `export function clamp(x,lo,hi){return x<lo?lo:x}`, fingerprint: 'b' }, acc)
+    ok('co-gate REJECTS a clamp that ignores the upper bound', !noHi.pass, noHi.signals[0])
   }
 
   // Domain from prose: a bare "sort" is numeric (the FM's (a,b)=>a-b comparator must PASS);

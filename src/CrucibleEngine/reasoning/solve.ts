@@ -21,7 +21,7 @@ import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
 import { makeFmPlanner, makeFmSubFunctionPlanner } from './fmPlanner'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
-import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
+import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
@@ -536,7 +536,7 @@ export async function solveCodingRequest(
     const it = await iterateCodeTask({ goal: nl, nl, entry, cases, webGround: opts.webGround }, {
       signal: opts.signal, emit: opts.emit, ...opts.iterate,
     })
-    if (it.status === 'solved' && it.solution && await metaGate(it.solution.value)) {
+    if (it.status === 'solved' && it.solution && await invariantGate(it.solution.value, entry)) {
       return {
         status: 'solved', code: it.solution.value, entry, cases, search: null,
         detail: `${detailPrefix} → converged in ${it.epochs} epoch(s) (${it.modelCalls} model call(s)); ${it.detail}`,
@@ -633,6 +633,38 @@ export async function solveCodingRequest(
     } catch { return true }  // a gate error must not block an otherwise-valid path
   }
 
+  // W20 — INDEPENDENT HELD-OUT INVARIANT GATE (2026-07-22b). The lowest tiers (differential /
+  // model-invented consensus) certify against cases whose OUTPUTS the system fuzzed or the model
+  // guessed — a systematic bug shared across samples can slip a wrong impl past them (the live
+  // `csvLine` shape: VGR-certified on a weak self-extracted spec, 11 hidden fails). Splitting the
+  // already-thin consensus pool into visible+held-out just starves the proposer, so instead we
+  // hold out a MODEL-FREE property family as the independent ground truth: `supplementalPropertySpec`
+  // resolves the entry to one of ~30 exact-name-gated invariant families (factorial, gcd, unique,
+  // max, clamp, reverse…) whose assertions hold for EVERY correct implementation. When one matches,
+  // a lower-tier solution must satisfy it too — the proposer still drives on the cases (no
+  // starvation), but a candidate that overfits weak cases yet violates the invariant is rejected.
+  // Distinct from `meta` (metamorphic relations) and only reached when `derivePropertySpec` did NOT
+  // already fire as the PRIMARY verifier, so it never double-gates a path the property tier owns.
+  const supp = supplementalPropertySpec(nl)
+  // Only enforce the supplemental invariant when its exact-name-gated family resolves to the
+  // SAME function the tier actually certified — a name mismatch would run assertions against an
+  // undefined export and wrongly reject a correct impl. `entry` defaults to supp.entry so a
+  // caller that omits it keeps the strict-match behavior.
+  const suppGate = async (code: string | null, entry?: string): Promise<boolean> => {
+    if (!supp || !code) return true
+    if (entry !== undefined && entry !== supp.entry) return true
+    try {
+      const v = await verifyByProperty({ value: code, fingerprint: 'suppgate' },
+        { goal: nl, domain: 'code', acceptance: { entry: supp.entry, family: supp.family, assertions: supp.assertions } } as unknown as TaskSpec)
+      return v.pass
+    } catch { return true }  // a gate error must not block an otherwise-valid path
+  }
+  // A lower-tier certification must clear BOTH independent invariant gates. Neither fires unless
+  // its family matched (and, for supp, the certified entry matches), so on a task with no known
+  // invariant this is a transparent no-op.
+  const invariantGate = async (code: string | null, entry?: string): Promise<boolean> =>
+    (await metaGate(code)) && (await suppGate(code, entry))
+
   // 3) DIFFERENTIAL CONSENSUS — for arbitrary functions with no named-property family. The
   // SYSTEM fuzzes the inputs (no input bias) and independently-written implementations vote on
   // the outputs by EXECUTION (a far harder oracle than a model stating a value). Preferred over
@@ -645,14 +677,15 @@ export async function solveCodingRequest(
       const conv = await tryConverge(entry, cases, diff.detail)
       if (conv) return conv
       const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
-      if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
+      if (result.status === 'solved' && await invariantGate(result.solution?.value ?? null, entry)) {
+        const gated = [meta && `${meta.family}`, supp && `${supp.family}`].filter(Boolean).join(' + ')
         return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
-          detail: `${diff.detail}${meta ? ` (also passed the ${meta.family} invariant)` : ''}; ${result.detail}` }
+          detail: `${diff.detail}${gated ? ` (also passed the ${gated} invariant)` : ''}; ${result.detail}` }
       }
       // A differentially-agreed case can still be poisoned by a shared systematic bug — the same
       // cross-derivation recovery applies (independent impls unanimously failing ONE case → drop it).
       const rec = await recoverFromPoisonedCase(entry, cases, result.attempts)
-      if (rec && await metaGate(rec.code)) {
+      if (rec && await invariantGate(rec.code, entry)) {
         return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
           detail: `${diff.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against ${rec.cleaned.length}` }
       }
@@ -667,16 +700,17 @@ export async function solveCodingRequest(
     const conv = await tryConverge(entry, cases, extraction.detail)
     if (conv) return conv
     const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
-    if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
+    if (result.status === 'solved' && await invariantGate(result.solution?.value ?? null, entry)) {
+      const gated = [meta && `${meta.family}`, supp && `${supp.family}`].filter(Boolean).join(' + ')
       return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
-        detail: `${extraction.detail}; ${result.detail}` }
+        detail: `${extraction.detail}${gated ? ` (also cleared the ${gated} invariant)` : ''}; ${result.detail}` }
     }
     // Recovery: a model-invented case may be WRONG, making a solvable spec unsatisfiable. If
     // multiple INDEPENDENT candidates unanimously fail the SAME single case (and pass all
     // others), that case — not the code — is the bad one (cross-derivation agreement). Drop it
     // and re-certify against the cleaned set. Never ships code failing a case we still trust.
     const rec = await recoverFromPoisonedCase(entry, cases, result.attempts)
-    if (rec && await metaGate(rec.code)) {
+    if (rec && await invariantGate(rec.code, entry)) {
       return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
         detail: `${extraction.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against the remaining ${rec.cleaned.length}` }
     }
