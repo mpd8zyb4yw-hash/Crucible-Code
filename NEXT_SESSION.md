@@ -135,12 +135,13 @@ session used for Track-A W1. tsc clean throughout.
    (`selfTestHarnessFiles()` / `deliverableRequestedFiles()`) and routes on the deliverable
    count, so a runnable `src/index.ts` self-test no longer trips the 3×~90s multi-file ladder.
    VGR bench 214/0. Re-bench (item 6) will confirm the reclaimed budget in the live n=39.
-3. **~~W2 GBNF grammar-constrained decoding~~ — BUILDERS DONE 2026-07-22e.** `agent/grammars.ts`
-   emits fenced-code / json-object / enum GBNF (pure, unit-tested 15/15, live `node-llama-cpp`
-   compile confirmed), wired optionally into `completeLocalModel({gbnf})`. REMAINING: pass the
-   fenced-code grammar from the actual proposal path (`codeProposer`/`fmReact`) when a GGUF head is
-   active so live proposals are shape-constrained — currently the grammar exists but nothing on the
-   hot path requests it. Compounds with W3 batching.
+3. **~~W2 GBNF grammar-constrained decoding~~ — DONE 2026-07-22e/f.** `agent/grammars.ts` emits
+   fenced-code / json-object / enum GBNF (15/15, live `node-llama-cpp` compile). WIRED ON THE HOT
+   PATH 22f: `gbnf` threads `fmComplete → callFm → callFmInner` to both backends (bonsai/llama-server
+   `body.grammar` + Apple FM body), and `codeProposer.proposeCode` constrains every proposal to one
+   fenced-TS block. Grammar body admits ≤2 backticks so template literals stay reachable. REMAINING:
+   confirm the live head actually honours `grammar` at run time (needs a bench run with the local
+   head active) and measure the malformed-proposal-rate drop. Compounds with W3 batching.
 4. **~~Certification-scope fix (soundness)~~ — DONE 2026-07-22b.** Both gaps closed +
    bench-locked: (a) `specExtractor.declaredExportedNames()` makes a single declared export
    authoritative, overriding a mis-voted VGR entry (`matrixRotate`→`rotate90` gap); (b)

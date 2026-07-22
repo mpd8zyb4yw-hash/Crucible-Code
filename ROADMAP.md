@@ -1933,6 +1933,27 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22f (gap-soundness — work done WHILE the n=39 sweep runs: VGR attribution + GBNF on hot path)
+
+Two improvements landed while the item-3 sweep runs detached (it uses committed code, so both
+take effect NEXT run). Both mine, offline-verified, non-interfering.
+
+- **W1 mid-VGR timeout attribution (`server.ts` + `coding-benchmarks.ts`).** Diagnosed live from the
+  running sweep: every task was logging `timeout-before-loop — nothing ran`, but the mechanism is
+  that the VGR search (`solveCodingRequest` at the 4095 call site) makes multiple ~90s proposals and
+  emits its `loop_entry` only at EXIT, so a cap firing mid-search sent zero events and the bench
+  mislabeled a throughput-bound search-timeout as a phantom pre-loop stall. Now emit `vgr:entered`
+  before the attempt loop; the bench's `timeout-before-loop` branch is re-scoped to genuine pre-VGR
+  stalls (synth / repo-context). Makes the incoming scorecard's attribution honest.
+- **W2 fenced-code grammar on the LIVE proposal path (`bonsaiSidecar.ts`, `fmReact.ts`,
+  `codeProposer.ts`, `grammars.ts`).** Threaded a `gbnf` option through `fmComplete → callFm →
+  callFmInner` to both backends (bonsai/llama-server `body.grammar` and the Apple FM daemon body);
+  `codeProposer.proposeCode` now constrains every proposal to one fenced-TypeScript block so a
+  grammar-aware head never wastes a ~90s call on malformed shape. CORRECTNESS GUARD: the original
+  backtick-forbidding body would have made template-literal solutions unsamplable (regressing
+  `templateExpand`/`wordWrap`-class tasks); rebuilt it to admit ≤2 consecutive backticks (three =
+  closing fence only). node-llama-cpp compiles the new grammar; grammars 15/15, VGR 231/0, tsc clean.
+
 ### 2026-07-22e (gap-soundness — next-steps items 1,2,4,5 landed; item 3 re-bench launched)
 
 User directive: "do all 5 tasks in one run." Non-interference re-verified — the parallel
