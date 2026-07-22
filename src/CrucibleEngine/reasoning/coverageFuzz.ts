@@ -245,3 +245,65 @@ export const intArrayMutator: Mutator = (args, rng) => {
   else base.reverse()
   return [base]
 }
+
+// A small alphabet that deliberately includes the characters real string bugs hide behind:
+// case boundaries, digits, whitespace, and a couple of non-ASCII/edge chars.
+const STR_ALPHABET = 'abcABC012 \t.-_@áΩ'
+function randChar(rng: Rng): string {
+  return STR_ALPHABET[Math.floor(rng() * STR_ALPHABET.length)]!
+}
+
+/** Mutate/generate a single `string` argument — grows, shrinks, and rewrites characters. */
+export const stringMutator: Mutator = (args, rng) => {
+  let base = typeof args?.[0] === 'string' ? (args![0] as string) : ''
+  const roll = rng()
+  if (roll < 0.25 || base.length === 0) {
+    const at = Math.floor(rng() * (base.length + 1)) // insert
+    base = base.slice(0, at) + randChar(rng) + base.slice(at)
+  } else if (roll < 0.45) {
+    const at = Math.floor(rng() * base.length) // delete one
+    base = base.slice(0, at) + base.slice(at + 1)
+  } else if (roll < 0.65) {
+    const at = Math.floor(rng() * base.length) // overwrite one
+    base = base.slice(0, at) + randChar(rng) + base.slice(at + 1)
+  } else if (roll < 0.8) {
+    base = base + base // double it (surfaces length/quadratic bugs)
+  } else if (roll < 0.9) {
+    base = base.split('').reverse().join('') // reverse (palindrome/symmetry bugs)
+  } else {
+    base = '  ' + base + '  ' // pad with whitespace (trim/parse bugs)
+  }
+  return [base]
+}
+
+/**
+ * Build a mutator for a fixed-shape object argument from per-field mutators.
+ * Each round it perturbs one field, so the search still explores a single dimension at a time
+ * (delta-debugging can then shrink whichever field carries the bug).
+ */
+export function objectMutator(fields: Record<string, Mutator>): Mutator {
+  const keys = Object.keys(fields)
+  return (args, rng) => {
+    const prev = (args?.[0] && typeof args[0] === 'object' ? args[0] : {}) as Record<string, unknown>
+    const next: Record<string, unknown> = { ...prev }
+    const key = keys[Math.floor(rng() * keys.length)]!
+    // Feed the field mutator a 1-tuple holding just that field's current value.
+    next[key] = fields[key]!([prev[key]], rng)[0]
+    return [next]
+  }
+}
+
+/**
+ * Build a mutator for a positional argument tuple from per-position mutators.
+ * `mutators[i]` owns argument `i`; each round one position is perturbed. This is what lets the
+ * fuzzer drive multi-argument entries (e.g. `(haystack: string, needle: string)`).
+ */
+export function tupleMutator(mutators: Mutator[]): Mutator {
+  return (args, rng) => {
+    const out = mutators.map((_, i) => (args ? args[i] : undefined))
+    const pos = Math.floor(rng() * mutators.length)
+    // Each sub-mutator produces a 1-tuple; take its single value for this position.
+    out[pos] = mutators[pos]!([out[pos]], rng)[0]
+    return out
+  }
+}

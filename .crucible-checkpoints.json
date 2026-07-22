@@ -1,77 +1,5 @@
 [
   {
-    "hash": "3c10f4d",
-    "message": "pre-write_file",
-    "timestamp": 1784488354367,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/async-retry"
-  },
-  {
-    "hash": "546523d",
-    "message": "pre-write_file",
-    "timestamp": 1784488361628,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/dedupe-preserve-order"
-  },
-  {
-    "hash": "efc13ae",
-    "message": "pre-write_file",
-    "timestamp": 1784488371888,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/no-suite-wordcount"
-  },
-  {
-    "hash": "5556b60",
-    "message": "pre-write_file",
-    "timestamp": 1784488387284,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/thread-tax-rate"
-  },
-  {
-    "hash": "0907225",
-    "message": "pre-write_file",
-    "timestamp": 1784488448900,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/thread-tax-rate"
-  },
-  {
-    "hash": "df8267c",
-    "message": "pre-write_file",
-    "timestamp": 1784488468767,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/rename-field-across-layers"
-  },
-  {
-    "hash": "2fea19b",
-    "message": "pre-write_file",
-    "timestamp": 1784488528781,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/rename-field-across-layers"
-  },
-  {
-    "hash": "ef01f13",
-    "message": "pre-write_file",
-    "timestamp": 1784488610849,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/extract-duplicated-discount"
-  },
-  {
-    "hash": "22d2a54",
-    "message": "pre-write_file",
-    "timestamp": 1784488696110,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/clamp-upper-bound"
-  },
-  {
-    "hash": "2be16ea",
-    "message": "pre-write_file",
-    "timestamp": 1784488704836,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/average-empty-array"
-  },
-  {
-    "hash": "652ed89",
-    "message": "pre-write_file",
-    "timestamp": 1784488713657,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/add-titlecase"
-  },
-  {
-    "hash": "c245f79",
-    "message": "pre-write_file",
-    "timestamp": 1784488732333,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/68366/live/cross-file-currency"
-  },
-  {
     "hash": "0dd4bd3",
     "message": "pre-write_file",
     "timestamp": 1784488754158,
@@ -298,5 +226,81 @@
     "message": "pre-write_file",
     "timestamp": 1784614952035,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "eb5286c",
+    "message": "pre-write_file",
+    "timestamp": 1784615077341,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "9771aff",
+    "message": "pre-write_file",
+    "timestamp": 1784615235196,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-crucible-local/35f110c4-ad79-4e4c-bfd1-085caa1cd159/scratchpad/ckptrepo"
+  },
+  {
+    "hash": "26b233d",
+    "message": "pre-write_file",
+    "timestamp": 1784615276239,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-crucible-local/35f110c4-ad79-4e4c-bfd1-085caa1cd159/scratchpad/ckptrepo"
+  },
+  {
+    "hash": "fac2dbf",
+    "message": "pre-write_file",
+    "timestamp": 1784615276434,
+    "projectPath": "/private/tmp/claude-501/-Users-justin-crucible-local/35f110c4-ad79-4e4c-bfd1-085caa1cd159/scratchpad/ckptrepo"
+  },
+  {
+    "hash": "03c8036",
+    "message": "pre-write_file",
+    "timestamp": 1784615327289,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "75c0f20",
+    "message": "pre-write_file",
+    "timestamp": 1784615408468,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "94e8990",
+    "message": "pre-write_file",
+    "timestamp": 1784615497026,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "175cfe4",
+    "message": "pre-write_file",
+    "timestamp": 1784615610861,
+    "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "849bee1",
+    "message": "before edit",
+    "timestamp": 1784640874302,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/ckpt-YXzXjw"
+  },
+  {
+    "hash": "a23baf0",
+    "message": "desktop write",
+    "timestamp": 1784640874376,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/ckpt-YXzXjw"
+  },
+  {
+    "hash": "c2ea802",
+    "message": "real write",
+    "timestamp": 1784641722614,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/ckpt2-DWpG1C",
+    "files": [
+      "src/real.ts"
+    ]
+  },
+  {
+    "hash": "6553dc1",
+    "message": "desktop write",
+    "timestamp": 1784641722674,
+    "projectPath": "/var/folders/r1/r058ry_x197cx6p231lk7p700000gn/T/ckpt2-DWpG1C",
+    "files": []
   }
 ]

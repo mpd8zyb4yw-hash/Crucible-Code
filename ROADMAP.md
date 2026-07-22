@@ -1933,6 +1933,17 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22c (W12+ — mutator library expansion beyond numeric arrays)
+
+Grew `coverageFuzz.ts`'s mutator library from the single `intArrayMutator` to cover the
+non-numeric task surface: `stringMutator` (insert/delete/overwrite/double/reverse/pad over an
+alphabet that deliberately includes case-boundary, digit, whitespace, and non-ASCII chars),
+`objectMutator(fields)` and `tupleMutator(mutators)` combinators (perturb one field/position per
+round so delta-debugging can still isolate the carrying dimension). Bench extended to 7/7 trials:
+new string-differential trial (naive ASCII-only upcase vs `toUpperCase`, witness shrinks to `"á"`)
+and multi-arg tuple trial (off-by-one substring search, witness shrinks to `["c","c"]`).
+`fault:localize:bench` regression still 92% exact / 100% within-±1 (n=12).
+
 ### 2026-07-22b (W12 — coverage-guided differential/property fuzzing; and W8+ brace-less instrumentation)
 
 **W12 shipped.** `src/CrucibleEngine/reasoning/coverageFuzz.ts` — the two things the existing
