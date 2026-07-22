@@ -107,9 +107,54 @@ function instrument(source: string): { code: string } | { error: string } {
       return out
     }
 
+    const lineOf = (n: ts.Node): number => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1
+    // Wrap a single brace-less statement into a probed block so its execution is separately
+    // attributable instead of folding into the enclosing block. The line is read from the ORIGINAL
+    // statement (valid pos) — never from the synthetic block we create around it.
+    const probedBlock = (s: ts.Statement): ts.Block =>
+      f.createBlock([probe(lineOf(s)), ts.visitNode(s, visit) as ts.Statement], /*multiLine*/ true)
+
     const visit: ts.Visitor = node => {
       if (ts.isBlock(node)) return f.updateBlock(node, weave(node.statements))
       if (ts.isModuleBlock(node)) return f.updateModuleBlock(node, weave(node.statements))
+
+      // ── Brace-less control-flow bodies: give each its own probe ──────────────────
+      if (ts.isIfStatement(node)) {
+        const thenS = ts.isBlock(node.thenStatement)
+          ? (ts.visitNode(node.thenStatement, visit) as ts.Statement)
+          : probedBlock(node.thenStatement)
+        // An `else if` chain stays a bare IfStatement (recurse); only a leaf else-body is wrapped.
+        const elseS = !node.elseStatement
+          ? undefined
+          : ts.isBlock(node.elseStatement) || ts.isIfStatement(node.elseStatement)
+            ? (ts.visitNode(node.elseStatement, visit) as ts.Statement)
+            : probedBlock(node.elseStatement)
+        return f.updateIfStatement(node, ts.visitNode(node.expression, visit) as ts.Expression, thenS, elseS)
+      }
+      if (ts.isForStatement(node) && !ts.isBlock(node.statement)) {
+        return f.updateForStatement(node, node.initializer, node.condition, node.incrementor, probedBlock(node.statement))
+      }
+      if (ts.isForInStatement(node) && !ts.isBlock(node.statement)) {
+        return f.updateForInStatement(node, node.initializer, node.expression, probedBlock(node.statement))
+      }
+      if (ts.isForOfStatement(node) && !ts.isBlock(node.statement)) {
+        return f.updateForOfStatement(node, node.awaitModifier, node.initializer, node.expression, probedBlock(node.statement))
+      }
+      if (ts.isWhileStatement(node) && !ts.isBlock(node.statement)) {
+        return f.updateWhileStatement(node, ts.visitNode(node.expression, visit) as ts.Expression, probedBlock(node.statement))
+      }
+      if (ts.isDoStatement(node) && !ts.isBlock(node.statement)) {
+        return f.updateDoStatement(node, probedBlock(node.statement), ts.visitNode(node.expression, visit) as ts.Expression)
+      }
+      // Concise arrow body `x => expr` → `x => { __cov(L); return expr }`. Semantics-preserving for
+      // arrows (no own `this`/`arguments`); the return value's line becomes separately attributable.
+      if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
+        const body = f.createBlock(
+          [probe(lineOf(node.body)), f.createReturnStatement(ts.visitNode(node.body, visit) as ts.Expression)],
+          /*multiLine*/ true,
+        )
+        return f.updateArrowFunction(node, node.modifiers, node.typeParameters, node.parameters, node.type, node.equalsGreaterThanToken, body)
+      }
       return ts.visitEachChild(node, visit, ctx)
     }
 

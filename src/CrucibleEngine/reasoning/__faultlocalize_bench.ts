@@ -71,6 +71,28 @@ const TARGETS: Target[] = [
     ],
   },
   {
+    // BRACE-LESS variant of clamp — exercises the normalization path (each brace-less body gets
+    // its own probe). Before the normalization upgrade these folded into the function block and
+    // scored only within ±1; now they should land exact.
+    id: 'clampTerse',
+    entry: 'clampTerse',
+    code: [
+      'export function clampTerse(x: number, lo: number, hi: number): number {',
+      '  if (x < lo) return lo',
+      '  if (x > hi) return hi',
+      '  return x',
+      '}',
+    ].join('\n'),
+    cases: [
+      { args: [-5, 0, 10], expected: 0, name: 'below' },
+      { args: [3, 0, 10], expected: 3, name: 'inside' },
+      { args: [50, 0, 10], expected: 10, name: 'above' },
+      { args: [0, 0, 10], expected: 0, name: 'at-lo' },
+      { args: [10, 0, 10], expected: 10, name: 'at-hi' },
+      { args: [7, 0, 10], expected: 7, name: 'inside2' },
+    ],
+  },
+  {
     id: 'grade',
     entry: 'grade',
     code: [
@@ -152,10 +174,16 @@ if (misses.length) {
   for (const m of misses) console.log(`    - ${m}`)
 }
 
-// Gate: block-attribution (see faultLocalize LIMITATION) means brace-less lines fold into their
-// enclosing block, so ±1 is the honest accuracy bar. Below it, the localizer is not earning trust.
-const GATE = 0.8
-const rate = detected ? hitWithin1 / detected : 0
-const ok = detected > 0 && rate >= GATE
-console.log(`\n  ${ok ? 'PASS' : 'FAIL'} — within-±1 rate ${(rate * 100).toFixed(0)}% vs gate ${GATE * 100}% (n=${detected})`)
+// Gates. With brace-less normalization the localizer should now land EXACT on the fault line,
+// not merely within ±1 — so exact-line is the primary gate. ±1 is kept as a softer backstop for
+// the residual cases (e.g. deletions that shift lines).
+const EXACT_GATE = 0.8
+const WITHIN1_GATE = 0.9
+const exactRate = detected ? hitExact / detected : 0
+const within1Rate = detected ? hitWithin1 / detected : 0
+const ok = detected > 0 && exactRate >= EXACT_GATE && within1Rate >= WITHIN1_GATE
+console.log(
+  `\n  ${ok ? 'PASS' : 'FAIL'} — exact ${(exactRate * 100).toFixed(0)}% (gate ${EXACT_GATE * 100}%), ` +
+    `within-±1 ${(within1Rate * 100).toFixed(0)}% (gate ${WITHIN1_GATE * 100}%), n=${detected}`,
+)
 process.exit(ok ? 0 : 1)
