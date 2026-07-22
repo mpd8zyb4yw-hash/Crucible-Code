@@ -17,7 +17,41 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22d (cont.99, VGR/reasoning track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22e (cont.99, VGR/reasoning track) (REPLACE THIS EVERY SESSION)
+
+> This track owns ONLY `src/CrucibleEngine/reasoning/*`. This session wired the W7 verifier
+> ladder into the actual single-shot solve path and closed 3 of the 4 cont.99d open items.
+
+**Shipped 2026-07-22e:**
+- **Verifier ladder in production.** `makeFuzzStage` / `makeCanonicalFuzzStage` (`fuzzResearch.ts`)
+  expose the coverage-guided differential fuzz as a hard cost-5 ladder STAGE. `solveCodeTask` gained
+  `fuzzGate?: boolean` → composes `ladderVerifier([acceptance, fuzz])` via `runLadder` as the
+  verifier handed to `search()`, cheapest-first + short-circuit enforced. Degenerates to plain
+  `verifyCode` off the canonical path (no behaviour change).
+- **Single-shot fuzz gate.** `solveCodingRequest` sets `fuzzGate:true` on the differential and
+  model-invents `solveCodeTask` calls — certified-but-edge-case-wrong single-shot answers are now
+  caught, not just on the `converge` path.
+- **objectMutator end-to-end** trial added to `__coveragefuzz_bench.ts`; ladder-stage acceptance→fuzz
+  checks added to `__fuzzresearch_bench.ts` (now 12/12).
+- Verified: `tsc` clean; vgr 208/208, iterate 12/12, coderesearch 22/22, fuzz:coverage 8/8,
+  verifier:ladder 10/10, fuzz:research 12/12, fault:localize 12/12. No regressions.
+
+**Open items / risks (this track, priority order):**
+1. **Re-bench the swapped qwen head** — `residue_terminal`/`refusal_terminal` rates
+   (`agent/loop.ts`) sit behind several changed routing paths. LIVE stochastic-FM run (like
+   `fault:live`), NOT a deterministic gate; deferred this session under the "assume 15%, no live
+   bench" instruction. Needs the live qwen head wired to produce an honest number.
+2. **`fuzzGate` currently only covers CANONICAL families** (those with a `canonicalImpl` reference).
+   Arbitrary differential functions get no post-acceptance fuzz because there's no trusted oracle —
+   a property-invariant fuzz stage (no reference) could extend coverage there.
+3. **The fuzz gate can turn a prior 'solved' into 'exhausted'** when the only fixed-case-passing
+   candidate is edge-case-wrong and search can't fix it in budget. That is the CORRECT outcome
+   (it was wrong), but watch the live solve-rate: if a real canonical task regresses solve-rate,
+   the search budget on the fuzzGate tiers may need a bump.
+
+---
+
+## CURRENT STATE — last updated 2026-07-22d (cont.99, VGR/reasoning track) (SUPERSEDED — see block above)
 
 > Ran CONCURRENTLY with a second session on the same working tree. This track (cont.99) owns
 > ONLY `src/CrucibleEngine/reasoning/*` — new files (`coverageFuzz.ts`, `faultLocalize.ts`,

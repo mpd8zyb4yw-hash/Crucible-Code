@@ -12,11 +12,16 @@
 import {
   coverageFuzz,
   intArrayMutator,
+  objectMutator,
   stringMutator,
   tupleMutator,
-  type FuzzResult,
   type Mutator,
+  type FuzzResult,
+  type Rng,
 } from './coverageFuzz'
+
+/** A scalar-integer field mutator for objectMutator: perturbs one numeric field into [-10,10]. */
+const intFieldMutator: Mutator = (_args, rng: Rng) => [Math.floor(rng() * 21) - 10]
 
 interface Trial {
   id: string
@@ -175,6 +180,26 @@ const TRIALS: Trial[] = [
     expectBug: true,
     mutate: tupleMutator([stringMutator, stringMutator]),
     seeds: [['', ''], ['abc', 'b'], ['abc', 'c']],
+  },
+  {
+    // MULTI-FIELD OBJECT surface (the shape only string/tuple had exercised end-to-end): the entry
+    // takes ONE object arg { width, height }. The bug hides behind a rare `width === height` branch —
+    // objectMutator perturbs a single field per round, so coverage guidance must land the diagonal
+    // to witness it. Reference is the honest area. Proves objectMutator drives a real fixed-shape sig.
+    id: 'diff (object): area bug only on the square (width === height) branch',
+    entry: 'f',
+    source: src(
+      'export function f(r: { width: number; height: number }): number {',
+      '  if (r.width === r.height) {',
+      '    return r.width * 2',        // wrong: doubles the side instead of squaring it
+      '  }',
+      '  return r.width * r.height',
+      '}',
+    ),
+    reference: (r: { width: number; height: number }) => r.width * r.height,
+    expectBug: true,
+    mutate: objectMutator({ width: intFieldMutator, height: intFieldMutator }),
+    seeds: [[{ width: 1, height: 2 }], [{ width: 3, height: 1 }], [{ width: 2, height: 4 }]],
   },
 ]
 

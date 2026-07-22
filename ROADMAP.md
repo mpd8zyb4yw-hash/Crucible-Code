@@ -1933,6 +1933,40 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22e (cont.99 — verifier ladder wired into the single-shot production path; objectMutator end-to-end)
+- **W7 ladder now runs in production, not just in a bench.** Added `makeFuzzStage` /
+  `makeCanonicalFuzzStage` to `fuzzResearch.ts` — the coverage-guided differential fuzz as a hard,
+  cost-5 VERIFIER-LADDER STAGE (verdict form, not just the stall-only ResearchFn). `solveCodeTask`
+  now takes `fuzzGate?: boolean`; when set AND the goal maps to a canonical family, it composes
+  `ladderVerifier([acceptance(verifyCode), fuzz])` via `runLadder` as the verifier passed to
+  `search()`. Cheapest-first short-circuit is enforced: a parse/acceptance failure never pays for
+  the fuzz campaign; only acceptance-certified candidates reach the fuzz rung, and a minimized
+  disagreement with the canonical reference REJECTS the candidate so search keeps climbing. Off the
+  canonical path the ladder degenerates to plain `verifyCode` — byte-for-byte unchanged. (Closes
+  NEXT_SESSION cont.99 open item #1.)
+- **Fuzz gate extended to the SINGLE-SHOT tiers.** `solveCodingRequest` now passes `fuzzGate: true`
+  on both case-based single-shot `solveCodeTask` calls — the differential-consensus tier and the
+  model-invents tier — so a certified single-shot answer that is edge-case-wrong on a canonical
+  family is caught before it ships (previously only the opt-in `converge`/`iterateCodeTask` path
+  had this). (Closes open item #2.)
+- **`objectMutator` exercised end-to-end.** Added a multi-field object-signature trial to
+  `__coveragefuzz_bench.ts` ({ width, height } area with a rare `width===height` branch bug);
+  coverage guidance lands the diagonal and minimizes to `{width:1,height:1}`. Also added a
+  ladder-stage section to `__fuzzresearch_bench.ts` proving acceptance→fuzz rejects an
+  edge-case-wrong dedupe, passes a correct one, and short-circuits on an acceptance (syntax)
+  failure so the fuzz rung never runs. (Closes open item #3.)
+- **Ledger/new-suite behaviour confirmed (open item #4):** `__bench_all.ts` fires a REGRESSION
+  only when a prior ledger entry exists for that suite (`if (p && r.passed < p.passed)`); the four
+  new suites are absent from any pre-existing per-machine ledger, so a first n=39 rerun records
+  them into a NEW baseline rather than flagging a false regression. No code change needed.
+- **Deferred (open item #5): re-bench of the swapped qwen head** (`residue_terminal` /
+  `refusal_terminal` rates from `agent/loop.ts`) — those are LIVE-agent telemetry events under the
+  stochastic FM, not a deterministic gate; not run this session per the standing "assume 15%, no
+  live bench" instruction.
+- Verified: full `tsc` clean; `vgr:bench` 208/208, `vgr:iterate` 12/12, `vgr:coderesearch` 22/22
+  (no regression from the fuzzGate wiring); `fuzz:coverage` 8/8 (+1 object trial),
+  `verifier:ladder` 10/10, `fuzz:research` 12/12 (+5 ladder-stage checks), `fault:localize` 12/12.
+
 ### 2026-07-22d (W12→ladder wiring, W5 typed feedback, W7 verifier ladder, scorecard registration)
 
 Five-item run, all in files this session owns or created (zero overlap with the parallel

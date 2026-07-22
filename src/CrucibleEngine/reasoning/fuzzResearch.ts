@@ -26,6 +26,8 @@ import { createCoverageHarness, localizeFault, type CoverageHarness, type LocCas
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import type { CodeCase } from './codeVerifier'
 import type { ResearchFn, ResearchOutput } from './iterate'
+import type { Candidate, Verdict } from './types'
+import type { LadderStage } from './verifierLadder'
 
 export interface FuzzResearchOpts {
   entry: string
@@ -160,6 +162,66 @@ function topSuspectLine(
   } catch {
     return null
   }
+}
+
+/**
+ * Build the same coverage-guided differential fuzz as a VERIFIER-LADDER STAGE (not a stall-only
+ * ResearchFn). This is what lets the fuzz gate fire on the SINGLE-SHOT solve path: composed after
+ * the acceptance stage in a `runLadder`, it runs ONLY on candidates acceptance already certified
+ * (cheapest-first short-circuit), and a minimized disagreement with the trusted reference FAILS the
+ * candidate (hard gate) — so search()/iterate() keep climbing instead of shipping an edge-case-wrong
+ * answer. Cost 5 (post-acceptance, pre-mutation, matching the ladder's documented ordering).
+ *
+ * Soundness mirrors makeFuzzResearchFn: the reference is the oracle, a disagreement is ground truth.
+ * A broken/unloadable reference, an abstaining fuzz run, or a candidate that agrees across the budget
+ * all yield a PASSING verdict — the stage can only ever REJECT on a witnessed differential, never
+ * fabricate a failure. No model is consulted.
+ */
+export function makeFuzzStage(opts: FuzzResearchOpts): LadderStage<string> {
+  const isStringFamily = /slug|trim|uppercase|lowercase|string/.test(opts.family ?? '')
+  const mutate = opts.mutate ?? (isStringFamily ? stringMutator : intArrayMutator)
+  const seeds = opts.seeds ?? (isStringFamily ? STRING_SEEDS : ARRAY_SEEDS)
+  const ref = referenceCallable(opts.referenceSource, opts.entry, opts.timeoutMs)
+  const pass: Verdict = { pass: true, score: 0, signals: [] }
+  const fam = opts.family ? `${opts.family} ` : ''
+
+  return {
+    name: 'fuzz',
+    cost: 5,
+    hard: true,
+    verify: (candidate: Candidate<string>): Verdict => {
+      if ('error' in ref) return pass                       // no oracle → inert (sound: never reject blindly)
+      if (!candidate.value) return pass
+      const r = coverageFuzz(candidate.value, opts.entry, seeds, mutate, {
+        reference: ref as (...a: unknown[]) => unknown,
+        iterations: opts.iterations ?? 400,
+        seed: opts.seed ?? 0x1234_5678,
+        timeoutMs: opts.timeoutMs,
+      })
+      if (r.status !== 'counterexample' || !r.counterexample) return pass
+      const cx = r.counterexample
+      const wrong = cx.candidate.threw ? `threw ${cx.candidate.threw}` : `returned ${fmt(cx.candidate.value)}`
+      const want = cx.reference?.threw ? 'reference rejects (throws)' : `the correct answer is ${fmt(cx.reference?.value)}`
+      return {
+        pass: false,
+        score: -1,   // passed every fixed case, fails ONE fuzz witness — a near-miss, not a syntax collapse
+        signals: [`${fam}edge case the fixed cases miss: input ${cx.args.map(fmt).join(', ')} → your code ${wrong}, but ${want}`],
+      }
+    },
+  }
+}
+
+/**
+ * Convenience: build a fuzz LADDER STAGE from a natural-language request IFF it maps to a canonical
+ * family with a known reference implementation. Returns null otherwise (no reference → no oracle →
+ * no gate). This is the solve.ts wiring point for the single-shot post-acceptance fuzz gate.
+ */
+export function makeCanonicalFuzzStage(nl: string, entry?: string): LadderStage<string> | null {
+  const meta = deriveMetamorphicSpec(nl, entry)
+  if (!meta) return null
+  const referenceSource = canonicalImpl(meta)
+  if (!referenceSource) return null
+  return makeFuzzStage({ entry: meta.entry, referenceSource, family: meta.family })
 }
 
 /**

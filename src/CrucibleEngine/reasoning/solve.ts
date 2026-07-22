@@ -26,7 +26,8 @@ import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
 import { makeMutationRepairProposer } from './mutationRepair'
-import { makeCanonicalFuzzResearch, composeResearchFns } from './fuzzResearch'
+import { makeCanonicalFuzzResearch, makeCanonicalFuzzStage, composeResearchFns } from './fuzzResearch'
+import { ladderVerifier } from './verifierLadder'
 import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 /**
@@ -69,6 +70,17 @@ export interface SolveCodeInput {
    * instead of spending a model call rediscovering which cases fail. Pure sample-efficiency.
    */
   buggyCode?: string
+  /**
+   * When set, wrap verifyCode in a cheapest-first VERIFIER LADDER (acceptance → post-acceptance
+   * differential fuzz) via runLadder, IFF `goal` maps to a canonical family with a trusted
+   * reference. This is what makes the single-shot tiers robust to "certified-but-edge-case-wrong":
+   * a candidate that passes every fixed acceptance case but disagrees with the canonical reference
+   * on a fuzzed input is REJECTED, so search() keeps climbing instead of shipping it. Off the
+   * canonical path (no reference) the ladder degenerates to plain acceptance — zero behavioural
+   * change. Deterministic (seeded fuzz); no model. The converge path gets this via the fuzz
+   * ResearchFn instead (iterateCodeTask); this flag covers the bounded single-shot search().
+   */
+  fuzzGate?: boolean
 }
 
 /** Render the buggy code's observed failures as a localization block for the first proposal. */
@@ -128,7 +140,15 @@ export async function solveCodeTask(
   const proposer: Proposer<string> = input.buggyCode && !proposerOverride
     ? composeProposers(makeMutationRepairProposer(input.buggyCode), proposeCode)
     : (proposerOverride ?? proposeCode)
-  const verifier: Verifier<string> = verifyCode
+  // Cheapest-first ladder: acceptance (verifyCode) short-circuits, and only candidates it certifies
+  // pay for the costlier post-acceptance differential fuzz gate (W7 ordering enforced in production).
+  // The stage is present ONLY when the goal maps to a canonical reference; otherwise the ladder is a
+  // single acceptance rung == plain verifyCode, so the no-canonical path is byte-for-byte unchanged.
+  let verifier: Verifier<string> = verifyCode
+  if (input.fuzzGate) {
+    const fuzzStage = makeCanonicalFuzzStage(input.goal, input.entry)
+    if (fuzzStage) verifier = ladderVerifier([{ name: 'acceptance', cost: 2, verify: verifyCode }, fuzzStage])
+  }
   return search(spec, proposer, verifier, opts)
 }
 
@@ -653,7 +673,7 @@ export async function solveCodingRequest(
       const { entry, cases } = diff.spec
       const conv = await tryConverge(entry, cases, diff.detail)
       if (conv) return conv
-      const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
+      const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode, fuzzGate: true }, opts)
       if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
         return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
           detail: `${diff.detail}${meta ? ` (also passed the ${meta.family} invariant)` : ''}; ${result.detail}` }
@@ -675,7 +695,7 @@ export async function solveCodingRequest(
     const { entry, cases } = extraction.spec
     const conv = await tryConverge(entry, cases, extraction.detail)
     if (conv) return conv
-    const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
+    const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode, fuzzGate: true }, opts)
     if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
       return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
         detail: `${extraction.detail}; ${result.detail}` }
