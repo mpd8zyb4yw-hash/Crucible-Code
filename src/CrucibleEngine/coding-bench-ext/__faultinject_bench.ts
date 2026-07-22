@@ -27,6 +27,7 @@
 // Subset (be kind to a concurrent live bench):  FAULTINJECT_LIMIT=3 npx tsx <thisfile>
 import { EXT_TASKS } from './index'
 import { verifyCandidate } from '../synth/oracle'
+import { generateMutants } from './mutationOps'
 
 let failures = 0
 const check = (label: string, cond: boolean, detail = '') => {
@@ -34,75 +35,6 @@ const check = (label: string, cond: boolean, detail = '') => {
   if (!cond) failures++
 }
 
-// ── mutation operators ──────────────────────────────────────────────────────
-// Each rewrites the FIRST occurrence of its pattern (outside the trivial case where that
-// leaves the source unchanged). First-match keeps the whole bench replayable byte-for-byte.
-// The set is chosen so that at least one operator fires on essentially any imperative ref:
-// a comparison, an arithmetic step, a boolean, or a boundary is almost always present.
-type Op = { name: string; apply: (src: string) => string | null }
-
-// A per-char mask of "this position is executable CODE" — false inside string/template
-// literals and comments. Mutating those regions yields EQUIVALENT mutants (an error-message
-// '>=' or a commented-out '+' changes no behavior), which would surface as phantom coverage
-// holes. Conservative on template literals: the whole `...` (incl. ${} code) is masked out,
-// so we simply generate fewer mutants there rather than risk a false positive.
-const codeMask = (src: string): boolean[] => {
-  const mask = new Array<boolean>(src.length).fill(true)
-  let i = 0
-  const set = (from: number, to: number) => { for (let k = from; k < to && k < src.length; k++) mask[k] = false }
-  while (i < src.length) {
-    const c = src[i], d = src[i + 1]
-    if (c === '/' && d === '/') { const nl = src.indexOf('\n', i); const end = nl < 0 ? src.length : nl; set(i, end); i = end; continue }
-    if (c === '/' && d === '*') { const close = src.indexOf('*/', i + 2); const end = close < 0 ? src.length : close + 2; set(i, end); i = end; continue }
-    if (c === '"' || c === "'" || c === '`') {
-      let j = i + 1
-      while (j < src.length && src[j] !== c) { if (src[j] === '\\') j++; j++ }
-      set(i, j + 1); i = j + 1; continue
-    }
-    i++
-  }
-  return mask
-}
-const firstCodeIndex = (src: string, mask: boolean[], needle: string): number => {
-  let from = 0
-  for (;;) {
-    const i = src.indexOf(needle, from)
-    if (i < 0) return -1
-    if (mask[i]) return i
-    from = i + 1
-  }
-}
-const firstReplace = (src: string, needle: string, repl: string): string | null => {
-  const i = firstCodeIndex(src, codeMask(src), needle)
-  return i < 0 ? null : src.slice(0, i) + repl + src.slice(i + needle.length)
-}
-const firstReplaceRe = (src: string, re: RegExp, repl: string): string | null => {
-  const mask = codeMask(src)
-  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g')
-  let m: RegExpExecArray | null
-  while ((m = g.exec(src)) !== null) {
-    if (mask[m.index]) return src.slice(0, m.index) + repl + src.slice(m.index + m[0].length)
-    if (m.index === g.lastIndex) g.lastIndex++
-  }
-  return null
-}
-const OPS: Op[] = [
-  { name: 'ge->gt',        apply: s => firstReplace(s, '>=', '>') },
-  { name: 'le->lt',        apply: s => firstReplace(s, '<=', '<') },
-  { name: 'gt->ge',        apply: s => firstReplaceRe(s, /([^>=!])>([^=])/, '$1>=$2') },
-  { name: 'lt->le',        apply: s => firstReplaceRe(s, /([^<=!])<([^=])/, '$1<=$2') },
-  { name: 'eqeqeq->neqeq', apply: s => firstReplace(s, '===', '!==') },
-  { name: 'neqeq->eqeqeq', apply: s => firstReplace(s, '!==', '===') },
-  { name: 'plus->minus',   apply: s => firstReplace(s, ' + ', ' - ') },
-  { name: 'minus->plus',   apply: s => firstReplace(s, ' - ', ' + ') },
-  { name: 'mul->plus',     apply: s => firstReplace(s, ' * ', ' + ') },
-  { name: 'and->or',       apply: s => firstReplace(s, ' && ', ' || ') },
-  { name: 'or->and',       apply: s => firstReplace(s, ' || ', ' && ') },
-  { name: 'true->false',   apply: s => firstReplaceRe(s, /\btrue\b/, 'false') },
-  { name: 'false->true',   apply: s => firstReplaceRe(s, /\bfalse\b/, 'true') },
-  { name: 'off-by-one',    apply: s => firstReplace(s, '+ 1', '+ 2') },
-  { name: 'inc->dec',      apply: s => firstReplace(s, '++', '--') },
-]
 
 const LIMIT = Number(process.env.FAULTINJECT_LIMIT ?? EXT_TASKS.length) || EXT_TASKS.length
 const tasks = EXT_TASKS.slice(0, LIMIT)
@@ -120,11 +52,7 @@ for (const task of tasks) {
   if (!clean.accepted) continue
 
   // 1. Generate the distinct mutants (drop operators that did not change the source).
-  const mutants: Array<{ op: string; src: string }> = []
-  for (const op of OPS) {
-    const m = op.apply(task.ref)
-    if (m !== null && m !== task.ref) mutants.push({ op: op.name, src: m })
-  }
+  const mutants = generateMutants(task.ref)
   // >= 2 not >= 3: the most compact refs (dedentText, minStack) expose only two mutable code
   // sites. The load-bearing bar is the teeth check below (>= 1 compiling mutant suite-rejected),
   // not the raw mutant count — count only guards against an operator set that fired on nothing.

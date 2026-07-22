@@ -155,7 +155,11 @@ export function snapshotClosure(task: MinedTask): string[] {
  * immutable history: their errors are deferred via changeSetScope, while errors in the
  * CANDIDATE file itself stay fatal — the agent's own output must still typecheck.
  */
-export function runMinedCandidate(task: MinedTask, candidateContent: string): Verdict {
+export function runMinedCandidate(
+  task: MinedTask,
+  candidateContent: string,
+  opts?: { runTimeoutMs?: number },
+): Verdict {
   const snapshot = materializeSnapshot(task.parentSha)
   const closure = snapshotClosure(task).filter(rel => rel !== task.targetPath && rel !== task.benchPath)
   return verifyCandidate(
@@ -169,7 +173,10 @@ export function runMinedCandidate(task: MinedTask, candidateContent: string): Ve
       // staged up front, the oracle's walk finds nothing left to copy.
       contextFiles: closure.map(rel => ({ src: path.join(snapshot, rel), rel })),
       changeSetScope: [...closure, task.benchPath],
-      runTimeoutMs: task.runTimeoutMs ?? 300_000,
+      // Callers that run MANY variants of one task (the mutation teeth-check) pass a
+      // tighter budget: a suite that has teeth fails an assertion and exits well before
+      // the full-run cap, and a mutant that induces a hang must not burn the whole budget.
+      runTimeoutMs: opts?.runTimeoutMs ?? task.runTimeoutMs ?? 300_000,
       compileTimeoutMs: 240_000,
     },
   )

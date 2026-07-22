@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22h (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22i (gap-soundness) (REPLACE THIS EVERY SESSION)
 
 > **THE FIRST HONEST LIVE BASELINE EXISTS. This is the "before" number.** Full write-up:
 > ROADMAP.md CHANGE LOG 2026-07-22. Read the label before quoting the number: it is the
@@ -42,6 +42,31 @@
 >   W35 → W36 → W48 — `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
 >   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
 >   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
+
+**Shipped 2026-07-22i (this continuation, on `claude/gap-soundness`) — last 11 mutation survivors triaged; W32 extended to the mined corpus:**
+- **pid 29147 was NOT wedged — it had cleanly completed** (last scorecard write 15:01, `passedHard 4/14`, full
+  task array). Relaunched `tsx src/CrucibleEngine/coding-benchmarks.ts` live; it is walking the `generated` path
+  again (`.crucible/coding-bench-last.json` will refresh on completion).
+- **intervalSubtract (×3) — the ONLY real holes among the 11 — CLOSED.** Two asserts added to its hidden suite:
+  adjacent-interval coalesce `[[1,2],[3,4]]→[[1,4]]` (kills `le->lt` + `plus->minus` on the `s <= last-end+1`
+  merge boundary), and nested/end-order sort `[[1,10],[2,3]]→[[1,10]]` (kills `or->and` collapsing the sort
+  comparator). **11→8 survivors, kill rate 93.0%→94.9%**, suite-kills 101→104, all refs certify, corpus floor PASS.
+- **The remaining 8 survivors are EQUIVALENT mutants — diagnosed, left unkilled (killing = theater):** bankersRound
+  ×4 (all in the `decimalString` helper — unreachable sci-notation boundaries + early-return-uses-`Math.abs`),
+  bitsetRange `le->lt` (word-vs-bit popcount path, same count), slidingWindowMax `le->lt` (deque tie-break, same
+  max value), deepEqualCyc `and->or` (`isPlain` guard only reached on confirmed objects), dateRangeDays `or->and`
+  (subsumed by `Date.UTC` round-trip). See ROADMAP CHANGE LOG 2026-07-22i for the per-mutant reasoning.
+- **W32 extended to the mined multi-file corpus.** Factored operators into `coding-bench-ext/mutationOps.ts`
+  (shared by both injectors; `__faultinject_bench` re-verified green). New `__minedfaultinject_bench.ts` +
+  `npm run minedfaultinject:bench` mutates `minedRefContent` and stages each mutant through the REAL parent
+  snapshot + hermetic oracle (`runMinedCandidate`, now with an optional `runTimeoutMs` override). It is
+  EXPLORATORY, not a gate: the authoritative mined-teeth proof is `__minedcorpus_bench`'s parent-rejection, so
+  the only hard failure is a non-certifying baseline; teeth are TEETH/INCONCLUSIVE. Smoke-tested green on
+  `mined-apifaith-vocabulary` (baseline certifies, 6 mutants staged/classified, exit 0). OPEN: run the full
+  3-task sweep (`MINEDFAULT_EXHAUSTIVE=1` for the two 300s `emitPlan`/`__vgr_bench` tasks — heavy, ~20-40min).
+- **Grammar-on-hot-path (task 5): verified wired** — `bonsaiSidecar.ts:264` (`body.grammar=opts.gbnf`),
+  `localModelPool.ts:124` (`session.prompt({grammar})`). Live malformed-rate measurement still OPEN (needs a
+  local head active; deferred to avoid a third heavy concurrent model run).
 
 **Shipped 2026-07-22h (this continuation, on `claude/gap-soundness`) — closed 5 of the 16 W32 survivor coverage holes:**
 Hand-triaged the 16 surviving mutants from `__faultinject_bench.ts` (deterministic first-match, so each is

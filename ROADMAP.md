@@ -1933,6 +1933,55 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22i (gap-soundness — work done WHILE the coding bench re-runs: last 11 mutation survivors triaged; W32 mutation testing extended to the mined multi-file corpus)
+
+Relaunched the coding scorecard first: pid 29147 was already dead — its last `.crucible/coding-bench-last.json`
+write (15:01, `passedHard 4/14`, full task array) was a CLEAN completion, not the wedge the handoff feared.
+Relaunched `tsx src/CrucibleEngine/coding-benchmarks.ts` (live), which is walking the `generated` path again.
+
+**W32 batch 2 — the last 11 `__faultinject_bench` survivors, all triaged.** Hand-computed each first-match
+mutant (deterministic operator order ⇒ byte-reproducible) and split real holes from equivalent mutants:
+- **intervalSubtract (×3 → 0), the only REAL holes.** Two asserts added to the hidden suite:
+  `subtractIntervals([[1,2],[3,4]], []) === [[1,4]]` (adjacent integer intervals must coalesce to minimal
+  form — kills `le->lt` AND `plus->minus` on the `s <= last-end + 1` merge boundary), and
+  `subtractIntervals([[1,10],[2,3]], []) === [[1,10]]` (a nested interval whose end-order differs from its
+  start-order — kills `or->and` collapsing the `a[0]-b[0] || a[1]-b[1]` sort comparator to sort-by-end,
+  which drops point 1). **Adjacency-merge and sort-order robustness were genuinely untested.**
+- **The other 8 are EQUIVALENT mutants, left unkilled (killing them would be theater):**
+  bankersRound ×4 — all live in the `decimalString` formatting helper: `ge->gt`/`le->lt` flip
+  scientific-notation boundaries JS number strings never actually hit, and `minus->plus` / the first `&&`
+  (`neg && value !== 0`) change output only through the early-return that uses `Math.abs(value)` directly, so
+  the mutated digit-string never reaches output. bitsetRange `le->lt` flips `i+32 <= end`, choosing the
+  per-bit vs. word-popcount path — same count either way. slidingWindowMax `le->lt` flips the monotonic-deque
+  tie-break, but the reported max VALUE is identical whichever equal index is retained. deepEqualCyc `and->or`
+  hits `isPlain`'s internal guard, which is only ever called on already-confirmed non-null objects.
+  dateRangeDays `or->and` — the `mo<1||mo>12` pre-check is redundant with the `Date.UTC` round-trip.
+- Result (full run): **11 → 8 survivors, kill rate 93.0% → 94.9%**, suite-kills 101 → 104, every clean ref
+  still certifies, corpus ≥80% floor PASS.
+
+**W32 extended to the mined multi-file corpus (task: cover the generated PATH for scaffolded tasks).**
+- Factored the deterministic operator set (`codeMask`/`OPS`/`generateMutants`) out of `__faultinject_bench.ts`
+  into `coding-bench-ext/mutationOps.ts`; both fault injectors now mutate by the SAME rules (kill-rate numbers
+  are comparable). `__faultinject_bench` re-verified green after the extraction.
+- New `coding-bench-ext/__minedfaultinject_bench.ts` (+ `npm run minedfaultinject:bench`): mutates
+  `minedRefContent(task)` and stages every mutant through `runMinedCandidate` — the REAL parent-commit snapshot
+  + hermetic oracle, the exact path a live agent's candidate takes. Added an optional `runTimeoutMs` override to
+  `runMinedCandidate` (non-breaking) so mutant runs get a tighter budget; the sweep early-exits a task on its
+  first suite-kill to bound cost (`MINEDFAULT_EXHAUSTIVE=1` for a full catalog).
+- **Design correction found by running it:** first-match single-site mutation on a 200+ line engine file
+  usually lands nowhere near the behaviorally load-bearing line, so a hard "≥1 suite-kill" gate produced a
+  spurious FAIL. The AUTHORITATIVE mined-teeth proof already exists — `__minedcorpus_bench` requires each suite
+  to REJECT the real buggy parent (gateA clean, gateB red). So this bench is now EXPLORATORY: the only hard
+  failure is a baseline that fails to certify on the snapshot (staging broken); teeth are reported as
+  TEETH/INCONCLUSIVE, never fatal. Smoke-tested on `mined-apifaith-vocabulary`: baseline certifies, 6 mutants
+  staged/classified, exit 0. (Informational finding: `__apifaith_bench`'s single-site coverage of
+  `apiFaithfulness.ts` is narrow — real bug caught, but synthetic off-site mutants survive.)
+
+**Grammar-on-hot-path (task 5) — verified wired, live measurement still open.** Confirmed by grep, not guess:
+`bonsaiSidecar.ts:264` sets `body.grammar = opts.gbnf` on the llama-server completion body; `localModelPool.ts:124`
+passes the built `grammar` to `session.prompt`. Both heads honour GBNF. The malformed-proposal-rate DROP still
+needs a live bench with a local head active (deferred to avoid a third heavy concurrent model run).
+
 ### 2026-07-22h (gap-soundness — work done WHILE the csvLine scorecard runs: closed 5 real verifier coverage holes surfaced by W32 mutation testing)
 
 The W32 `__faultinject_bench.ts` mutation run reported 16 surviving mutants across 9 tasks. Triaged

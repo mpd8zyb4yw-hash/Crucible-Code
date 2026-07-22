@@ -25,6 +25,8 @@
     "taskcorpus:bench": "tsx src/CrucibleEngine/coding-bench-ext/__taskcorpus_bench.ts",
     "refdiff:bench": "tsx src/CrucibleEngine/coding-bench-ext/__refdiff_bench.ts",
     "minedcorpus:bench": "tsx src/CrucibleEngine/coding-bench-ext/__minedcorpus_bench.ts",
+    "faultinject:bench": "tsx src/CrucibleEngine/coding-bench-ext/__faultinject_bench.ts",
+    "minedfaultinject:bench": "tsx src/CrucibleEngine/coding-bench-ext/__minedfaultinject_bench.ts",
     "contract:bench": "tsx src/CrucibleEngine/synth/__contractGate_bench.ts",
     "lintgate:bench": "tsx src/CrucibleEngine/synth/__lintGate_bench.ts",
     "repair:bench": "tsx src/CrucibleEngine/synth/__repairProposers_bench.ts",
