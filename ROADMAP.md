@@ -1933,6 +1933,35 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22h (gap-soundness — work done WHILE the csvLine scorecard runs: closed 5 real verifier coverage holes surfaced by W32 mutation testing)
+
+The W32 `__faultinject_bench.ts` mutation run reported 16 surviving mutants across 9 tasks. Triaged
+each survivor by hand-computing the exact first-match mutant source (the operator set is deterministic,
+so every survivor is reproducible byte-for-byte) and strengthened the hidden suites of the ones that
+were genuine coverage holes — not equivalent mutants.
+
+- **templateExpand (tasks-strings.ts): 3 survivors → 0.** All three fired on the escape-branch guard.
+  Added: escaped char as the FINAL char must still emit unescaped (kills `off-by-one`, `i+1`→`i+2`);
+  a lone trailing backslash is literal (kills `plus->minus`, `i+1`→`i-1`, which reads `template[-1]`=undefined);
+  empty placeholder `{}` with an empty-string property key stays verbatim (kills `and->or` on the initial
+  `parts.length > 0 && inner.trim() !== ''` guard).
+- **jsonPointerGet (tasks-logic.ts): 1 survivor → 0.** A numeric token into a string LEAF must resolve
+  `undefined` — kills `and->or` on `cur !== null && typeof cur === 'object'`, under which a string would
+  enter the object branch and `hasOwnProperty('0')` resolves the char at index 0 instead of undefined.
+- **baseConvert (tasks-numeric.ts): 1 survivor → 0.** `fromBase < 2` must be rejected up front even when
+  every digit is individually valid ('0' is a legal base-1 digit) — kills `or->and` on the first range
+  guard, under which `convertBase('0', 1, 10)` would return `'0'` instead of throwing RangeError.
+- **dateRangeDays `or->and`: diagnosed EQUIVALENT, left unkilled.** Neutralizing the `mo<1 || mo>12`
+  month pre-check changes nothing because the `Date.UTC` reconstruction check (`dt.getUTCMonth() !== mo-1`)
+  rejects every out-of-range month regardless. No test can distinguish it — forcing one would be theater.
+
+Result (full `npx tsx src/CrucibleEngine/coding-bench-ext/__faultinject_bench.ts`): **16 → 11 survivors,
+kill rate 89.8% → 93.0%**, every clean ref still certifies, corpus ≥80% floor still PASS. Remaining 11:
+intervalSubtract (×3), bitsetRange/slidingWindowMax (`le->lt` boundary), deepEqualCyc (`and->or`),
+bankersRound (×4), dateRangeDays (equivalent) — next-batch triage. csvLine scorecard (pid 29147) noted
+running 3h20m with no `.crucible/coding-bench-last.json` write since 10:21 — looks wedged past its 210s
+per-task timeout; flagged for kill-and-relaunch vs. hang diagnosis.
+
 ### 2026-07-22g (gap-soundness — work done WHILE the n=39 sweep runs: hermetic reap-leak fix + W32 verifier mutation testing)
 
 Two mine/offline-verified, non-interfering changes landed while the item-3 sweep runs detached.

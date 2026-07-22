@@ -385,6 +385,11 @@ check('leading-zero index rejected', getPointer(doc, '/foo/01') === undefined)
 check('negative index rejected', getPointer(doc, '/foo/-1') === undefined)
 check('non-numeric token on array rejected', getPointer(doc, '/foo/bar') === undefined)
 check('index through primitive undefined', getPointer(doc, '/foo/0/x') === undefined)
+// A string leaf must not be treated as an indexable container — kills and->or on the
+// (cur !== null && typeof cur === 'object') guard, under which a string would enter the
+// object branch and hasOwnProperty('0') would resolve the char at index 0 ('b') instead
+// of undefined.
+check('numeric token into string leaf is undefined', getPointer(doc, '/foo/0/0') === undefined)
 let threw = false
 try { getPointer(doc, 'foo') } catch (e) { threw = e instanceof SyntaxError }
 check('missing leading slash throws SyntaxError', threw)

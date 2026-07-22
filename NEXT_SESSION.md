@@ -17,7 +17,7 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22e (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22h (gap-soundness) (REPLACE THIS EVERY SESSION)
 
 > **THE FIRST HONEST LIVE BASELINE EXISTS. This is the "before" number.** Full write-up:
 > ROADMAP.md CHANGE LOG 2026-07-22. Read the label before quoting the number: it is the
@@ -42,6 +42,21 @@
 >   W35 → W36 → W48 — `synth/hermetic.ts`, `synth/hermetic-prelude.cjs`,
 >   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
 >   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
+
+**Shipped 2026-07-22h (this continuation, on `claude/gap-soundness`) — closed 5 of the 16 W32 survivor coverage holes:**
+Hand-triaged the 16 surviving mutants from `__faultinject_bench.ts` (deterministic first-match, so each is
+reproducible byte-for-byte) and strengthened the real coverage holes:
+- **templateExpand** 3→0 (escaped-char-at-end kills `off-by-one`; lone-trailing-backslash kills `plus->minus`;
+  empty-`{}`-with-empty-string-key kills `and->or`). **jsonPointerGet** 1→0 (numeric token into a string leaf
+  must be undefined — kills `and->or`). **baseConvert** 1→0 (`fromBase<2` rejected even with a valid digit —
+  kills `or->and`).
+- **dateRangeDays `or->and`** diagnosed EQUIVALENT (the `Date.UTC` reconstruction check subsumes the month
+  pre-check) — correctly left unkilled.
+- Verified: **16→11 survivors, kill rate 89.8%→93.0%**, all clean refs certify, corpus ≥80% floor PASS.
+- OPEN survivor batch (next): intervalSubtract (`le->lt`,`plus->minus`,`or->and`), bitsetRange (`le->lt`),
+  slidingWindowMax (`le->lt`), deepEqualCyc (`and->or`), bankersRound (`ge->gt`,`le->lt`,`minus->plus`,`and->or`).
+- FLAG: csvLine scorecard **pid 29147** running 3h20m+ with no `.crucible/coding-bench-last.json` write since
+  10:21 — looks wedged past its 210s per-task timeout. Kill-and-relaunch vs. diagnose next session.
 
 **Shipped 2026-07-22g (this continuation, on `claude/gap-soundness`) — hermetic reap-leak fix + W32 mutation harness:**
 - **W30 hermetic reap-leak (`synth/hermetic.ts` + `__hermetic_bench.ts`) — found LIVE.** The tsx-CLI
