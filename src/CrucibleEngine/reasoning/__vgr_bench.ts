@@ -29,7 +29,7 @@ import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { detectDelete, detectMove, detectMoveFile, detectMoveToOnly, detectPruneImports, detectPruneImportsAll, detectRename, detectTargetPath, findDefiningFile, mergeCertifiedSource, planDeleteTree, planEmit, planEmitTree, planMoveFileTree, planMoveTree, planPruneImports, planRenameTree, relativeSpecifier, renameInModule } from './emitPlan'
 import { entryFromExamples, extractSpecExamples } from '../synth/derive'
 import { detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
-import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, solveMultiFileRequest } from './multiFile'
+import { deriveMultiFileProperties, detectRequestedFiles, isMultiFileRequest, mergeCertifiedFileSet, parseFileSet, selfTestHarnessFiles, solveMultiFileRequest } from './multiFile'
 import type { CandidateFile } from './codeVerifier'
 import type { Candidate, ProposeContext } from './types'
 
@@ -755,6 +755,15 @@ async function run() {
     isMultiFileRequest('Create src/math.ts exporting add and src/index.ts importing it'))
   ok('isMultiFileRequest false for a one-file request',
     !isMultiFileRequest('write sumEvens in src/sum.ts'))
+  // A self-test HARNESS named as the second file must NOT trip the multi-file ladder — the real
+  // deliverable is the single module; src/index.ts is a runnable test, written by the single-file
+  // path. This is the misroute that burned a 3×~90s multi-file budget on 26/39 baseline tasks.
+  ok('isMultiFileRequest false when the only second file is a self-test harness',
+    !isMultiFileRequest('Implement a rate limiter at src/ratelimiter.ts. Write a self-test (src/index.ts, runnable with `npx tsx src/index.ts`) that proves it — confirm it passes.'))
+  ok('selfTestHarnessFiles isolates the harness path',
+    JSON.stringify(selfTestHarnessFiles('Implement src/ratelimiter.ts. Write a self-test (src/index.ts, runnable with `npx tsx src/index.ts`).')) === '["src/index.ts"]')
+  ok('a file also used outside the self-test clause is still a deliverable',
+    isMultiFileRequest('Create src/math.ts exporting add and src/index.ts importing it. Also write a self-test (src/index.ts) that checks it.'))
   ok('detectRequestedFiles finds both paths',
     JSON.stringify(detectRequestedFiles('put it in src/math.ts and src/index.ts')) === '["src/math.ts","src/index.ts"]')
 

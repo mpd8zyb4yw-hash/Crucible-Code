@@ -39,14 +39,42 @@ export function detectRequestedFiles(nl: string): string[] {
   return all.filter(f => f.includes('/') || !all.some(o => o !== f && o.endsWith('/' + f)))
 }
 
+// A self-test HARNESS clause — "write a self-test (src/index.ts, runnable with `npx tsx
+// src/index.ts`) …". The path(s) it names are a runnable test harness, NOT a co-equal
+// deliverable module: the real deliverable is the implementation file elsewhere in the prompt,
+// and the harness is written by the single-file path's own self-test step. Certifying it as a
+// second file in the multi-file import graph is pure waste (a 3×~90s ladder that never needed
+// to run). We therefore DISCOUNT harness-only paths from the multi-file trigger.
+const SELF_TEST_CLAUSE_RX =
+  /\bself-?test\b[^.]*?(?:\(([^)]*)\)|runnable with[^`\n]*`([^`\n]*)`)/gi
+
+/** Every code-file path that the request names ONLY inside a self-test-harness clause.
+ * A path also mentioned outside such a clause (a real deliverable that happens to be exercised
+ * by the harness too) is NOT returned — only harness-exclusive paths are. */
+export function selfTestHarnessFiles(nl: string): string[] {
+  const stripped = nl.replace(SELF_TEST_CLAUSE_RX, ' ')
+  const outside = new Set(detectRequestedFiles(stripped))
+  return detectRequestedFiles(nl).filter(f => !outside.has(f))
+}
+
+/** Requested files that are genuine deliverable modules — every named code file minus the
+ * paths that appear only as a self-test harness. This, not the raw file count, is what decides
+ * multi-file routing. */
+export function deliverableRequestedFiles(nl: string): string[] {
+  const harness = new Set(selfTestHarnessFiles(nl))
+  return detectRequestedFiles(nl).filter(f => !harness.has(f))
+}
+
 /**
- * A request is multi-FILE when it names ≥2 distinct code files, OR names ≥1 file AND
+ * A request is multi-FILE when it names ≥2 distinct DELIVERABLE code files, OR names ≥1 file AND
  * explicitly asks for several modules / cross-file imports. Conservative on purpose: a
  * one-file "add X to foo.ts" edit or "write foo in foo.ts" impl is NOT multi-file — those
- * stay on the (cheaper, append-safe) single-file path.
+ * stay on the (cheaper, append-safe) single-file path. A second path that is only a self-test
+ * harness ("write a self-test (src/index.ts, runnable with `npx tsx …`)") is discounted — it is
+ * a runnable test, not a co-equal module, and must not trip the slow multi-file ladder.
  */
 export function isMultiFileRequest(nl: string): boolean {
-  const files = detectRequestedFiles(nl)
+  const files = deliverableRequestedFiles(nl)
   if (files.length >= 2) return true
   const multiSignal = /\b(multiple files|across (?:multiple )?files|separate (?:file|module)s?|cross-file|each in (?:its|their) own file|split (?:it |them )?(?:into|across)|imports? from)\b/i.test(nl)
   return files.length >= 1 && multiSignal
