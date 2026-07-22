@@ -65,6 +65,10 @@ const SUITES = [
   'fuzz:coverage:bench',
   'fuzz:research:bench',
   'verifier:ladder:bench',
+  // Consensus-fuzz (this session): the no-reference extension of the fuzz gate — arbitrary
+  // differential functions get a post-acceptance edge-case rung backed by independent-impl
+  // agreement. Deterministic (injected impls + real execution), so it belongs in the gate.
+  'consensus:fuzz:bench',
   // cont.79c audit: these were deterministic and passing but registered NOWHERE, so nothing
   // failed CI when they broke. Verified individually before adding (all <2s except html:bench).
   'vgr:iterate',

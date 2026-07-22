@@ -27,7 +27,8 @@ import { type Completer, extractCodeSpec, harvestExplicitExamples } from './spec
 import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
 import { makeMutationRepairProposer } from './mutationRepair'
 import { makeCanonicalFuzzResearch, makeCanonicalFuzzStage, composeResearchFns } from './fuzzResearch'
-import { ladderVerifier } from './verifierLadder'
+import { makeConsensusFuzzStage, type ImplRef } from './consensusFuzz'
+import { ladderVerifier, type LadderStage } from './verifierLadder'
 import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 /**
@@ -81,6 +82,16 @@ export interface SolveCodeInput {
    * ResearchFn instead (iterateCodeTask); this flag covers the bounded single-shot search().
    */
   fuzzGate?: boolean
+  /**
+   * The distinct independent implementations behind a DIFFERENTIAL-consensus spec (from
+   * deriveDifferentialSpec). When `fuzzGate` is set and the goal maps to NO canonical reference,
+   * these seed a CONSENSUS-FUZZ ladder rung (consensusFuzz.ts) — the same agreement oracle that
+   * derived the fixed cases, now re-run on fuzzed inputs to catch a certified-but-edge-case-wrong
+   * candidate on ARBITRARY (non-canonical) functions. Absent, or <2 impls → the ladder degenerates
+   * to plain acceptance (no behavioural change). Ignored on the canonical path (that uses the
+   * trusted single reference instead).
+   */
+  consensusImpls?: ImplRef[]
 }
 
 /** Render the buggy code's observed failures as a localization block for the first proposal. */
@@ -146,7 +157,20 @@ export async function solveCodeTask(
   // single acceptance rung == plain verifyCode, so the no-canonical path is byte-for-byte unchanged.
   let verifier: Verifier<string> = verifyCode
   if (input.fuzzGate) {
-    const fuzzStage = makeCanonicalFuzzStage(input.goal, input.entry)
+    // Prefer the CANONICAL single-reference fuzz rung (a known-correct oracle). Off the canonical
+    // path, fall back to a CONSENSUS-FUZZ rung built from the differential tier's independent impls
+    // — the same agreement oracle that derived the fixed cases, extended to fuzzed inputs so
+    // arbitrary (non-canonical) functions also get post-acceptance edge-case coverage.
+    let fuzzStage: LadderStage<string> | null = makeCanonicalFuzzStage(input.goal, input.entry)
+    if (!fuzzStage && input.consensusImpls && input.consensusImpls.length >= 2) {
+      fuzzStage = makeConsensusFuzzStage({
+        entry: input.entry,
+        impls: input.consensusImpls,
+        seeds: input.cases.map(c => c.args),
+        family: input.goal,
+        timeoutMs: input.timeoutMs,
+      })
+    }
     if (fuzzStage) verifier = ladderVerifier([{ name: 'acceptance', cost: 2, verify: verifyCode }, fuzzStage])
   }
   return search(spec, proposer, verifier, opts)
@@ -670,10 +694,13 @@ export async function solveCodingRequest(
   if (opts.differential !== false) {
     const diff = await deriveDifferentialSpec(nl, { ...opts.differential })
     if (diff.ok && diff.spec) {
-      const { entry, cases } = diff.spec
+      const { entry, cases, impls } = diff.spec
       const conv = await tryConverge(entry, cases, diff.detail)
       if (conv) return conv
-      const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode, fuzzGate: true }, opts)
+      // Off the canonical path the fuzz gate has no single trusted reference — hand it the
+      // differential tier's own independent impls so the consensus-fuzz rung can extend the
+      // "certified-but-edge-case-wrong" catch to this arbitrary function.
+      const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode, fuzzGate: true, consensusImpls: impls }, opts)
       if (result.status === 'solved' && await metaGate(result.solution?.value ?? null)) {
         return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
           detail: `${diff.detail}${meta ? ` (also passed the ${meta.family} invariant)` : ''}; ${result.detail}` }

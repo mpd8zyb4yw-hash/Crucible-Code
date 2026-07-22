@@ -57,7 +57,12 @@ export type ImplSampler = (nl: string, entry: string, k: number) => Promise<Impl
 
 export interface DifferentialResult {
   ok: boolean
-  spec?: { entry: string; cases: CodeCase[] }
+  /**
+   * `impls` carries the DISTINCT independent implementations the quorum was drawn from — kept so a
+   * caller can build a post-acceptance CONSENSUS-FUZZ gate (consensusFuzz.ts) that re-uses the exact
+   * same agreement oracle on inputs BEYOND the fixed battery. Present only on the ok path.
+   */
+  spec?: { entry: string; cases: CodeCase[]; impls: ImplSample[] }
   detail?: string
   reason?: string
 }
@@ -373,7 +378,7 @@ export async function deriveDifferentialSpec(nl: string, opts: DifferentialOpts 
   const trimmed = cases.slice(0, 24)
   return {
     ok: true,
-    spec: { entry, cases: trimmed },
+    spec: { entry, cases: trimmed, impls: distinct },
     detail: `no example → differential consensus: ${trimmed.length} case(s) agreed by ≥${quorum} of ${distinct.length} distinct impls (arity ${arity}, ${inputs.length} inputs fuzzed)`,
   }
 }

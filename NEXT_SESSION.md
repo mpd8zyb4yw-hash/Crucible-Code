@@ -17,37 +17,52 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22e (cont.99, VGR/reasoning track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22f (cont.99, VGR/reasoning track) (REPLACE THIS EVERY SESSION)
 
-> This track owns ONLY `src/CrucibleEngine/reasoning/*`. This session wired the W7 verifier
-> ladder into the actual single-shot solve path and closed 3 of the 4 cont.99d open items.
+> This track owns ONLY `src/CrucibleEngine/reasoning/*` (+ additive edits to `__bench_all.ts`,
+> `package.json`). This session closed all four cont.99e open items: the live head re-bench,
+> the no-reference fuzz-gate extension, its watch, and the ledger fold.
 
-**Shipped 2026-07-22e:**
-- **Verifier ladder in production.** `makeFuzzStage` / `makeCanonicalFuzzStage` (`fuzzResearch.ts`)
-  expose the coverage-guided differential fuzz as a hard cost-5 ladder STAGE. `solveCodeTask` gained
-  `fuzzGate?: boolean` → composes `ladderVerifier([acceptance, fuzz])` via `runLadder` as the
-  verifier handed to `search()`, cheapest-first + short-circuit enforced. Degenerates to plain
-  `verifyCode` off the canonical path (no behaviour change).
-- **Single-shot fuzz gate.** `solveCodingRequest` sets `fuzzGate:true` on the differential and
-  model-invents `solveCodeTask` calls — certified-but-edge-case-wrong single-shot answers are now
-  caught, not just on the `converge` path.
-- **objectMutator end-to-end** trial added to `__coveragefuzz_bench.ts`; ladder-stage acceptance→fuzz
-  checks added to `__fuzzresearch_bench.ts` (now 12/12).
-- Verified: `tsc` clean; vgr 208/208, iterate 12/12, coderesearch 22/22, fuzz:coverage 8/8,
-  verifier:ladder 10/10, fuzz:research 12/12, fault:localize 12/12. No regressions.
+**Shipped 2026-07-22f:**
+- **Consensus-fuzz — the no-reference fuzz gate (cont.99e item 2, DONE).** New `consensusFuzz.ts`:
+  `makeConsensusFuzzStage`/`buildConsensusReference` extend the post-acceptance fuzz gate to
+  ARBITRARY (non-canonical) functions. The oracle is the SAME one the differential tier already
+  trusts — AGREEMENT ACROSS INDEPENDENT IMPLS: on a fuzzed input, a value ≥quorum distinct impls
+  agree on is the derived answer (candidate disagreement → hard FAIL), a throw-quorum means the
+  candidate must throw too, NO quorum → `FUZZ_ABSTAIN` (new sentinel in `coverageFuzz.ts`; never a
+  false failure). `deriveDifferentialSpec` now returns its `distinct` impls; `solveCodeTask` gained
+  `consensusImpls?` and builds the consensus rung when `fuzzGate` is set and NO canonical reference
+  exists; `solveCodingRequest`'s differential tier threads `diff.spec.impls` through. Shape-inferred
+  mutators (`inferMutator`) drive unknown arg shapes from the real case tuples. Bench
+  `consensus:fuzz:bench` 17/17 (rejects edge-wrong, passes correct, sound abstain on no-quorum,
+  inert <2 impls, throw-consensus, end-to-end through `solveCodeTask`).
+- **Live head terminal-rate re-bench (cont.99e item 1, DONE).** New `head:terminal:live` metric drives
+  the REAL `runAgentLoop` against the LIVE on-device head (qwen2.5-1.5b, confirmed serving at ~1.6s)
+  over an 8-task agent-mode battery, subscribes to the debugBus, and tallies the terminal guards.
+  MEASURED (n=16, two passes): **`residue_terminal` 0/16 (0.0%)**, **`refusal_terminal` 1/16 (6.3%)** —
+  the single refusal_terminal was the GUI "open Finder" task honestly stalling (no GUI control on the
+  offline driver), plus 1 refusal_bounce that recovered. Replaces the "assume 15%" placeholder; the
+  cont.91 residue guard holds at 0% live. Stochastic METRIC, NOT a gate — deliberately not in bench:all.
+- **fuzzGate watch (cont.99e item 3, ADDRESSED).** The consensus rung can only reject on a WITNESSED
+  quorum disagreement (abstains on no-quorum, inert without ≥2 loadable impls), so a 'solved'→'exhausted'
+  flip only happens for a genuinely edge-case-wrong candidate — the correct outcome. Watch live solve-rate.
+- **Ledger fold (cont.99e item 4, DONE).** `npm run bench:all` ran green: **1284/1284 across 41 suites**,
+  baseline recorded to `.bench-history.jsonl` — the four W8/W12 suites plus the new `consensus:fuzz`
+  are now regression-enforced.
+- Verified: `tsc` clean; consensus:fuzz 17/17, fuzz:research 12/12, fuzz:coverage 8/8,
+  verifier:ladder 10/10, fault:localize 12/12, vgr 208/208, coderesearch 22/22. No regressions.
 
 **Open items / risks (this track, priority order):**
-1. **Re-bench the swapped qwen head** — `residue_terminal`/`refusal_terminal` rates
-   (`agent/loop.ts`) sit behind several changed routing paths. LIVE stochastic-FM run (like
-   `fault:live`), NOT a deterministic gate; deferred this session under the "assume 15%, no live
-   bench" instruction. Needs the live qwen head wired to produce an honest number.
-2. **`fuzzGate` currently only covers CANONICAL families** (those with a `canonicalImpl` reference).
-   Arbitrary differential functions get no post-acceptance fuzz because there's no trusted oracle —
-   a property-invariant fuzz stage (no reference) could extend coverage there.
-3. **The fuzz gate can turn a prior 'solved' into 'exhausted'** when the only fixed-case-passing
-   candidate is edge-case-wrong and search can't fix it in budget. That is the CORRECT outcome
-   (it was wrong), but watch the live solve-rate: if a real canonical task regresses solve-rate,
-   the search budget on the fuzzGate tiers may need a bump.
+1. **Consensus-fuzz shares the differential tier's ONE honest limit** — a bug SYSTEMATICALLY shared by
+   every sampled impl can seat a wrong consensus (same risk the derived cases already carry, strictly
+   rarer than single-value consensus). A metamorphic invariant, where one exists, is still preferred and
+   the `metaGate` still runs above it. No fix needed; documented so it isn't "discovered" as a defect.
+2. **`refusal_terminal` at 6.3% (n=16) is small-sample and capability-shaped** — the one hit was a GUI
+   task the offline driver genuinely can't do. Re-run `head:terminal:live --repeats=3+` for a tighter
+   number, and consider excluding true-GUI tasks from the battery (they measure the driver, not the head).
+3. **The fuzz gate can turn a prior 'solved' into 'exhausted'** for edge-case-wrong candidates (CORRECT),
+   but watch live solve-rate on the differential/canonical tiers; if a real task regresses, bump the
+   search budget (`maxModelCalls`) on those tiers rather than loosening the gate.
 
 ---
 

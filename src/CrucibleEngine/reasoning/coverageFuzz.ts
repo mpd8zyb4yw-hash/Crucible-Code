@@ -47,6 +47,15 @@ export type Rng = () => number
 /** Produce a fresh argument tuple, or mutate an existing one, using the PRNG. */
 export type Mutator = (args: unknown[] | null, rng: Rng) => unknown[]
 
+/**
+ * Sentinel a `reference` oracle may RETURN to decline an input — "I have no trusted answer here,
+ * do not judge this input." The fuzzer then treats that input as agreement (no counterexample).
+ * This is what lets a CONSENSUS reference (a quorum of independent impls) stay sound on inputs
+ * where the impls disagree: no quorum → no oracle → no false failure. Distinct from the reference
+ * THROWING, which the differential oracle treats as a real "reference rejects" signal.
+ */
+export const FUZZ_ABSTAIN: unique symbol = Symbol('fuzz-abstain')
+
 export interface FuzzOpts {
   /** Differential oracle: the trusted reference. Disagreement candidate≠reference is a bug. */
   reference?: (...args: unknown[]) => unknown
@@ -124,6 +133,8 @@ export function coverageFuzz(
 
     if (opts.reference) {
       const ref = safeCall(opts.reference, args)
+      // The reference explicitly declined this input (e.g. no consensus quorum) → no oracle, no bug.
+      if (ref.ok && ref.value === FUZZ_ABSTAIN) return null
       const agree =
         cand.ok && ref.ok ? deepEqual(cand.value, ref.value)
         : !cand.ok && !ref.ok ? true // both throw on the same input — that is agreement, not a bug

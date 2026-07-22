@@ -53,6 +53,8 @@
     "fault:localize:bench": "tsx src/CrucibleEngine/reasoning/__faultlocalize_bench.ts",
     "fuzz:coverage:bench": "tsx src/CrucibleEngine/reasoning/__coveragefuzz_bench.ts",
     "fuzz:research:bench": "tsx src/CrucibleEngine/reasoning/__fuzzresearch_bench.ts",
+    "consensus:fuzz:bench": "tsx src/CrucibleEngine/reasoning/__consensusfuzz_bench.ts",
+    "head:terminal:live": "tsx src/CrucibleEngine/reasoning/__headterminal_live.ts",
     "verifier:ladder:bench": "tsx src/CrucibleEngine/reasoning/__verifierladder_bench.ts",
     "fault:live": "tsx src/CrucibleEngine/reasoning/__fault_live.ts",
     "fault:h2h": "tsx src/CrucibleEngine/reasoning/__fault_headtohead.ts",

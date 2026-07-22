@@ -1933,6 +1933,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22f (cont.99 — consensus-fuzz no-reference gate; live head terminal-rate re-bench; ledger fold)
+- **Consensus-fuzz: the fuzz gate for ARBITRARY (non-canonical) functions.** New
+  `reasoning/consensusFuzz.ts`. `makeCanonicalFuzzStage` only fired for families with a single
+  trusted `canonicalImpl`; every other function the differential tier reaches had an inert gate.
+  `makeConsensusFuzzStage` / `buildConsensusReference` extend it using the SAME oracle the
+  differential tier already trusts — agreement across the independently-written impls it sampled.
+  On a fuzzed input: a value ≥quorum distinct impls agree on is the derived answer (candidate
+  disagreement → hard FAIL); a throw-quorum requires the candidate to throw; NO quorum → new
+  `FUZZ_ABSTAIN` sentinel in `coverageFuzz.ts` (never a false failure). `deriveDifferentialSpec`
+  now returns its `distinct` impls; `solveCodeTask` gained `consensusImpls?` and builds the rung
+  when `fuzzGate` is set with no canonical reference; `solveCodingRequest`'s differential tier
+  threads them through. `inferMutator` picks a fuzz mutator from the real case tuples' shapes.
+  Bench `consensus:fuzz:bench` 17/17; registered in `bench:all`. Soundness mirrors the differential
+  tier exactly (inherits its one shared-systematic-bug limit; `metaGate` still runs above it).
+- **Live head terminal-rate re-bench (closes the "assume 15%" placeholder).** New `head:terminal:live`
+  metric drives the real `runAgentLoop` against the live on-device head (qwen2.5-1.5b, confirmed
+  serving) over an 8-task agent-mode battery and tallies the loop's terminal guards off the debugBus.
+  Measured n=16: `residue_terminal` 0/16 (0.0%), `refusal_terminal` 1/16 (6.3%, the GUI "open Finder"
+  task honestly stalling). Stochastic METRIC, not a gate — not registered in `bench:all`.
+- **Ledger fold.** `npm run bench:all` green — 1284/1284 across 41 suites, baseline recorded; the four
+  W8/W12 suites plus `consensus:fuzz` are now regression-enforced on this machine.
+
 ### 2026-07-22e (cont.99 — verifier ladder wired into the single-shot production path; objectMutator end-to-end)
 - **W7 ladder now runs in production, not just in a bench.** Added `makeFuzzStage` /
   `makeCanonicalFuzzStage` to `fuzzResearch.ts` — the coverage-guided differential fuzz as a hard,
