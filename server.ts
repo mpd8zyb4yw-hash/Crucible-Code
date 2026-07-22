@@ -4105,6 +4105,9 @@ app.post('/api/chat', async (req, res) => {
             signal: ac.signal,
             buggyCode: repairSeed,
             converge: process.env.CRUCIBLE_CONVERGE === '1' || tryHard,
+            // On a demonstrably-hard attempt (attempt 2+), also allow last-resort sub-function
+            // decomposition — the lever for tasks that stay 0% under pure resampling (item 2).
+            decompose: tryHard || process.env.CRUCIBLE_DECOMPOSE === '1',
             webGround: tryHard ? webGroundOrNull : undefined,
             emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
           })

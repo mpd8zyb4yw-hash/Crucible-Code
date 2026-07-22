@@ -93,6 +93,28 @@ async function repairEvidenceBlock(
 }
 
 /**
+ * Batch-path search-budget bump (item 3). Returns the proposalsPerNode / maxModelCalls overrides
+ * to layer on top of the caller's opts when CRUCIBLE_VGR_BATCH is on. Pure + deterministic given
+ * env — factored out so __search_batch_bench and a unit test can assert the accounting directly.
+ *
+ *   proposalsPerNode: raised to CRUCIBLE_VGR_BATCH_PROPOSALS (default 4), unless the caller pinned
+ *                     its own value (respected verbatim — an explicit request always wins).
+ *   maxModelCalls:    scaled by the SAME factor the draws-per-round grew by, so the round count is
+ *                     preserved (K× wider search, not K× fewer rounds), then hard-capped at
+ *                     CRUCIBLE_VGR_BATCH_MAXCALLS (default 64) so a large caller budget can't blow up.
+ */
+export function batchBudget(opts: SearchOpts<string>): { proposalsPerNode: number; maxModelCalls: number } {
+  const wantProps = Math.max(1, Number(process.env.CRUCIBLE_VGR_BATCH_PROPOSALS || 4))
+  const proposalsPerNode = opts.proposalsPerNode ?? wantProps
+  const baseCalls = opts.maxModelCalls ?? 12
+  const baseProps = opts.proposalsPerNode ?? 1               // serial default is 1 draw/node
+  const factor = Math.max(1, proposalsPerNode / baseProps)   // how much wider each round got
+  const cap = Math.max(baseCalls, Number(process.env.CRUCIBLE_VGR_BATCH_MAXCALLS || 64))
+  const maxModelCalls = Math.min(cap, Math.round(baseCalls * factor))
+  return { proposalsPerNode, maxModelCalls }
+}
+
+/**
  * Solve a code task by verification-guided search. Returns the full SearchResult —
  * callers read `.status` ('solved' | 'exhausted' | 'abstained' | 'aborted') and use
  * `.solution.value` only when solved, or report `.best` honestly otherwise.
@@ -134,7 +156,18 @@ export async function solveCodeTask(
   // serial path. proposeCodeMany draws a whole round's slots across llama-server KV slots at once;
   // search()'s batch path is proven accounting-identical to serial (see __search_batch_bench).
   const useBatch = process.env.CRUCIBLE_VGR_BATCH === '1' && !opts.batchProposer && proposer === proposeCode
-  const searchOpts: SearchOpts<string> = useBatch ? { ...opts, batchProposer: proposeCodeMany } : opts
+  // BATCH-PATH SAMPLE BUMP (item 3, 2026-07-22). The pass@k experiment proved the loop is STARVED,
+  // not weak: pass@1 52.5% → pass@10 83.3% — the correct answer is in the distribution, just rare,
+  // so drawing MORE candidates per round converts directly to solves. Batching makes concurrent
+  // draws ~free (the K slots decode together), so on the batch path we raise proposalsPerNode from 1
+  // to `CRUCIBLE_VGR_BATCH_PROPOSALS` (default 4) — 4-8 draws/round is exactly where the curve says
+  // the marginal draw still pays. A matching maxModelCalls scale keeps the ROUND count constant
+  // (each round now spends proposalsPerNode× the calls), so the loop explores as many rounds as
+  // before but K× wider — never fewer rounds than the serial budget would have run. Capped so a
+  // pathological caller budget can't run away. A caller that set proposalsPerNode explicitly wins.
+  const searchOpts: SearchOpts<string> = useBatch
+    ? { ...opts, ...batchBudget(opts), batchProposer: proposeCodeMany }
+    : opts
   return search(spec, proposer, verifier, searchOpts)
 }
 
@@ -532,6 +565,18 @@ export async function solveCodingRequest(
      * certification is unchanged (every candidate is still executed against the spec).
      */
     buggyCode?: string
+    /**
+     * LAST-RESORT SUB-FUNCTION DECOMPOSITION (item 2, 2026-07-22). When a case-based tier's flat
+     * search AND its poisoned-case recovery both fail, escalate to decomposeCodeBySubFunction: ask
+     * the (untrusted) model to carve the goal into small helpers, certify each on its own tiny
+     * spec, then verify the composed module against the ORIGINAL cases. This is the lever for the
+     * genuinely-hard tasks the pass@k experiment showed stay 0% no matter how many times you draw
+     * (basicCalculator: precedence-without-parens) — where more sampling can't help but a smaller
+     * step can. Sound by construction (every rung + the whole are verifier-certified, and the
+     * result still clears invariantGate). OFF by default: it spends several sub-searches, so the
+     * server turns it on only for demonstrably-hard attempts. Absent → the ladder is unchanged.
+     */
+    decompose?: boolean
   } = {},
 ): Promise<CodingRequestResult> {
   // Shared converging attempt for the case-based tiers. Returns a solved CodingRequestResult
@@ -672,6 +717,31 @@ export async function solveCodingRequest(
   const invariantGate = async (code: string | null, entry?: string): Promise<boolean> =>
     (await metaGate(code)) && (await suppGate(code, entry))
 
+  // LAST-RESORT DECOMPOSITION (item 2). A case-based tier that could neither certify a flat
+  // candidate nor recover a poisoned case escalates here before it abstains: carve the goal into
+  // small verifier-certified helpers and re-verify the composed whole against the SAME cases. Only
+  // fires when `decompose` is on and there are enough cases to both carve helpers and re-verify
+  // meaningfully. Sound: decomposeCodeBySubFunction re-runs the full module against these cases,
+  // and we still clear invariantGate — a decomposition can only certify a genuinely-correct impl.
+  // Returns a solved result or null (→ caller keeps its honest non-solve).
+  const tryDecompose = async (
+    entry: string, cases: CodeAcceptance['cases'], detailPrefix: string,
+  ): Promise<CodingRequestResult | null> => {
+    if (!opts.decompose || opts.signal?.aborted) return null
+    if (cases.length < 3) return null
+    const d = await decomposeCodeBySubFunction(
+      { goal: nl, nl, entry, cases },
+      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: opts.iterate },
+    )
+    if (d.status === 'solved' && d.code && await invariantGate(d.code, entry)) {
+      return {
+        status: 'solved', code: d.code, entry, cases, search: null,
+        detail: `${detailPrefix}; flat search abstained → sub-function decomposition certified via ${d.helpers.length} helper(s) (${d.modelCalls} model call(s))`,
+      }
+    }
+    return null
+  }
+
   // 3) DIFFERENTIAL CONSENSUS — for arbitrary functions with no named-property family. The
   // SYSTEM fuzzes the inputs (no input bias) and independently-written implementations vote on
   // the outputs by EXECUTION (a far harder oracle than a model stating a value). Preferred over
@@ -696,6 +766,10 @@ export async function solveCodingRequest(
         return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
           detail: `${diff.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against ${rec.cleaned.length}` }
       }
+      // Neither flat search nor recovery certified → escalate to sub-function decomposition (the
+      // hard-task lever) before conceding the differential path.
+      const dec = await tryDecompose(entry, cases, diff.detail)
+      if (dec) return dec
       // Fall through to the weaker path only if differential could not certify.
     }
   }
@@ -721,6 +795,9 @@ export async function solveCodingRequest(
       return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
         detail: `${extraction.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against the remaining ${rec.cleaned.length}` }
     }
+    // Final escalation on the weakest tier: carve into certified helpers before abstaining.
+    const dec = await tryDecompose(entry, cases, extraction.detail)
+    if (dec) return dec
     return { status: result.status, code: null, entry, cases, search: result,
       detail: `${extraction.detail}; ${result.detail}` }
   }

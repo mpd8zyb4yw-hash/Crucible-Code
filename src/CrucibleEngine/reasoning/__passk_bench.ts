@@ -32,12 +32,14 @@
 //   PASSK_N=50           samples per task (default 30)
 //   PASSK_TASKS=easy,med only run tasks whose tier is listed (default: all)
 //   PASSK_ONLY=evalRPN   run a single task by id
+//   PASSK_MULTISHOT=1    ALSO run feedback-threaded sequential draws and print the loop's
+//                        convergence lift over independent pass@k (PASSK_SHOTS=8 sets the depth)
 // Requires a live local head (llama-server on :8080) — otherwise every draw is empty and the
 // run reports that honestly rather than pretending.
 
-import { proposeCodeBatch } from './codeProposer'
+import { proposeCode, proposeCodeBatch } from './codeProposer'
 import { verifyCode } from './codeVerifier'
-import type { Candidate, TaskSpec } from './types'
+import type { Attempt, Candidate, TaskSpec } from './types'
 
 interface PkCase { args: unknown[]; expected: unknown; entry?: string }
 interface PkTask {
@@ -208,6 +210,75 @@ async function runTask(task: PkTask, N: number): Promise<TaskResult> {
   return { id: task.id, tier: task.tier, N, correct, empty, distinct, passAt, proposeMs, verifyMs }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-SHOT (item 4) — the loop-convergence lift over first-shot sampling.
+// ─────────────────────────────────────────────────────────────────────────────
+// first-shot pass@k (runTask above) draws N INDEPENDENT samples with an EMPTY history — it
+// measures the raw proposal distribution, the number the "starved vs weak" question turns on.
+// But the actual loop does NOT draw independently: every failed candidate's execution verdict is
+// threaded back into the next prompt (buildProposalPrompt's feedback block), so the model debugs
+// its own code against ground truth. This mode measures THAT — draw shots SEQUENTIALLY, feeding
+// each failure's signals into the next draw's history, and report solve-rate@shot. Comparing it
+// to the independent pass@k at the same k quantifies how much the feedback loop buys over blind
+// resampling — the lever DOCTRINE.md calls "maximize information per model call".
+
+interface MultiShotResult {
+  id: string; tier: string
+  shots: number
+  solvedAtShot: number | null   // 1-indexed shot that first certified, or null if never
+  ms: number
+}
+
+/** Run up to `shots` SEQUENTIAL draws, threading every failed attempt's verdict into the next
+ *  proposal's history. Returns the first shot that certified (or null). One draw per shot (the
+ *  loop's per-node behaviour), verified by the same execution ground truth. */
+async function runTaskMultiShot(task: PkTask, shots: number): Promise<MultiShotResult> {
+  const spec: TaskSpec = { goal: task.goal, domain: 'code', acceptance: { entry: task.entry, cases: task.cases } as any }
+  const history: Attempt<string>[] = []
+  const t0 = Date.now()
+  let solvedAtShot: number | null = null
+  for (let shot = 1; shot <= shots; shot++) {
+    // diversify once the model has failed at least twice — mirrors search()'s stagnation nudge.
+    const diversify = history.length >= 2
+    let cand: Candidate<string> | null = null
+    try { cand = await proposeCode({ spec, history: history.slice(), diversify }) }
+    catch { cand = null }
+    if (!cand) continue                          // empty/malformed draw — a wasted shot, keep going
+    const v = await verifyCode(cand, spec)
+    if (v.pass) { solvedAtShot = shot; break }
+    history.push({ candidate: cand, verdict: v }) // feed this failure forward
+  }
+  return { id: task.id, tier: task.tier, shots, solvedAtShot, ms: Date.now() - t0 }
+}
+
+async function mainMultiShot(tasks: PkTask[], N: number, shots: number): Promise<void> {
+  console.log(`# pass@k MULTI-SHOT — ${tasks.length} task(s): independent pass@k (N=${N}) vs feedback-threaded solve-rate@shot (shots=${shots})`)
+  console.log(`# the gap between the two columns at equal k = the loop's convergence lift over blind resampling\n`)
+  const indep: TaskResult[] = []
+  const multi: MultiShotResult[] = []
+  for (const task of tasks) {
+    process.stdout.write(`[${task.tier}] ${task.id} … `)
+    const r = await runTask(task, N)                       // independent first-shot distribution
+    const m = await runTaskMultiShot(task, shots)          // feedback-threaded sequential draws
+    indep.push(r); multi.push(m)
+    const solved = m.solvedAtShot ? `shot ${m.solvedAtShot}` : 'never'
+    console.log(`indep c=${r.correct}/${N} pass@1 ${(r.passAt[1] * 100).toFixed(0)}%  |  multishot ${solved}  [${(m.ms / 1000).toFixed(0)}s]`)
+  }
+  // Curve: at each k, independent pass@k (mean) vs multi-shot solve-rate within k shots (fraction).
+  const shotKs = KS.filter(k => k <= Math.min(N, shots))
+  console.log(`\n# CONVERGENCE CURVE (mean across ${tasks.length} task(s))`)
+  console.log('k'.padEnd(8) + 'indep pass@k'.padStart(14) + 'multishot@k'.padStart(14) + 'lift'.padStart(10))
+  for (const k of shotKs) {
+    const ip = indep.reduce((s, r) => s + (r.passAt[k] ?? 0), 0) / (indep.length || 1)
+    const mp = multi.filter(m => m.solvedAtShot != null && m.solvedAtShot <= k).length / (multi.length || 1)
+    const lift = mp - ip
+    console.log(`${String(k).padEnd(8)}${(ip * 100).toFixed(1).padStart(13)}%${(mp * 100).toFixed(1).padStart(13)}%${(lift >= 0 ? '+' : '') + (lift * 100).toFixed(1).padStart(8)}`)
+  }
+  const solvedEver = multi.filter(m => m.solvedAtShot != null).length
+  console.log(`\n# ${solvedEver}/${multi.length} task(s) certified within ${shots} feedback-threaded shot(s)`)
+  console.log('\n' + JSON.stringify({ passk_multishot: true, N, shots, indep: indep.map(r => ({ id: r.id, correct: r.correct, passAt: r.passAt })), multi }))
+}
+
 async function main(): Promise<void> {
   const N = Math.max(1, Number(process.env.PASSK_N || 30))
   const only = (process.env.PASSK_ONLY || '').trim()
@@ -215,6 +286,13 @@ async function main(): Promise<void> {
   let tasks = ALL_TASKS
   if (only) tasks = tasks.filter(t => t.id === only)
   else if (tiers.length) tasks = tasks.filter(t => tiers.includes(t.tier))
+
+  // MULTI-SHOT mode (item 4): PASSK_MULTISHOT=1, shots via PASSK_SHOTS (default 8).
+  if (process.env.PASSK_MULTISHOT === '1') {
+    const shots = Math.max(1, Number(process.env.PASSK_SHOTS || 8))
+    await mainMultiShot(tasks, N, shots)
+    return
+  }
 
   console.log(`# pass@k — N=${N} samples/task, ${tasks.length} task(s), verifier=execution-ground-truth`)
   console.log(`# drawing through proposeCodeBatch → fmCompleteBatch → local head KV slots (W3)\n`)
