@@ -1963,12 +1963,29 @@ tsc-clean; the live "after" numbers are being measured as of this entry (see the
   Quantifies "maximize information per model call" as an actual number.
 - **Non-regression:** tsc **0 errors**; `vgr:bench` 231/0, `searchbatch:bench` 11/11, `vgr:decompose`
   35/0. Committed as `da0cf1e`.
-- **FLAG (measurement runs launched, results pending):** (1) `vgr:decompose:calc` (CALC_FLATFIRST=1)
-  live probe running to validate item 2 end-to-end on basicCalculator. (2) `MINEDFAULT_EXHAUSTIVE=1
-  minedfaultinject:bench` (item 5) running — note it still caps at `MINEDFAULT_MAX_MUTANTS` (default 8)
-  per task, so "exhaustive" here = no early-break-on-first-kill, not all 14 mutants; bump
-  MINEDFAULT_MAX_MUTANTS for a truly complete sweep. (3) The full generated scorecard with sig-pin live
-  (item 1) is the remaining headline "after" number — run once the model-bound probe frees :8080.
+- **MEASUREMENT RESULTS (this session):**
+  - **Item 2 live probe (`vgr:decompose:calc`, CALC_FLATFIRST=1) — mechanism validated, full solve NOT
+    reached, honest abstain.** Flat `solveCodeTask` on basicCalculator **EXHAUSTED in 6 calls / 41s** (0
+    solve — confirms the pass@k 0% ceiling live). Decomposition then certified real helpers
+    (`parseNumber`, `parseOperator`, `applyOperator`) across two plan attempts but the evaluator helper
+    (`calculateExpression`/`evaluateExpression`) **never certified** → final `decompose-failed`, best
+    score −4, 68 model calls, **honest abstain (never shipped garbage — soundness held)**. INSIGHT: the
+    FM planner keeps re-baking the whole precedence problem into ONE un-nameable helper. The fix is not
+    more attempts — it's a planner that carves by ALGORITHM (two-pass: tokenize → fold */÷ → fold +/−),
+    i.e. the decompose planner needs a precedence-aware template, not free naming. This is now the
+    sharpest single lever on the hardest task class.
+  - **Item 5 mined sweep (`MINEDFAULT_EXHAUSTIVE=1`) — DONE.** 3 mined parents, 24 mutants, **41.7% kill
+    (4 suite-killed, 6 compile-killed, 14 survived)**; survivors are operator-swap coverage-hole
+    candidates (ge->gt, le->lt, neqeq->eqeqeq, minus->plus) on the multi-file scaffold + an inconclusive
+    apifaith task. Capped at `MINEDFAULT_MAX_MUTANTS`=8/task; the run's own note: authoritative teeth =
+    `__minedcorpus_bench` parent-rejection. Full survivors in `scratch_minedsweep.log`.
+  - **Item 1 generated scorecard — BLOCKED on server infra, NOT run.** `smoke:code:offline` failed at the
+    auth gate ("server not reachable/authorized at :3001"): `/api/diag` returns 000 and the JWT minted
+    from `.env.local` is rejected — the fragile port+JWT-secret situation (memory
+    `crucible-live-server-auth-and-autocommit`). sig-pin is always-on and decomposition auto-fires on
+    hard tasks (tryHard), so the "after" number is ready to measure the instant a properly-authed
+    `server.ts` is up — but standing one up restarts the user's environment, so it's left for a session
+    with a live authed API. Batching additionally needs the server relaunched with `CRUCIBLE_VGR_BATCH=1`.
 
 ### 2026-07-22j (gap-soundness — W3 continuous-batch client + pass@k experiment: the loop is STARVED, not weak; +22.5pt pass@1 signature-pin lever)
 

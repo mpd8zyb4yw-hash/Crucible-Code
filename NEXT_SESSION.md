@@ -25,14 +25,20 @@
 > vgr:bench 231/0, searchbatch:bench 11/11, vgr:decompose 35/0. What remains is MEASUREMENT — the live
 > "after" numbers — not more code. Full detail: ROADMAP CHANGE LOG 2026-07-22k.
 >
-> **DECOMPOSITION VALIDATED LIVE (item 2 works):** the `vgr:decompose:calc` probe on the exact
-> basicCalculator ceiling carved it into helpers and CERTIFIED `parseOperator` (2 calls) + `applyOperator`
-> (7 calls), then composed — the sub-function decomposition escalation certifies a task that stayed 0%
-> under pure resampling. (Final composed-solve status: see `scratch_calc.log` / the run's tail.)
+> **DECOMPOSITION MECHANISM VALIDATED, FULL SOLVE NOT (item 2, honest):** the `vgr:decompose:calc` probe
+> on basicCalculator confirmed flat EXHAUSTS in 6 calls (0 solve — the live 0% ceiling) and decomposition
+> certified real helpers (`parseNumber`/`parseOperator`/`applyOperator`), but the EVALUATOR helper never
+> certified → `decompose-failed`, honest abstain at −4 (68 calls, never shipped garbage). KEY INSIGHT: the
+> FM planner re-bakes the whole precedence problem into one un-nameable helper. The lever is a
+> PRECEDENCE-AWARE planner template (two-pass tokenize → fold */÷ → fold +/−), not more plan attempts.
+>
+> **ITEM 1 SCORECARD BLOCKED on server infra:** `smoke:code:offline` failed at the auth gate (`:3001`
+> `/api/diag`=000, `.env.local` JWT rejected — the fragile port+JWT situation, memory
+> `crucible-live-server-auth-and-autocommit`). sig-pin is always-on and decomposition auto-fires on hard
+> tasks, so the "after" number is one authed-server run away — not more code.
 >
 > **PRE-FIX FLOOR (still the "before"):** live strict-offline scorecard `generated 1/33 = 3%`, 95% CI
-> ~1–15%; any post-fix generated rate below ~19% is noise. sig-pin (always-on) + the new batch bump +
-> decomposition escalation are NOT yet reflected on a full scorecard — that run is the headline gap.
+> ~1–15%; any post-fix generated rate below ~19% is noise.
 
 > **TWO-IMPLEMENTER SPLIT (user-confirmed 2026-07-21).** This branch (`claude/gap-soundness`) has
 > been executing Track-A-labeled W2/W3 work directly (the parallel session left `fmReact.ts` /
@@ -53,21 +59,26 @@
 - Prior session (2026-07-22j): W3 batch KV-slot client, pass@k harness, +22.5pt signature-pin lever.
 
 **OPEN (highest-leverage next, in order):**
-1. **Full generated scorecard, three arms** — baseline (already 3%), sig-pin-only (always-on now), and
-   `CRUCIBLE_VGR_BATCH=1 CRUCIBLE_DECOMPOSE=1` (batch bump + decomposition). Diff generated rate vs the
-   3% floor / ~19% noise threshold. This is the headline "after" number and the last thing gating a
-   claim that the levers moved the real scorecard. Run against :3001 (`npm run smoke:code`), model-bound.
-2. **Tune the batch bump under the 480s cap** — with 4 KV slots live, sweep `CRUCIBLE_VGR_BATCH_PROPOSALS`
-   ∈ {4,6,8} and read solves-per-wall-second; the pass@k curve says 4-8/round, but decode is
-   bandwidth-bound (~1.1-1.3× wall-clock), so the optimum under a fixed time cap is an open empirical Q.
-3. **Read the multi-shot curve** (`PASSK_MULTISHOT=1 npm run passk:bench`) and decide whether
+1. **PRECEDENCE-AWARE DECOMPOSE PLANNER — the sharpest lever on the hardest task class.** The live probe
+   proved decomposition's mechanism works but the FM planner re-bakes basicCalculator's whole precedence
+   problem into one un-certifiable evaluator helper. Give `makeFmSubFunctionPlanner`
+   (`reasoning/fmPlanner.ts`) an ALGORITHM-shaped template for the arithmetic/parser class: force a
+   two-pass carve (tokenize → fold */÷ left-to-right → fold +/− left-to-right), each a helper the 1.5B
+   CAN one-shot. Sound already (composition re-verified); this only changes the PATH the planner proposes.
+2. **Full generated scorecard (headline "after") — currently BLOCKED on server auth.** `smoke:code:offline`
+   401s: `:3001` `/api/diag`=000, `.env.local` JWT rejected (memory `crucible-live-server-auth-and-autocommit`).
+   Bring up an authed `server.ts` with the matching `JWT_SECRET`, then run — sig-pin is always-on and
+   decomposition auto-fires (tryHard), so this measures both immediately. For the batching arm, relaunch
+   the server with `CRUCIBLE_VGR_BATCH=1` (env is read inside the server process, not the bench client).
+3. **Tune the batch bump under the 480s cap** — 4 KV slots are live now; sweep
+   `CRUCIBLE_VGR_BATCH_PROPOSALS` ∈ {4,6,8} and read solves-per-wall-second (decode is bandwidth-bound,
+   ~1.1-1.3× wall-clock, so the optimum under a fixed time cap is empirical, not the curve's raw 4-8).
+4. **Read the multi-shot curve** (`PASSK_MULTISHOT=1 npm run passk:bench`) — quantify whether
    feedback-threaded draws beat independent draws enough to raise the live loop's per-node shot count.
-4. **basicCalculator beyond the probe** — decomposition now certifies it in the standalone probe; confirm
-   it fires + certifies through the FULL `solveCodingRequest` ladder on the scorecard (differential tier
-   → tryDecompose), not just the direct `decomposeCodeBySubFunction` entry.
-5. **Truly-exhaustive mined sweep** — this session ran `MINEDFAULT_EXHAUSTIVE=1` but it caps at
-   `MINEDFAULT_MAX_MUTANTS` (default 8)/task; a complete sweep needs `MINEDFAULT_MAX_MUTANTS=999`
-   (heavier). Track-B soundness residual; see `scratch_minedsweep.log` for this run's survivors.
+5. **Truly-exhaustive mined sweep** — this session's `MINEDFAULT_EXHAUSTIVE=1` capped at
+   `MINEDFAULT_MAX_MUTANTS`=8/task (24 mutants, 41.7% kill, 14 survivors in `scratch_minedsweep.log`);
+   a complete sweep needs `MINEDFAULT_MAX_MUTANTS=999` (heavier), then triage the operator-swap survivors
+   into the subsystem benches. Track-B soundness residual.
 
 **Shipped 2026-07-22h (this continuation, on `claude/gap-soundness`) — closed 5 of the 16 W32 survivor coverage holes:**
 Hand-triaged the 16 surviving mutants from `__faultinject_bench.ts` (deterministic first-match, so each is
