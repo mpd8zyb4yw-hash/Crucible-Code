@@ -1,41 +1,5 @@
 [
   {
-    "hash": "3c10f4d",
-    "message": "pre-write_file",
-    "timestamp": 1784488354367,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/async-retry"
-  },
-  {
-    "hash": "546523d",
-    "message": "pre-write_file",
-    "timestamp": 1784488361628,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/dedupe-preserve-order"
-  },
-  {
-    "hash": "efc13ae",
-    "message": "pre-write_file",
-    "timestamp": 1784488371888,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/no-suite-wordcount"
-  },
-  {
-    "hash": "5556b60",
-    "message": "pre-write_file",
-    "timestamp": 1784488387284,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/thread-tax-rate"
-  },
-  {
-    "hash": "0907225",
-    "message": "pre-write_file",
-    "timestamp": 1784488448900,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/thread-tax-rate"
-  },
-  {
-    "hash": "df8267c",
-    "message": "pre-write_file",
-    "timestamp": 1784488468767,
-    "projectPath": "/Users/justin/crucible-local/crucible-local/.crucible/agentic-runs/62670/live/rename-field-across-layers"
-  },
-  {
     "hash": "2fea19b",
     "message": "pre-write_file",
     "timestamp": 1784488528781,
@@ -298,5 +262,47 @@
     "message": "pre-write_file",
     "timestamp": 1784614952035,
     "projectPath": "/Users/justin/crucible-local/crucible-local"
+  },
+  {
+    "hash": "87d2691",
+    "message": "pre-write_file",
+    "timestamp": 1784676247099,
+    "projectPath": "/Users/justin/Desktop/crucible-bench/wordWrap",
+    "files": []
+  },
+  {
+    "hash": "2c745e6",
+    "message": "pre-write_file",
+    "timestamp": 1784676475818,
+    "projectPath": "/Users/justin/Desktop/crucible-bench/dedentText",
+    "files": []
+  },
+  {
+    "hash": "cd45ed3",
+    "message": "pre-write_file",
+    "timestamp": 1784677065638,
+    "projectPath": "/Users/justin/Desktop/crucible-bench/queryDecode",
+    "files": []
+  },
+  {
+    "hash": "89f8e00",
+    "message": "pre-write_file",
+    "timestamp": 1784677277973,
+    "projectPath": "/Users/justin/Desktop/crucible-bench/intervalMerge",
+    "files": []
+  },
+  {
+    "hash": "3f07c11",
+    "message": "pre-write_file",
+    "timestamp": 1784680620410,
+    "projectPath": "/Users/justin/Desktop/crucible-bench/retryDelays",
+    "files": []
+  },
+  {
+    "hash": "d53a8aa",
+    "message": "pre-write_file",
+    "timestamp": 1784682801300,
+    "projectPath": "/Users/justin/Desktop/crucible-bench/baseConvert",
+    "files": []
   }
 ]

@@ -1933,6 +1933,39 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22g (gap-soundness — work done WHILE the n=39 sweep runs: hermetic reap-leak fix + W32 verifier mutation testing)
+
+Two mine/offline-verified, non-interfering changes landed while the item-3 sweep runs detached.
+
+- **W30 hermetic reap-leak fix (`synth/hermetic.ts`, `synth/__hermetic_bench.ts`) — found LIVE.**
+  Diagnosed from `ps`: four `crucible-hermetic-bench` `spin.ts` busy-loops from last night's 3s-capped
+  `__hermetic_bench` run were STILL running ~13h later, PPID=1, each pinning a full core and starving
+  the live n=39 sweep. Root cause: `runHermeticSync`/`-Async` spawned `node tsx/cli entry.ts`, but the
+  tsx CLI **double-forks** — it re-spawns the real loader worker as its child. On timeout, SIGKILL hit
+  the wrapper we spawned; the worker was orphaned to PID 1 and (being a SIGTERM-immune `for(;;){}`)
+  ran forever. The reaper was aimed at the wrapper, not the worker. Fix: inject tsx's own loader flags
+  (`--require preflight.cjs --import loader.mjs`, absolute paths) directly onto our node invocation so
+  the candidate runs in the single process we spawn — its pid IS the reap target. `--no-cache` →
+  loader-honored `TSX_DISABLE_CACHE=1` (determinism preserved: the byte-identical two-run check still
+  passes). Async path also spawns detached + group-kills as defense-in-depth for the fallback vectors.
+  New regression guard: after the busy-loop reap, `pgrep` asserts no orphaned worker survives. Killed
+  the 4 zombies (4 cores reclaimed for the sweep). 19/19 hermetic checks pass, tsc clean.
+
+- **W32 verifier mutation testing (`coding-bench-ext/__faultinject_bench.ts`, NEW).** Turns mutation
+  testing on the corpus verifier itself: for each of the 22 authored refs, apply a fixed operator set
+  (comparison/arithmetic/boolean/boundary swaps) at the first CODE site — string literals and comments
+  are masked out (`codeMask`) so an error-message `>=` or a commented `+` is never a phantom hole — run
+  each mutant through the real hermetic oracle against that task's own hidden suite, and classify by the
+  verdict's gate booleans: accepted → SURVIVOR; `!gateA` → compile-killed (not proof of a behavioral
+  suite); `gateA && !gateB` → SUITE-KILLED (assertions rejected it). Result: **157 mutants, 89.8% kill
+  rate**, every task exhibits ≥1 suite-kill (no task's green rests on tsc alone). Honest about
+  undecidable mutant equivalence: hard gates are baseline-cert + ≥1 suite-kill/task + corpus kill-rate
+  floor (80%); the 16 survivors are REPORTED as coverage-hole candidates, not brittle-failed. Genuine
+  holes surfaced for follow-up: templateExpand (trailing-backslash escape guard, distinguished by
+  `expand('\\', {})`), bankersRound (rounding boundary), intervalSubtract, bitsetRange, slidingWindowMax,
+  deepEqualCyc, jsonPointerGet, baseConvert, dateRangeDays. Strengthen those suites AFTER the sweep
+  finishes (they sync to `coding-bench/<id>.hidden.ts`, which the live harness reads — do not edit mid-run).
+
 ### 2026-07-22f (gap-soundness — work done WHILE the n=39 sweep runs: VGR attribution + GBNF on hot path)
 
 Two improvements landed while the item-3 sweep runs detached (it uses committed code, so both

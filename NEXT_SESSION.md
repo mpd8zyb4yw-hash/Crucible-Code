@@ -43,6 +43,19 @@
 >   `synth/__hermetic_bench.ts`, all of `coding-bench-ext/`, the Gate-B call sites in
 >   `oracle.ts`. Track-B work arrives as NEW files + one wiring line.
 
+**Shipped 2026-07-22g (this continuation, on `claude/gap-soundness`) — hermetic reap-leak fix + W32 mutation harness:**
+- **W30 hermetic reap-leak (`synth/hermetic.ts` + `__hermetic_bench.ts`) — found LIVE.** The tsx-CLI
+  spawn vector double-forked; on timeout SIGKILL hit the wrapper, orphaning the busy-loop worker to
+  PID 1 forever (4 zombies from last night were pinning 4 cores and starving the running sweep — now
+  killed). Fixed by injecting tsx's loader flags in-process (single reapable pid); `--no-cache` →
+  `TSX_DISABLE_CACHE=1`. New `pgrep` orphan-survival guard. 19/19 hermetic, tsc clean.
+- **W32 verifier mutation testing (`coding-bench-ext/__faultinject_bench.ts`, NEW) — item 8 DONE (core).**
+  157 mutants across the 22 authored refs, **89.8% kill rate**, every task shows ≥1 suite-kill (teeth
+  proven beyond tsc). Strings/comments masked out of mutation sites. 16 survivors REPORTED as
+  coverage-hole candidates (templateExpand trailing-backslash, bankersRound boundary, +7 more).
+  RESIDUAL (do AFTER the sweep — suites sync to the live harness): strengthen those 9 suites so the
+  named survivors are killed; extend to the 3 mined parents (multi-file scaffold).
+
 **Shipped 2026-07-22e (this continuation, on `claude/gap-soundness`) — next-steps items 1,2,4,5 + item 3 launched:**
 NON-INTERFERENCE re-verified: the parallel `crucible-northstar-sessions` session is on W8→W12
 (fault-localization + coverage-guided fuzzing — `faultLocalize.ts`, `coverageFuzz.ts`, benches) and
@@ -169,7 +182,10 @@ session used for Track-A W1. tsc clean throughout.
    process died, relaunch `tsx src/CrucibleEngine/coding-benchmarks.ts` (server on :3001, daemon up).
 7. **W42.2 scale toward n≈100 (±10-pt floor)** — mined candidates `79583e1`, `a0bdd2a`,
    `781fbba`/`23d1305`, `1fb3971`; fix touches one engine file + its paired bench.
-8. **W32 verifier fault-injection** — 22 authored refs + 3 mined parents as mutation targets.
+8. **~~W32 verifier fault-injection~~ — CORE DONE 2026-07-22g.** `__faultinject_bench.ts` mutates
+   the 22 authored refs and proves the suites catch the faults (157 mutants, 89.8% kill rate, every
+   task ≥1 suite-kill). RESIDUAL: strengthen the 9 suites with named survivors (do AFTER the sweep —
+   they sync to the live harness); extend to the 3 mined parents (multi-file scaffold).
 
 **Standing (still load-bearing):** W31 `__refdiff_bench.ts` independent oracle per authored ref
 (~9k cases; posixResolve unwrapped node, queryDecode fuzzes malformed junk). W30 hermetic
