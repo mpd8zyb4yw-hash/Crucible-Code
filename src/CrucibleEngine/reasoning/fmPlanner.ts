@@ -274,16 +274,76 @@ export function precedenceTemplatePlan(): PlannedSubFunction[] {
   ]
 }
 
+// ── RPN / postfix / stack-machine class ────────────────────────────────────────
+// evalRPN (Reverse Polish Notation) is a SECOND task the pass@k experiment measured at 0%
+// (0/10 pass@1, never solved by feedback-threaded multishot) — same "sampling can't reach it"
+// wall as basicCalculator. The flat 1.5B reliably botches the two semantic traps: operand ORDER
+// (`a b -` means a−b, not b−a) and truncation direction (6/−4 = −1 toward zero, not −2 floor).
+// The carve ISOLATES exactly those into one tiny certified helper, `applyOp(op,a,b)`, whose seed
+// cases PIN both; the composition then only has to get the stack mechanics right. Same doctrine.
+
+/** Heuristic: does this goal look like Reverse Polish Notation / postfix stack evaluation? */
+export function isRpnGoal(goal: string, entry: string): boolean {
+  const g = (goal ?? '').toLowerCase()
+  const e = (entry ?? '').toLowerCase()
+  if (/(rpn|postfix)/.test(e)) return true
+  return /(reverse polish|postfix)/.test(g) && /(evaluat|operator|\+|stack)/.test(g)
+}
+
+/**
+ * The one-helper carve for the RPN/postfix class: `applyOp(op,a,b)` pins operand order + trunc
+ * division; the composition (the entry itself) wires the stack. Pure, 0 model calls, class-generic.
+ */
+export function rpnTemplatePlan(): PlannedSubFunction[] {
+  return [
+    {
+      name: 'applyOp',
+      goal:
+        'Apply ONE binary arithmetic operator to two numbers IN ORDER: given (op, a, b) return `a op b` ' +
+        'for op one of "+", "-", "*", "/". Order matters — applyOp("-", 10, 3) is 7, not -7. Division is ' +
+        'integer division truncating TOWARD ZERO with Math.trunc — applyOp("/", 6, -4) is -1, NOT -2. ' +
+        'Idiom: `op==="+"?a+b : op==="-"?a-b : op==="*"?a*b : Math.trunc(a/b)`.',
+      cases: [
+        { args: ['+', 2, 1], expected: 3 },
+        { args: ['-', 10, 3], expected: 7 },
+        { args: ['*', 3, 4], expected: 12 },
+        { args: ['/', 6, -4], expected: -1 },
+        { args: ['/', 13, 5], expected: 2 },
+      ],
+    },
+  ]
+}
+
+/**
+ * Dispatch a goal to its known algorithm-shaped decomposition template, or null when no class
+ * matches (→ the FM planner proposes a carve instead). A registry of (class-detector → template):
+ * the extensible generalization of the basicCalculator crack to any provably-0%-by-sampling class.
+ */
+export function templateFor(goal: string, entry: string): PlannedSubFunction[] | null {
+  // RPN FIRST — it is the more specific class: an RPN goal ("evaluate a postfix expression with
+  // operators + - * /") also trips the broader arithmetic-operator signal, so the postfix/stack
+  // detector must win. An infix arithmetic goal never matches isRpnGoal (no rpn/postfix keyword).
+  if (isRpnGoal(goal, entry)) return rpnTemplatePlan()
+  if (isArithmeticExprGoal(goal, entry)) return precedenceTemplatePlan()
+  return null
+}
+
+/** True when some algorithm-shaped decompose template covers this goal (used to route early). */
+export function hasDecomposeTemplate(goal: string, entry: string): boolean {
+  return templateFor(goal, entry) !== null
+}
+
 /** Build a sub-function planner. Returns null when it can't propose ≥1 checkable helper. */
 export function makeFmSubFunctionPlanner(opts: FmPlannerOpts = {}): (
   goal: string, entry: string, sampleCases: unknown[], signal?: AbortSignal,
 ) => Promise<PlannedSubFunction[] | null> {
   return async (goal, entry, sampleCases, signal) => {
-    // ALGORITHM-SHAPED FAST-PATH: for the arithmetic-expression class the correct carve is known,
-    // and the FM planner provably re-bakes it into one un-certifiable helper. Emit the two-pass
-    // template (0 model calls) instead. Still fully verifier-gated downstream — see the block above.
-    if (opts.template !== false && isArithmeticExprGoal(goal, entry)) {
-      return precedenceTemplatePlan()
+    // ALGORITHM-SHAPED FAST-PATH: for a known 0%-by-sampling class (arithmetic expression, RPN, …)
+    // the correct carve is known and the FM planner provably re-bakes it into one un-certifiable
+    // helper. Emit the class template (0 model calls) instead. Still fully verifier-gated downstream.
+    if (opts.template !== false) {
+      const tpl = templateFor(goal, entry)
+      if (tpl) return tpl
     }
     const raw = await fmComplete(
       [

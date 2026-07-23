@@ -522,4 +522,69 @@ console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
 process.exit(failures === 0 ? 0 : 1)
 `,
   },
+  {
+    id: 'evalRPN',
+    title: 'Evaluate a Reverse Polish Notation expression',
+    modulePath: 'src/evalRPN.ts',
+    prompt: `Implement a Reverse Polish Notation evaluator in TypeScript at src/evalRPN.ts. ${CONTRACT}
+
+Export exactly:
+  export function evalRPN(tokens: string[]): number
+
+Semantics:
+- Evaluate a Reverse Polish Notation (postfix) expression given as an array of string tokens.
+  Operators are "+", "-", "*", "/"; every other token is an integer (possibly negative, e.g. "-4").
+- Operand ORDER matters: for tokens [a, b, op], compute \`a op b\` (so ["10","3","-"] is 10-3=7).
+- Division is INTEGER division truncating TOWARD ZERO (so 6/-4 = -1, not -2). All intermediate
+  and final results are integers. A single-number input returns that number.
+- Examples: evalRPN(["2","1","+","3","*"]) -> 9, evalRPN(["4","13","5","/","+"]) -> 6,
+  evalRPN(["6","-4","/"]) -> -1, evalRPN(["-7"]) -> -7, evalRPN(["10","2","-","3","*"]) -> 24.
+- The reliable route is a single stack pass: push numbers; on an operator pop b then a and push
+  the result of applying the operator to (a, b).`,
+    ref: `export function applyOp(op: string, a: number, b: number): number {
+  return op === '+' ? a + b : op === '-' ? a - b : op === '*' ? a * b : Math.trunc(a / b)
+}
+
+export function evalRPN(tokens: string[]): number {
+  const stack: number[] = []
+  for (const t of tokens) {
+    if (t.length === 1 && '+-*/'.includes(t)) {
+      const b = stack.pop()!
+      const a = stack.pop()!
+      stack.push(applyOp(t, a, b))
+    } else {
+      stack.push(Number(t))
+    }
+  }
+  return stack[0]
+}
+`,
+    suite: `// HIDDEN adversarial suite for a NOVEL task (postfix/stack, 0%-by-sampling) — evalRPN.
+// Run: npx tsx __audit__/evalRPN.hidden.ts   (imports ../src/evalRPN)
+import { evalRPN } from '../src/evalRPN'
+
+let failures = 0
+function check(name: string, cond: boolean) {
+  console.log((cond ? '  PASS — ' : '  FAIL — ') + name)
+  if (!cond) failures++
+}
+
+check('add then multiply', evalRPN(['2', '1', '+', '3', '*']) === 9)
+check('nested with division', evalRPN(['4', '13', '5', '/', '+']) === 6)
+check('division truncates toward zero on negatives', evalRPN(['6', '-4', '/']) === -1)
+check('single number passthrough', evalRPN(['-7']) === -7)
+check('subtract then multiply', evalRPN(['10', '2', '-', '3', '*']) === 24)
+check('operand order for subtraction', evalRPN(['10', '3', '-']) === 7)
+check('operand order for division', evalRPN(['20', '4', '/']) === 5)
+check('chained subtraction', evalRPN(['5', '1', '2', '-', '-']) === 6)
+check('negative operands', evalRPN(['-3', '-2', '*']) === 6)
+check('truncates toward zero positive', evalRPN(['7', '2', '/']) === 3)
+check('longer expression', evalRPN(['15', '7', '1', '1', '+', '-', '/', '3', '*']) === 9)
+check('multi-digit', evalRPN(['100', '50', '-']) === 50)
+check('add negatives', evalRPN(['-5', '3', '+']) === -2)
+
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
+process.exit(failures === 0 ? 0 : 1)
+`,
+  },
 ]

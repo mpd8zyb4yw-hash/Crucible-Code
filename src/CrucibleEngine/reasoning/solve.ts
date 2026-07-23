@@ -19,7 +19,7 @@ import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROU
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
-import { makeFmPlanner, makeFmSubFunctionPlanner, isArithmeticExprGoal } from './fmPlanner'
+import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate } from './fmPlanner'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -627,7 +627,7 @@ export async function solveCodingRequest(
     // vgr:decompose:calc probe proved solves it in 7 calls. Single-entry only (decomposition composes
     // one function). Sound: decomposeCodeBySubFunction re-verifies the whole against these gold cases.
     if (result.status !== 'solved' && opts.decompose && nFns <= 1 && harvested.cases.length >= 3 &&
-        isArithmeticExprGoal(nl, harvested.entry) && !opts.signal?.aborted) {
+        hasDecomposeTemplate(nl, harvested.entry) && !opts.signal?.aborted) {
       const d = await decomposeCodeBySubFunction(
         { goal: nl, nl, entry: harvested.entry, cases: harvested.cases },
         { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: opts.iterate },
@@ -782,7 +782,7 @@ export async function solveCodingRequest(
       // CARVE FIRST. Sound: tryDecompose re-verifies the composed whole against these same cases and
       // clears invariantGate; on any non-solve we fall straight through to the normal ladder, so a
       // misdetection costs at most one decompose attempt and never changes what can certify.
-      if (isArithmeticExprGoal(nl, entry)) {
+      if (hasDecomposeTemplate(nl, entry)) {
         const early = await tryDecompose(entry, cases, `${diff.detail} · arithmetic-class early-carve`)
         if (early) return early
       }

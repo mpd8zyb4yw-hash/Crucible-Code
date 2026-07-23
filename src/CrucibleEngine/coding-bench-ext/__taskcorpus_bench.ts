@@ -49,7 +49,7 @@ const check = (label: string, cond: boolean, detail = '') => {
   const existing = fs.readdirSync(HIDDEN_DIR).filter(f => f.endsWith('.hidden.ts')).map(f => f.replace('.hidden.ts', ''))
   const preexisting = new Set(existing.filter(id => !ids.includes(id)))
   check('no id collides with a pre-existing bench task', ids.every(id => !preexisting.has(id) || fs.readFileSync(path.join(HIDDEN_DIR, id + '.hidden.ts'), 'utf8').includes('Extended corpus')), ids.filter(id => preexisting.has(id)).join(','))
-  check('corpus size is 23', EXT_TASKS.length === 23, String(EXT_TASKS.length))
+  check('corpus size is 24', EXT_TASKS.length === 24, String(EXT_TASKS.length))
 }
 
 // ── per-task certification ──────────────────────────────────────────────────

@@ -24,7 +24,7 @@
 
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
-import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner } from './fmPlanner'
+import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, templateFor } from './fmPlanner'
 import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, type SubFunctionPlanner } from './solve'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
@@ -330,6 +330,27 @@ async function main() {
   const compCases: [string, number][] = [['3+2*2', 7], [' 3/2 ', 1], ['3+5 / 2', 5], ['14-3*2', 8], ['2*3+4*5', 26], ['6/2*3', 9], ['2+3*4-6/2', 11]]
   const compOk = compCases.every(([s, e]) => refAS(refMD(refParse(refTok(s)))) === e)
   check('11g the four helpers compose to a correct calculator on all adversarial cases', compOk)
+
+  // ── 12. RPN / postfix template — the SECOND 0%-by-sampling class (generalization proof). ──
+  // Same doctrine: applyOp isolates the two traps the flat 1.5B fails (operand order + trunc div),
+  // the composition wires the stack. These checks verify the detector, dispatch precedence (RPN is
+  // more specific than arithmetic and must win), and that applyOp + a stack fold compose correctly.
+  const rpnGoal = 'Write evalRPN(tokens: string[]): number evaluating a Reverse Polish Notation expression. Operators are + - * /. Division truncates toward zero.'
+  check('12 RPN detector fires on the evalRPN goal', isRpnGoal(rpnGoal, 'evalRPN'))
+  check('12b RPN detector does NOT fire on the infix calculator goal', !isRpnGoal(calcGoal, 'basicCalculator'))
+  check('12c templateFor dispatches RPN goal to the applyOp carve (RPN wins over arithmetic)',
+    templateFor(rpnGoal, 'evalRPN')?.map((h) => h.name).join(',') === 'applyOp',
+    templateFor(rpnGoal, 'evalRPN')?.map((h) => h.name).join(','))
+  check('12d templateFor still dispatches the infix calculator to the four-helper carve',
+    templateFor(calcGoal, 'basicCalculator')?.map((h) => h.name).join(',') === NAMES)
+  const rpnTpl = rpnTemplatePlan()
+  const refApply = (op: string, a: number, b: number): number => op === '+' ? a + b : op === '-' ? a - b : op === '*' ? a * b : Math.trunc(a / b)
+  check('12e every applyOp seed case is satisfied by a correct impl',
+    rpnTpl[0].cases.every((c) => refApply(...(c.args as [string, number, number])) === c.expected))
+  const refRpn = (tokens: string[]): number => { const s: number[] = []; for (const t of tokens) { if (t.length === 1 && '+-*/'.includes(t)) { const b = s.pop()!, a = s.pop()!; s.push(refApply(t, a, b)) } else s.push(Number(t)) } return s[0] }
+  const rpnCases: [string[], number][] = [[['2', '1', '+', '3', '*'], 9], [['4', '13', '5', '/', '+'], 6], [['6', '-4', '/'], -1], [['-7'], -7], [['10', '2', '-', '3', '*'], 24], [['10', '3', '-'], 7]]
+  check('12f applyOp + a stack fold compose to a correct RPN evaluator on all adversarial cases',
+    rpnCases.every(([t, e]) => refRpn(t) === e))
 
   console.log(`\n${fail === 0 ? '✅' : '❌'} decompose bench: ${pass} passed, ${fail} failed\n`)
   if (fail > 0) process.exit(1)
