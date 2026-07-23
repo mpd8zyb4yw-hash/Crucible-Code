@@ -149,7 +149,6 @@ export function buildProposalPrompt(ctx: ProposeContext<string>): { system: stri
 
   // Thread the most recent failures back in as concrete, actionable debugging signal.
   // This is the sample-efficiency lever: the model sees exactly what went wrong.
-  const recent = history.slice(-3)
   // Surface the closest-to-passing attempt alongside the recent window (see pickFeedbackAttempts).
   const { shown, best } = pickFeedbackAttempts(history)
   const feedback = shown.length
@@ -165,20 +164,45 @@ export function buildProposalPrompt(ctx: ProposeContext<string>): { system: stri
   // SEMANTIC-THRASH detection (sample-efficiency): the model may make the SAME logical
   // mistake with cosmetically-different code (e.g. `.join(/\s+/)` vs `.join(/\s+/)` again),
   // so fingerprint-dedup never sees it. If the identical FAILURE SIGNAL recurs, the model is
-  // anchored — point it at the exact culprit instead of just repeating "try differently".
+  // ANCHORED. Live probe (2026-07-22l, basicCalculator foldMulDiv rung): a flat "you are stuck"
+  // note + a fixed 0.8 temperature does NOT break the anchor — the model re-emits the same wrong
+  // control structure every draw ("duplicate proposal (stuck)") until budget death. So escalate
+  // PROGRESSIVELY with the depth of the identical-failure run: raise temperature in steps, ROTATE
+  // a structural anchor-breaker (reduce↔index-loop↔recursion, different data structure), and once
+  // deeply anchored STOP echoing the anchored code back (that feedback reinforces the wrong shape)
+  // in favour of a clean-slate "abandon that structure" reframe. Sound: still fully verifier-gated —
+  // diversity can only help the search FIND a correct impl, never certify a wrong one.
   const sig = (a: typeof history[number]) => (a.verdict.signals[0] ?? '')
-  const lastSig = recent.length ? sig(recent[recent.length - 1]) : ''
-  const repeats = lastSig && recent.filter(a => sig(a) === lastSig).length >= 2
-  const stuckNote = repeats
-    ? `\n\n## YOU ARE STUCK — READ THIS CAREFULLY\nYour last attempts produced the EXACT SAME wrong result every time:\n"${lastSig}"\nThat means the bug is in a SPECIFIC line, not the overall approach. Look at HOW you build the return value — a wrong argument to a call (e.g. passing a regex where a string is required, an off-by-one, wrong separator, wrong comparison). Identify the one wrong expression and change THAT. Do not rewrite the whole thing the same way again.`
-    : ''
+  const lastSig = history.length ? sig(history[history.length - 1]) : ''
+  // Anchoring depth = how many of the most-recent attempts failed with the IDENTICAL signal.
+  let sameSigRun = 0
+  if (lastSig) for (let i = history.length - 1; i >= 0; i--) { if (sig(history[i]) === lastSig) sameSigRun++; else break }
+  const repeats = sameSigRun >= 2
 
-  const diversifyNote = (diversify || repeats)
+  // Structural anchor-breakers, rotated by anchoring depth — each names a DIFFERENT control shape
+  // so the model cannot re-emit the one that keeps failing. Generic (no task specifics), so this
+  // is a pure search-diversity lever, not a hint about any particular answer.
+  const BREAKERS = [
+    'Rewrite it with a DIFFERENT control structure than your last attempt: if you used array methods (map/reduce/filter), use an explicit indexed `for` loop instead — or vice versa.',
+    'Change your DATA REPRESENTATION: build the result by pushing onto a fresh array / accumulator you mutate step by step, rather than chaining transforms.',
+    'Solve it RECURSIVELY, or if you were recursing, solve it with a single explicit loop and an accumulator variable.',
+    'Handle the pieces in a DIFFERENT ORDER, and write out each intermediate value to its own named variable before combining — do not inline.',
+  ]
+  const deep = sameSigRun >= 4
+  const stuckNote = repeats
+    ? `\n\n## YOU ARE ANCHORED — the SAME wrong result ${sameSigRun}× in a row:\n"${lastSig}"\nYour current approach is a dead end. ${BREAKERS[Math.min(sameSigRun - 2, BREAKERS.length - 1)]} Do NOT submit the same structure again.`
+    : ''
+  const diversifyNote = (diversify && !repeats)
     ? '\n\nYour recent attempts are stuck. Change the SPECIFIC operation that produces the wrong output — different call, argument, or operator — not a cosmetic rename.'
     : ''
 
-  const user = `## Task\n${spec.goal}${feedback}${stuckNote}${diversifyNote}\n\nReturn the corrected full module now.`
-  return { system, user, temperature: (diversify || repeats) ? 0.8 : 0.3 }
+  // Progressive temperature: calm while making real progress, hotter the deeper the anchor.
+  const temperature = deep ? 1.15 : sameSigRun >= 3 ? 1.0 : (diversify || repeats) ? 0.8 : 0.3
+  // Deeply anchored: the echoed attempt-code is REINFORCING the wrong shape — drop it, keep only
+  // the reframe. Otherwise thread the concrete failure feedback (the normal sample-efficiency win).
+  const body = deep ? '' : feedback
+  const user = `## Task\n${spec.goal}${body}${stuckNote}${diversifyNote}\n\nReturn the corrected full module now.`
+  return { system, user, temperature }
 }
 
 export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidate<string> | null> {

@@ -448,7 +448,13 @@ async function runSubFunctionOnce(
   const helpers: { name: string; source: string }[] = []
   for (const h of helperPlan) {
     if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers, rungs, modelCalls, detail: `aborted at helper ${h.name}` }
-    const priorBlock = helpers.map((x) => x.source).join('\n\n')
+    // CONTEXT HYGIENE (2026-07-22l): only ground a rung with the prior helpers it ACTUALLY calls
+    // (its goal names them), not every certified helper. Live probe: foldMulDiv solves in 2 calls
+    // in isolation but ANCHORED inside decomposition, because the unconditional prior-helper dump
+    // crowded the idiom/cases out of the weak head's tiny per-slot context (n_ctx≈1024/slot). Most
+    // template helpers are independent, so this hands them the same clean prompt isolation gets.
+    const deps = helpers.filter((x) => h.goal.includes(x.name))
+    const priorBlock = deps.map((x) => x.source).join('\n\n')
     const spec: TaskSpec = {
       goal: `${h.goal}\n\nImplement helper \`${h.name}\`.`,
       domain: 'code',
