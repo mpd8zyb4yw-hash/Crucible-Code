@@ -338,16 +338,18 @@ async function main() {
   const rpnGoal = 'Write evalRPN(tokens: string[]): number evaluating a Reverse Polish Notation expression. Operators are + - * /. Division truncates toward zero.'
   check('12 RPN detector fires on the evalRPN goal', isRpnGoal(rpnGoal, 'evalRPN'))
   check('12b RPN detector does NOT fire on the infix calculator goal', !isRpnGoal(calcGoal, 'basicCalculator'))
-  check('12c templateFor dispatches RPN goal to the applyOp carve (RPN wins over arithmetic)',
-    templateFor(rpnGoal, 'evalRPN')?.map((h) => h.name).join(',') === 'applyOp',
+  check('12c templateFor dispatches RPN goal to the isOperator+applyOp carve (RPN wins over arithmetic)',
+    templateFor(rpnGoal, 'evalRPN')?.map((h) => h.name).join(',') === 'isOperator,applyOp',
     templateFor(rpnGoal, 'evalRPN')?.map((h) => h.name).join(','))
   check('12d templateFor still dispatches the infix calculator to the four-helper carve',
     templateFor(calcGoal, 'basicCalculator')?.map((h) => h.name).join(',') === NAMES)
   const rpnTpl = rpnTemplatePlan()
+  const refIsOp = (t: string): boolean => t.length === 1 && '+-*/'.includes(t)
   const refApply = (op: string, a: number, b: number): number => op === '+' ? a + b : op === '-' ? a - b : op === '*' ? a * b : Math.trunc(a / b)
-  check('12e every applyOp seed case is satisfied by a correct impl',
-    rpnTpl[0].cases.every((c) => refApply(...(c.args as [string, number, number])) === c.expected))
-  const refRpn = (tokens: string[]): number => { const s: number[] = []; for (const t of tokens) { if (t.length === 1 && '+-*/'.includes(t)) { const b = s.pop()!, a = s.pop()!; s.push(refApply(t, a, b)) } else s.push(Number(t)) } return s[0] }
+  const rpnImplFor: Record<string, (...a: any[]) => unknown> = { isOperator: refIsOp, applyOp: refApply }
+  check('12e every RPN helper seed case is satisfied by a correct impl',
+    rpnTpl.every((h) => h.cases.every((c) => rpnImplFor[h.name](...c.args) === c.expected)))
+  const refRpn = (tokens: string[]): number => { const s: number[] = []; for (const t of tokens) { if (refIsOp(t)) { const b = s.pop()!, a = s.pop()!; s.push(refApply(t, a, b)) } else s.push(Number(t)) } return s[0] }
   const rpnCases: [string[], number][] = [[['2', '1', '+', '3', '*'], 9], [['4', '13', '5', '/', '+'], 6], [['6', '-4', '/'], -1], [['-7'], -7], [['10', '2', '-', '3', '*'], 24], [['10', '3', '-'], 7]]
   check('12f applyOp + a stack fold compose to a correct RPN evaluator on all adversarial cases',
     rpnCases.every(([t, e]) => refRpn(t) === e))

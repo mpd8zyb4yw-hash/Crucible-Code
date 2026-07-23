@@ -297,12 +297,28 @@ export function isRpnGoal(goal: string, entry: string): boolean {
 export function rpnTemplatePlan(): PlannedSubFunction[] {
   return [
     {
+      name: 'isOperator',
+      goal:
+        'Implement `isOperator(token)` — return true if and only if the string token is EXACTLY one ' +
+        'of the operators "+", "-", "*", "/". A multi-character token like "-4" or "12" is NOT an ' +
+        'operator (it is a negative or multi-digit NUMBER), so length matters. Write exactly:\n' +
+        "export function isOperator(token) { return token.length === 1 && '+-*/'.includes(token) }",
+      cases: [
+        { args: ['+'], expected: true },
+        { args: ['-'], expected: true },
+        { args: ['/'], expected: true },
+        { args: ['-4'], expected: false },
+        { args: ['12'], expected: false },
+      ],
+    },
+    {
       name: 'applyOp',
       goal:
-        'Apply ONE binary arithmetic operator to two numbers IN ORDER: given (op, a, b) return `a op b` ' +
-        'for op one of "+", "-", "*", "/". Order matters — applyOp("-", 10, 3) is 7, not -7. Division is ' +
-        'integer division truncating TOWARD ZERO with Math.trunc — applyOp("/", 6, -4) is -1, NOT -2. ' +
-        'Idiom: `op==="+"?a+b : op==="-"?a-b : op==="*"?a*b : Math.trunc(a/b)`.',
+        'Implement `applyOp(op, a, b)` — apply ONE binary arithmetic operator to two numbers IN ORDER, ' +
+        'returning `a op b` for op one of "+", "-", "*", "/". `op` is a string; `a` and `b` are numbers. ' +
+        'Order matters — applyOp("-", 10, 3) returns 7, not -7. Division is integer division truncating ' +
+        'TOWARD ZERO with Math.trunc — applyOp("/", 6, -4) returns -1, NOT -2. Write exactly:\n' +
+        "export function applyOp(op, a, b) { return op === '+' ? a + b : op === '-' ? a - b : op === '*' ? a * b : Math.trunc(a / b) }",
       cases: [
         { args: ['+', 2, 1], expected: 3 },
         { args: ['-', 10, 3], expected: 7 },
