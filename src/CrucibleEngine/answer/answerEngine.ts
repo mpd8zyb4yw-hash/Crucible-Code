@@ -84,7 +84,7 @@ const LANG_INSTRUMENT = /\b(?:in|using|with|for)\s+(?:an?\s+)?(?:python|javascri
 // deliberately does NOT match timeless facts (capitals, populations, definitions) — the FM
 // answers those cleanly and directly, and routing them through the research DAG both slows the
 // turn and, empirically, garbles trivial answers. Stage 3 will harden DAG grounding quality.
-const EXTERNAL_FACT = /\b(latest|current(ly)?|todays?|tonight|right now|this (week|month|year)|recent(ly)?|news|headline|prices?|stock|shares?|market|weather|forecast|temperature|scores?|who won|standings?|release date|released|newest|as of|up to date|nowadays|who (is|are) the (current |reigning )?(ceo|president|prime minister|chancellor|pope|coach|manager|owner|champion|record holder|richest|oldest living|leader|head))\b/i
+const EXTERNAL_FACT = /\b(latest|current(ly)?|todays?|tonight|right now|this (week|month|year)|last (week|month|year)|yesterday|recent(ly)?|news|headline|prices?|stock|shares?|market|weather|forecast|temperature|scores?|who won|standings?|release date|released|newest|as of|up to date|nowadays|who (is|are) the (current |reigning )?(ceo|president|prime minister|chancellor|pope|coach|manager|owner|champion|record holder|richest|oldest living|leader|head))\b/i
 const MULTISTEP = /\b(and then|first[, ]|then |after that|finally|step by step|as well as)\b|.*\?.*\?/i
 const REASON = /\b(if\b[^?]*\b(then|will|would|does)|how (long|far|fast|many|much) (until|before|would|will|does|do)|calculate|solve|prove|derive|catch up|how old|what time|percentage|ratio|average|per (hour|day|week|minute|second)|mph|km\/h)\b/i
 // A quantitative ASK that REASON misses — discount/percent/money math and "what is the <quantity>"

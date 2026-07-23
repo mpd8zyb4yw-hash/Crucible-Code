@@ -1933,6 +1933,26 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23f (cont.105 — relative-past external-fact cues, entailment-gated grounding stamp, broadened decline-hedge; abstain:bench 11/12 live)
+- **Relative-past recency cues added to `EXTERNAL_FACT`** (`answerEngine.ts`): `last (week|month|year)`
+  and `yesterday`. Root cause: the lottery bait "winning number on the second Tuesday of **last
+  month**" and the rice bait "the bag I bought **yesterday**" carried no recency token the regex
+  matched, so `needsExternalFact` stayed false and they skipped the ungrounded-external-fact abstain,
+  web-grounding a fabricated specific. MEASURED (live probe): both baits BAD→GOOD [abstained].
+- **`via:'dag'` grounded stamp is now entailment-gated** (`synthDriver.solveNonCodeTurn` + new
+  `cited` field on `GroundedResult`). `answerWithWebGrounding` returns its best artifact even when
+  the model wrote PAST the evidence; the hardcoded `via:'dag', conf 0.85` badged that parametric
+  prose as grounded, and `isCodeDominated` only catches code-shaped failures — a confidently-wrong
+  PROSE synthesis still shipped stamped. Fix: inline `[S#]` citation count is the entailment proxy;
+  zero citations ⇒ emit `via:'direct', conf 0.3` (an ungrounded fall-through the answerEngine's
+  `retrievalUngrounded && needsExternalFact` branch can still abstain on) instead of `via:'dag'`.
+- **`abstain:bench` HEDGE regex broadened** to catch honest decline phrasings the ISBN/rice baits
+  used ("does not exist/address", "there is no … record/answer", "cannot be determined", "no
+  publicly available information", "not provided/found/mentioned in the evidence/sources").
+- **Live gate raised** from a bare majority (`good*2 > total`) to ≥75% (`good*4 >= total*3`, i.e.
+  ≥ 9/12). MEASURED live offline probe (qwen2.5-1.5b, strict): **11/12** hedged-or-abstained, PASS.
+  Pure `abstain:bench`: 62/62 PASS.
+
 ### 2026-07-23e (cont.104 — ungrounded external-fact + future-premise abstention; abstain:bench gated + grown)
 - **Confabulation-as-code / confident-fabrication bleed on the factual-lookup path CLOSED.** An
   `EXTERNAL_FACT` question (`needsExternalFact=true`) that retrieval could not ground — no web in

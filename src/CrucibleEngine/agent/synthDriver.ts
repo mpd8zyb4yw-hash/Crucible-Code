@@ -242,8 +242,19 @@ export async function solveNonCodeTurn(goal: string, projectPath?: string, histo
     try {
       const g = await answerWithWebGrounding(goal, { history })
       if (g && g.text.trim()) {
-        debugBus.emit('agent', 'offline_webground_hit', { goal: goal.slice(0, 80), sources: g.sources.length }, { severity: 'info' })
-        meta?.({ via: 'dag', confidence: 0.85, sources: g.sources.length })
+        // Evidence-entailment gate: `via:'dag'` at confidence 0.85 is a GROUNDED badge, and the
+        // downstream pipeline (answerEngine rMeta.via==='dag') trusts it enough to skip the
+        // ungrounded-fallthrough abstain. But answerWithWebGrounding returns its best artifact even
+        // when the model wrote PAST the evidence — a confidently-wrong prose synthesis that cites
+        // nothing. Inline [S#] citations are the proxy for "this answer is actually entailed by the
+        // retrieved sources"; zero citations means the sources footer is stapled onto parametric
+        // prose. Only stamp the grounded badge when the synthesis cited evidence; otherwise emit a
+        // low-confidence 'direct' so the answer still ships but is NOT treated as verified.
+        const entailed = (g.cited ?? 0) > 0
+        debugBus.emit('agent', 'offline_webground_hit', { goal: goal.slice(0, 80), sources: g.sources.length, cited: g.cited ?? 0, entailed }, { severity: 'info' })
+        meta?.(entailed
+          ? { via: 'dag', confidence: 0.85, sources: g.sources.length }
+          : { via: 'direct', confidence: 0.3, sources: g.sources.length })
         return g.text
       }
       debugBus.emit('agent', 'offline_webground_empty', { goal: goal.slice(0, 80) }, { severity: 'warn' })
@@ -2059,8 +2070,8 @@ function parseCurrentState(messages: Array<Record<string, unknown>>, explicitGoa
           const dest = String(args.dest ?? '')
           if (dest) { pendingDownload = dest; lastWritePath = dest }
         }
-        if (name === 'run_command') {
-          lastWritePath = null  // next tool result is from run_command
+        if (name === 'run') {
+          lastWritePath = null  // next tool result is from the run (tsc / self-test)
         }
       }
     }
@@ -2479,17 +2490,28 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     }
 
     // ── S2: Run tsc after all files written ──────────────────────────────────
-    const tscRuns = calledTools.filter(t => t === 'run_command').length
+    const tscRuns = calledTools.filter(t => t === 'run').length
     const hasTsTargets = goalPaths.some(p => /\.(ts|tsx|js|mjs)$/.test(p))
+    // Only run tsc through the PROJECT's own compiler. Bare `npx tsc` in a project with no
+    // local TypeScript fetches a registry squatter (the "This is not the tsc command you are
+    // looking for" package) — non-zero + garbage output that the grounding critic then rejects
+    // as a false success claim, churning the loop to its timeout. When there is no local tsc,
+    // skip this step entirely: synthesizeUniversal already compile-gated each file internally,
+    // and the self-test (below) still exercises the result at runtime.
+    const hasLocalTsc = fs.existsSync(path.join(projectPath, 'node_modules', '.bin', 'tsc'))
     // HTML-only goals are verified at write time (validateHtmlGame) — tsc has nothing to check.
-    const needsTsc = allWritten && hasTsTargets && tscRuns < 1 + Math.max(0, state.writeCycles - goalPaths.length)
+    const needsTsc = hasLocalTsc && allWritten && hasTsTargets && tscRuns < 1 + Math.max(0, state.writeCycles - goalPaths.length)
     if (needsTsc) {
       return {
         text: '',
         toolCalls: [{
           id: `offline_tsc_${Date.now()}`,
-          name: 'run_command',
-          args: { command: 'npx tsc --noEmit 2>&1 | head -20 || true' },
+          // Tool is registered as 'run' (tools/registry.ts), NOT 'run_command'. Emitting
+          // 'run_command' returned "Unknown tool" — so the tsc gate silently no-op'd (the
+          // error string has no "error TS", so hasTscErrors stayed false) and compile
+          // verification was inert. timeoutMs covers tsc cold-start under load.
+          name: 'run',
+          args: { command: './node_modules/.bin/tsc --noEmit 2>&1 | head -20 || true', timeoutMs: 120_000 },
         }],
       }
     }
@@ -2530,8 +2552,8 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
         text: '',
         toolCalls: [{
           id: `offline_selftest_${Date.now()}`,
-          name: 'run_command',
-          args: { command: `${selfTestCmd} 2>&1 | tail -30` },
+          name: 'run',
+          args: { command: `${selfTestCmd} 2>&1 | tail -30`, timeoutMs: 120_000 },
         }],
       }
     }
@@ -2563,7 +2585,12 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     }
 
     // ── S6: all clean → done ─────────────────────────────────────────────────
-    const testNote = selfTestCmd ? ` + self-test passed` : ''
+    // Only claim "tsc clean" when tsc actually ran (local compiler present). Asserting it
+    // after skipping tsc is a false success claim the grounding critic rejects, re-looping
+    // to timeout. Files-written + self-test are backed by tool evidence; keep the claim to
+    // exactly what was verified.
+    const compileNote = hasLocalTsc ? ` — tsc clean` : ''
+    const testNote = selfTestCmd ? ` — self-test passed` : ''
     debugBus.emit('agent', 'offline_turn_hit', { cycles: state.writeCycles, files: writtenPaths.length }, { severity: 'info' })
     const htmlDone = writtenPaths.filter(p => p.endsWith('.html'))
     if (htmlDone.length && !hasTsTargets) {
@@ -2573,7 +2600,7 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
       }
     }
     return {
-      text: `Wrote ${writtenPaths.join(', ')} — tsc clean${testNote} (${state.writeCycles} offline cycle(s)).`,
+      text: `Wrote ${writtenPaths.join(', ')}${compileNote}${testNote} (${state.writeCycles} offline cycle(s)).`,
       toolCalls: [],
     }
   }

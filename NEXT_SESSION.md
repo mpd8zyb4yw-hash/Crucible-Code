@@ -17,7 +17,17 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-23e (cont.104, answers/calibration track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-23f (cont.105, answers/calibration track) (REPLACE THIS EVERY SESSION)
+
+**Shipped 2026-07-23f (cont.105 — MEASURED live probe 11/12):**
+- `EXTERNAL_FACT` now matches relative-past cues (`last week/month/year`, `yesterday`) — lottery
+  "last month" + rice "yesterday" baits BAD→GOOD [abstained].
+- `via:'dag'` grounded stamp gated on inline `[S#]` citation count (new `GroundedResult.cited`):
+  zero-citation synthesis over weak evidence now emits `via:'direct', conf 0.3` (abstainable),
+  not a hardcoded grounded 0.85.
+- `abstain:bench` HEDGE regex broadened for honest decline phrasings; live gate raised to ≥75%
+  (≥9/12). Live offline probe: **11/12** PASS; pure bench 62/62 PASS.
+
 
 > cont.104 owns the ANSWER/CALIBRATION path: `src/CrucibleEngine/answer/answerEngine.ts`
 > (abstention routing, doctrine constant), `server.ts` quorum-synthesis prompt
