@@ -38,14 +38,23 @@
 >    isolation but anchored in-context because the prior-helper dump crowded the idiom/cases out of the
 >    ~1024-tok/slot window. Trimming it: `decompose-failed(−4, 17 calls)` → `solved (7 calls)`.
 >
-> **SERVER INFRA UNBLOCKED (was the item-2 blocker):** authed strict-offline `server.ts` from THIS worktree
-> runs on `:3011` (`PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1
-> CRUCIBLE_CONVERGE=1 npx tsx server.ts`). Auth is COOKIE `crucible_session=<JWT signed with .env.local
-> JWT_SECRET>`, NOT a Bearer header. The scorecard mints its own from `.env.local`; run with
-> `CRUCIBLE_API=http://localhost:3011 CRUCIBLE_OFFLINE=strict npx tsx src/CrucibleEngine/coding-benchmarks.ts <id>`.
+> **basicCalculator now passes the FULL AGENT-PATH SCORECARD GREEN (commit `3ef16d5`), strict-offline, 0
+> external API calls.** Not just the direct probe — the whole product chain: harvest 7 gold cases → gold-tier
+> arithmetic early-routing → decomposition (4 verifier-certified helpers) → composition re-verified. Result:
+> module PASS, tsc clean, hidden suite 18/18 ALL PASS, self-test PASS, rubric 80, `genuine model generation
+> 1/1`, 311s, `vgr:certified-no-iterate`. RED(420s timeout) → GREEN on the same 1.5B. The timeout was root-
+> caused to `vgr:no-acceptance-cases`: (1) bare-form prompt examples weren't harvestable (fixed to call-form
+> `basicCalculator("3+2*2") -> 7`); (2) the gold tier flat-solved and returned without escalating to decompose
+> (fixed — arithmetic early-routing added there too).
+>
+> **SERVER INFRA (repro):** authed strict-offline `server.ts` from THIS worktree on `:3011`:
+> `PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1 CRUCIBLE_CONVERGE=1
+> npx tsx server.ts`. Auth is COOKIE `crucible_session=<JWT signed with .env.local JWT_SECRET>`, NOT Bearer.
+> Scorecard mints its own: `CRUCIBLE_API=http://localhost:3011 CRUCIBLE_OFFLINE=strict npx tsx
+> src/CrucibleEngine/coding-benchmarks.ts <id>`.
 >
 > **PRE-FIX FLOOR (still the "before"):** live strict-offline scorecard `generated 1/33 = 3%`, 95% CI
-> ~1–15%; any post-fix generated rate below ~19% is noise.
+> ~1–15%; the full 39/40-task "after" sweep has NOT been run yet (only basicCalculator, now GREEN).
 
 > **TWO-IMPLEMENTER SPLIT (user-confirmed 2026-07-21).** This branch (`claude/gap-soundness`) has
 > been executing Track-A-labeled W2/W3 work directly (the parallel session left `fmReact.ts` /
@@ -65,20 +74,19 @@
   knobs, `__batch_tune_live.ts` (item-3 solves-per-wall-second sweep, ready to run).
 
 **OPEN (highest-leverage next, in order):**
-1. **AGENT-PATH → VGR/decompose WIRING GAP (item 2 end-to-end).** The `:3011` scorecard for basicCalculator
-   routes through the AGENTIC driver (`[Agent] complex_task, planned:true, ON-DEVICE`), which is heavier and
-   may NOT reach `solveCodingRequest`'s decompose lever that the `vgr:decompose:calc` probe proved solves it.
-   Confirm whether the agent path invokes the VGR coding path with `decompose:true` for single-file coding
-   tasks; if not, wire it (server.ts ~line 4103 is the VGR path; the agent driver is separate). This is the
-   gap between "the loop CAN solve it" (proven) and "the product path DOES" (unproven end-to-end).
-2. **Item 3 — batch tuning** (`npm run` the new `__batch_tune_live.ts`, or `CRUCIBLE_VGR_BATCH_PROPOSALS`∈{4,6,8}):
-   head has 4 KV slots (confirmed via `/props`); measure solves-per-wall-second. Needs sole use of `:8080`
-   (don't run concurrently with another live bench — timing gets corrupted by contention).
-3. **Extend the precedence/parser template class** — evalRPN (also live-measured 0% by sampling, a stack
-   parser) is the next decompose candidate; generalize `isArithmeticExprGoal`/`precedenceTemplatePlan` or add
-   a sibling template so the RPN/stack-machine class also carves into 1.5B-one-shottable rungs.
-4. **Full 39/40-task strict-offline scorecard "after"** against `:3011` (all tasks, not just basicCalculator)
-   — the headline generated-rate delta vs the 3% floor. Long run; use `CRUCIBLE_CODE_BENCH_GAP` pacing.
+1. **Full 39/40-task strict-offline scorecard "after"** against `:3011` (all tasks) — the headline
+   generated-rate delta vs the 3% floor. basicCalculator is GREEN; run the whole suite to see the aggregate
+   move (and catch any regressions from the gold-tier early-routing on non-arithmetic tasks). Long run
+   (~40 × up to 420s); use `CRUCIBLE_CODE_BENCH_GAP` pacing; server already up on `:3011` (commit `3ef16d5`).
+2. **Extend the parser template class to evalRPN** — evalRPN (live-measured 0% by sampling, a stack machine)
+   is the next decompose candidate. Add a sibling template (RPN → single-pass stack fold) + a class detector,
+   and an authored corpus task (call-form examples!). Same pattern that cracked basicCalculator.
+3. **Generalize class-routing beyond arithmetic** — the gold-tier + differential early-routing is currently
+   gated on `isArithmeticExprGoal`. Any task class where flat pass@k is ~0 but a known carve exists (parsers,
+   state machines, DP) should route to decompose early. Consider a registry of (class-detector → template).
+4. **Agent-driver budget** — VGR is called with `maxModelCalls: 8, beamWidth: 2` (server.ts ~4103); decompose
+   rungs fall back to DEFAULT iterate budget (fine for basicCalculator at ~7 calls, but a deeper carve could
+   exhaust it). Thread a decompose-aware budget when the class is detected.
 5. **Mined-survivor triage** — enhance `__minedfaultinject_bench.ts` to emit per-mutant LINE locations, then
    classify the 19 operator-swap survivors (equivalent vs real coverage hole) and strengthen suites. Track-B.
 

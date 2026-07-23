@@ -1990,6 +1990,19 @@ solve basicCalculator (proven); the product agent-path DOESN'T reach the lever i
 that routing/budget gap — recognize the arithmetic/parser class early and short-circuit to decompose, or give
 VGR a bigger slice of the agent budget — is the new top OPEN item.
 
+**UPDATE (same session) — the agent path now passes GREEN end-to-end.** Root-caused the timeout to
+`vgr:no-acceptance-cases`: `solveCodingRequest` formed ZERO cases, so the whole case-based ladder (incl. the
+early-routing) was skipped and it fell to the planner. Two fixes (commit `3ef16d5`): (1) the corpus prompt
+stated examples as bare `3+2*2 -> 7`, which `harvestExplicitExamples` can't parse — rewrote to call-form
+`basicCalculator("3+2*2") -> 7` (now harvests 7 gold cases, hermetically verified); (2) the GOLD tier
+flat-solved and returned on non-solve — added arithmetic-class early-routing there too (carve gold cases via
+`decomposeCodeBySubFunction` on flat abstain). **Re-run: basicCalculator GREEN** — module exists PASS,
+tsc clean PASS, hidden suite ALL PASS (18/18), self-test PASS, rubric 80/100, `genuine model generation 1/1
+(100%)`, 311s, `vgr:certified-no-iterate`. RED(420s timeout) → GREEN on the SAME 1.5B, strict-offline, zero
+external API calls. The full product chain — harvest → gold-tier arithmetic routing → decomposition
+(tokenize/parseTokens/foldMulDiv/foldAddSub, each verifier-certified) → composition re-verified against the
+gold cases — now works end-to-end, not just in the direct probe.
+
 ### 2026-07-22k (gap-soundness — the four STARVED-loop levers implemented: batch sample-bump, sub-function decomposition escalation, multi-shot pass@k harness; measurement runs launched)
 
 **Acting on the 2026-07-22j finding (the generated loop is STARVED, not weak), this session implements
