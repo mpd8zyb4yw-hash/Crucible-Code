@@ -19,7 +19,7 @@ import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROU
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
-import { makeFmPlanner, makeFmSubFunctionPlanner } from './fmPlanner'
+import { makeFmPlanner, makeFmSubFunctionPlanner, isArithmeticExprGoal } from './fmPlanner'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -757,6 +757,18 @@ export async function solveCodingRequest(
     const diff = await deriveDifferentialSpec(nl, { ...opts.differential })
     if (diff.ok && diff.spec) {
       const { entry, cases } = diff.spec
+      // EARLY CLASS-ROUTING (2026-07-22l). A class that is provably 0% by sampling (arithmetic/parser
+      // precedence — pass@k flat is zero, live-measured) must NOT spend the whole budget on flat
+      // tryConverge → solveCodeTask → poisoned-case recovery before it ever reaches decompose (that is
+      // exactly why the agent-path scorecard for basicCalculator TIMED OUT at 420s while the direct
+      // decompose probe solved it in 7 calls). When the class is detected and decompose is enabled,
+      // CARVE FIRST. Sound: tryDecompose re-verifies the composed whole against these same cases and
+      // clears invariantGate; on any non-solve we fall straight through to the normal ladder, so a
+      // misdetection costs at most one decompose attempt and never changes what can certify.
+      if (isArithmeticExprGoal(nl, entry)) {
+        const early = await tryDecompose(entry, cases, `${diff.detail} · arithmetic-class early-carve`)
+        if (early) return early
+      }
       const conv = await tryConverge(entry, cases, diff.detail)
       if (conv) return conv
       const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
