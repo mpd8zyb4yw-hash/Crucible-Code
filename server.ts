@@ -630,7 +630,18 @@ function refreshScoringConfig() {
 
 const app = express()
 app.use(cors({
-  origin: (origin, cb) => cb(null, origin ?? 'http://localhost:5173'),
+  // Security: reflect only trusted origins — never reflect an arbitrary Origin alongside
+  // credentials:true (that lets any site make credentialed cross-origin calls). LAN +
+  // localhost preserved for phone/dev access; FRONTEND_URL covers the deployed origin.
+  origin: (origin, cb) => {
+    const allow = [process.env.FRONTEND_URL, 'https://crucible.cam',
+                   'http://localhost:5173', 'http://localhost:3001'].filter(Boolean)
+    if (!origin) return cb(null, true)                        // same-origin / curl / native app
+    if (allow.includes(origin) ||
+        /^https?:\/\/(localhost|127\.0\.0\.1|(192\.168|10|172\.(1[6-9]|2\d|3[01]))\.)/.test(origin))
+      return cb(null, origin)
+    return cb(null, false)
+  },
   credentials: true,
 }))
 // Gzip all responses except SSE streams (text/event-stream must flush immediately;
