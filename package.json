@@ -61,6 +61,7 @@
     "keepk:bench": "tsx src/CrucibleEngine/reasoning/__keepK_bench.ts",
     "debate:bench": "tsx src/CrucibleEngine/agent/__debate_bench.ts",
     "conversational:bench": "tsx src/CrucibleEngine/answer/__conversational_bench.ts",
+    "abstain:bench": "tsx src/CrucibleEngine/answer/__abstention_bench.ts",
     "ground:bench": "tsx src/CrucibleEngine/answer/__ground_rank_bench.ts",
     "memory:bench": "tsx src/CrucibleEngine/answer/__memory_bench.ts",
     "longout:bench": "tsx src/CrucibleEngine/answer/__longoutput_bench.ts",
@@ -175,7 +176,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
-    "@electron/rebuild": "^3.7.1",
+    "@electron/rebuild": "^4.2.0",
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^24.12.3",
@@ -197,5 +198,9 @@
     "typescript-eslint": "^8.59.2",
     "vite": "^8.0.12",
     "wait-on": "^9.0.10"
+  },
+  "overrides": {
+    "shell-quote": "^1.10.0",
+    "@electron/rebuild": "^4.2.0"
   }
 }
