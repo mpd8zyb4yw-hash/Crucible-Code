@@ -23,8 +23,9 @@
 > coding-benchmark loop, `synth/universal.ts`, and `reasoning/{multiFile,solve,specExtractor}.ts`.
 
 **MEASURED THIS SESSION (full offline suite, own server :3001, strict, 2026-07-23):**
-gen-path **7/10 → 8/10**, total **11/14 → 12/14** (4/4 catalog-debt + 8/10 real signal),
-**no regressions**. Both remaining gen-path REDs are `compile=Y hidden=n`.
+reliable gen-path **7/10 → 8/10**, total **11/14 → 12/14** (4/4 catalog-debt + 8/10 real signal),
+**no regressions** (confirmed on the 8 non-sort gen tasks). sortModule now reaches GREEN
+probabilistically (~1/3 of runs, sound oracle) → occasional 9/10; bugfixCsv reliably RED.
 
 **Shipped 2026-07-23 (cont.101):**
 - **sortModule write-path root cause — it was NOT goalPaths extraction.** Disproved the prior
@@ -48,23 +49,30 @@ gen-path **7/10 → 8/10**, total **11/14 → 12/14** (4/4 catalog-debt + 8/10 r
   oracle still gates every candidate.
 
 **Open items / risks (priority order):**
-1. **sortModule still RED — `compile=Y hidden=n` (6–8/13 hidden checks fail).** NOW a genuine 1.5B
-   CAPABILITY gap, not routing. The weak `opts-transform-smoke` oracle accepts code the hidden suite
-   rejects: the FM's non-grouped branch HARDCODES `by:'price'` (ignores `opts.by`, never sorts by
-   name) and mutates `opts.direction`. TRIED + REVERTED (did not flip): strengthening the
-   false≡omitted oracle check across `by`×`direction` combos — the FM just introduces a different
-   bug each round. Real lever: a stronger multi-property sort oracle (sorts-by-requested-key across
-   all `by`, grouping-order when inStockFirst:true, tie-break-by-id) for convergent feedback — risk
-   it never converges in 3 rounds → module missing. Needs a denser core / multi-session.
+1. **sortModule PROBABILISTIC green — the oracle is now SOUND; the 1.5B is the ceiling.** DONE this
+   session (2026-07-23b): `deriveInvariant.ts` (c) check asserts full by×direction sort correctness
+   + tie-break, so the loop no longer rubber-stamps the FM's hardcoded-`by:'price'` non-grouped
+   branch (the old `compile=Y hidden=n` was reliably shipping WRONG-but-compiling code — a doctrine
+   violation). sortModule now either ships VERIFIED-correct code (GREEN, ~1/3 of runs) or HONESTLY
+   abstains (module-missing) — never wrong code. A `distillHint` for the (c) family feeds the FM the
+   imperative fix. **Reliable headline stays 8/10** because the 1.5B converges on the full sort
+   contract only ~1/3 of runs. The remaining lever is FM RELIABILITY, not the oracle: a deterministic
+   "unify the two comparators / rewrite the branch that hardcodes a key to read opts.by" repair in
+   `repairProposers.ts` (the FM already writes a CORRECT comparator in the grouped branch — copy it),
+   or a denser core. More rounds won't cheaply fix it (per-round success ~12%).
 2. **bugfixCsv RED — `compile=Y hidden=n` (5/9 fail).** RFC-4180 fix-in-repo: the 1.5B can't make a
    naive comma-split parser handle escaped quotes (`""`→`"`), empty quoted fields (`""`→`''`), or
-   commas/newlines inside quotes. TRIED + REVERTED an RFC-4180 family hint (changed failure shape to
-   tsc errors, did not flip). Real lever: a deterministic RFC-4180 repair proposer.
-3. **The weak smoke oracle over-accepts (systemic, highest-leverage).** `opts-transform-smoke` is a
-   "does it run" gate that greenlights hidden-failing code, so the FM gets no convergent feedback on
-   the real semantics. Strengthening derivers (`deriveInvariant.ts`) is the top systemic lever, but
-   every change must be measured across the FULL suite (≈60–90 min/run) for regressions before
-   keeping — a stronger gate the FM can't clear regresses compile=Y→module-missing.
+   commas/newlines inside quotes. TRIED + REVERTED (did not flip): an RFC-4180 initial-prompt hint
+   AND a CSV `distillHint` — the model can't write a correct single-pass scanner even with the
+   imperative rules. Real lever: a deterministic RFC-4180 repair proposer, or a denser core.
+3. **NOVICE-INTENT front (concurrent session owns `server.ts`).** `isCodeImplementationTask` was
+   widened (uncommitted, NOT this track) to route casual phrasing ("make me a sorter", "whip up a
+   CSV parser") into the build loop. DO NOT clobber it. The downstream gap it exposes is in
+   `synthDriver.ts`: a pathless code goal with no worked examples still falls to `solveNonCodeTurn`
+   (PROSE) because `primaryPath` is null — there is default-path/spec inference for web-artifact and
+   asset-collection goals (`defaultWebArtifactPath`) but NOT for general code. Add analogous
+   path/API inference so novice "build me X" → a real verified module, then add a novice-phrased
+   benchmark task (sanctioned 14→30) to measure it.
 4. **Recurring `src/index.ts` self-test tsc failure (filterModule, usernameModule).** MODULE
    writes/compiles fine but the self-test escalates on tsc in 3 rounds. SOFT-only (module still HARD-
    green), but wastes iterations. Low priority.

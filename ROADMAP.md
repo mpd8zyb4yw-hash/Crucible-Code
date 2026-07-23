@@ -1960,6 +1960,33 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
   by-key, bugfixCsv RFC-4180 quoting). The systemic lever is a stronger `deriveInvariant.ts` oracle;
   every such change needs a full-suite regression measure before keeping. `tsc` clean.
 
+### 2026-07-23b (cont.101 — sound sort oracle (fixes a doctrine violation) + honest reliability note)
+- **RELIABLE gen-path stays 8/10** (full-suite confirmed this session, no regression on the 8 other
+  gen tasks). sortModule reaches GREEN only PROBABILISTICALLY (~1/3 of runs); the 1.5B is the
+  ceiling, not the loop.
+- **deriveInvariant (c): full by×direction sort-correctness oracle.** The old `opts-transform-smoke`
+  gate only checked "ascending by the FIRST literal when direction omitted", so it RUBBER-STAMPED
+  the FM's non-grouped branch that HARDCODED `by:'price'` (ignored `by:'name'`) — i.e. it was
+  reliably shipping WRONG-but-compiling sort code (`compile=Y hidden=n`), a doctrine violation
+  ("never ship unverified/wrong code"). New (c) check asserts correct ordering for every {by}×{dir}
+  combo with the spec's stated tie-break (id asc). Validated SOUND offline (correct impl passes all;
+  FM's hardcoded-key shape fails 6/6). Result: sortModule now either ships VERIFIED-correct code
+  (green) or HONESTLY abstains (module-missing) — never wrong code. Narrowly gated to the
+  fn(items,opts) sort shape, so no other task reaches it (confirmed: 8 other gen tasks unchanged).
+- **errorHints: distillHint for the (c) family** (imperative fix: "read opts.by, don't hardcode a
+  key, reuse one comparator in every branch") — mandated companion to the new assertion family.
+  Improves convergence odds; the FM still converges only ~1/3 of runs.
+- **coding-benchmarks: skip the 45s inter-task GAP under CRUCIBLE_OFFLINE=strict** — offline has no
+  external pool, so the gap was ~10min dead time AND printed the "free pool recover" line CLAUDE.md
+  flags as the wrong command. Now that line only appears on genuine non-strict runs (heuristic fixed).
+- **TRIED + REVERTED (did not flip):** CSV distillHint for bugfixCsv — the 1.5B can't write a correct
+  RFC-4180 scanner even with the imperative hint (still `compile=Y hidden=n`, 5/9 fail).
+- **NOTE — concurrent session on the novice-intent front:** `server.ts isCodeImplementationTask` was
+  widened (uncommitted, not mine) to route casual/novice phrasing ("make me a sorter", "whip up a
+  CSV parser") into the build loop. Left untouched to avoid clobbering. The downstream gap it exposes
+  (a pathless code goal still falls to prose in `synthDriver.ts` — no path/spec inference) is the
+  coordinated next step for that front.
+
 ### 2026-07-22h (cont.100 — offline agent latency INSTRUMENTED; sortModule root-caused; a wrong fix reverted)
 - **Added `CRUCIBLE_TURN_TRACE` diagnostic** (server.ts, env-gated, off by default, inert when
   unset — returns the inner driveTurn unchanged). Wraps the strict-offline `activeDriveTurn` and
