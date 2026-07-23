@@ -17,25 +17,32 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22k (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-22l (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **THE FOUR STARVED-LOOP LEVERS ARE NOW IMPLEMENTED (commit `da0cf1e`).** Acting on 2026-07-22j's
-> finding (the generated loop is STARVED, not weak — pass@k climbs steeply, so more draws convert to
-> solves), this session shipped the durable code for items 1-4 of the prior OPEN list. tsc 0 errors;
-> vgr:bench 231/0, searchbatch:bench 11/11, vgr:decompose 35/0. What remains is MEASUREMENT — the live
-> "after" numbers — not more code. Full detail: ROADMAP CHANGE LOG 2026-07-22k.
+> **THE pass@k 0% CEILING IS CRACKED — basicCalculator SOLVED via decomposition in 7 model calls
+> (commits `bd7830f` + `0613feb`).** basicCalculator (evaluate `3+2*2`=7, `*`/`/` before `+`/`-`, no
+> parens) is provably 0% at any N by sampling; it is now CERTIFIED via sub-function decomposition on the
+> SAME qwen2.5-1.5b head, strict-offline, composed-whole re-verified against all 5 adversarial cases.
+> `npm run vgr:decompose:calc` → `solved`. This is the doctrine's central claim shown live: correctness
+> from the LOOP, not a bigger model. tsc 0; vgr:bench 231/0, searchbatch 11/11, vgr:decompose 42/0.
 >
-> **DECOMPOSITION MECHANISM VALIDATED, FULL SOLVE NOT (item 2, honest):** the `vgr:decompose:calc` probe
-> on basicCalculator confirmed flat EXHAUSTS in 6 calls (0 solve — the live 0% ceiling) and decomposition
-> certified real helpers (`parseNumber`/`parseOperator`/`applyOperator`), but the EVALUATOR helper never
-> certified → `decompose-failed`, honest abstain at −4 (68 calls, never shipped garbage). KEY INSIGHT: the
-> FM planner re-bakes the whole precedence problem into one un-nameable helper. The lever is a
-> PRECEDENCE-AWARE planner template (two-pass tokenize → fold */÷ → fold +/−), not more plan attempts.
+> **THE THREE LEVERS THAT CLOSED IT (each found by live probe, not guessed):**
+> 1. **Precedence template** (`reasoning/fmPlanner.ts`): class-detected, 0-model-call 4-helper carve
+>    `tokenizeExpr`(→strings) → `parseTokens`(→numbers) → `foldMulDiv` → `foldAddSub`, each rung typed to
+>    the 1.5B's natural grain (tokenize wants strings, arithmetic wants numbers — split so neither fights).
+> 2. **Progressive anti-anchoring** (`reasoning/codeProposer.ts`): escalate temperature 0.3→1.15 and ROTATE
+>    a structural anchor-breaker by the DEPTH of the identical-failure run; drop echoed code once deeply
+>    anchored. General search-diversity lever (helps every stuck search).
+> 3. **Decompose rung CONTEXT HYGIENE — the decisive unlock** (`reasoning/solve.ts`): ground each rung only
+>    with the prior helpers its goal NAMES, not every certified helper. foldMulDiv solved in 2 calls in
+>    isolation but anchored in-context because the prior-helper dump crowded the idiom/cases out of the
+>    ~1024-tok/slot window. Trimming it: `decompose-failed(−4, 17 calls)` → `solved (7 calls)`.
 >
-> **ITEM 1 SCORECARD BLOCKED on server infra:** `smoke:code:offline` failed at the auth gate (`:3001`
-> `/api/diag`=000, `.env.local` JWT rejected — the fragile port+JWT situation, memory
-> `crucible-live-server-auth-and-autocommit`). sig-pin is always-on and decomposition auto-fires on hard
-> tasks, so the "after" number is one authed-server run away — not more code.
+> **SERVER INFRA UNBLOCKED (was the item-2 blocker):** authed strict-offline `server.ts` from THIS worktree
+> runs on `:3011` (`PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1
+> CRUCIBLE_CONVERGE=1 npx tsx server.ts`). Auth is COOKIE `crucible_session=<JWT signed with .env.local
+> JWT_SECRET>`, NOT a Bearer header. The scorecard mints its own from `.env.local`; run with
+> `CRUCIBLE_API=http://localhost:3011 CRUCIBLE_OFFLINE=strict npx tsx src/CrucibleEngine/coding-benchmarks.ts <id>`.
 >
 > **PRE-FIX FLOOR (still the "before"):** live strict-offline scorecard `generated 1/33 = 3%`, 95% CI
 > ~1–15%; any post-fix generated rate below ~19% is noise.
@@ -46,39 +53,34 @@
 > claim here as a blocker). Track A = W2 GBNF / W3 batching / proposer prompt. Track B = soundness
 > (`synth/hermetic.ts`, `coding-bench-ext/`, `oracle.ts` Gate-B) — NEW files + one wiring line.
 
-**Shipped 2026-07-22k (this session) — the four STARVED-loop levers as durable code:**
-- **Item 3 — batch sample-bump** (`reasoning/solve.ts`, new `batchBudget()`): on `CRUCIBLE_VGR_BATCH=1`,
-  `proposalsPerNode` 1→`CRUCIBLE_VGR_BATCH_PROPOSALS` (default 4) + matching `maxModelCalls` scale (round
-  count preserved, K× wider), capped at `CRUCIBLE_VGR_BATCH_MAXCALLS` (64). Caller-pinned props win.
-- **Item 2 — decomposition escalation** (`reasoning/solve.ts` `tryDecompose` + `server.ts`
-  `decompose: tryHard`): last-resort `decomposeCodeBySubFunction` when flat search + poisoned-case
-  recovery both fail. Sound (composed whole re-verified vs original cases, still clears invariantGate).
-  New `npm run vgr:decompose:calc` probe. VALIDATED LIVE (see above).
-- **Item 4 — multi-shot pass@k** (`reasoning/__passk_bench.ts`, `PASSK_MULTISHOT=1`, `PASSK_SHOTS=8`):
-  feedback-threaded sequential draws vs independent pass@k → prints the loop's convergence lift.
-- Prior session (2026-07-22j): W3 batch KV-slot client, pass@k harness, +22.5pt signature-pin lever.
+**Shipped 2026-07-22l (this session):**
+- **basicCalculator SOLVED** (the headline) — precedence template + anti-anchoring + rung context hygiene.
+  Full detail: ROADMAP CHANGE LOG 2026-07-22l. New `basicCalculator` authored corpus task (ref + 18-case
+  hidden suite, corpus 22→23) so the headline scorecard now exercises the arithmetic class end-to-end.
+- **Item 5 exhaustive mined sweep** (`MINEDFAULT_MAX_MUTANTS=999`): 40 mutants, 52.5% kill, 19 operator-swap
+  survivors in historical mined refs (lowest-severity residual — no line locations from the bench yet).
+- **Item 4 passk multishot**: feedback-threading solves solvable tasks on shot 1 (vs ~5 blind draws), ZERO
+  lift on true-0% tasks (evalRPN 0/10) — reconfirms decomposition, not shots, is the 0%-task lever.
+- New diagnostics: `__foldmuldiv_live.ts` (isolate a stuck rung + dump failure signals), calc probe budget
+  knobs, `__batch_tune_live.ts` (item-3 solves-per-wall-second sweep, ready to run).
 
 **OPEN (highest-leverage next, in order):**
-1. **PRECEDENCE-AWARE DECOMPOSE PLANNER — the sharpest lever on the hardest task class.** The live probe
-   proved decomposition's mechanism works but the FM planner re-bakes basicCalculator's whole precedence
-   problem into one un-certifiable evaluator helper. Give `makeFmSubFunctionPlanner`
-   (`reasoning/fmPlanner.ts`) an ALGORITHM-shaped template for the arithmetic/parser class: force a
-   two-pass carve (tokenize → fold */÷ left-to-right → fold +/− left-to-right), each a helper the 1.5B
-   CAN one-shot. Sound already (composition re-verified); this only changes the PATH the planner proposes.
-2. **Full generated scorecard (headline "after") — currently BLOCKED on server auth.** `smoke:code:offline`
-   401s: `:3001` `/api/diag`=000, `.env.local` JWT rejected (memory `crucible-live-server-auth-and-autocommit`).
-   Bring up an authed `server.ts` with the matching `JWT_SECRET`, then run — sig-pin is always-on and
-   decomposition auto-fires (tryHard), so this measures both immediately. For the batching arm, relaunch
-   the server with `CRUCIBLE_VGR_BATCH=1` (env is read inside the server process, not the bench client).
-3. **Tune the batch bump under the 480s cap** — 4 KV slots are live now; sweep
-   `CRUCIBLE_VGR_BATCH_PROPOSALS` ∈ {4,6,8} and read solves-per-wall-second (decode is bandwidth-bound,
-   ~1.1-1.3× wall-clock, so the optimum under a fixed time cap is empirical, not the curve's raw 4-8).
-4. **Read the multi-shot curve** (`PASSK_MULTISHOT=1 npm run passk:bench`) — quantify whether
-   feedback-threaded draws beat independent draws enough to raise the live loop's per-node shot count.
-5. **Truly-exhaustive mined sweep** — this session's `MINEDFAULT_EXHAUSTIVE=1` capped at
-   `MINEDFAULT_MAX_MUTANTS`=8/task (24 mutants, 41.7% kill, 14 survivors in `scratch_minedsweep.log`);
-   a complete sweep needs `MINEDFAULT_MAX_MUTANTS=999` (heavier), then triage the operator-swap survivors
-   into the subsystem benches. Track-B soundness residual.
+1. **AGENT-PATH → VGR/decompose WIRING GAP (item 2 end-to-end).** The `:3011` scorecard for basicCalculator
+   routes through the AGENTIC driver (`[Agent] complex_task, planned:true, ON-DEVICE`), which is heavier and
+   may NOT reach `solveCodingRequest`'s decompose lever that the `vgr:decompose:calc` probe proved solves it.
+   Confirm whether the agent path invokes the VGR coding path with `decompose:true` for single-file coding
+   tasks; if not, wire it (server.ts ~line 4103 is the VGR path; the agent driver is separate). This is the
+   gap between "the loop CAN solve it" (proven) and "the product path DOES" (unproven end-to-end).
+2. **Item 3 — batch tuning** (`npm run` the new `__batch_tune_live.ts`, or `CRUCIBLE_VGR_BATCH_PROPOSALS`∈{4,6,8}):
+   head has 4 KV slots (confirmed via `/props`); measure solves-per-wall-second. Needs sole use of `:8080`
+   (don't run concurrently with another live bench — timing gets corrupted by contention).
+3. **Extend the precedence/parser template class** — evalRPN (also live-measured 0% by sampling, a stack
+   parser) is the next decompose candidate; generalize `isArithmeticExprGoal`/`precedenceTemplatePlan` or add
+   a sibling template so the RPN/stack-machine class also carves into 1.5B-one-shottable rungs.
+4. **Full 39/40-task strict-offline scorecard "after"** against `:3011` (all tasks, not just basicCalculator)
+   — the headline generated-rate delta vs the 3% floor. Long run; use `CRUCIBLE_CODE_BENCH_GAP` pacing.
+5. **Mined-survivor triage** — enhance `__minedfaultinject_bench.ts` to emit per-mutant LINE locations, then
+   classify the 19 operator-swap survivors (equivalent vs real coverage hole) and strengthen suites. Track-B.
 
 **Shipped 2026-07-22h (this continuation, on `claude/gap-soundness`) — closed 5 of the 16 W32 survivor coverage holes:**
 Hand-triaged the 16 surviving mutants from `__faultinject_bench.ts` (deterministic first-match, so each is

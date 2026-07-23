@@ -1933,6 +1933,63 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-22l (gap-soundness — CRACKED the pass@k 0% ceiling: basicCalculator SOLVED via decomposition in 7 model calls; precedence template + anti-anchoring + rung context hygiene)
+
+**The doctrine's central claim is now demonstrated LIVE on the hardest task class.** basicCalculator
+(evaluate `3+2*2`=7, `*`/`/` before `+`/`-`, no parens) is provably **0% at any N by sampling** — the
+pass@k experiment (2026-07-22j) showed the flat proposal distribution has zero mass on correct, and the
+2026-07-22k probe confirmed the flat search exhausts at 0 and the FM planner re-baked the whole problem
+into one un-certifiable "evaluator" helper (`decompose-failed` at −4). It is now **CERTIFIED via
+sub-function decomposition in 7 model calls** on the SAME qwen2.5-1.5b head, strict-offline, with the
+composed whole re-verified against all 5 adversarial cases. Correctness came from the LOOP, not a bigger
+model — exactly the north star.
+
+Three levers, each found by live probe (not guessed), stacked to close it:
+
+1. **Precedence-aware decompose template** (`reasoning/fmPlanner.ts`, committed `bd7830f`). A class-detected
+   (`isArithmeticExprGoal`) deterministic 0-model-call carve for the arithmetic/parser class, replacing the
+   FM planner's un-carvable single helper. FOUR helpers, each typed to the 1.5B's natural grain:
+   `tokenizeExpr` (→strings, the `match(/\d+|[-+*/]/g)` idiom) → `parseTokens` (→numbers, `.map(Number)`) →
+   `foldMulDiv` → `foldAddSub`. Two earlier token reps (mixed number/string, then all-string) were REJECTED
+   by live probes for fighting the model's type grain (tokenize wants strings, arithmetic wants numbers;
+   splitting `parseTokens` out gives each rung one natural-typed job). Idiom hints in the fold-helper goals.
+   Sound: seeds only seed rung verifiers; the whole is re-verified. +7 hermetic checks (42/0).
+
+2. **Progressive anti-anchoring** (`reasoning/codeProposer.ts`, committed `0613feb`). The old flat "you are
+   stuck" note + fixed 0.8 temp never broke the "duplicate proposal (stuck)" anchor. Now escalate with the
+   DEPTH of the identical-failure run: temperature 0.3→0.8→1.0→1.15, ROTATE a structural anchor-breaker
+   (reduce↔index-loop↔recursion↔reorder), and once deeply anchored DROP the echoed attempt-code (it
+   reinforces the wrong shape) for a clean-slate reframe. General search-diversity lever; sound.
+
+3. **Decompose rung CONTEXT HYGIENE — the decisive unlock** (`reasoning/solve.ts`, committed `0613feb`).
+   Root cause found by a new isolation diagnostic (`__foldmuldiv_live.ts`): `foldMulDiv` solves in **2 calls
+   in ISOLATION** but ANCHORED inside decomposition, because each rung was grounded with EVERY prior
+   certified helper's source — crowding the idiom/cases out of the weak head's ~1024-tok/slot context. Now a
+   rung is grounded only with the prior helpers its goal actually names (deps). Identical config, only the
+   context trimmed → `decompose-failed(−4)` (17 calls) became **`solved` (7 calls)**.
+
+**Also shipped:** `basicCalculator` authored corpus task (`coding-bench-ext/tasks-numeric.ts`, ref + 18-case
+hidden suite, corpus 22→23) so the HEADLINE scorecard now exercises the arithmetic class end-to-end; calc
+probe budget knobs; foldMulDiv isolation diagnostic. Item 5 exhaustive mined sweep (`MINEDFAULT_MAX_MUTANTS=999`):
+40 mutants, 52.5% kill, 19 operator-swap survivors in historical mined refs (lowest-severity residual).
+Item 4 passk multishot: feedback-threading solves solvable tasks on shot 1 (vs ~5 blind draws) but ZERO lift
+on true-0% tasks (evalRPN) — reconfirming decomposition, not more shots, is the lever for 0% tasks.
+
+**Regression:** vgr:bench 231/0, searchbatch 11/11, vgr:decompose 42/0, taskcorpus green, tsc 0 errors.
+**End-to-end (item 2) — infra UNBLOCKED, wiring gap EXPOSED.** Authed strict-offline server from THIS
+worktree on :3011 (commit 0613feb, CRUCIBLE_DECOMPOSE=1; cookie-auth `crucible_session=<JWT>`, NOT Bearer);
+`smoke:code:offline` gate cleared ("Live server offline mode: strict"). The scorecard for basicCalculator
+through the real `/api/chat` agent pipeline **TIMED OUT at 420s** — trace: `[Agent] complex_task, planned:
+true, ON-DEVICE`, then `[W1] vgr:entered :: differential/consensus search started`, `synth path: generated`,
+0 iters, no module written. So the AGENT product-path reaches the VGR coding path but does NOT converge in
+budget: the `solveCodingRequest` ladder runs differential-consensus spec extraction + flat search +
+poisoned-case recovery FIRST and only escalates to `tryDecompose` last, and the agent driver's overhead
+(planning, boot smoke, keepalive) eats the rest — so on the slow 1.5B the decompose lever that the DIRECT
+probe (`vgr:decompose:calc`, ~90s, 7 calls) uses to SOLVE it never gets its turn within 420s. **The loop CAN
+solve basicCalculator (proven); the product agent-path DOESN'T reach the lever in time (measured).** Closing
+that routing/budget gap — recognize the arithmetic/parser class early and short-circuit to decompose, or give
+VGR a bigger slice of the agent budget — is the new top OPEN item.
+
 ### 2026-07-22k (gap-soundness — the four STARVED-loop levers implemented: batch sample-bump, sub-function decomposition escalation, multi-shot pass@k harness; measurement runs launched)
 
 **Acting on the 2026-07-22j finding (the generated loop is STARVED, not weak), this session implements
