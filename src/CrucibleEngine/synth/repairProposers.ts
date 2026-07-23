@@ -448,6 +448,161 @@ export function repairImportLocalConflict(candidate: string, detail: string): st
 // default-direction-check bug at once) — `proposeRepairs` below tries each alone AND all of
 // them composed in sequence, so a candidate with N independent slips gets one shot at a fully
 // repaired variant instead of needing N separate rounds to discover each in isolation.
+/**
+ * `.sort()` comparator that returns a BOOLEAN instead of a number — the single most common slip
+ * the on-device FM makes on any sort task (confirmed live 2026-07-23: on sortModule it wasted 2
+ * of 3 rounds on the identical `error TS2345: '(a,b) => boolean' is not assignable to '… => number'`,
+ * writing `return a < b` or `return cond ? a < b : a > b`). tsc rejects it before the logic oracle
+ * even runs, so a logic-correct candidate dies on a purely mechanical mistake. Rewrite every
+ * boolean-relational return into the numeric `-1|0|1` form. Gated on the comparator TS2345 detail
+ * so it only fires when tsc actually flagged a `=> number` mismatch; re-gated by the full oracle,
+ * so if the rewrite were to break anything (e.g. a genuine boolean predicate elsewhere) that
+ * candidate is rejected exactly like any other — WRONG=0 untouched, and it only ever fires on a
+ * candidate that ALREADY failed, so there is no passing candidate to spoil.
+ */
+function repairBooleanComparator(candidate: string, detail: string): string | null {
+  // The mismatch tsc emits for a boolean-returning comparator passed to Array.prototype.sort.
+  if (!/is not assignable to parameter of type '\([^)]*\)\s*=>\s*number'/.test(detail)) return null
+  const OPERAND = "[\\w.$\\[\\]']+"
+  let out = candidate
+  // (1) ternary of comparisons: `return COND ? A < B : A > B` → numeric in both arms.
+  out = out.replace(
+    new RegExp(`return\\s+([^;\\n?]+?)\\s*\\?\\s*(${OPERAND})\\s*<\\s*(${OPERAND})\\s*:\\s*(${OPERAND})\\s*>\\s*(${OPERAND})\\s*;`, 'g'),
+    (_m, cond, a1, b1, a2, b2) => `return ${cond} ? (${a1} < ${b1} ? -1 : ${a1} > ${b1} ? 1 : 0) : (${a2} > ${b2} ? -1 : ${a2} < ${b2} ? 1 : 0);`,
+  )
+  // (2) standalone boolean relational returns: `return A < B;` / `return A > B;` → numeric.
+  out = out.replace(new RegExp(`return\\s+(${OPERAND})\\s*<\\s*(${OPERAND})\\s*;`, 'g'), 'return $1 < $2 ? -1 : $1 > $2 ? 1 : 0;')
+  out = out.replace(new RegExp(`return\\s+(${OPERAND})\\s*>\\s*(${OPERAND})\\s*;`, 'g'), 'return $1 > $2 ? 1 : $1 < $2 ? -1 : 0;')
+  return out !== candidate ? out : null
+}
+
+/**
+ * Balanced-paren scan for every `.sort( … )` call: returns the [argStart, argEnd) span of each
+ * comparator argument (exclusive of the surrounding parens). Kept structural rather than regex
+ * because a comparator body legitimately contains its own `()` (`a.id > b.id`, `(a,b) => …`),
+ * and `.sort(cmp).concat(…)` has a `.concat(` whose paren must NOT be mistaken for the sort's.
+ */
+function sortArgSpans(src: string): Array<{ argStart: number; argEnd: number }> {
+  const out: Array<{ argStart: number; argEnd: number }> = []
+  const rx = /\.sort\s*\(/g
+  let m: RegExpExecArray | null
+  while ((m = rx.exec(src))) {
+    const argStart = m.index + m[0].length
+    let depth = 1
+    let i = argStart
+    for (; i < src.length && depth > 0; i++) {
+      const ch = src[i]
+      if (ch === '(') depth++
+      else if (ch === ')') depth--
+    }
+    if (depth === 0) out.push({ argStart, argEnd: i - 1 })
+  }
+  return out
+}
+
+/**
+ * Canonicalize every `.sort((a, b) => …)` comparator on an opts-driven sort to the ONE correct
+ * shape the spec pins down — confirmed live across 14 distinct sortModule FM candidates
+ * (2026-07-22/23 ledger): the on-device 1.5B fails the sound "sorted by {by} {dir} (non-grouped),
+ * ties by {tie} asc" oracle family (deriveInvariant.ts check (c)) in a HANDFUL of independent ways
+ * it mixes freely — hardcoding one key (`a.price` while opts.by='name'), ignoring `direction`,
+ * mistie-breaking (`primaryComparison * secondaryComparison`, which is not a comparator at all),
+ * or omitting the tie-break. A "copy the grouped comparator to the non-grouped branch" unification
+ * is INERT on this data — the grouped comparator is itself usually one of these wrong shapes. The
+ * comparator is where all of (key / direction / tie) live, and the spec fixes all three
+ * mechanically, so the doctrine-clean repair rewrites each comparator BODY to the canonical form:
+ *   let __p = a[opts.by] < b[opts.by] ? -1 : a[opts.by] > b[opts.by] ? 1 : 0
+ *   if (opts.direction === 'desc') __p = -__p        // direction on the PRIMARY only
+ *   if (__p !== 0) return __p
+ *   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0     // tie ALWAYS ascending, regardless of dir
+ *
+ * Everything it needs is derived closed-world from the candidate's OWN echoed interface (the
+ * required string-literal-union field is the sort key `by`; the optional 'asc'|'desc' field is the
+ * direction) and from the oracle detail itself (`… ties by <tie> asc` names the tie field). No
+ * external spec, no memorized sortModule answer — it generalizes to any (items, opts) sort task
+ * whose sound oracle emits this family. Gated on that exact family and re-gated by the full oracle,
+ * so a misderivation is rejected like any wrong candidate — the WRONG=0 floor is untouched. It does
+ * NOT fix a candidate whose STRUCTURE is wrong (e.g. one that never branches on inStockFirst); those
+ * fail the oracle and abstain honestly, exactly as before.
+ */
+function repairSortByKeyComparator(candidate: string, detail: string): string | null {
+  if (!/FAIL — sorted by \w+[^|]*\(non-grouped\)/.test(detail)) return null
+
+  // Sort key: the required (non-`?`) string-literal-union field in the echoed opts interface,
+  // excluding the direction field (whose union is the asc/desc one).
+  let keyField: string | null = null
+  for (const m of candidate.matchAll(/^\s*(\w+)\s*:\s*('[^']+'(?:\s*\|\s*'[^']+')+)/gm)) {
+    if (/\b(asc|desc)\b/.test(m[2])) continue
+    keyField = m[1]; break
+  }
+  if (!keyField) return null
+
+  // Direction: the OPTIONAL literal-union field whose values include a 'desc'-style literal.
+  let dirField: string | null = null
+  let descLit: string | null = null
+  const dirM = candidate.match(/^\s*(\w+)\s*\?\s*:\s*('[^']+'(?:\s*\|\s*'[^']+')+)/m)
+  if (dirM && /desc/i.test(dirM[2])) {
+    dirField = dirM[1]
+    descLit = (dirM[2].match(/'([^']*desc[^']*)'/i) ?? [])[1] ?? null
+  }
+
+  // opts parameter name: the second parameter of the exported sort function.
+  const sig = candidate.match(/\bfunction\s+\w*[Ss]ort\w*\s*\(\s*\w+\s*:[^,]+,\s*(\w+)\s*:/)
+  const optsVar = sig?.[1] ?? 'opts'
+
+  // Tie-break field: named directly in the oracle detail (`… (non-grouped), ties by id asc`).
+  const tieField = (detail.match(/\(non-grouped\)[^|]*?\bties by (\w+) asc/) ?? [])[1] ?? null
+
+  const spans = sortArgSpans(candidate)
+  if (!spans.length) return null
+
+  // Rewrite right-to-left so earlier spans keep their offsets.
+  let out = candidate
+  let changed = false
+  for (let s = spans.length - 1; s >= 0; s--) {
+    const arg = out.slice(spans[s].argStart, spans[s].argEnd)
+    // Only an inline two-parameter comparator arrow; a bare `.sort()` or `.sort(cmpRef)` is skipped.
+    const pm = arg.match(/^\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)\s*=>/)
+    if (!pm) continue
+    const [a, b] = [pm[1], pm[2]]
+    const k = `${optsVar}.${keyField}`
+    const lines = [
+      `(${a}, ${b}) => {`,
+      `    let __p = ${a}[${k}] < ${b}[${k}] ? -1 : ${a}[${k}] > ${b}[${k}] ? 1 : 0;`,
+      ...(dirField && descLit ? [`    if (${optsVar}.${dirField} === '${descLit}') __p = -__p;`] : []),
+      `    if (__p !== 0) return __p;`,
+      ...(tieField
+        ? [`    return ${a}.${tieField} < ${b}.${tieField} ? -1 : ${a}.${tieField} > ${b}.${tieField} ? 1 : 0;`]
+        : [`    return 0;`]),
+      `  }`,
+    ]
+    const canonical = lines.join('\n')
+    if (canonical !== arg) {
+      out = out.slice(0, spans[s].argStart) + canonical + out.slice(spans[s].argEnd)
+      changed = true
+    }
+  }
+  return changed ? out : null
+}
+
+/**
+ * `return <arr>.sort(…)` mutates `<arr>` in place before returning it — the non-grouped-branch
+ * mutation half of the sortModule failures (confirmed live 2026-07-22/23: candidates that read
+ * `opts.by` correctly still failed `does not mutate input` because the non-grouped path was
+ * `return products.sort(…)`, sorting the caller's array). Distinct from `repairMutatingSort`,
+ * which is gated on localHardenFuzz's `mutates its input argument in place` message; THIS one is
+ * gated on the opts-transform oracle's own `does not mutate input` check. The regex matches only
+ * the `return <bareIdent>.sort(` shape, so an already-safe `return [...x].sort(` (starts `[`) or
+ * `return x.slice().sort(` (a `.slice()` sits between ident and `.sort`) cannot match — no-op on
+ * correct code. Wrapping a grouped-branch `return inStockProducts.sort(…).concat(…)` is a harmless
+ * extra copy (that array is already a filter() result), so the transform is safe there too.
+ */
+function repairReturnedInPlaceSort(candidate: string, detail: string): string | null {
+  if (!/does not mutate input/.test(detail)) return null
+  const repaired = candidate.replace(/return\s+([A-Za-z_$][\w$]*)\.sort\(/g, 'return [...$1].sort(')
+  return repaired !== candidate ? repaired : null
+}
+
 const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string | null> = [
   repairMissingField,
   repairImportLocalConflict,
@@ -457,6 +612,9 @@ const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string
   repairOneSidedCaseInsensitive,
   repairActiveFalseGuard,
   repairMutatingSort,
+  repairBooleanComparator,
+  repairSortByKeyComparator,
+  repairReturnedInPlaceSort,
   repairSeparatorRunNormalize,
 ]
 

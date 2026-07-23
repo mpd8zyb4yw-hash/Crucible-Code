@@ -17,15 +17,20 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-23 (cont.101, agentic-routing + synth track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-23c (cont.102, synth/repair + oracle-sandbox track) (REPLACE THIS EVERY SESSION)
 
-> This track owns `server.ts` (`/api/chat` agentic VGR routing/time-boxing), the offline
-> coding-benchmark loop, `synth/universal.ts`, and `reasoning/{multiFile,solve,specExtractor}.ts`.
+> cont.102 owns `synth/repairProposers.ts` (deterministic repairs) + `synth/oracle.ts` (sandbox).
+> A CONCURRENT session owns `server.ts` novice-routing (restarted :3001 in `tsx watch` mode);
+> a security track owns SECURITY.md / npm-audit. Check `git log` before refactoring shared files.
 
-**MEASURED THIS SESSION (full offline suite, own server :3001, strict, 2026-07-23):**
-reliable gen-path **7/10 → 8/10**, total **11/14 → 12/14** (4/4 catalog-debt + 8/10 real signal),
-**no regressions** (confirmed on the 8 non-sort gen tasks). sortModule now reaches GREEN
-probabilistically (~1/3 of runs, sound oracle) → occasional 9/10; bugfixCsv reliably RED.
+**MEASURED cont.102 (2026-07-23c):** sortModule PROBABILISTIC (~1/3) → **RELIABLE green: 6/6
+offline-strict runs GREEN this session** (path=gen, hidden 13/13), via the new comparator+demutate
+repairs; ledger confirms the repair flips failing FM candidates → ALL PASS. Full-suite gen-path
+headline (own strict server :3002, CRUCIBLE_OFFLINE=strict, 2026-07-23c, log
+`.crucible/fullsuite-3002-1821.log`): **gen-path 9/10, total 13/14** (4/4 catalog-debt + 9/10 real
+signal). Up from the 8/10 baseline; sortModule GREEN path=gen 439s. NO REGRESSIONS — all 8 other
+gen tasks still green. Only RED is bugfixCsv (item 2). This is a genuine reliability flip, not a
+lucky roll: 6/6 dedicated sortModule offline runs + this 7th full-suite run all GREEN.
 
 **Shipped 2026-07-23 (cont.101):**
 - **sortModule write-path root cause — it was NOT goalPaths extraction.** Disproved the prior
@@ -48,6 +53,17 @@ probabilistically (~1/3 of runs, sound oracle) → occasional 9/10; bugfixCsv re
   round for zero output. Added bounded backoff-retry (3×, 1.5s/3s) on 502/503/504; pure upside, the
   oracle still gates every candidate.
 
+**Shipped 2026-07-23c (cont.102):**
+- **CRITICAL: fixed S-7 oracle net sandbox silently RED-ing the WHOLE offline suite.**
+  `oracle.ts wrapSandbox` ran candidates under `sandbox-exec (deny network*)`, which ALSO denied
+  the LOCAL unix pipe tsx/esbuild binds (`…/T/tsx-501/<pid>.pipe`) → every multi-module candidate
+  died `listen EPERM` before its logic ran → tripwire → abstain → suite RED (looked like capability
+  collapse). Profile now appends `(allow network-bind (local unix-socket))(allow network-outbound
+  (remote unix-socket))`: only the unix pipe allowed, ALL IP networking still denied (verified: oracle
+  13/13; outbound to 1.1.1.1:443 still EPERM). If you EVER see all-RED + `listen EPERM`, this is it —
+  escape hatch is `CRUCIBLE_ORACLE_NO_SANDBOX=1` on the :3001 SERVER. See memory `crucible-oracle-sandbox-eperm`.
+- **sortModule deterministic comparator+demutate repair → reliable green (item 1 below — DONE).**
+
 **Open items / risks (priority order):**
 1. **sortModule PROBABILISTIC green — the oracle is now SOUND; the 1.5B is the ceiling.** DONE this
    session (2026-07-23b): `deriveInvariant.ts` (c) check asserts full by×direction sort correctness
@@ -55,16 +71,25 @@ probabilistically (~1/3 of runs, sound oracle) → occasional 9/10; bugfixCsv re
    branch (the old `compile=Y hidden=n` was reliably shipping WRONG-but-compiling code — a doctrine
    violation). sortModule now either ships VERIFIED-correct code (GREEN, ~1/3 of runs) or HONESTLY
    abstains (module-missing) — never wrong code. A `distillHint` for the (c) family feeds the FM the
-   imperative fix. **Reliable headline stays 8/10** because the 1.5B converges on the full sort
-   contract only ~1/3 of runs. The remaining lever is FM RELIABILITY, not the oracle: a deterministic
-   "unify the two comparators / rewrite the branch that hardcodes a key to read opts.by" repair in
-   `repairProposers.ts` (the FM already writes a CORRECT comparator in the grouped branch — copy it),
-   or a denser core. More rounds won't cheaply fix it (per-round success ~12%).
+   imperative fix. **DONE cont.102 (2026-07-23c): sortModule now RELIABLE green — MEASURED 6/6
+   offline-strict runs GREEN this session (path=gen, hidden 13/13).** NOTE: the "unify the two
+   comparators" hypothesis was WRONG on live data — 14 captured candidates show the two branches are
+   usually IDENTICAL and both wrong, so unification is inert. The shipped repairs instead canonicalize
+   the comparator BODY from the interface + oracle detail (`repairSortByKeyComparator`) and de-mutate
+   `return X.sort(…)` (`repairReturnedInPlaceSort`) in `synth/repairProposers.ts` — both oracle-gated,
+   `repair:bench` 26/26, ledger confirms `repair=true accepted=true` flips. The FM-STRUCTURAL miss
+   (a candidate that never branches on `inStockFirst`) is left to abstain honestly — not fake-fixed.
 2. **bugfixCsv RED — `compile=Y hidden=n` (5/9 fail).** RFC-4180 fix-in-repo: the 1.5B can't make a
    naive comma-split parser handle escaped quotes (`""`→`"`), empty quoted fields (`""`→`''`), or
    commas/newlines inside quotes. TRIED + REVERTED (did not flip): an RFC-4180 initial-prompt hint
    AND a CSV `distillHint` — the model can't write a correct single-pass scanner even with the
    imperative rules. Real lever: a deterministic RFC-4180 repair proposer, or a denser core.
+   **DOCTRINE TENSION flagged cont.102 (do NOT rush this):** a `parseCsv`→canned-RFC-4180-parser
+   swap would flip the number but is a MEMORIZED ANSWER for one known benchmark task, which
+   DOCTRINE.md calls debt (and the doctrine supersedes this note). It is unlike the sort repair,
+   which fixes a mechanical comparator SLIP and generalizes over the opts-sort family. The genuinely
+   doctrine-clean lever is a GENERALIZING transform — a quote-aware-split mutation that upgrades any
+   naive `.split(delimiter)` parser to RFC-4180 (applies beyond `parseCsv`) — or a denser core.
 3. **NOVICE-INTENT front (concurrent session owns `server.ts`).** `isCodeImplementationTask` was
    widened (uncommitted, NOT this track) to route casual phrasing ("make me a sorter", "whip up a
    CSV parser") into the build loop. DO NOT clobber it. The downstream gap it exposes is in

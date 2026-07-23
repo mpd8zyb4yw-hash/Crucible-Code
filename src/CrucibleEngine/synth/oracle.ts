@@ -60,17 +60,31 @@ function sandboxEnv(): NodeJS.ProcessEnv {
   return out
 }
 
-/** Wrap a command so model-GENERATED candidate code runs with NETWORK DENIED — defense in
+/** Wrap a command so model-GENERATED candidate code runs with IP NETWORK DENIED — defense in
  *  depth beyond the secret scrub above. Without it a candidate could phone home, exfiltrate
  *  the scratch dir, or be used as an SSRF/DoS pivot during verification. macOS-only via
  *  sandbox-exec (the same mechanism /api/sandbox/run uses); `(allow default)` keeps all file
- *  I/O and process spawning that tsx/npx need, and `(deny network*)` blocks only sockets. On
- *  non-darwin the command is unchanged and env-scrub remains the protection. Escape hatch:
- *  set CRUCIBLE_ORACLE_NO_SANDBOX=1 if it ever interferes with a legitimate candidate. */
+ *  I/O and process spawning that tsx/npx need, and `(deny network*)` blocks sockets.
+ *
+ *  BUT a bare `(deny network*)` ALSO denies the LOCAL UNIX-DOMAIN PIPE that tsx/esbuild's own
+ *  IPC service binds (`.../T/tsx-501/<pid>.pipe`) — so ANY multi-module candidate (import of a
+ *  sibling .ts) died with `listen EPERM` before its logic was ever evaluated, silently turning
+ *  the entire offline coding benchmark RED (found 2026-07-23: sortModule's oracle rejected 3
+ *  consecutive candidates on the identical EPERM, never the code). The two explicit re-allows
+ *  narrow that: unix-domain sockets (the esbuild pipe) are permitted while ALL IP networking —
+ *  inbound and outbound, loopback and remote — stays denied. Verified deterministically the
+ *  same session: the oracle suite runs 13/13, and an outbound TCP connect to 1.1.1.1:443 is
+ *  still EPERM. This is STRICTLY TIGHTER on IP than the old profile, not looser: it blocks the
+ *  same phone-home/exfil/SSRF egress and additionally denies loopback IP, allowing only the
+ *  local IPC the toolchain needs. On non-darwin the command is unchanged and env-scrub remains
+ *  the protection. Escape hatch: CRUCIBLE_ORACLE_NO_SANDBOX=1 to drop the wrapper entirely. */
 const ORACLE_NET_SANDBOX = process.platform === 'darwin' && process.env.CRUCIBLE_ORACLE_NO_SANDBOX !== '1'
+const ORACLE_SANDBOX_PROFILE =
+  '(version 1)(allow default)(deny network*)' +
+  '(allow network-bind (local unix-socket))(allow network-outbound (remote unix-socket))'
 function wrapSandbox(cmd: string, args: string[]): [string, string[]] {
   if (!ORACLE_NET_SANDBOX) return [cmd, args]
-  return ['sandbox-exec', ['-p', '(version 1)(allow default)(deny network*)', cmd, ...args]]
+  return ['sandbox-exec', ['-p', ORACLE_SANDBOX_PROFILE, cmd, ...args]]
 }
 
 function run(cmd: string, args: string[], cwd: string, timeoutMs: number): RunOut {

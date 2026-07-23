@@ -1933,6 +1933,51 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23c (cont.102 — deterministic sort-comparator repair → sortModule RELIABLE green; oracle-sandbox EPERM regression fixed)
+- **sortModule PROBABILISTIC (~1/3) → RELIABLE green. MEASURED: 6/6 offline-strict runs GREEN
+  this session (path=gen, hidden suite 13/13), incl. 1 under the real net sandbox.** The ledger
+  shows the deterministic repair flipping failing FM candidates to `ALL PASS` (`repair=true
+  accepted=true`) across the runs — not luck, a repair.
+- **Root-caused the task premise as WRONG, then built the repair the DATA supports** (doctrine
+  rule #4 — followed measurement, not the hypothesis). Pulled 14 distinct real failing sortModule
+  candidates from `.crucible/fm-rounds.jsonl`: the FM does NOT reliably write "correct grouped
+  comparator + hardcoded non-grouped comparator" — the two branches are usually IDENTICAL and both
+  wrong (hardcoded `a.price`, ignored `direction`, `primary*secondary`/`primary+secondary` tie math,
+  input mutation). A "copy the grouped comparator to the non-grouped branch" unification is INERT on
+  this data. The bugs cluster in two spec/detail-derivable loci:
+  - **`repairSortByKeyComparator` (`synth/repairProposers.ts`)** — canonicalizes every inline
+    `.sort((a,b)=>…)` comparator to the one correct shape: read `opts.by`, apply direction on the
+    primary only, tie-break ALWAYS ascending. Key field + direction come from the candidate's OWN
+    echoed interface; the tie field is read straight out of the oracle detail (`… ties by id asc`).
+    Generic over any (items, opts) sort task whose sound oracle emits the `(non-grouped)` family.
+  - **`repairReturnedInPlaceSort`** — `return X.sort(…)` → `return [...X].sort(…)` (the non-grouped
+    mutation half; distinct gate from the fuzz-driven `repairMutatingSort`).
+  Both compose, both oracle-gated. Offline validation through the real hidden suite: 5/6 fully-captured
+  real candidates flip fail→pass; the 6th is a genuine FM STRUCTURAL error (never branches on
+  `inStockFirst`) that a comparator repair correctly cannot fake-fix — it abstains honestly.
+  `repair:bench` 26/26 (4 new cases: 2 positive, 2 abstain guards).
+- **CRITICAL INFRA FIX — S-7 oracle net sandbox was silently turning the WHOLE offline benchmark
+  RED.** `oracle.ts wrapSandbox` ran every candidate under `sandbox-exec (deny network*)`, which
+  ALSO denies the LOCAL unix pipe tsx/esbuild's IPC binds (`…/T/tsx-501/<pid>.pipe`) → every
+  multi-module candidate died `listen EPERM` BEFORE its logic ran → out-of-depth tripwire →
+  task abstains → suite RED, looking like a capability collapse. FIX: profile now appends
+  `(allow network-bind (local unix-socket))(allow network-outbound (remote unix-socket))` — allows
+  ONLY the unix pipe, keeps ALL IP networking denied. STRICTLY TIGHTER on IP than the old profile.
+  Verified deterministically (oracle suite 13/13; outbound TCP to 1.1.1.1:443 still EPERM) AND
+  end-to-end (sortModule GREEN under the real sandbox, no escape hatch). See memory
+  `crucible-oracle-sandbox-eperm`.
+- **FULL-SUITE HEADLINE (offline-strict, own server :3002, 2026-07-23c, log
+  `.crucible/fullsuite-3002-1821.log`): gen-path 9/10, total 13/14** (4/4 catalog-debt + 9/10 real
+  signal). Up from the 8/10 baseline via the reliable sortModule flip; NO REGRESSIONS (all 8 other
+  gen tasks still GREEN). Only RED: bugfixCsv (deferred, item 2 below). sortModule GREEN path=gen 439s.
+- **Deferred, with rationale (NOT done — do not mark complete):** (2) bugfixCsv — a canned
+  full-RFC-4180-parser swap keyed to the `parseCsv` task would flip it but is a MEMORIZED ANSWER for
+  one known benchmark task, which DOCTRINE.md calls debt, not capability (doctrine supersedes the
+  NEXT_SESSION note that called it "doctrine-clean"). The generalizing lever is a quote-aware-split
+  transform or a denser core. (3) novice-intent `synthDriver.ts` — the concurrent novice-routing
+  session actively owns `server.ts`/routing (restarted :3001 in watch mode mid-session); left
+  untouched to avoid collision (cont. item #5). `tsc` clean on all changed files.
+
 ### 2026-07-23 (cont.101 — sortModule write-path fixed at the ROUTING layer; gen-path 7/10→8/10)
 - **MEASURED (full offline suite, own server :3001, strict): gen-path 7/10 → 8/10, total 11/14 →
   12/14 (4/4 catalog-debt + 8/10 real signal), no regressions.**

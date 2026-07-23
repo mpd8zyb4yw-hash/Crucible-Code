@@ -172,6 +172,61 @@ const CASES: Case[] = [
     ctx: { modulePath: 'src/discount.ts', files: ['src/checkout.ts', 'src/discount.ts'] },
     expect: null,
   },
+  {
+    // repairSortByKeyComparator: a hardcoded-key comparator (`a.price - b.price`, ignoring
+    // opts.by, direction and tie-break) is rewritten to the canonical opts-driven form. Key
+    // field ('by') and direction field come from the candidate's own echoed interface; the tie
+    // field ('id') is read straight out of the oracle detail's "ties by id asc". Confirmed to
+    // flip 5/6 real sortModule FM candidates (2026-07-22/23 ledger) through the hidden suite.
+    name: 'repairSortByKeyComparator: hardcoded-key comparator canonicalized to read opts.by + direction + tie-break',
+    candidate: `import type { Product } from './types'
+export interface SortOpts {
+  by: 'price' | 'name'
+  direction?: 'asc' | 'desc'
+}
+export function sortProducts(products: Product[], opts: SortOpts): Product[] {
+  return [...products].sort((a, b) => a.price - b.price);
+}`,
+    detail: `FAIL — sorted by name asc (non-grouped), ties by id asc`,
+    expect: `import type { Product } from './types'
+export interface SortOpts {
+  by: 'price' | 'name'
+  direction?: 'asc' | 'desc'
+}
+export function sortProducts(products: Product[], opts: SortOpts): Product[] {
+  return [...products].sort((a, b) => {
+    let __p = a[opts.by] < b[opts.by] ? -1 : a[opts.by] > b[opts.by] ? 1 : 0;
+    if (opts.direction === 'desc') __p = -__p;
+    if (__p !== 0) return __p;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+}`,
+  },
+  {
+    // repairReturnedInPlaceSort: `return products.sort(...)` sorts the caller's array in place —
+    // the non-grouped-branch mutation half of the sortModule failures. Only the bare-ident
+    // `return X.sort(` shape is wrapped; already-safe copies are left alone (see abstain below).
+    name: 'repairReturnedInPlaceSort: return X.sort(...) wrapped to return [...X].sort(...)',
+    candidate: `export function f(products: any[]) { return products.sort((a, b) => a.id - b.id); }`,
+    detail: `FAIL — does not mutate input`,
+    expect: `export function f(products: any[]) { return [...products].sort((a, b) => a.id - b.id); }`,
+  },
+  {
+    // repairReturnedInPlaceSort ABSTAINS: an already-copied `return [...x].sort(` must not be
+    // double-wrapped, and the sort-comparator repair must not fire without its (non-grouped) gate.
+    name: 'repairReturnedInPlaceSort: ABSTAINS on already-copied return [...x].sort(...) (no double wrap)',
+    candidate: `export function f(products: any[]) { return [...products].sort((a, b) => a.id - b.id); }`,
+    detail: `FAIL — does not mutate input`,
+    expect: null,
+  },
+  {
+    // repairSortByKeyComparator ABSTAINS when the failure family is NOT the sound non-grouped
+    // sort-correctness check — a generic sort elsewhere must never be rewritten by this repair.
+    name: 'repairSortByKeyComparator: ABSTAINS when detail is not the (non-grouped) sort family',
+    candidate: `const x = arr.sort((a, b) => a.v - b.v)`,
+    detail: `FAIL — unrelated behavioral check`,
+    expect: null,
+  },
 ]
 
 function main() {
