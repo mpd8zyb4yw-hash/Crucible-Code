@@ -93,10 +93,20 @@
    editDistance GREEN through the live `:3011` server (see the synth-catalog note below) but the
    aggregate sweep is still pending. Server repro below; run `npx tsx
    src/CrucibleEngine/coding-benchmarks.ts` (no id filter) with `CRUCIBLE_API=http://localhost:3011`.
-2. **Item 3 — mined-survivor triage**: bench code DONE (per-mutant line + before→after + triage
-   table, `mutationOps.ts`/`__minedfaultinject_bench.ts`). The exhaustive CLASSIFICATION sweep of the
-   19 survivors was RUNNING at session end (slow — subsystem-bench rerun per mutant); read its output
-   and confirm the advisory equivalent/hole flags, then strengthen any mined suite with a real hole.
+2. **Item 3 — mined-survivor triage: DONE (classified).** Exhaustive sweep (26 mutants, 13 survived,
+   50% kill): 9 likely-equivalent, 4 flagged likely-hole. On inspection the 4:
+   - **REAL HOLE (actionable):** `mined-apifaith-vocabulary` L119
+     `const start = code.lastIndexOf('\n', idx) + 1` — both `plus->minus` (`+1`→`-1`) and `off-by-one`
+     (`+1`→`+2`) survive, so that task's mined suite does NOT exercise the line-start offset. Strengthen
+     it with a case that asserts the exact `(line: N)` reported for a violation.
+   - **Two are string/comment-content mutations** that the guard/bound heuristic mis-flagged:
+     `mined-apifaith-vocabulary` L462 (` - `→` + ` inside a template-literal bullet) and L220
+     (` * `→` + ` on what reads as a JSDoc `* from …` line). If these are truly inside a template/comment
+     they should have been MASKED by `codeMask` (mutationOps.ts) — CHECK for a codeMask gap on JSDoc
+     continuation `*`/template bullets; a gap would inflate the phantom-equivalent survivor count.
+   - **PRE-EXISTING FLAKE (not from this session):** `mined-aliased-import-propagation` fails its
+     baseline NONDETERMINISTICALLY (two identical runs scored `-1000` load-error vs `-3` case-failure) —
+     the bench's honest guard excluding it. Root-cause that task's nondeterministic subsystem bench.
 3. **editDistance is synth-catalog-solvable on the agent path** (measured this session): the `:3011`
    scorecard is GREEN via `synth:catalog-no-iterate` (0 model inference — enumerative program search
    constructs it), so it does NOT exercise the decompose lever on the product path (the TEMPLATE is

@@ -2004,8 +2004,13 @@ sweep counts editDistance as synth, not generation.
   fields the authored `__faultinject_bench` consumer ignores). The mined sweep prints a per-survivor
   location and a final TRIAGE TABLE grouped by task with an advisory equivalent/hole flag (a mutation
   on a guard/bound line → likely-equivalent; else likely a real coverage gap). Turns the bare
-  operator list into a triage-ready artifact. Exhaustive classification sweep of the 19 operator-swap
-  survivors: RUNNING (each mutant reruns a subsystem bench — long; result lands next session).
+  operator list into a triage-ready artifact. Exhaustive classification sweep DONE (26 mutants, 13
+  survived, 50% kill): 9 likely-equivalent, and of the 4 flagged holes exactly ONE is a real coverage
+  gap — `mined-apifaith-vocabulary` L119 `code.lastIndexOf('\n', idx) + 1` (both plus->minus and
+  off-by-one survive → the suite never asserts the reported violation line). Two others are
+  string/comment-content mutations that should have been `codeMask`-excluded (a possible codeMask gap
+  on JSDoc `*`/template bullets — flagged). Separately surfaced a PRE-EXISTING nondeterministic
+  baseline in `mined-aliased-import-propagation` (unrelated to this change).
 
 ### 2026-07-22l (gap-soundness — CRACKED the pass@k 0% ceiling: basicCalculator SOLVED via decomposition in 7 model calls; precedence template + anti-anchoring + rung context hygiene)
 
