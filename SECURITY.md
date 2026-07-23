@@ -59,6 +59,7 @@ unfounded** — see S-1.
 | S-6 | Medium | `cors()` reflected an arbitrary `Origin` with `credentials:true` (any site could make credentialed cross-origin calls). Mitigated by `httpOnly`+`sameSite:lax`, but real for cookieless allowlisted endpoints. | Reflect only an allowlist (`FRONTEND_URL`, `crucible.cam`) + localhost/LAN; all other origins get no ACAO. Isolated-staged around a concurrent `server.ts` edit; esbuild parse-clean. | `9fde212` |
 | S-7 | Low-med | Oracle ran model-generated code with **network reachable** — a candidate could phone home / exfiltrate the scratch dir / act as an SSRF-DoS pivot (S-2 only closed env secrets). | Wrap `run`/`runAsync` in `sandbox-exec (deny network*)` on macOS; platform-guarded + `CRUCIBLE_ORACLE_NO_SANDBOX=1` escape hatch. Verified: `synth:prove` 4/4; positive control confirms network actually denied. | `59083b2` |
 | S-8 | Low | `rawGet` (retrieval) could fetch a poisoned search-result URL pointing at cloud metadata / localhost / RFC-1918 → SSRF pivot. | Custom `lookup` hook (blocks hostnames resolving private; DNS-rebinding-safe) **plus** synchronous IP-literal check (Node skips lookup for IP literals — the metadata payload). Covers redirects. Verified in the real module: metadata/live-server/localhost all blocked, public still fetches; unit 15/15. | `b559219` |
+| S-5 | 2 crit + 5 high (of the remaining 12) | Dev/build-time transitive vuln chains pinned by lagging parents. | `@electron/rebuild` `^3.7.1→^4.2.0` (clears `tar` CRITICAL + `@electron/node-gyp`/`cacache`/`make-fetch-happen` HIGHs) + `overrides.shell-quote ^1.10.0` (quadratic-DoS HIGH). Surgical: exactly 2 version bumps, no runtime dep changed, `--package-lock-only` (no node_modules churn). **npm audit 12 → 5.** | `df175d3` |
 
 ### Verified GOOD (no change needed — documented so future sessions don't re-audit)
 
@@ -69,38 +70,45 @@ unfounded** — see S-1.
 - **No provider keys in the client bundle**: no `import.meta.env.VITE_*_API_KEY` refs in `app/`; no literal key material in the build.
 - **Phantom-package gate** (`retrievalLayer.ts:1171`): `packageExistence()` tri-state npm check already guards fabricated package names.
 
-### Remaining / deferred (with reason)
+### Remaining (with reason)
 
-> S-6, S-7, S-8 were implemented + validated after this doc's first draft — see the "Fixed
-> this session" table above (`9fde212`, `59083b2`, `b559219`). Only S-5 and S-9 remain.
+> S-5, S-6, S-7, S-8 were implemented + validated (`df175d3`, `9fde212`, `59083b2`,
+> `b559219`). S-5's dev/build chains are cleared (12 → 5); only the runtime-ML residue and
+> the operational proxy (S-9) remain.
 
-**S-5 — 12 remaining dependency vulns (2 critical, 10 high). DELIBERATELY not force-fixed.**
-All require **major** bumps and are **build/dev-time, not runtime-exploitable with untrusted
-input**:
-- `tar` (CRITICAL) → `@electron/rebuild@4.2.0` — arbitrary file write during tarball extraction: **electron packaging / native rebuild only**, never the request path.
-- `protobufjs` (CRITICAL) → `@xenova/transformers@1.4.2` — ACE requires *untrusted* protobuf; here transitive under onnxruntime loading **local** models (no untrusted proto input). The suggested fix is a **major downgrade** of the embeddings lib that would likely break semantic recall / vision.
-- `shell-quote` (HIGH) → `concurrently@9` — quadratic-DoS in a **dev-only** script runner.
-- **Why not applied now:** `npm audit fix --force` rewrites `node_modules`, which a **live
-  server and an active parallel session share** — mutating it mid-flight can break their
-  running work — and it trades a runtime-breaking `@xenova` downgrade for a build-time vuln.
-  Forcing a runtime regression to patch a build-time issue is the wrong trade.
-- **Safe apply recipe (isolated, when quiescent):**
+**S-5-residual — 5 remaining vulns, all the `@xenova/transformers` runtime chain**
+(`protobufjs` CRITICAL + `onnx-proto` / `onnxruntime-web` / `sharp` HIGH). **Deliberately not
+changed:**
+- `protobufjs` ACE requires *untrusted* protobuf input, but onnxruntime only parses **local,
+  trusted** model files (the app never loads a user-supplied `.onnx`) → **not exploitable here**.
+- The only offered fix is `@xenova/transformers@1.4.2` — a **major downgrade** (current `^2.17.2`)
+  that would break semantic recall / vision. `protobufjs` only patches at 8.x, two majors above
+  the `6.11.6` that `onnx-proto` pins — forcing it risks breaking embeddings at runtime.
+- **`sharp`** is the one with a plausible (narrow) untrusted-input path (image processing);
+  if vision ever processes user-supplied images, prioritize validating a `sharp`/`@xenova` bump.
+- **Validate any bump in isolation (never touches the live tree):**
   ```sh
-  git worktree add ../crucible-deps chore/dep-majors   # own checkout
-  cd ../crucible-deps && npm ci                          # OWN node_modules — does NOT touch the live tree
-  npm audit fix --force
-  npm run smoke && npm run smoke:code && npm run synth:prove && npm run prove:all
-  npm audit --json    # confirm critical=0; keep only if benches stayed green
+  git worktree add ../crucible-deps chore/xenova-bump && cd ../crucible-deps && npm ci
+  npm i @xenova/transformers@latest    # or add overrides for protobufjs/onnx/sharp
+  npm run smoke && npm run smoke:code && npm run synth:prove   # keep only if recall/vision green
   ```
-  Merge only if the ML/vision benches survive the `@xenova` change; otherwise pin the
-  non-ML sub-fixes individually (e.g. `concurrently@9` alone clears `shell-quote`).
 
-**S-9 — Operational: proxy down.** `proxy.crucible.cam` returns connection-refused (edge-level;
-`crucible.cam` is 200). Local `wrangler` auth is expired, so it can't be diagnosed headlessly.
-Requires an interactive `wrangler login` (or `CLOUDFLARE_API_TOKEN`), then
-`wrangler deployments list` / `wrangler tail` / verify the `CRUCIBLE_USERS` KV binding
-(`wrangler.toml` id `54c5ee1ae4a9446bb6ab5b0a0e617b98`). OAuth + provider routing are down on
-the deployed surface until fixed. Not a code vulnerability.
+**S-9 — Operational: proxy down. Root-caused; blocked on credentials only.**
+- **Root cause (found this session):** `proxy.crucible.cam` returns **NXDOMAIN** — the
+  Workers custom-domain binding (which `wrangler.toml`'s `custom_domain = true` auto-provisions
+  on deploy) is gone, so there is no DNS record and no route. `crucible.cam` itself resolves
+  (zone intact). The `000` from curl was a DNS failure, not a 5xx.
+- **Fix:** `wrangler deploy` from the repo root re-provisions the custom domain + DNS + edge cert.
+- **Why not done independently:** the only Cloudflare credential in the repo
+  (`CLOUDFLARE_API_KEY` in `.dev.vars`/`.env.local`) is a narrowly-scoped token that
+  (verified via the CF API) **has no Workers Scripts permission and sees 0 zones** — it can
+  neither deploy the worker nor edit `crucible.cam` DNS. There is no `CLOUDFLARE_API_TOKEN`
+  and no email for global-key auth, and interactive `wrangler login` (browser OAuth) is
+  unavailable in a non-interactive shell. This is a hard permission boundary, not a code issue.
+- **Unblock (one of):** run `wrangler login` in a real terminal then `wrangler deploy`; OR add
+  a token with **Account · Workers Scripts · Edit** (+ **Zone · DNS · Edit** on crucible.cam)
+  as `CLOUDFLARE_API_TOKEN`, after which `CLOUDFLARE_API_TOKEN=… npx wrangler deploy` is fully
+  scriptable. KV binding to preserve: `CRUCIBLE_USERS` id `54c5ee1ae4a9446bb6ab5b0a0e617b98`.
 
 ---
 
