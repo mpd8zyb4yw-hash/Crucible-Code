@@ -76,12 +76,44 @@ export const OPS: Op[] = [
   { name: 'inc->dec',      apply: s => firstReplace(s, '++', '--') },
 ]
 
-/** Distinct mutants of `src` (drops operators that leave the source unchanged). */
-export const generateMutants = (src: string): Array<{ op: string; src: string }> => {
-  const mutants: Array<{ op: string; src: string }> = []
+/** A generated mutant: the operator, the mutated source, and WHERE it struck (for triage). */
+export interface Mutant {
+  op: string
+  src: string
+  /** 1-based line of the mutation in the ORIGINAL source (from the first differing character). */
+  line: number
+  /** The original line's trimmed text and the mutated line's trimmed text — the before→after diff. */
+  before: string
+  after: string
+}
+
+/** Index of the first character where a and b differ (works for shorter- or longer-than replacements). */
+const firstDiffIndex = (a: string, b: string): number => {
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i
+  return n
+}
+
+/** 1-based line number of a character index. */
+const lineOfIndex = (src: string, idx: number): number => {
+  let line = 1
+  for (let i = 0; i < idx && i < src.length; i++) if (src[i] === '\n') line++
+  return line
+}
+
+const lineText = (src: string, line: number): string => (src.split('\n')[line - 1] ?? '').trim()
+
+/** Distinct mutants of `src` (drops operators that leave the source unchanged), each with its
+ *  line location and before→after line text so a surviving mutant can be triaged (equivalent vs
+ *  a real coverage hole) without re-deriving where the operator struck. */
+export const generateMutants = (src: string): Mutant[] => {
+  const mutants: Mutant[] = []
   for (const op of OPS) {
     const m = op.apply(src)
-    if (m !== null && m !== src) mutants.push({ op: op.name, src: m })
+    if (m !== null && m !== src) {
+      const line = lineOfIndex(src, firstDiffIndex(src, m))
+      mutants.push({ op: op.name, src: m, line, before: lineText(src, line), after: lineText(m, line) })
+    }
   }
   return mutants
 }

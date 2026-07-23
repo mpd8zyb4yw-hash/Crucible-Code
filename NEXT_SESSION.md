@@ -88,15 +88,26 @@
 
 **OPEN (next session, priority order):**
 1. **Item 1 — full 39/40 strict-offline scorecard against `:3011`** for the aggregate "after"
-   generated-rate vs the 3% floor (the headline number). Long run; `CRUCIBLE_CODE_BENCH_GAP` pacing.
-   Server repro below. NOT yet run this session (three template classes + infra fixes were verified
-   individually GREEN, but the aggregate sweep across all tasks is still pending).
-2. **Item 3 — mined-survivor triage**: enhance `__minedfaultinject_bench.ts` to emit per-mutant line
-   locations, then classify the 19 operator-swap survivors (equivalent vs real hole). Still open.
-3. A FOURTH template class (registry is infix + postfix + DP): a shunting-yard parens calculator
+   generated-rate vs the 3% floor (the headline number). NOT run — a full n=39 strict sweep "can
+   exceed 5 hours" (coding-benchmarks.ts:53), infeasible in one session. This session validated
+   editDistance GREEN through the live `:3011` server (see the synth-catalog note below) but the
+   aggregate sweep is still pending. Server repro below; run `npx tsx
+   src/CrucibleEngine/coding-benchmarks.ts` (no id filter) with `CRUCIBLE_API=http://localhost:3011`.
+2. **Item 3 — mined-survivor triage**: bench code DONE (per-mutant line + before→after + triage
+   table, `mutationOps.ts`/`__minedfaultinject_bench.ts`). The exhaustive CLASSIFICATION sweep of the
+   19 survivors was RUNNING at session end (slow — subsystem-bench rerun per mutant); read its output
+   and confirm the advisory equivalent/hole flags, then strengthen any mined suite with a real hole.
+3. **editDistance is synth-catalog-solvable on the agent path** (measured this session): the `:3011`
+   scorecard is GREEN via `synth:catalog-no-iterate` (0 model inference — enumerative program search
+   constructs it), so it does NOT exercise the decompose lever on the product path (the TEMPLATE is
+   validated by the direct `__editdist_live.ts` probe instead). basicCalculator/evalRPN are not
+   synth-constructible → they exercise generation. A future generated-rate sweep must count
+   editDistance as synth, not generation. Consider whether the DP class needs a NON-synth-solvable
+   representative to exercise decompose on the agent path.
+4. A FOURTH template class (registry is infix + postfix + DP): a shunting-yard parens calculator
    (`evalPostfix(toPostfix(tokenize(s)))` — pure nesting) or a CSV/quoted-field parser.
-4. editDistance's `editRow` fold helper certifies ~2/3 (model variance on the fold); if the aggregate
-   sweep shows it flaking, raise `planAttempts` or per-rung budget for the DP class specifically.
+5. editDistance's `editRow` fold helper certifies ~2/3 in the direct decompose probe (model variance
+   on the fold); if a decompose-path run shows it flaking, raise `planAttempts` or the DP-class budget.
 
 **Shipped 2026-07-23 (this session):**
 - **THIRD template class: editDistance (Levenshtein DP) SOLVED end-to-end** — detector +
@@ -111,6 +122,11 @@
 - **Item 4 — bare-example harvest** (`specExtractor.ts`): `harvestExplicitExamples` now parses bare
   `"x" -> y` examples for a single declared export, closing the `vgr:no-acceptance-cases` drop. +5
   vgr:bench tests.
+- **Item 3 — mined-survivor triage locations** (`mutationOps.ts` + `__minedfaultinject_bench.ts`):
+  `generateMutants` returns per-mutant `line`+`before`→`after`; the sweep prints a triage table with
+  an advisory equivalent/hole flag. Exhaustive classification sweep of the 19 survivors: RUNNING.
+- **editDistance validated GREEN through the live `:3011` server** — but via `synth:catalog-no-iterate`
+  (0 inference), not generation (see open item 3).
 
 **Shipped 2026-07-22l (prior session):**
 - **basicCalculator SOLVED** (the headline) — precedence template + anti-anchoring + rung context hygiene.

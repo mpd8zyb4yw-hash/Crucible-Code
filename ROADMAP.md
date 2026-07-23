@@ -1975,6 +1975,18 @@ then DROPPED — flat solves it 3/4, so it is not genuinely 0% and would have mu
      ones its goal names), so a helper's grounding is a COMPILABLE partial module (nextRow alone
      referencing an undefined subCost made the weak head thrash).
 
+**AGENT-PATH NOTE (measured, honest): editDistance is caught by the model-free ENUMERATIVE SYNTH
+tier before decomposition, so its `:3011` scorecard is GREEN via `synth:catalog-no-iterate` (0 model
+inference), NOT via generation.** The direct decompose probe (`__editdist_live.ts`) proves the
+TEMPLATE works (14 model calls, GREEN); but on the full product path the L0/L1 enumerative program
+search constructs editDistance first (doctrine-compliant — correctness from the loop, zero oracle),
+short-circuiting the decompose lever. This is a cheaper WIN for the product, but it means editDistance
+does NOT add a "genuine model generation" scorecard datapoint the way basicCalculator/evalRPN do
+(those are not synth-constructible, so they exercise generation). The `flat solveCodeTask` MODEL
+proposer still exhausts on editDistance (0%-by-model-sampling holds); it is the enumerative synth
+proposer, not the model, that solves it on the agent path. Recorded so a future "generated-rate"
+sweep counts editDistance as synth, not generation.
+
 **Also shipped (the numbered follow-ups):**
 - **Item 2 — decompose-aware server budget** (`server.ts` ~4103). The flat `maxModelCalls: 8` never
   bounded decomposition (each rung runs its own iterate), leaving rung budgets on implicit defaults.
@@ -1986,6 +1998,14 @@ then DROPPED — flat solves it 3/4, so it is not genuinely 0% and would have mu
   declared export, single-arg, only when no call-form case exists for it — closing the silent
   `vgr:no-acceptance-cases` drop for authored/user prompts that state examples that way. +5 vgr:bench
   tests (harvest, connectors, ambiguous-skip, call-form-wins, non-literal-reject).
+- **Item 3 — mined-survivor triage locations** (`coding-bench-ext/mutationOps.ts` +
+  `__minedfaultinject_bench.ts`). `generateMutants` now returns each mutant's `line` + `before`→
+  `after` line text (computed from the first differing char — non-invasive, the `Mutant` type gains
+  fields the authored `__faultinject_bench` consumer ignores). The mined sweep prints a per-survivor
+  location and a final TRIAGE TABLE grouped by task with an advisory equivalent/hole flag (a mutation
+  on a guard/bound line → likely-equivalent; else likely a real coverage gap). Turns the bare
+  operator list into a triage-ready artifact. Exhaustive classification sweep of the 19 operator-swap
+  survivors: RUNNING (each mutant reruns a subsystem bench — long; result lands next session).
 
 ### 2026-07-22l (gap-soundness — CRACKED the pass@k 0% ceiling: basicCalculator SOLVED via decomposition in 7 model calls; precedence template + anti-anchoring + rung context hygiene)
 

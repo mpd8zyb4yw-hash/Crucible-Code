@@ -74,6 +74,10 @@ if (only && tasks.length === 0) {
 console.log(`mined teeth-check: ${tasks.length} task(s), <= ${MAX_MUTANTS} mutants each, ${RUN_MS}ms/mutant\n`)
 
 let totalMutants = 0, totalSuiteKilled = 0, totalCompileKilled = 0, totalSurvived = 0
+// Every surviving mutant with its location, so the final report is a triage-ready table (op + line
+// + before→after) instead of a bare operator list — the input to classifying each as an EQUIVALENT
+// mutant (no behavioral change → not a real hole) or a genuine coverage gap in that subsystem bench.
+const allSurvivors: Array<{ task: string; op: string; line: number; before: string; after: string }> = []
 
 for (const task of tasks) {
   console.log(`── ${task.id}  (${task.targetPath})`)
@@ -98,12 +102,12 @@ for (const task of tasks) {
   //    exhaustive mode is on, so a task's cost is usually one baseline + a few mutant runs.
   let suiteKilled = 0
   let ranHere = 0
-  const survivors: string[] = []
+  const survivors: Array<{ op: string; line: number; before: string; after: string }> = []
   const killedOps: string[] = []
   for (const mut of mutants) {
     totalMutants++; ranHere++
     const v = runMinedCandidate(task, mut.src, { runTimeoutMs: RUN_MS })
-    if (v.accepted) { survivors.push(mut.op); totalSurvived++ }
+    if (v.accepted) { survivors.push({ op: mut.op, line: mut.line, before: mut.before, after: mut.after }); totalSurvived++; allSurvivors.push({ task: task.id, ...mut }) }
     else if (v.gateA && !v.gateB) { suiteKilled++; totalSuiteKilled++; killedOps.push(mut.op) }
     else { totalCompileKilled++ }
     if (suiteKilled >= 1 && !EXHAUSTIVE) break
@@ -118,7 +122,10 @@ for (const task of tasks) {
   } else {
     console.log(`  INCONCLUSIVE — ${task.id}: no suite-kill in ${ranHere} mutant run(s) — first-match site likely outside the bench's scope. Authoritative teeth = __minedcorpus_bench parent-rejection. Widen: MINEDFAULT_MAX_MUTANTS/MINEDFAULT_EXHAUSTIVE.`)
   }
-  if (survivors.length) console.log(`  survivors (accepted): ${survivors.join(', ')}`)
+  if (survivors.length) {
+    console.log(`  survivors (accepted): ${survivors.length}`)
+    for (const s of survivors) console.log(`    · L${s.line} ${s.op}:  ${s.before}  →  ${s.after}`)
+  }
   console.log('')
 }
 
@@ -126,6 +133,27 @@ console.log(`mutants: ${totalMutants} total | ${totalSuiteKilled} suite-killed |
 const killRate = totalMutants ? (totalMutants - totalSurvived) / totalMutants : 0
 console.log(`mined verifier kill rate: ${(killRate * 100).toFixed(1)}%  (suite-kill share: ${totalMutants ? (100 * totalSuiteKilled / totalMutants).toFixed(1) : '0'}%)`)
 console.log('rule: a surviving mutant is a coverage-hole candidate in that subsystem bench relative to that operator — triage, then strengthen the bench, not this file.')
+
+// TRIAGE TABLE — every survivor with its location and before→after, grouped by task, so a human (or
+// a follow-up pass) can classify each as EQUIVALENT (the mutated site is behaviorally dead relative
+// to the reachable spec — e.g. a defensive guard the suite never exercises) or a REAL HOLE (a
+// behavior the mined suite should assert but doesn't). Heuristic auto-flag: a mutation on a line that
+// looks like a pure guard/bound (`if`, `? :`, `Math.min/max`, `.length`, `>=`/`<=` bound checks) is a
+// LIKELY-EQUIVALENT candidate; everything else is LIKELY a real coverage gap. The flag is advisory —
+// the location is the load-bearing output; a human confirms before strengthening a suite.
+if (allSurvivors.length) {
+  const likelyEquivalent = (s: { before: string }): boolean =>
+    /\b(if|else)\b|\?.*:|Math\.(min|max|trunc|floor|ceil|abs)|\.length\b|return (true|false)\b|<=|>=/.test(s.before)
+  console.log(`\nSURVIVOR TRIAGE (${allSurvivors.length}) — location + before→after, advisory equivalent/hole flag:`)
+  let byTask = ''
+  for (const s of allSurvivors) {
+    if (s.task !== byTask) { console.log(`  ${s.task}:`); byTask = s.task }
+    const flag = likelyEquivalent(s) ? 'likely-equiv' : 'LIKELY-HOLE '
+    console.log(`    [${flag}] L${s.line} ${s.op}:  ${s.before}  →  ${s.after}`)
+  }
+  const holes = allSurvivors.filter(s => !likelyEquivalent(s))
+  console.log(`\n  advisory: ${allSurvivors.length - holes.length} likely-equivalent, ${holes.length} likely real coverage gap(s) — confirm each before strengthening a mined suite.`)
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
