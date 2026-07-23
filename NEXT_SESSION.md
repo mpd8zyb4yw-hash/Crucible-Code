@@ -43,7 +43,10 @@
 > (never solved by sampling or multishot) — are now certified by the SAME template mechanism. A class-detector
 > registry `templateFor(goal,entry)` (fmPlanner.ts) dispatches infix→`precedenceTemplatePlan` (4 helpers) /
 > postfix→`rpnTemplatePlan` (isOperator+applyOp); solve.ts early-routing gates on `hasDecomposeTemplate`.
-> evalRPN direct probe: solved in 4 calls (commit `ba3ad17`).
+> evalRPN direct probe: solved in 4 calls (commit `ba3ad17`). evalRPN ALSO passes the FULL AGENT-PATH
+> SCORECARD GREEN (80s, faster than basicCalculator's 311s): module PASS, tsc clean, hidden suite ALL PASS,
+> self-test PASS, rubric 90, `genuine model generation 1/1`, `vgr:certified-no-iterate`. Two classes, both
+> GREEN end-to-end.
 >
 > **basicCalculator passes the FULL AGENT-PATH SCORECARD GREEN (commit `3ef16d5`), strict-offline, 0 external
 > API calls.** Not just the probe — the whole product chain: harvest 7 gold cases → gold-tier early-routing →
@@ -90,8 +93,8 @@
    coin change). Pick one, add a detector + `*TemplatePlan` + authored corpus task (call-form examples!), and
    live-probe. The `applyOp`-style lesson: put the named signature + a full one-line body idiom in each helper
    goal so `paramsFromGoal` extracts real params and the weak head can't copy the example call as a signature.
-3. **Confirm evalRPN GREEN end-to-end** (scorecard was launched this session against `:3011`; if it landed
-   after the handoff, verify RED→GREEN like basicCalculator).
+3. **DONE this session — evalRPN GREEN end-to-end** (80s, rubric 90, genuine model generation 1/1). Both
+   templated classes now certified through the full product path.
 4. **Agent-driver budget** — VGR is called with `maxModelCalls: 8, beamWidth: 2` (server.ts ~4103); decompose
    rungs fall back to DEFAULT iterate budget (fine for basicCalculator at ~7 calls, but a deeper carve could
    exhaust it). Thread a decompose-aware budget when the class is detected.

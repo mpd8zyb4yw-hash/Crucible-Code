@@ -2013,7 +2013,11 @@ operator-vs-negative-number trap) + `applyOp` (isolates operand order + trunc-to
 stack composition, re-verified against all 5 cases. Two live failure modes fixed along the way (`applyOp`
 copied its example call as a signature → put the named header in the goal; composition misclassified
 negative numbers → the `isOperator` helper). Same doctrine, same mechanism, second class. + evalRPN authored
-corpus task (call-form examples, corpus 23→24). vgr:decompose 48/0.
+corpus task (call-form examples, corpus 23→24). vgr:decompose 48/0. **evalRPN ALSO passes the FULL
+AGENT-PATH SCORECARD GREEN** (80s — faster than basicCalculator's 311s): module PASS, tsc clean, hidden
+suite ALL PASS, self-test PASS, rubric 90/100, `genuine model generation 1/1`, `vgr:certified-no-iterate`.
+Two independent 0%-by-sampling classes, both RED→GREEN end-to-end on the same 1.5B, strict-offline, 0
+external API calls — the doctrine ("correctness from the loop, not the oracle") demonstrated twice over.
 
 ### 2026-07-22k (gap-soundness — the four STARVED-loop levers implemented: batch sample-bump, sub-function decomposition escalation, multi-shot pass@k harness; measurement runs launched)
 
