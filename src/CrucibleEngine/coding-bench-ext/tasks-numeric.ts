@@ -587,4 +587,82 @@ console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
 process.exit(failures === 0 ? 0 : 1)
 `,
   },
+  {
+    id: 'editDistance',
+    title: 'Levenshtein edit distance between two strings',
+    modulePath: 'src/editDistance.ts',
+    prompt: `Implement the Levenshtein edit distance in TypeScript at src/editDistance.ts. ${CONTRACT}
+
+Export exactly:
+  export function editDistance(a: string, b: string): number
+
+Semantics:
+- Return the Levenshtein edit distance between a and b: the MINIMUM number of single-character
+  insertions, deletions, or substitutions needed to turn a into b.
+- Substituting a character for an equal character costs 0; substituting for a different one costs
+  1; each insertion and each deletion costs 1.
+- Either string may be empty; editDistance("", b) is b.length and editDistance(a, "") is a.length.
+- The distance is symmetric: editDistance(a, b) === editDistance(b, a).
+- Examples: editDistance("kitten", "sitting") -> 3, editDistance("flaw", "lawn") -> 2,
+  editDistance("", "abc") -> 3, editDistance("abc", "abc") -> 0,
+  editDistance("sunday", "saturday") -> 3.
+- The reliable route is the rolling-row dynamic program: seed the row [0..b.length], then for each
+  character of a compute the next row as min(delete, insert, match/substitute); the answer is the
+  last cell of the final row.`,
+    ref: `export function subCost(x: string, y: string): number {
+  return x === y ? 0 : 1
+}
+
+export function nextRow(prev: number[], ca: string, b: string): number[] {
+  const cur = [prev[0] + 1]
+  for (let j = 0; j < b.length; j++) {
+    cur.push(Math.min(prev[j + 1] + 1, cur[j] + 1, prev[j] + subCost(ca, b[j])))
+  }
+  return cur
+}
+
+export function editRow(a: string, b: string): number[] {
+  let row: number[] = []
+  for (let j = 0; j <= b.length; j++) row.push(j)
+  for (const ch of a) row = nextRow(row, ch, b)
+  return row
+}
+
+export function editDistance(a: string, b: string): number {
+  return editRow(a, b)[b.length]
+}
+`,
+    suite: `// HIDDEN adversarial suite for a NOVEL task (edit-distance DP, 0%-by-sampling) — editDistance.
+// Run: npx tsx __audit__/editDistance.hidden.ts   (imports ../src/editDistance)
+import { editDistance } from '../src/editDistance'
+
+let failures = 0
+function check(name: string, cond: boolean) {
+  console.log((cond ? '  PASS — ' : '  FAIL — ') + name)
+  if (!cond) failures++
+}
+
+check('classic kitten/sitting', editDistance('kitten', 'sitting') === 3)
+check('overlapping flaw/lawn', editDistance('flaw', 'lawn') === 2)
+check('empty to three', editDistance('', 'abc') === 3)
+check('three to empty', editDistance('abc', '') === 3)
+check('identical is zero', editDistance('abc', 'abc') === 0)
+check('sunday/saturday', editDistance('sunday', 'saturday') === 3)
+check('both empty', editDistance('', '') === 0)
+check('single insertion', editDistance('cat', 'cats') === 1)
+check('single deletion', editDistance('cats', 'cat') === 1)
+check('single substitution', editDistance('cat', 'cot') === 1)
+check('symmetric', editDistance('intention', 'execution') === editDistance('execution', 'intention'))
+check('intention/execution value', editDistance('intention', 'execution') === 5)
+check('prefix', editDistance('abcdef', 'abc') === 3)
+check('full replace', editDistance('abc', 'xyz') === 3)
+check('repeated chars', editDistance('aaa', 'aa') === 1)
+check('transposition costs two', editDistance('ab', 'ba') === 2)
+check('long common middle', editDistance('sunny', 'snowy') === 3)
+check('case sensitive', editDistance('Abc', 'abc') === 1)
+
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
+process.exit(failures === 0 ? 0 : 1)
+`,
+  },
 ]

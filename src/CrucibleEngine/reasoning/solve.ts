@@ -19,7 +19,7 @@ import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROU
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
-import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate } from './fmPlanner'
+import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate, composeHintFor } from './fmPlanner'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -352,6 +352,70 @@ export interface SubFunctionResult {
 }
 
 /**
+ * Remove any top-level `function <name>` / `export function <name>` definition of a CERTIFIED
+ * helper from a composition candidate, so the certified helper block can be prepended without a
+ * duplicate-declaration compile error. The weak proposer, told to "return the full module", often
+ * RE-DECLARES the helpers it was handed; concatenating that with the certified block yields
+ * `Multiple exports with the same name` and the model then anchors on the same failing output
+ * ("duplicate proposal (stuck)") — the exact wall the editDistance composition hit (2026-07-23).
+ *
+ * SOUND regardless of accuracy: this only strips redefinitions so the CERTIFIED helper sources win.
+ * If it mangles the candidate, the composition fails the ORIGINAL cases and collapses honestly — it
+ * can never make a wrong answer pass (composition re-verify owns truth). Brace-matched, string/
+ * comment naïve (worst case a stray brace under-strips → the old duplicate-error path, still safe).
+ */
+export function stripHelperRedefinitions(src: string, helperNames: string[]): string {
+  let out = src
+  for (const name of helperNames) {
+    const sig = new RegExp(`(?:export\\s+)?function\\s+${name}\\b`)
+    // Repeat: a candidate could (pathologically) declare the same helper twice.
+    for (let guard = 0; guard < 8; guard++) {
+      const m = sig.exec(out)
+      if (!m) break
+      const start = m.index
+      const brace = out.indexOf('{', start)
+      if (brace === -1) break
+      let depth = 0, end = -1
+      for (let i = brace; i < out.length; i++) {
+        if (out[i] === '{') depth++
+        else if (out[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+      }
+      if (end === -1) break // unbalanced — leave it (verify will reject the whole honestly)
+      out = (out.slice(0, start) + out.slice(end)).replace(/\n{3,}/g, '\n\n')
+    }
+  }
+  return out.trim()
+}
+
+/**
+ * Extract ONLY the `function <name>` / `export function <name>` definition of `name` from a
+ * source string, dropping everything else. A helper rung is certified as a whole MODULE, and the
+ * weak model — grounded with the prior helpers this one calls — routinely returns those prior
+ * helpers redefined ALONGSIDE the target. If we captured that whole module as the helper's
+ * `source`, concatenating helper sources for the composition would collide (`Multiple exports with
+ * the same name`) — the wall the editDistance carve hit even after the candidate was clean
+ * (2026-07-23). Keeping only the helper's OWN function makes each helper appear exactly once in the
+ * block; cross-references resolve against the other (certified) helpers in the same block. Sound:
+ * behavior is re-verified against the ORIGINAL cases downstream. Returns src unchanged if the named
+ * function isn't found or its braces don't balance (best effort — verify still owns truth).
+ */
+export function extractOwnFunction(src: string, name: string): string {
+  const sig = new RegExp(`(?:export\\s+)?function\\s+${name}\\b`)
+  const m = sig.exec(src)
+  if (!m) return src.trim()
+  const start = m.index
+  const brace = src.indexOf('{', start)
+  if (brace === -1) return src.trim()
+  let depth = 0, end = -1
+  for (let i = brace; i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+  }
+  if (end === -1) return src.trim()
+  return src.slice(start, end).trim()
+}
+
+/**
  * Solve a code task by SUB-FUNCTION decomposition. Certify each planned helper on its own,
  * then wire them in a composition rung verified against the ORIGINAL cases. Never ships an
  * unverified guess: the returned code is exactly what passed verifyCode over the full module.
@@ -453,7 +517,21 @@ async function runSubFunctionOnce(
     // in isolation but ANCHORED inside decomposition, because the unconditional prior-helper dump
     // crowded the idiom/cases out of the weak head's tiny per-slot context (n_ctx≈1024/slot). Most
     // template helpers are independent, so this hands them the same clean prompt isolation gets.
-    const deps = helpers.filter((x) => h.goal.includes(x.name))
+    // Start from the prior helpers this goal NAMES, then close over THEIR calls too: each stored
+    // source is only the helper's OWN function (extractOwnFunction), so grounding editRow with just
+    // `nextRow` would show nextRow calling an UNDEFINED subCost — a non-compiling partial module the
+    // weak head thrashes on. Transitive closure keeps the grounding block a COMPILABLE partial
+    // module while still excluding helpers this rung has nothing to do with (the hygiene intent).
+    const depSet = new Map<string, { name: string; source: string }>()
+    const frontier = helpers.filter((x) => h.goal.includes(x.name))
+    while (frontier.length) {
+      const x = frontier.pop()!
+      if (depSet.has(x.name)) continue
+      depSet.set(x.name, x)
+      for (const y of helpers) if (y.name !== x.name && !depSet.has(y.name) && x.source.includes(y.name)) frontier.push(y)
+    }
+    // Emit in original certification order so definitions precede their callers.
+    const deps = helpers.filter((x) => depSet.has(x.name))
     const priorBlock = deps.map((x) => x.source).join('\n\n')
     const spec: TaskSpec = {
       goal: `${h.goal}\n\nImplement helper \`${h.name}\`.`,
@@ -472,7 +550,10 @@ async function runSubFunctionOnce(
     if (!certified) {
       return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `helper \`${h.name}\` did not certify — ${res.detail}` }
     }
-    helpers.push({ name: h.name, source: res.solution!.value })
+    // Capture ONLY this helper's own function — the certified module often also redefines the
+    // prior helpers it was grounded with, which would collide when the sources are concatenated
+    // for the composition (see extractOwnFunction).
+    helpers.push({ name: h.name, source: extractOwnFunction(res.solution!.value, h.name) })
     emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified (${modelCalls} calls so far)` })
   }
 
@@ -480,8 +561,12 @@ async function runSubFunctionOnce(
   //    verifier prepends the helper sources and runs the FULL module against the ORIGINAL
   //    cases, so what we certify is the whole, not just the top function in isolation.
   const helperBlock = helpers.map((h) => h.source).join('\n\n')
+  // A class whose composition idiom isn't discoverable from the helper signatures (e.g. edit-distance:
+  // the answer is the LAST cell of editRow's output) supplies it here so the compose rung doesn't
+  // re-derive the whole algorithm and anchor. UNTRUSTED — the composed whole is re-verified downstream.
+  const composeHint = composeHintFor(input.nl ?? input.goal, input.entry)
   const composeSpec: TaskSpec = {
-    goal: `${input.goal}\n\nYou may CALL these already-implemented and tested helpers (they are defined in the same module — do NOT redefine them): ${helpers.map((h) => '`' + h.name + '`').join(', ')}.`,
+    goal: `${input.goal}${composeHint ? `\n\n${composeHint}` : ''}\n\nYou may CALL these already-implemented and tested helpers (they are defined in the same module — do NOT redefine them): ${helpers.map((h) => '`' + h.name + '`').join(', ')}.`,
     domain: 'code',
     context: [input.context, `${WEB_GROUND_MARK}\n${helperBlock}`].filter(Boolean).join('\n\n'),
     acceptance: {
@@ -490,9 +575,12 @@ async function runSubFunctionOnce(
       cases: input.cases, timeoutMs: input.timeoutMs,
     } satisfies CodeAcceptance as unknown as Record<string, unknown>,
   }
-  // Verify (helpers + candidate) as one module. The proposer only writes the top function.
+  // Verify (helpers + candidate) as one module. The proposer is asked for the top function, but a
+  // weak model often returns the whole module and RE-DECLARES the helpers → strip those redefinitions
+  // first so the CERTIFIED helper block is the single source (see stripHelperRedefinitions).
+  const helperNames = helpers.map((h) => h.name)
   const composingVerifier: Verifier<string> = (cand, spec) =>
-    verifyCode({ value: `${helperBlock}\n\n${cand.value}`, fingerprint: cand.fingerprint }, spec)
+    verifyCode({ value: `${helperBlock}\n\n${stripHelperRedefinitions(cand.value, helperNames)}`, fingerprint: cand.fingerprint }, spec)
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
   const composed = await iterate<string>(composeSpec, composeProposer, composingVerifier, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
@@ -503,9 +591,9 @@ async function runSubFunctionOnce(
     return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `composition of ${input.entry} did not certify — ${composed.detail}` }
   }
 
-  // 4) Final artifact = helpers + top. Re-verify with the PLAIN original verifier as a guard
-  //    (identical check to the composing verifier, made explicit for soundness).
-  const fullModule = `${helperBlock}\n\n${composed.solution!.value}`
+  // 4) Final artifact = helpers + top (redefinitions stripped, matching the composing verifier).
+  //    Re-verify with the PLAIN original verifier as a guard (identical check, explicit for soundness).
+  const fullModule = `${helperBlock}\n\n${stripHelperRedefinitions(composed.solution!.value, helperNames)}`
   const guard = await verifyCode({ value: fullModule, fingerprint: 'subfn-composed' }, composeSpec)
   if (!guard.pass) {
     return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `composed module failed final re-verify: ${guard.signals.slice(0, 3).join('; ')}` }

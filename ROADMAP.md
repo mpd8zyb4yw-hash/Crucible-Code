@@ -1933,6 +1933,60 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23 (gap-soundness — THIRD template class: edit-distance DP SOLVED end-to-end; two composition-hygiene infra fixes; decompose-aware server budget; bare-example harvest)
+
+**A THIRD 0%-by-sampling class is cracked by the same registry mechanism — and it is a genuinely NEW
+algorithm family (a DP table, not another expression evaluator), proving the crack generalizes past
+arithmetic.** `editDistance` (Levenshtein) is measured 0% by flat sampling (flat `solveCodeTask`
+EXHAUSTS on the 6-case set; the 2D recurrence is beyond one-shot). It is now certified via
+sub-function decomposition on the same qwen2.5-1.5b head, strict-offline, re-verified against all
+cases. Live probe: **solved in 14 model calls / 47s**, rungs `subCost:OK nextRow:OK editRow:OK
+compose:editDistance:OK`. tsc 0; vgr:bench 236/0, vgr:decompose 62/0, searchbatch 11/11, taskcorpus
+ALL PASS (corpus 25). evalRPN still solves (no regression from the solve.ts changes).
+
+**THE CARVE (`reasoning/fmPlanner.ts` `editDistanceTemplatePlan`, registry now infix + postfix + DP).**
+Three idiom-bearing helpers under the `applyOp` design law (named signature + full one-line body):
+`subCost(x,y)` (diagonal cost) → `nextRow(prev,ca,b)` (the min-of-three recurrence trap) →
+`editRow(a,b)` (the row fold from seed `[0..b.length]`). The composition is pure indexing
+`editRow(a,b)[b.length]`. `isEditDistanceGoal` detector + `templateFor` dispatch; disjoint from the
+other two classes (no operators; matches only `levenshtein`/`edit distance`). + `editDistance`
+authored corpus task (`coding-bench-ext/tasks-numeric.ts`, call-form examples, ref+18-case hidden
+suite, ref certifies through the hermetic oracle). (The balanced-bracket class was scaffolded first,
+then DROPPED — flat solves it 3/4, so it is not genuinely 0% and would have muddied the registry.)
+
+**THREE LEVERS, each found by live probe (2026-07-23):**
+1. **`editRow` as its own idiom-bearing helper, not composition logic** (`fmPlanner.ts`). With only
+   subCost+nextRow the compose rung has to invent the fold + seeding + final-cell index at once and
+   re-derives a full 2D `dp[i][j]` table → anchors. Making the fold a certifiable helper leaves the
+   composition a one-liner.
+2. **`composeHintFor(goal,entry)` — a composition IDIOM injected into the compose rung**
+   (`fmPlanner.ts` + `solve.ts`). The helper signatures don't reveal the answer is the LAST cell of
+   `editRow`'s output, so without it the 1.5B still re-derives DP. Null for basicCalculator (pure
+   nesting) / evalRPN (stack pass) — only edit-distance needs it. UNTRUSTED (re-verify owns truth).
+3. **COMPOSITION HYGIENE — the decisive unblock (`solve.ts`), two general fixes that help every class:**
+   - `extractOwnFunction(src,name)` — a helper certified as a whole MODULE (grounded with the priors
+     it calls) carries those priors redefined; capturing only its OWN function stops the helper block
+     from colliding (`Multiple exports with the same name`) when sources are concatenated.
+   - `stripHelperRedefinitions(src,names)` — the compose proposer, told to "return the full module",
+     re-declares the certified helpers; stripping them before prepending the certified block removes
+     the same collision on the candidate side. This was the wall: the compose candidate was already
+     CORRECT (`return editRow(a,b)[b.length]`) but failed to compile against a duplicate-laden block.
+   - Grounding a helper rung now uses the TRANSITIVE closure of the helpers it calls (not just the
+     ones its goal names), so a helper's grounding is a COMPILABLE partial module (nextRow alone
+     referencing an undefined subCost made the weak head thrash).
+
+**Also shipped (the numbered follow-ups):**
+- **Item 2 — decompose-aware server budget** (`server.ts` ~4103). The flat `maxModelCalls: 8` never
+  bounded decomposition (each rung runs its own iterate), leaving rung budgets on implicit defaults.
+  Threaded an explicit generous per-rung budget (`globalModelCalls: 64, maxEpochs: 10,
+  wallClockMs: 180_000`) on the tryHard/decompose attempt so the carve DEPTH, not an unstated
+  default, sets the ceiling. Every rung stays verifier-gated.
+- **Item 4 — bare-example harvest** (`reasoning/specExtractor.ts`). `harvestExplicitExamples` now
+  also parses bare `"x" -> y` input→output examples (not just call-form), attributed to a single
+  declared export, single-arg, only when no call-form case exists for it — closing the silent
+  `vgr:no-acceptance-cases` drop for authored/user prompts that state examples that way. +5 vgr:bench
+  tests (harvest, connectors, ambiguous-skip, call-form-wins, non-literal-reject).
+
 ### 2026-07-22l (gap-soundness — CRACKED the pass@k 0% ceiling: basicCalculator SOLVED via decomposition in 7 model calls; precedence template + anti-anchoring + rung context hygiene)
 
 **The doctrine's central claim is now demonstrated LIVE on the hardest task class.** basicCalculator

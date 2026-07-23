@@ -17,14 +17,28 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-22l (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-23 (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **THE pass@k 0% CEILING IS CRACKED — basicCalculator SOLVED via decomposition in 7 model calls
-> (commits `bd7830f` + `0613feb`).** basicCalculator (evaluate `3+2*2`=7, `*`/`/` before `+`/`-`, no
-> parens) is provably 0% at any N by sampling; it is now CERTIFIED via sub-function decomposition on the
-> SAME qwen2.5-1.5b head, strict-offline, composed-whole re-verified against all 5 adversarial cases.
-> `npm run vgr:decompose:calc` → `solved`. This is the doctrine's central claim shown live: correctness
-> from the LOOP, not a bigger model. tsc 0; vgr:bench 231/0, searchbatch 11/11, vgr:decompose 42/0.
+> **THREE 0%-by-sampling classes are now cracked by the decompose-template registry — and the third,
+> `editDistance`, is a genuinely NEW algorithm family (a DP table).** basicCalculator (infix
+> precedence), evalRPN (postfix stack), editDistance (Levenshtein DP): each measured 0% by flat
+> sampling, each now certified via sub-function decomposition on the same qwen2.5-1.5b head,
+> strict-offline, composed-whole re-verified. editDistance live probe: **solved in 14 model calls /
+> 47s** (`subCost → nextRow → editRow`, composition = `editRow(a,b)[b.length]`). This is the
+> doctrine's central claim: correctness from the LOOP, not a bigger model. tsc 0; vgr:bench 236/0,
+> vgr:decompose 62/0, searchbatch 11/11, taskcorpus ALL PASS (corpus 25).
+>
+> **THE THIRD CLASS FORCED TWO GENERAL COMPOSITION-HYGIENE FIXES (`solve.ts`), each found by live
+> probe (2026-07-23), that harden ALL classes:**
+> - `extractOwnFunction` — capture only a helper's OWN function (a helper certified as a whole module
+>   carries the priors it was grounded with; concatenating collided on `Multiple exports`).
+> - `stripHelperRedefinitions` — strip the compose candidate's re-declared helpers before prepending
+>   the certified block (the candidate was already CORRECT but wouldn't compile against a dup-laden block).
+> - Transitive-closure grounding — a helper rung is grounded with the transitive closure of the
+>   helpers it calls, so its grounding is a COMPILABLE partial module.
+> - `composeHintFor(goal,entry)` — inject a composition IDIOM into the compose rung when the helper
+>   signatures don't reveal it (edit-distance: the answer is the last cell of editRow). Null for the
+>   pure-nesting/stack classes. UNTRUSTED (re-verify owns truth).
 >
 > **THE THREE LEVERS THAT CLOSED IT (each found by live probe, not guessed):**
 > 1. **Precedence template** (`reasoning/fmPlanner.ts`): class-detected, 0-model-call 4-helper carve
@@ -72,7 +86,33 @@
 > claim here as a blocker). Track A = W2 GBNF / W3 batching / proposer prompt. Track B = soundness
 > (`synth/hermetic.ts`, `coding-bench-ext/`, `oracle.ts` Gate-B) — NEW files + one wiring line.
 
-**Shipped 2026-07-22l (this session):**
+**OPEN (next session, priority order):**
+1. **Item 1 — full 39/40 strict-offline scorecard against `:3011`** for the aggregate "after"
+   generated-rate vs the 3% floor (the headline number). Long run; `CRUCIBLE_CODE_BENCH_GAP` pacing.
+   Server repro below. NOT yet run this session (three template classes + infra fixes were verified
+   individually GREEN, but the aggregate sweep across all tasks is still pending).
+2. **Item 3 — mined-survivor triage**: enhance `__minedfaultinject_bench.ts` to emit per-mutant line
+   locations, then classify the 19 operator-swap survivors (equivalent vs real hole). Still open.
+3. A FOURTH template class (registry is infix + postfix + DP): a shunting-yard parens calculator
+   (`evalPostfix(toPostfix(tokenize(s)))` — pure nesting) or a CSV/quoted-field parser.
+4. editDistance's `editRow` fold helper certifies ~2/3 (model variance on the fold); if the aggregate
+   sweep shows it flaking, raise `planAttempts` or per-rung budget for the DP class specifically.
+
+**Shipped 2026-07-23 (this session):**
+- **THIRD template class: editDistance (Levenshtein DP) SOLVED end-to-end** — detector +
+  `editDistanceTemplatePlan` + `composeHintFor` + authored corpus task, live probe 14 calls/47s.
+  Full detail: ROADMAP CHANGE LOG 2026-07-23. (Balanced-bracket class scaffolded then dropped — flat
+  solves it 3/4, not genuinely 0%.)
+- **Two general composition-hygiene infra fixes** (`solve.ts`): `extractOwnFunction`,
+  `stripHelperRedefinitions`, transitive-closure grounding — unblocked the DP composition and harden
+  every decompose class. +6 vgr:decompose unit checks (section 14).
+- **Item 2 — decompose-aware server budget** (`server.ts` ~4103): explicit per-rung iterate budget on
+  the decompose attempt so carve depth, not an implicit default, sets the ceiling.
+- **Item 4 — bare-example harvest** (`specExtractor.ts`): `harvestExplicitExamples` now parses bare
+  `"x" -> y` examples for a single declared export, closing the `vgr:no-acceptance-cases` drop. +5
+  vgr:bench tests.
+
+**Shipped 2026-07-22l (prior session):**
 - **basicCalculator SOLVED** (the headline) — precedence template + anti-anchoring + rung context hygiene.
   Full detail: ROADMAP CHANGE LOG 2026-07-22l. New `basicCalculator` authored corpus task (ref + 18-case
   hidden suite, corpus 22→23) so the headline scorecard now exercises the arithmetic class end-to-end.

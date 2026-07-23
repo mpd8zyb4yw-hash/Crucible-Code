@@ -24,8 +24,8 @@
 
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
-import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, templateFor } from './fmPlanner'
-import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, type SubFunctionPlanner } from './solve'
+import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, isEditDistanceGoal, editDistanceTemplatePlan, composeHintFor, templateFor } from './fmPlanner'
+import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, type SubFunctionPlanner } from './solve'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
 let pass = 0, fail = 0
@@ -353,6 +353,76 @@ async function main() {
   const rpnCases: [string[], number][] = [[['2', '1', '+', '3', '*'], 9], [['4', '13', '5', '/', '+'], 6], [['6', '-4', '/'], -1], [['-7'], -7], [['10', '2', '-', '3', '*'], 24], [['10', '3', '-'], 7]]
   check('12f applyOp + a stack fold compose to a correct RPN evaluator on all adversarial cases',
     rpnCases.every(([t, e]) => refRpn(t) === e))
+
+  // ── 13. EDIT-DISTANCE template — the THIRD 0%-by-sampling class (a genuinely NEW family: DP). ──
+  // Flat solveCodeTask EXHAUSTS on editDistance (the 2D recurrence is beyond one-shot); the carve
+  // splits it into three idiom-bearing helpers (subCost, nextRow, editRow) whose composition is a
+  // one-line index. These checks verify the detector, dispatch disjointness, that the three helper
+  // interfaces COMPOSE to a correct Levenshtein on adversarial cases, and that composeHintFor supplies
+  // the last-cell index the compose rung can't infer from signatures.
+  const edGoal = 'Write editDistance(a: string, b: string): number returning the Levenshtein edit distance between a and b: the minimum number of single-character insertions, deletions, or substitutions to turn a into b.'
+  check('13 edit-distance detector fires on the editDistance goal', isEditDistanceGoal(edGoal, 'editDistance'))
+  check('13b edit-distance detector fires on a "levenshtein" phrasing',
+    isEditDistanceGoal('compute the levenshtein distance between two words', 'lev'))
+  check('13c edit-distance detector does NOT fire on unrelated distance goals',
+    !isEditDistanceGoal('return the euclidean distance between two points', 'dist') &&
+    !isEditDistanceGoal('edit the record in place', 'editRecord'))
+  check('13d edit-distance detector does NOT fire on the infix calculator or RPN goals',
+    !isEditDistanceGoal(calcGoal, 'basicCalculator') && !isEditDistanceGoal(rpnGoal, 'evalRPN'))
+  check('13e templateFor dispatches the edit-distance goal to the subCost/nextRow/editRow carve',
+    templateFor(edGoal, 'editDistance')?.map((h) => h.name).join(',') === 'subCost,nextRow,editRow',
+    templateFor(edGoal, 'editDistance')?.map((h) => h.name).join(','))
+  check('13f templateFor still routes RPN and infix correctly after adding the edit-distance class',
+    templateFor(rpnGoal, 'evalRPN')?.map((h) => h.name).join(',') === 'isOperator,applyOp' &&
+    templateFor(calcGoal, 'basicCalculator')?.map((h) => h.name).join(',') === NAMES)
+  const edTpl = editDistanceTemplatePlan()
+  const refSub = (x: string, y: string): number => (x === y ? 0 : 1)
+  const refNext = (prev: number[], ca: string, b: string): number[] => { const cur = [prev[0] + 1]; for (let j = 0; j < b.length; j++) cur.push(Math.min(prev[j + 1] + 1, cur[j] + 1, prev[j] + refSub(ca, b[j]))); return cur }
+  const refEditRow = (a: string, b: string): number[] => { let row: number[] = []; for (let j = 0; j <= b.length; j++) row.push(j); for (const ch of a) row = refNext(row, ch, b); return row }
+  const edImplFor: Record<string, (...a: any[]) => unknown> = { subCost: refSub, nextRow: refNext, editRow: refEditRow }
+  const eqj2 = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  check('13g every edit-distance helper seed case is satisfied by a correct impl',
+    edTpl.every((h) => h.cases.every((c) => eqj2(edImplFor[h.name](...c.args), c.expected))))
+  const refEdit = (a: string, b: string): number => refEditRow(a, b)[b.length]
+  const edCases: [string, string, number][] = [
+    ['kitten', 'sitting', 3], ['flaw', 'lawn', 2], ['', 'abc', 3], ['abc', '', 3], ['abc', 'abc', 0],
+    ['sunday', 'saturday', 3], ['intention', 'execution', 5], ['ab', 'ba', 2],
+  ]
+  check('13h subCost + nextRow + editRow compose to a correct Levenshtein on all adversarial cases',
+    edCases.every(([a, b, e]) => refEdit(a, b) === e))
+  check('13i composeHintFor supplies the last-cell index for edit-distance, null for the others',
+    /editRow\(a, b\)\[b\.length\]/.test(composeHintFor(edGoal, 'editDistance') ?? '') &&
+    composeHintFor(calcGoal, 'basicCalculator') === null && composeHintFor(rpnGoal, 'evalRPN') === null)
+
+  // ── 14. COMPOSITION HYGIENE — the two helpers that unblocked the edit-distance composition. ──
+  // A weak model, told to "return the full module", re-declares the certified helpers; and a helper
+  // certified as a whole module carries the prior helpers it was grounded with. Both would collide
+  // (`Multiple exports with the same name`) when the sources are concatenated for the composition.
+  const fullModule =
+    'export function subCost(x, y) { return x === y ? 0 : 1 }\n\n' +
+    'export function nextRow(prev, ca, b) { const cur = [prev[0] + 1]; for (let j = 0; j < b.length; j++) { cur.push(1) } return cur }\n\n' +
+    'export function editDistance(a, b) { return editRow(a, b)[b.length] }'
+  check('14 extractOwnFunction keeps only the named function',
+    extractOwnFunction(fullModule, 'subCost') === 'export function subCost(x, y) { return x === y ? 0 : 1 }')
+  check('14b extractOwnFunction returns src unchanged when the name is absent',
+    extractOwnFunction('export function foo() { return 1 }', 'bar') === 'export function foo() { return 1 }')
+  check('14c stripHelperRedefinitions removes redefined helpers, leaving the entry',
+    stripHelperRedefinitions(fullModule, ['subCost', 'nextRow']) === 'export function editDistance(a, b) { return editRow(a, b)[b.length] }')
+  check('14d stripHelperRedefinitions is a no-op when nothing matches',
+    stripHelperRedefinitions('export function editDistance(a, b) { return 0 }', ['subCost', 'nextRow']) === 'export function editDistance(a, b) { return 0 }')
+  check('14e a helper-block from extracted own-functions has each helper exactly once (no collision)',
+    (() => {
+      // Model the real failure: each helper is certified as a WHOLE module that also redefines the
+      // prior helpers it was grounded with. Extracting each helper's OWN function must dedupe them.
+      const subMod = 'export function subCost(x, y) { return x === y ? 0 : 1 }'
+      const nextMod = subMod + '\n\nexport function nextRow(prev, ca, b) { return [prev[0] + 1] }'
+      const editRowMod = nextMod + '\n\nexport function editRow(a, b) { let row = [0]; return nextRow(row, a, b) }'
+      const captured = [['subCost', subMod], ['nextRow', nextMod], ['editRow', editRowMod]] as const
+      const block = captured.map(([name, src]) => extractOwnFunction(src, name)).join('\n\n')
+      return (block.match(/function subCost/g) ?? []).length === 1 &&
+        (block.match(/function nextRow/g) ?? []).length === 1 &&
+        (block.match(/function editRow/g) ?? []).length === 1
+    })())
 
   console.log(`\n${fail === 0 ? '✅' : '❌'} decompose bench: ${pass} passed, ${fail} failed\n`)
   if (fail > 0) process.exit(1)

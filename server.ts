@@ -4100,6 +4100,7 @@ app.post('/api/chat', async (req, res) => {
           // proposer — every candidate is executed, so it can never certify a wrong answer.
           const tryHard = attempt > 1
           if (tryHard) send({ type: 'thought', text: `VGR · escalating to convergence${webGroundOrNull ? ' + web reference lookup' : ''} for this harder task…` })
+          const wantDecompose = tryHard || process.env.CRUCIBLE_DECOMPOSE === '1'
           vgr = await solveCodingRequest(vgrGoal, {
             maxModelCalls: 8, beamWidth: 2,
             signal: ac.signal,
@@ -4107,7 +4108,16 @@ app.post('/api/chat', async (req, res) => {
             converge: process.env.CRUCIBLE_CONVERGE === '1' || tryHard,
             // On a demonstrably-hard attempt (attempt 2+), also allow last-resort sub-function
             // decomposition — the lever for tasks that stay 0% under pure resampling (item 2).
-            decompose: tryHard || process.env.CRUCIBLE_DECOMPOSE === '1',
+            decompose: wantDecompose,
+            // DECOMPOSE-AWARE BUDGET (item 2). The flat `maxModelCalls: 8` bounds a single search;
+            // it does NOT bound decomposition, whose EACH rung runs its own iterate(). Left implicit,
+            // those rungs fall back to iterate's defaults — fine for a 2-helper carve (evalRPN), but a
+            // DEEPER carve (edit-distance is 3 helpers + a compose rung, ~14 model calls end-to-end,
+            // and the fold helper editRow occasionally needs a full stall-and-retry) can brush the
+            // default per-rung wall. Thread an explicit generous per-rung budget so the depth of the
+            // carve — not an unstated default — decides the ceiling. Every rung is still verifier-
+            // gated, so a larger budget only lets an honest solve finish; it cannot certify a wrong one.
+            iterate: wantDecompose ? { globalModelCalls: 64, maxEpochs: 10, wallClockMs: 180_000 } : undefined,
             webGround: tryHard ? webGroundOrNull : undefined,
             emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
           })

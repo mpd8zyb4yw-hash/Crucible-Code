@@ -330,17 +330,127 @@ export function rpnTemplatePlan(): PlannedSubFunction[] {
   ]
 }
 
+// ── Edit-distance / Levenshtein DP class ────────────────────────────────────────
+// A THIRD task the flat 1.5B measures at 0% (flat solveCodeTask EXHAUSTS on the 6-case set; the
+// two-dimensional recurrence is beyond its one-shot reach). It is a genuinely DIFFERENT algorithm
+// family from the two arithmetic/stack classes — a DP table — which is why cracking it proves the
+// registry generalizes past "expression evaluators". The carve is the rolling-row Levenshtein DP,
+// split so EVERY hard piece is an idiom-bearing helper the weak head can one-shot:
+//   1. `subCost(x, y)`            the diagonal substitution cost (0 if equal else 1)
+//   2. `nextRow(prev, ca, b)`     ONE DP row from the previous — the min-of-three recurrence trap
+//   3. `editRow(a, b)`            fold nextRow over a from the seed row [0..b.length] → final row
+// The composition is then pure indexing: `editDistance(a,b) = editRow(a,b)[b.length]`.
+//
+// WHY THE FOLD IS ITS OWN HELPER (editRow), NOT LEFT TO THE COMPOSITION. Live probe (2026-07-23):
+// with only subCost+nextRow, the composition rung has to invent the row-fold AND the seeding AND the
+// final-cell index at once — the 1.5B re-derives a full 2D `dp[i][j]` table instead and anchors.
+// Making the fold an idiom-bearing helper (editRow) that certifies in isolation leaves the
+// composition a one-line index — the same "pure nesting" shape basicCalculator's compose has. Even
+// so the composition needs to be TOLD that index (see composeHintFor): the helper signatures alone
+// don't reveal that the answer is the last cell of editRow's output.
+//
+// SOUNDNESS UNCHANGED. Seeds only SEED verifiers and the composed whole is re-verified against the
+// ORIGINAL cases; a wrong template can only waste budget, never certify a wrong answer.
+
+/** Heuristic: does this goal look like Levenshtein / edit-distance dynamic programming? */
+export function isEditDistanceGoal(goal: string, entry: string): boolean {
+  const g = (goal ?? '').toLowerCase()
+  const e = (entry ?? '').toLowerCase()
+  if (/(editdistance|levenshtein)/.test(e)) return true
+  if (/levenshtein/.test(g)) return true
+  // "edit distance" plus the three-operation signature, so we don't fire on unrelated "distance".
+  const editDist = /edit distance/.test(g)
+  const threeOps = /(insert).*(delet).*(substitut)|(substitut).*(insert).*(delet)/.test(g)
+  return editDist && (threeOps || /minimum number of/.test(g))
+}
+
+/**
+ * The three-helper carve for the edit-distance/Levenshtein class: subCost (diagonal cost), nextRow
+ * (one DP row — the min-of-three recurrence), editRow (the row fold). The composition is pure
+ * indexing `editRow(a,b)[b.length]` — see composeHintFor, which hands the compose rung that index.
+ * Pure, 0 model calls, class-generic example I/O.
+ */
+export function editDistanceTemplatePlan(): PlannedSubFunction[] {
+  return [
+    {
+      name: 'subCost',
+      goal:
+        'Implement `subCost(x, y)` — return 0 if the single characters x and y are equal, else 1 ' +
+        '(the substitution cost of the Levenshtein recurrence). Write exactly:\n' +
+        'export function subCost(x, y) { return x === y ? 0 : 1 }',
+      cases: [
+        { args: ['a', 'a'], expected: 0 },
+        { args: ['a', 'b'], expected: 1 },
+        { args: ['x', 'x'], expected: 0 },
+      ],
+    },
+    {
+      name: 'nextRow',
+      goal:
+        'Implement `nextRow(prev, ca, b)` — compute ONE row of the Levenshtein DP table from the ' +
+        'previous row. `prev` is the previous row (an array of length b.length+1), `ca` is one ' +
+        'character of the first string, `b` is the whole second string. Element 0 is prev[0]+1 (a ' +
+        'deletion). For each j from 0..b.length-1 the next element is the MINIMUM of three: ' +
+        'prev[j+1]+1 (deletion), cur[j]+1 (insertion), and prev[j]+subCost(ca, b[j]) (match or ' +
+        'substitute). Return the new row (length b.length+1). Write exactly:\n' +
+        'export function nextRow(prev, ca, b) { const cur = [prev[0] + 1]; for (let j = 0; j < b.length; j++) { cur.push(Math.min(prev[j + 1] + 1, cur[j] + 1, prev[j] + subCost(ca, b[j]))) } return cur }',
+      cases: [
+        { args: [[0, 1, 2, 3], 's', 'abc'], expected: [1, 1, 2, 3] },
+        { args: [[0, 1, 2], 'a', 'ab'], expected: [1, 0, 1] },
+        { args: [[1, 1, 2, 3], 'i', 'abc'], expected: [2, 2, 2, 3] },
+      ],
+    },
+    {
+      name: 'editRow',
+      goal:
+        'Implement `editRow(a, b)` — compute the FINAL row of the Levenshtein DP table for strings a ' +
+        'and b. Start with the first row [0, 1, 2, ..., b.length], then update it once for EACH ' +
+        'character of a using nextRow. Return the final row (an array of length b.length+1). ' +
+        'Write exactly:\n' +
+        'export function editRow(a, b) { let row = []; for (let j = 0; j <= b.length; j++) row.push(j); for (const ch of a) row = nextRow(row, ch, b); return row }',
+      cases: [
+        { args: ['', 'abc'], expected: [0, 1, 2, 3] },
+        { args: ['a', 'ab'], expected: [1, 0, 1] },
+        { args: ['ab', 'ab'], expected: [2, 1, 0] },
+      ],
+    },
+  ]
+}
+
 /**
  * Dispatch a goal to its known algorithm-shaped decomposition template, or null when no class
  * matches (→ the FM planner proposes a carve instead). A registry of (class-detector → template):
  * the extensible generalization of the basicCalculator crack to any provably-0%-by-sampling class.
  */
 export function templateFor(goal: string, entry: string): PlannedSubFunction[] | null {
-  // RPN FIRST — it is the more specific class: an RPN goal ("evaluate a postfix expression with
-  // operators + - * /") also trips the broader arithmetic-operator signal, so the postfix/stack
-  // detector must win. An infix arithmetic goal never matches isRpnGoal (no rpn/postfix keyword).
+  // MOST-SPECIFIC DETECTORS FIRST. An RPN goal ("evaluate a postfix expression with operators
+  // + - * /") also trips the broader arithmetic-operator signal, so the postfix/stack detector must
+  // win. The classes are otherwise disjoint (edit-distance has no operators and matches only on
+  // "levenshtein"/"edit distance"; an infix arithmetic goal never matches isRpnGoal), but the
+  // ordering is kept explicit so adding a class can never silently mis-route an existing one.
   if (isRpnGoal(goal, entry)) return rpnTemplatePlan()
+  if (isEditDistanceGoal(goal, entry)) return editDistanceTemplatePlan()
   if (isArithmeticExprGoal(goal, entry)) return precedenceTemplatePlan()
+  return null
+}
+
+/**
+ * A COMPOSITION IDIOM for a template class — the one-line wiring the compose rung should emit, when
+ * the helper signatures alone don't reveal it. Injected into the composition rung's goal by
+ * decomposeCodeBySubFunction. Null for classes whose composition is discoverable (basicCalculator's
+ * pure nesting, evalRPN's stack pass). UNTRUSTED like every hint: the composed whole is re-verified
+ * against the ORIGINAL cases, so a wrong idiom only wastes budget.
+ *
+ * Edit-distance needs it: the answer is the LAST cell of editRow's output, which no signature shows,
+ * so without this the 1.5B re-derives a full 2D DP table and anchors (live probe 2026-07-23).
+ */
+export function composeHintFor(goal: string, entry: string): string | null {
+  if (isEditDistanceGoal(goal, entry)) {
+    return (
+      'COMPOSITION: the edit distance is the LAST element of the final DP row. Write exactly:\n' +
+      `export function ${entry}(a, b) { return editRow(a, b)[b.length] }`
+    )
+  }
   return null
 }
 

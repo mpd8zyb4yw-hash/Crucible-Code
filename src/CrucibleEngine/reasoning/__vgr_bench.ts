@@ -320,6 +320,25 @@ async function run() {
     harvestExplicitExamples('processData(x) should be fast and run(y) will be slow').cases.length === 0 &&
     harvestExplicitExamples('The function isAdult(age) should handle edge cases carefully').cases.length === 0)
 
+  // ── BARE "x" -> y examples (no call wrapping the input) — the vgr:no-acceptance-cases gap. ──
+  // Authored/user prompts often state examples as bare input→output; unharvested they drop the
+  // request to no-acceptance-cases (gold tier never fires). Harvested ONLY for a single declared
+  // export, single-arg, when no call-form case exists for it.
+  const bareCalc = harvestExplicitExamples(
+    'Export exactly:\n  export function basicCalculator(expr: string): number\nExamples: "3+2*2" -> 7, "3/2" -> 1, "14-3*2" -> 8')
+  ok('BARE "x" -> y examples harvest as gold for a single declared export',
+    bareCalc.entry === 'basicCalculator' && bareCalc.cases.length === 3 &&
+    JSON.stringify(bareCalc.cases[0].args) === '["3+2*2"]' && bareCalc.cases[0].expected === 7,
+    `entry=${bareCalc.entry} ${bareCalc.cases.length} case(s)`)
+  ok('BARE examples support boolean/array/other connectors',
+    harvestExplicitExamples('export function isPal(s: string): boolean\n"racecar" returns true, "hi" => false').cases.length === 2)
+  ok('BARE harvest does NOT fire when the request declares MULTIPLE exports (ambiguous target)',
+    harvestExplicitExamples('export function a(x){}\nexport function b(x){}\n"z" -> 1').cases.length === 0)
+  ok('BARE harvest yields to call-form (a call-form case suppresses bare re-attribution)',
+    (() => { const h = harvestExplicitExamples('export function add(a,b): number\nadd(2,3) -> 5'); return h.cases.length === 1 && JSON.stringify(h.cases[0].args) === '[2,3]' })())
+  ok('BARE example with a non-literal value is REJECTED (never guess)',
+    harvestExplicitExamples('export function f(x): number\n"input" -> the answer').cases.length === 0)
+
   // ── PART G3 — model-call accounting: free work must not be billed as model work ────
   console.log('\nPART G3 — model-free proposal accounting')
   {

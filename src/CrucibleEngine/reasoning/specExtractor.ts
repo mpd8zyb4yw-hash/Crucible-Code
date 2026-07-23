@@ -83,6 +83,18 @@ const SYSTEM = [
 const EXAMPLE_RX =
   /([A-Za-z_$][\w$]*)\s*\(([^()]*(?:\([^()]*\)[^()]*)*)\)\s*(?:(?:should|must|shall|will|would|ought\s+to|has\s+to|needs?\s+to)\s+)?(?:===|==|=>|=|→|->|returns?|gives?|yields?|evaluates?\s+to|equals?|outputs?|produces?|be)\s*(\[[^\]\n]*\]|\{[^}\n]*\}|"[^"\n]*"|'[^'\n]*'|-?\d+(?:\.\d+)?|true|false|null|undefined|[^\n,;.]+)/gi
 
+// BARE input→output examples: `"3+2*2" -> 7`, `[1,2] => 3`, `"racecar" returns true` — a stated
+// example with NO `entry(` call wrapping the input. These are common in authored/user prompts
+// ("Examples: \"()[]{}\" -> true") and, unharvested, drop the request to `vgr:no-acceptance-cases`
+// (the gold tier never fires → the decompose lever is never reached). We can only attribute them to
+// a function when the request declares EXACTLY ONE export and states no call-form case for it, and
+// we treat the LHS as the SOLE argument (bare form can't express multi-arg unambiguously). The LHS
+// must be a clean literal, and — critically — must NOT be preceded by `(` or an identifier char, so
+// a call-form `f("x") -> y` is NOT re-matched here (its `"x"` sits right after `(`). Same honesty
+// guard as the call-form path: addExample discards any pair that isn't a clean literal.
+const BARE_EXAMPLE_RX =
+  /(?:^|[\s,;:])((?:"[^"\n]*"|'[^'\n]*'|\[[^\]\n]*\]|-?\d+(?:\.\d+)?))\s*(?:(?:should|must|shall|will|would|maps?\s+to)\s+)?(?:===|==|=>|→|->|returns?|gives?|yields?|evaluates?\s+to|equals?|outputs?|produces?)\s*(\[[^\]\n]*\]|\{[^}\n]*\}|"[^"\n]*"|'[^'\n]*'|-?\d+(?:\.\d+)?|true|false|null|undefined)/gi
+
 /** Evaluate a JS/JSON literal (from the user's own prompt) to a value, or throw. */
 function evalLiteral(src: string): unknown {
   const s = src.trim().replace(/[.\s]+$/, '')
@@ -142,6 +154,17 @@ export function harvestExplicitExamples(nl: string): Harvested {
       if (call) addExample(byEntry, call[0], call[1], rhs)
     }
   } catch { /* best-effort; regex source still applies */ }
+
+  // Source 3 — BARE `"x" -> y` examples (no call wrapping the input). Only safe to attribute when
+  // the request declares EXACTLY ONE export and Sources 1-2 harvested NO call-form case for it (so
+  // we can't be mixing arg arities), treating the LHS literal as the SOLE argument. This fills the
+  // `vgr:no-acceptance-cases` gap for authored/user prompts that state examples as input→output.
+  const declared = declaredExportedNames(nl)
+  const soleEntry = declared.length === 1 ? declared[0]
+    : (() => { const d = detectDeclaredFunctions(nl); return d.length === 1 ? d[0] : null })()
+  if (soleEntry && !(byEntry.get(soleEntry)?.length)) {
+    for (const m of nl.matchAll(BARE_EXAMPLE_RX)) addExample(byEntry, soleEntry, m[1], m[2])
+  }
 
   const entries = [...byEntry.keys()]
   if (!entries.length) return { entry: '', entries: [], cases: [] }
