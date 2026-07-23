@@ -620,6 +620,23 @@ export async function solveCodingRequest(
   if (harvested.cases.length >= 1) {
     const result = await solveCodeTask({ goal: nl, entry: harvested.entry, entries: harvested.entries, cases: harvested.cases, buggyCode: opts.buggyCode }, opts)
     const nFns = harvested.entries.length
+    // EARLY CLASS-ROUTING on the GOLD tier (2026-07-22l). When flat search abstains AND this is a
+    // provably-0%-by-sampling class (arithmetic/parser precedence — see isArithmeticExprGoal), carve
+    // the GOLD cases into certified helpers before conceding. Without this a calculator task with
+    // harvestable examples flat-fails here and RETURNS red, never reaching the decompose lever the
+    // vgr:decompose:calc probe proved solves it in 7 calls. Single-entry only (decomposition composes
+    // one function). Sound: decomposeCodeBySubFunction re-verifies the whole against these gold cases.
+    if (result.status !== 'solved' && opts.decompose && nFns <= 1 && harvested.cases.length >= 3 &&
+        isArithmeticExprGoal(nl, harvested.entry) && !opts.signal?.aborted) {
+      const d = await decomposeCodeBySubFunction(
+        { goal: nl, nl, entry: harvested.entry, cases: harvested.cases },
+        { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: opts.iterate },
+      )
+      if (d.status === 'solved' && d.code) {
+        return { status: 'solved', code: d.code, entry: harvested.entry, cases: harvested.cases, search: result,
+          detail: `${harvested.cases.length} user example(s) (gold); flat abstained → arithmetic-class sub-function decomposition certified via ${d.helpers.length} helper(s) (${d.modelCalls} model call(s))` }
+      }
+    }
     return {
       status: result.status,
       code: result.status === 'solved' ? (result.solution?.value ?? null) : null,

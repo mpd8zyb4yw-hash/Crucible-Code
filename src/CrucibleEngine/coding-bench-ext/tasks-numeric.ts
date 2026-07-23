@@ -465,8 +465,9 @@ Semantics:
   parentheses. Same-precedence operators associate LEFT TO RIGHT.
 - Division is INTEGER division truncating TOWARD ZERO (10/3 -> 3, exactly Math.trunc).
 - Spaces may appear anywhere and are ignored ("3 + 5 / 2" is "3+5/2").
-- Examples: "3+2*2" -> 7, "3+5/2" -> 5, "14-3*2" -> 8, "2*3+4*5" -> 26, "6/2*3" -> 9,
-  "100" -> 100, "7-2-1" -> 4.
+- Examples: basicCalculator("3+2*2") -> 7, basicCalculator("3+5/2") -> 5,
+  basicCalculator("14-3*2") -> 8, basicCalculator("2*3+4*5") -> 26,
+  basicCalculator("6/2*3") -> 9, basicCalculator("100") -> 100, basicCalculator("7-2-1") -> 4.
 - This is the classic precedence-without-parentheses evaluation: the reliable route is a
   two-pass fold — tokenize, collapse every * and / left to right, then collapse + and -.`,
     ref: `export function basicCalculator(expr: string): number {
