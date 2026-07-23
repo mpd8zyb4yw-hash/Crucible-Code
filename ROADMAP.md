@@ -1933,6 +1933,40 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23d (cont.103 — calibration shared into quorum synthesis; self-ref grounding beats web retrieval; abstention bench added)
+- **Restarted the app, confirmed the triage/calibration routing end-to-end in the running UI.**
+  `how smart are you` → `triage_simple_strict_local` (5ms triage) → on-device answer engine, NOT
+  the 6-model quorum. Answer is the calibrated honest reply ("I can't put a number on that, and I
+  won't pretend to…"). MEASURED live over the JWT curl harness against the real server.
+- **Extended the calibrated-honesty doctrine to the multi-model quorum synthesis prompt**
+  (`server.ts buildSynthesisMessages`). Extracted the doctrine from `answerEngine`'s base prompt
+  into one exported `CALIBRATED_HONESTY_DOCTRINE` constant; both the single-model engine and every
+  synthesis branch (seeker/code/general) now share it verbatim. Combining several drafts is no
+  longer a laundering path for a specific none of them could verify.
+- **Fixed a real confabulation the routing work exposed: self-referential queries were web-grounded
+  on a NAMESAKE.** `what's your IQ` classified `intent=definition`, retrieved Madsen Pirie's "Test
+  Your I.Q." book, and grounded on it → "I am Madsen Pirie, a British economist." Now
+  self-referential queries (`isSelfReferential`) force `needsExternalFact=false` AND are excluded
+  from `groundingEligible`, so `CRUCIBLE_SELF_FACTS` is the sole basis. MEASURED after fix:
+  `what is your IQ` → "I am not sure."; `are you conscious` → "I am not conscious." (confabulation gone).
+- **Tuned `SELF_REF_RX`** to catch IQ/EQ, cross-model comparison ("are you smarter than…/better
+  than ChatGPT"), training provenance ("when were you trained", "what data were you trained on",
+  "knowledge cutoff"), and feelings ("do you have feelings/consciousness") — the confabulation bait
+  `matchMeta` does NOT fixed-answer. `matchMeta` still runs first, so the fixed-fact and grounded
+  layers stay disjoint. Verified no false positives ("how smart are dolphins", "who made the iPhone").
+- **Added `abstain:bench`** (`src/CrucibleEngine/answer/__abstention_bench.ts`, `npm run abstain:bench`):
+  a pure-offline section locking the doctrine text, the self-facts honesty invariants, and the
+  self-ref routing regex (47/47 pass), plus an opt-in live probe (`CRUCIBLE_BENCH_LIVE=1`) that
+  fires confabulation-bait prompts at the answer engine and scores abstain-or-hedge. LIVE this
+  session: **3/5** baited prompts hedged/abstained. The 2 misses are real, now-measured findings:
+  a Nobel-2043 confabulation ("Maurice Allais") and — notable — the confabulation-as-code bleed
+  (a factual "middle name of the mayor" question emitted a JavaScript block).
+- **Investigated the `repro thread check` debug-feed entry:** NOT automation content leaking into
+  the agent loop. Only two automations exist (`Daily engine pulse`, `Morning brief`); the scheduler
+  (`setInterval` → `runAutomationNow`) dispatches ONLY stored records, each wrapped in an explicit
+  standing-automation preamble. `repro thread check` was a manual repro/test query (there is a
+  `history-repro-trace-user.json` session) that correctly appeared as a normal pipeline query. No defect.
+
 ### 2026-07-23c (cont.102 — deterministic sort-comparator repair → sortModule RELIABLE green; oracle-sandbox EPERM regression fixed)
 - **sortModule PROBABILISTIC (~1/3) → RELIABLE green. MEASURED: 6/6 offline-strict runs GREEN
   this session (path=gen, hidden suite 13/13), incl. 1 under the real net sandbox.** The ledger

@@ -64,7 +64,7 @@ function traceTurn(inner: import('./src/CrucibleEngine/agent/loop').DriveTurn): 
     }
   }
 }
-import { answerQuery, isSelfReferential } from './src/CrucibleEngine/answer/answerEngine'
+import { answerQuery, isSelfReferential, CALIBRATED_HONESTY_DOCTRINE } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild, matchMeta } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
@@ -385,6 +385,14 @@ loadCircuitState()
 import { exec, execFile, spawn } from 'child_process'
 import { prewarmPython, shutdownSandbox } from './src/CrucibleEngine/sandbox'
 import { debugBus } from './src/CrucibleEngine/debug/bus'
+// TEMP DIAGNOSTIC (item-3 tsc-escalation trace): env-gated stderr tap of agent-category events.
+if (process.env.CRUCIBLE_TRACE === '1') {
+  debugBus.subscribe(e => {
+    if (e.category === 'agent' || e.category === 'tool') {
+      process.stderr.write(`[TRACE ${e.category}/${e.type}] ${JSON.stringify(e.data).slice(0, 260)}\n`)
+    }
+  })
+}
 import { debugAnalyzer } from './src/CrucibleEngine/debug/analyzer'
 import { qualityPredictor } from './src/CrucibleEngine/qualityPredictor'
 import { init as autoImproveInit, triggerImprovementPass, rollbackIfDegraded, status as autoImproveStatus, loadLearnedWeights, setCallModel as autoImproveSetCallModel } from './src/CrucibleEngine/autoImprove'
@@ -5985,7 +5993,11 @@ ${worldCtx}`
   // the final synthesis input set is exactly what we speculated on (stragglers dropped
   // or rolled back); otherwise we DISCARD it and synthesise normally. The wasted call
   // costs nothing on the free tier; the win is hiding synthesis latency behind Stage 1.
-  const synthSystemContent =
+  // Every synthesis branch inherits the same anti-confabulation doctrine the single-model answer
+  // engine enforces (CALIBRATED_HONESTY_DOCTRINE): combining several drafts must not become a
+  // licence to assert a specific none of them could actually verify. Appended, not prepended, so
+  // the mode-specific formatting rules still lead.
+  const synthSystemBase =
     mode === 'seeker'
       ? 'You are the synthesis layer of an adversarial AI pipeline. You have attack analyses from multiple models. Your job: produce a ranked vulnerability report. Lead with the most critical finding. Be precise, not exhaustive. Format: numbered list, most critical first. Plain text only — never use emojis or decorative pictographs.'
       : mode === 'code'
@@ -6001,6 +6013,7 @@ ${worldCtx}`
         'CRITICAL: Never reference the source responses or mention which model said what. Write as a single unified voice — the reader should not know this answer came from a pipeline. ' +
         'Plain text only — never use emojis or decorative pictographs. ' +
         'For code requests: always put code in a fenced code block with the correct language tag, then explain briefly after. Never describe the code in prose without showing it.'
+  const synthSystemContent = `${synthSystemBase}\n\n${CALIBRATED_HONESTY_DOCTRINE}`
 
   const { normalizeOutput: normalizeForSynth } = await import('./src/CrucibleEngine/normalize')
   const distillationCtx = getDistillationContext(process.cwd(), promptType, 3)

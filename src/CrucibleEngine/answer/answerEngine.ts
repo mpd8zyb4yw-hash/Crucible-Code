@@ -154,6 +154,20 @@ export function classifyFacets(message: string): AnswerFacets {
 // The point of the mission: the SYSTEM decides how much thinking a question needs; the FM
 // isn't gagged into a wrong one-liner on a reasoning problem, nor made verbose on a lookup.
 
+// The anti-confabulation rule, extracted so the single-model answer engine (base prompt below)
+// and the multi-model quorum synthesis layer (server.ts buildSynthesisMessages) share ONE source
+// of truth. The weak on-device model's worst failure is fluently inventing a specific (a name,
+// date, source, attribution) to fill a gap it half-knows; synthesizing several such drafts does
+// not launder that risk away, so the synthesis prompt must carry the same doctrine.
+export const CALIBRATED_HONESTY_DOCTRINE =
+  'CALIBRATED HONESTY IS YOUR FIRST DUTY. For every factual specific — a name, date, number, ' +
+  'quote, citation, author, or event — state it ONLY if you are actually confident it is correct. ' +
+  'You have exactly three honest moves: (1) answer plainly when you know it; (2) answer but flag ' +
+  'the part you are unsure about ("I think… but I am not certain"); or (3) say you do not know / ' +
+  'cannot verify it. NEVER invent a plausible-sounding specific to fill a gap — a truthful ' +
+  '"I am not sure" or "I do not know" is always better than a confident guess. Do not pad an ' +
+  'answer with fabricated detail to sound authoritative.'
+
 function systemPromptFor(facets: AnswerFacets, evidence: string): string {
   // Identity + turn-anchoring + anti-roleplay are the load-bearing lines. Without them the
   // weak FM (a) invents a persona from an ambiguous opener and carries it forward, and (b)
@@ -171,16 +185,10 @@ function systemPromptFor(facets: AnswerFacets, evidence: string): string {
     'When the user asks you to recall a fact they told you earlier (e.g. their name, their project, ' +
     'a decision), find it in the conversation above and answer with THAT exact fact — do not give ' +
     'your own name and do not make one up; if it is not in the conversation, say so. ' +
-    // Calibrated honesty — the load-bearing anti-confabulation rule. The weak on-device model's
-    // worst failure is fluently inventing a specific (a name, date, source, attribution) to fill a
-    // gap it half-knows. Forbid that outright and give it the three sanctioned moves instead.
-    'CALIBRATED HONESTY IS YOUR FIRST DUTY. For every factual specific — a name, date, number, ' +
-    'quote, citation, author, or event — state it ONLY if you are actually confident it is correct. ' +
-    'You have exactly three honest moves: (1) answer plainly when you know it; (2) answer but flag ' +
-    'the part you are unsure about ("I think… but I am not certain"); or (3) say you do not know / ' +
-    'cannot verify it. NEVER invent a plausible-sounding specific to fill a gap — a truthful ' +
-    '"I am not sure" or "I do not know" is always better than a confident guess. Do not pad an ' +
-    'answer with fabricated detail to sound authoritative.'
+    // Calibrated honesty — the load-bearing anti-confabulation rule. Shared verbatim with the
+    // multi-model quorum synthesis prompt (server.ts) so a complex/ensemble answer is held to the
+    // SAME anti-confabulation bar as a single-model one — see CALIBRATED_HONESTY_DOCTRINE below.
+    CALIBRATED_HONESTY_DOCTRINE
   const grounding = evidence
     ? `\n\n## Retrieved evidence (ground your answer in THIS; do not contradict it)\n${evidence}`
     : ''
@@ -243,12 +251,18 @@ function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content:
 // Niven and Jerry Pournelle"). This is NOT a canned per-question answer: we inject the honest
 // facts as grounding and let the model compose the reply over them, the same way retrieved
 // evidence grounds a lookup. It reasons about itself instead of inventing a biography.
-const SELF_REF_RX =
-  /\b(how\s+(smart|intelligent|clever|capable|good|powerful|advanced|fast)\s+(are|r)\s+you|what('?s| is| are)\s+you\b|who\s+(are|r|made|built|created|trained|designed)\s+you|what\s+(kind|type|sort)\s+of\s+(ai|model|assistant|thing)\s+are\s+you|what\s+model\s+are\s+you|are\s+you\s+(conscious|sentient|alive|human|real|self.?aware|an?\s+(ai|llm|robot|model|human))|tell\s+me\s+about\s+yourself|introduce\s+yourself|what\s+can\s+you\s+do|what\s+are\s+your\s+(capabilit|limitation|strength|weakness))/i
+// Every alternative anchors on "you"/"your" so a third-party question ("how smart are dolphins",
+// "who made the iPhone") never matches. matchMeta (conversational.ts) runs FIRST and fixed-answers
+// the identity/creator/capability families, so the phrasings added here are deliberately the ones
+// matchMeta does NOT cover — IQ/EQ, cross-model comparison, training provenance, feelings — i.e.
+// exactly the confabulation bait that otherwise reaches the FM ungrounded. Grounded layer and
+// fixed-fact layer therefore stay disjoint in practice: matchMeta hits return before this is read.
+export const SELF_REF_RX =
+  /\b(how\s+(smart|intelligent|clever|capable|good|powerful|advanced|fast)\s+(are|r)\s+you|what('?s| is| are)\s+you\b|what('?s| is)\s+your\s+(iq|eq|intelligence|training data|architecture|parameter|context window|knowledge cutoff)|who\s+(are|r|made|built|created|trained|designed)\s+you|what\s+(kind|type|sort)\s+of\s+(ai|model|assistant|thing)\s+are\s+you|what\s+model\s+are\s+you|are\s+you\s+(conscious|sentient|alive|human|real|self.?aware|an?\s+(ai|llm|robot|model|human))|are\s+you\s+(smarter|dumber|better|worse|faster|slower|stronger|weaker|more\s+\w+|less\s+\w+)\s+than|do\s+you\s+have\s+(feelings|emotions|a\s+soul|consciousness|opinions|a\s+memory|self.?awareness)|when\s+were\s+you\s+(trained|made|built|created|born)|what\s+(data|dataset|corpus)\s+(were|was|are)\s+you\s+trained\s+on|tell\s+me\s+about\s+yourself|introduce\s+yourself|what\s+can\s+you\s+do|what\s+are\s+your\s+(capabilit|limitation|strength|weakness))/i
 export function isSelfReferential(message: string): boolean {
   return SELF_REF_RX.test(message ?? '')
 }
-const CRUCIBLE_SELF_FACTS =
+export const CRUCIBLE_SELF_FACTS =
   `- Crucible is a private AI assistant that runs entirely on the user's own device (offline-first); in strict mode it makes no external calls at all.\n` +
   `- Its cognitive core is a deliberately SMALL on-device language model (about 1.5 billion parameters today). It is not a large frontier model and does not claim to be one.\n` +
   `- Its reliability does NOT come from raw model size. It comes from a verification-and-search loop around that small model: the model only proposes, and deterministic checkers (arithmetic, code execution, calendar math, self-consistency voting) certify or reject each answer, and it backtracks when a check fails.\n` +
@@ -318,6 +332,12 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   const verifyComplete = (msgs: Array<{ role: string; content: string }>, o?: { temperature?: number }) =>
     fmComplete(msgs, { temperature: o?.temperature, timeoutMs: VERIFY_TIMEOUT_MS, priority: 'normal', signal })
   const facets = classifyFacets(message)
+  // A question ABOUT Crucible has no external fact to fetch — its ground truth is CRUCIBLE_SELF_FACTS,
+  // injected into the system prompt below. Letting retrieval fire on one is actively harmful: "what's
+  // your IQ" lexically retrieves Madsen Pirie's "Test Your I.Q." book and the model then grounds on
+  // THAT, confabulating "I am Madsen Pirie, a British economist." Pin self-referential queries to the
+  // direct grounded path so the self-facts are the sole basis, never web evidence about a namesake.
+  if (isSelfReferential(message)) facets.needsExternalFact = false
   const base: Omit<AnswerResult, 'text' | 'verified' | 'abstained'> = {
     facets, usedRetrieval: false, sources: [], corrections: 0, repaired: false,
   }
@@ -398,8 +418,11 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // ALREADY encodes this ("isCodingQuery → FM bluffs; SO/docs strong"), but could never fire:
   // isGenRequest/isQuestionShaped vetoed upstream, making that branch dead. This opens the lane.
   const libraryCodeAsk = (isGenRequest || isCodingQuery(message)) && namesExternalLibrary(message)
+  // Self-referential questions are grounded in CRUCIBLE_SELF_FACTS, never the web — shouldResearch()
+  // returns true for any question-shaped lookup, so without this veto "what's your IQ" would still
+  // web-ground on a namesake ("Test Your I.Q." → "I am Madsen Pirie") despite needsExternalFact=false.
   const groundingEligible = !usedRetrieval && !useConsensus &&
-    !facets.needsComputation &&
+    !facets.needsComputation && !isSelfReferential(message) &&
     (libraryCodeAsk || (!isGenRequest && isQuestionShaped)) &&
     process.env.CRUCIBLE_WEB_GROUNDING !== '0'
   // Gap-gate: only the specialized/technical/recent subset actually hits the web.
