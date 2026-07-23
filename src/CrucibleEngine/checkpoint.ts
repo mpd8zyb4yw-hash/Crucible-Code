@@ -105,7 +105,13 @@ export function createCheckpoint(projectPath: string, message: string, paths?: s
     // registry.ts classified every absolute path as external and passed [], so in-project
     // absolute writes got no snapshot at all, and nothing surfaced it.
     const staged = exec('git diff --cached --name-only', projectPath).split('\n').filter(Boolean)
-    exec(`git commit -m "crucible: ${message}" --allow-empty`, projectPath)
+    // Security: `exec` runs via execSync (a shell), so a message containing $(...), backticks,
+    // or quotes would be interpreted — a command-injection vector, since checkpoint messages
+    // can carry agent/goal-derived text. Single-quote the whole message (matching the path
+    // escaping above): inside single quotes the shell interprets nothing, and '\'' safely
+    // encodes any embedded single quote.
+    const safeMsg = `crucible: ${message}`.replace(/'/g, "'\\''")
+    exec(`git commit -m '${safeMsg}' --allow-empty`, projectPath)
     const hash = exec('git rev-parse --short HEAD', projectPath)
     const checkpoint: Checkpoint = {
       hash,
@@ -134,6 +140,12 @@ export function createCheckpoint(projectPath: string, message: string, paths?: s
 
 export function rollbackToCheckpoint(hash: string, projectPath: string): boolean {
   try {
+    // Security: hash flows into a shell command; only ever a git short/long SHA. Reject
+    // anything else so a tampered checkpoints file can't inject shell via the rollback path.
+    if (!/^[0-9a-f]{4,40}$/i.test(hash)) {
+      console.error(`[Checkpoint] Rollback refused: "${hash}" is not a valid git hash`)
+      return false
+    }
     exec(`git checkout ${hash} -- .`, projectPath)
     console.log(`[Checkpoint] Rolled back to ${hash}`)
     return true

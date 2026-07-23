@@ -42,8 +42,27 @@ export interface Verdict {
 
 interface RunOut { ok: boolean; out: string; timedOut: boolean }
 
+/** Env for executing model-GENERATED candidate code during verification. The candidate is
+ *  synthesized from a user prompt, so it is untrusted: a hallucinated or adversarial
+ *  candidate must not be able to read the server's secrets (JWT_SECRET, provider API keys,
+ *  OAuth client secrets) out of process.env and exfiltrate them. Deny-list credential-shaped
+ *  keys while preserving everything tsx/npx need (PATH, HOME, NODE_*, etc.). A correctness
+ *  test never legitimately needs real credentials, so scrubbing is safe for the oracle.
+ *  NOTE: this closes secret exfiltration, not network egress — network isolation
+ *  (sandbox-exec `(deny network*)`, as /api/sandbox/run already uses) is a recommended
+ *  follow-up for full isolation of the verification path. */
+const SANDBOX_SECRET_RE = /(SECRET|API[_-]?KEY|ACCESS[_-]?KEY|_TOKEN$|^TOKEN$|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|CLIENT_SECRET|JWT|VAPID|WEBHOOK|SESSION)/i
+function sandboxEnv(): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {}
+  for (const [k, v] of Object.entries(process.env)) {
+    if (SANDBOX_SECRET_RE.test(k)) continue
+    out[k] = v
+  }
+  return out
+}
+
 function run(cmd: string, args: string[], cwd: string, timeoutMs: number): RunOut {
-  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: process.env })
+  const r = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024, env: sandboxEnv() })
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`
   return { ok: r.status === 0, out, timedOut: r.signal === 'SIGTERM' || (r.error as any)?.code === 'ETIMEDOUT' }
 }
@@ -53,7 +72,7 @@ function runAsync(cmd: string, args: string[], cwd: string, timeoutMs: number): 
   return new Promise(resolve => {
     let out = ''
     let timedOut = false
-    const child = spawn(cmd, args, { cwd, env: process.env })
+    const child = spawn(cmd, args, { cwd, env: sandboxEnv() })
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM') }, timeoutMs)
     const cap = (d: Buffer) => { out += d.toString('utf8'); if (out.length > 8 * 1024 * 1024) child.kill('SIGTERM') }
     child.stdout?.on('data', cap)

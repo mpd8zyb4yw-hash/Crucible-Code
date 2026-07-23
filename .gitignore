@@ -27,5 +27,25 @@ Crucible UI redesign/
 Crucible UI v3.zip
 .bench-history.jsonl
 
-# Audit session artifacts — traces contain a minted session token in fire.sh usage
+# Audit session artifacts — traces contain a minted session token in fire.sh usage.
+# The bare rule below only matched a token directly under audit-traces/, NOT nested
+# paths like audit-traces/p2/.token (which is how they are actually written), so two
+# expired JWTs got committed. Match at any depth.
 audit-traces/.token
+audit-traces/**/.token
+
+# ── Secret / credential hardening (defense-in-depth) ─────────────────────────────
+# Never commit real secret material. Templates use the .example suffix and stay tracked.
+**/.token
+.env
+.env.*
+.dev.vars
+*.pem
+*.key
+*_rsa
+id_rsa
+*.p12
+*.pfx
+!*.example
+!.env.production.example
+!.dev.vars.example
