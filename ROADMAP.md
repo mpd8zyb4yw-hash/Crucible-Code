@@ -2003,6 +2003,18 @@ external API calls. The full product chain — harvest → gold-tier arithmetic 
 (tokenize/parseTokens/foldMulDiv/foldAddSub, each verifier-certified) → composition re-verified against the
 gold cases — now works end-to-end, not just in the direct probe.
 
+**GENERALIZED to a SECOND 0% class — evalRPN SOLVED (commit `ba3ad17`).** To prove the crack is not a
+one-off, added a class-detector registry `templateFor(goal, entry)` (`fmPlanner.ts`) dispatching to
+`precedenceTemplatePlan` (infix) or `rpnTemplatePlan` (postfix), checked RPN-first (an RPN goal also trips
+the arithmetic-operator signal). solve.ts early-routing now gates on `hasDecomposeTemplate` (any templated
+class). evalRPN — the OTHER task the pass@k experiment measured at 0/10, never solved by sampling or
+multishot — is now CERTIFIED via decomposition in 4 model calls: `isOperator` (isolates the `-4`-vs-`-`
+operator-vs-negative-number trap) + `applyOp` (isolates operand order + trunc-toward-zero division) + a
+stack composition, re-verified against all 5 cases. Two live failure modes fixed along the way (`applyOp`
+copied its example call as a signature → put the named header in the goal; composition misclassified
+negative numbers → the `isOperator` helper). Same doctrine, same mechanism, second class. + evalRPN authored
+corpus task (call-form examples, corpus 23→24). vgr:decompose 48/0.
+
 ### 2026-07-22k (gap-soundness — the four STARVED-loop levers implemented: batch sample-bump, sub-function decomposition escalation, multi-shot pass@k harness; measurement runs launched)
 
 **Acting on the 2026-07-22j finding (the generated loop is STARVED, not weak), this session implements

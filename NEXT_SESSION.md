@@ -38,14 +38,21 @@
 >    isolation but anchored in-context because the prior-helper dump crowded the idiom/cases out of the
 >    ~1024-tok/slot window. Trimming it: `decompose-failed(−4, 17 calls)` → `solved (7 calls)`.
 >
-> **basicCalculator now passes the FULL AGENT-PATH SCORECARD GREEN (commit `3ef16d5`), strict-offline, 0
-> external API calls.** Not just the direct probe — the whole product chain: harvest 7 gold cases → gold-tier
-> arithmetic early-routing → decomposition (4 verifier-certified helpers) → composition re-verified. Result:
-> module PASS, tsc clean, hidden suite 18/18 ALL PASS, self-test PASS, rubric 80, `genuine model generation
-> 1/1`, 311s, `vgr:certified-no-iterate`. RED(420s timeout) → GREEN on the same 1.5B. The timeout was root-
-> caused to `vgr:no-acceptance-cases`: (1) bare-form prompt examples weren't harvestable (fixed to call-form
-> `basicCalculator("3+2*2") -> 7`); (2) the gold tier flat-solved and returned without escalating to decompose
-> (fixed — arithmetic early-routing added there too).
+> **TWO independent 0%-by-sampling classes are now SOLVED via decomposition — the crack generalizes.**
+> basicCalculator (infix precedence) AND evalRPN (postfix/stack) — both measured 0% by the pass@k experiment
+> (never solved by sampling or multishot) — are now certified by the SAME template mechanism. A class-detector
+> registry `templateFor(goal,entry)` (fmPlanner.ts) dispatches infix→`precedenceTemplatePlan` (4 helpers) /
+> postfix→`rpnTemplatePlan` (isOperator+applyOp); solve.ts early-routing gates on `hasDecomposeTemplate`.
+> evalRPN direct probe: solved in 4 calls (commit `ba3ad17`).
+>
+> **basicCalculator passes the FULL AGENT-PATH SCORECARD GREEN (commit `3ef16d5`), strict-offline, 0 external
+> API calls.** Not just the probe — the whole product chain: harvest 7 gold cases → gold-tier early-routing →
+> decomposition (4 verifier-certified helpers) → composition re-verified. Result: module PASS, tsc clean,
+> hidden suite 18/18 ALL PASS, self-test PASS, rubric 80, `genuine model generation 1/1`, 311s. RED(420s
+> timeout) → GREEN. The timeout was root-caused to `vgr:no-acceptance-cases`: (1) bare-form prompt examples
+> weren't harvestable (fixed to call-form `basicCalculator("3+2*2") -> 7`); (2) the gold tier flat-solved and
+> returned without escalating to decompose (fixed — early-routing added there too). evalRPN end-to-end
+> scorecard: running (uses the identical chain; result pending).
 >
 > **SERVER INFRA (repro):** authed strict-offline `server.ts` from THIS worktree on `:3011`:
 > `PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1 CRUCIBLE_CONVERGE=1
@@ -78,12 +85,13 @@
    generated-rate delta vs the 3% floor. basicCalculator is GREEN; run the whole suite to see the aggregate
    move (and catch any regressions from the gold-tier early-routing on non-arithmetic tasks). Long run
    (~40 × up to 420s); use `CRUCIBLE_CODE_BENCH_GAP` pacing; server already up on `:3011` (commit `3ef16d5`).
-2. **Extend the parser template class to evalRPN** — evalRPN (live-measured 0% by sampling, a stack machine)
-   is the next decompose candidate. Add a sibling template (RPN → single-pass stack fold) + a class detector,
-   and an authored corpus task (call-form examples!). Same pattern that cracked basicCalculator.
-3. **Generalize class-routing beyond arithmetic** — the gold-tier + differential early-routing is currently
-   gated on `isArithmeticExprGoal`. Any task class where flat pass@k is ~0 but a known carve exists (parsers,
-   state machines, DP) should route to decompose early. Consider a registry of (class-detector → template).
+2. **Add a THIRD template class** — the registry (`templateFor`) now covers infix + postfix. Next 0%-by-
+   sampling candidates: balanced-paren/bracket matching, a mini JSON/CSV parser, or a small DP (edit distance,
+   coin change). Pick one, add a detector + `*TemplatePlan` + authored corpus task (call-form examples!), and
+   live-probe. The `applyOp`-style lesson: put the named signature + a full one-line body idiom in each helper
+   goal so `paramsFromGoal` extracts real params and the weak head can't copy the example call as a signature.
+3. **Confirm evalRPN GREEN end-to-end** (scorecard was launched this session against `:3011`; if it landed
+   after the handoff, verify RED→GREEN like basicCalculator).
 4. **Agent-driver budget** — VGR is called with `maxModelCalls: 8, beamWidth: 2` (server.ts ~4103); decompose
    rungs fall back to DEFAULT iterate budget (fine for basicCalculator at ~7 calls, but a deeper carve could
    exhaust it). Thread a decompose-aware budget when the class is detected.
