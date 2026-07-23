@@ -73,7 +73,11 @@
 >
 > **SERVER INFRA (repro):** authed strict-offline `server.ts` from THIS worktree on `:3011`:
 > `PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1 CRUCIBLE_CONVERGE=1
-> npx tsx server.ts`. Auth is COOKIE `crucible_session=<JWT signed with .env.local JWT_SECRET>`, NOT Bearer.
+> CRUCIBLE_NO_DISTILL=1 npx tsx server.ts`. **`CRUCIBLE_NO_DISTILL=1` is MANDATORY for any cold/aggregate
+> measurement run** (added 2026-07-23): `distillToSkill` runs in the SERVER process, so the guard must be set
+> on the SERVER launch, NOT the scorecard client — otherwise the sweep silently memorizes each corpus task
+> into `_learned/` as it goes and later tasks short-circuit to the L0 catalog. Auth is COOKIE
+> `crucible_session=<JWT signed with .env.local JWT_SECRET>`, NOT Bearer.
 > Scorecard mints its own: `CRUCIBLE_API=http://localhost:3011 CRUCIBLE_OFFLINE=strict npx tsx
 > src/CrucibleEngine/coding-benchmarks.ts <id>`.
 >
