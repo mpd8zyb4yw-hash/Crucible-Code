@@ -822,7 +822,12 @@ async function main() {
   // Pace between tasks so a multi-task cert doesn't exhaust the free-tier rate limits
   // (running hard coding tasks back-to-back trips every circuit; the next task then sees
   // an empty pool). A gap lets the 60s cooldowns recover. Tunable / 0 to disable.
-  const GAP_MS = Number(process.env.CRUCIBLE_CODE_BENCH_GAP ?? 45_000)
+  // OFFLINE-STRICT has no external pool and no rate limits, so the gap is pure dead time
+  // (~10 min across 14 tasks) AND its "free pool" log line is the exact phrase CLAUDE.md flags
+  // as "you ran the WRONG command" — which would be a false alarm on a valid offline run. Default
+  // it to 0 under strict so offline runs are faster and never print the misleading message.
+  const strictOffline = (process.env.CRUCIBLE_OFFLINE ?? '') === 'strict'
+  const GAP_MS = Number(process.env.CRUCIBLE_CODE_BENCH_GAP ?? (strictOffline ? 0 : 45_000))
 
   for (let ti = 0; ti < suite.length; ti++) {
     const task = suite[ti]

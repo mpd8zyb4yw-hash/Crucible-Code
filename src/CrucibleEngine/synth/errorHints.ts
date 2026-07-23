@@ -38,6 +38,18 @@ export function distillHint(detail: string, _spec: string): string | null {
     return `When \`direction\` is omitted it must default to 'asc': the result must be ordered ascending by \`${m[1]}\`. Check your comparator's sign and the default you apply.`
   }
 
+  // opts-transform-smoke: full by×direction sort correctness (deriveInvariant (c) check). This is
+  // the exact sortModule miss — the FM sorted the grouped branch right but HARDCODED one key in the
+  // non-grouped branch, so it failed every by=<other-key> combo. Translate into the imperative fix.
+  m = detail.match(/FAIL — sorted by (\w+) (\w+) \(non-grouped\)(?:, ties by (\w+) asc)?/)
+  if (m) {
+    const [, key, dir, tie] = m
+    return `Your non-grouped result is not correctly ordered by \`${key}\` ${dir === 'default' ? 'ascending (the default)' : dir}. Do NOT hardcode a single sort key: read \`opts.by\` and compare by THAT field (honor every allowed value, e.g. both price AND name)` +
+      (tie ? `, breaking ties by \`${tie}\` ascending regardless of direction` : '') +
+      `. Define ONE comparator that reads opts.by and opts.direction, and reuse the SAME comparator in every branch (grouped and non-grouped alike).`
+  }
+
+
   // opts-transform-smoke / shared: input array mutated.
   if (/FAIL — does not mutate input/.test(detail)) {
     return 'You are mutating the input array (Array.prototype.sort sorts IN PLACE). Copy it first: `[...items].sort(...)` — never call .sort() directly on the parameter.'
