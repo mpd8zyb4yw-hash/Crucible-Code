@@ -185,6 +185,57 @@ export function deriveOptsTransformSmokeTest(
 }`)
   }
 
+  // (c) full sort-by-requested-key correctness across every {by} × {direction} combination
+  // (non-grouped call only). This is the check that catches the exact sortModule capability
+  // miss the weak (b) check let through: the FM correctly sorted the grouped branch but its
+  // non-grouped branch HARDCODED one key (ignored opts.by='name') and mistie-broke — invisible
+  // to (b) (which only tests the first literal, ascending). Sound: validated offline that a
+  // correct multi-key sort passes ALL combos and the FM's hardcoded-key impl fails 6/6. Only
+  // the sort family with a key-style literal-union field reaches this, so no other task is
+  // affected. Every value comes from the spec's own type unions + its stated tie-break — no
+  // guessed semantics.
+  const literalsOf = (fieldName: string): string[] => {
+    const line = fieldLines.find(l => new RegExp(`^${fieldName}\\s*\\??\\s*:`).test(l))
+    return line ? Array.from(line.matchAll(/'([^']+)'/g), m => m[1]) : []
+  }
+  const dirField = fieldLines
+    .map(l => l.match(/^(\w+)\s*\?\s*:\s*(?:'[^']+'\s*\|\s*)*'[^']+'/))
+    .find(m => m && /^(direction|order|dir|sort)$/i.test(m[1]))?.[1] ?? null
+  // Tie-break key: only when the spec pins it down in words ("break by id ascending").
+  const tieMatch = spec.match(/\bties?\b[^.]{0,60}?\bbreak[^.]{0,20}?\bby\s+(\w+)\s+ascending\b/i)
+    ?? spec.match(/\bbreak[^.]{0,20}?\bby\s+(\w+)\s+ascending\b/i)
+  const tieField = tieMatch?.[1] ?? null
+  if (isSortFn && keyStyleField) {
+    const byValues = literalsOf(requiredField)
+    const dirValues: Array<{ tag: string; suffix: string; desc: boolean }> = dirField
+      ? [
+          { tag: 'default', suffix: '', desc: false },
+          ...literalsOf(dirField).map(v => ({ tag: v, suffix: `, ${dirField}: '${v}'`, desc: /desc/i.test(v) })),
+        ]
+      : [{ tag: 'default', suffix: '', desc: false }]
+    for (const bv of byValues) {
+      for (const dv of dirValues) {
+        const neg = dv.desc ? '  c = -c\n' : ''
+        const tieClause = tieField
+          ? `    if (c === 0 && a['${tieField}'] !== undefined && a['${tieField}'] > b['${tieField}']) return false\n`
+          : ''
+        extraChecks.push(
+          `if (threw === null && data.some((x: any) => x != null && x['${bv}'] !== undefined)) {
+  let __r: any = null
+  try { __r = ${fn}(data, { ${requiredField}: '${bv}'${dv.suffix} } as any) } catch { /* base no-throw check covers throwing */ }
+  const __ok = Array.isArray(__r) && __r.length === data.length && __r.every((x: any, i: number) => {
+    if (i === 0) return true
+    const a = __r[i - 1], b = x
+    let c = a['${bv}'] < b['${bv}'] ? -1 : a['${bv}'] > b['${bv}'] ? 1 : 0
+${neg}    if (c > 0) return false
+${tieClause}    return true
+  })
+  check('sorted by ${bv} ${dv.tag} (non-grouped)${tieField ? ', ties by ' + tieField + ' asc' : ''}', __ok)
+}`)
+      }
+    }
+  }
+
   const content = `// Context-invariant smoke test (opts-transform shape — Crucible synth/deriveInvariant).
 import { ${fn} } from '${importCandidate}'
 import { ${getter.name} } from '${importGetter}'
