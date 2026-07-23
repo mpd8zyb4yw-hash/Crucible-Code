@@ -107,22 +107,22 @@
    - **PRE-EXISTING FLAKE (not from this session):** `mined-aliased-import-propagation` fails its
      baseline NONDETERMINISTICALLY (two identical runs scored `-1000` load-error vs `-3` case-failure) —
      the bench's honest guard excluding it. Root-cause that task's nondeterministic subsystem bench.
-3. **editDistance is synth-catalog-solvable on the agent path** (measured this session): the `:3011`
-   scorecard is GREEN via `synth:catalog-no-iterate` (0 model inference — enumerative program search
-   constructs it), so it does NOT exercise the decompose lever on the product path (the TEMPLATE is
-   validated by the direct `__editdist_live.ts` probe instead). basicCalculator/evalRPN are not
-   synth-constructible → they exercise generation. A future generated-rate sweep must count
-   editDistance as synth, not generation. Consider whether the DP class needs a NON-synth-solvable
-   representative to exercise decompose on the agent path.
-   **DECISION NEEDED — untracked `src/CrucibleEngine/synth/skills/_learned/77ba7c865adf.ts`:** the
-   scorecard run made the synth path LEARN editDistance as a skill (this is WHY it is now
-   synth-catalog-solvable — it was memorized during benchmarking, not constructed cold every time).
-   `_learned/` files ARE git-tracked (3 committed), but this one is a memorized answer generated as a
-   side effect of a benchmark, so it was deliberately LEFT UNCOMMITTED this session — committing it
-   would entrench editDistance as memorized and conflict with the doctrine ("NOT preloaded/memorized
-   answers"). Decide: delete it (keep editDistance a genuine cold-synth/decompose task) or accept the
-   learned skill. This also raises a broader question: does benchmarking silently memorize corpus
-   tasks into `_learned/`, inflating future "synth" rates? Worth an audit.
+3. **DECISION RESOLVED + AUDIT DONE (2026-07-23) — editDistance memorization purged, choke-point guard
+   added.** editDistance was synth-catalog-solvable on the agent path ONLY because agent-path scorecard
+   runs had memorized it: `synthDriver.ts` hardcodes `distill: true`, so each solve persisted a durable
+   `_learned/<hash>.ts` (match keys on export name → score 1.0), and the next run short-circuited to the
+   L0 catalog (`synthPath:'catalog'`, zero inference). It had THREE copies (`editDistance.ts`,
+   `bc67de0ca5b9.ts`, untracked `77ba7c865adf.ts`) — ALL DELETED. Library reloads clean (258 skills); only
+   `edit-distance-lev` remains (matches `editDistanceLev`, not plain `editDistance`), so the corpus task
+   is genuinely COLD again. **Audit answer to "does benchmarking silently memorize corpus tasks?": YES it
+   did — now blocked** by a one-line guard in `distillToSkill` (pureCode.ts): `if (process.env.CRUCIBLE_NO_DISTILL)
+   return`. Every distill caller routes through that function, so cold-measurement runs export
+   `CRUCIBLE_NO_DISTILL=1` and cannot self-memorize. The `coding-benchmarks.ts` headline was never inflated
+   (it segregates catalog vs generated), but the cold-task signal was silenced. **STILL OPEN:** (a) add a
+   NON-synth-solvable DP representative so the DP class exercises decompose on the agent path even when cold
+   (item 4); (b) redundant non-corpus dupes remain — toRoman (`roman.ts`+`08454dc4b152.ts`), isEmail
+   (`isEmail.ts`+`7e0513ea58e3.ts`), and `clamp` (`01916e41e5f6.ts`, shadows `clampModule.hidden.ts` but
+   trivial) — dedup is optional cleanup, not doctrine-critical.
 4. A FOURTH template class (registry is infix + postfix + DP): a shunting-yard parens calculator
    (`evalPostfix(toPostfix(tokenize(s)))` — pure nesting) or a CSV/quoted-field parser.
 5. editDistance's `editRow` fold helper certifies ~2/3 in the direct decompose probe (model variance

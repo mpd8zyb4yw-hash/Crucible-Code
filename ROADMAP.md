@@ -1933,6 +1933,26 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23 (gap-soundness — benchmark self-memorization vector CLOSED: purged editDistance from _learned/, added CRUCIBLE_NO_DISTILL choke-point guard)
+- **Audited `_learned/` and found the corpus-memorization hole.** `distillToSkill` (pureCode.ts) is the
+  single choke point for all durable skill persistence; the agent path (`synthDriver.ts`) hardcodes
+  `distill: true`, so every agent-path scorecard solve of a benchmark corpus task persisted a durable
+  `_learned/<hash>.ts` whose `match()` keys on the export name at score 1.0. Result: on the next run the
+  task short-circuits to the L0 catalog (`synthPath:'catalog'`, zero inference) and never exercises the
+  generative/decompose path it exists to test. `editDistance` had accumulated THREE memorized copies this
+  way (`editDistance.ts`, `bc67de0ca5b9.ts`, untracked `77ba7c865adf.ts`). The `coding-benchmarks.ts`
+  headline is not inflated — it segregates catalog vs generated — but the cold-task signal was silenced.
+- **Fix:** one-line guard in `distillToSkill` — `if (process.env.CRUCIBLE_NO_DISTILL) return`. Covers agent
+  path, universal, and structuralSynthBridge from the one function they all route through. Cold-measurement
+  runs export `CRUCIBLE_NO_DISTILL=1` and can no longer self-memorize.
+- **Deleted all three editDistance `_learned` copies.** Library reloads clean (258 skills); the only
+  editDistance-adjacent skill still registered is `edit-distance-lev` (matches `editDistanceLev`, not the
+  corpus's plain `editDistance`), and proven `skills/editDistance.ts` is absent from `_manifest.ts` so it
+  never loads. The corpus `editDistance` task is genuinely COLD again. Guard verified as a no-op distill.
+- Remaining non-corpus redundant dupes flagged (not deleted): toRoman (`roman.ts` + `08454dc4b152.ts`),
+  isEmail (`isEmail.ts` + `7e0513ea58e3.ts`); `clamp` (`01916e41e5f6.ts`) shadows `clampModule.hidden.ts`
+  but is a trivial one-liner, not a reasoning-class cold task.
+
 ### 2026-07-23 (gap-soundness — THIRD template class: edit-distance DP SOLVED end-to-end; two composition-hygiene infra fixes; decompose-aware server budget; bare-example harvest)
 
 **A THIRD 0%-by-sampling class is cracked by the same registry mechanism — and it is a genuinely NEW

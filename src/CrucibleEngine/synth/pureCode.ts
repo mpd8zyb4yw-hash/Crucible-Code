@@ -246,6 +246,13 @@ function contentAddressedId(spec: string, content: string): string {
 }
 
 export function distillToSkill(spec: string, modulePath: string, content: string): void {
+  // Benchmark-integrity choke point. Every distill caller (agent path, universal, structural
+  // bridge) routes through here, so a single early-return guarantees a scorecard run cannot
+  // silently memorize a corpus task into _learned/ and thereafter serve it from the L0 catalog
+  // (tagged 'catalog', zero-inference) instead of genuinely re-deriving it. This is how
+  // editDistance got triple-memorized: synthDriver hardcodes distill:true, so each agent-path
+  // solve persisted a durable skill. Set CRUCIBLE_NO_DISTILL=1 for any cold-measurement run.
+  if (process.env.CRUCIBLE_NO_DISTILL) return
   const feats = extractFeatures(spec)
   const exports = feats.exports
   const hash = contentAddressedId(spec, content)
