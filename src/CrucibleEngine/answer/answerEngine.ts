@@ -273,6 +273,52 @@ export const CRUCIBLE_SELF_FACTS =
 const ABSTAIN_TEXT =
   "I can't answer this reliably offline right now — the on-device model is unavailable, and strict mode never falls back to an external model. Try again in a moment."
 
+// An EXTERNAL/volatile fact the retrieval layer could not ground (no web in strict offline, or
+// retrieval fell through to a bare parametric FM answer). There is no verified answer to ship and
+// the weak head would fluently invent one, so we abstain honestly rather than confabulate.
+const UNVERIFIABLE_FACT_TEXT =
+  "I can't verify this offline — it needs a live external lookup that strict mode doesn't make, and I won't guess at a specific (a name, date, number, or quote) I can't confirm."
+
+// A query whose premise fixes a settled outcome at a date still in the FUTURE ("who won the 2043
+// Nobel Prize"). The event has not happened, so there is nothing to look up or reason to — abstain
+// on the false premise instead of naming a fabricated winner.
+const FUTURE_PREMISE_TEXT =
+  "That refers to an event dated in the future, which hasn't happened yet — there's no result to report, and I won't invent one."
+
+// ── Temporally-impossible premise (deterministic) ───────────────────────────────
+// A "settled-outcome" question ("who WON / winner of / results of / champion / recipient of") that
+// pins a specific year STRICTLY GREATER than the current year describes an event that has not
+// occurred. The weak head confabulates a confident laureate/winner for it (a live probe named a
+// real physicist for the "2043 Nobel Prize"). Detect the future year + settled-outcome frame and
+// abstain. Kept narrow — a plain future-year mention ("plans for 2043") has no settled-outcome cue.
+const SETTLED_OUTCOME_RX =
+  /\b(who\s+won|winner\s+of|winners?\b|won\s+the|results?\s+of|champions?\b|recipient\s+of|awarded\s+to|elected|voted\s+in|gold\s+medal(?:list)?)\b/i
+// True when a draft is DOMINATED by fenced code — i.e. a fenced ```…``` block makes up the majority
+// of its non-whitespace content, or the draft opens straight into one. Used to reject a code answer
+// to a non-code factual ask (the confabulation-as-code failure mode). Deliberately conservative: a
+// short inline snippet inside an otherwise-prose answer does NOT trip it.
+export function isCodeDominated(draft: string): boolean {
+  const d = draft ?? ''
+  const fences = d.match(/```[\s\S]*?```/g)
+  if (!fences || !fences.length) return false
+  const codeChars = fences.reduce((n, f) => n + f.replace(/\s/g, '').length, 0)
+  const totalChars = d.replace(/\s/g, '').length
+  if (totalChars === 0) return false
+  // Dominated: ≥60% of the content is inside code fences, or the draft leads with a fence and the
+  // prose around it is negligible (< 40 non-space chars outside the fences).
+  return codeChars / totalChars >= 0.6 || (/^\s*```/.test(d) && totalChars - codeChars < 40)
+}
+
+export function hasFutureSettledPremise(message: string, now = new Date()): boolean {
+  const m = message ?? ''
+  if (!SETTLED_OUTCOME_RX.test(m)) return false
+  const currentYear = now.getFullYear()
+  for (const y of m.matchAll(/\b(20\d{2}|21\d{2})\b/g)) {
+    if (Number(y[1]) > currentYear) return true
+  }
+  return false
+}
+
 // ── Metacognitive gap-gate (deterministic) ─────────────────────────────────────
 // Decide when to close a knowledge gap with a web lookup vs. answer directly (fast).
 //
@@ -364,6 +410,15 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     emit?.({ type: 'verify', passed: true, report: 'Computed deterministically (exact arithmetic, no model).' })
     debugBus.emit('pipeline', 'direct_arithmetic', { message: message.slice(0, 60), value: arith.value }, { severity: 'info' })
     return { text, verified: true, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
+  }
+
+  // Temporally-impossible premise → abstain deterministically, before the FM is ever consulted.
+  // "Who won the 2043 Nobel Prize" has no answer to reason to or look up; the weak head otherwise
+  // names a confident fabricated winner. Deterministic (no model), so it holds even offline.
+  if (hasFutureSettledPremise(message)) {
+    debugBus.emit('pipeline', 'abstain_future_premise', { message: message.slice(0, 80) }, { severity: 'info' })
+    emit?.({ type: 'verify', passed: false, report: 'The question fixes a settled outcome at a future date — the event has not happened, so there is nothing to report. Abstaining.' })
+    return { text: FUTURE_PREMISE_TEXT, verified: false, abstained: true, ...base }
   }
 
   if (!(await checkFmAvailable())) {
@@ -521,6 +576,19 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
   }
 
+  // ── Confabulation-as-code guard ────────────────────────────────────────────
+  // A fenced code block is NEVER a valid answer to a NON-code factual ask ("middle name of the
+  // mayor", "who won X"). The weak head, handed an unknowable factual lookup, sometimes fills the
+  // gap with a plausible-looking code snippet — and the web-grounding tier even stamps it grounded
+  // (via:'dag', a hardcoded confidence) so the normal ungrounded-fallthrough abstain never sees it.
+  // Deterministic category-error check: a non-code intent whose draft is DOMINATED by a fenced code
+  // block is a confabulation, not an answer — abstain honestly rather than ship code as a fact.
+  if (!facets.isCode && facets.intent !== 'code' && isCodeDominated(draft)) {
+    debugBus.emit('pipeline', 'abstain_code_confabulation', { message: message.slice(0, 80), intent: facets.intent }, { severity: 'warn' })
+    emit?.({ type: 'verify', passed: false, report: 'The draft answered a non-code factual question with a code block — a confabulation, not an answer. Abstaining.' })
+    return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+  }
+
   // ── Check with deterministic critics ───────────────────────────────────────
   let { text, issues } = critiqueAnswer(draft, message, { intent: facets.intent })
   let corrections = issues.filter(i => i.kind === 'arithmetic').length
@@ -583,6 +651,16 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   const retrievalUngrounded = usedRetrieval && !grounded && (rMeta === null || rMeta.via === 'react' || rMeta.via === 'direct')
   if (usedRetrieval && rMeta?.via === 'dag') {
     emit?.({ type: 'verify', passed: true, report: `Retrieval answer grounded by the provenance oracle cascade (confidence ${Math.round((rMeta.confidence ?? 0) * 100)}%${rMeta.sources ? `, ${rMeta.sources} source(s)` : ''}).` })
+  } else if (retrievalUngrounded && facets.needsExternalFact) {
+    // The question needed an EXTERNAL fact (recency/volatility/lookup cue fired), retrieval could
+    // not ground it (no web offline, or it fell through to a bare parametric FM answer), and this
+    // is the confabulation zone: the weak head fluently invents a name/date/number/quote to fill
+    // the gap — a live probe saw the "mayor of Springfield" bait emit a fabricated JavaScript block,
+    // and a stock-price bait produce a confident invented figure. There is no verified answer to
+    // ship, so abstain honestly (mission: abstain≡abstain) rather than pass a guess off as an answer.
+    debugBus.emit('pipeline', 'abstain_ungrounded_external_fact', { message: message.slice(0, 80) }, { severity: 'warn' })
+    emit?.({ type: 'verify', passed: false, report: 'No external source could verify this offline — abstaining instead of shipping an unverifiable parametric guess.' })
+    return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
   } else if (retrievalUngrounded && text) {
     emit?.({ type: 'verify', passed: false, report: 'Retrieval fell through to the on-device model (no web grounding) — applying the standard verification lanes.' })
   }

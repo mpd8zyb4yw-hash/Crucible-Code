@@ -39,6 +39,11 @@ const SUITES = [
   'repair:bench',
   'examplegate:bench',
   'premise:bench',
+  // Calibration/abstention (this session): the PURE section locks CALIBRATED_HONESTY_DOCTRINE, the
+  // self-facts grounding text, the self-reference routing regex, and the temporally-impossible-
+  // premise guard — all deterministic (GGUF voters gated off, no network, no FM). The LIVE probe is
+  // env-gated (CRUCIBLE_BENCH_LIVE=1) and does NOT run here, so this stays a deterministic gate.
+  'abstain:bench',
   'jwt:bench',
   'textvector:bench',
   'latency:bench',

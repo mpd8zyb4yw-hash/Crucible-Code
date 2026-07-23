@@ -1933,6 +1933,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23e (cont.104 — ungrounded external-fact + future-premise abstention; abstain:bench gated + grown)
+- **Confabulation-as-code / confident-fabrication bleed on the factual-lookup path CLOSED.** An
+  `EXTERNAL_FACT` question (`needsExternalFact=true`) that retrieval could not ground — no web in
+  strict offline, or a fall-through to a bare parametric `fmDirectAnswer` (whose prompt carries NO
+  calibrated-honesty doctrine) — was shipping a confident guess (a live probe saw the "mayor of
+  Springfield" bait emit a fabricated JS block, and stock-price baits invent figures).
+  `answerEngine.answerQuery` now ABSTAINS on `retrievalUngrounded && facets.needsExternalFact`
+  (`UNVERIFIABLE_FACT_TEXT`) instead of passing the ungrounded parametric draft off as an answer.
+- **Temporally-impossible premise abstains deterministically.** New `hasFutureSettledPremise()` +
+  `SETTLED_OUTCOME_RX` catch a settled-outcome frame ("who won / winner of / results of / champion /
+  recipient of") pinned to a year past `new Date().getFullYear()` ("2043 Nobel Prize") and abstain
+  BEFORE the FM is consulted (`FUTURE_PREMISE_TEXT`). No model, holds offline. Narrow: a future year
+  with no settled-outcome cue ("plans for the 2043 Mars mission") is not swallowed.
+- **Verified task-3 doctrine reach:** `server.ts` `synthSystemContent` (= base + `CALIBRATED_HONESTY_
+  DOCTRINE`) → `shapedSynthSystem` → the real streaming `synthesisMessages` (server.ts:6570) AND the
+  speculative synth (6068), both over the quorum `models`. NOT dead defense-in-depth — live on every
+  quorum synthesis.
+- **`abstain:bench` grown + wired into `bench:all`.** PURE section now also locks the future-premise
+  guard (10 new deterministic checks → 56/56); live bait set expanded 5→12 unknowable specifics.
+  Registered in `__bench_all.ts` SUITES — the LIVE probe is `CRUCIBLE_BENCH_LIVE`-gated so the
+  aggregate runs only the deterministic invariants (no FM, no network).
+
 ### 2026-07-23d (cont.103 — calibration shared into quorum synthesis; self-ref grounding beats web retrieval; abstention bench added)
 - **Restarted the app, confirmed the triage/calibration routing end-to-end in the running UI.**
   `how smart are you` → `triage_simple_strict_local` (5ms triage) → on-device answer engine, NOT

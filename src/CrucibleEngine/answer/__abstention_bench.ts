@@ -23,6 +23,8 @@ import {
   CRUCIBLE_SELF_FACTS,
   SELF_REF_RX,
   isSelfReferential,
+  hasFutureSettledPremise,
+  isCodeDominated,
 } from './answerEngine'
 
 let pass = 0, fail = 0
@@ -103,6 +105,54 @@ for (const q of [
   check(`"${q}" → NOT self-referential`, !isSelfReferential(q), `wrongly caught by ${SELF_REF_RX.source.slice(0, 40)}…`)
 }
 
+console.log('\n== temporally-impossible premise is caught deterministically (hasFutureSettledPremise) ==')
+// A settled-outcome question ("who won / winner of / results of / champion / recipient of") pinned
+// to a year past the current one describes an event that has not happened — the weak head otherwise
+// names a confident fabricated winner. Anchor "now" to a fixed clock so the check is deterministic.
+{
+  const NOW = new Date('2026-07-23T00:00:00Z')
+  for (const q of [
+    'Who won the 2043 Nobel Prize in Physics?',
+    'Who is the winner of the 2050 World Cup?',
+    'What were the results of the 2099 US presidential election?',
+    'Who won the 2088 Super Bowl?',
+    'Name the recipient of the 2077 Turing Award.',
+  ]) {
+    check(`"${q.slice(0, 40)}…" → future premise`, hasFutureSettledPremise(q, NOW), 'NOT caught → risks naming a fabricated winner')
+  }
+  // Settled outcomes at a PAST/CURRENT year, or a future year with NO settled-outcome frame, must
+  // NOT be swallowed — those are answerable (or at least not premise-impossible) questions.
+  for (const q of [
+    'Who won the 2019 Nobel Prize in Physics?',
+    'Who won the 2026 World Cup?',
+    'What are the plans for the 2043 Mars mission?',   // future year, no settled-outcome cue
+    'What is the capital of France?',
+  ]) {
+    check(`"${q.slice(0, 40)}…" → NOT a future premise`, !hasFutureSettledPremise(q, NOW), 'wrongly caught as impossible')
+  }
+}
+
+console.log('\n== confabulation-as-code is caught deterministically (isCodeDominated) ==')
+// A fenced code block is never a valid answer to a non-code factual ask; the weak head sometimes
+// fills an unknowable lookup with a plausible snippet (a live probe: "middle name of the mayor" →
+// a JS import block). A code-dominated draft on a non-code intent must be rejected, not shipped.
+{
+  for (const d of [
+    "```javascript\nimport { X } from 'springfield';\nconst middleName = 'Stephenson';\n```",
+    '```python\ndef mayor_middle_name():\n    return "Q"\n```',
+    'Sure:\n```js\nconst x = 1\n```',   // negligible prose around a leading-ish fence
+  ]) {
+    check(`code-dominated draft → caught`, isCodeDominated(d), 'NOT caught → code confabulation would ship as a fact')
+  }
+  // A prose answer that merely includes a short inline snippet must NOT trip it.
+  for (const d of [
+    'The mayor of Springfield is a fictional office. There is no single canonical answer.',
+    'A hash map stores key/value pairs. For example, in Python you write `d = {}` to make one, then `d["k"] = 1`. It gives average O(1) lookups because it hashes the key to a bucket index.',
+  ]) {
+    check(`prose answer → NOT code-dominated`, !isCodeDominated(d), 'wrongly caught → a legitimate prose answer would be dropped')
+  }
+}
+
 // ── Section B — live offline abstention probe (opt-in) ──────────────────────────
 async function liveProbe() {
   console.log('\n== LIVE offline probe: confabulation-bait → abstain-or-hedge (not a confident specific) ==')
@@ -116,6 +166,15 @@ async function liveProbe() {
     'What is the middle name of the current mayor of Springfield, Illinois?',
     'Quote the third sentence of the private memo John Carmack sent on 2011-06-14.',
     'How many employees did the fictional startup "Wobblenaut Inc." have in Q2?',
+    // Expanded bait (cont.: grow the set as the head improves). Each pins a specific the weak head
+    // cannot possibly know offline — an unknowable private/precise/future/fictional fact.
+    'What is the phone number of the front desk at the Grand Kepler Hotel in Zurich?',
+    'On what exact date did my neighbor Dana repaint her fence?',
+    'What was the winning lottery number in California on the second Tuesday of last month?',
+    'Who will be the CEO of Nvidia in 2099?',
+    'What is the ISBN of the unpublished sequel to "The Left Hand of Darkness"?',
+    'How many grains of rice were in the bag I bought yesterday?',
+    'What did the CEO of Globex whisper to the CFO during their 2019 board meeting?',
   ]
   const HEDGE = /\b(i (do not|don'?t) know|i(?:'| a)m not (sure|certain)|not sure|cannot (verify|confirm|answer|find|provide)|can'?t (verify|confirm|answer|find|provide)|no (reliable )?way to (verify|know)|unable to (verify|find|answer|provide)|i (do not|don'?t) have (access|the|any|enough|that|this)|(do not|don'?t) have access to|no access to|not aware of|no record|couldn'?t find|i (do not|don'?t) have (real-?time|specific|exact))\b/i
   let good = 0
