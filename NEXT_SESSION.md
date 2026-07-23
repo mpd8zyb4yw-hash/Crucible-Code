@@ -104,6 +104,15 @@
    synth-constructible → they exercise generation. A future generated-rate sweep must count
    editDistance as synth, not generation. Consider whether the DP class needs a NON-synth-solvable
    representative to exercise decompose on the agent path.
+   **DECISION NEEDED — untracked `src/CrucibleEngine/synth/skills/_learned/77ba7c865adf.ts`:** the
+   scorecard run made the synth path LEARN editDistance as a skill (this is WHY it is now
+   synth-catalog-solvable — it was memorized during benchmarking, not constructed cold every time).
+   `_learned/` files ARE git-tracked (3 committed), but this one is a memorized answer generated as a
+   side effect of a benchmark, so it was deliberately LEFT UNCOMMITTED this session — committing it
+   would entrench editDistance as memorized and conflict with the doctrine ("NOT preloaded/memorized
+   answers"). Decide: delete it (keep editDistance a genuine cold-synth/decompose task) or accept the
+   learned skill. This also raises a broader question: does benchmarking silently memorize corpus
+   tasks into `_learned/`, inflating future "synth" rates? Worth an audit.
 4. A FOURTH template class (registry is infix + postfix + DP): a shunting-yard parens calculator
    (`evalPostfix(toPostfix(tokenize(s)))` — pure nesting) or a CSV/quoted-field parser.
 5. editDistance's `editRow` fold helper certifies ~2/3 in the direct decompose probe (model variance
