@@ -56,6 +56,9 @@ unfounded** — see S-1.
 | S-2 | **High** | Oracle executes model-generated candidate code with `env: process.env` — full secrets (JWT_SECRET, provider API keys, OAuth client secrets) + network. A crafted "write me code" prompt could exfiltrate env during verification. | `sandboxEnv()` deny-lists credential-shaped env keys for both `run` (spawnSync) and `runAsync` (spawn). Verified: `synth:prove` 4/4 green. | `933a558` |
 | S-3 | Medium | `checkpoint.ts` interpolates the commit `message` into a shell string unescaped (`execSync`), while paths right above it *are* escaped — command injection via agent/goal-derived messages. Rollback `git checkout ${hash}` also unvalidated. | Single-quote-escape the message; validate `hash` is `[0-9a-f]{4,40}`. Verified with an injection repro: `$(touch …)` payload is stored as inert literal, no execution. | `933a558` |
 | S-4 | 2 low + 6 high | Dependency vulns (undici cluster: TLS bypass, header injection, cache poisoning, …). | `npm audit fix` (non-breaking): **20 → 12**. | `8dd0253` |
+| S-6 | Medium | `cors()` reflected an arbitrary `Origin` with `credentials:true` (any site could make credentialed cross-origin calls). Mitigated by `httpOnly`+`sameSite:lax`, but real for cookieless allowlisted endpoints. | Reflect only an allowlist (`FRONTEND_URL`, `crucible.cam`) + localhost/LAN; all other origins get no ACAO. Isolated-staged around a concurrent `server.ts` edit; esbuild parse-clean. | `9fde212` |
+| S-7 | Low-med | Oracle ran model-generated code with **network reachable** — a candidate could phone home / exfiltrate the scratch dir / act as an SSRF-DoS pivot (S-2 only closed env secrets). | Wrap `run`/`runAsync` in `sandbox-exec (deny network*)` on macOS; platform-guarded + `CRUCIBLE_ORACLE_NO_SANDBOX=1` escape hatch. Verified: `synth:prove` 4/4; positive control confirms network actually denied. | `59083b2` |
+| S-8 | Low | `rawGet` (retrieval) could fetch a poisoned search-result URL pointing at cloud metadata / localhost / RFC-1918 → SSRF pivot. | Custom `lookup` hook (blocks hostnames resolving private; DNS-rebinding-safe) **plus** synchronous IP-literal check (Node skips lookup for IP literals — the metadata payload). Covers redirects. Verified in the real module: metadata/live-server/localhost all blocked, public still fetches; unit 15/15. | `b559219` |
 
 ### Verified GOOD (no change needed — documented so future sessions don't re-audit)
 
@@ -66,54 +69,31 @@ unfounded** — see S-1.
 - **No provider keys in the client bundle**: no `import.meta.env.VITE_*_API_KEY` refs in `app/`; no literal key material in the build.
 - **Phantom-package gate** (`retrievalLayer.ts:1171`): `packageExistence()` tri-state npm check already guards fabricated package names.
 
-### Deferred / recommended (NOT applied — reason noted)
+### Remaining / deferred (with reason)
 
-**S-5 — 12 remaining dependency vulns (2 critical, 10 high).** All require **major** bumps and
-are **build/dev-time, not runtime-exploitable with untrusted input**:
-- `tar` (CRITICAL) → `@electron/rebuild@4.2.0` — arbitrary file write during tarball extraction: **electron packaging / native rebuild only**.
-- `protobufjs` (CRITICAL) → `@xenova/transformers@1.4.2` — ACE requires *untrusted* protobuf; here transitive under onnxruntime loading **local** models. A major downgrade of the embeddings lib risks breaking semantic recall / vision.
-- `shell-quote` (HIGH) → `concurrently@9` — DoS in a **dev-only** script runner.
-- **Why deferred:** the fix is `npm audit fix --force` (major bumps). Per the handoff doc's own guidance, run it **in a dedicated branch, then `npm run smoke && npm run smoke:code && npm run synth:prove && npm run prove:all`** to confirm nothing broke. Do NOT run it while a server is live and a parallel session is editing.
-- **Command:** `git switch -c chore/dep-majors && npm audit fix --force && <run benches> && npm audit --json`.
+> S-6, S-7, S-8 were implemented + validated after this doc's first draft — see the "Fixed
+> this session" table above (`9fde212`, `59083b2`, `b559219`). Only S-5 and S-9 remain.
 
-**S-6 — Permissive CORS (medium, patch ready).** `server.ts:632` reflects an arbitrary
-`Origin` with `credentials: true`. Mitigated today by `sameSite:'lax'` + `httpOnly` + the
-global auth guard (the cookie is not sent on cross-site fetch), so it is **not a live exploit**
-for authenticated endpoints — but it is a real misconfiguration and matters for the cookieless
-allowlisted endpoints (`/api/screen-stream` etc.). **Not applied because `server.ts` is the
-known merge-contention file and a parallel session was editing it live during this audit.**
-Apply when `server.ts` is quiescent:
-
-```js
-// server.ts ~632 — replace the cors({...}) block
-app.use(cors({
-  origin: (origin, cb) => {
-    // Reflect only trusted origins; never reflect an arbitrary origin with credentials:true.
-    // LAN + localhost preserved for phone/dev access.
-    const allow = [process.env.FRONTEND_URL, 'https://crucible.cam',
-                   'http://localhost:5173', 'http://localhost:3001'].filter(Boolean)
-    if (!origin) return cb(null, true)                       // same-origin / curl / native app
-    if (allow.includes(origin) ||
-        /^https?:\/\/(localhost|127\.0\.0\.1|(192\.168|10|172\.(1[6-9]|2\d|3[01]))\.)/.test(origin))
-      return cb(null, origin)
-    return cb(null, false)
-  },
-  credentials: true,
-}))
-```
-
-**S-7 — Oracle network egress not isolated (low-medium).** `sandboxEnv()` (S-2) closes secret
-*exfiltration via env*, but the candidate can still open sockets. For full isolation, wrap the
-oracle's `spawn`/`spawnSync` in `sandbox-exec -p '(version 1)(allow default)(deny network*)'`
-on macOS (the `/api/sandbox/run` pattern). Deferred because a correct implementation must not
-break `npx tsx` module resolution; validate against `synth:prove` + `smoke:code`.
-
-**S-8 — SSRF hardening on outbound fetch (low).** `retrievalLayer.ts:569` `fetch(url)` and
-`modelDownloadManager.ts:155` (`redirect:'follow'`) fetch URLs derived from search results /
-registries (not raw user input, so no direct sink). For cloud deploys (Fly.io), add a guard
-that resolves the host and **rejects private / link-local ranges** (`169.254.169.254`,
-`10.*`, `192.168.*`, `127.*`, `::1`) before fetching, and re-checks after each redirect — to
-prevent a poisoned search result from reaching cloud metadata.
+**S-5 — 12 remaining dependency vulns (2 critical, 10 high). DELIBERATELY not force-fixed.**
+All require **major** bumps and are **build/dev-time, not runtime-exploitable with untrusted
+input**:
+- `tar` (CRITICAL) → `@electron/rebuild@4.2.0` — arbitrary file write during tarball extraction: **electron packaging / native rebuild only**, never the request path.
+- `protobufjs` (CRITICAL) → `@xenova/transformers@1.4.2` — ACE requires *untrusted* protobuf; here transitive under onnxruntime loading **local** models (no untrusted proto input). The suggested fix is a **major downgrade** of the embeddings lib that would likely break semantic recall / vision.
+- `shell-quote` (HIGH) → `concurrently@9` — quadratic-DoS in a **dev-only** script runner.
+- **Why not applied now:** `npm audit fix --force` rewrites `node_modules`, which a **live
+  server and an active parallel session share** — mutating it mid-flight can break their
+  running work — and it trades a runtime-breaking `@xenova` downgrade for a build-time vuln.
+  Forcing a runtime regression to patch a build-time issue is the wrong trade.
+- **Safe apply recipe (isolated, when quiescent):**
+  ```sh
+  git worktree add ../crucible-deps chore/dep-majors   # own checkout
+  cd ../crucible-deps && npm ci                          # OWN node_modules — does NOT touch the live tree
+  npm audit fix --force
+  npm run smoke && npm run smoke:code && npm run synth:prove && npm run prove:all
+  npm audit --json    # confirm critical=0; keep only if benches stayed green
+  ```
+  Merge only if the ML/vision benches survive the `@xenova` change; otherwise pin the
+  non-ML sub-fixes individually (e.g. `concurrently@9` alone clears `shell-quote`).
 
 **S-9 — Operational: proxy down.** `proxy.crucible.cam` returns connection-refused (edge-level;
 `crucible.cam` is 200). Local `wrangler` auth is expired, so it can't be diagnosed headlessly.
