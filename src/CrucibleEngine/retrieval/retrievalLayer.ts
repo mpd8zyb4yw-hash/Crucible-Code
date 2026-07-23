@@ -16,6 +16,7 @@
 
 import https from 'https'
 import http from 'http'
+import dns from 'dns'
 import { readFileSync } from 'fs'
 import type { RouterTask } from '../router/capabilityRouter'
 import { debugBus } from '../debug/bus'
@@ -88,10 +89,56 @@ function hostOf(url: string): string {
   try { return new URL(url).hostname } catch { return '' }
 }
 
+// ── SSRF guard ───────────────────────────────────────────────────────────────────
+// rawGet fetches URLs derived from search results / registries, so a poisoned result could
+// point at an internal address (cloud metadata 169.254.169.254, localhost, RFC-1918) and turn
+// the server into an SSRF pivot — on a cloud deploy that can leak instance credentials. We can't
+// trust the hostname string: it may be an IP literal OR a public name that RESOLVES to a private
+// IP (DNS-rebinding). The robust fix is a custom `lookup` hook: it sees the ACTUAL address the
+// socket is about to connect to (no TOCTOU), covers IP literals and hostnames alike, and — because
+// rawGet re-enters itself for each redirect — covers every redirect hop too. Escape hatch:
+// CRUCIBLE_ALLOW_PRIVATE_FETCH=1 (e.g. pointing retrieval at a LAN mirror on purpose).
+const SSRF_GUARD = process.env.CRUCIBLE_ALLOW_PRIVATE_FETCH !== '1'
+function isPrivateAddr(ip: string): boolean {
+  const s = ip.toLowerCase().replace(/^\[|\]$/g, '')
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (m) {
+    const a = +m[1], b = +m[2]
+    return a === 0 || a === 10 || a === 127 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||          // link-local incl. cloud metadata
+      (a === 100 && b >= 64 && b <= 127)   // CGNAT (100.64/10)
+  }
+  const mapped = s.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (mapped) return isPrivateAddr(mapped[1])
+  return s === '::1' || s === '::' || s.startsWith('fe80') || s.startsWith('fc') || s.startsWith('fd')
+}
+function guardedLookup(hostname: string, options: any, cb: any): void {
+  dns.lookup(hostname, options, (err: any, addr: any, fam?: any) => {
+    if (err) return cb(err, addr, fam)
+    const addrs = Array.isArray(addr) ? addr.map((a: any) => a.address) : [addr]
+    const bad = addrs.find((a: string) => isPrivateAddr(a))
+    if (bad) return cb(new Error(`SSRF blocked: ${hostname} resolves to private address ${bad}`))
+    cb(null, addr, fam)
+  })
+}
+
 function rawGet(url: string, timeout = 6000, redirectsLeft = 4, ua = UA): Promise<string> {
   return new Promise((resolve, reject) => {
     let mod: typeof https | typeof http
     try { mod = url.startsWith('http://') ? http : https } catch { reject(new Error('bad url')); return }
+    // Node's http.get SKIPS the `lookup` hook when the host is already an IP literal, so the
+    // guardedLookup below only covers hostnames. Catch private IP literals (e.g. the direct
+    // 169.254.169.254 metadata payload) synchronously here. Hostnames — incl. "localhost" and
+    // any public name that resolves to a private IP — are still caught by guardedLookup.
+    if (SSRF_GUARD) {
+      const h = hostOf(url).replace(/^\[|\]$/g, '')
+      const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')
+      if (h === 'localhost' || h.endsWith('.localhost') || (isIpLiteral && isPrivateAddr(h))) {
+        reject(new Error(`SSRF blocked: ${h || url}`)); return
+      }
+    }
     const headers: Record<string, string> = {
       'User-Agent': ua,
       'Accept': 'text/html,application/xhtml+xml,application/json,*/*',
@@ -105,7 +152,7 @@ function rawGet(url: string, timeout = 6000, redirectsLeft = 4, ua = UA): Promis
       headers['Authorization'] = `Bearer ${ghToken}`
       headers['X-GitHub-Api-Version'] = '2022-11-28'
     }
-    const req = mod.get(url, { headers }, res => {
+    const req = mod.get(url, { headers, lookup: SSRF_GUARD ? guardedLookup : undefined }, res => {
       const status = res.statusCode ?? 0
       // Follow redirects (npm/unpkg/DefinitelyTyped all redirect heavily).
       if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
