@@ -171,7 +171,16 @@ function systemPromptFor(facets: AnswerFacets, evidence: string): string {
     'When the user asks you to recall a fact they told you earlier (e.g. their name, their project, ' +
     'a decision), find it in the conversation above and answer with THAT exact fact — do not give ' +
     'your own name and do not make one up; if it is not in the conversation, say so. ' +
-    'Be accurate above all — if you are not sure, say so plainly rather than guessing.'
+    // Calibrated honesty — the load-bearing anti-confabulation rule. The weak on-device model's
+    // worst failure is fluently inventing a specific (a name, date, source, attribution) to fill a
+    // gap it half-knows. Forbid that outright and give it the three sanctioned moves instead.
+    'CALIBRATED HONESTY IS YOUR FIRST DUTY. For every factual specific — a name, date, number, ' +
+    'quote, citation, author, or event — state it ONLY if you are actually confident it is correct. ' +
+    'You have exactly three honest moves: (1) answer plainly when you know it; (2) answer but flag ' +
+    'the part you are unsure about ("I think… but I am not certain"); or (3) say you do not know / ' +
+    'cannot verify it. NEVER invent a plausible-sounding specific to fill a gap — a truthful ' +
+    '"I am not sure" or "I do not know" is always better than a confident guess. Do not pad an ' +
+    'answer with fabricated detail to sound authoritative.'
   const grounding = evidence
     ? `\n\n## Retrieved evidence (ground your answer in THIS; do not contradict it)\n${evidence}`
     : ''
@@ -226,6 +235,26 @@ function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content:
       { role: 'assistant', content: h.assistant },
     ])
 }
+
+// ── Self-knowledge grounding ────────────────────────────────────────────────
+// "How smart are you / who made you / what are you" have a GROUND TRUTH — what Crucible
+// actually is — but the parametric model has never seen it, so it confabulates a persona
+// (a real run answered "how smart are you" with "I am a fictional character created by Larry
+// Niven and Jerry Pournelle"). This is NOT a canned per-question answer: we inject the honest
+// facts as grounding and let the model compose the reply over them, the same way retrieved
+// evidence grounds a lookup. It reasons about itself instead of inventing a biography.
+const SELF_REF_RX =
+  /\b(how\s+(smart|intelligent|clever|capable|good|powerful|advanced|fast)\s+(are|r)\s+you|what('?s| is| are)\s+you\b|who\s+(are|r|made|built|created|trained|designed)\s+you|what\s+(kind|type|sort)\s+of\s+(ai|model|assistant|thing)\s+are\s+you|what\s+model\s+are\s+you|are\s+you\s+(conscious|sentient|alive|human|real|self.?aware|an?\s+(ai|llm|robot|model|human))|tell\s+me\s+about\s+yourself|introduce\s+yourself|what\s+can\s+you\s+do|what\s+are\s+your\s+(capabilit|limitation|strength|weakness))/i
+export function isSelfReferential(message: string): boolean {
+  return SELF_REF_RX.test(message ?? '')
+}
+const CRUCIBLE_SELF_FACTS =
+  `- Crucible is a private AI assistant that runs entirely on the user's own device (offline-first); in strict mode it makes no external calls at all.\n` +
+  `- Its cognitive core is a deliberately SMALL on-device language model (about 1.5 billion parameters today). It is not a large frontier model and does not claim to be one.\n` +
+  `- Its reliability does NOT come from raw model size. It comes from a verification-and-search loop around that small model: the model only proposes, and deterministic checkers (arithmetic, code execution, calendar math, self-consistency voting) certify or reject each answer, and it backtracks when a check fails.\n` +
+  `- Because of that loop it is strongest on things that can be checked — arithmetic and word problems, code it can run, definitions and explanations, recall of what you told it earlier. It is weaker on obscure or very recent facts it was never trained on, and it can be wrong on those.\n` +
+  `- It has no feelings, no consciousness, and no fixed IQ score. "How smart am I" is best answered by what it can and cannot reliably do, not by a number.\n` +
+  `- When it is not sure or cannot verify something, it says so or abstains rather than guessing. It was built by its developer as an experiment in making a small model trustworthy through verification, not scale.`
 
 const ABSTAIN_TEXT =
   "I can't answer this reliably offline right now — the on-device model is unavailable, and strict mode never falls back to an external model. Try again in a moment."
@@ -329,6 +358,12 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // single depth-controlled FM call — NOT web-retrieved, because there is no external fact to
   // fetch (a math word problem or a concept explanation is answered from reasoning, not search).
   let sys = systemPromptFor(facets, '')
+  // Self-referential questions ("how smart are you", "who made you") get grounded in the honest
+  // facts about what Crucible is, so the model reasons over ground truth instead of inventing a
+  // persona. Paired with the calibrated-honesty rule in `base`, this closes the confabulation gap.
+  if (isSelfReferential(message)) {
+    sys += `\n\n## About you (Crucible) — ground ANY question about yourself in THESE facts. Do not invent a biography, authors, a persona, or an IQ; if asked something about yourself not covered here, say you are not sure.\n${CRUCIBLE_SELF_FACTS}`
+  }
   // Fold the older-turn recall into the system prompt as labeled context the FM reads reliably.
   if (recall.recallBlock) {
     sys += `\n\n## Earlier in this conversation (facts the user already told you — treat as authoritative)\n${recall.recallBlock}`

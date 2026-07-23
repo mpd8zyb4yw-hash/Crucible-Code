@@ -64,7 +64,7 @@ function traceTurn(inner: import('./src/CrucibleEngine/agent/loop').DriveTurn): 
     }
   }
 }
-import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
+import { answerQuery, isSelfReferential } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild, matchMeta } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
@@ -4631,6 +4631,11 @@ app.post('/api/chat', async (req, res) => {
     if (PREMISE_RX.test(trimmed)) return 'full'
     const qMarks = (trimmed.match(/\?/g) || []).length
     if (trimmed.length <= 160 && qMarks <= 1 && SIMPLE_RX.test(trimmed) && !NEEDS_ENSEMBLE_RX.test(trimmed)) return 'simple'
+    // Self-referential + open-ended chat ("how smart are you", "who made you", "what can you do")
+    // belong on the on-device answer engine (answerQuery), which now grounds them in Crucible's real
+    // facts and answers with calibrated honesty. Routing them to the heavy quorum was the bug that
+    // let a 1.5B model confabulate a persona AND compile its prose answer as TypeScript.
+    if (trimmed.length <= 200 && isSelfReferential(trimmed)) return 'simple'
     return 'full'
   }
   // Context-dependent follow-ups ("what is ITS population?", "and THAT one?") mean
