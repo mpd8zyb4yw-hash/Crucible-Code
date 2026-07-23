@@ -65,7 +65,7 @@ function traceTurn(inner: import('./src/CrucibleEngine/agent/loop').DriveTurn): 
   }
 }
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
-import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
+import { clarifyBuild, matchMeta } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
 import { selectBestEffort } from './src/CrucibleEngine/reasoning/keepK'
@@ -3001,9 +3001,19 @@ function buildAssumptionNote(message: string): string | null {
 // up, and actually writes + runs the code.
 function isCodeImplementationTask(message: string): boolean {
   const m = message ?? ''
-  const buildVerb = /\b(implement|build|write|create|develop|code|scaffold|refactor)\b/i.test(m)
+  // Novice/casual phrasing (cont.101): a non-technical user asks for advanced things in plain
+  // words — "make me a sorter", "I need a function that…", "can you whip up a CSV parser". The
+  // formal verb/noun lists below missed all of these, so they fell through to the prose/Q&A path
+  // and the user got an explanation instead of a built, verified module. Widen the vocabulary to
+  // the casual synonyms. This is PURELY ADDITIVE: every request that matched before still matches,
+  // and the new matches are ones that previously produced prose — so it can only route MORE build
+  // requests into the verify-and-build loop, never change an existing route. The build loop still
+  // certifies by execution and abstains honestly, so a vague request that can't form a checkable
+  // spec is handled the same as any other under-specified task (clarify / best-effort), never a
+  // false ship.
+  const buildVerb = /\b(implement|build|write|create|develop|code|scaffold|refactor|make|makes|making|generate|produce|need|needs|want|wants|gimme|give me|put together|whip up|help me (?:build|make|write|create))\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
-  const codeNoun = /\b(function|class|module|interface|api|endpoint|algorithm|parser|engine|component|library|package|cli|data structure|test suite|self-test)\b/i.test(m)
+  const codeNoun = /\b(function|class|module|interface|api|endpoint|algorithm|parser|engine|component|library|package|cli|data structure|test suite|self-test|sorter|checker|validator|converter|formatter|encoder|decoder|helper|utility|util|script|handler|generator|calculator|comparator|serializer|deserializer|tokeni[sz]er|matcher)\b/i.test(m)
   return buildVerb && (hasCodePath || codeNoun)
 }
 
@@ -5480,7 +5490,12 @@ app.post('/api/chat', async (req, res) => {
   }
 
   let complexity = scoreComplexity(message)
-  if (qualityForceFull || uncertaintyResult.forceFullPipeline) complexity = 'complex'
+  // A bare conversational/meta query (greeting, "who are you", "how smart are you", "what can
+  // you do") is a FIXED-FACT / calibrated answer, never a job for the full multi-model quorum.
+  // Never let the quality/uncertainty heuristics force-promote it to 'complex' — doing so is
+  // what routed "how smart are you" through the heavy pipeline in the first place.
+  const isConversationalMeta = matchMeta(message) !== null
+  if (!isConversationalMeta && (qualityForceFull || uncertaintyResult.forceFullPipeline)) complexity = 'complex'
   console.log(`[Pipeline] Complexity: ${complexity}`)
   const config = complexity === 'simple' ? SIMPLE_PIPELINE_CONFIG : PIPELINE_CONFIG
 
@@ -7192,6 +7207,22 @@ app.post('/api/verify', async (req, res) => {
 
   const rid = `v-${Date.now()}`
   const send = (payload: object) => res.write(`data: ${JSON.stringify(payload)}\n\n`)
+  const offlineStrict = (process.env.CRUCIBLE_OFFLINE ?? '1') === 'strict'
+
+  // Defense-in-depth (prose-as-code guard): the client only posts real fenced code, but this
+  // endpoint is reachable directly. Never run a compiler on natural-language text. If no
+  // explicit language was supplied AND the payload has no code-like structure (no braces,
+  // semicolons, def/function/import/return, assignments), treat it as non-code and no-op —
+  // otherwise detectLanguage would guess "typescript" and fail line 1 on English prose.
+  if (!language) {
+    const looksLikeCode = /[{};=]|\b(?:def|function|class|import|from|return|const|let|var|for|while|if|print|console)\b|=>|::/.test(String(code))
+    if (!looksLikeCode) {
+      send({ type: 'verify_clean' })
+      res.write('data: [DONE]\n\n'); res.end()
+      debugBus.emit('verify', 'skipped_non_code', { codeLen: String(code).length }, { severity: 'info', requestId: rid })
+      return
+    }
+  }
 
   const { executeCode, verifyCode } = await import('./src/CrucibleEngine/sandbox')
   const { parseError, attemptAlgorithmicFix, buildSurgicalPrompt } = await import('./src/CrucibleEngine/error-intelligence')
@@ -7267,6 +7298,19 @@ app.post('/api/verify', async (req, res) => {
         res.write('data: [DONE]\n\n'); res.end(); return
       }
       workingCode = fix.code
+    }
+
+    // ── Offline-strict short-circuit ────────────────────────────────────
+    // Rounds 3 (surgical single-model) and 4 (multi-model analysis tournament) both call
+    // EXTERNAL cloud models (groq/mistral/openrouter). Under CRUCIBLE_OFFLINE=strict — the
+    // doctrine's production default — every one of those calls throws OfflineStrictError, so
+    // the tournament can ONLY emit "external escalation blocked" errors (the 8 verify errors
+    // seen in the debug feed) and never fix anything. Fail honestly on the deterministic
+    // Rounds 1-2 instead of burning a guaranteed-failing external loop.
+    if (offlineStrict) {
+      debugBus.emit('verify', 'verify_result', { passed: false, offline: true }, { severity: 'warn', requestId: rid })
+      send({ type: 'verify_failed', error: result.error ?? 'Could not fix with on-device deterministic checks (offline mode)' })
+      res.write('data: [DONE]\n\n'); res.end(); return
     }
 
     // ── Round 3: surgical single-model fix ──────────────────────────────

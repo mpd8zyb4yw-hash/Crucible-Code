@@ -38,6 +38,16 @@ const CREATOR = /^\s*(?:(?:so\s+|hey\s+)?who(?:'?s|\s+is|\s+are)?\s+(?:the\s+one
 // "what can you do", "what do you do", "how can you help", "what are you capable of".
 const CAPABILITY = /^\s*(?:what\s+can\s+you\s+(?:do|help(?:\s+with)?)|what\s+do\s+you\s+do|what\s+are\s+you\s+(?:capable\s+of|able\s+to\s+do)|how\s+(?:can|do)\s+you\s+help|what\s+(?:can|could)\s+you\s+help\s+(?:me\s+)?with|help)\b[\s?.!]*$/i
 
+// "how smart/intelligent/capable/good are you", "are you smart", "how well do you reason".
+// This is a SELF-ASSESSMENT question, not a fixed identity fact — and it's exactly the class
+// that made the weak on-device model confabulate ("I am a fictional character created by
+// Larry Niven and Jerry Pournelle"). There is no factual number to look up, so the ONLY honest
+// answer is a calibrated one: state what is known (how it's built), decline to invent a score,
+// and never fabricate. Anchored to the whole message so "how good is this investment" etc.
+// never match. Kept ahead of nothing it would wrongly swallow — IDENTITY/CAPABILITY are
+// disjoint shapes ("what/who are you" vs "how smart are you").
+const SELF_ASSESSMENT = /^\s*(?:so\s+|hey\s+|and\s+)?(?:how\s+(?:smart|intelligent|clever|capable|powerful|good|advanced|reliable|accurate|dumb|stupid)\s+(?:are|r|is)\s+(?:you|u|crucible)|are\s+(?:you|u)\s+(?:really\s+|actually\s+|even\s+)?(?:smart|intelligent|clever|capable|dumb|stupid|any\s+good)|how\s+(?:well|good)\s+(?:do|can|are)\s+(?:you|u)\s+(?:reason|think|answer|do))\b[\s?.!]*$/i
+
 const GREETING_TEXT =
   "Hi — I'm Crucible, a private assistant running entirely on your device. " +
   "Ask me a question, hand me a problem to reason through, or ask me to build something. " +
@@ -55,6 +65,19 @@ const CREATOR_TEXT =
   'model) coordinated by a verification-first reasoning system that checks its own work before ' +
   "answering. I'm not made by any big cloud provider, and nothing you say leaves your machine. " +
   'What can I help you with?'
+
+const SELF_ASSESSMENT_TEXT =
+  "Honest answer: I can't put a number on that, and I won't pretend to. What I can tell you is " +
+  "how I'm built, because that's what actually determines what I get right.\n\n" +
+  'I run on a small language model on your own device — far smaller than the big cloud models, ' +
+  'and on its own it makes mistakes. What makes me more reliable than that model alone is the ' +
+  "loop around it: I don't just trust a first draft, I check my own work with deterministic " +
+  'verifiers — running code, computing arithmetic exactly, cross-examining claims — and I would ' +
+  'rather tell you I’m not sure than make something up.\n\n' +
+  'So I’m strongest on things that can be checked — reasoning step by step, math, and writing ' +
+  'and running code — and weaker on obscure facts I can’t verify offline, where I’ll say I ' +
+  "don't know rather than guess. If you have a specific problem, the fastest way to judge me is to " +
+  'hand it over and see how I do.'
 
 const CAPABILITY_TEXT =
   'A few things, all on-device:\n\n' +
@@ -75,6 +98,7 @@ export function matchMeta(message: string): MetaMatch | null {
   const m = (message ?? '').trim()
   if (!m || m.length > 60) return null // long messages are never bare meta-openers
   if (CREATOR.test(m)) return { kind: 'identity', text: CREATOR_TEXT }
+  if (SELF_ASSESSMENT.test(m)) return { kind: 'identity', text: SELF_ASSESSMENT_TEXT }
   if (IDENTITY.test(m)) return { kind: 'identity', text: IDENTITY_TEXT }
   if (CAPABILITY.test(m)) return { kind: 'capability', text: CAPABILITY_TEXT }
   if (GREETING.test(m)) return { kind: 'greeting', text: GREETING_TEXT }

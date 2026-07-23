@@ -28,6 +28,23 @@ import { TasksBinder, HistoryBinder } from './chat/binders'
 import { AuthScreen } from './chat/AuthScreen'
 import { MessageList } from './chat/MessageList'
 
+// Only real, runnable code should ever reach /api/verify. A prose answer (e.g. "how smart
+// are you") has NO fenced code block; posting the prose made the server's detectLanguage
+// guess "typescript" and compile English as source (TS1434 at line 1), then burn the whole
+// repair tournament trying to "fix" it. Extract the first fenced block whose language tag is
+// one the sandbox actually executes; return null for everything else so verify is skipped.
+const RUNNABLE_LANGS = /^(?:js|javascript|ts|typescript|jsx|tsx|py|python|python3)$/i
+function extractVerifiableCode(answer: string): { code: string; language: string } | null {
+  const fence = /```([a-zA-Z0-9+#.]*)\r?\n([\s\S]*?)```/g
+  let m: RegExpExecArray | null
+  while ((m = fence.exec(answer))) {
+    const language = (m[1] || '').trim()
+    const code = (m[2] || '').trim()
+    if (code.length >= 10 && RUNNABLE_LANGS.test(language)) return { code, language }
+  }
+  return null
+}
+
 export default function App() {
   // F panels — parallel chats: rounds from EVERY open conversation live in this one
   // array (each tagged with convId). Streaming updaters are keyed by unique round id,
@@ -1469,7 +1486,10 @@ export default function App() {
               setConvThinking(convId, false)
               const synthText = synthesisRef.current[roundId] ?? ''
               if (synthText) {
-                setTimeout(() => runVerify(roundId, synthText, userMessage), 200)
+                // Gate: only verify when the answer actually contains runnable code.
+                // Prose answers must never be posted to /api/verify (compiled-as-code bug).
+                const verifiable = extractVerifiableCode(synthText)
+                if (verifiable) setTimeout(() => runVerify(roundId, verifiable.code, userMessage, verifiable.language), 200)
                 speakReply(synthText)
               }
 
@@ -1769,14 +1789,14 @@ export default function App() {
     }
   }
 
-  const runVerify = async (roundId: string, code: string, originalPrompt: string) => {
+  const runVerify = async (roundId: string, code: string, originalPrompt: string, language?: string) => {
     setRounds(prev => prev.map(r => r.id === roundId ? { ...r, verifyStatus: 'running', verifyMessage: 'Running verification...' } : r))
     let res: Response
     try {
       res = await apiFetch(`${API_BASE}/api/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code, originalPrompt }),
+        body: JSON.stringify({ code, originalPrompt, ...(language ? { language } : {}) }),
       })
     } catch (fetchErr) {
       console.error('[runVerify] fetch FAILED:', fetchErr)
