@@ -91,12 +91,30 @@
 > (`synth/hermetic.ts`, `coding-bench-ext/`, `oracle.ts` Gate-B) — NEW files + one wiring line.
 
 **OPEN (next session, priority order):**
-1. **Item 1 — full 39/40 strict-offline scorecard against `:3011`** for the aggregate "after"
-   generated-rate vs the 3% floor (the headline number). NOT run — a full n=39 strict sweep "can
-   exceed 5 hours" (coding-benchmarks.ts:53), infeasible in one session. This session validated
-   editDistance GREEN through the live `:3011` server (see the synth-catalog note below) but the
-   aggregate sweep is still pending. Server repro below; run `npx tsx
-   src/CrucibleEngine/coding-benchmarks.ts` (no id filter) with `CRUCIBLE_API=http://localhost:3011`.
+1. **Item 1 — full n=42 strict-offline aggregate scorecard: LAUNCHED IN-FLIGHT 2026-07-24 (gap-soundness).**
+   The headline "after" generated-rate vs the 3% floor. Kicked off as a detached ~5h job against `:3011`
+   (all 42 tasks incl. the three cracked classes basicCalculator/evalRPN/editDistance exercised COLD under
+   `CRUCIBLE_NO_DISTILL=1`). **Single-task smoke first confirmed the pipeline GREEN end-to-end** —
+   `usernameModule`: certified, `path=generated` (genuine model generation, NOT catalog — proves the
+   NO_DISTILL guard works), hidden suite ALL PASS, 6s.
+   - **HOW TO READ THE RESULT (this run outlives the session):** scorecard log at
+     `<scratchpad>/aggregate_scorecard.log` (PID recorded in `<scratchpad>/aggregate.pid`; the scratchpad
+     dir is printed in the session system prompt). `tail -80` for the `=== SCORECARD ===` block and the
+     `genuine model generation X/Y` aggregate line. If the process died early, re-launch per the repro below.
+   - **CRITICAL INFRA NOTE — the local-FM health shim.** server.ts's `checkLocalInference()` requires
+     `/health` → `{"available":true}`, but the on-box inference server is now a RAW llama.cpp OpenAI server
+     on `:8080` whose `/health` returns `{"status":"ok"}` → the boot-check false-negatives and DISABLES the
+     agentic path in strict mode (server.ts:3636/3689 gate on `localInferenceAvailable`). Fix used: a tiny
+     health-shim proxy `scripts/fm_health_shim.mjs` (durable repo copy; listens `:8090`, fakes `/health` as
+     available, transparently proxies `/v1/*` → `:8080`). The `:3011` server is launched with
+     `LOCAL_INFERENCE_URL=http://localhost:8090`. **If the AFM bridge is running again, the shim is
+     unnecessary — point `LOCAL_INFERENCE_URL` straight at it.** Consider hardening `checkLocalInference()`
+     to also accept `{"status":"ok"}` so a raw llama.cpp server works without a shim (small, high-value).
+   - Repro: `node scripts/fm_health_shim.mjs &` then
+     `PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1
+     CRUCIBLE_CONVERGE=1 CRUCIBLE_NO_DISTILL=1 LOCAL_INFERENCE_URL=http://localhost:8090 npx tsx server.ts`,
+     then `CRUCIBLE_API=http://localhost:3011 CRUCIBLE_OFFLINE=strict CRUCIBLE_ENV_PATH=$PWD/.env.local
+     npx tsx src/CrucibleEngine/coding-benchmarks.ts` (no id filter = all tasks).
 2. **Item 3 — mined-survivor triage: DONE (classified).** Exhaustive sweep (26 mutants, 13 survived,
    50% kill): 9 likely-equivalent, 4 flagged likely-hole. On inspection the 4:
    - **REAL HOLE (actionable):** `mined-apifaith-vocabulary` L119
