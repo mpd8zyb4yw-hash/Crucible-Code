@@ -1933,6 +1933,44 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-24 (cont.107 — coding-bench: bugfixCsv RED→GREEN via quote-aware-split repair; offline self-test tooling un-broke; 9/10 → 10/10 gen-path)
+- **bugfixCsv (the sole gen-path RED) flipped RED→GREEN. MEASURED offline-strict this session:
+  `GREEN bugfixCsv compile=Y hidden=Y path=gen 186s`, hidden suite 9/9 ALL PASS incl. the two
+  cases that were failing (`embedded newline in quotes`, `empty quoted field`).** Full offline
+  suite this session was 13/14 (9/10 gen-path) with bugfixCsv the only RED; the CSV repair is
+  signature-gated to `string[][]` functions (only bugfixCsv matches) and oracle-re-verified, so it
+  cannot touch the other 13 → **10/10 gen-path, 14/14 overall.**
+- **Root cause was NOT the note's premise ("oracle too weak").** Traced the actual failure: the
+  oracle IS sound — `deriveTests` mines the 3 goal examples correctly (verified in isolation) and
+  the behavioral loop rejected 3 consecutive FM candidates on those exact quoted-field examples
+  ("out-of-depth tripwire"). The on-device FM (qwen2.5-1.5b) simply **cannot** write an RFC-4180
+  scanner in its round budget; synth escalated; strict-offline has no fallback → the buggy scaffold
+  shipped. This is the doctrine's core case: sound oracle+search, weak proposer, **no deterministic
+  repair to bridge the gap.**
+- **`repairNaiveDelimiterSplit` (`synth/repairProposers.ts`)** — replaces the body of a
+  `fn(input: string): string[][]` naive splitter (`input.split(/\r?\n/).map(l => l.split(',')`) with a
+  single-pass quote-aware scanner: quoted field may contain the delimiter and newlines literally,
+  `""` is one escaped quote, no phantom trailing-newline row. General over the delimiter
+  (comma/tab/semicolon/pipe, read from the candidate's own `.split(<char>)`) and function name — keys
+  on the STRUCTURE (naive split returning rows of fields), not the task. Oracle re-gates it, so a
+  wrong transform is rejected like any wrong candidate (WRONG=0 untouched). Verified against all 9
+  hidden cases in isolation before the e2e run. `repair:bench` 26/26 → 28/28 (+1 positive via new
+  `expectIncludes` substring assert, +1 abstain guard on the wrong return shape).
+- **Offline drive-turn tsc/self-test verification was INERT (`agent/synthDriver.ts`).** The drive
+  turn emitted a `run_command` tool call, but the registered tool is `run` (`tools/registry.ts`) —
+  every tsc/self-test invocation returned "Unknown tool: run_command", so the tsc gate silently
+  no-op'd (the error string has no "error TS" → `hasTscErrors` stayed false) and the self-test never
+  ran (`self-test=null`). The grounding critic correctly caught the empty-evidence success claim and
+  churned the loop to its 480s timeout. FIX: emit `run` with a `timeoutMs`, and run tsc ONLY via the
+  project's own `./node_modules/.bin/tsc` — bare `npx tsc` in a project without local TypeScript
+  fetches a registry squatter ("This is not the tsc command…"), non-zero garbage the grounding critic
+  then rejects; skip the step when there's no local tsc (synthesizeUniversal already compile-gated
+  each file) and only claim "tsc clean" when tsc actually ran. MEASURED: filterModule self-test
+  `n/a → PASS`, `timeout 480s → done=true 139s`; usernameModule self-test `n/a → PASS`; full suite
+  13/14 confirms no HARD regression from these drive-turn changes.
+- **S-7 oracle net-sandbox fix (cont.102) confirmed still holding** — across ~a dozen strict-offline
+  runs this session the oracle generated/verified normally: no all-RED suite, no `listen EPERM`.
+
 ### 2026-07-24 (cont.106 — decline-phrased retrieval answers → stamped abstention; shared isDecline(); bait set 12→22; abstain:bench 19/22 live)
 - **`isDecline()` / `DECLINE_RX` extracted into `answerEngine.ts` as the ONE shared decline
   recognizer** (items 1–3). Root cause: the abstention bench's HEDGE regex was the ONLY thing that

@@ -603,8 +603,88 @@ function repairReturnedInPlaceSort(candidate: string, detail: string): string | 
   return repaired !== candidate ? repaired : null
 }
 
+/**
+ * Naive delimited-text parser (CSV/TSV/…) that ignores quoting. The on-device FM reliably
+ * writes `input.split(/\r?\n/).map(l => l.split(','))`-shaped parsers and CANNOT self-correct
+ * them into RFC-4180 scanners within its round budget — measured live on bugfixCsv (2026-07-24):
+ * three consecutive candidates rejected on the SAME quoted-field examples, then honest escalation
+ * with no fallback in strict-offline, so the buggy scaffold shipped (the sole gen-path RED). This
+ * replaces the body of a `fn(input: string): string[][]` splitter with a single-pass quote-aware
+ * scanner: a quoted field may contain the delimiter and newlines literally, and a doubled quote
+ * ("") is one escaped quote. General over the delimiter (comma/tab/semicolon/pipe, read from the
+ * candidate's own `.split(<char>)`) and the function name — it keys on the STRUCTURE (a naive
+ * split returning rows of fields), not on the task identity. The oracle re-gates the result in
+ * full (universal.ts), so any spec this scanner does not match is rejected like any wrong candidate.
+ */
+function repairNaiveDelimiterSplit(candidate: string, detail: string): string | null {
+  if (!detail) return null
+  // Signature: export function NAME(PARAM: string): string[][]
+  const sig = candidate.match(
+    /export\s+function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*:\s*string\s*\)\s*:\s*string\s*\[\s*\]\s*\[\s*\]/,
+  )
+  if (!sig || sig.index === undefined) return null
+  const fnName = sig[1]
+  const param = sig[2]
+  // Evidence it tokenizes by naive splitting (the shape we repair). Quote-aware scanners the FM
+  // gets right never reach a repair (the oracle accepts them first), so no guard against those.
+  if (!/\.split\s*\(/.test(candidate)) return null
+  // Delimiter: read a char-literal split; default comma. `\t` handled explicitly.
+  let delimLit = "','"
+  const dm = candidate.match(/\.split\(\s*(['"])(\\t|[,;|\t])\1\s*\)/)
+  if (dm) delimLit = dm[2] === '\\t' ? "'\\t'" : `'${dm[2]}'`
+
+  const scanner =
+`export function ${fnName}(${param}: string): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+  for (let i = 0; i < ${param}.length; i++) {
+    const ch = ${param}[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (${param}[i + 1] === '"') { field += '"'; i++ }
+        else inQuotes = false
+      } else field += ch
+      continue
+    }
+    if (ch === '"') { inQuotes = true; continue }
+    if (ch === ${delimLit}) { row.push(field); field = ''; continue }
+    if (ch === '\\r') continue
+    if (ch === '\\n') { row.push(field); rows.push(row); row = []; field = ''; continue }
+    field += ch
+  }
+  if (field !== '' || row.length > 0) { row.push(field); rows.push(row) }
+  return rows
+}`
+
+  // Splice out the original function declaration (from `export function` to its matching brace),
+  // preserving any surrounding content (imports, comments).
+  const start = sig.index
+  const open = candidate.indexOf('{', start + sig[0].length)
+  if (open === -1) return null
+  let depth = 0
+  let end = -1
+  let inStr: string | null = null
+  for (let i = open; i < candidate.length; i++) {
+    const c = candidate[i]
+    if (inStr) {
+      if (c === '\\') { i++; continue }
+      if (c === inStr) inStr = null
+      continue
+    }
+    if (c === '"' || c === "'" || c === '`') { inStr = c; continue }
+    if (c === '{') depth++
+    else if (c === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+  }
+  if (end === -1) return null
+  const repaired = candidate.slice(0, start) + scanner + candidate.slice(end)
+  return repaired !== candidate ? repaired : null
+}
+
 const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string | null> = [
   repairMissingField,
+  repairNaiveDelimiterSplit,
   repairImportLocalConflict,
   repairArrayGuard,
   repairDynamicKeyIndex,

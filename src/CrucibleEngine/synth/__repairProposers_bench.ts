@@ -21,6 +21,9 @@ interface Case {
   ctx?: { modulePath: string; files: string[] }
   // Exact string the repaired candidate must equal, or null if no repair should fire at all.
   expect: string | null
+  // Substring that SOME proposed repair must contain — used when pinning the whole emitted body
+  // verbatim would be brittle (e.g. the multi-line quote-aware scanner). Ignored when `expect` set.
+  expectIncludes?: string
 }
 
 const CASES: Case[] = [
@@ -227,6 +230,25 @@ export function sortProducts(products: Product[], opts: SortOpts): Product[] {
     detail: `FAIL — unrelated behavioral check`,
     expect: null,
   },
+  {
+    // repairNaiveDelimiterSplit: the FM's naive `split(',')` CSV parser (returns string[][]) gets
+    // replaced with a single-pass quote-aware RFC-4180 scanner. Body pinned by substring, not
+    // verbatim — the whole scanner is stable but multi-line. Full correctness is covered e2e
+    // (bugfixCsv flips RED→GREEN) and the oracle re-gates the result in any case.
+    name: 'repairNaiveDelimiterSplit: naive split(",") CSV parser → quote-aware scanner',
+    candidate: `export function parseCsv(input: string): string[][] {\n  return input.split(/\\r?\\n/).filter(l => l.length > 0).map(l => l.split(','))\n}`,
+    detail: `FAIL — parseCsv('a,"b,c",d') === [['a','b,c','d']]  (got [['a','"b','c"','d']])`,
+    expect: 'sentinel-unused',
+    expectIncludes: 'let inQuotes = false',
+  },
+  {
+    // repairNaiveDelimiterSplit ABSTAINS on the wrong return shape: a `string[]` splitter (one row)
+    // is not the rows-of-fields structure this repair owns, so it must not fire.
+    name: 'repairNaiveDelimiterSplit: ABSTAINS when the function does not return string[][]',
+    candidate: `export function splitLine(input: string): string[] { return input.split(',') }`,
+    detail: `FAIL — splitLine('a,b') === ['a','b']  (got something)`,
+    expect: null,
+  },
 ]
 
 function main() {
@@ -234,7 +256,9 @@ function main() {
   for (const c of CASES) {
     const repairs = proposeRepairs(c.candidate, c.detail, c.spec ?? '', c.ctx)
     let ok: boolean
-    if (c.expect === null) {
+    if (c.expectIncludes !== undefined) {
+      ok = repairs.some(r => r.includes(c.expectIncludes!))
+    } else if (c.expect === null) {
       ok = repairs.length === 0
     } else {
       ok = repairs.includes(c.expect)

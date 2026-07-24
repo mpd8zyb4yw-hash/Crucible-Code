@@ -385,14 +385,6 @@ loadCircuitState()
 import { exec, execFile, spawn } from 'child_process'
 import { prewarmPython, shutdownSandbox } from './src/CrucibleEngine/sandbox'
 import { debugBus } from './src/CrucibleEngine/debug/bus'
-// TEMP DIAGNOSTIC (item-3 tsc-escalation trace): env-gated stderr tap of agent-category events.
-if (process.env.CRUCIBLE_TRACE === '1') {
-  debugBus.subscribe(e => {
-    if (e.category === 'agent' || e.category === 'tool') {
-      process.stderr.write(`[TRACE ${e.category}/${e.type}] ${JSON.stringify(e.data).slice(0, 260)}\n`)
-    }
-  })
-}
 import { debugAnalyzer } from './src/CrucibleEngine/debug/analyzer'
 import { qualityPredictor } from './src/CrucibleEngine/qualityPredictor'
 import { init as autoImproveInit, triggerImprovementPass, rollbackIfDegraded, status as autoImproveStatus, loadLearnedWeights, setCallModel as autoImproveSetCallModel } from './src/CrucibleEngine/autoImprove'

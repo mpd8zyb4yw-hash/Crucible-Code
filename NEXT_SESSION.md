@@ -17,8 +17,46 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-24 (cont.106, answers/calibration track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-24 (cont.107 coding-bench track + cont.106 answers track — two concurrent tracks, both current) (REPLACE THIS EVERY SESSION)
 
+> NOTE: two tracks were live on 2026-07-24. The CODING-BENCH block is first; the ANSWERS/CALIBRATION
+> block (cont.106) follows unchanged. Do not delete either without confirming that track is done.
+
+### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.107 — MEASURED, gen-path 9/10 → 10/10):
+- **bugfixCsv RED→GREEN** (the sole gen-path RED). `repairNaiveDelimiterSplit` in
+  `synth/repairProposers.ts`: a naive `fn(input:string):string[][]` splitter → single-pass
+  quote-aware RFC-4180 scanner, delimiter read from the candidate, oracle-re-gated. Measured
+  `GREEN bugfixCsv compile=Y hidden=Y path=gen 186s`, hidden 9/9 ALL PASS. `repair:bench` 28/28.
+- **Offline drive-turn tsc/self-test un-broke** (`agent/synthDriver.ts`): emitted-tool name was
+  `run_command` but the registry tool is `run` → tsc/self-test were "Unknown tool" no-ops; self-test
+  never ran, grounding critic churned to timeout. Now emits `run` (+timeoutMs), runs tsc only via
+  the project's own `./node_modules/.bin/tsc` (bare `npx tsc` fetches a squatter in projects w/o
+  local TS), skips when absent, and only claims "tsc clean" when tsc ran. filterModule
+  timeout→139s + self-test n/a→PASS; usernameModule self-test n/a→PASS; no HARD regression.
+
+**Coding-bench open next, highest-leverage first:**
+1. **Novice-intent downstream gap** (`agent/synthDriver.ts` ~L2287–2410, unchanged this session):
+   a pathless code goal gets `primaryPath = null` → falls to `solveNonCodeTurn` (prose). Add
+   `defaultCodePath(goal)` inference mirroring the `isWebArtifactGoal`/`defaultWebArtifactPath`
+   block (~L2291), gated so it only fires on server-approved-as-code turns (else it regresses the
+   conversational-confabulation fix). BLOCKED ON TWO THINGS: (a) coordinate with the concurrent
+   `server.ts` routing session; (b) it CANNOT be measured yet — add a novice-phrased benchmark task
+   (sanctioned 14→30) to `coding-benchmarks.ts` FIRST, or the change is unmeasurable = unshippable
+   per doctrine rule #4. Do not implement blind.
+2. **bugfixCsv SOFT residuals** (HARD is green, low priority): the FM's generated self-test
+   `src/index.ts` FAILs (it asserts the FM's own wrong behavior against the now-correct repaired
+   module) and LLM rubric is 40. Neither affects passedHard. Only worth touching if a self-test
+   SOFT metric becomes a gate.
+3. **Full-suite wall-clock**: gen tasks run 200–1000s+ server-side; the harness's 480s PER_TASK
+   timeout aborts only the harness's WAIT, not the server-side agent, so a full 14-task offline
+   suite takes 40–90 min. Consider wiring an abort signal from harness→server, or accept the cost.
+4. **S-7 net-sandbox** (`synth/oracle.ts`): confirmed still holding this session (no all-RED, no
+   `listen EPERM` across ~a dozen strict runs). If it ever recurs on a future oracle.ts edit, it's
+   the net sandbox re-blocking the local unix pipe — escape hatch `CRUCIBLE_ORACLE_NO_SANDBOX=1`.
+
+---
+
+### ANSWERS/CALIBRATION TRACK —
 **Shipped 2026-07-24 (cont.106 — MEASURED live probe 19/22):**
 - **Production pipeline can now recognize its own declines.** `isDecline()`/`DECLINE_RX` extracted
   into `answerEngine.ts` and shared with `__abstention_bench.ts` (one source of truth). A
