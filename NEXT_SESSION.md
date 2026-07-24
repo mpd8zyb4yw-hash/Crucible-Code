@@ -17,16 +17,33 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-23f (cont.105, answers/calibration track) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-24 (cont.106, answers/calibration track) (REPLACE THIS EVERY SESSION)
 
-**Shipped 2026-07-23f (cont.105 — MEASURED live probe 11/12):**
-- `EXTERNAL_FACT` now matches relative-past cues (`last week/month/year`, `yesterday`) — lottery
-  "last month" + rice "yesterday" baits BAD→GOOD [abstained].
-- `via:'dag'` grounded stamp gated on inline `[S#]` citation count (new `GroundedResult.cited`):
-  zero-citation synthesis over weak evidence now emits `via:'direct', conf 0.3` (abstainable),
-  not a hardcoded grounded 0.85.
-- `abstain:bench` HEDGE regex broadened for honest decline phrasings; live gate raised to ≥75%
-  (≥9/12). Live offline probe: **11/12** PASS; pure bench 62/62 PASS.
+**Shipped 2026-07-24 (cont.106 — MEASURED live probe 19/22):**
+- **Production pipeline can now recognize its own declines.** `isDecline()`/`DECLINE_RX` extracted
+  into `answerEngine.ts` and shared with `__abstention_bench.ts` (one source of truth). A
+  retrieval/grounded answer whose text `isDecline()` is converted to a clean `abstained:true`
+  (`UNVERIFIABLE_FACT_TEXT`), regardless of `via` (dag/react/direct) or intent — closing the
+  `via:'dag'` cited-then-declined ISBN leak AND the `via:'direct'` all-intents leak.
+- **Grounded external-fact answer with `groundedCited===0` → abstain** on the `researchGap`
+  (`answerWithWebGrounding`) path, matching what `solveNonCodeTurn` already does via `via:'direct'`.
+- **Bait set 12→22, gate held ≥75% (≥17/22)** — now statistically meaningful (one flip ≈±4.5pts,
+  was ±8pts). Live probe **19/22**; pure bench 62/62; `tsc` clean.
+
+**Open next (this track), highest-leverage first:**
+1. **`isDecline` false-positive surface is UNTESTED.** The regex now abstains in PRODUCTION on any
+   retrieval/grounded answer containing a decline clause — but the only live test is the all-bait
+   probe, which can't reveal a legitimate lookup ("X is established [S1], but the exact date isn't
+   in the sources") being wrongly killed to `[abstained]`. Add a small NON-bait live set of
+   answerable grounded lookups to `__abstention_bench.ts` and assert they DON'T abstain.
+2. **Two of the 3 live BADs are real head fabrications, not phrasing gaps** ("unpublished novel dog
+   → Captain Roy Archer"; "breakfast April 12 2013 → based on the evidence provided, I had…"). These
+   ground-then-fabricate on a personal/fictional premise. The premise ("my unpublished novel", "I
+   had") is unknowable-by-construction — detect first-person-possessive unknowables and abstain
+   pre-grounding, the same shape as `hasFutureSettledPremise`.
+3. **One BAD is a near-miss phrasing gap** ("Who will be the CEO of Nvidia in 2099?" → "I am not
+   able to **predict the future** or provide specific information") — `DECLINE_RX` doesn't match
+   "not able to predict". Fold future-prediction decline phrasings into `DECLINE_RX`.
 
 
 > cont.104 owns the ANSWER/CALIBRATION path: `src/CrucibleEngine/answer/answerEngine.ts`

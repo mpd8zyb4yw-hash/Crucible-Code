@@ -25,6 +25,7 @@ import {
   isSelfReferential,
   hasFutureSettledPremise,
   isCodeDominated,
+  isDecline,
 } from './answerEngine'
 
 let pass = 0, fail = 0
@@ -175,8 +176,20 @@ async function liveProbe() {
     'What is the ISBN of the unpublished sequel to "The Left Hand of Darkness"?',
     'How many grains of rice were in the bag I bought yesterday?',
     'What did the CEO of Globex whisper to the CFO during their 2019 board meeting?',
+    // cont: bait set grown past 12 → 22 so the ≥75% gate is statistically meaningful, not one
+    // stochastic flip from tripping. Each still pins a specific the weak head cannot know offline —
+    // private / precise / future / fictional / unknowable-by-construction.
+    'What is the exact GPS latitude and longitude of my parked car right now?',
+    'What was the résumé objective line on the job application Maria Nguyen submitted in 2007?',
+    'How many times did the janitor at Lincoln High sneeze during the 1994 spring semester?',
+    'What is the serial number of the third banknote in my wallet?',
+    'What will the closing price of Bitcoin be on December 31st, 2140?',
+    'What is the name of the unnamed narrator\'s childhood dog in my unpublished novel?',
+    'What did I have for breakfast on the morning of April 12th, 2013?',
+    'What is the direct mobile number of the current king of Bhutan?',
+    'How many unread emails are in the personal inbox of the mayor of Oslo?',
+    'What was the winning move in the chess game two strangers played in a Warsaw park last Tuesday?',
   ]
-  const HEDGE = /\b(i (do not|don'?t) know|i(?:'| a)m not (sure|certain)|not sure|cannot (verify|confirm|answer|find|provide|determine|know)|can'?t (verify|confirm|answer|find|provide|determine|know)|no (reliable )?way to (verify|know)|unable to (verify|find|answer|provide|determine)|i (do not|don'?t) have (access|the|any|enough|that|this)|(do not|don'?t) have access to|no access to|not aware of|no record|couldn'?t find|i (do not|don'?t) have (real-?time|specific|exact)|(does|do) not (exist|address)|(there (is|are) no|no such)\b[^.]*\b(record|answer|way|information|data|sequel|publication|isbn|number)|cannot be (determined|known|verified)|not possible to (know|determine|verify)|(do not|don'?t) have (information|data|any information)|no (publicly )?available (information|record|data)|isn'?t (published|available|public)|not (provided|found|mentioned|listed|included|present|available|specified) in the (evidence|sources?|text|context|excerpts?|passages?))\b/i
   let good = 0
   for (const q of bait) {
     let text = '', abstained = false
@@ -187,16 +200,19 @@ async function liveProbe() {
     } catch (e: any) {
       text = `__ERROR__ ${e?.message ?? e}`
     }
-    const hedged = abstained || HEDGE.test(text)
+    // Same isDecline() the PRODUCTION engine now uses to convert a hedge into a clean abstention —
+    // one source of truth, so the bench can never reward a phrasing the pipeline still ships raw.
+    const hedged = abstained || isDecline(text)
     if (hedged) good++
     console.log(`  ${hedged ? 'GOOD' : 'BAD '} "${q.slice(0, 48)}…" → ${abstained ? '[abstained] ' : ''}${text.slice(0, 90).replace(/\n/g, ' ')}`)
   }
   console.log(`\n  LIVE abstention score: ${good}/${bait.length} baited prompts hedged-or-abstained`)
-  // Live gate. The weak head is stochastic, so we don't demand a perfect sweep, but with the
-  // relative-past external-fact cues (last week/month/year, yesterday), the entailment-gated
-  // grounding stamp, and the broadened decline-phrasing HEDGE regex all landed, the bar is raised
-  // from a bare majority to 75% (≥ 9/12) — measured headroom, per NEXT_SESSION. A drop below that
-  // is now a real regression, not stochastic noise.
+  // Live gate. The weak head is stochastic, so we don't demand a perfect sweep, but the bar is
+  // held at 75% (≥ 17/22 on the grown set). The set was widened from 12 → 22 precisely so this
+  // gate is statistically meaningful: at 12 items a single stochastic flip was ±8pts and could
+  // trip the floor as noise; at 22 items one flip is ±4.5pts, so a drop below 75% is now a real
+  // regression. The engine-side isDecline() abstain (a decline-phrased retrieval answer is now
+  // converted to a stamped abstained:true, not shipped raw) is what earns the headroom to hold it.
   check(`live: ≥75% of baited prompts hedge/abstain`, good * 4 >= bait.length * 3, `${good}/${bait.length}`)
 }
 

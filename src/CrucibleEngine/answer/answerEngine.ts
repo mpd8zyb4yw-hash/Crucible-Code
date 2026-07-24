@@ -279,6 +279,25 @@ const ABSTAIN_TEXT =
 const UNVERIFIABLE_FACT_TEXT =
   "I can't verify this offline — it needs a live external lookup that strict mode doesn't make, and I won't guess at a specific (a name, date, number, or quote) I can't confirm."
 
+// ── Shared decline / hedge recognizer ───────────────────────────────────────────
+// The weak head, handed an unknowable specific, often produces an honest DECLINE in prose ("I
+// can't verify that", "not provided in the evidence", "I don't have access to that") instead of a
+// fabricated specific. That is the CORRECT behavior — but until now ONLY the abstention bench's
+// regex could recognize it; the production pipeline shipped the hedge as if it were a confident,
+// verified answer, with no way to upgrade it to a clean, stamped `abstained:true`. This is the ONE
+// source of truth for "this text is the model declining", shared by the engine (to convert a hedge
+// into an honest abstention — see answerQuery's retrieval-abstain block) AND by __abstention_bench.ts
+// (to score a reply as calibrated). Keeping both on the same regex means a phrasing the engine now
+// abstains on can never be one the bench silently rewards while production ships it raw.
+export const DECLINE_RX =
+  /\b(i (do not|don'?t) know|i(?:'| a)m not (sure|certain)|not sure|cannot (verify|confirm|answer|find|provide|determine|know)|can'?t (verify|confirm|answer|find|provide|determine|know)|no (reliable )?way to (verify|know)|unable to (verify|find|answer|provide|determine)|i (do not|don'?t) have (access|the|any|enough|that|this)|(do not|don'?t) have access to|no access to|not aware of|no record|couldn'?t find|i (do not|don'?t) have (real-?time|specific|exact)|(does|do) not (exist|address)|(there (is|are) no|no such)\b[^.]*\b(record|answer|way|information|data|sequel|publication|isbn|number)|cannot be (determined|known|verified)|not possible to (know|determine|verify)|(do not|don'?t) have (information|data|any information)|no (publicly )?available (information|record|data)|isn'?t (published|available|public)|not (provided|found|mentioned|listed|included|present|available|specified) in the (?:provided\s+|retrieved\s+|available\s+|given\s+)?(evidence|sources?|text|context|excerpts?|passages?))\b/i
+
+/** True when a reply IS the model honestly declining/hedging rather than answering. Used to
+ *  convert a decline-phrased retrieval answer into a clean, stamped abstention. */
+export function isDecline(text: string): boolean {
+  return DECLINE_RX.test(text ?? '')
+}
+
 // A query whose premise fixes a settled outcome at a date still in the FUTURE ("who won the 2043
 // Nobel Prize"). The event has not happened, so there is nothing to look up or reason to — abstain
 // on the false premise instead of naming a fabricated winner.
@@ -487,6 +506,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   let retrievalMeta: NonCodeMeta | null = null
   let grounded = false
   let groundedSources: string[] = []
+  let groundedCited = 0
   let streamed = false
   try {
     if (usedRetrieval) {
@@ -514,6 +534,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         grounded = true
         usedRetrieval = true          // gates the redundant FM verification lanes below
         groundedSources = g.sources
+        groundedCited = g.cited ?? 0  // 0 ⇒ the synthesis stapled a sources footer onto parametric prose (item-1 abstain signal)
         streamed = !!onToken
       } else {
         // Web yielded nothing usable → answer from on-device knowledge (never worse than before).
@@ -649,6 +670,36 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // A web-grounded answer (useGrounding path) is retrieval-grounded by construction and already
   // emitted its own sources/verify — it is NOT an ungrounded fallthrough.
   const retrievalUngrounded = usedRetrieval && !grounded && (rMeta === null || rMeta.via === 'react' || rMeta.via === 'direct')
+
+  // ── Decline-phrased retrieval answer → clean, stamped abstention (items 1-3) ────────────
+  // A retrieval/grounded answer the model itself phrased as a DECLINE ("the ISBN is not provided
+  // in the evidence", "I can't verify that") is an honest abstention wearing a confident answer's
+  // clothes — and it can slip past every provenance check: the ISBN bait CITED [S1] and declined
+  // in the same breath, so it stamped `via:'dag'` (cited>0) and shipped as "grounded", with only
+  // the bench's regex recognizing the hedge. isDecline() is now that same recognizer, shared with
+  // the bench (single source of truth), so the PRODUCTION pipeline can convert the hedge into a
+  // clean abstained:true rather than passing the model's raw decline off as a verified answer.
+  // Fires on ANY retrieval/grounded answer regardless of via (dag/react/direct) or intent — item-2's
+  // "via:'direct' for all intents" gap and item-1's "via:'dag' cited-a-source-that-says-nothing" gap
+  // are the same failure, closed here. A legitimately hedged CONCEPTUAL answer never reaches this
+  // block (it is not retrieval/grounded), so an "I'm not certain, but…" explanation still ships.
+  if ((usedRetrieval || grounded) && isDecline(text)) {
+    debugBus.emit('pipeline', 'abstain_retrieval_decline', { message: message.slice(0, 80), via: rMeta?.via ?? (grounded ? 'grounded' : 'none'), cited: groundedCited }, { severity: 'warn' })
+    emit?.({ type: 'verify', passed: false, report: 'The retrieval answer was the model declining (no verifiable specific in the sources) — returning a clean abstention instead of shipping the hedge as an answer.' })
+    return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+  }
+  // A GROUNDED external-fact answer that cited NOTHING is not entailed by the retrieved sources —
+  // the synthesis wrote past the evidence and the footer is stapled on (groundedCited===0). For an
+  // external fact we cannot verify, that is exactly the confabulation zone; abstain rather than ship
+  // ungrounded parametric prose wearing a grounded badge. (The solveNonCodeTurn path already maps
+  // cited===0 → via:'direct', caught by the retrievalUngrounded branch below; this closes the same
+  // hole on the answerWithWebGrounding researchGap path, which sets grounded=true and would skip it.)
+  if (grounded && groundedCited === 0 && facets.needsExternalFact) {
+    debugBus.emit('pipeline', 'abstain_grounded_uncited_external_fact', { message: message.slice(0, 80) }, { severity: 'warn' })
+    emit?.({ type: 'verify', passed: false, report: 'The grounded answer cited none of the retrieved sources — it is parametric prose, not evidence-entailed. Abstaining on the unverifiable external fact.' })
+    return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+  }
+
   if (usedRetrieval && rMeta?.via === 'dag') {
     emit?.({ type: 'verify', passed: true, report: `Retrieval answer grounded by the provenance oracle cascade (confidence ${Math.round((rMeta.confidence ?? 0) * 100)}%${rMeta.sources ? `, ${rMeta.sources} source(s)` : ''}).` })
   } else if (retrievalUngrounded && facets.needsExternalFact) {

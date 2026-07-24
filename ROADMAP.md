@@ -1933,6 +1933,31 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-24 (cont.106 — decline-phrased retrieval answers → stamped abstention; shared isDecline(); bait set 12→22; abstain:bench 19/22 live)
+- **`isDecline()` / `DECLINE_RX` extracted into `answerEngine.ts` as the ONE shared decline
+  recognizer** (items 1–3). Root cause: the abstention bench's HEDGE regex was the ONLY thing that
+  could tell an honest decline ("not provided in the evidence", "I can't verify that") from a
+  confident answer — the production pipeline could not, so it shipped the model's raw hedge as a
+  verified answer. The regex is now exported from the engine and imported by `__abstention_bench.ts`,
+  so a phrasing the engine abstains on can never be one the bench silently rewards while production
+  ships it. Also broadened to catch "not provided in the **provided/retrieved/available/given**
+  evidence" (the exact ISBN-bait phrasing the old regex missed).
+- **Decline-phrased retrieval/grounded answers now convert to a clean `abstained:true`**
+  (`answerQuery`, items 1+2). Any answer on the `usedRetrieval`/`grounded` path whose text
+  `isDecline()` returns `UNVERIFIABLE_FACT_TEXT` stamped abstained — regardless of `via`
+  (dag/react/direct) or intent. This closes item-1's "`via:'dag'` cited-[S1]-then-declined" leak
+  (the ISBN bait cited a source that said nothing and shipped as grounded) AND item-2's "`via:'direct'`
+  ungrounded synthesis for all intents" leak in a single block.
+- **Grounded external-fact answer with zero citations → abstain** (item 1): the `researchGap`
+  path set `grounded=true` and skipped the ungrounded abstain even when the synthesis cited none of
+  its sources (`groundedCited===0`). Now abstains on `needsExternalFact` — the same `cited===0`
+  signal `solveNonCodeTurn` already maps to `via:'direct'`, now enforced on the `answerWithWebGrounding`
+  path too.
+- **Live bait set grown 12→22 and gate re-baselined** (item 4): at 12 items one stochastic flip was
+  ±8pts and could trip the ≥75% floor as noise; at 22 items one flip is ±4.5pts, so a sub-75% drop is
+  now a real regression. Gate held at ≥75% (≥17/22). MEASURED live: **19/22** hedged-or-abstained
+  (3 BADs are genuine head fabrications, not phrasing gaps); pure bench 62/62 PASS; `tsc` clean.
+
 ### 2026-07-23f (cont.105 — relative-past external-fact cues, entailment-gated grounding stamp, broadened decline-hedge; abstain:bench 11/12 live)
 - **Relative-past recency cues added to `EXTERNAL_FACT`** (`answerEngine.ts`): `last (week|month|year)`
   and `yesterday`. Root cause: the lottery bait "winning number on the second Tuesday of **last
