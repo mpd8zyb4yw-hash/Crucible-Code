@@ -41,8 +41,22 @@
   variance, NOT a demonstrated fix. Kept as sound hardening; a clean e2e flip still needs a run where
   qwen emits wrong bounds. A bounds-repair (canonicalize the length comparison) would make it
   reliable like repairSetOp — build it once an e2e wrong-bounds candidate is captured.
-- **OPEN (this track):** (a) summaryModule (8/14 wrong group-by aggregation + self-test synth fails)
-  — the last qwen RED, hardest; root-cause the aggregation error (likely oracle gap like set-op);
+- **summaryModule DIAGNOSED (not yet fixed — the last qwen RED, variance).** Root cause is the
+  SAME weak-oracle class: `synth/deriveInvariant.ts` (grouped-ledger-aggregate family) only asserts
+  `entry.balance === entry.credits - entry.debits` (INTERNAL consistency) + non-empty — it NEVER
+  verifies credits/debits are the correct SUMS. So qwen's occasionally-wrong sums that stay
+  internally consistent pass oracle-GREEN / hidden-RED (baseline 8/14 fail on acct-C credit-only &
+  debit-only accounts). FIX (careful — false-rejection risk in a core deriver, so gate on clean
+  parse and validate the KNOWN-CORRECT candidate still passes BEFORE trusting it): in
+  deriveInvariant.ts, when the spec's aggregation semantics parse cleanly — group key ("Group … by
+  X"→accountId), each summed field's `field = sum of <amt> for … '<typeVal>' transactions`
+  (sumField=amount, typeVal=credit/debit), and the type discriminator field from the context data —
+  emit a test that RECOMPUTES expected[g][field] from the real getter data and asserts equality.
+  Abstain to the current weak check when any part doesn't parse (a misparse would false-reject
+  correct code — cont.85 "a verifier fails in two directions"). Likely needs a follow-on repair
+  only if qwen can't write correct sums once the oracle forces it (it wrote them correctly in the
+  capture run, so oracle-strengthening alone may suffice — measure 3×).
+- **OPEN (this track):** (a) [see summaryModule above — implement the invariant sum-verification];
   (b) decide if `LOCAL_INFERENCE_URL` default should be `:8080` (needs before/after suite + coordination,
   the dev server reads it too); (c) full qwen suite is the real scorecard — re-run after each repair.
 
