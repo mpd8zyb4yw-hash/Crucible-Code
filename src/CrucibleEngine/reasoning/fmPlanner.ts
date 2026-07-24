@@ -417,6 +417,126 @@ export function editDistanceTemplatePlan(): PlannedSubFunction[] {
   ]
 }
 
+// ── Shunting-yard PARENTHESISED calculator class ────────────────────────────────
+// A FOURTH template class, and the one that most directly answers the "cold agent path" gap
+// (NEXT_SESSION item, 2026-07-23): the parenless two-pass fold (precedenceTemplatePlan) provably
+// CANNOT evaluate `(2+3)*4` — grouping breaks the flat left-to-right fold entirely — so a
+// parenthesised calculator is a genuinely DISTINCT algorithm (Dijkstra's shunting-yard: an operator
+// stack that reorders the stream into postfix, then a stack machine that evaluates it). It is the
+// representative we wanted precisely because the hard rung, `toPostfix`, is NON-synth-constructible:
+// enumerative program search over the corpus's tiny operator set can stumble onto editDistance-shaped
+// table code, but it will not synthesise a correct precedence-climbing operator stack — so this class
+// forces GENERATION on the decompose path even from a cold library. The carve is the textbook pipeline,
+// each stage an idiom-bearing helper the weak head can one-shot:
+//   1. `tokenize(s): string[]`          regex split → string tokens INCLUDING '(' and ')'
+//   2. `precedence(op): number`         2 for * and /, 1 for + and - (the only comparison toPostfix needs)
+//   3. `toPostfix(tokens): string[]`    shunting-yard: operator stack → RPN token stream (calls precedence)
+//   4. `evalPostfix(postfix): number`   stack machine over the RPN stream → the answer (operand order + trunc div)
+// Composition is pure nesting `evalPostfix(toPostfix(tokenize(s)))`, but the compose rung is still handed
+// that one-liner (composeHintFor) — with FOUR unfamiliar helper names the 1.5B otherwise mis-orders the
+// pipeline or tries to re-fold precedence inline. SOUNDNESS UNCHANGED: seeds only SEED verifiers and the
+// composed whole is re-verified against the ORIGINAL cases; a wrong template only wastes budget.
+
+/** Heuristic: does this goal look like "evaluate an arithmetic expression WITH parentheses"? */
+export function isShuntingYardGoal(goal: string, entry: string): boolean {
+  const g = (goal ?? '').toLowerCase()
+  const e = (entry ?? '').toLowerCase()
+  // Name the algorithm or the entry → unambiguous.
+  if (/shunting.?yard/.test(g)) return true
+  if (/shunt/.test(e)) return true
+  // Otherwise: an arithmetic-expression evaluator that EXPLICITLY involves parentheses/grouping.
+  // A raw "paren" mention is not enough — the parenless basicCalculator goal literally says "no
+  // parentheses", so a NEGATED mention ("no/without parentheses") must NOT count, else this would
+  // steal that class from precedenceTemplatePlan.
+  const mentionsParens = /parenthes|\bparens?\b|bracket|grouping|\(\s*\)/.test(g)
+  const negatedParens = /\b(no|without|not|excluding|ignore|ignoring|omit|omitting|drop|dropping)\b[^.]{0,24}\b(paren|bracket|group)/.test(g)
+  const parenSignal = mentionsParens && !negatedParens
+  const hasOps = /[+\-].*[*/]|[*/].*[+\-]/.test(g) || /\boperator/.test(g)
+  const exprLang = /(evaluat|calculat|expression|arithmetic|precedence|order of operations)/.test(g)
+  return parenSignal && hasOps && exprLang
+}
+
+/**
+ * The four-helper carve for the parenthesised-calculator class: tokenize (→string tokens incl parens),
+ * precedence (the * /-over-+ - comparison), toPostfix (the shunting-yard reorder — the generation-forcing
+ * rung), evalPostfix (the RPN stack machine). Composition is `evalPostfix(toPostfix(tokenize(s)))` — handed
+ * to the compose rung by composeHintFor. Pure, 0 model calls, class-generic example I/O.
+ */
+export function shuntingYardTemplatePlan(): PlannedSubFunction[] {
+  return [
+    {
+      name: 'tokenize',
+      goal:
+        'Implement `tokenize(s)` — split an arithmetic expression string of non-negative integers, ' +
+        'the operators + - * /, and ROUND PARENTHESES ( ) into a flat array of STRING tokens, in ' +
+        'order, ignoring every space. Each multi-digit integer is ONE string token; each operator ' +
+        'and each parenthesis is a one-character string token. Write exactly:\n' +
+        'export function tokenize(s) { return s.replace(/\\s+/g, "").match(/\\d+|[-+*/()]/g) || [] }',
+      cases: [
+        { args: ['3+2*2'], expected: ['3', '+', '2', '*', '2'] },
+        { args: ['(1+2)*3'], expected: ['(', '1', '+', '2', ')', '*', '3'] },
+        { args: [' 2 * ( 3 + 4 ) '], expected: ['2', '*', '(', '3', '+', '4', ')'] },
+        { args: ['10'], expected: ['10'] },
+      ],
+    },
+    {
+      name: 'precedence',
+      goal:
+        'Implement `precedence(op)` — return the binding strength of a one-character operator string: ' +
+        '2 for "*" and "/", 1 for "+" and "-". Write exactly:\n' +
+        'export function precedence(op) { return op === "*" || op === "/" ? 2 : 1 }',
+      cases: [
+        { args: ['*'], expected: 2 },
+        { args: ['/'], expected: 2 },
+        { args: ['+'], expected: 1 },
+        { args: ['-'], expected: 1 },
+      ],
+    },
+    {
+      name: 'toPostfix',
+      goal:
+        'Implement `toPostfix(tokens)` — convert an array of infix tokens (number-strings, the ' +
+        'one-character operators + - * /, and the parentheses "(" ")") into Reverse Polish Notation ' +
+        '(postfix) using Dijkstra\'s SHUNTING-YARD algorithm with an operator stack. All operators are ' +
+        'LEFT-ASSOCIATIVE. Numbers go straight to the output. On an operator, first pop to the output ' +
+        'every stacked operator of GREATER-OR-EQUAL precedence (never past a "("), then push it. On ' +
+        '"(" push it; on ")" pop to the output until the matching "(" and discard both parens. At the ' +
+        'end pop any remaining operators. Uses the helper `precedence(op)`. Write exactly:\n' +
+        'export function toPostfix(tokens) { const out = []; const ops = []; for (const t of tokens) { ' +
+        'if (t === "(") ops.push(t); else if (t === ")") { while (ops.length && ops[ops.length - 1] !== "(") ' +
+        'out.push(ops.pop()); ops.pop(); } else if (t.length === 1 && "+-*/".includes(t)) { ' +
+        'while (ops.length && ops[ops.length - 1] !== "(" && precedence(ops[ops.length - 1]) >= precedence(t)) ' +
+        'out.push(ops.pop()); ops.push(t); } else out.push(t); } while (ops.length) out.push(ops.pop()); return out }',
+      cases: [
+        { args: [['3', '+', '2', '*', '2']], expected: ['3', '2', '2', '*', '+'] },
+        { args: [['(', '1', '+', '2', ')', '*', '3']], expected: ['1', '2', '+', '3', '*'] },
+        { args: [['2', '*', '3', '+', '4']], expected: ['2', '3', '*', '4', '+'] },
+        { args: [['10']], expected: ['10'] },
+      ],
+    },
+    {
+      name: 'evalPostfix',
+      goal:
+        'Implement `evalPostfix(postfix)` — evaluate an array of Reverse Polish Notation (postfix) ' +
+        'string tokens with a number stack, returning the resulting NUMBER. Push each number token ' +
+        '(via Number). On a one-character operator + - * /, pop b then a and push `a op b` IN THAT ' +
+        'ORDER (a is the deeper operand). Division is integer division truncating TOWARD ZERO with ' +
+        'Math.trunc — so 7/2 = 3 and evalPostfix(["6","-4","/"]) would be -1, not -2. Write exactly:\n' +
+        'export function evalPostfix(postfix) { const st = []; for (const t of postfix) { ' +
+        'if (t.length === 1 && "+-*/".includes(t)) { const b = st.pop(), a = st.pop(); ' +
+        'st.push(t === "+" ? a + b : t === "-" ? a - b : t === "*" ? a * b : Math.trunc(a / b)); } ' +
+        'else st.push(Number(t)); } return st[0] }',
+      cases: [
+        { args: [['3', '2', '2', '*', '+']], expected: 7 },
+        { args: [['1', '2', '+', '3', '*']], expected: 9 },
+        { args: [['10', '2', '-', '3', '*']], expected: 24 },
+        { args: [['7', '2', '/']], expected: 3 },
+        { args: [['5']], expected: 5 },
+      ],
+    },
+  ]
+}
+
 /**
  * Dispatch a goal to its known algorithm-shaped decomposition template, or null when no class
  * matches (→ the FM planner proposes a carve instead). A registry of (class-detector → template):
@@ -425,11 +545,16 @@ export function editDistanceTemplatePlan(): PlannedSubFunction[] {
 export function templateFor(goal: string, entry: string): PlannedSubFunction[] | null {
   // MOST-SPECIFIC DETECTORS FIRST. An RPN goal ("evaluate a postfix expression with operators
   // + - * /") also trips the broader arithmetic-operator signal, so the postfix/stack detector must
-  // win. The classes are otherwise disjoint (edit-distance has no operators and matches only on
-  // "levenshtein"/"edit distance"; an infix arithmetic goal never matches isRpnGoal), but the
-  // ordering is kept explicit so adding a class can never silently mis-route an existing one.
+  // win. A PARENTHESISED calculator ("evaluate ... with + - * / precedence AND parentheses") also
+  // trips isArithmeticExprGoal's precedence signal, so the shunting-yard detector must be checked
+  // BEFORE the parenless two-pass fold — routing a parens goal to precedenceTemplatePlan would carve
+  // a plan that provably cannot evaluate grouping. The classes are otherwise disjoint (edit-distance
+  // has no operators and matches only on "levenshtein"/"edit distance"; the parenless basicCalculator
+  // goal says "no parentheses" → isShuntingYardGoal declines it), but the ordering is kept explicit so
+  // adding a class can never silently mis-route an existing one.
   if (isRpnGoal(goal, entry)) return rpnTemplatePlan()
   if (isEditDistanceGoal(goal, entry)) return editDistanceTemplatePlan()
+  if (isShuntingYardGoal(goal, entry)) return shuntingYardTemplatePlan()
   if (isArithmeticExprGoal(goal, entry)) return precedenceTemplatePlan()
   return null
 }
@@ -449,6 +574,16 @@ export function composeHintFor(goal: string, entry: string): string | null {
     return (
       'COMPOSITION: the edit distance is the LAST element of the final DP row. Write exactly:\n' +
       `export function ${entry}(a, b) { return editRow(a, b)[b.length] }`
+    )
+  }
+  // Shunting-yard: pure nesting, but with FOUR unfamiliar helper names the 1.5B mis-orders the
+  // pipeline (or re-folds precedence inline) unless handed the exact wiring. UNTRUSTED — re-verify
+  // owns truth. Note this is checked AFTER edit-distance, matching templateFor's ordering, though
+  // the two detectors are disjoint (no goal is both a Levenshtein and a parens calculator).
+  if (isShuntingYardGoal(goal, entry)) {
+    return (
+      'COMPOSITION: tokenize the string, convert to postfix, then evaluate the postfix. Write exactly:\n' +
+      `export function ${entry}(s) { return evalPostfix(toPostfix(tokenize(s))) }`
     )
   }
   return null

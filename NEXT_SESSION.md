@@ -122,17 +122,41 @@
    did — now blocked** by a one-line guard in `distillToSkill` (pureCode.ts): `if (process.env.CRUCIBLE_NO_DISTILL)
    return`. Every distill caller routes through that function, so cold-measurement runs export
    `CRUCIBLE_NO_DISTILL=1` and cannot self-memorize. The `coding-benchmarks.ts` headline was never inflated
-   (it segregates catalog vs generated), but the cold-task signal was silenced. **STILL OPEN:** (a) add a
-   NON-synth-solvable DP representative so the DP class exercises decompose on the agent path even when cold
-   (item 4); (b) redundant non-corpus dupes remain — toRoman (`roman.ts`+`08454dc4b152.ts`), isEmail
-   (`isEmail.ts`+`7e0513ea58e3.ts`), and `clamp` (`01916e41e5f6.ts`, shadows `clampModule.hidden.ts` but
-   trivial) — dedup is optional cleanup, not doctrine-critical.
-4. A FOURTH template class (registry is infix + postfix + DP): a shunting-yard parens calculator
-   (`evalPostfix(toPostfix(tokenize(s)))` — pure nesting) or a CSV/quoted-field parser.
+   (it segregates catalog vs generated), but the cold-task signal was silenced. **RESOLVED THIS SESSION:**
+   (a) the FOURTH template class (shunting-yard parens calculator) IS the non-synth-constructible DP/parser
+   representative — see item 4; (b) the redundant non-corpus dupes are deduped — `08454dc4b152.ts` (toRoman
+   dup of `roman.ts`) and `7e0513ea58e3.ts` (isEmail dup of `isEmail.ts`) DELETED; `clamp` (`01916e41e5f6.ts`)
+   KEPT because its match key `\bclamp\b` does NOT hit the corpus export `clampVolume` (no word boundary), so
+   it never shadowed the `clampModule` measurement and has no duplicate to remove. Also added a defense-in-depth
+   `CORPUS_TASK_EXPORTS` denylist in `distillToSkill` (pureCode.ts) so a FORGOTTEN `CRUCIBLE_NO_DISTILL` can
+   never re-memorize a known eval task (blocks corpus API + template-helper names, still lets user tasks grow).
+4. **DONE — FOURTH template class: shunting-yard PARENTHESISED calculator (`fmPlanner.ts`).** Registry is now
+   infix-fold / postfix-stack / DP / parser-with-grouping. Detector `isShuntingYardGoal` (requires a
+   NON-negated paren signal so the parenless basicCalculator "…and no parentheses" isn't stolen),
+   `shuntingYardTemplatePlan` (4 helpers tokenize/precedence/toPostfix/evalPostfix), `composeHintFor` wiring
+   `evalPostfix(toPostfix(tokenize(s)))`, routed BEFORE `isArithmeticExprGoal` in `templateFor` (a parens goal
+   also trips the precedence signal). +11 hermetic bench checks (§15), vgr:decompose 62→73/0. `toPostfix` is
+   the non-synth-constructible rung that forces GENERATION on the cold agent path. **STILL OPEN:** author a
+   `calculatorWithParens` CORPUS task (call-form examples + hidden suite) so the class is exercised end-to-end
+   on the agent path — template/detector/bench are in place; the corpus task + a live probe are the remaining
+   step (mirror how basicCalculator/evalRPN/editDistance were closed end-to-end).
 5. editDistance's `editRow` fold helper certifies ~2/3 in the direct decompose probe (model variance
    on the fold); if a decompose-path run shows it flaking, raise `planAttempts` or the DP-class budget.
 
-**Shipped 2026-07-23 (this session):**
+**Shipped 2026-07-23 (gap-soundness, FOURTH-class session):**
+- **FOURTH template class: shunting-yard PARENTHESISED calculator (`fmPlanner.ts`)** — `isShuntingYardGoal`
+  + `shuntingYardTemplatePlan` (tokenize/precedence/toPostfix/evalPostfix) + `composeHintFor` +
+  `templateFor` routing (parens wins over the parenless fold). The non-synth-constructible representative:
+  `toPostfix` (precedence-climbing operator stack) forces generation on the cold agent path. +11 hermetic
+  bench checks (§15), vgr:decompose 73/0, tsc 0. Corpus task + live probe still to author.
+- **Corpus-name distill denylist (`pureCode.ts`)** — `CORPUS_TASK_EXPORTS` frozen set (all eval APIs +
+  the three cracked classes' template-helper names); `distillToSkill` refuses colliding distills as
+  defense-in-depth beyond the `CRUCIBLE_NO_DISTILL` env guard. Verified blocks `basicCalculator`/`editRow`,
+  allows a novel user export.
+- **_learned dedup** — deleted `08454dc4b152.ts` (toRoman dup) + `7e0513ea58e3.ts` (isEmail dup); kept
+  `clamp` (not a corpus-match). Library reloads clean (256 skills).
+
+**Shipped 2026-07-23 (THIRD-class session):**
 - **THIRD template class: editDistance (Levenshtein DP) SOLVED end-to-end** — detector +
   `editDistanceTemplatePlan` + `composeHintFor` + authored corpus task, live probe 14 calls/47s.
   Full detail: ROADMAP CHANGE LOG 2026-07-23. (Balanced-bracket class scaffolded then dropped — flat

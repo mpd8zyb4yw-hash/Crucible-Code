@@ -1933,6 +1933,51 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-23 (gap-soundness — FOURTH template class: shunting-yard PARENTHESISED calculator + corpus-name distill denylist + _learned dup dedup)
+- **FOURTH decompose-template class: the shunting-yard parenthesised calculator (`fmPlanner.ts`).** The
+  registry now covers infix-fold / postfix-stack / DP / **parser-with-grouping**. This is the class that
+  most directly answers the "cold agent path" gap (NEXT_SESSION item): the parenless two-pass fold
+  (`precedenceTemplatePlan`) provably CANNOT evaluate `(2+3)*4` — grouping breaks a flat left-to-right fold
+  entirely — so a parenthesised calculator is a genuinely DISTINCT algorithm (Dijkstra's shunting-yard: an
+  operator stack that reorders the token stream to postfix, then a stack machine evaluates it). It is the
+  representative we wanted precisely because the hard rung, `toPostfix`, is **NON-synth-constructible**:
+  enumerative program search will not stumble onto a correct precedence-climbing operator stack, so this
+  class forces GENERATION on the decompose path even from a cold library.
+  - Carve = four idiom-bearing helpers, each one-shottable: `tokenize`(→string tokens incl parens) →
+    `precedence`(the * /-over-+ - comparison) → `toPostfix`(the shunting-yard reorder) →
+    `evalPostfix`(RPN stack machine; operand order + trunc div). Composition is pure nesting
+    `evalPostfix(toPostfix(tokenize(s)))`, handed to the compose rung by `composeHintFor` (four unfamiliar
+    helper names → the 1.5B otherwise mis-orders the pipeline).
+  - `isShuntingYardGoal` detector requires an arithmetic-expression evaluator AND a **non-negated** paren
+    signal, so the parenless basicCalculator goal ("…and no parentheses") is NOT stolen. `templateFor`
+    checks it BEFORE `isArithmeticExprGoal` (a parens goal also trips the precedence signal); routing a
+    parens goal to the parenless fold would carve a plan that can't evaluate grouping.
+  - SOUNDNESS UNCHANGED: seeds only SEED verifiers; the composed whole is re-verified against the ORIGINAL
+    cases. A wrong template only wastes budget.
+  - **+11 hermetic bench checks (`__decompose_bench.ts` §15), all green: vgr:decompose 62→73/0.** Verifies
+    the detector fires/declines correctly, routing precedence (parens wins over the fold; infix/RPN/DP still
+    route correctly), all four helper seed cases are satisfiable, the helpers compose to a correct
+    parenthesised calculator on 10 adversarial cases (nested/grouped/trunc-div), and the compose hint.
+- **Defense-in-depth corpus-name distill denylist (`pureCode.ts`).** Beyond the `CRUCIBLE_NO_DISTILL` env
+  guard: a frozen `CORPUS_TASK_EXPORTS` set of every known eval-task API name (coding-benchmarks.ts +
+  coding-bench/-ext suites) plus the decompose-template helper names of the three cracked 0%-classes
+  (`tokenizeExpr`/`parseTokens`/`foldMulDiv`/`foldAddSub`, `isOperator`/`applyOp`, `subCost`/`nextRow`/
+  `editRow`). `distillToSkill` refuses to persist any distill whose exports collide — so a FORGOTTEN env
+  guard can never re-memorize a known eval task into `_learned/`, while genuine USER tasks still distill and
+  the library keeps growing. Only affects caching, never a produced answer. Verified: blocks `basicCalculator`
+  + `editRow` distills, allows a novel `zzUserWidget`.
+- **Deduped the redundant non-corpus `_learned` pairs (item 3).** `08454dc4b152.ts` (byte-identical dup of
+  `roman.ts`, both keyed on `\btoRoman\b`) and `7e0513ea58e3.ts` (dup of `isEmail.ts`) deleted. `clamp`
+  (`01916e41e5f6.ts`) KEPT: its match key `\bclamp\b` does NOT hit the corpus task's export `clampVolume`
+  (no word boundary between `clamp` and `Volume`), so it never shadowed the `clampModule` measurement and
+  has no duplicate to remove. Library reloads clean (256 skills; exactly one `learned/roman`, one
+  `learned/isEmail`).
+- tsc 0; vgr:decompose 73/0. **STILL PENDING (the headline): the aggregate n=39 strict-offline scorecard
+  "after" generated-rate vs the 3% floor** — a >5h run (coding-benchmarks.ts:53), infeasible in one session;
+  server repro in NEXT_SESSION. The shunting-yard class needs an authored corpus task (call-form examples)
+  to be exercised end-to-end on the agent path — the template + detector + bench are in place; the corpus
+  task is the next end-to-end step.
+
 ### 2026-07-23 (gap-soundness — benchmark self-memorization vector CLOSED: purged editDistance from _learned/, added CRUCIBLE_NO_DISTILL choke-point guard)
 - **Audited `_learned/` and found the corpus-memorization hole.** `distillToSkill` (pureCode.ts) is the
   single choke point for all durable skill persistence; the agent path (`synthDriver.ts`) hardcodes

@@ -24,7 +24,7 @@
 
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
-import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, isEditDistanceGoal, editDistanceTemplatePlan, composeHintFor, templateFor } from './fmPlanner'
+import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, isEditDistanceGoal, editDistanceTemplatePlan, isShuntingYardGoal, shuntingYardTemplatePlan, composeHintFor, templateFor } from './fmPlanner'
 import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, type SubFunctionPlanner } from './solve'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
@@ -423,6 +423,78 @@ async function main() {
         (block.match(/function nextRow/g) ?? []).length === 1 &&
         (block.match(/function editRow/g) ?? []).length === 1
     })())
+
+  // ── 15. SHUNTING-YARD parenthesised-calculator template — the FOURTH class, and the one that
+  //       forces GENERATION on the cold agent path: the parenless two-pass fold provably cannot
+  //       evaluate grouping, so a parens calculator is a genuinely distinct algorithm (an operator
+  //       stack that reorders to postfix). These checks verify the detector (fires on parens, DECLINES
+  //       the parenless basicCalculator so it doesn't steal that class), dispatch precedence (parens
+  //       must be routed to shunting-yard, NOT the fold), that the four helpers COMPOSE to a correct
+  //       calculator on parenthesised adversarial cases, and that composeHintFor hands the compose rung
+  //       the exact `evalPostfix(toPostfix(tokenize(s)))` wiring. ──
+  const syGoal =
+    'Write calc(s: string): number evaluating an arithmetic expression string containing non-negative ' +
+    'integers, the operators + - * / with standard precedence (* and / before + and -), AND parentheses ' +
+    'for grouping. Division truncates toward zero.'
+  check('15 shunting-yard detector fires on the parenthesised calculator goal', isShuntingYardGoal(syGoal, 'calc'))
+  check('15b shunting-yard detector fires when the algorithm is named',
+    isShuntingYardGoal('evaluate the expression using the shunting-yard algorithm', 'eval'))
+  check('15c shunting-yard detector DECLINES the parenless basicCalculator goal (negated parens)',
+    !isShuntingYardGoal(calcGoal, 'basicCalculator'))
+  check('15d shunting-yard detector does NOT fire on RPN, edit-distance, or unrelated goals',
+    !isShuntingYardGoal(rpnGoal, 'evalRPN') && !isShuntingYardGoal(edGoal, 'editDistance') &&
+    !isShuntingYardGoal('reverse a linked list in place', 'reverseList'))
+  check('15e the parenless basicCalculator still routes to the two-pass fold (not stolen by shunting-yard)',
+    templateFor(calcGoal, 'basicCalculator')?.map((h) => h.name).join(',') === NAMES)
+  const SY_NAMES = 'tokenize,precedence,toPostfix,evalPostfix'
+  check('15f templateFor dispatches the parens goal to the shunting-yard carve (parens wins over the fold)',
+    templateFor(syGoal, 'calc')?.map((h) => h.name).join(',') === SY_NAMES,
+    templateFor(syGoal, 'calc')?.map((h) => h.name).join(','))
+  check('15g templateFor still routes RPN, infix, and edit-distance correctly after adding shunting-yard',
+    templateFor(rpnGoal, 'evalRPN')?.map((h) => h.name).join(',') === 'isOperator,applyOp' &&
+    templateFor(calcGoal, 'basicCalculator')?.map((h) => h.name).join(',') === NAMES &&
+    templateFor(edGoal, 'editDistance')?.map((h) => h.name).join(',') === 'subCost,nextRow,editRow')
+  const syTpl = shuntingYardTemplatePlan()
+  check('15h template proposes the four-helper carve tokenize/precedence/toPostfix/evalPostfix',
+    syTpl.length === 4 && syTpl.map((h) => h.name).join(',') === SY_NAMES, syTpl.map((h) => h.name).join(','))
+  // Reference impls following each helper's declared interface EXACTLY (mirrors the Write-exactly idioms).
+  const refSyTok = (s: string): string[] => (s.replace(/\s+/g, '').match(/\d+|[-+*/()]/g)) ?? []
+  const refPrec = (op: string): number => (op === '*' || op === '/' ? 2 : 1)
+  const refToPost = (tokens: string[]): string[] => {
+    const out: string[] = []; const ops: string[] = []
+    for (const t of tokens) {
+      if (t === '(') ops.push(t)
+      else if (t === ')') { while (ops.length && ops[ops.length - 1] !== '(') out.push(ops.pop()!); ops.pop() }
+      else if (t.length === 1 && '+-*/'.includes(t)) {
+        while (ops.length && ops[ops.length - 1] !== '(' && refPrec(ops[ops.length - 1]) >= refPrec(t)) out.push(ops.pop()!)
+        ops.push(t)
+      } else out.push(t)
+    }
+    while (ops.length) out.push(ops.pop()!)
+    return out
+  }
+  const refEvalPost = (postfix: string[]): number => {
+    const st: number[] = []
+    for (const t of postfix) {
+      if (t.length === 1 && '+-*/'.includes(t)) { const b = st.pop()!, a = st.pop()!; st.push(t === '+' ? a + b : t === '-' ? a - b : t === '*' ? a * b : Math.trunc(a / b)) }
+      else st.push(Number(t))
+    }
+    return st[0]
+  }
+  const syImplFor: Record<string, (...a: any[]) => unknown> = { tokenize: refSyTok, precedence: refPrec, toPostfix: refToPost, evalPostfix: refEvalPost }
+  const eqj3 = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b)
+  check('15i every shunting-yard helper seed case is satisfied by a correct impl',
+    syTpl.every((h) => h.cases.every((c) => eqj3(syImplFor[h.name](...c.args), c.expected))))
+  const refCalc = (s: string): number => refEvalPost(refToPost(refSyTok(s)))
+  const syCases: [string, number][] = [
+    ['3+2*2', 7], ['(1+2)*3', 9], ['2*(3+4)', 14], ['10-2*3', 4], ['(2+3)*(4-1)', 15],
+    ['100/(2+3)', 20], ['2*(3+(4-1))', 12], ['((1+1))', 2], ['1+2+3+4', 10], ['(7-2)/2', 2],
+  ]
+  check('15j the four helpers compose to a correct parenthesised calculator on all adversarial cases',
+    syCases.every(([s, e]) => refCalc(s) === e), syCases.filter(([s, e]) => refCalc(s) !== e).map(([s]) => s).join(' '))
+  check('15k composeHintFor supplies the evalPostfix(toPostfix(tokenize(s))) wiring for shunting-yard, null for the fold',
+    /evalPostfix\(toPostfix\(tokenize\(s\)\)\)/.test(composeHintFor(syGoal, 'calc') ?? '') &&
+    composeHintFor(calcGoal, 'basicCalculator') === null)
 
   console.log(`\n${fail === 0 ? '✅' : '❌'} decompose bench: ${pass} passed, ${fail} failed\n`)
   if (fail > 0) process.exit(1)

@@ -245,6 +245,43 @@ function contentAddressedId(spec: string, content: string): string {
   return createHash('sha256').update(spec + '\x00' + content).digest('hex').slice(0, 12)
 }
 
+/**
+ * DEFENSE-IN-DEPTH corpus denylist — export identifiers that belong to a KNOWN eval/benchmark task
+ * (or to a decompose-template helper of one). A distill whose exports collide with any of these is
+ * refused even when `CRUCIBLE_NO_DISTILL` is unset, so a FORGOTTEN env guard can never re-memorize a
+ * corpus task into `_learned/` and thereafter serve it from the L0 catalog (that is exactly the
+ * editDistance failure — see below). Genuine USER tasks (whose exports are not eval APIs) still
+ * distill normally, so the library keeps growing.
+ *
+ * SOUNDNESS NOTE: this only affects CACHING/memorization, never a produced answer — a blocked task is
+ * simply re-derived from scratch next time instead of served from catalog. Over-blocking a genuinely
+ * user-named `wrap`/`expand`/etc. costs one cache entry, nothing more.
+ *
+ * KEEP IN SYNC WITH THE CORPUS: the top-level names are the `export function` APIs in
+ * coding-benchmarks.ts and the coding-bench / coding-bench-ext suites. The tail block is the
+ * decompose-template helper names for the three cracked 0%-by-sampling classes (fmPlanner.ts) — those
+ * are derived during a decompose-path solve of basicCalculator / evalRPN / editDistance, and therefore
+ * likewise memorizable, so they are denied here too. When a new corpus task or template class is
+ * authored, add its entry + helper names here too.
+ */
+const CORPUS_TASK_EXPORTS: ReadonlySet<string> = new Set([
+  // ── coding-benchmarks.ts and the coding-bench / coding-bench-ext suite public APIs ──
+  'addFractions', 'bankersRound', 'basicCalculator', 'categoryTotals', 'clampVolume',
+  'compareCaseInsensitive', 'convertBase', 'dedent', 'deepEqual', 'editDistance', 'evalRPN',
+  'expand', 'filterUsers', 'findCycle', 'getAllProducts', 'getAllTransactions', 'getAllUsers',
+  'getPointer', 'intersectTags', 'isValidUsername', 'mergeIntervals', 'normalizePath', 'overlapDays',
+  'parseCsv', 'parseCsvLine', 'parseQuery', 'readCfg', 'regexMatch', 'retryDelays', 'rleDecode',
+  'rleEncode', 'rotate90', 'slidingWindowMax', 'sortProducts', 'sortScoresAscending',
+  'subtractIntervals', 'summarizeByAccount', 'tmpFor', 'topoSort', 'unionTags', 'wrap',
+  // ── decompose-template helpers (fmPlanner.ts) for the cracked 0%-by-sampling classes ──
+  // basicCalculator (infix precedence):
+  'tokenizeExpr', 'parseTokens', 'foldMulDiv', 'foldAddSub',
+  // evalRPN (postfix stack):
+  'isOperator', 'applyOp',
+  // editDistance (Levenshtein DP):
+  'subCost', 'nextRow', 'editRow',
+])
+
 export function distillToSkill(spec: string, modulePath: string, content: string): void {
   // Benchmark-integrity choke point. Every distill caller (agent path, universal, structural
   // bridge) routes through here, so a single early-return guarantees a scorecard run cannot
@@ -255,6 +292,10 @@ export function distillToSkill(spec: string, modulePath: string, content: string
   if (process.env.CRUCIBLE_NO_DISTILL) return
   const feats = extractFeatures(spec)
   const exports = feats.exports
+  // DEFENSE-IN-DEPTH: even with the env guard forgotten, never memorize a KNOWN eval task (or its
+  // template helpers). A distill that exports a corpus API would become a catalog hit that
+  // short-circuits genuine re-derivation of that task — the very leak the env guard exists to close.
+  if (exports.some((e) => CORPUS_TASK_EXPORTS.has(e))) return
   const hash = contentAddressedId(spec, content)
   const id = `learned/${hash}`
   if (listSkills().some(s => s.id === id)) return
