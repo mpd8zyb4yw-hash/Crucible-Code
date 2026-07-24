@@ -219,8 +219,8 @@ export function precedenceTemplatePlan(): PlannedSubFunction[] {
       goal:
         'Split an arithmetic expression string of non-negative integers and the operators + - * / ' +
         'into a flat array of STRING tokens, in order, ignoring every space. Each multi-digit ' +
-        'integer is ONE string token; each operator is a one-character string token. ' +
-        '(The idiom `s.replace(/\\s+/g, "").match(/\\d+|[-+*/]/g)` does exactly this.)',
+        'integer is ONE string token; each operator is a one-character string token. Write exactly:\n' +
+        'export function tokenizeExpr(s) { return s.replace(/\\s+/g, "").match(/\\d+|[-+*/]/g) || [] }',
       cases: [
         { args: ['3+2*2'], expected: ['3', '+', '2', '*', '2'] },
         { args: [' 3/2 '], expected: ['3', '/', '2'] },
@@ -233,7 +233,8 @@ export function precedenceTemplatePlan(): PlannedSubFunction[] {
       goal:
         'Given an array of string tokens, return a new array where every NUMBER token (all digits) ' +
         'is converted to a number with Number(), and every OPERATOR token (+ - * /) is left as its ' +
-        'one-character string. Order is preserved. (Idiom: tokens.map(t => "+-*/".includes(t) ? t : Number(t)).)',
+        'one-character string. Order is preserved. Write exactly:\n' +
+        'export function parseTokens(tokens) { return tokens.map(t => "+-*/".includes(t) ? t : Number(t)) }',
       cases: [
         { args: [['3', '+', '2', '*', '2']], expected: [3, '+', 2, '*', 2] },
         { args: [['14', '-', '3']], expected: [14, '-', 3] },
@@ -246,10 +247,11 @@ export function precedenceTemplatePlan(): PlannedSubFunction[] {
         'Given an array whose elements alternate NUMBER, operator-string, NUMBER, … collapse every ' +
         '* and / LEFT TO RIGHT (integer division truncates toward zero with Math.trunc), returning ' +
         'a SHORTER array of the same shape (numbers separated by operator strings) that contains ' +
-        'only + and - operators. Leave + and - untouched. Computed values stay NUMBERS. ' +
-        'Idiom: `const out=[items[0]]; for(let i=1;i<items.length;i+=2){const op=items[i],b=items[i+1]; ' +
-        "if(op==='*')out[out.length-1]*=b; else if(op==='/')out[out.length-1]=Math.trunc(out[out.length-1]/b); " +
-        'else out.push(op,b);} return out;`',
+        'only + and - operators. Leave + and - untouched. Computed values stay NUMBERS. Write exactly:\n' +
+        'export function foldMulDiv(items) { const out = [items[0]]; for (let i = 1; i < items.length; i += 2) { ' +
+        "const op = items[i], b = items[i + 1]; if (op === '*') out[out.length - 1] *= b; " +
+        "else if (op === '/') out[out.length - 1] = Math.trunc(out[out.length - 1] / b); " +
+        'else out.push(op, b); } return out }',
       cases: [
         { args: [[3, '+', 2, '*', 2]], expected: [3, '+', 4] },
         { args: [[3, '/', 2]], expected: [1] },
@@ -262,8 +264,9 @@ export function precedenceTemplatePlan(): PlannedSubFunction[] {
       goal:
         'Given an array whose elements alternate NUMBER, operator-string, NUMBER, … containing only ' +
         '+ and - operators, evaluate it LEFT TO RIGHT and return the resulting NUMBER. A single-number ' +
-        'array returns that number. ' +
-        "Idiom: `let acc=items[0]; for(let i=1;i<items.length;i+=2){acc=items[i]==='+'?acc+items[i+1]:acc-items[i+1];} return acc;`",
+        'array returns that number. Write exactly:\n' +
+        "export function foldAddSub(items) { let acc = items[0]; for (let i = 1; i < items.length; i += 2) { " +
+        "acc = items[i] === '+' ? acc + items[i + 1] : acc - items[i + 1]; } return acc }",
       cases: [
         { args: [[3, '+', 4]], expected: 7 },
         { args: [[1]], expected: 1 },
