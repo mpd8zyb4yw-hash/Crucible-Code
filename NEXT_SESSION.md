@@ -17,10 +17,17 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-24 (cont.107 coding-bench track + cont.106 answers track — two concurrent tracks, both current) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-25 (cont.110b coding-bench track + cont.106 answers track — two concurrent tracks, both current) (REPLACE THIS EVERY SESSION)
 
-> NOTE: two tracks were live on 2026-07-24. The CODING-BENCH block is first; the ANSWERS/CALIBRATION
-> block (cont.106) follows unchanged. Do not delete either without confirming that track is done.
+> NOTE: two tracks were live. The CODING-BENCH block is first; the ANSWERS/CALIBRATION block
+> (cont.106) follows unchanged. Do not delete either without confirming that track is done.
+
+> **CODING-BENCH HEADLINE (2026-07-25, cont.110b):** authoritative full offline-strict suite on the
+> doctrine head **qwen-1.5b (:8080)** = **14/14 overall, 10/10 gen-path GREEN** (this run), up from a
+> 7/10 qwen baseline. RELIABLE floor ~8/10: bugfixCsv + tagSetModule are repair-guaranteed;
+> usernameModule + summaryModule are strengthened-oracle green but VARIANCE (a bad run can still RED
+> them — the oracle catches the FM's wrong code but the FM can't always self-fix). Measure on qwen
+> with `LOCAL_INFERENCE_URL=http://localhost:8080` — the synth default (:11435) is Apple FM, off-doctrine.
 
 ### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.108 — DOCTRINE-CORRECT qwen head measurement):
 - **All prior numbers were on Apple FM (:11435), NOT the qwen-1.5b head (:8080)** — the offline

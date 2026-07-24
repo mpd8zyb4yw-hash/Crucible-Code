@@ -1933,6 +1933,16 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25 (cont.110b — AUTHORITATIVE full qwen suite: 14/14, 10/10 gen-path GREEN)
+- **Full offline-strict suite on the doctrine head qwen-1.5b (:8080): 14/14 overall, 10/10 gen-path
+  GREEN** (up from the 7/10 qwen baseline at the start of the cont.107–110 work). bugfixCsv +
+  tagSetModule are RELIABLY green (deterministic repairs guarantee it); usernameModule + summaryModule
+  are strengthened-oracle green but VARIANCE (measured 3/3 and 2/3 respectively in isolation — a
+  different run can still RED them when the FM writes wrong code the oracle now catches but the FM
+  can't self-fix in budget). Reliable floor is therefore ~8/10; 10/10 is this-run.
+- NEXT for a reliable 10/10: either a denser core (doctrine's real direction) or carefully-general
+  repairs for the aggregation/bounds classes (NOT task-keyed — that's memorized-answer debt).
+
 ### 2026-07-25 (cont.110 — grouped-ledger invariant now RECOMPUTES sums from source → summaryModule 3/3 RED → 2/3 GREEN on qwen, strong oracle fires 22×)
 - **Root cause (qwen head): the grouped-ledger-aggregate invariant checked only the FORMULA, not
   the SUMS.** `synth/deriveInvariant.ts` asserted `entry.balance === entry.credits - entry.debits`
