@@ -44,6 +44,7 @@ import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
 import { solveCodingRequest } from './src/CrucibleEngine/reasoning/solve'
+import { decomposePerRungBudget } from './src/CrucibleEngine/reasoning/fmPlanner'
 import { selectBestEffort } from './src/CrucibleEngine/reasoning/keepK'
 import type { Attempt } from './src/CrucibleEngine/reasoning/types'
 import { retrieveForTask as retrieveCodeRefs } from './src/CrucibleEngine/retrieval/retrievalLayer'
@@ -4123,7 +4124,11 @@ app.post('/api/chat', async (req, res) => {
             // default per-rung wall. Thread an explicit generous per-rung budget so the depth of the
             // carve — not an unstated default — decides the ceiling. Every rung is still verifier-
             // gated, so a larger budget only lets an honest solve finish; it cannot certify a wrong one.
-            iterate: wantDecompose ? { globalModelCalls: 64, maxEpochs: 10, wallClockMs: 180_000 } : undefined,
+            // CLASS-AWARE (2026-07-24): DP-fold classes (edit-distance editRow, coin-change relaxCoin)
+            // are wall-clock bound — a 3× live signal had editRow certify only 2/3 under a 300s wall,
+            // needing 22–28 calls at ~12s each — so decomposePerRungBudget hands them a 420s wall while
+            // every other class keeps the standard 180s. (entry unknown here; goal-text detectors suffice.)
+            iterate: wantDecompose ? decomposePerRungBudget(vgrGoal, '') : undefined,
             webGround: tryHard ? webGroundOrNull : undefined,
             emit: (ev: any) => { if (ev?.type === 'thought' && typeof ev.text === 'string') send({ type: 'thought', text: `VGR · ${ev.text}` }) },
           })

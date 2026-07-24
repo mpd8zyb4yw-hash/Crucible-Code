@@ -678,6 +678,36 @@ export function hasDecomposeTemplate(goal: string, entry: string): boolean {
   return templateFor(goal, entry) !== null
 }
 
+/**
+ * True for the DP-FOLD template classes — edit-distance (editRow) and coin-change (relaxCoin) —
+ * whose central helper folds a per-element recurrence over a whole array. That fold is the one
+ * rung the 1.5B re-derives from scratch on most draws, so it is WALL-CLOCK bound: a live 3× signal
+ * (2026-07-24, shared qwen2.5-1.5b head) had editRow certify 2/3, needing 22–28 model calls at
+ * ~12s each — >300s — with the one failure hitting the wall-clock, not the call, ceiling. The
+ * calculators are excluded: their hardest rung (shunting-yard toPostfix) one-shots (4 calls in the
+ * calculatorWithParens live probe), so they do NOT need the bigger wall.
+ */
+export function isDpFoldDecomposeClass(goal: string, entry: string): boolean {
+  return isEditDistanceGoal(goal, entry) || isCoinChangeGoal(goal, entry)
+}
+
+/**
+ * Per-rung iterate budget for the decompose path, sized to the CARVE, not an unstated default.
+ * The lever the 3× signal identified is WALL-CLOCK on the DP-fold rung (planAttempts is inert for
+ * a template class — its plan is deterministic, so re-running only re-certifies the easy rungs);
+ * so the DP-fold classes get a materially larger wall (and headroom on calls/epochs) while every
+ * other class keeps the standard budget. Verifier-gated throughout: a bigger budget only lets an
+ * honest solve finish, never certifies a wrong one. Caller threads the result straight into
+ * decomposeCodeBySubFunction's `iterate`.
+ */
+export function decomposePerRungBudget(goal: string, entry: string): { globalModelCalls: number; maxEpochs: number; wallClockMs: number } {
+  if (isDpFoldDecomposeClass(goal, entry)) {
+    // editRow/relaxCoin: 22–28 calls observed → 40-call headroom; >300s observed → 420s wall.
+    return { globalModelCalls: 40, maxEpochs: 12, wallClockMs: 420_000 }
+  }
+  return { globalModelCalls: 64, maxEpochs: 10, wallClockMs: 180_000 }
+}
+
 /** Build a sub-function planner. Returns null when it can't propose ≥1 checkable helper. */
 export function makeFmSubFunctionPlanner(opts: FmPlannerOpts = {}): (
   goal: string, entry: string, sampleCases: unknown[], signal?: AbortSignal,

@@ -19,7 +19,7 @@ import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROU
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
-import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate, composeHintFor } from './fmPlanner'
+import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate, composeHintFor, decomposePerRungBudget } from './fmPlanner'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -718,7 +718,10 @@ export async function solveCodingRequest(
         hasDecomposeTemplate(nl, harvested.entry) && !opts.signal?.aborted) {
       const d = await decomposeCodeBySubFunction(
         { goal: nl, nl, entry: harvested.entry, cases: harvested.cases },
-        { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: opts.iterate },
+        { webGround: opts.webGround, signal: opts.signal, emit: opts.emit,
+          // Class-aware per-rung budget when the caller didn't set one, so a DP-fold carve
+          // (editRow/relaxCoin) gets its 420s wall even off the server path (entry now known).
+          iterate: opts.iterate ?? decomposePerRungBudget(nl, harvested.entry) },
       )
       if (d.status === 'solved' && d.code) {
         return { status: 'solved', code: d.code, entry: harvested.entry, cases: harvested.cases, search: result,
@@ -842,7 +845,8 @@ export async function solveCodingRequest(
     if (cases.length < 3) return null
     const d = await decomposeCodeBySubFunction(
       { goal: nl, nl, entry, cases },
-      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: opts.iterate },
+      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit,
+        iterate: opts.iterate ?? decomposePerRungBudget(nl, entry) },
     )
     if (d.status === 'solved' && d.code && await invariantGate(d.code, entry)) {
       return {
