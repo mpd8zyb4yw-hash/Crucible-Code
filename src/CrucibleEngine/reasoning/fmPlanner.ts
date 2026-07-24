@@ -417,6 +417,75 @@ export function editDistanceTemplatePlan(): PlannedSubFunction[] {
   ]
 }
 
+// ── Coin-change MINIMUM-COINS DP class ──────────────────────────────────────────
+/** Heuristic: does this goal look like "fewest coins to make an amount" (unbounded-supply min-coins DP)? */
+export function isCoinChangeGoal(goal: string, entry: string): boolean {
+  const g = (goal ?? '').toLowerCase()
+  const e = (entry ?? '').toLowerCase()
+  if (/coinchange/.test(e)) return true
+  // "coin(s)"/"denomination(s)" as the unit, a MINIMISATION cue, and an "amount"/"total" target.
+  const coinUnit = /\bcoins?\b|denomination/.test(g)
+  const minimise = /(fewest|minimum number|minimum count|least number|smallest number|min(?:imum)? coins?)/.test(g)
+  const target = /\bamount\b|\btotal\b|\bsum\b|make change/.test(g)
+  return coinUnit && minimise && target
+}
+
+/**
+ * The three-helper carve for the coin-change min-coins class: initDp (the amount+1 "infinity"
+ * sentinel table), relaxCoin (one unbounded-coin relaxation pass — the DP recurrence), and the
+ * entry coinChange (fold relaxCoin over the coins, read dp[amount]). The amount+1 sentinel avoids
+ * Infinity entirely, so every rung's example I/O is small integers. Composition is the fold —
+ * see composeHintFor. Pure, 0 model calls, class-generic example I/O.
+ */
+export function coinChangeTemplatePlan(): PlannedSubFunction[] {
+  return [
+    {
+      name: 'initDp',
+      goal:
+        'Implement `initDp(amount)` — build the initial min-coins DP table: an array of length ' +
+        'amount+1 where every entry is the sentinel amount+1 (a stand-in for "unreachable", since no ' +
+        'real answer can exceed amount coins), EXCEPT index 0 which is 0 (zero coins make amount 0). ' +
+        'Write exactly:\n' +
+        'export function initDp(amount) { const dp = new Array(amount + 1).fill(amount + 1); dp[0] = 0; return dp }',
+      cases: [
+        { args: [3], expected: [0, 4, 4, 4] },
+        { args: [0], expected: [0] },
+        { args: [1], expected: [0, 2] },
+      ],
+    },
+    {
+      name: 'relaxCoin',
+      goal:
+        'Implement `relaxCoin(dp, coin)` — one relaxation pass for a single coin of UNBOUNDED supply. ' +
+        'Copy dp, then for each amount a from coin up to dp.length-1 set out[a] = min(out[a], ' +
+        'out[a-coin]+1). Sweeping a ASCENDING lets the same coin be reused any number of times. ' +
+        'Return the new array; do NOT mutate the input. Write exactly:\n' +
+        'export function relaxCoin(dp, coin) { const out = dp.slice(); for (let a = coin; a < out.length; a++) out[a] = Math.min(out[a], out[a - coin] + 1); return out }',
+      cases: [
+        { args: [[0, 4, 4, 4], 1], expected: [0, 1, 2, 3] },
+        { args: [[0, 4, 4, 4], 2], expected: [0, 4, 1, 4] },
+        { args: [[0, 1, 2, 3], 2], expected: [0, 1, 1, 2] },
+      ],
+    },
+    {
+      name: 'coinChange',
+      goal:
+        'Implement `coinChange(coins, amount)` — the FEWEST coins (each denomination available in ' +
+        'unlimited supply) that sum to exactly amount, or -1 if no combination does. Start from ' +
+        'initDp(amount), then fold relaxCoin over every coin. The answer is dp[amount] unless it is ' +
+        'still greater than amount (the untouched sentinel → unreachable), in which case return -1. ' +
+        'Uses initDp and relaxCoin. Write exactly:\n' +
+        'export function coinChange(coins, amount) { let dp = initDp(amount); for (const c of coins) dp = relaxCoin(dp, c); return dp[amount] > amount ? -1 : dp[amount] }',
+      cases: [
+        { args: [[1, 2, 5], 11], expected: 3 },
+        { args: [[2], 3], expected: -1 },
+        { args: [[1], 0], expected: 0 },
+        { args: [[2, 5, 10], 27], expected: 4 },
+      ],
+    },
+  ]
+}
+
 // ── Shunting-yard PARENTHESISED calculator class ────────────────────────────────
 // A FOURTH template class, and the one that most directly answers the "cold agent path" gap
 // (NEXT_SESSION item, 2026-07-23): the parenless two-pass fold (precedenceTemplatePlan) provably
@@ -554,6 +623,11 @@ export function templateFor(goal: string, entry: string): PlannedSubFunction[] |
   // adding a class can never silently mis-route an existing one.
   if (isRpnGoal(goal, entry)) return rpnTemplatePlan()
   if (isEditDistanceGoal(goal, entry)) return editDistanceTemplatePlan()
+  // Coin-change is disjoint from every other class (no operators, no expression/parens language,
+  // matches only on coins+minimise+amount), so ordering versus the calculators is immaterial — but
+  // it is kept AFTER edit-distance and BEFORE the arithmetic detectors so the specific-first
+  // discipline is visibly preserved.
+  if (isCoinChangeGoal(goal, entry)) return coinChangeTemplatePlan()
   if (isShuntingYardGoal(goal, entry)) return shuntingYardTemplatePlan()
   if (isArithmeticExprGoal(goal, entry)) return precedenceTemplatePlan()
   return null
@@ -584,6 +658,16 @@ export function composeHintFor(goal: string, entry: string): string | null {
     return (
       'COMPOSITION: tokenize the string, convert to postfix, then evaluate the postfix. Write exactly:\n' +
       `export function ${entry}(s) { return evalPostfix(toPostfix(tokenize(s))) }`
+    )
+  }
+  // Coin-change: the amount+1 sentinel and the "> amount → -1" read are invisible in the helper
+  // signatures, so without this the 1.5B tends to compare against Infinity or forget the -1 branch.
+  // UNTRUSTED — the composed whole is re-verified against the original cases.
+  if (isCoinChangeGoal(goal, entry)) {
+    return (
+      'COMPOSITION: seed initDp(amount), fold relaxCoin over every coin, then read dp[amount] — but ' +
+      'the untouched sentinel is amount+1, so a value greater than amount means unreachable → -1. Write exactly:\n' +
+      `export function ${entry}(coins, amount) { let dp = initDp(amount); for (const c of coins) dp = relaxCoin(dp, c); return dp[amount] > amount ? -1 : dp[amount] }`
     )
   }
   return null

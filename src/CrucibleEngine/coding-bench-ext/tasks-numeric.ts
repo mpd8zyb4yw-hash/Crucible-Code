@@ -766,4 +766,82 @@ console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
 process.exit(failures === 0 ? 0 : 1)
 `,
   },
+  {
+    id: 'coinChange',
+    title: 'Fewest coins to make an amount (unbounded-supply DP)',
+    modulePath: 'src/coinChange.ts',
+    prompt: `Implement the minimum-coins problem in TypeScript at src/coinChange.ts. ${CONTRACT}
+
+Export exactly:
+  export function coinChange(coins: number[], amount: number): number
+
+Semantics:
+- Return the FEWEST number of coins needed to make exactly \`amount\`, where each coin
+  denomination in \`coins\` is available in UNLIMITED supply. Return -1 if no combination of
+  the given coins sums to amount.
+- amount is a non-negative integer; coins are positive integers (in any order, possibly with
+  denominations larger than amount, which are simply unusable).
+- coinChange(coins, 0) is 0 for any coins (zero coins make zero). coinChange([], amount) is 0
+  when amount is 0, else -1.
+- Examples: coinChange([1,2,5], 11) -> 3 (5+5+1), coinChange([2], 3) -> -1,
+  coinChange([1], 0) -> 0, coinChange([2,5,10], 27) -> 4 (10+10+5+2),
+  coinChange([186,419,83,408], 6249) -> 20, coinChange([1,5,6,9], 11) -> 2 (5+6).
+- The reliable route is a bottom-up dynamic program over amounts 0..amount: dp[0]=0 and every
+  other dp entry starts at a sentinel meaning "unreachable" (amount+1 works — no answer can
+  exceed amount coins); for each coin relax dp[a]=min(dp[a], dp[a-coin]+1) sweeping a upward so
+  the coin can be reused. The answer is dp[amount], or -1 if it stayed at the sentinel. A greedy
+  largest-coin-first approach is WRONG in general (e.g. coins [1,5,6,9], amount 11).`,
+    ref: `export function initDp(amount: number): number[] {
+  const dp = new Array(amount + 1).fill(amount + 1)
+  dp[0] = 0
+  return dp
+}
+
+// One relaxation pass for a single coin of UNBOUNDED supply. Sweeping the amount ASCENDING
+// lets the same coin be reused any number of times. Pure — never mutates the input array.
+export function relaxCoin(dp: number[], coin: number): number[] {
+  const out = dp.slice()
+  for (let a = coin; a < out.length; a++) out[a] = Math.min(out[a], out[a - coin] + 1)
+  return out
+}
+
+export function coinChange(coins: number[], amount: number): number {
+  let dp = initDp(amount)
+  for (const c of coins) dp = relaxCoin(dp, c)
+  return dp[amount] > amount ? -1 : dp[amount]
+}
+`,
+    suite: `// HIDDEN adversarial suite for a NOVEL task (min-coins DP; greedy is provably wrong) — coinChange.
+// Run: npx tsx __audit__/coinChange.hidden.ts   (imports ../src/coinChange)
+import { coinChange } from '../src/coinChange'
+
+let failures = 0
+function check(name: string, cond: boolean) {
+  console.log((cond ? '  PASS — ' : '  FAIL — ') + name)
+  if (!cond) failures++
+}
+
+check('canonical 11 from 1,2,5', coinChange([1, 2, 5], 11) === 3)
+check('impossible amount', coinChange([2], 3) === -1)
+check('zero amount is zero coins', coinChange([1], 0) === 0)
+check('empty coins nonzero amount', coinChange([], 7) === -1)
+check('empty coins zero amount', coinChange([], 0) === 0)
+check('exact single coin', coinChange([7], 7) === 1)
+check('greedy trap prefers two coins', coinChange([1, 5, 6, 9], 11) === 2)
+check('classic greedy-fails set', coinChange([1, 3, 4], 6) === 2)
+check('all ones', coinChange([1], 5) === 5)
+check('large mixed', coinChange([2, 5, 10], 27) === 4)
+check('denomination larger than amount ignored', coinChange([5, 10], 3) === -1)
+check('reuse same coin', coinChange([3], 9) === 3)
+check('unordered coins', coinChange([25, 10, 5, 1], 30) === 2)
+check('hard 6249', coinChange([186, 419, 83, 408], 6249) === 20)
+check('prime amount', coinChange([2, 3], 7) === 3)
+check('single ok exact', coinChange([2, 5], 10) === 2)
+check('cannot make odd from evens', coinChange([2, 4], 7) === -1)
+check('minimal for 6 from 1,3,4', coinChange([1, 3, 4], 6) === 2)
+
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
+process.exit(failures === 0 ? 0 : 1)
+`,
+  },
 ]
