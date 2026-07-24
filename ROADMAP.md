@@ -1933,6 +1933,26 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25 (cont.110 — grouped-ledger invariant now RECOMPUTES sums from source → summaryModule 3/3 RED → 2/3 GREEN on qwen, strong oracle fires 22×)
+- **Root cause (qwen head): the grouped-ledger-aggregate invariant checked only the FORMULA, not
+  the SUMS.** `synth/deriveInvariant.ts` asserted `entry.balance === entry.credits - entry.debits`
+  (internal consistency) + non-empty — so any internally-consistent-but-WRONG sums passed
+  oracle-GREEN / hidden-RED (summaryModule shipped e.g. credits=Σall-amounts, debits=0, balance
+  consistent → 8/14 hidden fail on single-sided accounts).
+- **FIX: recompute-from-source.** When the aggregation semantics parse cleanly from the spec — group
+  key ("Group … by X"), each summed field's source+type (`field = sum of <amt> for … '<typeVal>'`,
+  with `[\s\S]*?` to cross the prose's line-wrap and a bare-word `'(\w+)'` to skip the "account's"
+  possessive), and the discriminator field from the getter data — the invariant now recomputes
+  expected per-account `credits`/`debits`/`balance` AND asserts the account-key set, from the real
+  getter data. Abstains to the old weak check on ANY parse miss (a misparse would false-reject
+  correct code — cont.85). Isolation-validated BOTH directions: correct candidate ALL PASS (no
+  false-reject), wrong-sums candidate 6 FAILURES.
+- **MEASURED e2e on qwen (:8080): summaryModule 3/3 RED (weak oracle) → 2/3 GREEN; the strong
+  invariant fired 22× (recompute-driven rejections, was 0).** Not yet RELIABLE — run 2 escalated
+  (qwen couldn't produce correct sums in budget → compile=n). NEXT: a grouped-ledger repair
+  parameterized by the SAME parsed semantics (canonical group-by aggregation, like repairSetOp) to
+  reach 3/3, since the FM can't reliably self-correct the aggregation.
+
 ### 2026-07-24 (cont.108 — DOCTRINE-CORRECT measurement on qwen-1.5b head; tagSetModule variance-RED → reliably GREEN via set-op oracle + repair)
 - **Measurement discrepancy found & corrected.** The offline synth proposer default
   (`synth/universal.ts:39` `LOCAL_INFERENCE_URL ?? http://127.0.0.1:11435`) hits **Apple FM**, not

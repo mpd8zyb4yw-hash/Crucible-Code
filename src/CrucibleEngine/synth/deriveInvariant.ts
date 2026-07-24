@@ -58,7 +58,30 @@ export function deriveInvariantTests(
   const importGetter = '../' + getter.rel.replace(/\.tsx?$/, '')
   const getterName = getter.name
 
-  const content = `// Context-invariant test (repo-getter-fed runtime oracle — Crucible synth/deriveInvariant).
+  // ── Strong path (2026-07-24): RECOMPUTE the expected per-group sums from the real getter data
+  // and assert them. The weak balance-formula check below passes any internally-consistent-but-
+  // WRONG sums (summaryModule shipped wrong credits/debits that still satisfied balance ===
+  // credits - debits → oracle-GREEN / hidden-RED). Only taken when the FULL aggregation semantics
+  // parse cleanly; otherwise fall back to the weak check — a misparsed recompute would FALSE-REJECT
+  // correct code (cont.85: a verifier fails in two directions). Parses: the group key, each summed
+  // field's source amount + type value ("<field> = sum of <amt> for … '<typeVal>'"), and the
+  // discriminator field name (the data-literal key carrying those type values).
+  const rxEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const groupKey = spec.match(/\bgroup(?:ed)?\s+\w+\s+by\s+(\w+)/i)?.[1]
+  // The type value is a BARE quoted word (e.g. 'credit'); the non-greedy `[^\n]*?` skips a
+  // possessive apostrophe ("that account's 'credit' transactions") that a `[^']*` would trip on.
+  // `[\s\S]*?` (not `[^\n]`) because the rule prose wraps across lines ("sum of amount for\n
+  // that account's 'credit' transactions"); non-greedy still stops at the first bare-word quote.
+  const sum1 = spec.match(new RegExp(`\\b${rxEsc(field1)}\\b[^=\\n]*=\\s*sum of\\s+(\\w+)\\s+for[\\s\\S]*?'(\\w+)'`, 'i'))
+  const sum2 = spec.match(new RegExp(`\\b${rxEsc(field2)}\\b[^=\\n]*=\\s*sum of\\s+(\\w+)\\s+for[\\s\\S]*?'(\\w+)'`, 'i'))
+  const typeVal1 = sum1?.[2], typeVal2 = sum2?.[2]
+  const typeField = typeVal1
+    ? getter.content.match(new RegExp(`(\\w+)\\s*:\\s*'${rxEsc(typeVal1)}'`))?.[1]
+    : undefined
+  const canRecompute = !!(groupKey && sum1 && sum2 && typeField && typeVal2 && sum1[1] === sum2[1])
+  const sumField = sum1?.[1]
+
+  const weak = `// Context-invariant test (repo-getter-fed runtime oracle — Crucible synth/deriveInvariant).
 import { ${fn} } from '${importCandidate}'
 import { ${getterName} } from '${importGetter}'
 let failures = 0
@@ -80,6 +103,38 @@ for (const k of keys) {
 console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
 process.exit(failures === 0 ? 0 : 1)
 `
+  const strong = `// Context-invariant test (recompute-from-source — Crucible synth/deriveInvariant).
+import { ${fn} } from '${importCandidate}'
+import { ${getterName} } from '${importGetter}'
+let failures = 0
+const data: any[] = ${getterName}() as any
+const result: Record<string, any> = ${fn}(data) as any
+const exp: Record<string, { ${field1}: number; ${field2}: number }> = {}
+for (const t of data) {
+  const g = String(t['${groupKey}'])
+  if (!exp[g]) exp[g] = { ${field1}: 0, ${field2}: 0 }
+  if (t['${typeField}'] === '${typeVal1}') exp[g].${field1} += t['${sumField}']
+  if (t['${typeField}'] === '${typeVal2}') exp[g].${field2} += t['${sumField}']
+}
+const expKeys = Object.keys(exp).sort()
+const gotKeys = Object.keys(result).sort()
+if (JSON.stringify(expKeys) !== JSON.stringify(gotKeys)) {
+  console.log('FAIL — account keys ' + JSON.stringify(gotKeys) + ' !== expected ' + JSON.stringify(expKeys))
+  failures++
+}
+for (const g of expKeys) {
+  const e: any = result[g] || {}
+  const checks: Array<[string, number]> = [['${field1}', exp[g].${field1}], ['${field2}', exp[g].${field2}], ['${diffField}', exp[g].${field1} - exp[g].${field2}]]
+  for (const [f, want] of checks) {
+    const ok = e[f] === want
+    console.log((ok ? 'PASS' : 'FAIL') + ' — result["' + g + '"].' + f + ' === ' + want + (ok ? '' : '  (got ' + e[f] + ')'))
+    if (!ok) failures++
+  }
+}
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
+process.exit(failures === 0 ? 0 : 1)
+`
+  const content = canRecompute ? strong : weak
   return {
     testFile: { path: '__invariant__/spec.test.ts', content },
     count: recordHint,
