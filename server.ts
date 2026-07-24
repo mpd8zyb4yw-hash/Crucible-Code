@@ -1691,7 +1691,13 @@ async function checkLocalInference(): Promise<boolean> {
       console.log('[Local] Apple Foundation Models bridge up — on-device inference active')
       return true
     }
-    console.log(`[Local] Bridge reachable but model unavailable: ${data?.detail ?? 'unknown'} — local inference inactive`)
+    // A raw llama.cpp server (no shim) answers /health with {"status":"ok"} and has no
+    // `available` field — accept it directly so strict-offline runs need no fm_health_shim.
+    if (data?.status === 'ok') {
+      console.log('[Local] llama.cpp server up (status:ok) — on-device inference active')
+      return true
+    }
+    console.log(`[Local] Bridge reachable but model unavailable: ${data?.detail ?? data?.status ?? 'unknown'} — local inference inactive`)
     return false
   } catch {
     console.log('[Local] FM bridge not running — local inference inactive (external pool only)')

@@ -266,7 +266,7 @@ function contentAddressedId(spec: string, content: string): string {
  */
 const CORPUS_TASK_EXPORTS: ReadonlySet<string> = new Set([
   // ── coding-benchmarks.ts and the coding-bench / coding-bench-ext suite public APIs ──
-  'addFractions', 'bankersRound', 'basicCalculator', 'categoryTotals', 'clampVolume',
+  'addFractions', 'bankersRound', 'basicCalculator', 'calculatorWithParens', 'categoryTotals', 'clampVolume',
   'compareCaseInsensitive', 'convertBase', 'dedent', 'deepEqual', 'editDistance', 'evalRPN',
   'expand', 'filterUsers', 'findCycle', 'getAllProducts', 'getAllTransactions', 'getAllUsers',
   'getPointer', 'intersectTags', 'isValidUsername', 'mergeIntervals', 'normalizePath', 'overlapDays',
@@ -280,6 +280,8 @@ const CORPUS_TASK_EXPORTS: ReadonlySet<string> = new Set([
   'isOperator', 'applyOp',
   // editDistance (Levenshtein DP):
   'subCost', 'nextRow', 'editRow',
+  // calculatorWithParens (shunting-yard, parenthesised precedence):
+  'tokenize', 'precedence', 'toPostfix', 'evalPostfix',
 ])
 
 export function distillToSkill(spec: string, modulePath: string, content: string): void {

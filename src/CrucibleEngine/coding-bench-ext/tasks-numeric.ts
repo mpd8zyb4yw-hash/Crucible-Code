@@ -665,4 +665,105 @@ console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
 process.exit(failures === 0 ? 0 : 1)
 `,
   },
+  {
+    id: 'calculatorWithParens',
+    title: 'Evaluate an arithmetic expression with precedence AND parentheses',
+    modulePath: 'src/calculatorWithParens.ts',
+    prompt: `Implement a parenthesised arithmetic expression evaluator in TypeScript at src/calculatorWithParens.ts. ${CONTRACT}
+
+Export exactly:
+  export function calculatorWithParens(expr: string): number
+
+Semantics:
+- Evaluate an arithmetic expression string of non-negative integers, the binary operators
+  + - * / with STANDARD PRECEDENCE (* and / bind tighter than + and -), AND round PARENTHESES
+  "(" ")" that override precedence. Same-precedence operators associate LEFT TO RIGHT.
+- Division is INTEGER division truncating TOWARD ZERO (10/3 -> 3, exactly Math.trunc).
+- Spaces may appear anywhere and are ignored ("( 3 + 5 ) / 2" is "(3+5)/2").
+- Examples: calculatorWithParens("(3+2)*2") -> 10, calculatorWithParens("2*(3+4)") -> 14,
+  calculatorWithParens("(1+2)*(3+4)") -> 21, calculatorWithParens("3+2*2") -> 7,
+  calculatorWithParens("((2+3))*2") -> 10, calculatorWithParens("100") -> 100,
+  calculatorWithParens("2*(3+4*(5-1))") -> 38.
+- The parenless two-pass fold does NOT generalise here — grouping requires Dijkstra's
+  SHUNTING-YARD algorithm. The reliable route is three helpers: tokenize the string into
+  number/operator/parenthesis string tokens, convert infix to postfix (Reverse Polish
+  Notation) with an operator stack, then evaluate the postfix with a number stack —
+  calculatorWithParens(s) = evalPostfix(toPostfix(tokenize(s))).`,
+    ref: `export function tokenize(s: string): string[] {
+  return s.replace(/\\s+/g, '').match(/\\d+|[-+*/()]/g) || []
+}
+
+export function precedence(op: string): number {
+  return op === '*' || op === '/' ? 2 : 1
+}
+
+// Dijkstra's shunting-yard: infix token stream → Reverse Polish Notation. All operators
+// are left-associative, so an incoming operator pops every stacked operator of GREATER-OR-
+// EQUAL precedence (never past an open paren) before it is pushed.
+export function toPostfix(tokens: string[]): string[] {
+  const out: string[] = []
+  const ops: string[] = []
+  for (const t of tokens) {
+    if (t === '(') ops.push(t)
+    else if (t === ')') {
+      while (ops.length && ops[ops.length - 1] !== '(') out.push(ops.pop()!)
+      ops.pop() // discard the matching '('
+    } else if (t.length === 1 && '+-*/'.includes(t)) {
+      while (ops.length && ops[ops.length - 1] !== '(' && precedence(ops[ops.length - 1]) >= precedence(t)) out.push(ops.pop()!)
+      ops.push(t)
+    } else out.push(t)
+  }
+  while (ops.length) out.push(ops.pop()!)
+  return out
+}
+
+export function evalPostfix(postfix: string[]): number {
+  const st: number[] = []
+  for (const t of postfix) {
+    if (t.length === 1 && '+-*/'.includes(t)) {
+      const b = st.pop()!
+      const a = st.pop()!
+      st.push(t === '+' ? a + b : t === '-' ? a - b : t === '*' ? a * b : Math.trunc(a / b))
+    } else st.push(Number(t))
+  }
+  return st[0]
+}
+
+export function calculatorWithParens(expr: string): number {
+  return evalPostfix(toPostfix(tokenize(expr)))
+}
+`,
+    suite: `// HIDDEN adversarial suite for a NOVEL task (shunting-yard / parenthesised precedence) — calculatorWithParens.
+// Run: npx tsx __audit__/calculatorWithParens.hidden.ts   (imports ../src/calculatorWithParens)
+import { calculatorWithParens } from '../src/calculatorWithParens'
+
+let failures = 0
+function check(name: string, cond: boolean) {
+  console.log((cond ? '  PASS — ' : '  FAIL — ') + name)
+  if (!cond) failures++
+}
+
+check('parens override add-before-mul', calculatorWithParens('(3+2)*2') === 10)
+check('parens on the right', calculatorWithParens('2*(3+4)') === 14)
+check('two parenthesised groups', calculatorWithParens('(1+2)*(3+4)') === 21)
+check('precedence still holds without parens', calculatorWithParens('3+2*2') === 7)
+check('redundant nested parens', calculatorWithParens('((2+3))*2') === 10)
+check('bare integer', calculatorWithParens('100') === 100)
+check('deeply nested', calculatorWithParens('2*(3+4*(5-1))') === 38)
+check('spaces ignored', calculatorWithParens('( 3 + 5 ) / 2') === 4)
+check('division truncates toward zero after group', calculatorWithParens('(10)/3') === 3)
+check('left-associative subtraction inside parens', calculatorWithParens('(7-2-1)') === 4)
+check('parens change division grouping', calculatorWithParens('8/(2*2)') === 2)
+check('same expr without parens differs', calculatorWithParens('8/2*2') === 8)
+check('leading group then mul', calculatorWithParens('(2+3)*(4)') === 20)
+check('nested subtraction goes through zero', calculatorWithParens('(2-(3+1))') === -2)
+check('multi-digit inside group', calculatorWithParens('(12+8)/5') === 4)
+check('chain of groups left-to-right', calculatorWithParens('(6/2)*(3-1)') === 6)
+check('no parens mixed precedence', calculatorWithParens('2+3*4-6/2') === 11)
+check('group forces early subtraction', calculatorWithParens('10-(2+3)') === 5)
+
+console.log(failures === 0 ? 'ALL PASS' : failures + ' FAILURE(S)')
+process.exit(failures === 0 ? 0 : 1)
+`,
+  },
 ]
