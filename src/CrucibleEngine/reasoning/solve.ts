@@ -467,6 +467,17 @@ export async function decomposeCodeBySubFunction(
   return last ?? { status: 'declined', code: null, helpers: [], rungs: [], modelCalls: spentCalls, detail: 'no plan attempts run' }
 }
 
+/**
+ * PLAN-QUALITY predicate for the code decompose path. A single-helper carve is degenerate — the
+ * lone helper does all the work and compose just calls it (the FM "re-baked the whole difficulty
+ * into one un-certifiable helper"), so it should fail fast and resample rather than burn a rung
+ * budget. Fires ONLY on the FM general path: trusted template classes (always ≥2 helpers) and
+ * caller-supplied planners (tests) are exempt. Pure — unit-tested in __decompose_bench.
+ */
+export function isDegenerateSubFnCarve(hasCustomPlanner: boolean, helperCount: number, hasTemplate: boolean): boolean {
+  return !hasCustomPlanner && helperCount < 2 && !hasTemplate
+}
+
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
   opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] },
@@ -506,6 +517,18 @@ async function runSubFunctionOnce(
   emit({ type: 'thought', text: `subfn: ${helperPlan.length} helper(s) — ${helperPlan.map((h) => h.name).join(', ')}` })
   if (!helperPlan.length) {
     return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'no helper distinct from the top-level function' }
+  }
+  // PLAN-QUALITY GATE (universal, template-free path only). A single-helper carve is degenerate:
+  // the lone helper necessarily does ALL the work and the compose rung just calls it — i.e. the
+  // FM "re-baked the whole difficulty into one un-certifiable helper" (the documented failure
+  // mode). Certifying that helper is exactly as hard as the original task, so spending a full
+  // rung budget on it before failing is pure waste. Fail FAST as decompose-failed so the outer
+  // planAttempts loop resamples a fresh (stochastic) carve immediately. Exempt the trusted
+  // template classes (their fixed carves are always ≥2 helpers anyway) and any caller-supplied
+  // planner (tests), so this only tightens the FM general path it was written for.
+  if (isDegenerateSubFnCarve(!!opts.planner, helperPlan.length, hasDecomposeTemplate(input.nl ?? input.goal, input.entry))) {
+    emit({ type: 'thought', text: 'subfn: single-helper carve re-bakes the whole task — resampling the plan' })
+    return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls, detail: 'degenerate single-helper carve (re-bake); resample plan' }
   }
 
   // 2) Certify each helper independently. A helper that can't certify collapses the plan.

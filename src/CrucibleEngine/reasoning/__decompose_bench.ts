@@ -25,7 +25,7 @@
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
 import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, isEditDistanceGoal, editDistanceTemplatePlan, isShuntingYardGoal, shuntingYardTemplatePlan, composeHintFor, templateFor } from './fmPlanner'
-import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, type SubFunctionPlanner } from './solve'
+import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, isDegenerateSubFnCarve, type SubFunctionPlanner } from './solve'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
 let pass = 0, fail = 0
@@ -167,6 +167,14 @@ async function main() {
     parsePlan('1. build canvas\n2. add player\n3. spawn bullets').length === 3)
   check('7b dashes/bullets parse', parsePlan('- one thing\n• another thing').length === 2)
   check('7c JSON array parses', parsePlan('["step a","step b","step c"]').length === 3)
+
+  // ── 6c. PLAN-QUALITY GATE — the FM general path rejects a degenerate single-helper carve. ──
+  // A 1-helper carve on the template-free path is a re-bake (the helper is the whole task); fail
+  // fast so planAttempts resamples. Template classes and caller-supplied planners are exempt.
+  check('6c1 FM single-helper carve fires the re-bake gate', isDegenerateSubFnCarve(false, 1, false) === true)
+  check('6c2 two-helper carve is a real decomposition', isDegenerateSubFnCarve(false, 2, false) === false)
+  check('6c3 custom-planner (test) is exempt', isDegenerateSubFnCarve(true, 1, false) === false)
+  check('6c4 trusted template class is exempt', isDegenerateSubFnCarve(false, 1, true) === false)
   check('7d JSON objects parse', parsePlan('[{"goal":"x"},{"step":"y"}]').length === 2)
   check('7e prose without list structure yields no rungs (→ decline)',
     parsePlan('I think you should just try harder honestly.').length === 0)
