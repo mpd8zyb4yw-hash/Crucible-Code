@@ -31,8 +31,18 @@
 - **tagSetModule variance-RED → 3/3 reliably GREEN on qwen.** Oracle gap: set-op property family
   (`synth/derive.ts`) tested only `setOps[0]` → intersect never checked → wrong intersect shipped.
   Fixed: iterate every set-op export + `repairSetOp` (canonical impls, oracle-gated). repair:bench 30/30.
-- **OPEN (this track):** (a) qwen REDs still open — summaryModule (8/14 wrong group-by aggregation
-  + self-test synth fails) and usernameModule (2 boundary/off-by-one fails) — root-cause + repair each;
+- **usernameModule validator oracle HARDENED (not a measured flip — read carefully).** The
+  validator family (`synth/derive.ts`) only checked the return TYPE, so a wrong length bound shipped
+  oracle-GREEN/hidden-RED on an unlucky run. Added spec-prose length-boundary REJECTION tests
+  (`name('a'.repeat(min-1))===false`, `…max+1…===false`) — isolation-proven to reject a wrong-bounds
+  validator, and provably NEVER false-rejects a correct one (out-of-range length is invalid on
+  length alone). BUT: across 5 qwen measurement runs qwen wrote CORRECT bounds every time (round-log:
+  22 accepted, 0 boundary-rejections), so the hardening never fired and the 3/3 GREEN is qwen
+  variance, NOT a demonstrated fix. Kept as sound hardening; a clean e2e flip still needs a run where
+  qwen emits wrong bounds. A bounds-repair (canonicalize the length comparison) would make it
+  reliable like repairSetOp — build it once an e2e wrong-bounds candidate is captured.
+- **OPEN (this track):** (a) summaryModule (8/14 wrong group-by aggregation + self-test synth fails)
+  — the last qwen RED, hardest; root-cause the aggregation error (likely oracle gap like set-op);
   (b) decide if `LOCAL_INFERENCE_URL` default should be `:8080` (needs before/after suite + coordination,
   the dev server reads it too); (c) full qwen suite is the real scorecard — re-run after each repair.
 
