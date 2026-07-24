@@ -1933,6 +1933,30 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-24 (cont.108 — DOCTRINE-CORRECT measurement on qwen-1.5b head; tagSetModule variance-RED → reliably GREEN via set-op oracle + repair)
+- **Measurement discrepancy found & corrected.** The offline synth proposer default
+  (`synth/universal.ts:39` `LOCAL_INFERENCE_URL ?? http://127.0.0.1:11435`) hits **Apple FM**, not
+  the doctrine head **qwen-1.5b (:8080)**. Every coding-bench number reported before this entry was
+  measured on Apple FM. Re-ran the full suite with `LOCAL_INFERENCE_URL=http://localhost:8080`:
+  **qwen baseline 11/14, 7/10 gen-path** (vs Apple FM 9/10) — qwen is empirically WEAKER, which is
+  fine per doctrine: close the gap with verifier+repair, NOT by promoting the bigger Apple FM
+  fallback. bugfixCsv (cont.107 repair) stays GREEN on qwen — the repair is validated on the real head.
+  OPEN: decide whether the `:11435` default should be `:8080` (needs its own before/after suite +
+  coordination — the user's dev server reads this too).
+- **tagSetModule variance-RED → reliably GREEN on qwen (3/3, repair fired+accepted 3/3, verdict
+  ALL PASS).** Root cause was an ORACLE GAP, not the FM: the set-op property family
+  (`synth/derive.ts`) tested only `setOps[0]`, so a task exporting BOTH `unionTags` AND
+  `intersectTags` never tested intersect — qwen's intersect-as-deduped-union
+  (`[...a,...b].filter(uniq)`) shipped oracle-GREEN / hidden-RED. Two changes, both oracle-gated:
+  - **`derive.ts` set-op family now iterates over EVERY set-op export** (union/intersect/difference),
+    not just the first. Isolated proof: the wrong intersect now fails 2 derived props it used to skip.
+    Alone this makes the task VARIANCE (1 GREEN / 1 RED across 2 qwen runs — oracle catches it, FM
+    can't reliably self-fix).
+  - **`repairNaive... ` neighbour `repairSetOp` (`synth/repairProposers.ts`)** — replaces each
+    union/intersect/difference export BODY with its canonical set impl (`a.filter(x=>b.includes(x))`
+    for intersect, etc.), param names preserved, general over element type, oracle-re-gated. With it:
+    **3/3 GREEN.** `repair:bench` 28/28 → 30/30 (+1 positive via `expectIncludes`, +1 abstain guard).
+
 ### 2026-07-24 (cont.107 — coding-bench: bugfixCsv RED→GREEN via quote-aware-split repair; offline self-test tooling un-broke; 9/10 → 10/10 gen-path)
 - **bugfixCsv (the sole gen-path RED) flipped RED→GREEN. MEASURED offline-strict this session:
   `GREEN bugfixCsv compile=Y hidden=Y path=gen 186s`, hidden suite 9/9 ALL PASS incl. the two

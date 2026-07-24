@@ -22,7 +22,21 @@
 > NOTE: two tracks were live on 2026-07-24. The CODING-BENCH block is first; the ANSWERS/CALIBRATION
 > block (cont.106) follows unchanged. Do not delete either without confirming that track is done.
 
-### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.107 — MEASURED, gen-path 9/10 → 10/10):
+### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.108 — DOCTRINE-CORRECT qwen head measurement):
+- **All prior numbers were on Apple FM (:11435), NOT the qwen-1.5b head (:8080)** — the offline
+  synth default (`synth/universal.ts:39`) points at Apple FM. Measure with
+  `LOCAL_INFERENCE_URL=http://localhost:8080` on the strict server. **qwen baseline: 11/14, 7/10
+  gen-path** (Apple FM was 9/10 — qwen is weaker; doctrine says close the gap with verifier+repair,
+  not by promoting Apple FM). bugfixCsv stays GREEN on qwen.
+- **tagSetModule variance-RED → 3/3 reliably GREEN on qwen.** Oracle gap: set-op property family
+  (`synth/derive.ts`) tested only `setOps[0]` → intersect never checked → wrong intersect shipped.
+  Fixed: iterate every set-op export + `repairSetOp` (canonical impls, oracle-gated). repair:bench 30/30.
+- **OPEN (this track):** (a) qwen REDs still open — summaryModule (8/14 wrong group-by aggregation
+  + self-test synth fails) and usernameModule (2 boundary/off-by-one fails) — root-cause + repair each;
+  (b) decide if `LOCAL_INFERENCE_URL` default should be `:8080` (needs before/after suite + coordination,
+  the dev server reads it too); (c) full qwen suite is the real scorecard — re-run after each repair.
+
+### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.107 — MEASURED, gen-path 9/10 → 10/10 on Apple FM):
 - **bugfixCsv RED→GREEN** (the sole gen-path RED). `repairNaiveDelimiterSplit` in
   `synth/repairProposers.ts`: a naive `fn(input:string):string[][]` splitter → single-pass
   quote-aware RFC-4180 scanner, delimiter read from the candidate, oracle-re-gated. Measured

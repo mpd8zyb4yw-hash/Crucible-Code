@@ -682,9 +682,66 @@ function repairNaiveDelimiterSplit(candidate: string, detail: string): string | 
   return repaired !== candidate ? repaired : null
 }
 
+/** Index (exclusive) of the `}` that closes the `{` at `open` in `src`, string-aware. -1 if none. */
+function matchBrace(src: string, open: number): number {
+  let depth = 0
+  let inStr: string | null = null
+  for (let i = open; i < src.length; i++) {
+    const c = src[i]
+    if (inStr) {
+      if (c === '\\') { i++; continue }
+      if (c === inStr) inStr = null
+      continue
+    }
+    if (c === '"' || c === "'" || c === '`') { inStr = c; continue }
+    if (c === '{') depth++
+    else if (c === '}') { depth--; if (depth === 0) return i + 1 }
+  }
+  return -1
+}
+
+/**
+ * Array set-operation functions (union / intersect / difference) the on-device FM writes WRONG
+ * in a recurring, non-self-correcting way — most often intersect implemented as the deduped
+ * UNION (`[...a,...b].filter(uniq)`), measured live on the qwen head (tagSetModule: all 4 intersect
+ * hidden checks failing). The strengthened set-op property test (synth/derive.ts, 2026-07-24) now
+ * REJECTS such candidates, but the small FM can't reliably produce the fix, so the task stays
+ * variance-green at best. This replaces each union/intersect/difference export BODY with its
+ * canonical set implementation, preserving the declared parameter names and signature. General
+ * over element type (Set + includes) and function naming; oracle-re-gated, so a spec these
+ * canonical forms don't satisfy is rejected like any wrong candidate (WRONG=0 untouched).
+ */
+function repairSetOp(candidate: string, detail: string): string | null {
+  if (!detail) return null
+  const SIG = /export\s+function\s+(union\w*|intersect\w*|intersection\w*|difference\w*|subtract\w*)\s*\(\s*([A-Za-z_$][\w$]*)\s*:[^,()]*,\s*([A-Za-z_$][\w$]*)\s*:[^)]*\)\s*:\s*[^{]*\{/gi
+  // Collect every set-op declaration first (splicing shifts indices), then apply right-to-left.
+  const hits: Array<{ sigStart: number; open: number; a: string; b: string; kind: 'union' | 'intersect' | 'diff' }> = []
+  let m: RegExpExecArray | null
+  while ((m = SIG.exec(candidate)) !== null) {
+    const nm = m[1].toLowerCase()
+    const kind = nm.startsWith('union') ? 'union' : nm.startsWith('intersect') ? 'intersect' : 'diff'
+    hits.push({ sigStart: m.index, open: SIG.lastIndex - 1, a: m[2], b: m[3], kind })
+  }
+  if (!hits.length) return null
+  let out = candidate
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const h = hits[i]
+    const end = matchBrace(candidate, h.open)
+    if (end === -1) return null
+    const body =
+      h.kind === 'union'     ? `[...new Set([...${h.a}, ...${h.b}])]`
+      : h.kind === 'intersect' ? `[...new Set(${h.a}.filter((__v) => ${h.b}.includes(__v)))]`
+      :                          `[...new Set(${h.a}.filter((__v) => !${h.b}.includes(__v)))]`
+    const header = candidate.slice(h.sigStart, h.open + 1)   // `export function …): T[] {`
+    out = out.slice(0, h.sigStart) + `${header}\n  return ${body}\n}` + out.slice(end)
+  }
+  return out !== candidate ? out : null
+}
+
 const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string | null> = [
   repairMissingField,
   repairNaiveDelimiterSplit,
+  repairSetOp,
   repairImportLocalConflict,
   repairArrayGuard,
   repairDynamicKeyIndex,

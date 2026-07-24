@@ -249,6 +249,24 @@ export function sortProducts(products: Product[], opts: SortOpts): Product[] {
     detail: `FAIL — splitLine('a,b') === ['a','b']  (got something)`,
     expect: null,
   },
+  {
+    // repairSetOp: the FM's intersect-as-deduped-union bug (returns [...a,...b].filter(uniq)) is
+    // replaced with the canonical `a.filter(x => b.includes(x))` set intersection, param names
+    // preserved. Union in the same candidate is left semantically correct. Body pinned by substring.
+    name: 'repairSetOp: wrong intersect (deduped union) → canonical a.filter(b.includes)',
+    candidate: `export function unionTags(a: string[], b: string[]): string[] { return [...new Set([...a, ...b])] }\nexport function intersectTags(a: string[], b: string[]): string[] { return [...new Set([...a, ...b].filter((x,i,s)=>s.indexOf(x)===i))] }`,
+    detail: `FAIL — intersect subset of A`,
+    expect: 'sentinel-unused',
+    expectIncludes: 'a.filter((__v) => b.includes(__v))',
+  },
+  {
+    // repairSetOp ABSTAINS on a non-set-op function: a same-shaped (a[],b[])->[] that is not a
+    // named set operation must not be rewritten into a set op.
+    name: 'repairSetOp: ABSTAINS on a non-set-op array function',
+    candidate: `export function zipPairs(a: number[], b: number[]): number[] { return a.map((x, i) => x + b[i]) }`,
+    detail: `FAIL — some behavioral check`,
+    expect: null,
+  },
 ]
 
 function main() {
