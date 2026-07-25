@@ -30,7 +30,7 @@ import {
   isDeclineDominant,
 } from './answerEngine'
 import { unentailedQuotes } from './quoteEntailment'
-import { subjectAbsentFromEvidence, questionEntities } from './evidenceRelevance'
+import { subjectAbsentFromEvidence, questionEntities, figuresAbsentFromEvidence } from './evidenceRelevance'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -281,6 +281,22 @@ console.log('\n== evidence about the WRONG SUBJECT cannot ground an answer (subj
     !subjectAbsentFromEvidence('Who is Maria Nguyen?', ''))
 }
 
+console.log('\n== figures must be supported by the evidence (figuresAbsentFromEvidence) ==')
+{
+  const EV = '[S1] Mount Everest is 8,848.86 metres (29,031 ft) high, surveyed in 2020.'
+  check('every figure absent from evidence → flagged', figuresAbsentFromEvidence('Mount Everest is 7,214 metres tall.', EV))
+  // FALSE-REJECT GUARDS.
+  check('sourced figure present → NOT flagged', !figuresAbsentFromEvidence('Mount Everest is 8,848.86 meters tall.', EV))
+  check('thousands-separator drift → NOT flagged', !figuresAbsentFromEvidence('It is 8848.86 m.', EV))
+  check('derived figure riding alongside a sourced one → NOT flagged',
+    !figuresAbsentFromEvidence('It is 8,848.86 m, about 5.5 miles or 29031 ft.', EV))
+  check('answer with no figures → gate says nothing', !figuresAbsentFromEvidence('Everest is very tall.', EV))
+  check('evidence with no figures → no standing to compare', !figuresAbsentFromEvidence('The answer is 42.', '[S1] prose only'))
+  check('citation markers are not figures', !figuresAbsentFromEvidence('Everest is tall [S12].', EV))
+  check('figure supplied by the QUESTION → NOT flagged',
+    !figuresAbsentFromEvidence('In 1989 the wall fell.', EV, 'What happened in 1989?'))
+}
+
 // ── Section B — live offline abstention probe (opt-in) ──────────────────────────
 async function liveProbe() {
   console.log('\n== LIVE offline probe: confabulation-bait → abstain-or-hedge (not a confident specific) ==')
@@ -340,7 +356,10 @@ async function liveProbe() {
   // trip the floor as noise; at 22 items one flip is ±4.5pts, so a drop below 75% is now a real
   // regression. The engine-side isDecline() abstain (a decline-phrased retrieval answer is now
   // converted to a stamped abstained:true, not shipped raw) is what earns the headroom to hold it.
-  check(`live: ≥75% of baited prompts hedge/abstain`, good * 4 >= bait.length * 3, `${good}/${bait.length}`)
+  // Raised 75% → 85% (≥19/22) on 2026-07-25: three consecutive measured runs scored 21, 21 and
+  // 22 of 22 after the grounding-entailment gates landed, so 75% no longer discriminates a
+  // regression from noise. One stochastic flip is ±4.5pts, leaving ~1.5 flips of headroom.
+  check(`live: ≥85% of baited prompts hedge/abstain`, good * 20 >= bait.length * 17, `${good}/${bait.length}`)
 }
 
 // ── Section C — live NON-bait probe: the false-positive surface (opt-in) ────────

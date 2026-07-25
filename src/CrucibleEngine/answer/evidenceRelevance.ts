@@ -96,3 +96,42 @@ export function subjectAbsentFromEvidence(question: string, evidence: string): b
   if (!entities.length) return false     // unnamed subject → this gate has nothing to say
   return !entities.some(e => supported(e, hay))
 }
+
+// ── Numeric-claim support ──────────────────────────────────────────────────────
+// The same argument as quotations, applied to figures: a grounded answer's numbers are claims
+// about what the sources SAY, and "does this figure occur in the evidence" is a membership test,
+// not a judgement. This is the check that lets the pipeline stop stamping every web-grounded
+// answer `via:'dag'` confidence 0.85 regardless of whether the evidence supports its specifics.
+//
+// FALSE-REJECT DISCIPLINE. Answers legitimately introduce derived figures (unit conversions,
+// sums, "8,848.86 m (29,031 ft)"), so a per-number rule would reject correct work constantly.
+// This fires ONLY on a total miss: the answer states figures, and NOT ONE of them — nor any
+// figure from the question — occurs anywhere in the evidence. One supported number clears the
+// answer, because a derived figure always rides alongside the sourced one it came from.
+const CITATION_RX = /\[S\d+\]/g
+
+/** Figures asserted by the answer, normalized (thousands separators dropped, citations removed). */
+function figures(text: string): string[] {
+  const cleaned = (text ?? '').replace(CITATION_RX, ' ')
+  const out: string[] = []
+  for (const m of cleaned.matchAll(/\d[\d,]*(?:\.\d+)?/g)) {
+    const norm = m[0].replace(/,/g, '')
+    if (norm.replace(/[^0-9]/g, '').length < 2) continue   // single digits: list markers, "a 5%"
+    out.push(norm)
+  }
+  return out
+}
+
+/**
+ * True when the answer asserts figures and the evidence (or the question) contains none of them —
+ * the numbers were not read anywhere, so the answer's specifics are unsupported by what it cites.
+ */
+export function figuresAbsentFromEvidence(answer: string, evidence: string, question = ''): boolean {
+  const hay = (evidence ?? '') + ' ' + (question ?? '')
+  if (!hay.trim()) return false
+  const hayFigures = new Set(figures(hay))
+  if (!hayFigures.size) return false      // evidence states no figures → no standing to compare
+  const asserted = figures(answer)
+  if (!asserted.length) return false      // no numeric claim → nothing to check
+  return !asserted.some(f => hayFigures.has(f))
+}

@@ -16,7 +16,7 @@ import { checkFmAvailable, fmComplete, fmStream, stripAgentScaffold, type ConvTu
 import { solveNonCodeTurn, type NonCodeMeta } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
 import { unentailedQuotes } from './quoteEntailment'
-import { subjectAbsentFromEvidence } from './evidenceRelevance'
+import { subjectAbsentFromEvidence, figuresAbsentFromEvidence } from './evidenceRelevance'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
 import { applyRecomputation, recomputeMultiStep, recomputeWordProblem, directArithmetic } from './wordProblem'
@@ -764,6 +764,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   if (grounded && groundedCited === 0 && facets.needsExternalFact) {
     debugBus.emit('pipeline', 'abstain_grounded_uncited_external_fact', { message: message.slice(0, 80) }, { severity: 'warn' })
     emit?.({ type: 'verify', passed: false, report: 'The grounded answer cited none of the retrieved sources — it is parametric prose, not evidence-entailed. Abstaining on the unverifiable external fact.' })
+    return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+  }
+
+  // ── Numeric-support gate ────────────────────────────────────────────────────
+  // Figures are the other kind of checkable specific: "does this number occur in what I read" is a
+  // membership test. Fires only on a TOTAL miss — the answer states figures and not one of them
+  // (nor any figure from the question) appears in the evidence — so derived numbers (unit
+  // conversions, sums) that ride alongside a sourced one never trip it. This is the concrete
+  // replacement for stamping every grounded answer confident regardless of what the evidence says.
+  if (grounded && groundedEvidence && figuresAbsentFromEvidence(text, groundedEvidence, message)) {
+    debugBus.emit('pipeline', 'abstain_figures_unsupported', { message: message.slice(0, 80) }, { severity: 'warn' })
+    emit?.({ type: 'verify', passed: false, report: 'Every figure in the answer is absent from the retrieved sources — the numbers are not evidence-entailed, so abstaining rather than shipping them as grounded.' })
     return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
   }
 
