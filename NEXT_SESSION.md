@@ -137,18 +137,24 @@ All three cont.106 open items are CLOSED. Commit `5da90f1`.
   ReferenceError). `vgr:execverify` 46/46. NOTE: `contractVerify.ts` (2 sites) and
   `faultLocalize.ts` (2 sites) run vm the same way and are STILL UNGUARDED — same crash class.
 
+  FOLLOW-UP SHIPPED same session: all remaining vm tiers are now guarded too — `contractVerify.ts`
+  (2 sites) and `faultLocalize.ts` (3 sites, INCLUDING the host-side calls into sandbox functions,
+  which can hand back a rejecting promise — same crash class). New dedicated crash bench
+  `__sandboxguard_bench.ts` (`npm run vgr:sandboxguard`) covers every tier: 5/5, isolation-proven
+  (guard neutered → process exits with the ReferenceError, no verdict printed). No regressions:
+  vgr:execverify 46/46, fault:localize 12/12 (exact 92%), fault:bench 17/17, contract benches
+  10/10 + 69/69.
+
 **Open next (this track), highest-leverage first:**
-1. **Wrap the remaining vm call sites** in `withSandboxRejectionGuard` — `contractVerify.ts:826,834`
-   and `faultLocalize.ts:253,329`. Same crash class as `fb4327c`, not yet observed live there.
-2. **One live BAD remains (MEASURED):** "What was the résumé objective line on the job application
+1. **One live BAD remains (MEASURED):** "What was the résumé objective line on the job application
    Maria Nguyen submitted in 2007?" → fabricated a quoted objective line. It is THIRD-person, so
    `hasUnknowablePossessivePremise` (first-person by design) doesn't fire and shouldn't be widened
    blindly — the general shape is "a unique private datum about a named private individual".
    Needs a real detector, not a regex widening; false-positive risk is high (public figures).
-3. **Web-grounding tier still hardcodes `via:'dag'` conf 0.85 regardless of answer quality**
+2. **Web-grounding tier still hardcodes `via:'dag'` conf 0.85 regardless of answer quality**
    (synthDriver `solveNonCodeTurn` ~line 246) — a confidently-wrong PROSE synthesis over weak
    evidence still ships stamped grounded. Consider an evidence-entailment gate before stamping.
-4. **Raise the live gates** (both at ≥75%) once items 1–3 land — bait is running 21/22.
+3. **Raise the live gates** (both at ≥75%) once items 1–2 land — bait is running 21/22.
 
 
 > cont.104 owns the ANSWER/CALIBRATION path: `src/CrucibleEngine/answer/answerEngine.ts`

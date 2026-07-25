@@ -28,6 +28,7 @@
 
 import vm from 'node:vm'
 import * as ts from 'typescript'
+import { withSandboxRejectionGuard } from './sandboxRejectionGuard'
 
 /** One acceptance case: positional args applied to the entry, and the deep-equal expected value.
  *  Same shape as codeVerifier's CodeCase so callers can pass their existing cases straight through. */
@@ -250,7 +251,7 @@ export function localizeFault(source: string, entry: string, cases: LocCase[], o
 
     // Load the module. A load-time throw means we can't get a spectrum for this case; skip it.
     try {
-      new vm.Script(inst.code).runInContext(context, { timeout: timeoutMs })
+      withSandboxRejectionGuard(() => new vm.Script(inst.code).runInContext(context, { timeout: timeoutMs }))
     } catch {
       continue
     }
@@ -266,7 +267,7 @@ export function localizeFault(source: string, entry: string, cases: LocCase[], o
     hit.clear()
     let passed: boolean
     try {
-      const actual = (fn as (...a: unknown[]) => unknown)(...c.args)
+      const actual = withSandboxRejectionGuard(() => (fn as (...a: unknown[]) => unknown)(...c.args))
       passed = deepEqual(actual, c.expected)
     } catch {
       // A throw is a failing case — the exception path is exactly what we want to localize.
@@ -326,7 +327,7 @@ export function createCoverageHarness(source: string, opts: { timeoutMs?: number
   const { sandbox, moduleObj } = makeSandbox(line => { hit.add(line) })
   const context = vm.createContext(sandbox)
   try {
-    new vm.Script(inst.code).runInContext(context, { timeout: timeoutMs })
+    withSandboxRejectionGuard(() => new vm.Script(inst.code).runInContext(context, { timeout: timeoutMs }))
   } catch (e: any) {
     return { error: `candidate failed to load: ${e?.message ?? e}` }
   }
@@ -338,7 +339,7 @@ export function createCoverageHarness(source: string, opts: { timeoutMs?: number
       if (typeof fn !== 'function') return { ok: false, threw: `entry '${entry}' is not an exported function`, covered: new Set() }
       hit.clear()
       try {
-        const value = (fn as (...a: unknown[]) => unknown)(...args)
+        const value = withSandboxRejectionGuard(() => (fn as (...a: unknown[]) => unknown)(...args))
         return { ok: true, value, covered: new Set(hit) }
       } catch (e: any) {
         return { ok: false, threw: String(e?.message ?? e), covered: new Set(hit) }

@@ -40,6 +40,7 @@ import * as ts from 'typescript'
 import { answerCodeBlocks, extractLibraryUsage, classifyLibraryUsage, makeSafeBuiltinRequire } from './apiFaithfulness'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { propertyForFunction } from './propertyVerifier'
+import { withSandboxRejectionGuard } from './sandboxRejectionGuard'
 
 export interface ContractDefect {
   /** The invariant that failed. */
@@ -823,7 +824,7 @@ function runHarness(candidateJs: string, harnessJs: string, timeoutMs: number): 
   // Script 1: clock prelude + the candidate (its own demo runs here). A death here is the
   // plain-code tier's finding, not ours — report loadError so the caller abstains.
   try {
-    new vm.Script(CLOCK_PRELUDE + '\n' + candidateJs).runInContext(context, { timeout: timeoutMs })
+    withSandboxRejectionGuard(() => new vm.Script(CLOCK_PRELUDE + '\n' + candidateJs).runInContext(context, { timeout: timeoutMs }))
   } catch (e: any) {
     return { loadError: `${e?.name ?? 'Error'}: ${e?.message ?? e}`, failures: [], checksRun: 0 }
   }
@@ -831,7 +832,7 @@ function runHarness(candidateJs: string, harnessJs: string, timeoutMs: number): 
   // Script 2: helpers + battery. Top-level class/function declarations from script 1 live in
   // the context's global lexical environment, so the battery sees them by name.
   try {
-    new vm.Script(HELPERS + '\n' + harnessJs).runInContext(context, { timeout: timeoutMs })
+    withSandboxRejectionGuard(() => new vm.Script(HELPERS + '\n' + harnessJs).runInContext(context, { timeout: timeoutMs }))
   } catch (e: any) {
     const msg = String(e?.message ?? e)
     if (/Script execution timed out/.test(msg)) {
