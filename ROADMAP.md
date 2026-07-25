@@ -1933,6 +1933,25 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25 (cont.111 — repairGroupedLedger → summaryModule 2/3 → 3/3 GREEN on qwen, repair accepted 3/3)
+- **`repairGroupedLedger` (`synth/repairProposers.ts`).** cont.110's recompute invariant made the
+  oracle REJECT wrong aggregations (22 rejections), but the FM couldn't reliably self-fix — summaryModule
+  sat at 2/3. This replaces the function BODY with the canonical group-by aggregation, PARAMETERIZED by
+  semantics parsed from the spec (group key; each summed field's source amount + type value; the diff
+  field) plus the discriminator field inferred from the candidate's OWN type check (`t.type === 'credit'`).
+  General over any grouped-ledger-aggregate task — NOT keyed to summaryModule — and oracle-re-gated, so a
+  shape the canonical form doesn't satisfy is rejected like any wrong candidate.
+- **MEASURED on qwen (:8080): summaryModule 2/3 → 3/3 GREEN, grouped-ledger repair fired+accepted 3/3.**
+  Trajectory for this task across the session: 3/3 RED (weak oracle) → 2/3 (strong oracle) → 3/3 (+repair).
+- Isolation-validated both directions before measuring: repairs a swapped-credit/debit candidate into
+  canonical form that passes the strong invariant AND a hand-written correctness check; abstains when the
+  discriminator field can't be inferred. `repair:bench` 30/30 → **32/32** (+1 positive, +1 abstain guard;
+  added an `expectExcludes` assertion mode so a per-proposer abstain can be pinned even when an unrelated
+  proposer legitimately fires on the same input).
+- **All four gen-path tasks fixed this session are now REPAIR-GUARANTEED or oracle-hardened:** bugfixCsv
+  (cont.107), tagSetModule (cont.108), summaryModule (cont.110+111) reliable; usernameModule (cont.109)
+  hardened-but-variance.
+
 ### 2026-07-25 (cont.110b — AUTHORITATIVE full qwen suite: 14/14, 10/10 gen-path GREEN)
 - **Full offline-strict suite on the doctrine head qwen-1.5b (:8080): 14/14 overall, 10/10 gen-path
   GREEN** (up from the 7/10 qwen baseline at the start of the cont.107–110 work). bugfixCsv +
