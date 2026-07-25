@@ -308,5 +308,33 @@ console.log(_.chunk([1, 2, 3], 2));`)
   check('plain: safe builtin + third-party → abstain (defers to library path)', v.status === 'abstain', v.reason)
 }
 
-console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`)
-process.exit(fail === 0 ? 0 : 1)
+{
+  // CRASH GUARD (measured live 2026-07-25, abstain:bench): the answer's demo was ASYNC and awaited
+  // `fetch` — undefined in the sandbox, because network is denied by design. The rejection settled
+  // AFTER `runInContext` returned, so the try/catch never saw it; Node's default unhandled-rejection
+  // behaviour then KILLED THE WHOLE BENCH PROCESS mid-run. Untrusted answer code must never be able
+  // to take the engine down: the verifier has to return a verdict, whatever the demo does.
+  const asyncReject = code(`async function getWinningNumber() {
+  const response = await fetch('https://example.com/lottery');
+  return (await response.json()).number;
+}
+const p = getWinningNumber();
+console.log(p);`)
+  let survived = true, v: any
+  try { v = verifyPlainCodeByExecution(asyncReject) } catch { survived = false }
+  check('plain: async demo rejecting on a later tick returns a verdict instead of killing the process',
+    survived && !!v, v?.reason)
+  // Give the rejection a tick to settle — if the guard is missing, THIS is where the process dies.
+  // NOTE for anyone re-proving this: the guard installs ONE process-level listener the first time
+  // ANY wrapped sandbox run executes, so unwrapping a single call site still passes here. Isolation-
+  // proven separately (2026-07-25): with `withSandboxRejectionGuard` removed from executionVerify
+  // entirely, this exact snippet exits the process with `ReferenceError: fetch is not defined`.
+}
+
+// Summary is deferred one macrotask so the async sandbox rejection above has settled BEFORE we
+// report: if the guard is missing, the process dies here instead of printing a verdict.
+setTimeout(() => {
+  check('plain: process still alive after the sandbox rejection settled', true)
+  console.log(`\n${fail === 0 ? 'ALL PASS' : 'FAILURES'} — ${pass} passed, ${fail} failed`)
+  process.exit(fail === 0 ? 0 : 1)
+}, 60)

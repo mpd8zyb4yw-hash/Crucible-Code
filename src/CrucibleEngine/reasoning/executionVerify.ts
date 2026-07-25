@@ -40,6 +40,7 @@ import {
   verifyApiFaithfulness, classifyLibraryUsage, makeSafeBuiltinRequire, type FaithfulnessVerdict,
 } from './apiFaithfulness'
 import { verifyAnswerContract } from './contractVerify'
+import { withSandboxRejectionGuard } from './sandboxRejectionGuard'
 
 export type ExecutionStatus = 'certified' | 'violations' | 'abstain'
 
@@ -214,7 +215,7 @@ export function verifyByExecution(
   const bindings = topLevelBindings(js)
   const collector = bindings.length ? `\n;__crucible_collect({ ${bindings.join(', ')} });` : ''
   try {
-    new vm.Script(js + collector).runInContext(context, { timeout: timeoutMs })
+    withSandboxRejectionGuard(() => new vm.Script(js + collector).runInContext(context, { timeout: timeoutMs }))
   } catch (e: any) {
     if (isStructural(e)) {
       return done({
@@ -562,7 +563,7 @@ export function verifyPlainCodeByExecution(
   const context = vm.createContext(sandbox)
 
   try {
-    new vm.Script(js).runInContext(context, { timeout: timeoutMs })
+    withSandboxRejectionGuard(() => new vm.Script(js).runInContext(context, { timeout: timeoutMs }))
   } catch (e: any) {
     if (isStructural(e)) {
       return done({
