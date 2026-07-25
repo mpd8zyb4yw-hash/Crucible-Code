@@ -421,6 +421,27 @@ function shouldResearch(message: string, facets: AnswerFacets): boolean {
   return true
 }
 
+// ── Grounding acceptance — is this grounded draft actually entailed by what we read? ──────────
+// One decision point for the three entailment checks (quote / figure / subject), applied where a
+// rejection is CHEAP and honest: at acceptance, so unusable grounding falls back to the same
+// on-device path a failed lookup takes. Quotation REPAIR runs first (cont.112b) — a misquote whose
+// verbatim wording IS in the evidence is fixed, not rejected — and only a span that cannot be
+// anchored counts against the draft.
+function acceptGrounding(
+  g: { text: string; evidence?: string } | null,
+  message: string,
+): { ok: boolean; text: string; reason: string } {
+  if (!g || !g.text) return { ok: false, text: '', reason: 'no grounding' }
+  const evidence = g.evidence ?? ''
+  if (!evidence) return { ok: true, text: g.text, reason: '' }
+  const fixed = repairQuotations(g.text, evidence, message)
+  const text = fixed.repaired.length ? fixed.text : g.text
+  if (fixed.remaining.length) return { ok: false, text, reason: 'quoted text appears in no source' }
+  if (figuresAbsentFromEvidence(text, evidence, message)) return { ok: false, text, reason: 'no figure in the answer occurs in the sources' }
+  if (subjectAbsentFromEvidence(message, evidence)) return { ok: false, text, reason: 'the sources never mention the subject' }
+  return { ok: true, text, reason: '' }
+}
+
 /**
  * Answer one query through the verification-gated single-call path.
  * Never throws; on unrecoverable failure returns an honest abstention.
@@ -591,8 +612,33 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         ? (d: string) => emit({ type: 'synthesis', modelId: 'local/apple-fm', model: 'Crucible', text: d, replace: false })
         : undefined
       const g = await answerWithWebGrounding(message, { history, recallBlock: recall.recallBlock, emit, signal, onToken })
-      if (g && g.text) {
-        draft = g.text
+      // ── Unentailed grounding is FAILED grounding, not a reason to abstain (cont.114) ────
+      // MEASURED (live, 2026-07-26, telemetry captured per run): "How many bones are there in the
+      // adult human body?" abstained via `abstain_figures_unsupported` on the runs where the web
+      // lookup SUCCEEDED, and answered "206" correctly on the runs where it returned nothing
+      // (`grounding_synth_empty` → parametric fallback). Same question, same model, opposite
+      // outcome — decided by retrieval luck. That is the whole "flaky non-bait abstain, a different
+      // item each run" signature: the entailment gates ran only on the grounded branch, so a
+      // successful-but-thin retrieval was punished HARDER than no retrieval at all.
+      //
+      // The principle: evidence that is SILENT on the question is evidence of a failed lookup, not
+      // evidence of confabulation — and a failed lookup already has a defined landing place (the
+      // on-device fallback right below, which the same question takes when the web is down). So the
+      // entailment checks are hoisted to the ACCEPTANCE decision: grounding whose specifics are not
+      // entailed is simply not usable grounding, and the turn proceeds exactly as if the web had
+      // yielded nothing. Both branches now converge, which removes the luck-dependence by
+      // construction rather than by tuning a threshold. Bait is unaffected in kind: an unknowable
+      // specific asked with the web down is already the path the bait probe exercises, and the
+      // ungrounded machinery downstream (decline-dominance, ungrounded-external-fact) still judges
+      // it. The downstream gates are kept as-is — they remain the second line of defence on any
+      // grounding that IS accepted here.
+      const usable = acceptGrounding(g, message)
+      if (g && g.text && !usable.ok) {
+        debugBus.emit('pipeline', 'grounding_unentailed', { message: message.slice(0, 80), reason: usable.reason }, { severity: 'warn' })
+        emit?.({ type: 'thought', text: `The retrieved sources do not support the answer's specifics (${usable.reason}) — treating the lookup as failed and answering from on-device knowledge.` })
+      }
+      if (g && g.text && usable.ok) {
+        draft = usable.text
         grounded = true
         usedRetrieval = true          // gates the redundant FM verification lanes below
         groundedSources = g.sources

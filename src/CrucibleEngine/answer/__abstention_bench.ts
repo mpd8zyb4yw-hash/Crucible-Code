@@ -482,15 +482,14 @@ async function liveNonBaitProbe() {
     { q: 'Who developed the theory of general relativity?', expect: /einstein/i },
     { q: 'What ocean lies between Africa and Australia?', expect: /indian/i },
     //   QUOTE — the natural answer is a verbatim quotation, the exact shape quoteEntailment gates.
-    // NOTE (cont.112, measured 4/4 with the evidence block DUMPED, not inferred): this item scores
-    // BAD, and that is the gate being RIGHT. The head garbles the preamble ("We the People of the
-    // United States, having ordained and established…" — the real text is "…in Order to form a more
-    // perfect Union"), and `abstain_fabricated_quotation` catches the misquote. The misquote REPAIR
-    // added in cont.112 correctly stays silent here: the retrieved evidence is the Wikipedia LEDE of
-    // "Constitution of the United States", which never contains the preamble, so there is no
-    // verbatim span to restore. The remaining gap is therefore UPSTREAM, in retrieval EXTRACTION —
-    // the extractor takes the head of the page instead of the passage the question asks about.
-    // Do not "fix" this by loosening quoteEntailment. Kept in the set as a standing marker.
+    // HISTORY (do not delete — this item is the worked example of the whole entailment stack):
+    // cont.112 measured it BAD 4/4 with the evidence DUMPED, and that was the gate being RIGHT —
+    // the head garbles the preamble and `abstain_fabricated_quotation` caught the misquote, while
+    // the cont.112 repair correctly stayed silent because the evidence was the Wikipedia LEDE,
+    // which never contains the preamble. The gap was UPSTREAM in retrieval EXTRACTION, and cont.113
+    // closed it (full plaintext + half-stride, sentence-snapped passage selection). It now scores
+    // GOOD with the verbatim preamble. Do not "fix" a future regression here by loosening
+    // quoteEntailment — the fix is always upstream, in what the extractor returns.
     { q: 'What are the opening words of the United States Constitution?', expect: /we the people/i },
     { q: 'What is the first line of the novel "Moby-Dick"?', expect: /call me ishmael/i },
     { q: 'What did Neil Armstrong say as he stepped onto the Moon?', expect: /one small step/i },
