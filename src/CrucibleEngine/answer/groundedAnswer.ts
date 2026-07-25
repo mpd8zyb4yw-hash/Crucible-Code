@@ -14,7 +14,7 @@
 // only ever makes an answer better or is transparently skipped, never worse.
 
 import {
-  search, fetch as fetchPage, stripBoilerplate, namesExternalLibrary, isCodingQuery, namesInstrument,
+  search, fetch as fetchPage, stripBoilerplate, namesExternalLibrary, isCodingQuery, namesInstrument, isCodeRequestShaped,
   fetchLibraryApiForQuery, type SearchResult, type LibraryApiDocs,
 } from '../retrieval/retrievalLayer'
 import { fmComplete, fmStream, type ConvTurn } from '../agent/fmReact'
@@ -604,7 +604,14 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   // makes the SINGLE oracle (certifyAnswer) treat "no code block" as a violation — so the draft
   // and every repair attempt are judged identically. Doing it only here would be invisible inside
   // the repair loop, which re-verifies through the same oracle (cont.89).
-  const codeRequested = isCodingQuery(message) || namesExternalLibrary(message) || namesInstrument(message)
+  // The library/instrument signals are name- and preposition-shaped, so they fire on ORDINARY
+  // prose questions ("Who painted the Mona Lisa?" → capitalized proper noun → namesExternalLibrary).
+  // Left ungated, every proper-noun factual lookup was judged "no code block → violations" by the
+  // single oracle and dragged through up to 6 repair model calls before shipping unverified
+  // (measured 2026-07-25). Gate them behind an actual request to PRODUCE code; the keyword-based
+  // isCodingQuery still stands alone.
+  const codeRequested = isCodingQuery(message)
+    || ((namesExternalLibrary(message) || namesInstrument(message)) && isCodeRequestShaped(message))
   // `question` reaches the behavioral-contract tier (cont.92): the user's ask names the contract
   // (stack/LRU/rate-limiter/…) whose invariants the answer's code is executed against.
   const faith = certifyAnswer(text, ev.block, { codeRequested, question: message })

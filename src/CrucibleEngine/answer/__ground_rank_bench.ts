@@ -4,7 +4,7 @@
 // Guards the canonical-title preference (cont.67): within one salient-overlap tier the base
 // entity article must outrank its derivatives/sequels, and the top-1 must be the correct page.
 import { rankResults, selectRelevantPassages, queryTerms } from './groundedAnswer'
-import { namesExternalLibrary } from '../retrieval/retrievalLayer'
+import { namesExternalLibrary, namesInstrument, isCodingQuery, isCodeRequestShaped } from '../retrieval/retrievalLayer'
 import type { SearchResult } from '../retrieval/retrievalLayer'
 
 let pass = 0, fail = 0
@@ -268,6 +268,35 @@ console.log('\n== library-vs-algorithmic routing ==')
   // an all-lowercase library name has no structural signal to key on.
   check('KNOWN GAP: lowercase library name is missed (documented, not fixed)',
     !namesExternalLibrary('create a pandas dataframe from a csv'))
+}
+
+console.log('\n== codeRequested: library signals only count inside an actual code request ==')
+// namesExternalLibrary's strongest signal is a bare capitalized proper noun, so ungated it fires on
+// the ENTITY of any prose question — measured 2026-07-25: every proper-noun factual lookup was
+// marked codeRequested, judged "no code block → violations" by the single oracle, and dragged
+// through up to 6 repair model calls before shipping unverified. This mirrors the exact expression
+// groundedAnswer.ts computes.
+{
+  const codeRequested = (q: string) =>
+    isCodingQuery(q) || ((namesExternalLibrary(q) || namesInstrument(q)) && isCodeRequestShaped(q))
+  for (const q of [
+    'Who painted the Mona Lisa?',
+    'What is the capital city of Australia?',
+    'In what year did the Berlin Wall fall?',
+    'Who is the CEO of Nvidia?',
+    'What was the résumé objective line on the job application Maria Nguyen submitted in 2007?',
+    'When did Jane Austen die?',
+  ]) check(`prose lookup is NOT a code request: ${q.slice(0, 44)}`, !codeRequested(q))
+  // Real code asks must still be marked — a false NEGATIVE here means a prose non-answer to a
+  // snippet request stops being a violation, which is the failure codeRequested exists to catch.
+  for (const q of [
+    'write a Zod schema that validates an IPv4 address',
+    'parse a csv file with papaparse',
+    'make an http request with axios',
+    'how do I validate a form with yup',
+    'reverse a linked list in Python',
+    'show me how to connect to Postgres',
+  ]) check(`code ask IS a code request: ${q.slice(0, 44)}`, codeRequested(q))
 }
 
 console.log(`\n${pass}/${pass + fail} passed`)

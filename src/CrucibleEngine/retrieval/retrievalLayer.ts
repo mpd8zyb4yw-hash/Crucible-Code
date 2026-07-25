@@ -1039,6 +1039,24 @@ export function extractPackageCandidatesRanked(q: string): PackageCandidate[] {
  * and "validate a form with yup" all scored isCodingQuery=false, so the docs lane never ran.
  * The named token is still only 'token' confidence — popularity + relevance still have to agree.
  */
+/**
+ * True when the message is SHAPED like a request for code — an imperative build/use verb, a fenced
+ * block, or a "how do I …" ask. Needed because the library signals are only meaningful INSIDE a
+ * code request: `namesExternalLibrary`'s strongest signal is a bare capitalized proper noun, so on
+ * ordinary prose questions ("Who painted the Mona Lisa?", "Who is the CEO of Nvidia?") it fires on
+ * the ENTITY. Measured 2026-07-25: every proper-noun factual question was therefore marked
+ * `codeRequested` by the grounded path, so the single oracle judged a correct prose answer
+ * "no code block → violations" and burned up to 6 repair model calls before shipping the draft
+ * unverified. `isCodingQuery` (keyword) stays sufficient on its own; this gates the two
+ * name/preposition-shaped signals behind an actual request to produce code.
+ */
+export function isCodeRequestShaped(q: string): boolean {
+  const m = q ?? ''
+  if (/```|\b(?:def|function|class|const|let|var)\s+\w/.test(m)) return true
+  if (/^\s*(?:can you |could you |please |i want (?:you )?to |i need (?:you )?to )?(write|create|build|implement|generate|refactor|debug|optimi[sz]e|fix|convert|rewrite|port|parse|validate|render|serialize|deserialize|scrape|plot|query|call|connect|upload|download|make|fetch|send|post|load|save|install|configure|mock|format|extract|filter|sort)\b/i.test(m)) return true
+  return /\b(how (?:do|can|would) i|show me how to|example of how to|sample code|snippet|code (?:for|to|that)|script (?:for|to|that))\b/i.test(m)
+}
+
 export function namesInstrument(q: string): boolean {
   return /\b(?:with|using|via)\s+[a-z][\w.-]{2,}/i.test(q ?? '')
 }
