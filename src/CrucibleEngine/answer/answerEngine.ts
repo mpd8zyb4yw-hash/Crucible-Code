@@ -15,7 +15,7 @@
 import { checkFmAvailable, fmComplete, fmStream, stripAgentScaffold, type ConvTurn } from '../agent/fmReact'
 import { solveNonCodeTurn, type NonCodeMeta } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
-import { unentailedQuotes } from './quoteEntailment'
+import { unentailedQuotes, repairQuotations } from './quoteEntailment'
 import { subjectAbsentFromEvidence, figuresAbsentFromEvidence } from './evidenceRelevance'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
@@ -597,6 +597,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         usedRetrieval = true          // gates the redundant FM verification lanes below
         groundedSources = g.sources
         groundedEvidence = g.evidence ?? ''
+        if (process.env.CRUCIBLE_DUMP_EVIDENCE === '1') console.error('\n===EVIDENCE===\n' + groundedEvidence.slice(0, 2500) + '\n===END===\n')
         groundedCited = g.cited ?? 0  // 0 ⇒ the synthesis stapled a sources footer onto parametric prose (item-1 abstain signal)
         streamed = !!onToken
       } else {
@@ -806,7 +807,20 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // near-misses all count as entailed) so a correct answer that merely re-punctuates a real passage
   // is never killed — see quoteEntailment.ts for the false-reject discipline.
   if (grounded && groundedEvidence) {
-    const fabricated = unentailedQuotes(text, groundedEvidence, message)
+    // REPAIR BEFORE ABSTAINING (cont.112). Abstention is right when the datum is unknowable and
+    // wrong when the true verbatim text is in evidence we already retrieved — measured: the head
+    // garbles the US Constitution preamble 3/3 runs, and abstaining threw away a question the
+    // sources could answer. `repairQuotations` swaps in the evidence's real wording, which is a
+    // literal substring of the evidence and therefore entailed by construction, so this can never
+    // manufacture a fabrication; anything it cannot confidently anchor falls through to the gate
+    // below unchanged. It only ever touches spans already judged unentailed.
+    const fixed = repairQuotations(text, groundedEvidence, message)
+    if (fixed.repaired.length) {
+      debugBus.emit('pipeline', 'repair_misquote_from_evidence', { message: message.slice(0, 80), repaired: fixed.repaired.slice(0, 3) }, { severity: 'warn' })
+      emit?.({ type: 'verify', passed: true, report: `The answer misquoted its source; the quoted span was corrected to the evidence's verbatim wording (${fixed.repaired.length} quotation${fixed.repaired.length === 1 ? '' : 's'}) instead of abstaining.` })
+      text = fixed.text
+    }
+    const fabricated = fixed.remaining
     if (fabricated.length) {
       debugBus.emit('pipeline', 'abstain_fabricated_quotation', { message: message.slice(0, 80), quotes: fabricated.slice(0, 3) }, { severity: 'warn' })
       emit?.({ type: 'verify', passed: false, report: `The answer quoted text that appears in none of the retrieved sources (${fabricated.slice(0, 2).map(q => `"${q}"`).join(', ')}) — a fabricated quotation, so abstaining instead of shipping it as grounded.` })

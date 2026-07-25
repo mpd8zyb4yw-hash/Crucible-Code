@@ -74,3 +74,104 @@ export function unentailedQuotes(answer: string, evidence: string, question = ''
   }
   return bad
 }
+
+// ── Misquote repair ────────────────────────────────────────────────────────────
+// WHY (measured live 2026-07-25, cont.112 non-bait probe, 3/3 runs):
+//   Q: "What are the opening words of the United States Constitution?"
+//   A: 'We the People of the United States, having ord…'   ← the head garbles the preamble
+// `unentailedQuotes` correctly flags this, and the pipeline abstains — throwing away a question the
+// evidence CAN answer, because one quoted span drifted. Abstention is the right move when the datum
+// is unknowable; it is the wrong move when the true verbatim text is sitting in the evidence we
+// already retrieved. REPAIR DOMINATES ABSTENTION whenever the correct span is recoverable.
+//
+// SOUNDNESS. The replacement is a literal substring of the evidence by construction, so the repaired
+// quote is entailed by definition — this can never manufacture a new fabrication. The risk is the
+// opposite one (anchoring on the WRONG passage and confidently swapping in unrelated text), so the
+// anchor is deliberately strict: the answer's quote and the evidence passage must share a contiguous
+// run of leading content words that is both ≥3 tokens and ≥40% of the quote. A drifting tail is what
+// this repairs; a quote that never lined up in the first place is left to the abstention gate.
+// It runs ONLY on spans already judged unentailed — i.e. on the path that was about to abstain — so
+// a correct quotation is never rewritten.
+
+// How many contiguous leading content words must match exactly before we trust that the answer's
+// quote and an evidence passage are the SAME passage. A fixed floor, deliberately not a proportion
+// of the quote's length: measured live (cont.112), the head's misquote of the US Constitution
+// anchored on 6 exact tokens out of ~20, and a 40%-of-quote rule refused to repair it — i.e. the
+// proportional rule was strictest on exactly the case it exists to fix (a long quote that diverges
+// early). The anchor's job is only to IDENTIFY the passage, and five consecutive exact content words
+// is already a near-unique locator inside a few-KB evidence block; the longest-anchor-first search
+// below then prefers the strongest match available.
+const ANCHOR_TOKENS = 5
+
+type Tok = { norm: string; start: number; end: number }
+
+/** Content tokens of `raw` with their offsets back into `raw`, so a match can be quoted verbatim. */
+function tokenize(raw: string): Tok[] {
+  const out: Tok[] = []
+  for (const m of (raw ?? '').matchAll(/[A-Za-z0-9]+/g)) {
+    out.push({ norm: m[0].toLowerCase(), start: m.index!, end: m.index! + m[0].length })
+  }
+  return out
+}
+
+/** Index of the first occurrence of `needle` (token norms) in `hay`, or -1. */
+function findRun(hay: Tok[], needle: string[], from = 0): number {
+  outer: for (let i = from; i + needle.length <= hay.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j].norm !== needle[j]) continue outer
+    return i
+  }
+  return -1
+}
+
+/**
+ * The evidence's actual verbatim text for a quote the answer got wrong, or null when no passage
+ * anchors it confidently. Returned text is a raw substring of `evidence`.
+ */
+export function repairMisquote(span: string, evidence: string): string | null {
+  const quoteToks = tokenize(span).map(t => t.norm)
+  const evToks = tokenize(evidence)
+  if (quoteToks.length < ANCHOR_TOKENS + 1 || !evToks.length) return null  // too short to anchor safely
+  const minAnchor = ANCHOR_TOKENS
+  // Longest leading run of the quote that occurs contiguously in the evidence. Longest-first so a
+  // quote that drifts only at the very end anchors on nearly its whole length.
+  for (let len = quoteToks.length; len >= minAnchor; len--) {
+    const at = findRun(evToks, quoteToks.slice(0, len))
+    if (at < 0) continue
+    // Extend the evidence span to the length of the original quote (that is what was asked for),
+    // but never past the end of its sentence — an over-long quote is its own kind of wrong.
+    const wanted = Math.min(quoteToks.length, evToks.length - at)
+    let endTok = at + wanted - 1
+    const rawStart = evToks[at].start
+    for (let k = at; k <= endTok; k++) {
+      const tail = evidence.slice(evToks[k].end, evToks[k + 1]?.start ?? evidence.length)
+      if (/[.!?]/.test(tail)) { endTok = k; break }
+    }
+    const repaired = evidence.slice(rawStart, evToks[endTok].end).trim()
+    // A repair that reproduces the (already-rejected) quote is not a repair.
+    return normalize(repaired) === normalize(span) ? null : repaired
+  }
+  return null
+}
+
+/**
+ * Rewrites every fabricated quotation in `answer` that the evidence can correct, and reports the
+ * ones it cannot. `remaining` empty means the answer is now fully quote-entailed and may ship;
+ * otherwise the caller should abstain, exactly as before.
+ */
+export function repairQuotations(
+  answer: string,
+  evidence: string,
+  question = '',
+): { text: string; repaired: Array<{ from: string; to: string }>; remaining: string[] } {
+  const bad = unentailedQuotes(answer, evidence, question)
+  const repaired: Array<{ from: string; to: string }> = []
+  const remaining: string[] = []
+  let text = answer
+  for (const span of bad) {
+    const fix = repairMisquote(span, evidence)
+    if (!fix) { remaining.push(span); continue }
+    text = text.split(span).join(fix)
+    repaired.push({ from: span, to: fix })
+  }
+  return { text, repaired, remaining }
+}

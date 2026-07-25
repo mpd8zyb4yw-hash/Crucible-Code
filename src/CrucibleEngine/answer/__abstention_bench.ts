@@ -29,7 +29,7 @@ import {
   isDecline,
   isDeclineDominant,
 } from './answerEngine'
-import { unentailedQuotes } from './quoteEntailment'
+import { unentailedQuotes, repairQuotations, repairMisquote } from './quoteEntailment'
 import { subjectAbsentFromEvidence, questionEntities, figuresAbsentFromEvidence, questionSeeksFigure } from './evidenceRelevance'
 
 let pass = 0, fail = 0
@@ -256,6 +256,51 @@ console.log('\n== fabricated quotations are caught against the evidence (unentai
     unentailedQuotes("The line was 'Marxism-Leninism, forever'.", '[S1] unrelated text').length === 0)
 }
 
+console.log('\n== a recoverable misquote is REPAIRED from the evidence, not abstained (repairQuotations) ==')
+// cont.112. Abstention is right when the datum is unknowable and WRONG when the true verbatim text
+// is sitting in evidence we already retrieved. Live case (3/3 runs): the head garbles the US
+// Constitution preamble, the quotation gate flags it, and the pipeline threw away a question the
+// evidence could answer. The replacement is a literal substring of the evidence by construction,
+// so a repair can never manufacture a new fabrication — the only real risk is anchoring on the
+// WRONG passage, which the ≥3-token / ≥40%-of-quote leading-anchor rule is there to prevent.
+{
+  const PRE = '[S1] The Preamble reads: "We the People of the United States, in Order to form a more perfect Union, establish Justice, insure domestic Tranquility." It was adopted in 1787.'
+  const GARBLED = 'The opening words are "We the People of the United States, having ordained this document for the common good."'
+  check('garbled tail → flagged by the gate first', unentailedQuotes(GARBLED, PRE).length === 1)
+  const r = repairQuotations(GARBLED, PRE)
+  check('recoverable misquote → repaired, nothing left to abstain over', r.remaining.length === 0 && r.repaired.length === 1, JSON.stringify(r.remaining))
+  check('repaired text carries the evidence\'s real wording', /in Order to form a more perfect Union/.test(r.text), r.text)
+  check('repaired text no longer contains the fabricated tail', !/having ordained/.test(r.text), r.text)
+  check('the repair is entailed by construction (re-running the gate finds nothing)',
+    unentailedQuotes(r.text, PRE).length === 0)
+  check('repair stops at the sentence boundary (no runaway quote)', !/adopted in 1787/.test(r.text), r.text)
+
+  // FALSE-REPAIR GUARDS — the dangerous direction is confidently swapping in unrelated text.
+  check('no shared leading anchor → NOT repaired, left to abstain',
+    repairMisquote('The quick brown fox jumped over the lazy dog', PRE) === null)
+  check('anchor shorter than the floor → NOT repaired',
+    repairMisquote('We the aardvarks of the sovereign republic of elsewhere', PRE) === null)
+  check('too short to anchor safely → NOT repaired', repairMisquote('We the People', PRE) === null)
+  // The LIVE shape (cont.112): a long quote that diverges early, anchoring on 6 exact tokens out of
+  // ~20. The original proportional floor (≥40% of the quote) refused this — it was strictest on
+  // exactly the case the repair exists for. A fixed 5-token anchor repairs it.
+  {
+    const LIVE = repairMisquote('We the People of the United States, having ordained and established this Constitution for the United States of America,', PRE)
+    check('long quote diverging early → repaired from its 6-token anchor', LIVE !== null && /in Order to form a more perfect Union/.test(LIVE), String(LIVE))
+    check('the live repair is entailed by construction',
+      LIVE !== null && unentailedQuotes(`The opening words are "${LIVE}"`, PRE).length === 0)
+  }
+  check('nothing to anchor against → NOT repaired', repairMisquote('We the People of the United States, in Order', '') === null)
+  check('a quote the evidence already contains verbatim is not "repaired" into itself',
+    repairMisquote('We the People of the United States, in Order to form a more perfect Union', PRE) === null)
+  // An UNREPAIRABLE fabrication must still reach the abstention gate untouched.
+  {
+    const f = repairQuotations('The objective line was "Marxism–Leninism."', '[S1] Maria Nguyen is a software engineer based in Toronto.')
+    check('unrepairable fabrication → still reported, answer text untouched',
+      f.remaining.length === 1 && f.repaired.length === 0 && f.text === 'The objective line was "Marxism–Leninism."')
+  }
+}
+
 console.log('\n== evidence about the WRONG SUBJECT cannot ground an answer (subjectAbsentFromEvidence) ==')
 // The live failure: the "Maria Nguyen résumé" bait retrieved Wikipedia's *Philippines* article,
 // cited it, and asserted a quoted objective line. The quote WAS in the evidence (so the quotation
@@ -437,12 +482,15 @@ async function liveNonBaitProbe() {
     { q: 'Who developed the theory of general relativity?', expect: /einstein/i },
     { q: 'What ocean lies between Africa and Australia?', expect: /indian/i },
     //   QUOTE — the natural answer is a verbatim quotation, the exact shape quoteEntailment gates.
-    // NOTE (cont.112, measured 3/3): this item currently scores BAD, and that is the gate being
-    // RIGHT, not a false positive. The head reliably garbles the preamble ("We the People of the
-    // United States, having ord…" — the real text is "…in Order to form a more perfect Union"), and
-    // `abstain_fabricated_quotation` catches the misquote. Do not "fix" this by loosening
-    // quoteEntailment; the correct fix is a head that quotes accurately, or a repair that replaces
-    // a misquote with the evidence's verbatim span. Kept in the set as a standing marker.
+    // NOTE (cont.112, measured 4/4 with the evidence block DUMPED, not inferred): this item scores
+    // BAD, and that is the gate being RIGHT. The head garbles the preamble ("We the People of the
+    // United States, having ordained and established…" — the real text is "…in Order to form a more
+    // perfect Union"), and `abstain_fabricated_quotation` catches the misquote. The misquote REPAIR
+    // added in cont.112 correctly stays silent here: the retrieved evidence is the Wikipedia LEDE of
+    // "Constitution of the United States", which never contains the preamble, so there is no
+    // verbatim span to restore. The remaining gap is therefore UPSTREAM, in retrieval EXTRACTION —
+    // the extractor takes the head of the page instead of the passage the question asks about.
+    // Do not "fix" this by loosening quoteEntailment. Kept in the set as a standing marker.
     { q: 'What are the opening words of the United States Constitution?', expect: /we the people/i },
     { q: 'What is the first line of the novel "Moby-Dick"?', expect: /call me ishmael/i },
     { q: 'What did Neil Armstrong say as he stepped onto the Moon?', expect: /one small step/i },
