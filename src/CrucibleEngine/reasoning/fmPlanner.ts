@@ -16,6 +16,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { fmComplete } from '../agent/fmReact'
+import { subFunctionPlanGrammar } from '../agent/grammars'
 import type { Planner, SubGoal } from './decompose'
 import type { Attempt, TaskSpec } from './types'
 
@@ -105,22 +106,71 @@ export interface PlannedSubFunction {
   cases: { args: unknown[]; expected: unknown }[]
 }
 
+// CARVE QUALITY (2026-07-25c). The previous wording — "prefer helpers that carve off the tricky
+// PARSING / EDGE-CASE logic" — is what produced the live junk carves: on `numberToWords`, whose
+// goal merely FORBIDS commas and the word "and", the 1.5B dutifully read that negative FORMATTING
+// constraint as the "tricky edge-case logic" and proposed `removeCommas`/`removeAnd` — helpers
+// that consume a string the entry never has and compose back to nothing. Four such helpers pass
+// the single-helper degeneracy gate and burn a full rung budget each.
+//
+// The fix is to state the two properties a carve must have to be WORTH grinding, both of which are
+// checkable by the planner itself before it answers:
+//   (a) COMPOSES — the entry can be written as a short expression over the helpers ONLY;
+//   (b) TYPED FROM THE ENTRY — the first helper consumes the entry's own arguments, so the chain
+//       has somewhere to start instead of dangling on data that never exists.
+// Both are restated as a mechanical self-check in the user turn, and (a) is re-checked
+// deterministically downstream by `isNonComposingCarve` — this prompt only makes the good carve
+// more likely, it never gets to certify one.
+/** Sampler-level pin on the plan schema — built once (pure string). See subFunctionPlanGrammar. */
+const SUBFN_GRAMMAR = subFunctionPlanGrammar()
+
 const SUBFN_SYSTEM =
   'You are a decomposition planner. Given ONE hard function to implement, you propose 2–4 SMALLER, ' +
   'PURE helper functions it can be built from — each doing one simple, self-contained job that a weak ' +
   'model can get right on its own. For each helper give a name, a one-line purpose, and 2–3 concrete ' +
-  'input/output examples. You never write the code. Prefer helpers that carve off the tricky parsing / ' +
-  'edge-case logic into isolated, independently-testable pieces.'
+  'input/output examples. You never write the code.\n' +
+  'A plan is only useful if the helpers COMPOSE BACK into the top-level function: the top-level body ' +
+  'must be writable as a short expression that calls your helpers and nothing else. So the FIRST ' +
+  'helper must take the top-level function\'s OWN arguments, each later helper must take what an ' +
+  'earlier one returns, and the LAST one must return the top-level function\'s return value. ' +
+  'Split the work into consecutive STAGES of that pipeline. ' +
+  'Never propose a helper for a formatting rule the goal only forbids, and never invent an input ' +
+  'type the top-level function is never given.'
 
 function buildSubFnUser(goal: string, entry: string, sampleCases: unknown[]): string {
+  const argShape = firstCaseArgShape(sampleCases)
   return [
     `TOP-LEVEL FUNCTION: ${entry}`,
     `GOAL:\n${goal}`,
     sampleCases.length ? `Example top-level behavior:\n${JSON.stringify(sampleCases.slice(0, 4))}` : '',
+    argShape
+      ? `${entry} is called as ${entry}(${argShape}). Your FIRST helper must accept exactly those argument types.`
+      : '',
+    `Before you answer, check your plan against BOTH rules:\n` +
+      `1. COMPOSES: you can write \`${entry}\` as one short line that only calls your helpers — write that line in your head; if you cannot, change the plan.\n` +
+      `2. CONSUMES THE REAL INPUT: the first helper's example args are the SAME kind of values ${entry} itself receives above.`,
     'Output ONLY a JSON array of 2–4 helpers, each: ' +
       '{"name":"<camelCaseHelper>","purpose":"<one line>","examples":[{"args":[...],"expected":<value>}]}. ' +
       'No prose, no code, no markdown fences — just the JSON array.',
   ].filter(Boolean).join('\n\n')
+}
+
+/**
+ * Render the top-level entry's ACTUAL argument shape from its first sample case, e.g.
+ * `1234: number` or `"abc": string, [1,2]: number[]`. Handed to the planner so "consume the entry's
+ * argument types" is a concrete instruction rather than an abstract rule — the live failure was a
+ * planner inventing a string input for a function that only ever receives a number. Best-effort and
+ * purely advisory: returns null when the cases don't carry a recognizable `args` array.
+ */
+function firstCaseArgShape(sampleCases: unknown[]): string | null {
+  const first = sampleCases.find((c) => Array.isArray((c as any)?.args)) as { args: unknown[] } | undefined
+  if (!first || !first.args.length) return null
+  const shape = (v: unknown): string =>
+    v === null ? 'null'
+      : Array.isArray(v) ? `${shape(v[0]) || 'unknown'}[]`
+      : typeof v === 'object' ? 'object'
+      : typeof v
+  return first.args.map((a) => `${JSON.stringify(a)}: ${shape(a)}`).join(', ')
 }
 
 /**
@@ -785,7 +835,13 @@ export function makeFmSubFunctionPlanner(opts: FmPlannerOpts = {}): (
         { role: 'system', content: SUBFN_SYSTEM },
         { role: 'user', content: buildSubFnUser(goal, entry, sampleCases) },
       ],
-      { temperature: opts.temperature ?? 0.4, maxTokens: opts.maxTokens ?? 600, timeoutMs: opts.timeoutMs, signal },
+      // W2 constrained decoding pinned to the PLAN SCHEMA (2026-07-25c). The plan JSON is the one
+      // remaining place a whole task could die at zero model calls on a syntax slip — the salvage
+      // path recovers well-formed siblings, but a salvaged plan is a mutilated carve. With the
+      // grammar the malformed sibling is unreachable at the sampler, and the 2–4-helper cardinality
+      // is enforced structurally rather than asked for in prose. A backend without grammar support
+      // ignores the field and the salvage path still covers it.
+      { temperature: opts.temperature ?? 0.4, maxTokens: opts.maxTokens ?? 600, timeoutMs: opts.timeoutMs, signal, gbnf: SUBFN_GRAMMAR },
     )
     const plan = parseSubFunctionPlan(raw)
     return plan.length >= 1 ? plan : null

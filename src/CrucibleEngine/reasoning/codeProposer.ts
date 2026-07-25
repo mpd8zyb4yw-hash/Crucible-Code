@@ -21,12 +21,77 @@ import type { Candidate, ProposeContext } from './types'
 // not on being well-formed. A backend without grammar support ignores it — extractCode still runs.
 const CODE_GRAMMAR = fencedCodeGrammar('typescript')
 
+/** Monotone draw counter feeding the anti-anchor seed. A counter, not a clock, so a run's seed
+ *  sequence is reproducible from its call order — the diversity comes from the seeds DIFFERING
+ *  across retries, which is all the anchor break requires. */
+let drawCounter = 0
+function nextDrawSeed(): number { return ++drawCounter }
+
 /** Deterministic fingerprint for anti-thrash dedup (normalizes whitespace). */
 export function fingerprintCode(code: string): string {
   const norm = code.replace(/\s+/g, ' ').trim()
   let h = 5381
   for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) | 0
   return `c${(h >>> 0).toString(36)}`
+}
+
+/** Reserved words that carry the SHAPE of a program — kept verbatim by structuralFingerprint while
+ *  every other identifier is anonymized. Anything here is control flow or a built-in whose identity
+ *  changes what the code DOES; anything not here is a name the model was free to choose. */
+const STRUCTURAL_WORDS = new Set([
+  'function', 'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'default', 'break',
+  'continue', 'const', 'let', 'var', 'of', 'in', 'new', 'typeof', 'instanceof', 'delete', 'void',
+  'throw', 'try', 'catch', 'finally', 'export', 'import', 'class', 'extends', 'this', 'null',
+  'undefined', 'true', 'false', 'NaN', 'Infinity',
+  // Built-ins whose identity IS the algorithm — swapping map for reduce is a different structure.
+  'map', 'reduce', 'filter', 'forEach', 'slice', 'splice', 'split', 'join', 'push', 'pop', 'shift',
+  'unshift', 'concat', 'reverse', 'sort', 'indexOf', 'includes', 'charAt', 'charCodeAt', 'replace',
+  'match', 'test', 'trim', 'length', 'Math', 'Number', 'String', 'Array', 'Object', 'JSON', 'Map',
+  'Set', 'parseInt', 'parseFloat', 'floor', 'ceil', 'round', 'abs', 'min', 'max', 'pow',
+])
+
+/**
+ * STRUCTURAL fingerprint — the same code modulo the names the model chose.
+ *
+ * WHY (2026-07-25c). `fingerprintCode` is exact text, so an ANCHORED head slips past the
+ * anti-thrash signal for free: rename `i` to `idx`, reflow a line, drop a comment, and the search
+ * sees a brand-new proposal even though the wrong control structure is byte-for-byte the same
+ * algorithm. The escalation in `buildProposalPrompt` keys on repetition, so it never deepened and
+ * the rung ground out its budget re-emitting one dead end.
+ *
+ * The normalization strips comments and whitespace, collapses every string literal to `"s"` and
+ * every number to `0`, and rewrites each non-structural identifier to `v1`, `v2`, … in order of
+ * first appearance. Operators, keywords, and shape-bearing built-ins survive untouched, so `>` vs
+ * `>=` and `map` vs `for` still produce DIFFERENT fingerprints — this collapses cosmetics, not
+ * semantics. It is a lexical normalization, not a parse: no AST, no dependency, no failure mode
+ * on code that doesn't compile (which is most of what a weak head emits).
+ *
+ * Used only as stagnation EVIDENCE by search (see SearchOpts.structuralKey) — a structural repeat
+ * is still verified, so a collision can never discard a correct candidate.
+ */
+export function structuralFingerprint(code: string): string {
+  const noComments = code
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+  const names = new Map<string, string>()
+  const norm = noComments
+    // literals first, so their contents can never be mistaken for identifiers
+    .replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g, '"s"')
+    .replace(/\b\d+(?:\.\d+)?\b/g, '0')
+    .replace(/[A-Za-z_$][A-Za-z0-9_$]*/g, (id) => {
+      if (STRUCTURAL_WORDS.has(id)) return id
+      let v = names.get(id)
+      if (!v) { v = `v${names.size + 1}`; names.set(id, v) }
+      return v
+    })
+    // ASI makes statement semicolons optional, so their presence is pure surface style — the same
+    // program written with and without them must not read as two different structures.
+    .replace(/;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  let h = 5381
+  for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) | 0
+  return `s${(h >>> 0).toString(36)}`
 }
 
 /** Pull the first fenced code block, else the whole trimmed body. */
@@ -198,18 +263,29 @@ export function buildProposalPrompt(ctx: ProposeContext<string>): { system: stri
 
   // Progressive temperature: calm while making real progress, hotter the deeper the anchor.
   const temperature = deep ? 1.15 : sameSigRun >= 3 ? 1.0 : (diversify || repeats) ? 0.8 : 0.3
+  // ANTI-ANCHOR SAMPLING (2026-07-25c). Temperature alone did not break the live anchors: it
+  // re-weights the distribution but the nucleus still contains only the one wrong program, so the
+  // head kept re-emitting it ("duplicate proposal (stuck)") until budget death. Two knobs address
+  // exactly that, and only once anchoring is detected — the calm path stays untouched so a healthy
+  // run keeps its focused sampling:
+  //   • topP — widen the admitted set so a DIFFERENT structure is reachable at all.
+  //   • seed — force a distinct RNG stream per draw, so a repeat prompt with repeat settings can
+  //     no longer come back byte-identical. Sourced from a monotone counter (not a clock, so runs
+  //     stay reproducible in order) mixed with the anchoring depth.
+  const topP = deep ? 0.99 : repeats ? 0.97 : undefined
+  const seed = repeats ? ((nextDrawSeed() * 2654435761) ^ (sameSigRun * 40503)) >>> 0 : undefined
   // Deeply anchored: the echoed attempt-code is REINFORCING the wrong shape — drop it, keep only
   // the reframe. Otherwise thread the concrete failure feedback (the normal sample-efficiency win).
   const body = deep ? '' : feedback
   const user = `## Task\n${spec.goal}${body}${stuckNote}${diversifyNote}\n\nReturn the corrected full module now.`
-  return { system, user, temperature }
+  return { system, user, temperature, topP, seed }
 }
 
 export async function proposeCode(ctx: ProposeContext<string>): Promise<Candidate<string> | null> {
-  const { system, user, temperature } = buildProposalPrompt(ctx)
+  const { system, user, temperature, topP, seed } = buildProposalPrompt(ctx)
   const raw = await fmComplete(
     [{ role: 'system', content: system }, { role: 'user', content: user }],
-    { temperature, gbnf: CODE_GRAMMAR },
+    { temperature, gbnf: CODE_GRAMMAR, topP, seed },
   )
   return rawToCandidate(raw)
 }
@@ -240,7 +316,12 @@ export async function proposeCodeMany(ctxs: ProposeContext<string>[]): Promise<(
   // here we use the max temperature as the batch temperature, which only ever ADDS diversity
   // (never removes it) and keeps the single-round-trip batch. GBNF is constant across slots.
   const temp = Math.max(...prompts.map(p => p.temperature))
-  const raws = await fmCompleteBatch(messages, { temperature: temp, gbnf: CODE_GRAMMAR })
+  // Same rationale as the widest temperature: take the widest top-p any slot asked for. Per-slot
+  // SEEDS are deliberately not sent — fmCompleteBatch takes one opts, and a shared seed across K
+  // slots would make the draws MORE alike, the opposite of what the batch is for. The slots already
+  // diverge through the backend's own per-slot RNG.
+  const topPs = prompts.map(p => p.topP).filter((v): v is number => typeof v === 'number')
+  const raws = await fmCompleteBatch(messages, { temperature: temp, gbnf: CODE_GRAMMAR, ...(topPs.length ? { topP: Math.max(...topPs) } : {}) })
   return raws.map(rawToCandidate)
 }
 
@@ -253,12 +334,12 @@ export async function proposeCodeMany(ctxs: ProposeContext<string>[]): Promise<(
  */
 export async function proposeCodeBatch(ctx: ProposeContext<string>, n: number): Promise<Candidate<string>[]> {
   const k = Math.max(1, n)
-  const { system, user, temperature } = buildProposalPrompt(ctx)
+  const { system, user, temperature, topP } = buildProposalPrompt(ctx)
   // A batch of size 1 is just the single path; for n>1 raise temperature so the K draws are
   // genuinely different lines of attack (the whole point of sampling K) rather than K copies.
   const temp = k === 1 ? temperature : Math.max(temperature, 0.8)
   const messages = [{ role: 'system', content: system }, { role: 'user', content: user }]
-  const raws = await fmCompleteBatch(Array.from({ length: k }, () => messages), { temperature: temp, gbnf: CODE_GRAMMAR })
+  const raws = await fmCompleteBatch(Array.from({ length: k }, () => messages), { temperature: temp, gbnf: CODE_GRAMMAR, ...(typeof topP === 'number' ? { topP } : {}) })
   const out: Candidate<string>[] = []
   for (const raw of raws) {
     const c = rawToCandidate(raw)

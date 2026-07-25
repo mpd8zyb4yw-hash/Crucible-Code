@@ -25,7 +25,9 @@
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
 import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, isEditDistanceGoal, editDistanceTemplatePlan, isShuntingYardGoal, shuntingYardTemplatePlan, composeHintFor, templateFor } from './fmPlanner'
-import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, isDegenerateSubFnCarve, subLevelIterateBudget, type SubFunctionPlanner } from './solve'
+import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, isDegenerateSubFnCarve, isNonComposingCarve, subLevelIterateBudget, type SubFunctionPlanner } from './solve'
+import { structuralFingerprint, fingerprintCode } from './codeProposer'
+import { subFunctionPlanGrammar } from '../agent/grammars'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
 let pass = 0, fail = 0
@@ -175,6 +177,57 @@ async function main() {
   check('6c2 two-helper carve is a real decomposition', isDegenerateSubFnCarve(false, 2, false) === false)
   check('6c3 custom-planner (test) is exempt', isDegenerateSubFnCarve(true, 1, false) === false)
   check('6c4 trusted template class is exempt', isDegenerateSubFnCarve(false, 1, true) === false)
+
+  // ── 6d. PLAN-QUALITY GATE #2 — a multi-helper carve with NO ENTRY POINT is rejected too. ──
+  // The live case: numberToWords(1234) drew removeCommas/removeAnd, helpers that consume STRINGS
+  // while the entry is only ever handed a NUMBER. Four rungs certified, nothing composable.
+  const junkCarve = [
+    { name: 'removeCommas', goal: 'strip commas', cases: [{ args: ['1,234'], expected: '1234' }] },
+    { name: 'removeAnd', goal: 'strip the word and', cases: [{ args: ['one and two'], expected: 'one two' }] },
+  ]
+  const numCases = [{ args: [1234], expected: 'one thousand two hundred thirty four' }]
+  check('6d1 no helper consumes the entry input → non-composing',
+    isNonComposingCarve(false, junkCarve, numCases, false) === true)
+  const goodCarve = [
+    { name: 'splitGroups', goal: 'split into 3-digit groups', cases: [{ args: [1234], expected: [1, 234] }] },
+    { name: 'groupToWords', goal: 'words for one group', cases: [{ args: [234], expected: 'two hundred thirty four' }] },
+  ]
+  check('6d2 a helper taking the entry\'s number type passes',
+    isNonComposingCarve(false, goodCarve, numCases, false) === false)
+  check('6d3 custom-planner (test) is exempt', isNonComposingCarve(true, junkCarve, numCases, false) === false)
+  check('6d4 trusted template class is exempt', isNonComposingCarve(false, junkCarve, numCases, true) === false)
+  check('6d5 no entry cases → cannot judge, allow', isNonComposingCarve(false, junkCarve, [], false) === false)
+  check('6d6 plan with no example args → cannot judge, allow',
+    isNonComposingCarve(false, [{ name: 'x', goal: 'g', cases: [] }] as any, numCases, false) === false)
+  check('6d7 array element shape is compared, not just "array"',
+    isNonComposingCarve(false, [{ name: 'x', goal: 'g', cases: [{ args: [['a', 'b']], expected: 1 }] }],
+      [{ args: [[1, 2]], expected: 3 }], false) === true)
+
+  // ── 6e. STRUCTURAL FINGERPRINT — collapses the model's cosmetic renames, keeps semantics. ──
+  const sfA = 'export function solve(nums){ let total = 0; for (const n of nums) total += n; return total }'
+  const sfRenamed = 'export function solve(xs){\n  // sum them\n  let acc = 0\n  for (const x of xs) acc += x\n  return acc\n}'
+  const sfDifferentOp = 'export function solve(nums){ let total = 0; for (const n of nums) total -= n; return total }'
+  const sfDifferentShape = 'export function solve(nums){ return nums.reduce((a, b) => a + b, 0) }'
+  check('6e1 a pure rename/reflow/comment change is the SAME structure',
+    structuralFingerprint(sfA) === structuralFingerprint(sfRenamed))
+  check('6e2 exact-text fingerprint MISSES that (which is why this exists)',
+    fingerprintCode(sfA) !== fingerprintCode(sfRenamed))
+  check('6e3 a changed operator is a DIFFERENT structure',
+    structuralFingerprint(sfA) !== structuralFingerprint(sfDifferentOp))
+  check('6e4 loop vs reduce is a DIFFERENT structure',
+    structuralFingerprint(sfA) !== structuralFingerprint(sfDifferentShape))
+
+  // ── 6f. PLAN GRAMMAR — the sampler-level pin on the plan schema is well-formed GBNF. ──
+  const planGrammar = subFunctionPlanGrammar()
+  check('6f1 plan grammar declares a root', /^root ::= /m.test(planGrammar))
+  check('6f2 every referenced rule is defined', (() => {
+    const defined = new Set([...planGrammar.matchAll(/^([a-z0-9]+) ::=/gm)].map(m => m[1]))
+    const used = [...planGrammar.matchAll(/(?:::=|\||\(|\s)\s*([a-z][a-z0-9]*)\b/g)].map(m => m[1])
+    return used.every(u => defined.has(u))
+  })())
+  check('6f3 the 2–4 helper cardinality is structural (two required, two optional)',
+    /helper ( ws "," ws helper )\? ( ws "," ws helper )\?/.test(planGrammar.replace(/\\/g, '')) ||
+    planGrammar.includes('ws helper ws "," ws helper'))
   check('7d JSON objects parse', parsePlan('[{"goal":"x"},{"step":"y"}]').length === 2)
   check('7e prose without list structure yields no rungs (→ decline)',
     parsePlan('I think you should just try harder honestly.').length === 0)

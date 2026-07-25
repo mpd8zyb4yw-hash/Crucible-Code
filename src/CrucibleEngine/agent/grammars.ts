@@ -75,3 +75,43 @@ export function enumGrammar(choices: string[]): string {
   const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
   return `root ::= ${choices.map(c => `"${esc(c)}"`).join(' | ')}`
 }
+
+/**
+ * Grammar for a SUB-FUNCTION DECOMPOSITION PLAN — a JSON array of 2–4 helper objects, each
+ * `{"name":…, "purpose":…, "examples":[{"args":[…],"expected":<any JSON>}…]}`.
+ *
+ * WHY (2026-07-25c): `makeFmSubFunctionPlanner` sent this schema as PROSE and the 1.5B produced
+ * unbalanced JSON on real draws — most memorably on a bracket-matching goal, where the payloads
+ * themselves are bracket characters and the head lost track of its own nesting
+ * (`{"args":["(","{"]},  "expected":true}`). `salvageTopLevelObjects` recovers the well-formed
+ * siblings AFTER the fact; this makes the malformed sibling unreachable at the sampler instead,
+ * which is strictly better — a salvaged 4-helper plan that lost 2 rows is a WORSE carve, not just
+ * a slower one.
+ *
+ * The cardinality bounds (2–4 helpers, 1–3 examples) are baked into the grammar rather than asked
+ * for in prose, so a single-helper "re-bake" plan is literally unsamplable and the degenerate-carve
+ * gate downstream stops being the only line of defence. Values may be any JSON, since helper I/O is
+ * arbitrary (arrays, objects, nulls) — only the SHAPE is pinned, never the content. Untrusted as
+ * ever: a well-formed plan can still be a bad plan; the composed whole is re-verified downstream.
+ */
+export function subFunctionPlanGrammar(): string {
+  return [
+    // 2–4 helpers: two required, two optional.
+    `root ::= "[" ws helper ws "," ws helper ( ws "," ws helper )? ( ws "," ws helper )? ws "]"`,
+    `helper ::= "{" ws "\\"name\\"" ws ":" ws ident ws "," ws "\\"purpose\\"" ws ":" ws strval ws "," ws "\\"examples\\"" ws ":" ws examples ws "}"`,
+    // 1–3 examples per helper.
+    `examples ::= "[" ws example ( ws "," ws example )? ( ws "," ws example )? ws "]"`,
+    `example ::= "{" ws "\\"args\\"" ws ":" ws jarray ws "," ws "\\"expected\\"" ws ":" ws jval ws "}"`,
+    // A helper name is a bare camelCase identifier — no spaces, no punctuation, so it can be used
+    // verbatim as a function name in the generated module.
+    `ident ::= "\\"" [a-zA-Z_] [a-zA-Z0-9_]* "\\""`,
+    // Full JSON value subgrammar: helper I/O is arbitrary data, so nothing here restricts content.
+    `jval ::= strval | numval | boolval | "null" | jarray | jobj`,
+    `jarray ::= "[" ws ( jval ( ws "," ws jval )* )? ws "]"`,
+    `jobj ::= "{" ws ( strval ws ":" ws jval ( ws "," ws strval ws ":" ws jval )* )? ws "}"`,
+    `strval ::= "\\"" ( [^"\\\\] | "\\\\" ["\\\\/bfnrt] )* "\\""`,
+    `numval ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [-+]? [0-9]+)?`,
+    `boolval ::= "true" | "false"`,
+    `ws ::= [ \\t\\n]*`,
+  ].join('\n')
+}

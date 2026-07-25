@@ -13,7 +13,7 @@
 // unverified guess (mission: abstain means abstain).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { proposeCode, proposeCodeMany } from './codeProposer'
+import { proposeCode, proposeCodeMany, structuralFingerprint } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
 import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROUND_MARK } from './codeResearch'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
@@ -165,9 +165,12 @@ export async function solveCodeTask(
   // (each round now spends proposalsPerNode× the calls), so the loop explores as many rounds as
   // before but K× wider — never fewer rounds than the serial budget would have run. Capped so a
   // pathological caller budget can't run away. A caller that set proposalsPerNode explicitly wins.
+  // ANTI-ANCHOR: hand search the structural key so a cosmetic re-emission of an already-drawn
+  // control structure counts as stagnation (it is still verified — see SearchOpts.structuralKey).
+  // A caller that supplied its own key keeps it.
   const searchOpts: SearchOpts<string> = useBatch
-    ? { ...opts, ...batchBudget(opts), batchProposer: proposeCodeMany }
-    : opts
+    ? { structuralKey: structuralFingerprint, ...opts, ...batchBudget(opts), batchProposer: proposeCodeMany }
+    : { structuralKey: structuralFingerprint, ...opts }
   return search(spec, proposer, verifier, searchOpts)
 }
 
@@ -502,6 +505,66 @@ export function isDegenerateSubFnCarve(hasCustomPlanner: boolean, helperCount: n
   return !hasCustomPlanner && helperCount < 2 && !hasTemplate
 }
 
+/** Coarse runtime type-shape of a case value, used only to compare a helper's declared inputs
+ *  against the entry's actual ones. Arrays report their element shape so `number[]` ≠ `string[]`;
+ *  an empty array is `unknown[]`, which matches any array (we must not reject on missing evidence). */
+function argShape(v: unknown): string {
+  if (v === null) return 'null'
+  if (Array.isArray(v)) return v.length ? `${argShape(v[0])}[]` : 'unknown[]'
+  return typeof v
+}
+
+/** Do two shapes plausibly denote the same kind of value? `unknown[]` is a wildcard for arrays. */
+function shapesMatch(a: string, b: string): boolean {
+  if (a === b) return true
+  return (a === 'unknown[]' && b.endsWith('[]')) || (b === 'unknown[]' && a.endsWith('[]'))
+}
+
+/**
+ * PLAN-QUALITY predicate #2: the carve has NO ENTRY POINT — not one proposed helper consumes a
+ * value of a type the top-level function is actually given, so no composition can even begin.
+ *
+ * WHY (2026-07-25c). `isDegenerateSubFnCarve` only catches the SINGLE-helper re-bake, so every
+ * junk multi-helper carve sailed through and spent a full per-rung budget per helper before the
+ * compose rung discovered there was nothing to compose. The live example: `numberToWords(1234)`,
+ * whose goal merely FORBIDS commas and the word "and", drew the carve
+ * `removeCommas, removeAnd, …` — helpers whose example args are all STRINGS while the entry is
+ * only ever handed a NUMBER. Four rungs certified four helpers that could never be wired to the
+ * input, and the task declined at the end of the budget instead of resampling in seconds.
+ *
+ * The check is deliberately ONE-SIDED and weak: it fires only when NOTHING lines up on the INPUT
+ * side. It does not require the chain to type-check end to end, and it says nothing about the
+ * output side — the compose rung is allowed to do a little final work, so demanding an exact
+ * return-type anchor would reject good carves. Missing evidence never fires it either: no entry
+ * cases, or a plan with no usable example args, is treated as "can't tell" → allow.
+ *
+ * Soundness: like every gate on this path it can only cause a RESAMPLE, never a certification. A
+ * false positive costs one more plan draw; a false negative just leaves us where we were. Trusted
+ * template classes and caller-supplied planners (tests) are exempt, as with the degeneracy gate.
+ * Pure — unit-tested in __decompose_bench.
+ */
+export function isNonComposingCarve(
+  hasCustomPlanner: boolean,
+  plan: { cases?: { args: unknown[] }[] }[],
+  entryCases: { args: unknown[] }[],
+  hasTemplate: boolean,
+): boolean {
+  if (hasCustomPlanner || hasTemplate) return false
+  const entryShapes = new Set<string>()
+  for (const c of entryCases ?? []) for (const a of c?.args ?? []) entryShapes.add(argShape(a))
+  if (!entryShapes.size) return false                       // no evidence → can't judge
+  let sawHelperArgs = false
+  for (const h of plan) {
+    for (const c of h?.cases ?? []) {
+      for (const a of c?.args ?? []) {
+        sawHelperArgs = true
+        for (const s of entryShapes) if (shapesMatch(argShape(a), s)) return false
+      }
+    }
+  }
+  return sawHelperArgs                                       // no example args at all → can't judge
+}
+
 /**
  * SUB-LEVEL BUDGET for the two recovery paths (helper recursion, glue re-decomposition). Both used
  * to hand the child `opts.iterate` VERBATIM, so a depth-1 subtree could spend the parent's full
@@ -601,6 +664,13 @@ async function runSubFunctionOnce(
   if (isDegenerateSubFnCarve(!!opts.planner, helperPlan.length, hasDecomposeTemplate(input.nl ?? input.goal, input.entry))) {
     emit({ type: 'thought', text: 'subfn: single-helper carve re-bakes the whole task — resampling the plan' })
     return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls, detail: 'degenerate single-helper carve (re-bake); resample plan' }
+  }
+  // PLAN-QUALITY GATE #2 — no helper consumes the entry's actual input types, so the carve has no
+  // entry point and can never compose. Same fail-fast treatment: resample rather than certify four
+  // helpers that cannot be wired to the input (see isNonComposingCarve for the live case).
+  if (isNonComposingCarve(!!opts.planner, helperPlan as any, input.cases as any, hasDecomposeTemplate(input.nl ?? input.goal, input.entry))) {
+    emit({ type: 'thought', text: 'subfn: no helper consumes the top-level input — carve cannot compose; resampling the plan' })
+    return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls, detail: 'non-composing carve (no helper takes the entry input); resample plan' }
   }
 
   // 2) Certify each helper independently. A helper that can't certify collapses the plan.

@@ -102,13 +102,25 @@ export interface FmCallOpts {
    *  grammar-aware Apple FM daemon; ignored elsewhere. Use it to force output shape (e.g. exactly
    *  one fenced code block) so the model never wastes a proposal on malformed structure. */
   gbnf?: string
+  /** Nucleus-sampling cutoff and explicit RNG seed. Both exist for ONE reason: breaking a proposal
+   *  ANCHOR. A stuck head re-emits the same wrong program because raising temperature alone
+   *  re-weights a top-p mass that still contains only that program, and because two draws from an
+   *  identical prompt with identical settings can land identically. `sampling` lets the caller widen
+   *  the admitted set and force a distinct RNG stream per retry. Honoured by the local head;
+   *  ignored by a backend that doesn't support them. */
+  topP?: number
+  seed?: number
 }
 
-async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS, temperature?: number, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal, maxTokens = 1536, gbnf?: string): Promise<string> {
+/** Extra sampling knobs bundled so the long positional call chain below doesn't grow two more
+ *  arguments per hop. Optional throughout — an absent field means "backend default". */
+interface FmSampling { gbnf?: string; topP?: number; seed?: number }
+
+async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIMEOUT_MS, temperature?: number, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal, maxTokens = 1536, sampling: FmSampling = {}): Promise<string> {
   let lastErr: any
   for (let attempt = 0; attempt <= FM_GEN_RETRIES; attempt++) {
     try {
-      return await callFmInner(system, messages, timeoutMs, temperature, priority, signal, maxTokens, gbnf)
+      return await callFmInner(system, messages, timeoutMs, temperature, priority, signal, maxTokens, sampling)
     } catch (e: any) {
       lastErr = e
       // Transient on-device generation failure — brief backoff then retry a fresh session.
@@ -128,7 +140,8 @@ async function callFm(system: string, messages: FmMessage[], timeoutMs = FM_TIME
   throw lastErr
 }
 
-async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal, maxTokens = 1536, gbnf?: string): Promise<string> {
+async function callFmInner(system: string, messages: FmMessage[], timeoutMs: number, temperature = 0.2, priority: 'high' | 'normal' | 'low' = 'high', signal?: AbortSignal, maxTokens = 1536, sampling: FmSampling = {}): Promise<string> {
+  const { gbnf, topP, seed } = sampling
   // Serialize the single-session daemon (fmQueue): interactive React/VGR/chat runs at HIGH
   // priority so it jumps ahead of any waiting background (autoImprove) work. Prevents the
   // concurrent-load GenerationError that starved live VGR searches. Optional verification
@@ -140,7 +153,7 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
     try {
       return await bonsaiComplete(
         [{ role: 'system', content: system }, ...messages],
-        { maxTokens, temperature, timeoutMs, signal, gbnf },
+        { maxTokens, temperature, timeoutMs, signal, gbnf, topP, seed },
       )
     } catch { /* sidecar unavailable/errored — fall back to Apple FM */ }
   }
@@ -165,6 +178,10 @@ async function callFmInner(system: string, messages: FmMessage[], timeoutMs: num
       // W2 constrained decoding: forward a GBNF grammar when the caller supplies one. A
       // grammar-aware daemon masks the sampler to it; an unaware one ignores the field.
       ...(gbnf ? { grammar: gbnf } : {}),
+      // Anti-anchor sampling knobs (see FmCallOpts.topP/seed). Unknown to the Apple FM daemon,
+      // which ignores extra fields — safe either way.
+      ...(typeof topP === 'number' ? { top_p: topP } : {}),
+      ...(typeof seed === 'number' ? { seed } : {}),
     }),
     signal: combined,
   }), { priority, label: priority === 'high' ? 'fmReact' : 'fmVerify' })
@@ -879,7 +896,7 @@ export async function fmComplete(
       'You are Crucible, an expert AI assistant. Answer concisely and accurately.'
     const convo = messages.filter(m => m.role !== 'system') as FmMessage[]
     if (!convo.length) return ''
-    return await callFm(system, convo, opts?.timeoutMs ?? FM_TIMEOUT_MS, opts?.temperature, opts?.priority ?? 'high', opts?.signal, opts?.maxTokens, opts?.gbnf)
+    return await callFm(system, convo, opts?.timeoutMs ?? FM_TIMEOUT_MS, opts?.temperature, opts?.priority ?? 'high', opts?.signal, opts?.maxTokens, { gbnf: opts?.gbnf, topP: opts?.topP, seed: opts?.seed })
   } catch {
     return ''
   }

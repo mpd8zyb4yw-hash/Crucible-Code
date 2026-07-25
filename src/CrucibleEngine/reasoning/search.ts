@@ -42,6 +42,20 @@ export interface SearchOpts<T = unknown> {
    * empty/failed draw for that slot). Omit it and search() behaves exactly as before (serial).
    */
   batchProposer?: (ctxs: ProposeContext<T>[]) => Promise<(Candidate<T> | null)[]>
+  /**
+   * STRUCTURAL anti-anchor key (2026-07-25c). `Candidate.fingerprint` is exact-text, so the
+   * anchored head escapes the anti-thrash signal by renaming a variable or reflowing a line while
+   * re-emitting the SAME wrong control structure — the run then looks like healthy exploration and
+   * the codeProposer escalation (hotter temperature, rotated structural breaker) never deepens.
+   * Supply a key that collapses those cosmetic differences (for code: `structuralFingerprint`) and
+   * a repeat of it counts as stagnation evidence.
+   *
+   * DELIBERATELY NOT a dedup: a structural repeat is still VERIFIED and still recorded. Two
+   * programs can share a structure and differ where it matters (`>` vs `>=`), so skipping the
+   * verify would throw away a correct candidate on a heuristic — unacceptable when verification is
+   * free deterministic execution. This only makes the proposer try harder, never the search blind.
+   */
+  structuralKey?: (value: T) => string
 }
 
 const DEFAULTS: Required<Omit<SearchOpts, 'signal' | 'emit' | 'batchProposer'>> = {
@@ -75,6 +89,20 @@ export async function search<T>(
   // so the escalation — which keys on repeated failure SIGNALS in history — never fired at all.
   // Sound: nothing is re-verified or re-scored; this only changes what the proposer is told.
   const seenAttempt = new Map<string, Attempt<T>>()
+  // Structural keys already drawn (see SearchOpts.structuralKey). Evidence only — never a skip.
+  const seenStructure = new Set<string>()
+  /** Record a cosmetically-different re-emission of an already-drawn STRUCTURE as stagnation, so
+   *  the proposer's anchor escalation fires on it. Returns nothing: the candidate still verifies. */
+  const noteStructure = (candidate: Candidate<T>): void => {
+    if (!opts.structuralKey) return
+    let key: string
+    try { key = opts.structuralKey(candidate.value) } catch { return }
+    if (!key) return
+    if (seenStructure.has(key)) {
+      emit({ type: 'thought', text: 'same structure re-proposed under a different surface — counting as stuck' })
+      stagnantRounds++
+    } else seenStructure.add(key)
+  }
   let beam: Attempt<T>[] = []             // surviving candidates, best-first
   let modelCalls = 0
   let bestScore = -Infinity
@@ -142,6 +170,7 @@ export async function search<T>(
         return null
       }
       seen.add(candidate.fingerprint)
+      noteStructure(candidate)
       const verdict = await verifyOne(candidate)
       const attempt: Attempt<T> = { candidate, verdict }
       seenAttempt.set(candidate.fingerprint, attempt)
@@ -247,6 +276,7 @@ export async function search<T>(
           continue
         }
         seen.add(candidate.fingerprint)
+        noteStructure(candidate)
 
         const verdict = await verifyOne(candidate)
         const attempt: Attempt<T> = { candidate, verdict }

@@ -255,6 +255,15 @@ export interface BonsaiOpts {
    *  honours `grammar` in the completion body, masking every token to the grammar so malformed
    *  output is unreachable. Ignored by a backend that doesn't support it — safe either way. */
   gbnf?: string
+  /** Nucleus-sampling cutoff. Raised by the proposer when it detects an ANCHORED head: temperature
+   *  alone re-weights a distribution whose top-p mass is still the one wrong program, so widening
+   *  the admitted set is the lever that actually admits a different structure. Backend default when
+   *  omitted. */
+  topP?: number
+  /** Explicit RNG seed. Varied per retry so two draws with an identical prompt AND identical
+   *  sampling settings cannot come back identical — the exact-duplicate case that burned whole
+   *  rung budgets. Backend picks a random seed when omitted. */
+  seed?: number
 }
 
 /**
@@ -277,6 +286,8 @@ export async function bonsaiComplete(
       }
       if (!opts.think) body.chat_template_kwargs = { enable_thinking: false }
       if (opts.gbnf) body.grammar = opts.gbnf   // W2: constrain the sampler to a GBNF grammar
+      if (typeof opts.topP === 'number') body.top_p = opts.topP
+      if (typeof opts.seed === 'number') body.seed = opts.seed
 
       // Generation is minutes-long in background mode, so the timeout must be generous AND
       // explicit: Node's undici kills a non-streaming request at 300s by default, which reads

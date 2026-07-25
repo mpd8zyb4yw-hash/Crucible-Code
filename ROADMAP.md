@@ -1933,6 +1933,62 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25d (gap-soundness — the whole carve-quality failure ladder, closed at the mechanism)
+Every item on 25c's failure ladder got a mechanism, not a mitigation. All five are verifier-gated:
+each can only cause a resample or a wider sample, never a certification.
+
+- **1. Malformed plan JSON is now UNREACHABLE, not salvaged.** New `subFunctionPlanGrammar()`
+  (`agent/grammars.ts`) pins the plan schema at the SAMPLER, and `makeFmSubFunctionPlanner` passes it
+  as `gbnf` (the `FmCallOpts.gbnf` path `codeProposer` already used). The 2–4-helper and 1–3-example
+  cardinalities are now STRUCTURAL — a single-helper "re-bake" plan is literally unsamplable — and
+  helper I/O keeps a full JSON-value subgrammar so nothing constrains plan CONTENT, only its shape.
+  `salvageTopLevelObjects` stays as the fallback for a backend with no grammar support.
+  **Live-verified against the head on :8080**: HTTP 200, parseable JSON, correct cardinality.
+- **2. Carve quality rewritten in `SUBFN_SYSTEM`/`buildSubFnUser`.** The old "carve off the tricky
+  parsing / edge-case logic" wording is what produced `removeCommas`/`removeAnd` out of a NEGATIVE
+  formatting constraint. Replaced with the two properties a carve must have: it must COMPOSE (the
+  entry is writable as one short expression over the helpers only) and it must CONSUME THE REAL INPUT
+  (first helper takes the entry's own argument types). New `firstCaseArgShape` renders the entry's
+  ACTUAL argument shape from its first sample case into the prompt, so "consume the entry's types" is
+  a concrete instruction rather than an abstract rule.
+- **3. Second plan-quality gate: `isNonComposingCarve` (solve.ts).** `isDegenerateSubFnCarve` only
+  ever caught the SINGLE-helper plan, so every junk 4-helper carve passed and burned a full rung
+  budget per helper. The new gate fires when NOT ONE helper consumes a value of a type the entry is
+  actually given — exactly the `numberToWords(1234)` → `removeCommas(string)` case. Deliberately
+  one-sided and weak: no end-to-end type-check, no output-side anchor (the compose rung is allowed
+  final work), and missing evidence always allows. Tests 6d1–6d7.
+- **4. Proposal anchor broken at the proposer, two ways.**
+  - `structuralFingerprint` (codeProposer): a lexical normalization — comments/whitespace/semicolons
+    stripped, literals collapsed, non-structural identifiers renamed `v1,v2,…`, while operators,
+    keywords and shape-bearing built-ins survive. So a rename/reflow reads as the SAME structure but
+    `>` vs `>=` and `map` vs `for` still differ. Wired through the new `SearchOpts.structuralKey`.
+    **It is EVIDENCE, never a dedup** — a structural repeat is still verified, so a collision can
+    never discard a correct candidate (that would trade soundness for a heuristic).
+  - `topP`/`seed` plumbed end-to-end (`FmCallOpts` → `callFm` → `bonsaiComplete` → llama-server), set
+    by `buildProposalPrompt` ONLY once anchoring is detected (topP 0.97/0.99, seed from a monotone
+    counter — not a clock, so a run stays reproducible). Temperature alone did not break the live
+    anchors because the nucleus still contained only the one wrong program.
+- **5. Template scorecard re-earned.** `search.ts`, `solve.ts`, `fmPlanner.ts` and `codeProposer.ts`
+  all changed on paths every class uses. Live re-run, strict `CRUCIBLE_NO_DISTILL=1`:
+  **5/5 at 1 draw**, then **15/15 (100%) at 3 draws** — see the scorecard block below.
+- `__decompose_bench`: **97 → 111 passed, 0 failed** (14 new: 6d1–6d7 the non-composing gate,
+  6e1–6e4 the structural fingerprint incl. the negative controls, 6f1–6f3 the plan grammar).
+
+**Template scorecard, live head :8080, `CRUCIBLE_NO_DISTILL=1`, 3 draws/class — 15/15 (100%):**
+
+| class | solved | calls (med) | wall (med) |
+|---|---|---|---|
+| basicCalculator (parenless precedence fold) | 3/3 | 5 | **18s** |
+| evalRPN (postfix stack) | 3/3 | 16 | 119s |
+| editDistance (Levenshtein DP fold) | 3/3 | 13 | 101s |
+| calculatorWithParens (shunting-yard) | 3/3 | 5 | 22s |
+| coinChange (min-coins unbounded DP fold) | 3/3 | 3 | 14s |
+
+Not just re-earned — materially CHEAPER. `basicCalculator` had a 264s median on the 1-draw run
+immediately before these changes and lands at 18s median across 3 draws; `coinChange` and
+`calculatorWithParens` now finish in 3–5 calls. Read that as the anti-anchor work removing wasted
+draws rather than as a claimed 14× speedup: n=3, and the medians are noisy at this sample size.
+
 ### 2026-07-25c (gap-soundness — FIRST general-path number: 2/5, and the malformed-plan salvage)
 - **FIRST LIVE GENERAL (no-template) SCORECARD: 2/5 (40%)**, strict-offline, `CRUCIBLE_NO_DISTILL=1`.
   `romanToInt` **solved** (90 calls, 692s; rungs romanToNum/parseRoman/subtract/compose all OK),
