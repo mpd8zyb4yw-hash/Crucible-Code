@@ -521,6 +521,41 @@ function shapesMatch(a: string, b: string): boolean {
 }
 
 /**
+ * PLAN-QUALITY predicate #3: this helper IS the top-level function wearing a different name.
+ *
+ * WHY (2026-07-25d general scorecard, 1/5). Every failing carve on that run contained one of these:
+ * `intToRomanHelper`, `romanNumeralConverter`, `isBalancedHelper`, `runLength`. The planner names a
+ * helper after the entry and SPECIFIES IT WITH THE ENTRY'S OWN EXAMPLE — so certifying that rung is
+ * exactly as hard as the original task, and the rung that stalls (`subtractiveRoman`, `isIgnored`)
+ * only stalls after the budget has already been poured into the alias. `isDegenerateSubFnCarve`
+ * cannot see this: these plans have FOUR helpers, so the single-helper re-bake test passes.
+ *
+ * The test is the tight one, deliberately NOT a name-similarity heuristic: a helper is a re-bake
+ * when one of its example cases is, argument-for-argument and result-for-result, a case of the
+ * ENTRY. That is the planner literally writing down "this helper does the whole task". Naming is
+ * ignored on purpose — the live `romanToInt` SOLVE used a carve containing `romanToIntHelper` and
+ * `romanToIntHelper2`, so punishing the NAME would have destroyed the one task that works. Only the
+ * spec is evidence.
+ *
+ * Callers FILTER these helpers out rather than failing the plan: a 4-helper carve with one alias may
+ * have three good rungs, and if too few survive the existing degeneracy gate catches it on the way
+ * past. Pure — unit-tested in __decompose_bench.
+ */
+export function isRebakedHelper(
+  helperCases: { args: unknown[]; expected: unknown }[] | undefined,
+  entryCases: { args: unknown[]; expected: unknown }[] | undefined,
+): boolean {
+  if (!helperCases?.length || !entryCases?.length) return false
+  const key = (c: { args: unknown[]; expected: unknown }) => {
+    try { return JSON.stringify([c.args, c.expected]) } catch { return null }
+  }
+  const entryKeys = new Set<string>()
+  for (const c of entryCases) { const k = key(c); if (k) entryKeys.add(k) }
+  for (const c of helperCases) { const k = key(c); if (k && entryKeys.has(k)) return true }
+  return false
+}
+
+/**
  * PLAN-QUALITY predicate #2: the carve has NO ENTRY POINT — not one proposed helper consumes a
  * value of a type the top-level function is actually given, so no composition can even begin.
  *
@@ -641,14 +676,21 @@ async function runSubFunctionOnce(
   // keys on NAME, so a name must map to exactly one source for any of it to be well-defined.
   // Deduping BEFORE the degeneracy gate is deliberate — a carve of [A, A] is a single-helper
   // re-bake wearing a disguise, and should resample rather than burn two rungs discovering that.
+  // ALIAS RE-BAKE (2026-07-25d): also drop any helper the planner specified with one of the ENTRY's
+  // OWN cases — that rung is the whole task under a new name, and certifying it is exactly as hard
+  // as the original problem. Filtered rather than fatal, since the sibling rungs may be fine; if too
+  // few survive, the degeneracy gate below catches it. Exempt when the caller supplied a planner.
   const seenNames = new Set<string>()
+  const rebaked: string[] = []
   const helperPlan = plan
     .filter((h) => {
       if (h.name === input.entry || preNames.has(h.name) || seenNames.has(h.name)) return false
+      if (!opts.planner && isRebakedHelper((h as any).cases, input.cases as any)) { rebaked.push(h.name); return false }
       seenNames.add(h.name)
       return true
     })
     .slice(0, 5)
+  if (rebaked.length) emit({ type: 'thought', text: `subfn: dropped ${rebaked.join(', ')} — specified with the top-level function's own case (alias re-bake)` })
   emit({ type: 'thought', text: `subfn: ${helperPlan.length} helper(s) — ${helperPlan.map((h) => h.name).join(', ')}` })
   if (!helperPlan.length) {
     return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'no helper distinct from the top-level function' }

@@ -1984,6 +1984,30 @@ each can only cause a resample or a wider sample, never a certification.
 | calculatorWithParens (shunting-yard) | 3/3 | 5 | 22s |
 | coinChange (min-coins unbounded DP fold) | 3/3 | 3 | 14s |
 
+**General (no-template) scorecard, same conditions, 1 draw/task — 1/5 (20%), DOWN from 25c's 2/5.**
+Reported as measured, not explained away. n=1 per task, so 2/5→1/5 is inside the noise band, but the
+honest headline is that this session did not raise the general number.
+
+| task | 25c | 25d | note |
+|---|---|---|---|
+| `romanToInt` | solved, 90 calls, 692s | **solved, 5 calls, 34s** | 18× cheaper |
+| `intToRoman` | solved, 13 calls | decompose-failed, 205 calls | **regression**, `subtractiveRoman` stalled |
+| `compressRuns` | declined, 97 calls | decompose-failed, 182 calls | now recurses, still misses |
+| `isBalanced` | declined, **0 calls**, 17s | decompose-failed, 250 calls, 2288s | **the grammar worked** |
+| `wordFrequencyTop` | decompose-failed, 151 calls | decompose-failed, 77 calls | — |
+
+What each row actually proves:
+- **`isBalanced` is the clean win for item 1.** It previously died at ZERO model calls because the
+  plan JSON was unparseable. With the grammar it produces a real 4-helper carve and grinds 250 calls.
+  Failure mode #2 on the ladder is closed at the mechanism; the task is now merely hard.
+- **`romanToInt` is the win for items 3+4.** Same solve, 90 calls → 5.
+- **`intToRoman` is a real regression** and the honest cost of this session. Not diagnosed yet.
+- **The remaining bottleneck is now visible in the carve NAMES**: `intToRomanHelper`,
+  `romanNumeralConverter`, `isBalancedHelper`, `runLength`. The planner still proposes a helper that
+  IS the entry under another name. The rewritten prompt did not stop it, and no gate catches it
+  because such plans have 4 helpers, not 1 — `isDegenerateSubFnCarve` is blind to the ALIAS re-bake.
+  That is the next mechanism, and it is mechanically checkable (see `isRebakedHelper` below).
+
 Not just re-earned — materially CHEAPER. `basicCalculator` had a 264s median on the 1-draw run
 immediately before these changes and lands at 18s median across 3 draws; `coinChange` and
 `calculatorWithParens` now finish in 3–5 calls. Read that as the anti-anchor work removing wasted

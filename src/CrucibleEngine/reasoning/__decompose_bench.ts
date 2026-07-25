@@ -25,7 +25,7 @@
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
 import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, isEditDistanceGoal, editDistanceTemplatePlan, isShuntingYardGoal, shuntingYardTemplatePlan, composeHintFor, templateFor } from './fmPlanner'
-import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, isDegenerateSubFnCarve, isNonComposingCarve, subLevelIterateBudget, type SubFunctionPlanner } from './solve'
+import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, isDegenerateSubFnCarve, isNonComposingCarve, isRebakedHelper, subLevelIterateBudget, type SubFunctionPlanner } from './solve'
 import { structuralFingerprint, fingerprintCode } from './codeProposer'
 import { subFunctionPlanGrammar } from '../agent/grammars'
 import type { Proposer, TaskSpec, Verifier } from './types'
@@ -202,6 +202,19 @@ async function main() {
   check('6d7 array element shape is compared, not just "array"',
     isNonComposingCarve(false, [{ name: 'x', goal: 'g', cases: [{ args: [['a', 'b']], expected: 1 }] }],
       [{ args: [[1, 2]], expected: 3 }], false) === true)
+
+  // ── 6g. ALIAS RE-BAKE — a helper SPECIFIED with one of the entry's own cases is the whole task. ──
+  const entryCasesRb = [{ args: [1994], expected: 'MCMXCIV' }, { args: [58], expected: 'LVIII' }]
+  check('6g1 a helper carrying an entry case verbatim is a re-bake',
+    isRebakedHelper([{ args: [1994], expected: 'MCMXCIV' }], entryCasesRb) === true)
+  check('6g2 a genuine sub-step is NOT a re-bake',
+    isRebakedHelper([{ args: [900], expected: 'CM' }], entryCasesRb) === false)
+  check('6g3 same args but a DIFFERENT expected is not a re-bake (it is a different spec)',
+    isRebakedHelper([{ args: [1994], expected: [1000, 900, 90, 4] }], entryCasesRb) === false)
+  check('6g4 missing evidence on either side never fires',
+    isRebakedHelper([], entryCasesRb) === false && isRebakedHelper([{ args: [1994], expected: 'MCMXCIV' }], []) === false)
+  check('6g5 naming is IGNORED — only the spec is evidence (romanToIntHelper solved live)',
+    isRebakedHelper([{ args: ['IX'], expected: 9 }], [{ args: ['MCMXCIV'], expected: 1994 }]) === false)
 
   // ── 6e. STRUCTURAL FINGERPRINT — collapses the model's cosmetic renames, keeps semantics. ──
   const sfA = 'export function solve(nums){ let total = 0; for (const n of nums) total += n; return total }'
