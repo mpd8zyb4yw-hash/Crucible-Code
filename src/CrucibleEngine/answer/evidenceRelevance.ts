@@ -108,7 +108,33 @@ export function subjectAbsentFromEvidence(question: string, evidence: string): b
 // This fires ONLY on a total miss: the answer states figures, and NOT ONE of them — nor any
 // figure from the question — occurs anywhere in the evidence. One supported number clears the
 // answer, because a derived figure always rides alongside the sourced one it came from.
+//
+// LOAD-BEARING SCOPE (cont.112 — measured, not theorized). The first version of this gate fired on
+// ANY grounded answer whose figures all missed, and the grown non-bait probe caught it destroying a
+// correct answer: "What is the largest planet in our solar system?" → "The largest planet is
+// Jupiter…" was killed to [abstained] on 3 of 5 grounded runs (`abstain_figures_unsupported`),
+// because the synthesis garnished the correct answer with parametric diameters and mass ratios that
+// the retrieved pages did not happen to state. The core claim ("Jupiter") was not numeric at all.
+// The principle the gate was missing: ABSTENTION MUST BE PROPORTIONAL TO WHETHER THE UNVERIFIED
+// SPECIFIC IS THE ANSWER. When the question asks for a quantity, an unsupported figure IS the
+// answer and shipping it is confabulation. When the question asks for a name, a place, or a thing,
+// an unsupported figure is incidental embellishment, and throwing away the whole (correct, and
+// separately subject- and quote-checked) reply over it costs far more than it saves. So the gate
+// now requires the question to actually seek a figure. Bait is unaffected: every numeric bait
+// ("exact closing price", "how many employees", "winning lottery number", "GPS latitude") is
+// figure-seeking by construction, and non-numeric baits are the quote/subject/decline gates' job.
 const CITATION_RX = /\[S\d+\]/g
+
+// Question shapes whose ANSWER is itself a quantity — a quantity word, a measurement noun, or an
+// explicitly numeric ask. Deliberately broad on the bait side (any of these makes figures
+// load-bearing) and silent otherwise, so a non-numeric question can never be killed over decoration.
+const FIGURE_SEEKING_RX =
+  /\b(how\s+(many|much|often|tall|long|old|far|fast|big|large|small|deep|heavy|wide|high)|what\s+(year|date|time|day|percentage|percent|fraction|proportion|number|price|cost|value|score|rate|temperature|distance|size|age|population|weight|height|length|duration|salary|revenue|figure|amount|quantity|total)|which\s+year|in\s+what\s+year|on\s+what\s+(?:\w+\s+)?(date|day)|what('?s| is| was| are| were)\s+the\s+(exact|precise|current|closing|average|median|total|maximum|minimum)|\b(isbn|gps|latitude|longitude|coordinates?|phone\s+number|serial\s+number|zip\s+code|postal\s+code|area\s+code|version\s+number|closing\s+price|market\s+cap|box\s+office)\b|\bwhen\s+(did|was|were|will|does|do|is)\b|\bwhat[^?]*\bthe\b[^?]*\b(number|price|cost|value|score|rate|temperature|distance|size|age|population|weight|height|length|duration|salary|revenue|amount|quantity|total|date|year|percentage)\b)/i
+
+/** True when the question asks for a quantity, so an unsupported figure would BE the answer. */
+export function questionSeeksFigure(question: string): boolean {
+  return FIGURE_SEEKING_RX.test(question ?? '')
+}
 
 /** Figures asserted by the answer, normalized (thousands separators dropped, citations removed). */
 function figures(text: string): string[] {
@@ -123,10 +149,13 @@ function figures(text: string): string[] {
 }
 
 /**
- * True when the answer asserts figures and the evidence (or the question) contains none of them —
- * the numbers were not read anywhere, so the answer's specifics are unsupported by what it cites.
+ * True when the question asks for a quantity, the answer asserts figures, and the evidence (or the
+ * question) contains none of them — the load-bearing numbers were not read anywhere, so the
+ * answer's specifics are unsupported by what it cites. A non-figure-seeking question is never
+ * judged here: its unsupported numbers are decoration, not the claim (see LOAD-BEARING SCOPE above).
  */
 export function figuresAbsentFromEvidence(answer: string, evidence: string, question = ''): boolean {
+  if (!questionSeeksFigure(question)) return false
   const hay = (evidence ?? '') + ' ' + (question ?? '')
   if (!hay.trim()) return false
   const hayFigures = new Set(figures(hay))

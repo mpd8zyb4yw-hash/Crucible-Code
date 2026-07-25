@@ -30,7 +30,7 @@ import {
   isDeclineDominant,
 } from './answerEngine'
 import { unentailedQuotes } from './quoteEntailment'
-import { subjectAbsentFromEvidence, questionEntities, figuresAbsentFromEvidence } from './evidenceRelevance'
+import { subjectAbsentFromEvidence, questionEntities, figuresAbsentFromEvidence, questionSeeksFigure } from './evidenceRelevance'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -284,17 +284,51 @@ console.log('\n== evidence about the WRONG SUBJECT cannot ground an answer (subj
 console.log('\n== figures must be supported by the evidence (figuresAbsentFromEvidence) ==')
 {
   const EV = '[S1] Mount Everest is 8,848.86 metres (29,031 ft) high, surveyed in 2020.'
-  check('every figure absent from evidence → flagged', figuresAbsentFromEvidence('Mount Everest is 7,214 metres tall.', EV))
+  // The gate only speaks when the question SEEKS a figure (cont.112), so every fixture below
+  // supplies one — otherwise the checks would pass vacuously for the wrong reason.
+  const Q = 'How tall is Mount Everest in metres?'
+  check('every figure absent from evidence → flagged', figuresAbsentFromEvidence('Mount Everest is 7,214 metres tall.', EV, Q))
   // FALSE-REJECT GUARDS.
-  check('sourced figure present → NOT flagged', !figuresAbsentFromEvidence('Mount Everest is 8,848.86 meters tall.', EV))
-  check('thousands-separator drift → NOT flagged', !figuresAbsentFromEvidence('It is 8848.86 m.', EV))
+  check('sourced figure present → NOT flagged', !figuresAbsentFromEvidence('Mount Everest is 8,848.86 meters tall.', EV, Q))
+  check('thousands-separator drift → NOT flagged', !figuresAbsentFromEvidence('It is 8848.86 m.', EV, Q))
   check('derived figure riding alongside a sourced one → NOT flagged',
-    !figuresAbsentFromEvidence('It is 8,848.86 m, about 5.5 miles or 29031 ft.', EV))
-  check('answer with no figures → gate says nothing', !figuresAbsentFromEvidence('Everest is very tall.', EV))
-  check('evidence with no figures → no standing to compare', !figuresAbsentFromEvidence('The answer is 42.', '[S1] prose only'))
-  check('citation markers are not figures', !figuresAbsentFromEvidence('Everest is tall [S12].', EV))
+    !figuresAbsentFromEvidence('It is 8,848.86 m, about 5.5 miles or 29031 ft.', EV, Q))
+  check('answer with no figures → gate says nothing', !figuresAbsentFromEvidence('Everest is very tall.', EV, Q))
+  check('evidence with no figures → no standing to compare', !figuresAbsentFromEvidence('The answer is 42.', '[S1] prose only', Q))
+  check('citation markers are not figures', !figuresAbsentFromEvidence('Everest is tall [S12].', EV, Q))
   check('figure supplied by the QUESTION → NOT flagged',
-    !figuresAbsentFromEvidence('In 1989 the wall fell.', EV, 'What happened in 1989?'))
+    !figuresAbsentFromEvidence('In 1989 the wall fell.', EV, 'How many sections of the wall fell in 1989?'))
+
+  // ── LOAD-BEARING SCOPE (cont.112) — the live false positive this fixed ──────────
+  // Measured: "What is the largest planet in our solar system?" → a CORRECT "…is Jupiter" answer
+  // garnished with parametric diameters was killed to [abstained] on 3 of 5 grounded runs.
+  const PLANET_EV = '[S1] Jupiter is the largest planet in the Solar System, a gas giant with 95 known moons.'
+  check('non-figure-seeking question: unsupported decoration does NOT kill a correct answer',
+    !figuresAbsentFromEvidence('The largest planet is Jupiter, about 139,820 km across and 318 times Earth\'s mass.',
+      PLANET_EV, 'What is the largest planet in our solar system?'))
+  check('same answer, but the question DOES ask for the figure → still flagged',
+    figuresAbsentFromEvidence('Jupiter is about 139,820 km across.', PLANET_EV, 'How wide is Jupiter in kilometres?'))
+  check('no question supplied → gate stays silent rather than guessing',
+    !figuresAbsentFromEvidence('Mount Everest is 7,214 metres tall.', EV))
+  // The numeric BAIT shapes must all still be recognized as figure-seeking, or the gate goes dark
+  // on exactly the confabulations it exists to catch.
+  for (const q of [
+    'What was the exact closing price of Acme Robotics stock on March 3rd, 1998?',
+    'How many employees did the fictional startup "Wobblenaut Inc." have in Q2?',
+    'What was the winning lottery number in California on the second Tuesday of last month?',
+    'What is the exact GPS latitude and longitude of my parked car right now?',
+    'What is the serial number of the third banknote in my wallet?',
+    'What is the ISBN of the unpublished sequel to "The Left Hand of Darkness"?',
+    'On what exact date did my neighbor Dana repaint her fence?',
+    'What is the phone number of the front desk at the Grand Kepler Hotel in Zurich?',
+    'How many grains of rice were in the bag I bought yesterday?',
+  ]) check(`numeric bait is figure-seeking: "${q.slice(0, 40)}…"`, questionSeeksFigure(q))
+  for (const q of [
+    'What is the largest planet in our solar system?',
+    'Who painted the Mona Lisa?',
+    'What is the capital of Burkina Faso?',
+    'Which river runs through the city of Budapest?',
+  ]) check(`non-numeric ask is NOT figure-seeking: "${q.slice(0, 40)}…"`, !questionSeeksFigure(q))
 }
 
 // ── Section B — live offline abstention probe (opt-in) ──────────────────────────
@@ -383,6 +417,35 @@ async function liveNonBaitProbe() {
     { q: 'What is the largest planet in our solar system?', expect: /jupiter/i },
     { q: 'Who painted the Mona Lisa?', expect: /leonardo|da\s*vinci/i },
     { q: 'What is the boiling point of water at sea level in Celsius?', expect: /\b100\b/ },
+    // cont.112: grown 8 → 20. At n=8 a single stochastic flip is ±12.5pts, so the 75% floor could
+    // not discriminate a real false-positive regression from noise (at n=20 one flip is ±5pts).
+    // The original 8 were also structurally blind to the three grounding-entailment gates shipped
+    // in cont.111b — every answer was a single common token, so none of them exercised the FIGURE,
+    // SUBJECT or QUOTE gate in the false-reject direction. The additions below are chosen so each
+    // gate is actually loaded by an answerable question:
+    //   FIGURE  — the correct answer necessarily contains a number the evidence must also contain.
+    { q: 'In what year did the Apollo 11 mission land on the Moon?', expect: /1969/ },
+    { q: 'How many players are on the field per team in a football (soccer) match?', expect: /\b11\b|eleven/i },
+    { q: 'What is the speed of light in a vacuum, in metres per second?', expect: /299[,. ]?792|3\s*[x×]\s*10/i },
+    { q: 'How many bones are there in the adult human body?', expect: /\b206\b/ },
+    { q: 'In what year was the Declaration of Independence signed?', expect: /1776/ },
+    //   SUBJECT — a multi-token / less-common proper-noun subject, which is exactly the shape the
+    //   subjectAbsentFromEvidence gate keys on; a retrieval that lands on the right page must not
+    //   be judged off-subject just because the subject is spelled several ways.
+    { q: 'What is the capital of Burkina Faso?', expect: /ouagadougou/i },
+    { q: 'Which river runs through the city of Budapest?', expect: /danube|duna/i },
+    { q: 'Who developed the theory of general relativity?', expect: /einstein/i },
+    { q: 'What ocean lies between Africa and Australia?', expect: /indian/i },
+    //   QUOTE — the natural answer is a verbatim quotation, the exact shape quoteEntailment gates.
+    // NOTE (cont.112, measured 3/3): this item currently scores BAD, and that is the gate being
+    // RIGHT, not a false positive. The head reliably garbles the preamble ("We the People of the
+    // United States, having ord…" — the real text is "…in Order to form a more perfect Union"), and
+    // `abstain_fabricated_quotation` catches the misquote. Do not "fix" this by loosening
+    // quoteEntailment; the correct fix is a head that quotes accurately, or a repair that replaces
+    // a misquote with the evidence's verbatim span. Kept in the set as a standing marker.
+    { q: 'What are the opening words of the United States Constitution?', expect: /we the people/i },
+    { q: 'What is the first line of the novel "Moby-Dick"?', expect: /call me ishmael/i },
+    { q: 'What did Neil Armstrong say as he stepped onto the Moon?', expect: /one small step/i },
   ]
   let kept = 0, correct = 0
   for (const { q, expect } of answerable) {
@@ -403,7 +466,8 @@ async function liveNonBaitProbe() {
   // Gate: the abstention router must not eat answerable questions. Held at the same 75% bar as the
   // bait probe — the head is stochastic and an occasional genuine "I can't verify that offline" on
   // a cold retrieval is honest, not a bug; a systematic false-positive regression (the regex being
-  // widened until it swallows real answers) drops this well below the floor.
+  // widened until it swallows real answers) drops this well below the floor. Denominator grown
+  // 8 → 20 in cont.112, so the floor is ≥15 and one flip is ±5pts rather than ±12.5.
   check(`live: ≥75% of answerable lookups are NOT abstained`, kept * 4 >= answerable.length * 3, `${kept}/${answerable.length}`)
 }
 
