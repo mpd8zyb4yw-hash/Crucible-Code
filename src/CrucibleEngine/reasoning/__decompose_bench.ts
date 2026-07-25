@@ -263,6 +263,39 @@ async function main() {
   check('9e a wrong helper example collapses honestly, never a false solve',
     badF.status === 'decompose-failed' && badF.code === null, badF.detail)
 
+  // 9f/9g CARRY-FORWARD across planAttempts. Plan [gg, kk]: gg certifies immediately; kk fails
+  //   the first attempt's budget and only certifies once its proposer has been called >3 times
+  //   (i.e. on the SECOND plan attempt). With carry-forward, gg (already certified attempt 0) is
+  //   REUSED on attempt 1 at zero cost rather than re-ground — the exact waste the DP-fold
+  //   scorecard exposed. We assert (a) it still solves and (b) the reuse path actually fired.
+  let ggCalls = 0, kkCalls = 0
+  const carryProposer: Proposer<string> = async (ctx) => {
+    const acc = ctx.spec.acceptance as { entry: string }
+    const ctxt = ctx.spec.context ?? ''
+    if (acc.entry === 'gg') { ggCalls++; return { value: 'export function gg(x) { return x * 2; }', fingerprint: 'gg' } }
+    if (acc.entry === 'kk') { kkCalls++; return { value: kkCalls > 3 ? 'export function kk(x) { return x * 3; }' : 'export function kk(x) { return x; }', fingerprint: `kk${kkCalls}` } }
+    if (acc.entry === 'ff') {
+      const wired = ctxt.includes('function gg') && ctxt.includes('function kk')
+      return wired ? { value: 'export function ff(x) { return gg(x) + kk(x); }', fingerprint: 'ff-ok' } : { value: 'export function ff(x) { return x; }', fingerprint: 'ff-bad' }
+    }
+    return { value: 'export function ff(x){return x}', fingerprint: 'na' }
+  }
+  const ffInput = { goal: 'compute ff(x) = gg(x) + kk(x)', entry: 'ff', cases: [{ args: [1], expected: 5 }, { args: [2], expected: 10 }] }
+  const carryPlan: SubFunctionPlanner = async () => [
+    { name: 'gg', goal: 'double x', cases: [{ args: [2], expected: 4 }, { args: [5], expected: 10 }] },
+    { name: 'kk', goal: 'triple x', cases: [{ args: [2], expected: 6 }, { args: [1], expected: 3 }] },
+  ]
+  const carryEvents: string[] = []
+  const carried = await decomposeCodeBySubFunction(
+    ffInput,
+    { planner: carryPlan, planAttempts: 3, iterate: { maxEpochs: 3, baseModelCalls: 3, globalModelCalls: 3 },
+      emit: (e: any) => { if (e?.type === 'thought' && typeof e.text === 'string') carryEvents.push(e.text) } },
+    carryProposer,
+  )
+  check('9h carry-forward: task solves on a later plan attempt', carried.status === 'solved' && !!carried.code, carried.detail)
+  check('9i carry-forward: the already-certified helper was reused (0 calls), not re-ground',
+    carryEvents.some((t) => /gg` reused from a prior attempt/.test(t)) && ggCalls === 1, `ggCalls=${ggCalls} events=${carryEvents.filter(t => /reused/.test(t)).length}`)
+
   // 9f DECLINES when the planner offers nothing / only the top-level name.
   const noPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => null }, subWeak)
   check('9f planner with no helpers → declined', noPlan.status === 'declined', noPlan.detail)

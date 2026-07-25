@@ -455,10 +455,14 @@ export async function decomposeCodeBySubFunction(
   // Stop early on solve, decline (planner has nothing), or abort (reality budget/cancel).
   let last: SubFunctionResult | null = null
   let spentCalls = 0
+  // Persists certified helpers across attempts so a retry re-grinds only the rung that failed,
+  // not the easy ones it already got (the DP-fold scorecard showed a failed editDistance re-running
+  // subCost/nextRow + a full editRow window every attempt → ~1200s). Reuse is exact-goal-gated.
+  const carry = new Map<string, { source: string; goal: string }>()
   for (let attempt = 0; attempt < planAttempts; attempt++) {
     if (opts.signal?.aborted) break
     if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
-    const r = await runSubFunctionOnce(input, opts, proposerOverride)
+    const r = await runSubFunctionOnce(input, opts, proposerOverride, carry)
     spentCalls += r.modelCalls
     last = { ...r, modelCalls: spentCalls }
     if (r.status === 'solved' || r.status === 'declined' || r.status === 'aborted') return last
@@ -482,6 +486,12 @@ async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
   opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] },
   proposerOverride?: Proposer<string>,
+  // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by name→{source,goal}.
+  // A rung whose plan is IDENTICAL (same name AND same goal) reuses the stored source instead of
+  // re-certifying — so a retry spends its whole budget on the rung that actually failed, not on
+  // re-grinding the easy ones. Only exact-goal matches are reused, so a stochastic FM re-plan whose
+  // rung goal changed is (correctly) re-certified.
+  carry?: Map<string, { source: string; goal: string }>,
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})
   const proposer = proposerOverride ?? proposeCode
@@ -535,6 +545,18 @@ async function runSubFunctionOnce(
   const helpers: { name: string; source: string }[] = []
   for (const h of helperPlan) {
     if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers, rungs, modelCalls, detail: `aborted at helper ${h.name}` }
+    // CARRY-FORWARD: this exact rung (name + identical goal) already certified on a prior
+    // planAttempt — reuse its source at zero model cost instead of re-grinding it. Sound: the
+    // stored source certified against this same spec last attempt, and the composed whole is
+    // re-verified downstream against the ORIGINAL cases regardless, so a stale reuse can only
+    // cost a compose failure, never a false certification.
+    const carried = carry?.get(h.name)
+    if (carried && carried.goal === h.goal) {
+      helpers.push({ name: h.name, source: carried.source })
+      rungs.push({ name: h.name, status: 'solved', bestScore: 1, modelCalls: 0, certified: true })
+      emit({ type: 'thought', text: `subfn: helper \`${h.name}\` reused from a prior attempt (0 calls)` })
+      continue
+    }
     // CONTEXT HYGIENE (2026-07-22l): only ground a rung with the prior helpers it ACTUALLY calls
     // (its goal names them), not every certified helper. Live probe: foldMulDiv solves in 2 calls
     // in isolation but ANCHORED inside decomposition, because the unconditional prior-helper dump
@@ -576,7 +598,10 @@ async function runSubFunctionOnce(
     // Capture ONLY this helper's own function — the certified module often also redefines the
     // prior helpers it was grounded with, which would collide when the sources are concatenated
     // for the composition (see extractOwnFunction).
-    helpers.push({ name: h.name, source: extractOwnFunction(res.solution!.value, h.name) })
+    const ownSource = extractOwnFunction(res.solution!.value, h.name)
+    helpers.push({ name: h.name, source: ownSource })
+    // Record for carry-forward: a later planAttempt with this identical rung reuses it at 0 cost.
+    carry?.set(h.name, { source: ownSource, goal: h.goal })
     emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified (${modelCalls} calls so far)` })
   }
 
