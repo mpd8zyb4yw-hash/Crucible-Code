@@ -696,12 +696,19 @@ export function isDpFoldDecomposeClass(goal: string, entry: string): boolean {
 
 /**
  * Per-rung iterate budget for the decompose path, sized to the CARVE, not an unstated default.
- * The lever the 3× signal identified is WALL-CLOCK on the DP-fold rung (planAttempts is inert for
- * a template class — its plan is deterministic, so re-running only re-certifies the easy rungs);
- * so the DP-fold classes get a materially larger wall (and headroom on calls/epochs) while every
- * other class keeps the standard budget. Verifier-gated throughout: a bigger budget only lets an
- * honest solve finish, never certifies a wrong one. Caller threads the result straight into
- * decomposeCodeBySubFunction's `iterate`.
+ * The lever the 3× signal identified is WALL-CLOCK on the DP-fold rung; so the DP-fold classes get
+ * a materially larger wall (and headroom on calls/epochs) while every other class keeps the standard
+ * budget. Verifier-gated throughout: a bigger budget only lets an honest solve finish, never
+ * certifies a wrong one. Caller threads the result straight into decomposeCodeBySubFunction's
+ * `iterate`.
+ *
+ * NOTE on planAttempts (b45093f): the older claim here — "planAttempts is inert for a template class
+ * because re-running only re-certifies the easy rungs" — no longer holds. Carry-forward now reuses
+ * already-certified rungs at zero cost, so a retry re-attempts ONLY the flaky rung (editRow/relaxCoin)
+ * with a fresh independent window. Raising DP-fold planAttempts is therefore now a CHEAP lever on the
+ * solve rate (each extra attempt ≈ one more editRow window, not a whole re-grind). It is deliberately
+ * left at the default 3 until a live solve-rate sweep justifies a specific value — a blind bump only
+ * lengthens the rare persistent-failure tail (more 420s windows) without measured benefit.
  */
 export function decomposePerRungBudget(goal: string, entry: string): { globalModelCalls: number; maxEpochs: number; wallClockMs: number } {
   if (isDpFoldDecomposeClass(goal, entry)) {
