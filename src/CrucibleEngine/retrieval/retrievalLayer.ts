@@ -1484,7 +1484,7 @@ export async function retrieveForTask(task: RouterTask, opts: RetrieveOptions = 
 
   if (!codeBlocks.length && !typeSignatures.length) return { ...empty, sources }
 
-  const block = budgetFit(buildRetrievalBlock({ block: '', sources, codeBlocks, typeSignatures }), budget)
+  const block = budgetFit(buildRetrievalBlock({ sources, codeBlocks, typeSignatures }), budget)
   return { block, sources: [...new Set(sources)], codeBlocks, typeSignatures }
 }
 
