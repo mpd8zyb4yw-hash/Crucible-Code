@@ -67,6 +67,14 @@ export async function search<T>(
   const emit = opts.emit ?? (() => {})
   const attempts: Attempt<T>[] = []
   const seen = new Set<string>()          // fingerprints already tried (anti-thrash)
+  // Fingerprint → the attempt it produced. A repeat draw is thrown away (no verify, no budget), but
+  // it is EVIDENCE: the head is anchored on that exact code. Re-appending the stored attempt to the
+  // history the proposer sees makes the anchoring escalation in codeProposer (identical-signal run →
+  // hotter temperature, rotated structural breaker, stop echoing the anchored code) actually DEEPEN
+  // on duplicates. Live 2026-07-25: rungs died in long runs of pure duplicates that never verified,
+  // so the escalation — which keys on repeated failure SIGNALS in history — never fired at all.
+  // Sound: nothing is re-verified or re-scored; this only changes what the proposer is told.
+  const seenAttempt = new Map<string, Attempt<T>>()
   let beam: Attempt<T>[] = []             // surviving candidates, best-first
   let modelCalls = 0
   let bestScore = -Infinity
@@ -129,11 +137,14 @@ export async function search<T>(
       if (seen.has(candidate.fingerprint)) {
         emit({ type: 'thought', text: `duplicate proposal (stuck) — will force a different approach` })
         stagnantRounds++
+        const prior = seenAttempt.get(candidate.fingerprint)
+        if (prior) attempts.push({ ...prior })   // a COPY: an object identity-equal to the beam parent is filtered out of history
         return null
       }
       seen.add(candidate.fingerprint)
       const verdict = await verifyOne(candidate)
       const attempt: Attempt<T> = { candidate, verdict }
+      seenAttempt.set(candidate.fingerprint, attempt)
       record(attempt)
       fresh.push(attempt)
       emit({ type: 'verify', pass: verdict.pass, score: verdict.score, signals: verdict.signals.slice(0, 4), modelCalls })
@@ -231,12 +242,15 @@ export async function search<T>(
         if (seen.has(candidate.fingerprint)) {
           emit({ type: 'thought', text: `duplicate proposal (stuck) — will force a different approach` })
           stagnantRounds++
+          const prior = seenAttempt.get(candidate.fingerprint)
+          if (prior) attempts.push({ ...prior })   // a COPY: an object identity-equal to the beam parent is filtered out of history
           continue
         }
         seen.add(candidate.fingerprint)
 
         const verdict = await verifyOne(candidate)
         const attempt: Attempt<T> = { candidate, verdict }
+        seenAttempt.set(candidate.fingerprint, attempt)
         record(attempt)
         fresh.push(attempt)
         emit({

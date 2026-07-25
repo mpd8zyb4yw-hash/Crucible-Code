@@ -23,6 +23,7 @@ import { checkFmAvailable } from '../agent/fmReact'
 import { verifyCode, verifyMultiFileCode } from './codeVerifier'
 import { buildProposalPrompt, pickFeedbackAttempts } from './codeProposer'
 import { recoverFromPoisonedCase, solveCodeTask, solveCodingRequest } from './solve'
+import { search } from './search'
 import { derivePropertySpec, verifyByProperty } from './propertyVerifier'
 import { deriveDifferentialSpec, implFingerprint } from './differentialSpec'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
@@ -111,6 +112,25 @@ async function run() {
       best?.candidate.fingerprint === 'best' && shown.length === 3)
   }
   ok('empty history → no feedback attempts', pickFeedbackAttempts([]).shown.length === 0)
+
+  // ANCHOR EVIDENCE ON DUPLICATES. A repeat draw is discarded (no verify, no budget charged), so it
+  // used to leave NO trace in the history the proposer sees — and codeProposer's anchoring escalation
+  // keys on repeated failure SIGNALS in that history. Live 2026-07-25: rungs died in long runs of pure
+  // duplicates with the escalation never firing. The duplicate must now re-append its stored attempt.
+  {
+    const seenHist: number[] = []
+    const anchored = async (ctx: any) => {
+      seenHist.push(ctx.history.length)
+      return { value: 'export function f(x){return x}', fingerprint: 'anchored' }
+    }
+    const failing = async () => ({ pass: false, score: -1, signals: ['wrong output'] })
+    const r = await search({ goal: 'g', domain: 'code', acceptance: {} } as any, anchored as any, failing as any,
+      { maxModelCalls: 5, beamWidth: 2, patience: 9 })
+    ok('an anchored (always-identical) proposal terminates honestly, never a false solve',
+      r.status !== 'solved', r.status)
+    ok('duplicate draws feed anchoring EVIDENCE back to the proposer (history keeps growing)',
+      seenHist.length > 2 && seenHist[seenHist.length - 1] > seenHist[1], seenHist.join(','))
+  }
 
   // 2. The LOOP: same weak generator, but wrapped in propose→verify→backtrack.
   const looped = await solveCodeTask(TASK, { maxModelCalls: 6, beamWidth: 2 }, mockProposer())
