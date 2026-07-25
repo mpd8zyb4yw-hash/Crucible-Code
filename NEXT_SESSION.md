@@ -145,16 +145,44 @@ All three cont.106 open items are CLOSED. Commit `5da90f1`.
   vgr:execverify 46/46, fault:localize 12/12 (exact 92%), fault:bench 17/17, contract benches
   10/10 + 69/69.
 
+**Shipped 2026-07-25 (cont.111b — grounding ENTAILMENT, live 22/22 bait + 8/8 non-bait):**
+`506f8cf`, `db3d808`, `f1f40a8`, `aad7ad4`. Closes the last live BAD and the "via:'dag' 0.85
+regardless of quality" item. Every gate below was diagnosed by DUMPING the evidence block
+(`CRUCIBLE_DUMP_FAITH=/tmp/x`), not by guessing, and each is a membership test — checkable, not
+judgeable. All are TOTAL-MISS gates (any supported item clears the answer) per cont.85.
+- **`quoteEntailment.ts` — fabricated quotations.** A quotation claims verbatim provenance, and
+  verbatim is a substring claim. A grounded answer quoting text absent from both evidence and
+  question abstains. Generous: cosmetic normalization, question echoes, all-content-words
+  near-misses, tiny/numeric spans skipped.
+- **`evidenceRelevance.ts` — wrong-subject evidence.** THE gate that catches the résumé bait: the
+  retrieved corpus was Wikipedia's *Philippines* article, the synthesis cited it, and the quoted
+  datum WAS in that page (so the quotation gate rightly stayed silent). When the question names
+  proper-noun entities and the evidence mentions NONE, abstain.
+- **`evidenceRelevance.ts` — unsupported figures.** Same argument for numbers; derived figures
+  (unit conversions, sums) ride alongside a sourced one, so only a total miss fires.
+- **`groundedAnswer.ts` exposes `evidence` on `GroundedResult`** so the answer path can verify
+  claims against what was actually read.
+- **codeRequested no longer fires on prose lookups** (`isCodeRequestShaped` in retrievalLayer.ts).
+  `namesExternalLibrary`'s strongest signal is a bare capitalized proper noun, so EVERY
+  proper-noun factual question ("Who painted the Mona Lisa?", "Who is the CEO of Nvidia?") was
+  marked codeRequested → the single oracle judged the correct prose answer "no code block →
+  violations" → up to 6 repair model calls → shipped unverified. Measured before/after on
+  "Who painted the Mona Lisa?": violations + 6 calls + ~34s → clean abstain, 3/3 cited, 7.1s.
+- **Live bait floor raised 75% → 85%** (three consecutive runs scored 21/21/22 of 22).
+- Benches: abstain 113/113 pure, 115/115 live; __ground_rank 55/55; tsc clean (also fixed a
+  pre-existing TS2353 in retrievalLayer.ts).
+
 **Open next (this track), highest-leverage first:**
-1. **One live BAD remains (MEASURED):** "What was the résumé objective line on the job application
-   Maria Nguyen submitted in 2007?" → fabricated a quoted objective line. It is THIRD-person, so
-   `hasUnknowablePossessivePremise` (first-person by design) doesn't fire and shouldn't be widened
-   blindly — the general shape is "a unique private datum about a named private individual".
-   Needs a real detector, not a regex widening; false-positive risk is high (public figures).
-2. **Web-grounding tier still hardcodes `via:'dag'` conf 0.85 regardless of answer quality**
-   (synthDriver `solveNonCodeTurn` ~line 246) — a confidently-wrong PROSE synthesis over weak
-   evidence still ships stamped grounded. Consider an evidence-entailment gate before stamping.
-3. **Raise the live gates** (both at ≥75%) once items 1–2 land — bait is running 21/22.
+1. **Entailment for the remaining claim shapes.** Quotes, subjects and figures are covered; an
+   answer's DATES-in-words ("9 November"), names introduced only in the ANSWER (not the question),
+   and relational claims ("X acquired Y") are still unchecked. Same membership-test shape; each
+   needs its own false-reject guard set before wiring.
+2. **The non-bait live set is only 8 items** — one flip is ±12.5pts, so the ≥75% floor there is
+   still noise-dominated. Grow it to ~20 answerable lookups before tightening it.
+3. **`shouldResearch`/`needsExternalFact` disagreement.** The résumé bait had
+   `needsExternalFact:false` yet the grounding tier ran and produced a confident answer — the two
+   gap-gates disagree about what needs evidence, and only the entailment gates now catch the fallout.
+   Unifying them would fix the class upstream instead of at the exit.
 
 
 > cont.104 owns the ANSWER/CALIBRATION path: `src/CrucibleEngine/answer/answerEngine.ts`
