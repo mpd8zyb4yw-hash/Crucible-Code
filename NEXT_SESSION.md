@@ -177,6 +177,30 @@ All three cont.106 open items are CLOSED. Commit `5da90f1`.
      `cites=0` (see the `grounding_hit` telemetry). The two gap-gates disagree about what needs
      evidence, and the entailment gates are only catching the fallout at the exit.
 
+**Shipped 2026-07-25 (cont.112b — REPAIR beats abstention when the true span is in evidence):**
+- **`repairQuotations` / `repairMisquote` (`quoteEntailment.ts`), wired ahead of the fabricated-
+  quotation gate.** Swaps a flagged quote for the evidence's real wording. Sound by construction:
+  the replacement is a literal substring of the evidence, so it cannot manufacture a fabrication,
+  and it only ever touches spans ALREADY judged unentailed (the path that was about to abstain).
+- **The anchor floor is a FIXED 5 content tokens, not a proportion of the quote.** The proportional
+  rule (≥40%) refused the very case it existed for — the live Constitution misquote anchors on 6
+  exact tokens out of ~20, so the rule was strictest on the long-quote-that-diverges-early shape.
+- **`CRUCIBLE_DUMP_EVIDENCE=1`** now dumps the grounded evidence block. Diagnosing this needed it twice.
+- **MEASURED:** pure **145/145** (14 repair checks, both directions); live bait 21/22, non-bait
+  19/20. Commit `7c65de5`.
+- **THE NEXT REAL GAP — retrieval EXTRACTION, not the gates.** Both remaining non-bait misses have
+  the same cause, confirmed by dumping the evidence (not inferred): for "opening words of the US
+  Constitution" the retrieved block is the Wikipedia LEDE of *Constitution of the United States*,
+  which never contains the preamble; "how many bones in the adult human body" likewise lands on a
+  lede without 206. The extractor takes the HEAD OF THE PAGE instead of the passage that answers the
+  question. Every exit gate is then working correctly on evidence that cannot support any answer —
+  which is why abstentions here are honest but useless. Fix the extractor to select question-relevant
+  passages (score candidate spans against the question's content words / seek the section whose
+  heading or text matches) and both misses should resolve without touching a single gate.
+  This subsumes the older "needsExternalFact disagrees with the grounding tier" item — that gate
+  disagreement is what routes these to grounding in the first place, but the reason grounding cannot
+  answer is the extraction, so fix extraction first and re-measure before touching the router.
+
 **Shipped 2026-07-25 (cont.111b — grounding ENTAILMENT, live 22/22 bait + 8/8 non-bait):**
 `506f8cf`, `db3d808`, `f1f40a8`, `aad7ad4`. Closes the last live BAD and the "via:'dag' 0.85
 regardless of quality" item. Every gate below was diagnosed by DUMPING the evidence block
