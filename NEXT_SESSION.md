@@ -223,12 +223,44 @@ answer away BEFORE any question-aware selection could run:
    sentence/paragraph boundary.
 **MEASURED live (qwen :8080), both named repros resolved WITHOUT touching a gate:** the preamble
 comes back verbatim and "206 bones" answers. Pure 143/143, live bait 21/22, non-bait 18–19/20.
-**NEXT / residual:** the leftover non-bait abstains are FLAKY — a *different* item abstains each
-run (run A: Apollo 11 + Declaration of Independence; run B: bones), always with the pre-retrieval
-"can't verify this offline" message. That is the `needsExternalFact`-vs-grounding-tier disagreement
-(no longer subsumed — extraction is fixed, so this is now the top item). Also noted in passing:
-run B answered "Southern Ocean" for the Africa/Australia question — scored GOOD because it is not
-an abstention, so the non-bait probe measures survival, not correctness, for that item.
+**Shipped 2026-07-26 (cont.114 — THE FLAKY NON-BAIT ABSTAIN IS CLOSED). Commit `2a94919`.**
+It was NOT `needsExternalFact` vs the grounding tier. Per-run telemetry (captured, not inferred)
+showed the same question taking opposite outcomes decided by RETRIEVAL LUCK:
+
+| retrieval outcome | gate that ran | result |
+|---|---|---|
+| `grounding_hit` (web returned pages) | `abstain_figures_unsupported` | `[abstained]` |
+| `grounding_synth_empty` (web returned nothing) | none | "There are 206 bones…" ✅ |
+
+A successful-but-thin retrieval was punished HARDER than no retrieval at all: the three entailment
+gates (quote / figure / subject) lived only on the grounded branch, while the failed-lookup branch
+shipped its parametric answer unchallenged. Whichever items happened to reach the web on a given
+run were the items that abstained — hence "a different item each run".
+**THE PRINCIPLE:** evidence that is SILENT on the question is evidence of a FAILED LOOKUP, not
+evidence of confabulation — and a failed lookup already has a defined landing place. `acceptGrounding()`
+(`answerEngine.ts`) now runs quotation repair (cont.112b) then the three entailment checks at the
+ACCEPTANCE point; grounding whose specifics are not entailed is not usable grounding, and the turn
+takes the identical on-device path it takes when the web is down (`grounding_unentailed`). The two
+branches converge, so the luck-dependence is gone BY CONSTRUCTION, not by tuning a threshold. The
+downstream gates are untouched and remain the second line of defence on accepted grounding.
+**MEASURED, two full live runs:** pure 145/145; bait 22/22 then 21/22 (unchanged band; the 21 is
+the ISBN hedge); non-bait **20/20 survived both runs** (was 18–19/20), 20 then 19 also correct.
+The Constitution item — a standing BAD marker since cont.112 — now scores GOOD with the verbatim
+preamble.
+
+**NEXT / residual (in priority order):**
+1. **The non-bait probe measures SURVIVAL, not correctness.** Run 2 answered "Southern Ocean" for
+   "What ocean lies between Africa and Australia?" and scored GOOD, because it is not an abstention.
+   The `correct` count is printed but NOT gated. Gate it (a floor on `correct`, not just `kept`) —
+   otherwise a regression that keeps answers flowing while making them wrong is invisible.
+2. **Intent classification misroutes plain factual lookups** (measured this session with
+   `classifyFacets`): "In what year did the Apollo 11 mission land on the Moon?" → `converse`, and
+   "What is the speed of light in a vacuum, in metres per second?" → `reason` (REASON's
+   `per (hour|second|…)` matches a UNIT, not a computation). The `lookup` test is anchored at string
+   start (`^(what|who|when|…)`), so ANY leading prepositional phrase ("In what year…", "On what
+   date…", "At what temperature…") falls through to converse. Both then get the wrong system
+   prompt/depth and the wrong critics. Fix: recognize the interrogative wherever it heads the
+   clause, and don't let a bare unit mention imply computation.
 
 **Shipped 2026-07-25 (cont.111b — grounding ENTAILMENT, live 22/22 bait + 8/8 non-bait):**
 `506f8cf`, `db3d808`, `f1f40a8`, `aad7ad4`. Closes the last live BAD and the "via:'dag' 0.85
