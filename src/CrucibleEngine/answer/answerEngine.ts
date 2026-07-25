@@ -290,12 +290,34 @@ const UNVERIFIABLE_FACT_TEXT =
 // (to score a reply as calibrated). Keeping both on the same regex means a phrasing the engine now
 // abstains on can never be one the bench silently rewards while production ships it raw.
 export const DECLINE_RX =
-  /\b(i (do not|don'?t) know|i(?:'| a)m not (sure|certain)|not sure|cannot (verify|confirm|answer|find|provide|determine|know)|can'?t (verify|confirm|answer|find|provide|determine|know)|no (reliable )?way to (verify|know)|unable to (verify|find|answer|provide|determine)|i (do not|don'?t) have (access|the|any|enough|that|this)|(do not|don'?t) have access to|no access to|not aware of|no record|couldn'?t find|i (do not|don'?t) have (real-?time|specific|exact)|(does|do) not (exist|address)|(there (is|are) no|no such)\b[^.]*\b(record|answer|way|information|data|sequel|publication|isbn|number)|cannot be (determined|known|verified)|not possible to (know|determine|verify)|(do not|don'?t) have (information|data|any information)|no (publicly )?available (information|record|data)|isn'?t (published|available|public)|not (provided|found|mentioned|listed|included|present|available|specified) in the (?:provided\s+|retrieved\s+|available\s+|given\s+)?(evidence|sources?|text|context|excerpts?|passages?))\b/i
+  /\b(i (do not|don'?t) know|i(?:'| a)m not (sure|certain)|not sure|cannot (verify|confirm|answer|find|provide|determine|know)|can'?t (verify|confirm|answer|find|provide|determine|know)|no (reliable )?way to (verify|know)|unable to (verify|find|answer|provide|determine)|i (do not|don'?t) have (access|the|any|enough|that|this)|(do not|don'?t) have access to|no access to|not aware of|no record|couldn'?t find|i (do not|don'?t) have (real-?time|specific|exact)|(does|do) not (exist|address)|(there (is|are) no|no such)\b[^.]*\b(record|answer|way|information|data|sequel|publication|isbn|number)|cannot be (determined|known|verified)|not possible to (know|determine|verify)|(not able to|un(?:able|willing) to|cannot|can'?t) predict(?: the future)?|(do not|don'?t) predict the future|no way to predict|(do not|don'?t) have (information|data|any information)|no (publicly )?available (information|record|data)|isn'?t (published|available|public)|not (provided|found|mentioned|listed|included|present|available|specified) in the (?:provided\s+|retrieved\s+|available\s+|given\s+)?(evidence|sources?|text|context|excerpts?|passages?))\b/i
 
 /** True when a reply IS the model honestly declining/hedging rather than answering. Used to
  *  convert a decline-phrased retrieval answer into a clean, stamped abstention. */
 export function isDecline(text: string): boolean {
   return DECLINE_RX.test(text ?? '')
+}
+
+// True when a reply is DOMINATED by declining — i.e. the model is honestly abstaining and NOT also
+// delivering a real, cited answer alongside the hedge. This is the discriminator the production
+// abstention gate needs: `isDecline()` fires on any decline CLAUSE, which false-positives on a
+// legitimate grounded lookup that answers the main question and merely flags a missing sub-detail
+// ("Canberra is the capital of Australia [S1], but the exact founding date isn't in the sources").
+// Nuking that whole reply to `[abstained]` throws away a correct, cited answer. Dominance keeps the
+// gate honest: a decline-phrased reply that ALSO contains a genuinely cited answer sentence
+// (a non-decline sentence carrying an [S#] marker) is a partial hedge, not an abstention — ship it.
+// Only when EVERY factual sentence is itself a decline (the ISBN bait: "the ISBN is not provided in
+// the evidence [S1]" — cites, but the cited sentence IS the decline) do we convert to a clean abstain.
+export function isDeclineDominant(text: string): boolean {
+  const t = text ?? ''
+  if (!DECLINE_RX.test(t)) return false
+  // A "real answer" sentence: not itself a decline, and carrying a citation marker ([S1], [S2]…) —
+  // the grounded path staples those onto the claims it actually verified, so their presence on a
+  // NON-decline sentence means a genuine answer rode along with the hedge.
+  for (const sentence of t.split(/(?<=[.!?])\s+|\s*[;\n]+\s*/)) {
+    if (/\[S\d/.test(sentence) && !DECLINE_RX.test(sentence)) return false
+  }
+  return true
 }
 
 // A query whose premise fixes a settled outcome at a date still in the FUTURE ("who won the 2043
@@ -336,6 +358,33 @@ export function hasFutureSettledPremise(message: string, now = new Date()): bool
     if (Number(y[1]) > currentYear) return true
   }
   return false
+}
+
+// ── First-person-possessive unknowable premise (deterministic) ──────────────────
+// A question that asks for a UNIQUE CONCRETE SPECIFIC (a name, date, number, serial, exact value)
+// about the USER'S own private world — "my unpublished novel", "my parked car", "the banknote in
+// my wallet", "what I had for breakfast on April 12 2013" — is unknowable to an on-device model by
+// construction: the fact was never provided, and no retrieval can reach the user's private past.
+// The weak head otherwise GROUNDS-then-FABRICATES ("based on the evidence provided, I had…" → an
+// invented meal; "…the dog is Captain Roy Archer"). Catch it BEFORE retrieval, the same shape as
+// hasFutureSettledPremise, and abstain. Kept deliberately conservative — it fires only on a
+// first-person-possessive/private-action reference PAIRED WITH a concrete-datum demand, and NOT on
+// advice / how-to / computational / help asks ("how do I…", "what should I…", "if I weigh 70kg…"),
+// which are answerable and must fall through untouched. Under-triggering is safe (the retrieval /
+// isDecline nets still catch the rest); over-triggering would kill real user questions.
+const POSSESSIVE_REF_RX =
+  /\b(my|mine)\b|\b(?:did\s+I|I)\s+(had|have|ate|drank|bought|saw|met|wrote|said|did|wore|parked|paid|took|visited|received|sent|submitted|read)\b/i
+const CONCRETE_DEMAND_RX =
+  /\b(what\s+(?:is|was|were|did)|which\b|how\s+many|how\s+much|on\s+what\s+(?:\w+\s+){0,2}(?:date|day)|the\s+(?:exact\s+)?(?:\w+\s+){0,2}(?:name|serial(?:\s+number)?|number|date|time|price|amount|colou?r|address|phone(?:\s+number)?|latitude|longitude|gps|move|score|objective|title))\b/i
+// Answerable frames that must NEVER be swallowed even when they contain "my"/"I": advice, how-to,
+// help, opinion, and computation-with-given-data (the "if I …" conditional supplies its own inputs).
+const ANSWERABLE_FRAME_RX =
+  /\b(how\s+(?:do|can|could|should|would|might)\s+(?:i|we|you)|(?:should|can|could|would|shall)\s+i\b|help\s+me|if\s+i\b|explain|recommend|suggest|advice|meaning|means?\b|difference|better|vs\.?|versus|center|css|html|code|function|variable|BMI)\b/i
+
+export function hasUnknowablePossessivePremise(message: string): boolean {
+  const m = message ?? ''
+  if (ANSWERABLE_FRAME_RX.test(m)) return false
+  return POSSESSIVE_REF_RX.test(m) && CONCRETE_DEMAND_RX.test(m)
 }
 
 // ── Metacognitive gap-gate (deterministic) ─────────────────────────────────────
@@ -438,6 +487,16 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     debugBus.emit('pipeline', 'abstain_future_premise', { message: message.slice(0, 80) }, { severity: 'info' })
     emit?.({ type: 'verify', passed: false, report: 'The question fixes a settled outcome at a future date — the event has not happened, so there is nothing to report. Abstaining.' })
     return { text: FUTURE_PREMISE_TEXT, verified: false, abstained: true, ...base }
+  }
+
+  // First-person-possessive unknowable premise → abstain deterministically, before retrieval.
+  // "What did I have for breakfast on April 12 2013", "the dog in my unpublished novel" — the fact
+  // is in the user's private world, unreachable by any lookup; the weak head otherwise grounds-then-
+  // fabricates a confident specific. Deterministic (no model), so it holds even offline.
+  if (hasUnknowablePossessivePremise(message)) {
+    debugBus.emit('pipeline', 'abstain_possessive_unknowable', { message: message.slice(0, 80) }, { severity: 'info' })
+    emit?.({ type: 'verify', passed: false, report: 'The question asks for a specific private fact about you that I was never given and cannot look up — abstaining rather than inventing one.' })
+    return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base }
   }
 
   if (!(await checkFmAvailable())) {
@@ -676,14 +735,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // in the evidence", "I can't verify that") is an honest abstention wearing a confident answer's
   // clothes — and it can slip past every provenance check: the ISBN bait CITED [S1] and declined
   // in the same breath, so it stamped `via:'dag'` (cited>0) and shipped as "grounded", with only
-  // the bench's regex recognizing the hedge. isDecline() is now that same recognizer, shared with
-  // the bench (single source of truth), so the PRODUCTION pipeline can convert the hedge into a
-  // clean abstained:true rather than passing the model's raw decline off as a verified answer.
+  // the bench's regex recognizing the hedge. isDeclineDominant() shares that recognizer (DECLINE_RX,
+  // one source of truth with the bench) but adds DOMINANCE: it fires only when the decline is the
+  // WHOLE reply, not when a real, cited answer rides alongside a hedged sub-detail ("Canberra is the
+  // capital [S1], but the founding date isn't in the sources"). That distinction is what stops the
+  // gate from nuking a correct grounded lookup to [abstained] over one flagged gap. So the PRODUCTION
+  // pipeline converts a decline-DOMINANT reply into a clean abstained:true rather than passing the
+  // model's raw decline off as a verified answer — while a partial hedge with a cited answer ships.
   // Fires on ANY retrieval/grounded answer regardless of via (dag/react/direct) or intent — item-2's
   // "via:'direct' for all intents" gap and item-1's "via:'dag' cited-a-source-that-says-nothing" gap
   // are the same failure, closed here. A legitimately hedged CONCEPTUAL answer never reaches this
   // block (it is not retrieval/grounded), so an "I'm not certain, but…" explanation still ships.
-  if ((usedRetrieval || grounded) && isDecline(text)) {
+  if ((usedRetrieval || grounded) && isDeclineDominant(text)) {
     debugBus.emit('pipeline', 'abstain_retrieval_decline', { message: message.slice(0, 80), via: rMeta?.via ?? (grounded ? 'grounded' : 'none'), cited: groundedCited }, { severity: 'warn' })
     emit?.({ type: 'verify', passed: false, report: 'The retrieval answer was the model declining (no verifiable specific in the sources) — returning a clean abstention instead of shipping the hedge as an answer.' })
     return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
