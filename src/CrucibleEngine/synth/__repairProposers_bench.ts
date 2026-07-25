@@ -24,6 +24,9 @@ interface Case {
   // Substring that SOME proposed repair must contain — used when pinning the whole emitted body
   // verbatim would be brittle (e.g. the multi-line quote-aware scanner). Ignored when `expect` set.
   expectIncludes?: string
+  // Substring that NO proposed repair may contain — asserts a SPECIFIC proposer abstained even when
+  // an unrelated proposer legitimately fires on the same input (checked before expect/expectIncludes).
+  expectExcludes?: string
 }
 
 const CASES: Case[] = [
@@ -267,6 +270,27 @@ export function sortProducts(products: Product[], opts: SortOpts): Product[] {
     detail: `FAIL — some behavioral check`,
     expect: null,
   },
+  {
+    // repairGroupedLedger: a wrong grouped-ledger aggregation (here: swapped credit/debit — the
+    // candidate references `t.type` so the discriminator field is inferable) is replaced with the
+    // canonical group-by aggregation parameterized by the spec's parsed semantics.
+    name: 'repairGroupedLedger: wrong aggregation → canonical group-by (semantics from spec)',
+    candidate: `export function summarizeByAccount(transactions: Transaction[]): Record<string, AccountSummary> {\n  const out: Record<string, AccountSummary> = {}\n  for (const t of transactions) {\n    if (!out[t.accountId]) out[t.accountId] = { credits: 0, debits: 0, balance: 0 }\n    if (t.type === 'debit') out[t.accountId].credits += t.amount\n    else out[t.accountId].debits += t.amount\n    out[t.accountId].balance = out[t.accountId].credits - out[t.accountId].debits\n  }\n  return out\n}`,
+    detail: `FAIL — result["acct-A"].credits === 100  (got 50)`,
+    spec: `export function summarizeByAccount(transactions: Transaction[]): Record<string, AccountSummary>\nRules:\n- Group transactions by accountId.\n- credits = sum of amount for that account's 'credit' transactions; debits = sum of amount for that account's 'debit' transactions.\n- balance = credits - debits.`,
+    expect: 'sentinel-unused',
+    expectIncludes: `__out[__g].credits += __t['amount']`,
+  },
+  {
+    // repairGroupedLedger ABSTAINS when the candidate gives no discriminator signal (no type check
+    // to infer the field from) — it must not guess.
+    name: 'repairGroupedLedger: ABSTAINS when the discriminator field cannot be inferred',
+    candidate: `export function summarizeByAccount(transactions: Transaction[]): Record<string, AccountSummary> {\n  const out: Record<string, AccountSummary> = {}\n  return out\n}`,
+    detail: `FAIL — result["acct-A"].credits === 100  (got 0)`,
+    spec: `- Group transactions by accountId.\n- credits = sum of amount for that account's 'credit' transactions; debits = sum of amount for that account's 'debit' transactions.\n- balance = credits - debits.`,
+    expect: 'sentinel-unused',
+    expectExcludes: '__out[__g]',
+  },
 ]
 
 function main() {
@@ -274,7 +298,9 @@ function main() {
   for (const c of CASES) {
     const repairs = proposeRepairs(c.candidate, c.detail, c.spec ?? '', c.ctx)
     let ok: boolean
-    if (c.expectIncludes !== undefined) {
+    if (c.expectExcludes !== undefined) {
+      ok = !repairs.some(r => r.includes(c.expectExcludes!))
+    } else if (c.expectIncludes !== undefined) {
       ok = repairs.some(r => r.includes(c.expectIncludes!))
     } else if (c.expect === null) {
       ok = repairs.length === 0

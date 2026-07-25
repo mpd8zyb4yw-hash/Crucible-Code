@@ -738,6 +738,63 @@ function repairSetOp(candidate: string, detail: string): string | null {
   return out !== candidate ? out : null
 }
 
+/**
+ * Grouped-ledger aggregation (`fn(rows): Record<string, {f1; f2; diff}>` where diff = f1 - f2, and
+ * f1/f2 are sums of a numeric field over rows whose discriminator equals a stated type value —
+ * e.g. summarizeByAccount: credits/debits = Σamount for 'credit'/'debit' txns, balance = credits -
+ * debits). The on-device FM writes the aggregation WRONG very often (measured on qwen: 22
+ * recompute-driven oracle rejections across 3 summaryModule runs — e.g. credits = Σall-amounts,
+ * debits = 0, balance kept internally consistent). The strengthened invariant (deriveInvariant.ts)
+ * now REJECTS those, but the FM can't reliably self-fix. This replaces the function BODY with the
+ * canonical group-by aggregation, PARAMETERIZED by semantics parsed from the spec (group key, the
+ * two summed fields + their source amount + type values, the diff field) and the discriminator
+ * field read from the candidate's OWN type check — general over any grouped-ledger-aggregate task,
+ * not keyed to summaryModule. Oracle-re-gated: a spec/shape this canonical form doesn't satisfy
+ * (e.g. an interface with extra fields) fails tsc/behaviour and is rejected like any wrong candidate.
+ */
+function repairGroupedLedger(candidate: string, detail: string, spec: string): string | null {
+  if (!detail) return null
+  const rxEsc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (!/Record<\s*string\s*,\s*\w+\s*>/.test(spec)) return null
+  const rel = spec.match(/\b([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\s*-\s*([A-Za-z_]\w*)\b/)
+  if (!rel) return null
+  const diffField = rel[1], field1 = rel[2], field2 = rel[3]
+  if (new Set([diffField, field1, field2]).size !== 3) return null
+  const groupKey = spec.match(/\bgroup(?:ed)?\s+\w+\s+by\s+(\w+)/i)?.[1]
+  const sum1 = spec.match(new RegExp(`\\b${rxEsc(field1)}\\b[^=\\n]*=\\s*sum of\\s+(\\w+)\\s+for[\\s\\S]*?'(\\w+)'`, 'i'))
+  const sum2 = spec.match(new RegExp(`\\b${rxEsc(field2)}\\b[^=\\n]*=\\s*sum of\\s+(\\w+)\\s+for[\\s\\S]*?'(\\w+)'`, 'i'))
+  if (!groupKey || !sum1 || !sum2 || sum1[1] !== sum2[1]) return null
+  const sumField = sum1[1], typeVal1 = sum1[2], typeVal2 = sum2[2]
+  // Discriminator field name — inferred from the candidate's own type check (`t.type === 'credit'`
+  // or `t['type'] === 'credit'`). The goal prose names the type VALUES but not the field.
+  const tf = candidate.match(new RegExp(`\\.(\\w+)\\s*===?\\s*['"](?:${rxEsc(typeVal1)}|${rxEsc(typeVal2)})['"]`))
+    || candidate.match(new RegExp(`\\[\\s*['"](\\w+)['"]\\s*\\]\\s*===?\\s*['"](?:${rxEsc(typeVal1)}|${rxEsc(typeVal2)})['"]`))
+  const typeField = tf?.[1]
+  if (!typeField) return null
+  // Function to rewrite: export function NAME(PARAM: …): Record<string, …> { … }
+  const sig = candidate.match(/export\s+function\s+([A-Za-z_$][\w$]*)\s*\(\s*([A-Za-z_$][\w$]*)\s*:[^)]*\)\s*:\s*Record<[^{]*\{/)
+  if (!sig || sig.index === undefined) return null
+  const fn = sig[1], param = sig[2]
+  const open = candidate.indexOf('{', sig.index + sig[0].length - 1)
+  if (open === -1) return null
+  const end = matchBrace(candidate, open)
+  if (end === -1) return null
+  const header = candidate.slice(sig.index, open + 1)
+  const body = `${header}
+  const __out: Record<string, any> = {}
+  for (const __t of ${param} as any[]) {
+    const __g = String(__t['${groupKey}'])
+    if (!__out[__g]) __out[__g] = { ${field1}: 0, ${field2}: 0, ${diffField}: 0 }
+    if (__t['${typeField}'] === '${typeVal1}') __out[__g].${field1} += __t['${sumField}']
+    else if (__t['${typeField}'] === '${typeVal2}') __out[__g].${field2} += __t['${sumField}']
+    __out[__g].${diffField} = __out[__g].${field1} - __out[__g].${field2}
+  }
+  return __out
+}`
+  const repaired = candidate.slice(0, sig.index) + body + candidate.slice(end)
+  return repaired !== candidate ? repaired : null
+}
+
 const DETAIL_DRIVEN_REPAIRS: Array<(candidate: string, detail: string) => string | null> = [
   repairMissingField,
   repairNaiveDelimiterSplit,
@@ -769,6 +826,7 @@ export function proposeRepairs(
   const repairs: Array<(c: string, d: string) => string | null> = [
     ...DETAIL_DRIVEN_REPAIRS,
     (c, d) => repairUnresolvableImport(c, d, ctx),
+    (c, d) => repairGroupedLedger(c, d, spec),
   ]
   const stage1 = [candidate]   // seed so spec-driven repairs below can apply standalone too
   for (const repair of repairs) {
