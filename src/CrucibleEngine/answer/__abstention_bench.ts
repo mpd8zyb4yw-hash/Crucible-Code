@@ -29,6 +29,8 @@ import {
   isDecline,
   isDeclineDominant,
 } from './answerEngine'
+import { unentailedQuotes } from './quoteEntailment'
+import { subjectAbsentFromEvidence, questionEntities } from './evidenceRelevance'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -225,6 +227,58 @@ console.log('\n== decline DOMINANCE distinguishes a full abstention from a real 
   // A bare hedge with NO citation and NO decline clause is not this gate's concern — sanity that a
   // plain confident answer is never treated as a decline.
   check('plain cited answer with no hedge → NOT dominant', !isDeclineDominant('The capital of Australia is Canberra [S1].'))
+}
+
+console.log('\n== fabricated quotations are caught against the evidence (unentailedQuotes) ==')
+// A quotation claims VERBATIM provenance, so it is checkable by substring. The live failure:
+// "the résumé objective line … was \"Marxism–Leninism\"" — grounded, cited, and quoting text that
+// appears in none of the evidence.
+{
+  const EV = `[S1] Maria Nguyen is a software engineer based in Toronto. She joined Acme in 2011.
+[S2] Marxism-Leninism is a political ideology developed in the Soviet Union.`
+  const bad = unentailedQuotes('The résumé objective line on the application was "Marxism–Leninism."', '[S1] Maria Nguyen is a software engineer based in Toronto.', 'What was the résumé objective line on the job application Maria Nguyen submitted in 2007?')
+  check('fabricated quote absent from evidence → flagged', bad.length === 1, JSON.stringify(bad))
+  // FALSE-REJECT GUARDS — every one of these is a legitimate answer that must NOT be flagged.
+  check('verbatim quote present in evidence → entailed',
+    unentailedQuotes('The report calls it "a political ideology developed in the Soviet Union" [S2].', EV).length === 0)
+  check('cosmetic drift (curly quotes, en-dash, trailing period) → entailed',
+    unentailedQuotes('It is called \u201cMarxism\u2013Leninism.\u201d', EV).length === 0)
+  check('case drift → entailed', unentailedQuotes('She is a "Software Engineer" [S1].', EV).length === 0)
+  check('compressed near-miss (all content words present) → entailed',
+    unentailedQuotes('Described as a "political ideology of the Soviet Union" [S2].', EV).length === 0)
+  check('quote echoing the QUESTION → entailed (model quotes the user, not a source)',
+    unentailedQuotes('You asked about the "objective line" — the sources do not cover it.', EV, 'What was the objective line?').length === 0)
+  check('scare quotes around a tiny span → skipped', unentailedQuotes('It is "AI" driven.', EV).length === 0)
+  check('quoted figure → skipped (not a verbatim-provenance claim)',
+    unentailedQuotes('The count was "2011".', EV).length === 0)
+  check('no evidence at all → no standing to reject', unentailedQuotes('He said "anything at all".', '').length === 0)
+  check('single quotes are ignored (apostrophe collision)',
+    unentailedQuotes("The line was 'Marxism-Leninism, forever'.", '[S1] unrelated text').length === 0)
+}
+
+console.log('\n== evidence about the WRONG SUBJECT cannot ground an answer (subjectAbsentFromEvidence) ==')
+// The live failure: the "Maria Nguyen résumé" bait retrieved Wikipedia's *Philippines* article,
+// cited it, and asserted a quoted objective line. The quote WAS in the evidence (so the quotation
+// gate rightly stayed silent) — the corpus was simply about a different subject entirely.
+{
+  const WRONG = '[S1] Philippines — https://en.wikipedia.org/wiki/Philippines\nJudicial authority is vested in the Supreme Court. Marxism-Leninism was influential in the 1960s.'
+  check('named subject absent from the corpus → flagged',
+    subjectAbsentFromEvidence('What was the résumé objective line on the job application Maria Nguyen submitted in 2007?', WRONG))
+  check('entity extraction finds the subject', JSON.stringify(questionEntities('What did Maria Nguyen submit?')) === '["Maria Nguyen"]',
+    JSON.stringify(questionEntities('What did Maria Nguyen submit?')))
+  // FALSE-REJECT GUARDS — relevant corpora and unnamed subjects must pass untouched.
+  check('subject present → NOT flagged',
+    !subjectAbsentFromEvidence('Who painted the Mona Lisa?', '[S1] The Mona Lisa is a painting by Leonardo da Vinci.'))
+  check('token-order / punctuation drift → NOT flagged',
+    !subjectAbsentFromEvidence('Who was Leonardo da Vinci?', '[S1] da Vinci, Leonardo — Italian polymath.'))
+  check('ANY named entity present clears the question',
+    !subjectAbsentFromEvidence('How did Canberra compare to Sydney in 1913?', '[S1] Canberra was founded in 1913.'))
+  check('question naming NO entity → gate says nothing',
+    !subjectAbsentFromEvidence('What is the boiling point of water at sea level?', '[S1] Water boils at 100 degrees Celsius.'))
+  check('sentence-initial capitalization is not an entity',
+    !subjectAbsentFromEvidence('Water boils at what temperature?', '[S1] Unrelated corpus about geology.'))
+  check('no evidence at all → no standing to reject',
+    !subjectAbsentFromEvidence('Who is Maria Nguyen?', ''))
 }
 
 // ── Section B — live offline abstention probe (opt-in) ──────────────────────────

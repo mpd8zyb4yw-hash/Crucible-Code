@@ -15,6 +15,8 @@
 import { checkFmAvailable, fmComplete, fmStream, stripAgentScaffold, type ConvTurn } from '../agent/fmReact'
 import { solveNonCodeTurn, type NonCodeMeta } from '../agent/synthDriver'
 import { debugBus } from '../debug/bus'
+import { unentailedQuotes } from './quoteEntailment'
+import { subjectAbsentFromEvidence } from './evidenceRelevance'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
 import { applyRecomputation, recomputeMultiStep, recomputeWordProblem, directArithmetic } from './wordProblem'
@@ -566,6 +568,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   let grounded = false
   let groundedSources: string[] = []
   let groundedCited = 0
+  let groundedEvidence = ''
   let streamed = false
   try {
     if (usedRetrieval) {
@@ -593,6 +596,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         grounded = true
         usedRetrieval = true          // gates the redundant FM verification lanes below
         groundedSources = g.sources
+        groundedEvidence = g.evidence ?? ''
         groundedCited = g.cited ?? 0  // 0 ⇒ the synthesis stapled a sources footer onto parametric prose (item-1 abstain signal)
         streamed = !!onToken
       } else {
@@ -761,6 +765,41 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     debugBus.emit('pipeline', 'abstain_grounded_uncited_external_fact', { message: message.slice(0, 80) }, { severity: 'warn' })
     emit?.({ type: 'verify', passed: false, report: 'The grounded answer cited none of the retrieved sources — it is parametric prose, not evidence-entailed. Abstaining on the unverifiable external fact.' })
     return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+  }
+
+  // ── Subject-relevance gate ──────────────────────────────────────────────────
+  // Grounding means the evidence is ABOUT the thing you asked about. Measured live (evidence block
+  // dumped, not inferred): the "résumé objective line … Maria Nguyen" bait retrieved three pages —
+  // [S1] was Wikipedia's *Philippines* article — and the synthesis cited [S1] while asserting a
+  // quoted objective line. Citation count, quote entailment (the quoted string DID occur in that
+  // unrelated page) and every other structural check passed; the corpus simply had nothing to do
+  // with the subject. When the question names proper-noun subjects and the evidence mentions NONE
+  // of them, nothing it says can entail an answer about them — abstain. Fires only on a TOTAL miss
+  // (any named entity present clears it) and never on questions that name no entity at all.
+  if (grounded && groundedEvidence && subjectAbsentFromEvidence(message, groundedEvidence)) {
+    debugBus.emit('pipeline', 'abstain_subject_absent_from_evidence', { message: message.slice(0, 80) }, { severity: 'warn' })
+    emit?.({ type: 'verify', passed: false, report: 'None of the retrieved sources mention the subject of the question — the evidence is about something else, so an answer built on it would not be grounded. Abstaining.' })
+    return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+  }
+
+  // ── Fabricated-quotation gate ───────────────────────────────────────────────
+  // A QUOTATION is a claim of verbatim provenance, and verbatim is a substring claim — so unlike
+  // paraphrase it can be CHECKED, not judged. Measured live: "the résumé objective line … was
+  // \"Marxism–Leninism\"" shipped verified:true because it cleared every structural check we had
+  // (needsExternalFact was false, so no ungrounded-external-fact abstain; the grounding tier cited
+  // 1 of 3 sources, so no uncited-grounded abstain) — while the load-bearing quoted datum appeared
+  // in NONE of the evidence. If the model puts words in quotes that nothing it read (nor the user's
+  // own question) contains, it did not read them; it invented them. Abstain. Entailment is
+  // deliberately generous (cosmetic normalization, question echoes, all-content-words-present
+  // near-misses all count as entailed) so a correct answer that merely re-punctuates a real passage
+  // is never killed — see quoteEntailment.ts for the false-reject discipline.
+  if (grounded && groundedEvidence) {
+    const fabricated = unentailedQuotes(text, groundedEvidence, message)
+    if (fabricated.length) {
+      debugBus.emit('pipeline', 'abstain_fabricated_quotation', { message: message.slice(0, 80), quotes: fabricated.slice(0, 3) }, { severity: 'warn' })
+      emit?.({ type: 'verify', passed: false, report: `The answer quoted text that appears in none of the retrieved sources (${fabricated.slice(0, 2).map(q => `"${q}"`).join(', ')}) — a fabricated quotation, so abstaining instead of shipping it as grounded.` })
+      return { text: UNVERIFIABLE_FACT_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+    }
   }
 
   if (usedRetrieval && rMeta?.via === 'dag') {

@@ -33,6 +33,8 @@ export interface GroundedResult {
   sources: string[]
   /** How many independent sources fed the answer. */
   sourceCount: number
+  /** The evidence block the synthesis actually read — callers verify verbatim claims against it. */
+  evidence: string
   /** How many inline [S#] citations the synthesis actually made — a proxy for how much of the
    *  answer is EVIDENCE-ENTAILED versus parametric prose stapled onto a sources footer. Zero
    *  citations means the model wrote past the evidence; callers must not badge that "grounded". */
@@ -748,5 +750,5 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
   emit?.({ type: 'sources', phase: 'grounded', items: ev.sources.map(u => ({ url: u, host: safeHost(u) })) })
   debugBus.emit('pipeline', 'grounding_hit', { message: message.slice(0, 80), sources: ev.sources.length, cites, ms: Date.now() - started }, { severity: 'info' })
 
-  return { text: withSourcesFooter(text, ev), sources: ev.sources, sourceCount: ev.sources.length, cited: cites }
+  return { text: withSourcesFooter(text, ev), sources: ev.sources, sourceCount: ev.sources.length, evidence: ev.block, cited: cites }
 }
