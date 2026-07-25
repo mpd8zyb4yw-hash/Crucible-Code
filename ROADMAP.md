@@ -1933,6 +1933,33 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25 (gap-soundness — RECURSIVE decomposition + carry-forward + raw-llama health + 15/15 aggregate scorecard)
+- **RECURSIVE DECOMPOSITION (`solve.ts`) — the single-level ceiling is gone.** Previously a helper the
+  weak head still couldn't one-shot collapsed the WHOLE plan. Now, on the FM-general path (no template),
+  a failed helper rung re-applies `decomposeCodeBySubFunction` to ITSELF (its own goal + a fresh FM
+  sub-plan) before giving up — propose→verify→backtrack applied recursively, bounded by `maxDepth`
+  (default 1). This is the doctrine's generalization beyond the 5 hand-authored template classes to any
+  novel task whose natural carve hides a non-trivial sub-helper. Sound at every level: the recursive
+  helper is a module re-verified against ITS OWN cases, the parent's composed whole is still re-verified
+  against the ORIGINAL cases (control test 9m: `maxDepth 0` fails honestly). Sub-helpers are carried into
+  the final module (keep the whole recursive module, strip only prior-helper redefs). Gated to the
+  no-template path so template classes keep carry-forward+planAttempts and DP-fold doesn't re-decompose a
+  fixed carve. Tests 9j–9m in `__decompose_bench` (83/0).
+- **CARRY-FORWARD across `planAttempts` (`solve.ts`).** Certified helpers persist across plan attempts
+  (name+goal-gated reuse), so a retry re-grinds only the rung that actually failed, not the easy ones —
+  the DP-fold scorecard's ~1200s waste (re-running subCost/nextRow + a full editRow window every attempt)
+  is gone. Composed whole re-verified downstream, so a stale reuse can only cost a compose failure, never
+  a false certification. Tests 9h/9i.
+- **Health check accepts raw llama.cpp `{status:"ok"}` (`localModels/registry.ts`, `synth/fm-bench.ts`).**
+  A bare `llama-server` now satisfies the local head with no `fm_health_shim.mjs` in front — verified
+  live: `appleFm.health()` → true against the :8080 raw llama.cpp server (which returns exactly
+  `{"status":"ok"}`). Removes the shim dependency for every strict-offline run.
+- **AGGREGATE decompose scorecard: 15/15 (100%) across all 5 template classes**, strict-offline,
+  `CRUCIBLE_NO_DISTILL=1` (genuine generation, no memorized catalog hits). Per-class median calls/wall:
+  basicCalculator 5/11s, evalRPN 4/7s, editDistance 23/74s, calculatorWithParens 8/23s, coinChange 3/6s.
+  editDistance held 3/3 — the DP-fold flake the carry-forward + 420s wall were sized for did not recur.
+- Regressions clean: vgr:bench 236/0, vgr:decompose 83/0, searchbatch 11/11, taskcorpus ALL PASS, tsc 0.
+
 ### 2026-07-23 (gap-soundness — FOURTH template class: shunting-yard PARENTHESISED calculator + corpus-name distill denylist + _learned dup dedup)
 - **FOURTH decompose-template class: the shunting-yard parenthesised calculator (`fmPlanner.ts`).** The
   registry now covers infix-fold / postfix-stack / DP / **parser-with-grouping**. This is the class that

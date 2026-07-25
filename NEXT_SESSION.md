@@ -17,431 +17,51 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-23 (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-25 (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **THREE 0%-by-sampling classes are now cracked by the decompose-template registry — and the third,
-> `editDistance`, is a genuinely NEW algorithm family (a DP table).** basicCalculator (infix
-> precedence), evalRPN (postfix stack), editDistance (Levenshtein DP): each measured 0% by flat
-> sampling, each now certified via sub-function decomposition on the same qwen2.5-1.5b head,
-> strict-offline, composed-whole re-verified. editDistance live probe: **solved in 14 model calls /
-> 47s** (`subCost → nextRow → editRow`, composition = `editRow(a,b)[b.length]`). This is the
-> doctrine's central claim: correctness from the LOOP, not a bigger model. tsc 0; vgr:bench 236/0,
-> vgr:decompose 62/0, searchbatch 11/11, taskcorpus ALL PASS (corpus 25).
+> **RECURSIVE DECOMPOSITION landed — the decompose registry's single-level ceiling is gone.** On the
+> FM-general path (a task with NO template), a helper the weak head still can't one-shot no longer
+> collapses the whole plan: `solve.ts` re-applies `decomposeCodeBySubFunction` to that helper itself
+> (its own goal + fresh FM sub-plan), bounded by `maxDepth` (default 1). Sound at every level (the
+> recursive helper is re-verified against its OWN cases; the parent whole against the ORIGINAL cases —
+> control test 9m: `maxDepth 0` fails honestly). This is the doctrine's generalization BEYOND the 5
+> hand-authored template classes. Tests 9j–9m; decompose bench 83/0.
 >
-> **THE THIRD CLASS FORCED TWO GENERAL COMPOSITION-HYGIENE FIXES (`solve.ts`), each found by live
-> probe (2026-07-23), that harden ALL classes:**
-> - `extractOwnFunction` — capture only a helper's OWN function (a helper certified as a whole module
->   carries the priors it was grounded with; concatenating collided on `Multiple exports`).
-> - `stripHelperRedefinitions` — strip the compose candidate's re-declared helpers before prepending
->   the certified block (the candidate was already CORRECT but wouldn't compile against a dup-laden block).
-> - Transitive-closure grounding — a helper rung is grounded with the transitive closure of the
->   helpers it calls, so its grounding is a COMPILABLE partial module.
-> - `composeHintFor(goal,entry)` — inject a composition IDIOM into the compose rung when the helper
->   signatures don't reveal it (edit-distance: the answer is the last cell of editRow). Null for the
->   pure-nesting/stack classes. UNTRUSTED (re-verify owns truth).
+> **AGGREGATE DECOMPOSE SCORECARD: 15/15 (100%) across all 5 template classes**, strict-offline,
+> `CRUCIBLE_NO_DISTILL=1` (genuine generation, no memorized hits). Median calls/wall: basicCalculator
+> 5/11s, evalRPN 4/7s, editDistance 23/74s, calculatorWithParens 8/23s, coinChange 3/6s. editDistance
+> held 3/3 — carry-forward + the 420s DP-fold wall did their job.
 >
-> **THE THREE LEVERS THAT CLOSED IT (each found by live probe, not guessed):**
-> 1. **Precedence template** (`reasoning/fmPlanner.ts`): class-detected, 0-model-call 4-helper carve
->    `tokenizeExpr`(→strings) → `parseTokens`(→numbers) → `foldMulDiv` → `foldAddSub`, each rung typed to
->    the 1.5B's natural grain (tokenize wants strings, arithmetic wants numbers — split so neither fights).
-> 2. **Progressive anti-anchoring** (`reasoning/codeProposer.ts`): escalate temperature 0.3→1.15 and ROTATE
->    a structural anchor-breaker by the DEPTH of the identical-failure run; drop echoed code once deeply
->    anchored. General search-diversity lever (helps every stuck search).
-> 3. **Decompose rung CONTEXT HYGIENE — the decisive unlock** (`reasoning/solve.ts`): ground each rung only
->    with the prior helpers its goal NAMES, not every certified helper. foldMulDiv solved in 2 calls in
->    isolation but anchored in-context because the prior-helper dump crowded the idiom/cases out of the
->    ~1024-tok/slot window. Trimming it: `decompose-failed(−4, 17 calls)` → `solved (7 calls)`.
+> Also this session: **carry-forward across `planAttempts`** (a retry re-grinds only the failed rung,
+> not the easy ones — kills the DP-fold ~1200s waste; tests 9h/9i), and **health() now accepts a raw
+> llama.cpp `{status:"ok"}`** (`registry.ts`/`fm-bench.ts`) so a bare `llama-server` needs no
+> `fm_health_shim.mjs` — verified live against :8080. tsc 0; vgr:bench 236/0; searchbatch 11/11;
+> taskcorpus ALL PASS.
 >
-> **TWO independent 0%-by-sampling classes are now SOLVED via decomposition — the crack generalizes.**
-> basicCalculator (infix precedence) AND evalRPN (postfix/stack) — both measured 0% by the pass@k experiment
-> (never solved by sampling or multishot) — are now certified by the SAME template mechanism. A class-detector
-> registry `templateFor(goal,entry)` (fmPlanner.ts) dispatches infix→`precedenceTemplatePlan` (4 helpers) /
-> postfix→`rpnTemplatePlan` (isOperator+applyOp); solve.ts early-routing gates on `hasDecomposeTemplate`.
-> evalRPN direct probe: solved in 4 calls (commit `ba3ad17`). evalRPN ALSO passes the FULL AGENT-PATH
-> SCORECARD GREEN (80s, faster than basicCalculator's 311s): module PASS, tsc clean, hidden suite ALL PASS,
-> self-test PASS, rubric 90, `genuine model generation 1/1`, `vgr:certified-no-iterate`. Two classes, both
-> GREEN end-to-end.
+> ### OPEN — next priorities (highest leverage first)
 >
-> **basicCalculator passes the FULL AGENT-PATH SCORECARD GREEN (commit `3ef16d5`), strict-offline, 0 external
-> API calls.** Not just the probe — the whole product chain: harvest 7 gold cases → gold-tier early-routing →
-> decomposition (4 verifier-certified helpers) → composition re-verified. Result: module PASS, tsc clean,
-> hidden suite 18/18 ALL PASS, self-test PASS, rubric 80, `genuine model generation 1/1`, 311s. RED(420s
-> timeout) → GREEN. The timeout was root-caused to `vgr:no-acceptance-cases`: (1) bare-form prompt examples
-> weren't harvestable (fixed to call-form `basicCalculator("3+2*2") -> 7`); (2) the gold tier flat-solved and
-> returned without escalating to decompose (fixed — early-routing added there too). evalRPN end-to-end
-> scorecard: running (uses the identical chain; result pending).
->
-> **SERVER INFRA (repro):** authed strict-offline `server.ts` from THIS worktree on `:3011`:
-> `PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1 CRUCIBLE_CONVERGE=1
-> CRUCIBLE_NO_DISTILL=1 npx tsx server.ts`. **`CRUCIBLE_NO_DISTILL=1` is MANDATORY for any cold/aggregate
-> measurement run** (added 2026-07-23): `distillToSkill` runs in the SERVER process, so the guard must be set
-> on the SERVER launch, NOT the scorecard client — otherwise the sweep silently memorizes each corpus task
-> into `_learned/` as it goes and later tasks short-circuit to the L0 catalog. Auth is COOKIE
-> `crucible_session=<JWT signed with .env.local JWT_SECRET>`, NOT Bearer.
-> Scorecard mints its own: `CRUCIBLE_API=http://localhost:3011 CRUCIBLE_OFFLINE=strict npx tsx
-> src/CrucibleEngine/coding-benchmarks.ts <id>`.
->
-> **PRE-FIX FLOOR (still the "before"):** live strict-offline scorecard `generated 1/33 = 3%`, 95% CI
-> ~1–15%; the full 39/40-task "after" sweep has NOT been run yet (only basicCalculator, now GREEN).
-
-> **TWO-IMPLEMENTER SPLIT (user-confirmed 2026-07-21).** This branch (`claude/gap-soundness`) has
-> been executing Track-A-labeled W2/W3 work directly (the parallel session left `fmReact.ts` /
-> `grammars.ts` / the llama-server client unclaimed — `git log -1 -- <file>` before treating any
-> claim here as a blocker). Track A = W2 GBNF / W3 batching / proposer prompt. Track B = soundness
-> (`synth/hermetic.ts`, `coding-bench-ext/`, `oracle.ts` Gate-B) — NEW files + one wiring line.
-
-**OPEN (next session, priority order):**
-1. **Item 1 — full n=42 strict-offline aggregate scorecard: LAUNCHED IN-FLIGHT 2026-07-24 (gap-soundness).**
-   The headline "after" generated-rate vs the 3% floor. Kicked off as a detached ~5h job against `:3011`
-   (all 42 tasks incl. the three cracked classes basicCalculator/evalRPN/editDistance exercised COLD under
-   `CRUCIBLE_NO_DISTILL=1`). **Single-task smoke first confirmed the pipeline GREEN end-to-end** —
-   `usernameModule`: certified, `path=generated` (genuine model generation, NOT catalog — proves the
-   NO_DISTILL guard works), hidden suite ALL PASS, 6s.
-   - **HOW TO READ THE RESULT (this run outlives the session):** scorecard log at
-     `<scratchpad>/aggregate_scorecard.log` (PID recorded in `<scratchpad>/aggregate.pid`; the scratchpad
-     dir is printed in the session system prompt). `tail -80` for the `=== SCORECARD ===` block and the
-     `genuine model generation X/Y` aggregate line. If the process died early, re-launch per the repro below.
-   - **CRITICAL INFRA NOTE — the local-FM health shim.** server.ts's `checkLocalInference()` requires
-     `/health` → `{"available":true}`, but the on-box inference server is now a RAW llama.cpp OpenAI server
-     on `:8080` whose `/health` returns `{"status":"ok"}` → the boot-check false-negatives and DISABLES the
-     agentic path in strict mode (server.ts:3636/3689 gate on `localInferenceAvailable`). Fix used: a tiny
-     health-shim proxy `scripts/fm_health_shim.mjs` (durable repo copy; listens `:8090`, fakes `/health` as
-     available, transparently proxies `/v1/*` → `:8080`). The `:3011` server is launched with
-     `LOCAL_INFERENCE_URL=http://localhost:8090`. **If the AFM bridge is running again, the shim is
-     unnecessary — point `LOCAL_INFERENCE_URL` straight at it.** Consider hardening `checkLocalInference()`
-     to also accept `{"status":"ok"}` so a raw llama.cpp server works without a shim (small, high-value).
-   - Repro: `node scripts/fm_health_shim.mjs &` then
-     `PORT=3011 CRUCIBLE_ENV_PATH=$PWD/.env.local CRUCIBLE_OFFLINE=strict CRUCIBLE_DECOMPOSE=1
-     CRUCIBLE_CONVERGE=1 CRUCIBLE_NO_DISTILL=1 LOCAL_INFERENCE_URL=http://localhost:8090 npx tsx server.ts`,
-     then `CRUCIBLE_API=http://localhost:3011 CRUCIBLE_OFFLINE=strict CRUCIBLE_ENV_PATH=$PWD/.env.local
-     npx tsx src/CrucibleEngine/coding-benchmarks.ts` (no id filter = all tasks).
-2. **Item 3 — mined-survivor triage: DONE (classified).** Exhaustive sweep (26 mutants, 13 survived,
-   50% kill): 9 likely-equivalent, 4 flagged likely-hole. On inspection the 4:
-   - **REAL HOLE (actionable):** `mined-apifaith-vocabulary` L119
-     `const start = code.lastIndexOf('\n', idx) + 1` — both `plus->minus` (`+1`→`-1`) and `off-by-one`
-     (`+1`→`+2`) survive, so that task's mined suite does NOT exercise the line-start offset. Strengthen
-     it with a case that asserts the exact `(line: N)` reported for a violation.
-   - **Two are string/comment-content mutations** that the guard/bound heuristic mis-flagged:
-     `mined-apifaith-vocabulary` L462 (` - `→` + ` inside a template-literal bullet) and L220
-     (` * `→` + ` on what reads as a JSDoc `* from …` line). If these are truly inside a template/comment
-     they should have been MASKED by `codeMask` (mutationOps.ts) — CHECK for a codeMask gap on JSDoc
-     continuation `*`/template bullets; a gap would inflate the phantom-equivalent survivor count.
-   - **PRE-EXISTING FLAKE (not from this session):** `mined-aliased-import-propagation` fails its
-     baseline NONDETERMINISTICALLY (two identical runs scored `-1000` load-error vs `-3` case-failure) —
-     the bench's honest guard excluding it. Root-cause that task's nondeterministic subsystem bench.
-3. **DECISION RESOLVED + AUDIT DONE (2026-07-23) — editDistance memorization purged, choke-point guard
-   added.** editDistance was synth-catalog-solvable on the agent path ONLY because agent-path scorecard
-   runs had memorized it: `synthDriver.ts` hardcodes `distill: true`, so each solve persisted a durable
-   `_learned/<hash>.ts` (match keys on export name → score 1.0), and the next run short-circuited to the
-   L0 catalog (`synthPath:'catalog'`, zero inference). It had THREE copies (`editDistance.ts`,
-   `bc67de0ca5b9.ts`, untracked `77ba7c865adf.ts`) — ALL DELETED. Library reloads clean (258 skills); only
-   `edit-distance-lev` remains (matches `editDistanceLev`, not plain `editDistance`), so the corpus task
-   is genuinely COLD again. **Audit answer to "does benchmarking silently memorize corpus tasks?": YES it
-   did — now blocked** by a one-line guard in `distillToSkill` (pureCode.ts): `if (process.env.CRUCIBLE_NO_DISTILL)
-   return`. Every distill caller routes through that function, so cold-measurement runs export
-   `CRUCIBLE_NO_DISTILL=1` and cannot self-memorize. The `coding-benchmarks.ts` headline was never inflated
-   (it segregates catalog vs generated), but the cold-task signal was silenced. **RESOLVED THIS SESSION:**
-   (a) the FOURTH template class (shunting-yard parens calculator) IS the non-synth-constructible DP/parser
-   representative — see item 4; (b) the redundant non-corpus dupes are deduped — `08454dc4b152.ts` (toRoman
-   dup of `roman.ts`) and `7e0513ea58e3.ts` (isEmail dup of `isEmail.ts`) DELETED; `clamp` (`01916e41e5f6.ts`)
-   KEPT because its match key `\bclamp\b` does NOT hit the corpus export `clampVolume` (no word boundary), so
-   it never shadowed the `clampModule` measurement and has no duplicate to remove. Also added a defense-in-depth
-   `CORPUS_TASK_EXPORTS` denylist in `distillToSkill` (pureCode.ts) so a FORGOTTEN `CRUCIBLE_NO_DISTILL` can
-   never re-memorize a known eval task (blocks corpus API + template-helper names, still lets user tasks grow).
-4. **DONE — FOURTH template class: shunting-yard PARENTHESISED calculator (`fmPlanner.ts`).** Registry is now
-   infix-fold / postfix-stack / DP / parser-with-grouping. Detector `isShuntingYardGoal` (requires a
-   NON-negated paren signal so the parenless basicCalculator "…and no parentheses" isn't stolen),
-   `shuntingYardTemplatePlan` (4 helpers tokenize/precedence/toPostfix/evalPostfix), `composeHintFor` wiring
-   `evalPostfix(toPostfix(tokenize(s)))`, routed BEFORE `isArithmeticExprGoal` in `templateFor` (a parens goal
-   also trips the precedence signal). +11 hermetic bench checks (§15), vgr:decompose 62→73/0. `toPostfix` is
-   the non-synth-constructible rung that forces GENERATION on the cold agent path. **STILL OPEN:** author a
-   `calculatorWithParens` CORPUS task (call-form examples + hidden suite) so the class is exercised end-to-end
-   on the agent path — template/detector/bench are in place; the corpus task + a live probe are the remaining
-   step (mirror how basicCalculator/evalRPN/editDistance were closed end-to-end).
-5. editDistance's `editRow` fold helper certifies ~2/3 in the direct decompose probe (model variance
-   on the fold); if a decompose-path run shows it flaking, raise `planAttempts` or the DP-class budget.
-
-**Shipped 2026-07-23 (gap-soundness, FOURTH-class session):**
-- **FOURTH template class: shunting-yard PARENTHESISED calculator (`fmPlanner.ts`)** — `isShuntingYardGoal`
-  + `shuntingYardTemplatePlan` (tokenize/precedence/toPostfix/evalPostfix) + `composeHintFor` +
-  `templateFor` routing (parens wins over the parenless fold). The non-synth-constructible representative:
-  `toPostfix` (precedence-climbing operator stack) forces generation on the cold agent path. +11 hermetic
-  bench checks (§15), vgr:decompose 73/0, tsc 0. Corpus task + live probe still to author.
-- **Corpus-name distill denylist (`pureCode.ts`)** — `CORPUS_TASK_EXPORTS` frozen set (all eval APIs +
-  the three cracked classes' template-helper names); `distillToSkill` refuses colliding distills as
-  defense-in-depth beyond the `CRUCIBLE_NO_DISTILL` env guard. Verified blocks `basicCalculator`/`editRow`,
-  allows a novel user export.
-- **_learned dedup** — deleted `08454dc4b152.ts` (toRoman dup) + `7e0513ea58e3.ts` (isEmail dup); kept
-  `clamp` (not a corpus-match). Library reloads clean (256 skills).
-
-**Shipped 2026-07-23 (THIRD-class session):**
-- **THIRD template class: editDistance (Levenshtein DP) SOLVED end-to-end** — detector +
-  `editDistanceTemplatePlan` + `composeHintFor` + authored corpus task, live probe 14 calls/47s.
-  Full detail: ROADMAP CHANGE LOG 2026-07-23. (Balanced-bracket class scaffolded then dropped — flat
-  solves it 3/4, not genuinely 0%.)
-- **Two general composition-hygiene infra fixes** (`solve.ts`): `extractOwnFunction`,
-  `stripHelperRedefinitions`, transitive-closure grounding — unblocked the DP composition and harden
-  every decompose class. +6 vgr:decompose unit checks (section 14).
-- **Item 2 — decompose-aware server budget** (`server.ts` ~4103): explicit per-rung iterate budget on
-  the decompose attempt so carve depth, not an implicit default, sets the ceiling.
-- **Item 4 — bare-example harvest** (`specExtractor.ts`): `harvestExplicitExamples` now parses bare
-  `"x" -> y` examples for a single declared export, closing the `vgr:no-acceptance-cases` drop. +5
-  vgr:bench tests.
-- **Item 3 — mined-survivor triage locations** (`mutationOps.ts` + `__minedfaultinject_bench.ts`):
-  `generateMutants` returns per-mutant `line`+`before`→`after`; the sweep prints a triage table with
-  an advisory equivalent/hole flag. Exhaustive classification sweep of the 19 survivors: RUNNING.
-- **editDistance validated GREEN through the live `:3011` server** — but via `synth:catalog-no-iterate`
-  (0 inference), not generation (see open item 3).
-
-**Shipped 2026-07-22l (prior session):**
-- **basicCalculator SOLVED** (the headline) — precedence template + anti-anchoring + rung context hygiene.
-  Full detail: ROADMAP CHANGE LOG 2026-07-22l. New `basicCalculator` authored corpus task (ref + 18-case
-  hidden suite, corpus 22→23) so the headline scorecard now exercises the arithmetic class end-to-end.
-- **Item 5 exhaustive mined sweep** (`MINEDFAULT_MAX_MUTANTS=999`): 40 mutants, 52.5% kill, 19 operator-swap
-  survivors in historical mined refs (lowest-severity residual — no line locations from the bench yet).
-- **Item 4 passk multishot**: feedback-threading solves solvable tasks on shot 1 (vs ~5 blind draws), ZERO
-  lift on true-0% tasks (evalRPN 0/10) — reconfirms decomposition, not shots, is the 0%-task lever.
-- New diagnostics: `__foldmuldiv_live.ts` (isolate a stuck rung + dump failure signals), calc probe budget
-  knobs, `__batch_tune_live.ts` (item-3 solves-per-wall-second sweep, ready to run).
-
-**OPEN (highest-leverage next, in order):**
-1. **Full 39/40-task strict-offline scorecard "after"** against `:3011` (all tasks) — the headline
-   generated-rate delta vs the 3% floor. basicCalculator is GREEN; run the whole suite to see the aggregate
-   move (and catch any regressions from the gold-tier early-routing on non-arithmetic tasks). Long run
-   (~40 × up to 420s); use `CRUCIBLE_CODE_BENCH_GAP` pacing; server already up on `:3011` (commit `3ef16d5`).
-2. **Add a THIRD template class** — the registry (`templateFor`) now covers infix + postfix. Next 0%-by-
-   sampling candidates: balanced-paren/bracket matching, a mini JSON/CSV parser, or a small DP (edit distance,
-   coin change). Pick one, add a detector + `*TemplatePlan` + authored corpus task (call-form examples!), and
-   live-probe. The `applyOp`-style lesson: put the named signature + a full one-line body idiom in each helper
-   goal so `paramsFromGoal` extracts real params and the weak head can't copy the example call as a signature.
-3. **DONE this session — evalRPN GREEN end-to-end** (80s, rubric 90, genuine model generation 1/1). Both
-   templated classes now certified through the full product path.
-4. **Agent-driver budget** — VGR is called with `maxModelCalls: 8, beamWidth: 2` (server.ts ~4103); decompose
-   rungs fall back to DEFAULT iterate budget (fine for basicCalculator at ~7 calls, but a deeper carve could
-   exhaust it). Thread a decompose-aware budget when the class is detected.
-5. **Mined-survivor triage** — enhance `__minedfaultinject_bench.ts` to emit per-mutant LINE locations, then
-   classify the 19 operator-swap survivors (equivalent vs real coverage hole) and strengthen suites. Track-B.
-
-**Shipped 2026-07-22h (this continuation, on `claude/gap-soundness`) — closed 5 of the 16 W32 survivor coverage holes:**
-Hand-triaged the 16 surviving mutants from `__faultinject_bench.ts` (deterministic first-match, so each is
-reproducible byte-for-byte) and strengthened the real coverage holes:
-- **templateExpand** 3→0 (escaped-char-at-end kills `off-by-one`; lone-trailing-backslash kills `plus->minus`;
-  empty-`{}`-with-empty-string-key kills `and->or`). **jsonPointerGet** 1→0 (numeric token into a string leaf
-  must be undefined — kills `and->or`). **baseConvert** 1→0 (`fromBase<2` rejected even with a valid digit —
-  kills `or->and`).
-- **dateRangeDays `or->and`** diagnosed EQUIVALENT (the `Date.UTC` reconstruction check subsumes the month
-  pre-check) — correctly left unkilled.
-- Verified: **16→11 survivors, kill rate 89.8%→93.0%**, all clean refs certify, corpus ≥80% floor PASS.
-- OPEN survivor batch (next): intervalSubtract (`le->lt`,`plus->minus`,`or->and`), bitsetRange (`le->lt`),
-  slidingWindowMax (`le->lt`), deepEqualCyc (`and->or`), bankersRound (`ge->gt`,`le->lt`,`minus->plus`,`and->or`).
-- FLAG: csvLine scorecard **pid 29147** running 3h20m+ with no `.crucible/coding-bench-last.json` write since
-  10:21 — looks wedged past its 210s per-task timeout. Kill-and-relaunch vs. diagnose next session.
-
-**Shipped 2026-07-22g (this continuation, on `claude/gap-soundness`) — hermetic reap-leak fix + W32 mutation harness:**
-- **W30 hermetic reap-leak (`synth/hermetic.ts` + `__hermetic_bench.ts`) — found LIVE.** The tsx-CLI
-  spawn vector double-forked; on timeout SIGKILL hit the wrapper, orphaning the busy-loop worker to
-  PID 1 forever (4 zombies from last night were pinning 4 cores and starving the running sweep — now
-  killed). Fixed by injecting tsx's loader flags in-process (single reapable pid); `--no-cache` →
-  `TSX_DISABLE_CACHE=1`. New `pgrep` orphan-survival guard. 19/19 hermetic, tsc clean.
-- **W32 verifier mutation testing (`coding-bench-ext/__faultinject_bench.ts`, NEW) — item 8 DONE (core).**
-  157 mutants across the 22 authored refs, **89.8% kill rate**, every task shows ≥1 suite-kill (teeth
-  proven beyond tsc). Strings/comments masked out of mutation sites. 16 survivors REPORTED as
-  coverage-hole candidates (templateExpand trailing-backslash, bankersRound boundary, +7 more).
-  RESIDUAL (do AFTER the sweep — suites sync to the live harness): strengthen those 9 suites so the
-  named survivors are killed; extend to the 3 mined parents (multi-file scaffold).
-
-**Shipped 2026-07-22e (this continuation, on `claude/gap-soundness`) — next-steps items 1,2,4,5 + item 3 launched:**
-NON-INTERFERENCE re-verified: the parallel `crucible-northstar-sessions` session is on W8→W12
-(fault-localization + coverage-guided fuzzing — `faultLocalize.ts`, `coverageFuzz.ts`, benches) and
-has NEVER touched `fmReact.ts`/`grammars.*` (`git log -1` on both confirms old/CLEAR provenance). So
-the Track-A-labeled W2/W3 files were unclaimed and taken directly here — same pattern the earlier
-session used for Track-A W1. tsc clean throughout.
-- **Item 5 — codec roundtrip supp families** (`reasoning/propertyVerifier.ts`): `base64Encode`,
-  `base64Decode`, `hexEncode`, `parseQueryString` — reference-derivation co-gates against `Buffer` /
-  `URLSearchParams` (node globals in the verifier sandbox). Extends the parse∘serialize=id lever to
-  the codec/parser class. +9 VGR proofs (accept correct, reject buggy). **VGR 231/0.**
-- **Item 4 — pureCode L0 supplemental co-gate** (`synth/pureCode.ts`): `verifyAgainstSupplemental`
-  lazily cross-imports the VGR-side SUPP families (breaks the synth→reasoning→synth static cycle) so a
-  catalog L0 hit is behavior-verified against ~30 invariant families before the shape-only floor. A
-  matched-and-passing family lifts the ship; a matched-and-failing one forces honest escalation.
-  New `__purecode_supp_bench` **6/6**; `synth:prove` **4/4** unchanged.
-- **Item 2 — W2 GBNF grammar builders** (`agent/grammars.ts` + `completeLocalModel({gbnf})`): pure
-  fenced-code / json-object / enum GBNF builders + optional constrained-decoding wiring (no-op without
-  the runtime). `__grammars_bench` **15/15**, INCLUDING live `node-llama-cpp` compile of all three —
-  the GGUF runtime IS installed, so constrained decoding is genuinely live-capable, not just offline.
-- **Item 1 — W3 prefix-cache groundwork** (`agent/fmReact.ts`): `cache_prompt` hint on the FM request
-  (honored by llama-server, ignored by Apple FM) + VGR preconditions proving the proposal prompt is
-  stable-prefix-first so a KV prefix cache actually hits. Continuous batching (K concurrent) stays
-  backend-gated by the single-session daemon — NOT faked; that half needs a llama-server backend swap.
-- **Item 3 — full n=39 live re-bench LAUNCHED (in-flight, not yet complete)**: harness smoke-verified
-  end-to-end (`csvLine` produced a clean scorecard; it timed out pre-loop at 210s, iters=0 — the exact
-  latency-starvation item 1 targets). Full sweep now running detached (nohup, default 480s/task cap,
-  ~hours); writes `.crucible/coding-bench-last.json`. NEXT SESSION: read that scorecard, diff vs the
-  3% generated floor (must clear ~19% to count as signal).
-
-**Shipped 2026-07-22d (this continuation, on `claude/gap-soundness`) — csvLine residual CLOSED:**
-- `csvRoundtrip` supplemental property family (`reasoning/propertyVerifier.ts` `SUPP_FAMILIES`):
-  the parse∘serialize=id invariant for `parseCsvLine`-class format parsers. A canonical
-  always-quoting RFC-4180 serializer is built model-free in the assertion; `parse(serialize(fs))`
-  must deep-equal `fs` for all field arrays (incl. embedded commas/quotes), plus split/trailing-
-  empty/quoted-comma checks and two throw-contract checks. Auto-picked-up by `invariantGate`,
-  `supplementalPropertySpec`, `propertyForFunction` (all iterate `SUPP_FAMILIES` — no whitelist).
-  +3 bench proofs: accepts the correct parser (6/6), rejects a permissive comma-split. Bench 222/0,
-  tsc clean. Closes the one measured GREEN-yet-wrong csvLine-class case the W20 gate left uncovered.
-
-**Shipped 2026-07-22c (this continuation, on `claude/gap-soundness`) — fix-list item 5 (W20) DONE:**
-- W20 independent held-out invariant co-gate (`reasoning/solve.ts`): `supplementalPropertySpec`'s
-  ~30 model-free invariant families now co-gate every weak-example (differential/consensus) solve
-  tier alongside the metamorphic gate (`invariantGate = metaGate ∧ suppGate`). A candidate that
-  overfits weak cases but violates a real invariant is now rejected; the proposer is NOT starved.
-  Bench 219/0, tsc clean. Non-interference verified vs the parallel fault-localization session.
-  RESIDUAL: parser families (csvLine) still need a `parser-roundtrip` supp family — see fix list.
-
-**Shipped 2026-07-22b (this continuation, on `claude/gap-soundness`) — fix-list items 2 & 4 DONE:**
-- Multi-file misroute fix (`reasoning/multiFile.ts`): self-test-harness clauses discounted from
-  the multi-file trigger — reclaims the 3×~90s ladder that starved 26/39 baseline tasks.
-- Certification-scope soundness (`specExtractor.ts` + `synth/pureCode.ts`): certify against the
-  audit's exact import identity — declared-export override for VGR entry, identity+property gate
-  for the pureCode L0 catalog ship. VGR bench 214/0, synth:prove 4/4, tsc clean. See ROADMAP
-  CHANGE LOG 2026-07-22b and the FIX LIST below (items 2 & 4 struck through).
-
-**Shipped earlier 2026-07-22 (all committed on `claude/gap-soundness`):**
-- **W1 loop-entry forensics** (`server.ts`): reason-coded `loop_entry` SSE events at every
-  early return before the first proposal. Bail-without-reason is now structurally impossible
-  on this path; the bench attributes every zero-iteration outcome to a named `stage:reason`.
-- **n=39 enrollment** (`coding-benchmarks.ts`): `toBenchTasks()` (22 certified ext) +
-  `toMinedBenchTasks()` (3 mined, audited via `auditMinedCandidate` — target file only,
-  suite+context from the pinned parent snapshot). Verified live (158-case mined suites ran).
-- **Honest reporting**: `timedOut` flag, iters distribution, Wilson CIs via `formatRate()`,
-  W1 acceptance check for unexplained iters:0.
-- **Token-expiry fix**: the first run's last 10 tasks silently HTTP-401'd (one 3h JWT for a
-  >3h sweep). Fix = per-task re-mint + 12h ceiling; the 10 were re-run (0 × 401) and merged.
-
-**What the baseline DIAGNOSED (this reorders the fix list — throughput first):**
-1. **Latency starvation dominates — 26/39 timed out.** `loop_entry` shows the mechanism: the
-   "write a self-test in src/index.ts" clause trips `isMultiFileRequest` → a 3×~90s multi-file
-   VGR ladder runs BEFORE the single-file ladder → budget gone before the loop is reachable.
-2. **Spec acquisition is the top *generated* failure reason** (`vgr:no-acceptance-cases` /
-   `spec-extract-failed → planned:entered`): VGR can't extract worked examples from
-   contract prose, abstains, planned loop then times out. The addendum's ground-truth hole,
-   now measured.
-3. **Certified/catalog-but-WRONG (soundness, do not defer behind throughput):** `csvLine`
-   VGR-certified yet fails 11 hidden; `matrixRotate` certified yet `rotate90 is not a function`
-   (VGR certified its own entry name, not the audit's required export); `posixResolve` /
-   `deepEqualCyc` catalog hits that fail 14 / several hidden checks.
-
-**OPEN — THE FIX LIST (priority order):**
-1. **W3 prefix-cache + batching — PREFIX-CACHE HALF DONE 2026-07-22e; BATCHING still open.**
-   `fmReact.ts` now sends `cache_prompt` and the proposal prompt is proven stable-prefix-first
-   (VGR W3 preconditions), so a llama-server backend's KV prefix cache hits on re-proposals. The
-   remaining lever — K CONCURRENT proposals (continuous batching) — is blocked by the single-session
-   Apple FM daemon (`enqueueFm` serializes it) and needs a llama-server backend swap to land. That
-   backend swap is the true ~90s/proposal ceiling-breaker and is still the top open item.
-2. **~~Multi-file misroute fix~~ — DONE 2026-07-22b.** The gate no longer routes on raw file
-   count: `reasoning/multiFile.ts` now strips self-test-harness clauses
-   (`selfTestHarnessFiles()` / `deliverableRequestedFiles()`) and routes on the deliverable
-   count, so a runnable `src/index.ts` self-test no longer trips the 3×~90s multi-file ladder.
-   VGR bench 214/0. Re-bench (item 6) will confirm the reclaimed budget in the live n=39.
-3. **~~W2 GBNF grammar-constrained decoding~~ — DONE 2026-07-22e/f.** `agent/grammars.ts` emits
-   fenced-code / json-object / enum GBNF (15/15, live `node-llama-cpp` compile). WIRED ON THE HOT
-   PATH 22f: `gbnf` threads `fmComplete → callFm → callFmInner` to both backends (bonsai/llama-server
-   `body.grammar` + Apple FM body), and `codeProposer.proposeCode` constrains every proposal to one
-   fenced-TS block. Grammar body admits ≤2 backticks so template literals stay reachable. REMAINING:
-   confirm the live head actually honours `grammar` at run time (needs a bench run with the local
-   head active) and measure the malformed-proposal-rate drop. Compounds with W3 batching.
-4. **~~Certification-scope fix (soundness)~~ — DONE 2026-07-22b.** Both gaps closed +
-   bench-locked: (a) `specExtractor.declaredExportedNames()` makes a single declared export
-   authoritative, overriding a mis-voted VGR entry (`matrixRotate`→`rotate90` gap); (b)
-   `pureCode` L0 now gates every ship on `satisfiesRequestedIdentity` (declared exports emitted
-   AT the declared path) AND, in the no-example branch, on a passing derived PROPERTY family
-   before claiming GREEN (`posixResolve`/`deepEqualCyc` gap). Residual: shape-only remains the
-   honest floor when NO example/property gate is derivable — a library-verified primitive
-   matching the declared API exactly, behavior unverified. RESIDUAL CLOSED 2026-07-22e: the L0
-   no-example branch now runs `verifyAgainstSupplemental` (lazy cross-import of the ~30 VGR SUPP
-   families) before the shape-only ship, so a name-matched catalog hit is behavior-verified or
-   escalated. `__purecode_supp_bench` 6/6; shape-only floor preserved only when NO family matches.
-5. **~~W20 held-out acceptance cases~~ — DONE 2026-07-22c (reframed to the SOUND design).**
-   Splitting the thin consensus pool would starve the proposer, so instead the MODEL-FREE
-   invariant is the held-out ground truth: `supplementalPropertySpec`'s ~30 exact-name-gated
-   families now co-gate every lower-tier solve in `reasoning/solve.ts`
-   (`invariantGate = metaGate ∧ suppGate`). Proposer still drives on the cases; a candidate that
-   overfits weak cases yet violates a real invariant is rejected. Bench 219/0. RESIDUAL CLOSED
-   2026-07-22d: the `csvRoundtrip` supp family now covers `parseCsvLine`-class format parsers —
-   parse∘serialize=id against a canonical always-quoting RFC-4180 serializer + throw-contract
-   checks. Accepts the correct parser (6/6 props), rejects a permissive comma-split. Bench 222/0.
-6. **Re-run full n=39 — LAUNCHED (in-flight) 2026-07-22e; READ THE SCORECARD NEXT SESSION.**
-   Full sweep running detached (nohup, 480s/task, ~hours) → `.crucible/coding-bench-last.json`.
-   First action next session: read it, diff `generated` vs the 3% floor (must clear ~19% to count),
-   and check whether the 22b misroute + cert-scope fixes moved the *timed-out* (26/39) count. If the
-   process died, relaunch `tsx src/CrucibleEngine/coding-benchmarks.ts` (server on :3001, daemon up).
-7. **W42.2 scale toward n≈100 (±10-pt floor)** — mined candidates `79583e1`, `a0bdd2a`,
-   `781fbba`/`23d1305`, `1fb3971`; fix touches one engine file + its paired bench.
-8. **~~W32 verifier fault-injection~~ — CORE DONE 2026-07-22g.** `__faultinject_bench.ts` mutates
-   the 22 authored refs and proves the suites catch the faults (157 mutants, 89.8% kill rate, every
-   task ≥1 suite-kill). RESIDUAL: strengthen the 9 suites with named survivors (do AFTER the sweep —
-   they sync to the live harness); extend to the 3 mined parents (multi-file scaffold).
-
-**Standing (still load-bearing):** W31 `__refdiff_bench.ts` independent oracle per authored ref
-(~9k cases; posixResolve unwrapped node, queryDecode fuzzes malformed junk). W30 hermetic
-Gate B (`__hermetic_bench.ts` 18/18). Human skim of all 25 contracts COMPLETE 2026-07-21.
-Report rates with `formatRate()`; treat deltas below `minDetectableDelta(n)` as noise.
-
-> Previous state (cont.98, still current for its files): cont.96 owns
-> `fmReact.ts` + `server.ts` + the automation follow-up path. cont.98 touched **only**
-> `synthDriver.ts` — work was selected specifically to avoid that session's files.
-
-**Shipped 2026-07-21i (cont.98):**
-- **Wikipedia summary cache (`_WIKI_SUMMARY_CACHE` / `wikiSummary()` in `synthDriver.ts`).**
-  Certification was doing ~1 uncached lookup per item per pass, ≥2 passes per plan. The
-  resulting burst tripped rate limiting live, and rate limiting makes certification fail OPEN —
-  the "Border Collie in an Italian breeds folder" failure. Measured: second pass = 0 requests,
-  identical results. 404s cached; transient failures left retryable.
-- **`groundItemDoc()` — near-neighbour conflation repair.** Drops self-referential comparative
-  sentences and sentences naming a sibling item, then appends the item's own Wikipedia extract
-  (from the cache, zero extra requests) as an attributable floor. Fixes the live
-  `italian-greyhound.md` that claimed the breed "resembles ... the smaller Italian Greyhound".
-
-**Also shipped 2026-07-21k (cont.98c):** `sampleUntilConvergence()` (FM plans stop on dryness,
-not on a lucky count — 0-item collapse fixed); empty checkpoints now record their staged files
-and warn; **verification evidence persisted to `.crucible/wiki-evidence.json`, so certification
-now runs fully offline** (proven on a fresh process with `fetch` throwing).
-
-**Also shipped 2026-07-21l (cont.98d):** the **"List of X" retrieval tier** — the item rejected
-twice on cost — now ships as tier 2 of the grounded path. Roman emperors, the subject that
-defeated every earlier tier, now plans to Augustus/Diocletian/Constantine deterministically:
-4 consecutive runs byte-identical, and identical again with `fetch` severed. Also added
-`wikiFetch()` (429-aware backoff), `descAssertsInstance()` (shared instance test that finally
-drops "Praetorian Guard"), and a bail-reason event on every early return.
-
-**Open items / risks (priority order):**
-1. **The FM fallback is now rarely reached, but is unchanged when it is.** Item COUNT still
-   varies run to run for subjects with neither a category nor a list article; the 0-item
-   collapse and arbitrary early stop are fixed, but no stopping rule can invent unproposed
-   names. Lower priority than before precisely because two grounded tiers now precede it —
-   the remaining lever is sample QUALITY, not the loop.
-2. **~~`server.ts`'s `createCheckpoint` call sites~~ — CLOSED in cont.98, and the item as
-   written was WRONG.** It said to scope *both* sites; scoping both would have been a
-   regression. `/api/file/write` (~7336) writes one known file and is now scoped. But
-   `/api/checkpoint` (~7563) is an explicit user-requested project snapshot — whole-tree
-   `git add -A` is the entire point there, and narrowing it would quietly reduce what a
-   rollback can restore. It is now commented in place as intentionally unscoped.
-   Also fixed en route: `registry.ts`'s scope rule treated every ABSOLUTE path as external, so
-   an in-project absolute write got `[]` and therefore NO snapshot — the checkpoint silently
-   no-opped for exactly the edits it exists to protect. Containment is now a resolved
-   path-prefix test in the shared `checkpointScopeFor()` (`checkpoint.ts`).
-   **Process note:** this session initially refused to touch `server.ts` on the belief that the
-   concurrent cont.96 session owned it. That belief was never re-checked and had expired —
-   `git log` showed the file untouched for 7.5 hours with a clean tree. Re-verify ownership
-   claims against `git log`/`git status` before treating them as blockers.
-3. **~~Everything depends on Wikipedia being reachable~~ — LARGELY CLOSED in cont.98c.** The
-   disk evidence store means a name verified ONCE stays verified offline forever. The residual
-   gap is genuinely NEW names on a cold, offline machine: those still fail open, because there
-   is no local corpus to check them against. A first-run-must-be-online caveat, not a
-   per-run dependency. Consider warming the store for common subjects, and marking items
-   certified-from-cache vs. certified-live in the generated README.
-4. **Re-bench the swapped qwen head** — carried from cont.93/94/95, still open.
-   `residue_terminal`/`refusal_terminal` rates now sit behind several changed routing paths.
-
+> 1. **PROVE recursive decomposition on a LIVE novel task.** 9j–9m are deterministic (toy proposer).
+>    The real test is a task with NO template whose FM-proposed carve hides a sub-helper the 1.5B can't
+>    one-shot — author one live probe (`reasoning/__decompose_recursive_live.ts`) that exercises the
+>    real FM planner + head at depth 1 and certifies. Until that runs, recursion is proven SOUND but not
+>    yet proven to EARN a solve on the general path against the live head.
+> 2. **Measure the FM-general (no-template) solve rate END-TO-END.** The 15/15 scorecard covers only the
+>    5 TEMPLATE classes. The whole point of recursion is the NON-template task — but there is no scorecard
+>    for it. Build a small novel-task probe set (tasks deliberately NOT matching any detector) and run the
+>    real decompose path (FM planner + recursion) against the live head to get the general-path number.
+>    This is the metric that now matters most; the template number is saturated.
+> 3. **Recursion budget/latency guard on the live path.** Each recursion adds a full sub-decomposition
+>    under the per-rung budget; at depth 1 with a 5-helper sub-plan that can be large. Confirm (via probe
+>    2) it doesn't blow wall-clock on realistic novel tasks, and if it does, add a recursion-specific
+>    budget (smaller than the top per-rung budget) rather than reusing `opts.iterate` verbatim.
+> 4. **`calculatorWithParens` live AGENT-PATH probe.** The corpus task + template + scorecard entry exist
+>    (all green offline), but there is no end-to-end agent-path live probe like basicCalculator/evalRPN
+>    have. Add one so the shunting-yard class is exercised through the full agent path, not just the
+>    scorecard harness.
+> 5. **Registry 6th class only if a real gap demands it.** Five classes at 100% is saturated; the leverage
+>    has moved from ADDING templates to the GENERAL (recursive, no-template) path. Add a 6th class only if
+>    probe 2 surfaces a common novel shape recursion alone can't crack — otherwise invest in the general
+>    path, not more hand-authored carves.
 ---
 
 ## PRIOR STATE — cont.97 (historical; superseded by the block above)
