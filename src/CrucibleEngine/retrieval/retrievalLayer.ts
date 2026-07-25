@@ -596,13 +596,23 @@ async function searchWikipediaRest(query: string): Promise<SearchResult[]> {
 
   if (results[0]) {
     try {
-      const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext&titles=${encodeURIComponent(pages[0].title)}&format=json&redirects=1&exchars=6000`
+      // FULL plaintext article, NOT `exchars=6000`. The char cap was a lede-only extractor by
+      // another name: it kept the first ~6KB and threw the rest away BEFORE any question-aware
+      // selection could run, so an answer living deeper in the article was structurally
+      // unreachable. MEASURED: the Constitution's preamble ("We the People…") sits at char
+      // 28,935 of a 79,093-char article — the evidence block could never contain it, and the
+      // grounded answer abstained honestly but uselessly. Downstream `selectRelevantPassages`
+      // is the thing that trims to budget, and it scores windows against the question; giving
+      // it the whole article is what makes it able to find the answering passage.
+      const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext&titles=${encodeURIComponent(pages[0].title)}&format=json&redirects=1`
       const extractRaw = await rawGet(extractUrl, 7000)
       const extractData = JSON.parse(extractRaw) as any
       const pageObjs = extractData?.query?.pages ?? {}
       const page = Object.values(pageObjs)[0] as any
       if (page?.extract) {
-        const text = stripTags(page.extract)
+        // Cap only against pathological articles (memory, not relevance) — well above the
+        // point where the answering passage plausibly lives.
+        const text = stripTags(page.extract).slice(0, 200_000)
         if (!pageCache.has(results[0].url)) pageCache.set(results[0].url, text)
         results[0].snippet = text.slice(0, 300)
       }

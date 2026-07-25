@@ -188,8 +188,16 @@ export function selectRelevantPassages(text: string, query: string, budget: numb
   if (!terms.length) return text.slice(0, budget)
 
   const WIN = 400
+  // HALF-STRIDE scoring windows. A fixed non-overlapping grid makes the answering sentence
+  // unreachable whenever it straddles a boundary: its terms split across two windows, neither
+  // scores high enough to be kept, and the passage that IS the answer is dropped. MEASURED on
+  // the Constitution article — the preamble spans a grid boundary, so the selection came back
+  // with prose ABOUT the opening words and not the words. Overlapping candidates mean some
+  // window always contains the whole passage; selection below stays non-overlapping, so the
+  // budget still buys `budget` chars of distinct text.
+  const STRIDE = WIN / 2
   const lower = text.toLowerCase()
-  const nWin = Math.ceil(text.length / WIN)
+  const nWin = Math.max(1, Math.ceil((text.length - WIN) / STRIDE) + 1)
 
   // Window-level IDF: weight a term by how FEW windows contain it. The rare term is the whole
   // point of the query ("ipv4"), and the common ones ("schema", "zod", "validate") are noise
@@ -201,7 +209,7 @@ export function selectRelevantPassages(text: string, query: string, budget: numb
   // back full of ZodCUID with ZERO mentions of ipv4, silently dropping the identifier from the
   // evidence. Classic IDF is unbounded as df→0, so a window holding the rare term always wins.
   const windows: string[] = []
-  for (let i = 0; i < nWin; i++) windows.push(lower.slice(i * WIN, i * WIN + WIN))
+  for (let i = 0; i < nWin; i++) windows.push(lower.slice(i * STRIDE, i * STRIDE + WIN))
   const df = new Map<string, number>()
   for (const t of terms) df.set(t, windows.reduce((n, w) => n + (w.includes(t) ? 1 : 0), 0))
   const weight = (t: string) => {
@@ -225,25 +233,50 @@ export function selectRelevantPassages(text: string, query: string, budget: numb
   }
   if (scored.every(s => s.score === 0)) return text.slice(0, budget)
 
-  // Take best windows until the budget is spent, then re-order by position so the
-  // stitched passage still reads in document order.
+  // Take best windows until the budget is spent, skipping any that overlaps text already kept
+  // (candidates are half-stride, so neighbours share half their span — charging for the same
+  // chars twice would halve the evidence). Then re-order by position so the stitched passage
+  // still reads in document order.
   scored.sort((a, b) => b.score - a.score || a.i - b.i)
-  const keep: number[] = []
+  const keep: Array<{ start: number; end: number }> = []
   let used = 0
   for (const s of scored) {
     if (s.score === 0) break
-    if (used + WIN > budget) break
-    keep.push(s.i); used += WIN
+    const start = s.i * STRIDE
+    const end = Math.min(text.length, start + WIN)
+    if (keep.some(k => start < k.end && end > k.start)) continue
+    if (used + (end - start) > budget) continue
+    keep.push({ start, end }); used += end - start
   }
   if (!keep.length) return text.slice(0, budget)
-  keep.sort((a, b) => a - b)
+  keep.sort((a, b) => a.start - b.start)
+
+  // SNAP to sentence boundaries. A window boundary that lands mid-sentence hands the model
+  // (and the verbatim-quote checks downstream) a half-sentence: the Constitution selection
+  // began "ct Union, establish Justice…" — the preamble's actual opening words fell in the
+  // truncated half. Extending each range outward to the nearest sentence/paragraph break costs
+  // a little budget and makes every kept passage quotable.
+  const SNAP = 260
+  for (let n = 0; n < keep.length; n++) {
+    const k = keep[n]
+    const floor = n === 0 ? 0 : keep[n - 1].end
+    const back = text.slice(Math.max(floor, k.start - SNAP), k.start)
+    const bIdx = Math.max(back.lastIndexOf('. '), back.lastIndexOf('\n'))
+    if (bIdx >= 0) k.start -= back.length - bIdx - 1
+    const ceil = n === keep.length - 1 ? text.length : keep[n + 1].start
+    const fwd = text.slice(k.end, Math.min(ceil, k.end + SNAP))
+    // NEAREST forward boundary — the smaller of the two hits, not Math.max (which would run
+    // past the first sentence end whenever both a period and a newline are in range).
+    const fCands = [fwd.indexOf('. '), fwd.indexOf('\n')].filter(i => i >= 0)
+    if (fCands.length) k.end += Math.min(...fCands) + 1
+  }
 
   const out: string[] = []
-  let prev = -2
-  for (const i of keep) {
-    if (i !== prev + 1 && out.length) out.push(' … ')
-    out.push(text.slice(i * WIN, i * WIN + WIN))
-    prev = i
+  let prevEnd = -1
+  for (const k of keep) {
+    if (k.start !== prevEnd && out.length) out.push(' … ')
+    out.push(text.slice(k.start, k.end))
+    prevEnd = k.end
   }
   return out.join('')
 }
