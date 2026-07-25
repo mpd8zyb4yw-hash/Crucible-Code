@@ -22,6 +22,13 @@
 > NOTE: two tracks were live. The CODING-BENCH block is first; the ANSWERS/CALIBRATION block
 > (cont.106) follows unchanged. Do not delete either without confirming that track is done.
 
+> **CODING-BENCH UPDATE (cont.111):** summaryModule is now RELIABLE — `repairGroupedLedger`
+> (`synth/repairProposers.ts`) took it 2/3 → **3/3 GREEN** on qwen (repair fired+accepted 3/3);
+> trajectory this session was 3/3 RED → 2/3 (recompute invariant) → 3/3 (+repair). `repair:bench`
+> 32/32. Reliable floor is therefore ~9/10 (bugfixCsv + tagSetModule + summaryModule repair-guaranteed;
+> only usernameModule remains hardened-but-variance). A confirmation full suite with all four fixes
+> in place has NOT been run yet — the 10/10 headline below predates cont.111.
+
 > **CODING-BENCH HEADLINE (2026-07-25, cont.110b):** authoritative full offline-strict suite on the
 > doctrine head **qwen-1.5b (:8080)** = **14/14 overall, 10/10 gen-path GREEN** (this run), up from a
 > 7/10 qwen baseline. RELIABLE floor ~8/10: bugfixCsv + tagSetModule are repair-guaranteed;
