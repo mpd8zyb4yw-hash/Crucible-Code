@@ -208,6 +208,28 @@ All three cont.106 open items are CLOSED. Commit `5da90f1`.
   disagreement is what routes these to grounding in the first place, but the reason grounding cannot
   answer is the extraction, so fix extraction first and re-measure before touching the router.
 
+**Shipped 2026-07-26 (cont.113 — THE EXTRACTION GAP ABOVE IS CLOSED). Commit `633cf65`.**
+The extractor was a lede-only extractor by another name; three stacked truncations threw the
+answer away BEFORE any question-aware selection could run:
+1. **`exchars=6000` on the Wikipedia extracts call** (`retrievalLayer.ts` `searchWikipediaRest`) —
+   kept the first ~6KB of the article. The Constitution's preamble sits at char **28,935 of a
+   79,093-char article**, so no gate could ever have saved it. Now fetches the FULL plaintext
+   (capped 200k for memory, not relevance).
+2. **`selectRelevantPassages` scored a fixed non-overlapping 400-char grid** — a passage straddling
+   a boundary split its terms across two windows and neither scored high enough to keep. Candidates
+   are now HALF-STRIDE; selection stays non-overlapping so the budget still buys `budget` chars.
+3. **Kept ranges began/ended mid-sentence** ("ct Union, establish Justice…") — unquotable, which
+   also starves the cont.112b misquote repair. Ranges now snap outward to the nearest
+   sentence/paragraph boundary.
+**MEASURED live (qwen :8080), both named repros resolved WITHOUT touching a gate:** the preamble
+comes back verbatim and "206 bones" answers. Pure 143/143, live bait 21/22, non-bait 18–19/20.
+**NEXT / residual:** the leftover non-bait abstains are FLAKY — a *different* item abstains each
+run (run A: Apollo 11 + Declaration of Independence; run B: bones), always with the pre-retrieval
+"can't verify this offline" message. That is the `needsExternalFact`-vs-grounding-tier disagreement
+(no longer subsumed — extraction is fixed, so this is now the top item). Also noted in passing:
+run B answered "Southern Ocean" for the Africa/Australia question — scored GOOD because it is not
+an abstention, so the non-bait probe measures survival, not correctness, for that item.
+
 **Shipped 2026-07-25 (cont.111b — grounding ENTAILMENT, live 22/22 bait + 8/8 non-bait):**
 `506f8cf`, `db3d808`, `f1f40a8`, `aad7ad4`. Closes the last live BAD and the "via:'dag' 0.85
 regardless of quality" item. Every gate below was diagnosed by DUMPING the evidence block
