@@ -145,6 +145,38 @@ All three cont.106 open items are CLOSED. Commit `5da90f1`.
   vgr:execverify 46/46, fault:localize 12/12 (exact 92%), fault:bench 17/17, contract benches
   10/10 + 69/69.
 
+**Shipped 2026-07-25 (cont.112 — the false-positive surface, measured on the qwen head :8080):**
+- **Live non-bait probe grown 8 → 20** (`__abstention_bench.ts`). At n=8 one stochastic flip is
+  ±12.5pts, so the 75% false-positive floor could not tell a regression from noise; at n=20 it is
+  ±5pts. The 12 additions deliberately load the three cont.111b entailment gates in the FALSE-REJECT
+  direction (figure-seeking asks, multi-token proper-noun subjects, quotation asks) — the original 8
+  all had single-common-token answers and exercised none of them.
+- **It immediately caught my own cont.111 gate destroying a correct answer.** "What is the largest
+  planet in our solar system?" → a correct "…is Jupiter" reply was converted to `[abstained]` on
+  **3 of 5** grounded runs (`abstain_figures_unsupported`) because the synthesis garnished it with
+  parametric diameters the retrieved pages did not state. FIX (universal): **abstention must be
+  proportional to whether the unverified specific IS the answer** — `figuresAbsentFromEvidence` now
+  requires `questionSeeksFigure(question)`. Unsupported figures on a name/place/thing ask are
+  decoration; numeric bait is figure-seeking by construction so the catch surface is intact.
+- **MEASURED:** pure 131/131; live bait **22/22**; live non-bait **19/20** (Jupiter flipped GOOD).
+  Commit `303f893`.
+- **The remaining non-bait miss is the gate being RIGHT, not a false positive** — do not "fix" it by
+  loosening quoteEntailment. The head garbles the US Constitution preamble on **3/3** runs ("We the
+  People of the United States, having ord…") and `abstain_fabricated_quotation` catches the misquote.
+  Annotated inline in the bench. The real fix is a MISQUOTE REPAIR: when the evidence contains the
+  near-miss verbatim span, replace the answer's quote with it rather than abstaining.
+- **OPEN (this track), in priority order:**
+  1. **Misquote repair** (above) — currently a correct-answer-shaped question is abstained because
+     one quoted span drifted. Repair > abstain when the evidence holds the true span.
+  2. **A wrong grounded answer shipped clean:** "What ocean lies between Africa and Australia?" →
+     "the Southern Ocean" (correct: Indian), stamped GOOD by the survival metric because no gate
+     covers *relational* claims. This is the next entailment shape — the claim shapes still
+     unchecked are relational ("X lies between Y and Z"), word-dates, and answer-introduced names.
+  3. **The upstream disagreement (unchanged from cont.111b):** `needsExternalFact` said *false* on
+     the Jupiter/planet asks while the grounding tier ran anyway, and grounded runs came back
+     `cites=0` (see the `grounding_hit` telemetry). The two gap-gates disagree about what needs
+     evidence, and the entailment gates are only catching the fallout at the exit.
+
 **Shipped 2026-07-25 (cont.111b — grounding ENTAILMENT, live 22/22 bait + 8/8 non-bait):**
 `506f8cf`, `db3d808`, `f1f40a8`, `aad7ad4`. Closes the last live BAD and the "via:'dag' 0.85
 regardless of quality" item. Every gate below was diagnosed by DUMPING the evidence block
