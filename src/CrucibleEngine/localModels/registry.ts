@@ -40,7 +40,10 @@ const appleFm: LocalModel = {
     try {
       const res = await fetch(`${LOCAL_INFERENCE_URL}/health`, { signal: AbortSignal.timeout(2000) })
       const data = await res.json()
-      return data?.available === true
+      // Accept both the Crucible shim's `{available:true}` AND a raw llama.cpp server's
+      // `{status:"ok"}`, so a bare `llama-server` satisfies the local head with no shim in front
+      // (removes the fm_health_shim.mjs dependency for strict-offline runs).
+      return data?.available === true || data?.status === 'ok'
     } catch {
       return false
     }

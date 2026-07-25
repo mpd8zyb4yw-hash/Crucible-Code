@@ -91,7 +91,8 @@ async function main() {
     const h = await fetch(`${LOCAL_FM_URL}/health`, { signal: AbortSignal.timeout(5_000) })
     const hj: any = await h.json()
     console.log(`Health: ${JSON.stringify(hj)}\n`)
-    if (!hj.available) { console.error('FAIL — FM not available'); process.exit(1) }
+    // Accept the Crucible shim's `{available:true}` OR a raw llama.cpp `{status:"ok"}`.
+    if (!hj.available && hj.status !== 'ok') { console.error('FAIL — FM not available'); process.exit(1) }
   } catch (e: any) {
     console.error(`FAIL — FM unreachable: ${e?.message}`)
     console.error('  Start the daemon: ./local-inference/crucible-fm-daemon 11435')
