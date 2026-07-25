@@ -25,7 +25,7 @@
 import { iterate } from './iterate'
 import { solveByDecomposition, type Planner, type SubSpecFactory } from './decompose'
 import { parsePlan, parseSubFunctionPlan, isArithmeticExprGoal, precedenceTemplatePlan, makeFmSubFunctionPlanner, isRpnGoal, rpnTemplatePlan, isEditDistanceGoal, editDistanceTemplatePlan, isShuntingYardGoal, shuntingYardTemplatePlan, composeHintFor, templateFor } from './fmPlanner'
-import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, isDegenerateSubFnCarve, type SubFunctionPlanner } from './solve'
+import { decomposeCodeBySubFunction, decomposeCodeTask, growingCasePrefixes, iterateCodeTask, stripHelperRedefinitions, extractOwnFunction, isDegenerateSubFnCarve, subLevelIterateBudget, type SubFunctionPlanner } from './solve'
 import type { Proposer, TaskSpec, Verifier } from './types'
 
 let pass = 0, fail = 0
@@ -341,6 +341,58 @@ async function main() {
   const noRec = await decomposeCodeBySubFunction(recInput, { ...recOpts, maxDepth: 0 }, recProposer)
   check('9m recursion bound: maxDepth 0 makes the same task fail honestly (no false solve)',
     noRec.status === 'decompose-failed' && noRec.code === null, noRec.detail)
+
+  // 9n/9o/9p COMPOSE-RUNG RECOVERY. The live FM-general run (numberToWords, 2026-07-25) failed in the
+  //   shape recursion did NOT cover: every helper certified in one call, and the COMPOSITION stalled —
+  //   the planner left the difficulty in the glue. Here `easy` certifies, but `mainf` cannot be written
+  //   from `easy` alone (the proposer needs a `dbl` that no one planned). The compose stall must now
+  //   re-decompose the task one level deeper (glue plan) instead of throwing the certified helper away.
+  const glueProposer: Proposer<string> = async (ctx) => {
+    const entry = (ctx.spec.acceptance as { entry: string }).entry
+    const ctxt = ctx.spec.context ?? ''
+    if (entry === 'easy') return { value: 'export function easy(x) { return x * x; }', fingerprint: 'easy' }
+    if (entry === 'dbl') return { value: 'export function dbl(x) { return x * 2; }', fingerprint: 'dbl' }
+    if (entry === 'mainf') {
+      return ctxt.includes('function dbl')
+        ? { value: 'export function mainf(x) { return dbl(easy(x)) + 2; }', fingerprint: 'mainf-ok' }
+        : { value: 'export function mainf(x) { return easy(x); }', fingerprint: 'mainf-bad' } // glue missing
+    }
+    return { value: 'export function f(x){return x}', fingerprint: 'na' }
+  }
+  // The glue re-decomposition appends a "do NOT re-plan" note naming the certified helpers — key on it.
+  const gluePlan: SubFunctionPlanner = async (inp) => {
+    if (/do NOT re-plan/.test(inp.goal)) return [{ name: 'dbl', goal: 'double x', cases: [{ args: [4], expected: 8 }, { args: [9], expected: 18 }] }]
+    return [{ name: 'easy', goal: 'square x', cases: [{ args: [2], expected: 4 }, { args: [3], expected: 9 }] }]
+  }
+  const glueInput = { goal: 'compute mainf(x) = 2*(x*x) + 2', entry: 'mainf', cases: [{ args: [2], expected: 10 }, { args: [3], expected: 20 }] }
+  const glueEvents: string[] = []
+  const glueOpts = { planner: gluePlan, planAttempts: 1, iterate: { maxEpochs: 3, baseModelCalls: 3, globalModelCalls: 3 },
+    emit: (e: any) => { if (e?.type === 'thought' && typeof e.text === 'string') glueEvents.push(e.text) } }
+  const glued = await decomposeCodeBySubFunction(glueInput, { ...glueOpts, maxDepth: 1 }, glueProposer)
+  check('9n compose-stall: a plan whose difficulty is in the GLUE now solves via re-decomposition',
+    glued.status === 'solved' && !!glued.code, glued.detail)
+  check('9o compose-stall: the glue path actually fired and its rungs are attributed',
+    glueEvents.some((t) => /re-decomposing the glue \(depth 1/.test(t)) && glued.rungs.some((r) => r.name.startsWith('glue/')),
+    glued.rungs.map((r) => r.name).join(','))
+  check('9p compose-stall: the certified module really contains helper + glue + top (verified whole)',
+    !!glued.code && /function easy/.test(glued.code) && /function dbl/.test(glued.code) && /function mainf/.test(glued.code),
+    (glued.code ?? '').slice(0, 80))
+  // 9q CONTROL: with maxDepth 0 the identical setup fails honestly — the glue recovery, not the flat
+  //   compose rung, is what earned the solve, and the depth bound is respected.
+  const noGlue = await decomposeCodeBySubFunction(glueInput, { ...glueOpts, maxDepth: 0 }, glueProposer)
+  check('9q compose-stall bound: maxDepth 0 makes the same task fail honestly (no false solve)',
+    noGlue.status === 'decompose-failed' && noGlue.code === null, noGlue.detail)
+
+  // 9r SUB-LEVEL BUDGET. A recovery level is a smaller problem and must get a smaller purse, or a
+  //   stuck rung's cost compounds with depth (live: 595s on ONE pinned rung before recursion began).
+  const scaled = subLevelIterateBudget({ globalModelCalls: 40, wallClockMs: 420_000, maxEpochs: 12 })
+  check('9r sub-level budget scales the child down, never up',
+    scaled.globalModelCalls === 24 && scaled.wallClockMs === 252_000 && scaled.maxEpochs === 7, JSON.stringify(scaled))
+  const floored = subLevelIterateBudget({ globalModelCalls: 2, wallClockMs: 5_000, maxEpochs: 1 })
+  check('9r2 sub-level budget floors keep a scaled child usable (a 1-call rung can only abstain)',
+    floored.globalModelCalls === 3 && floored.wallClockMs === 30_000 && floored.maxEpochs === 2, JSON.stringify(floored))
+  check('9r3 sub-level budget leaves unset knobs unset (no invented caps)',
+    Object.keys(subLevelIterateBudget(undefined)).length === 0 && subLevelIterateBudget({ maxEpochs: 10 }).globalModelCalls === undefined)
 
   // 9f DECLINES when the planner offers nothing / only the top-level name.
   const noPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => null }, subWeak)

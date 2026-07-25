@@ -459,6 +459,13 @@ export async function decomposeCodeBySubFunction(
     depth?: number
     /** Max recursion levels for the above. Default 1 (one level of sub-decomposition). */
     maxDepth?: number
+    /**
+     * Helpers already CERTIFIED by a parent level, handed down so this level's module contains them
+     * (compose verifies helpers + candidate as one module). Set only by the glue re-decomposition —
+     * callers pass nothing. Sound: these sources were certified against their own cases upstream and
+     * whatever is built on them is still re-verified as a whole against the original cases here.
+     */
+    preHelpers?: { name: string; source: string }[]
   } = {},
   proposerOverride?: Proposer<string>,
 ): Promise<SubFunctionResult> {
@@ -495,9 +502,30 @@ export function isDegenerateSubFnCarve(hasCustomPlanner: boolean, helperCount: n
   return !hasCustomPlanner && helperCount < 2 && !hasTemplate
 }
 
+/**
+ * SUB-LEVEL BUDGET for the two recovery paths (helper recursion, glue re-decomposition). Both used
+ * to hand the child `opts.iterate` VERBATIM, so a depth-1 subtree could spend the parent's full
+ * per-rung budget again on EVERY one of its own rungs — a stuck rung's cost grew multiplicatively
+ * with depth (live: one pinned rung alone burned 595s before recursion even started). Scale the
+ * child down instead: it is a strictly smaller problem, so it should get a strictly smaller purse.
+ * Floors keep a scaled budget usable (a 1-call, 5s rung can only abstain). Pure — unit-tested.
+ */
+export function subLevelIterateBudget(
+  parent: Partial<IterateOpts<string>> | undefined,
+  scale = 0.6,
+): Partial<IterateOpts<string>> {
+  const scaled = { ...(parent ?? {}) } as Partial<IterateOpts<string>> & Record<string, unknown>
+  const shrink = (v: unknown, floor: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.max(floor, Math.round(v * scale)) : v
+  if ('globalModelCalls' in scaled) scaled.globalModelCalls = shrink(scaled.globalModelCalls, 3)
+  if ('wallClockMs' in scaled) scaled.wallClockMs = shrink(scaled.wallClockMs, 30_000)
+  if ('maxEpochs' in scaled) scaled.maxEpochs = shrink(scaled.maxEpochs, 2)
+  return scaled
+}
+
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number },
+  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[] },
   proposerOverride?: Proposer<string>,
   // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by name→{source,goal}.
   // A rung whose plan is IDENTICAL (same name AND same goal) reuses the stored source instead of
@@ -536,7 +564,10 @@ async function runSubFunctionOnce(
     return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'planner proposed no checkable helpers' }
   }
   // guard against a helper colliding with the top-level name
-  const helperPlan = plan.filter((h) => h.name !== input.entry).slice(0, 5)
+  // Drop any rung that re-proposes a helper already certified by the parent level (see preHelpers):
+  // it is proven code, so re-grinding it would only spend budget and risk a WORSE reimplementation.
+  const preNames = new Set((opts.preHelpers ?? []).map((h) => h.name))
+  const helperPlan = plan.filter((h) => h.name !== input.entry && !preNames.has(h.name)).slice(0, 5)
   emit({ type: 'thought', text: `subfn: ${helperPlan.length} helper(s) — ${helperPlan.map((h) => h.name).join(', ')}` })
   if (!helperPlan.length) {
     return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'no helper distinct from the top-level function' }
@@ -555,7 +586,10 @@ async function runSubFunctionOnce(
   }
 
   // 2) Certify each helper independently. A helper that can't certify collapses the plan.
-  const helpers: { name: string; source: string }[] = []
+  // PRE-CERTIFIED helpers handed down by a parent level (glue re-decomposition): their sources are
+  // already verifier-certified and must be part of THIS level's module, or the sub-solve would be
+  // asked to compose against functions that exist only as prompt text and could never certify.
+  const helpers: { name: string; source: string }[] = (opts.preHelpers ?? []).map((h) => ({ ...h }))
   for (const h of helperPlan) {
     if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers, rungs, modelCalls, detail: `aborted at helper ${h.name}` }
     // CARRY-FORWARD: this exact rung (name + identical goal) already certified on a prior
@@ -627,7 +661,7 @@ async function runSubFunctionOnce(
         emit({ type: 'thought', text: `subfn: helper \`${h.name}\` won't one-shot — recursing (depth ${depth + 1}/${maxDepth})` })
         const sub = await decomposeCodeBySubFunction(
           { goal: h.goal, entry: h.name, cases: h.cases, context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined, timeoutMs: input.timeoutMs, nl: h.goal },
-          { ...opts, depth: depth + 1, emit: opts.emit },
+          { ...opts, depth: depth + 1, emit: opts.emit, iterate: subLevelIterateBudget(opts.iterate) },
           proposerOverride,
         )
         modelCalls += sub.modelCalls
@@ -686,6 +720,49 @@ async function runSubFunctionOnce(
   const composedCert = composed.status === 'solved' && !!composed.solution
   rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert })
   if (!composedCert) {
+    // COMPOSE-RUNG RECOVERY (2026-07-25, from the first live FM-general run). Recursion covered only
+    // a stuck HELPER rung — but live, the weak planner's more common miss is the opposite shape: it
+    // carves helpers that all certify in one call each and leaves the DIFFICULTY IN THE GLUE (live
+    // numberToWords: numberToDigit/digitToWord/… all OK, then compose stalled 3 epochs on duplicate
+    // proposals). That stall used to collapse the whole plan and cost a full planAttempt, throwing
+    // the certified helpers away. It is the same disease recursion treats — a rung still too hard for
+    // one shot — so apply the same medicine: re-decompose THIS task one level deeper, with the
+    // certified helpers supplied as context (and carried, so an identical rung costs 0 calls), asking
+    // for a plan that covers the missing glue. Gated exactly like helper recursion: FM-general path
+    // only (a template class's compose is a known-good idiom + composeHint, so a stall there is model
+    // variance, best answered by the outer planAttempt) and bounded by maxDepth. Sound: the sub-solve
+    // is verified against the SAME original cases by the same verifier — this widens search, not trust.
+    const cDepth = opts.depth ?? 0
+    const cMaxDepth = opts.maxDepth ?? 1
+    const cTemplated = hasDecomposeTemplate(input.nl ?? input.goal, input.entry)
+    if (!cTemplated && helpers.length > 0 && cDepth < cMaxDepth && composed.status !== 'aborted' && !opts.signal?.aborted) {
+      emit({ type: 'thought', text: `subfn: composition of \`${input.entry}\` stalled with all helpers certified — re-decomposing the glue (depth ${cDepth + 1}/${cMaxDepth})` })
+      const glueNote =
+        `These helpers are already implemented, tested and available to call — do NOT re-plan them: ` +
+        `${helperNames.map((n) => '`' + n + '`').join(', ')}. Plan the REMAINING steps that combine them into \`${input.entry}\`.`
+      // Seed carry-forward with the certified helpers so a sub-plan that re-proposes an identical
+      // rung (same name AND goal) reuses the proven source at zero model cost.
+      const glueCarry = new Map(carry ?? [])
+      for (const h of helpers) {
+        const planned = helperPlan.find((p) => p.name === h.name)
+        if (planned) glueCarry.set(h.name, { source: h.source, goal: planned.goal })
+      }
+      const sub = await decomposeCodeBySubFunction(
+        { ...input, goal: `${input.goal}\n\n${glueNote}`, context: [input.context, `${WEB_GROUND_MARK}\n${helperBlock}`].filter(Boolean).join('\n\n') || undefined },
+        { ...opts, depth: cDepth + 1, emit: opts.emit, preHelpers: helpers, iterate: subLevelIterateBudget(opts.iterate) },
+        proposerOverride,
+        glueCarry,
+      )
+      modelCalls += sub.modelCalls
+      rungs.push(...sub.rungs.map((r) => ({ ...r, name: `glue/${r.name}` })))
+      if (sub.status === 'solved' && sub.code) {
+        emit({ type: 'thought', text: `subfn: \`${input.entry}\` certified via glue re-decomposition (${modelCalls} calls so far)` })
+        // The sub-solve's module is self-contained (its own helpers + the top fn) and was verified
+        // against the ORIGINAL cases; return it as-is rather than re-concatenating this level's block.
+        return { status: 'solved', code: sub.code, helpers: sub.helpers, rungs, modelCalls, detail: `sub-function decomposition solved ${input.entry} via glue re-decomposition (${modelCalls} model call(s))` }
+      }
+      return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `composition of ${input.entry} did not certify (glue re-decomposition also failed: ${sub.detail})` }
+    }
     return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `composition of ${input.entry} did not certify — ${composed.detail}` }
   }
 
