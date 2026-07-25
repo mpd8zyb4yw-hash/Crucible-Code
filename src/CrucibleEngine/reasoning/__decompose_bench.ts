@@ -427,6 +427,39 @@ async function main() {
   check('9u plan dedupe: the announced carve lists each helper name once',
     dupEvents.some((t) => /^subfn: 2 helper\(s\) — sq, inc$/.test(t)), dupEvents.find((t) => /^subfn: \d+ helper/.test(t)) ?? '(none)')
 
+  // 9v–9y PARTIAL-PLAN SALVAGE. Live `isBalanced` (general scorecard, 2026-07-25b) declined at ZERO
+  //   model calls in 17s: the whole-array JSON.parse is all-or-nothing, so one bad character from the
+  //   1.5B discarded a four-helper plan including the well-formed siblings. The reply below is the
+  //   REAL captured shape — on a bracket-matching goal the model emitted unbalanced brackets itself
+  //   (`]},` for `],`, and `{")]` for `{"]`).
+  const malformed = `[
+  { "name": "isPair", "purpose": "pair check",
+    "examples": [ {"args":["(","("], "expected":true}, {"args":["(","]"], "expected":false} ] },
+  { "name": "isBracket", "purpose": "bracket check",
+    "examples": [ {"args":["(","{"]}, "expected":true}, {"args":["(","}"], "expected":false} ] },
+  { "name": "isNested", "purpose": "nesting check",
+    "examples": [ {"args":["(","(","{")], "expected":true} ] },
+  { "name": "isOpen", "purpose": "open check",
+    "examples": [ {"args":["("], "expected":true}, {"args":[")"], "expected":false} ] }
+]`
+  const salvagedNames = parseSubFunctionPlan(malformed).map((h) => h.name)
+  check('9v salvage: a malformed sibling no longer discards the whole plan (0 helpers → some)',
+    salvagedNames.length > 0, `got ${JSON.stringify(salvagedNames)}`)
+  check('9w salvage: exactly the well-formed helpers survive; the broken ones are dropped',
+    salvagedNames.join(',') === 'isPair,isOpen', salvagedNames.join(','))
+  // The happy path must be untouched — salvage is a FALLBACK, only reached when JSON.parse throws.
+  const wellFormed = `[{"name":"a","purpose":"p","examples":[{"args":[1],"expected":2}]},
+                       {"name":"b","purpose":"q","examples":[{"args":[2],"expected":3}]}]`
+  check('9x salvage: a fully-valid array parses exactly as before (fallback not engaged)',
+    parseSubFunctionPlan(wellFormed).map((h) => h.name).join(',') === 'a,b')
+  // String-awareness matters precisely because the PAYLOADS here are brace/bracket characters: a
+  // `{` inside a JSON string literal must not open a span, or the scan desynchronises on this class.
+  const braceInString = `[{"name":"c","purpose":"handles } and { chars","examples":[{"args":["{"],"expected":true}]},` +
+                        `{"name":"d","purpose":"broken sibling","examples":[{"args":["("]}, "expected":true}]}]`
+  check('9y salvage is string-aware: braces inside string literals do not break the span',
+    parseSubFunctionPlan(braceInString).map((h) => h.name).join(',') === 'c',
+    JSON.stringify(parseSubFunctionPlan(braceInString)))
+
   // 9f DECLINES when the planner offers nothing / only the top-level name.
   const noPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => null }, subWeak)
   check('9f planner with no helpers → declined', noPlan.status === 'declined', noPlan.detail)

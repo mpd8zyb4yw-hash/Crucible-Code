@@ -123,6 +123,56 @@ function buildSubFnUser(goal: string, entry: string, sampleCases: unknown[]): st
   ].filter(Boolean).join('\n\n')
 }
 
+/**
+ * SALVAGE a partially-malformed plan array: scan for top-level `{…}` spans and keep the ones that
+ * parse on their own, discarding only the broken siblings.
+ *
+ * WHY (2026-07-25b, live `isBalanced` general-scorecard task). `JSON.parse` on the whole array is
+ * all-or-nothing, so ONE bad character threw away a four-helper plan and the task declined at ZERO
+ * model calls in 17s — never proposing anything. The 1.5B's actual reply, on a bracket-matching
+ * goal, contained unbalanced brackets of its own:
+ *     {"args":["(","{"]},  "expected":true}      ← `]},` where `],` belongs
+ *     {"args":["(","(","{")], "expected":true}   ← `{")]` where `{"]` belongs
+ * Two of the four helper objects were perfectly well-formed and were discarded with the rest.
+ *
+ * Deterministic and zero-inference — the doctrine's "weak output ⇒ more client-side processing,
+ * never a premium model". Soundness is unchanged: a plan is UNTRUSTED, its example I/O only SEEDS
+ * each rung's verifier, and the composed whole is still re-verified against the ORIGINAL cases. A
+ * salvaged plan can waste budget; it can never certify a wrong answer.
+ *
+ * The scan is string-aware (a brace inside a JSON string literal, or an escaped quote, does not
+ * move the depth) — which matters here precisely because the payloads ARE bracket characters.
+ */
+function salvageTopLevelObjects(text: string): unknown[] {
+  const out: unknown[] = []
+  let depth = 0
+  let start = -1
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (inStr) {
+      if (esc) esc = false
+      else if (c === '\\') esc = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; continue }
+    if (c === '{') { if (depth === 0) start = i; depth++; continue }
+    if (c === '}') {
+      if (depth > 0) {
+        depth--
+        if (depth === 0 && start >= 0) {
+          try { out.push(JSON.parse(text.slice(start, i + 1))) } catch { /* drop this sibling only */ }
+          start = -1
+        }
+      }
+      continue
+    }
+  }
+  return out
+}
+
 /** Parse an FM reply into planned helper functions. Tolerates ```json fences and stray prose. */
 export function parseSubFunctionPlan(raw: string): PlannedSubFunction[] {
   let text = (raw ?? '').trim()
@@ -137,7 +187,7 @@ export function parseSubFunctionPlan(raw: string): PlannedSubFunction[] {
     if (arrStart >= 0 && arrEnd > arrStart) text = text.slice(arrStart, arrEnd + 1)
   }
   let arr: unknown
-  try { arr = JSON.parse(text) } catch { return [] }
+  try { arr = JSON.parse(text) } catch { arr = salvageTopLevelObjects(text) }
   if (!Array.isArray(arr)) return []
 
   const out: PlannedSubFunction[] = []
