@@ -446,6 +446,19 @@ export async function decomposeCodeBySubFunction(
     iterate?: Partial<IterateOpts<string>>
     signal?: AbortSignal
     emit?: IterateOpts<string>['emit']
+    /**
+     * RECURSIVE DECOMPOSITION depth. When a helper rung can't be certified by flat iterate, the
+     * loop re-applies decomposition to THAT helper (its goal + FM-proposed sub-plan) before giving
+     * up — so a task whose natural carve still contains a sub-helper too hard for the weak head one-
+     * shot is subdivided further, rather than collapsing the whole plan. `depth` is the current
+     * recursion level (0 at the top call); recursion fires only while `depth < maxDepth`. Sound at
+     * every level: a recursively-solved helper is a module re-verified against ITS OWN cases, and
+     * the parent's composed whole is still re-verified against the ORIGINAL cases, so recursion can
+     * subdivide the search but never fabricate a certification. General path only (no custom planner).
+     */
+    depth?: number
+    /** Max recursion levels for the above. Default 1 (one level of sub-decomposition). */
+    maxDepth?: number
   } = {},
   proposerOverride?: Proposer<string>,
 ): Promise<SubFunctionResult> {
@@ -484,7 +497,7 @@ export function isDegenerateSubFnCarve(hasCustomPlanner: boolean, helperCount: n
 
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] },
+  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number },
   proposerOverride?: Proposer<string>,
   // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by name→{source,goal}.
   // A rung whose plan is IDENTICAL (same name AND same goal) reuses the stored source instead of
@@ -593,6 +606,43 @@ async function runSubFunctionOnce(
     const certified = res.status === 'solved' && !!res.solution
     rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
     if (!certified) {
+      // RECURSIVE DECOMPOSITION. Flat iterate couldn't certify this helper — before collapsing the
+      // whole plan, re-apply decomposition to the helper itself (its own goal + a fresh FM sub-plan).
+      // This turns a helper that is STILL too hard for the weak head into its own propose→verify→
+      // backtrack tree. In production the planner is always the default (FM, keyed on the passed
+      // goal), so recursion naturally re-plans on `h.goal`; a caller-supplied planner (tests) is
+      // simply re-invoked with the sub-goal. Loops are bounded by `maxDepth`, not the planner source.
+      // Sound: the recursive solve re-verifies its module against THIS helper's cases, and the parent's
+      // composed whole is re-verified against the ORIGINAL cases downstream — recursion widens the
+      // search, never the trust.
+      const depth = opts.depth ?? 0
+      const maxDepth = opts.maxDepth ?? 1
+      // Recurse only on the FM-GENERAL path — a task with NO decompose template. For a template class
+      // the carve is already known-good: a rung failure there is model variance, best answered by
+      // carry-forward + a fresh planAttempt (and re-decomposing a fixed template helper would just burn
+      // the DP-fold wall-clock). Recursion's payoff is precisely the novel task where no template exists
+      // and re-sampling the SAME carve can't help — subdividing the stuck helper is the only move left.
+      const templated = hasDecomposeTemplate(input.nl ?? input.goal, input.entry)
+      if (!templated && depth < maxDepth && res.status !== 'aborted' && !opts.signal?.aborted) {
+        emit({ type: 'thought', text: `subfn: helper \`${h.name}\` won't one-shot — recursing (depth ${depth + 1}/${maxDepth})` })
+        const sub = await decomposeCodeBySubFunction(
+          { goal: h.goal, entry: h.name, cases: h.cases, context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined, timeoutMs: input.timeoutMs, nl: h.goal },
+          { ...opts, depth: depth + 1, emit: opts.emit },
+          proposerOverride,
+        )
+        modelCalls += sub.modelCalls
+        rungs.push(...sub.rungs.map((r) => ({ ...r, name: `${h.name}/${r.name}` })))
+        if (sub.status === 'solved' && sub.code) {
+          // Keep the WHOLE recursive module (its sub-helpers + `h.name`), only stripping any prior
+          // helper it redefined — extractOwnFunction would wrongly drop the sub-helpers it needs.
+          const recSource = stripHelperRedefinitions(sub.code, helpers.map((x) => x.name))
+          helpers.push({ name: h.name, source: recSource })
+          carry?.set(h.name, { source: recSource, goal: h.goal })
+          emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified via recursion (${modelCalls} calls so far)` })
+          continue
+        }
+        return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `helper \`${h.name}\` did not certify (recursion also failed: ${sub.detail})` }
+      }
       return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls, detail: `helper \`${h.name}\` did not certify — ${res.detail}` }
     }
     // Capture ONLY this helper's own function — the certified module often also redefines the

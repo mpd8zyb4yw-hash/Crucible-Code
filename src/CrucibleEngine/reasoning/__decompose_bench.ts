@@ -288,13 +288,59 @@ async function main() {
   const carryEvents: string[] = []
   const carried = await decomposeCodeBySubFunction(
     ffInput,
-    { planner: carryPlan, planAttempts: 3, iterate: { maxEpochs: 3, baseModelCalls: 3, globalModelCalls: 3 },
+    // maxDepth 0 isolates the plan-RETRY + carry mechanism from recursive decomposition: this test's
+    // planner is not goal-aware, so we exercise the outer planAttempts path deliberately, not recursion.
+    { planner: carryPlan, planAttempts: 3, maxDepth: 0, iterate: { maxEpochs: 3, baseModelCalls: 3, globalModelCalls: 3 },
       emit: (e: any) => { if (e?.type === 'thought' && typeof e.text === 'string') carryEvents.push(e.text) } },
     carryProposer,
   )
   check('9h carry-forward: task solves on a later plan attempt', carried.status === 'solved' && !!carried.code, carried.detail)
   check('9i carry-forward: the already-certified helper was reused (0 calls), not re-ground',
     carryEvents.some((t) => /gg` reused from a prior attempt/.test(t)) && ggCalls === 1, `ggCalls=${ggCalls} events=${carryEvents.filter(t => /reused/.test(t)).length}`)
+
+  // 9j/9k/9l RECURSIVE DECOMPOSITION. The top plan carves ONE helper `hard(x) = sq(x)+1` that the
+  //   proposer CANNOT one-shot (with no `sq` in context it returns the identity → flat iterate stalls).
+  //   Instead of collapsing, the loop re-decomposes `hard` itself: a sub-plan carves `sq`, the proposer
+  //   one-shots it, and `hard` composes from `sq`. The whole thing then composes into `mainf = hard*2`.
+  //   Models the real failure mode: a helper that is STILL too hard until subdivided one level further.
+  const recProposer: Proposer<string> = async (ctx) => {
+    const entry = (ctx.spec.acceptance as { entry: string }).entry
+    const ctxt = ctx.spec.context ?? ''
+    if (entry === 'sq') return { value: 'export function sq(x) { return x * x; }', fingerprint: 'sq' }
+    if (entry === 'hard') {
+      return ctxt.includes('function sq')
+        ? { value: 'export function hard(x) { return sq(x) + 1; }', fingerprint: 'hard-ok' }
+        : { value: 'export function hard(x) { return x; }', fingerprint: 'hard-bad' } // can't one-shot without sq
+    }
+    if (entry === 'mainf') {
+      return ctxt.includes('function hard')
+        ? { value: 'export function mainf(x) { return hard(x) * 2; }', fingerprint: 'mainf-ok' }
+        : { value: 'export function mainf(x) { return x; }', fingerprint: 'mainf-bad' }
+    }
+    return { value: 'export function f(x){return x}', fingerprint: 'na' }
+  }
+  // Goal-keyed planner: the TOP goal carves `hard`; `hard`'s OWN goal carves `sq`.
+  const recPlan: SubFunctionPlanner = async (inp) => {
+    if (inp.entry === 'mainf') return [{ name: 'hard', goal: 'compute hard(x) = sq(x) + 1', cases: [{ args: [2], expected: 5 }, { args: [3], expected: 10 }] }]
+    if (inp.entry === 'hard') return [{ name: 'sq', goal: 'square x', cases: [{ args: [2], expected: 4 }, { args: [3], expected: 9 }] }]
+    return null
+  }
+  const recInput = { goal: 'compute mainf(x) = 2*(x*x + 1)', entry: 'mainf', cases: [{ args: [2], expected: 10 }, { args: [3], expected: 20 }] }
+  const recEvents: string[] = []
+  const recOpts = { planner: recPlan, planAttempts: 1, iterate: { maxEpochs: 3, baseModelCalls: 3, globalModelCalls: 3 },
+    emit: (e: any) => { if (e?.type === 'thought' && typeof e.text === 'string') recEvents.push(e.text) } }
+  const recursed = await decomposeCodeBySubFunction(recInput, { ...recOpts, maxDepth: 1 }, recProposer)
+  check('9j recursion: a helper too hard to one-shot solves when re-decomposed one level deeper',
+    recursed.status === 'solved' && !!recursed.code, recursed.detail)
+  check('9k recursion: the recursive path actually fired (not a flat solve)',
+    recEvents.some((t) => /recursing \(depth 1/.test(t)) && recEvents.some((t) => /certified via recursion/.test(t)), recEvents.filter(t => /recurs/.test(t)).join(' | '))
+  check('9l recursion: the sub-helper `sq` is carried into the final composed module (not dropped)',
+    !!recursed.code && /function sq/.test(recursed.code) && /function hard/.test(recursed.code) && /function mainf/.test(recursed.code), (recursed.code ?? '').slice(0, 80))
+  // 9m SOUNDNESS/CONTROL: with recursion DISABLED (maxDepth 0) the SAME setup fails honestly — proving
+  //   it is recursion, not the flat path, that earned the solve, and that the depth bound is respected.
+  const noRec = await decomposeCodeBySubFunction(recInput, { ...recOpts, maxDepth: 0 }, recProposer)
+  check('9m recursion bound: maxDepth 0 makes the same task fail honestly (no false solve)',
+    noRec.status === 'decompose-failed' && noRec.code === null, noRec.detail)
 
   // 9f DECLINES when the planner offers nothing / only the top-level name.
   const noPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => null }, subWeak)
