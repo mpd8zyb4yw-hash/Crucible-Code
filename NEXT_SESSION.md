@@ -17,51 +17,61 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-25 (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-25b (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **RECURSIVE DECOMPOSITION landed — the decompose registry's single-level ceiling is gone.** On the
-> FM-general path (a task with NO template), a helper the weak head still can't one-shot no longer
-> collapses the whole plan: `solve.ts` re-applies `decomposeCodeBySubFunction` to that helper itself
-> (its own goal + fresh FM sub-plan), bounded by `maxDepth` (default 1). Sound at every level (the
-> recursive helper is re-verified against its OWN cases; the parent whole against the ORIGINAL cases —
-> control test 9m: `maxDepth 0` fails honestly). This is the doctrine's generalization BEYOND the 5
-> hand-authored template classes. Tests 9j–9m; decompose bench 83/0.
+> **The live bottleneck is NOT carve depth — it is the head anchoring on one wrong module.** The
+> pinned-carve recursion probe (`__decompose_recursive_live.ts`, `numberToWords`) came back an honest
+> miss on BOTH arms: depth 0 `decompose-failed` (42 calls, 595s); depth 1 `decompose-failed` with
+> **recursion confirmed firing** (136 calls, 1301s). The sub-carve (`tensToWords`/`hundredsToWords`)
+> also failed to certify — the 1.5B stalls even on 0..99→words. Every stall in both logs is the same
+> line repeated: `duplicate proposal (stuck)`. So recursion is proven SOUND and proven to FIRE live,
+> but has not yet EARNED a solve; the thing blocking it is proposal diversity, not depth.
 >
-> **AGGREGATE DECOMPOSE SCORECARD: 15/15 (100%) across all 5 template classes**, strict-offline,
-> `CRUCIBLE_NO_DISTILL=1` (genuine generation, no memorized hits). Median calls/wall: basicCalculator
-> 5/11s, evalRPN 4/7s, editDistance 23/74s, calculatorWithParens 8/23s, coinChange 3/6s. editDistance
-> held 3/3 — carry-forward + the 420s DP-fold wall did their job.
+> **Three fixes landed against that finding:**
+> - **Duplicate draws now feed anchoring evidence back to the proposer (`search.ts`).** A duplicate was
+>   discarded with no trace in the history — so `codeProposer`'s anti-anchoring escalation (hotter
+>   temperature, rotated structural breaker, stop echoing the anchored code), which keys on repeated
+>   failure signals in that history, never fired in exactly the situation it was written for. A duplicate
+>   now re-appends a copy of the stored attempt. Nothing is re-verified or re-scored; only the prompt
+>   changes. Test asserts the history grows AND an always-identical proposer still terminates honestly.
+> - **`subLevelIterateBudget`** — a recovery level gets 0.6× the parent per-rung purse (with floors),
+>   so a stuck rung's cost stops compounding with depth (the 595s→1301s blowup). Tests 9r–9r3.
+> - **Plan dedupe (`solve.ts`)** — the live FM carve was
+>   `convertToWords, pluralize, convertToWordsHelper, convertToWordsHelper`. Repeated names were each
+>   ground as their own rung (a full budget spent twice on one goal) and both sources landed in the
+>   module, where the later same-named `function` declaration silently shadows the first certified one.
+>   Dedupe keeps the first occurrence, BEFORE the degeneracy gate, so `[A, A]` resamples as the
+>   single-helper re-bake it is. Tests 9s–9u.
 >
-> Also this session: **carry-forward across `planAttempts`** (a retry re-grinds only the failed rung,
-> not the easy ones — kills the DP-fold ~1200s waste; tests 9h/9i), and **health() now accepts a raw
-> llama.cpp `{status:"ok"}`** (`registry.ts`/`fm-bench.ts`) so a bare `llama-server` needs no
-> `fm_health_shim.mjs` — verified live against :8080. tsc 0; vgr:bench 236/0; searchbatch 11/11;
-> taskcorpus ALL PASS.
+> **New harness: `__decompose_general_scorecard_live.ts`** — the NO-TEMPLATE number. All five classes in
+> the existing 15/15 scorecard trip a `templateFor` detector, so that number measures the REGISTRY, not
+> general capability. Five tasks (`romanToInt`, `intToRoman`, `compressRuns`, `isBalanced`,
+> `wordFrequencyTop`), each asserted at runtime to miss every detector (verified: all five clean). A task
+> that later trips a detector reports `TEMPLATED` and is skipped, never folded into the general number.
+> **It has not been run against the live head yet — there is no general-path number on record.**
+>
+> Benches: decompose 93/0, vgr 238/0, searchbatch 11/0, tsc clean. All work committed.
 >
 > ### OPEN — next priorities (highest leverage first)
 >
-> 1. **PROVE recursive decomposition on a LIVE novel task.** 9j–9m are deterministic (toy proposer).
->    The real test is a task with NO template whose FM-proposed carve hides a sub-helper the 1.5B can't
->    one-shot — author one live probe (`reasoning/__decompose_recursive_live.ts`) that exercises the
->    real FM planner + head at depth 1 and certifies. Until that runs, recursion is proven SOUND but not
->    yet proven to EARN a solve on the general path against the live head.
-> 2. **Measure the FM-general (no-template) solve rate END-TO-END.** The 15/15 scorecard covers only the
->    5 TEMPLATE classes. The whole point of recursion is the NON-template task — but there is no scorecard
->    for it. Build a small novel-task probe set (tasks deliberately NOT matching any detector) and run the
->    real decompose path (FM planner + recursion) against the live head to get the general-path number.
->    This is the metric that now matters most; the template number is saturated.
-> 3. **Recursion budget/latency guard on the live path.** Each recursion adds a full sub-decomposition
->    under the per-rung budget; at depth 1 with a 5-helper sub-plan that can be large. Confirm (via probe
->    2) it doesn't blow wall-clock on realistic novel tasks, and if it does, add a recursion-specific
->    budget (smaller than the top per-rung budget) rather than reusing `opts.iterate` verbatim.
-> 4. **`calculatorWithParens` live AGENT-PATH probe.** The corpus task + template + scorecard entry exist
->    (all green offline), but there is no end-to-end agent-path live probe like basicCalculator/evalRPN
->    have. Add one so the shunting-yard class is exercised through the full agent path, not just the
->    scorecard harness.
-> 5. **Registry 6th class only if a real gap demands it.** Five classes at 100% is saturated; the leverage
->    has moved from ADDING templates to the GENERAL (recursive, no-template) path. Add a 6th class only if
->    probe 2 surfaces a common novel shape recursion alone can't crack — otherwise invest in the general
->    path, not more hand-authored carves.
+> 1. **Run `__decompose_general_scorecard_live.ts` against the live head** (`LOCAL_INFERENCE_URL=:8080`,
+>    `CRUCIBLE_NO_DISTILL=1`). The file exists and typechecks; no live number exists yet. This is the
+>    metric that now matters most — the template 15/15 is saturated and measures the registry, not the
+>    general path.
+> 2. **Break the duplicate-proposal anchor at the PROPOSER, not just the prompt.** The
+>    duplicate-evidence fix (`search.ts`) makes escalation fire, but if live logs still show
+>    `duplicate proposal (stuck)` dominating, the next lever is drawing the retry at a different
+>    sampling seed / top-p, or hard-rejecting a candidate whose AST matches a prior one rather than
+>    only its exact fingerprint.
+> 3. **Re-run the 15/15 template scorecard (`__decompose_scorecard_live.ts`).** `search.ts` and
+>    `solve.ts` both changed on paths every template class uses (duplicate evidence, plan dedupe,
+>    sub-level budget). That number must be re-earned, not assumed.
+> 4. **Re-run the FM-general recursion probe on the FIXED code.** The recorded 595s/1301s arms predate
+>    plan dedupe, the sub-level budget, and duplicate evidence — and the arm-1 carve collapsed on
+>    exactly the duplicated helper name that dedupe now removes.
+> 5. **`calculatorWithParens` live AGENT-PATH probe.** The corpus task, template, and scorecard entry
+>    all exist and are green offline, but the shunting-yard class has no end-to-end agent-path live
+>    probe the way basicCalculator/evalRPN do.
 ---
 
 ## PRIOR STATE — cont.97 (historical; superseded by the block above)

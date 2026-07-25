@@ -1933,6 +1933,42 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25b (gap-soundness — duplicate-draw evidence, sub-level budget, plan dedupe, general scorecard)
+- **A DUPLICATE DRAW NOW FEEDS ANCHORING EVIDENCE BACK TO THE PROPOSER (`search.ts`).** A duplicate
+  fingerprint was discarded outright — no verify, no budget charged, and crucially **no trace in the
+  history**. But `codeProposer`'s anti-anchoring escalation (hotter temperature, rotated structural
+  breaker, stop echoing the anchored code) keys on repeated failure *signals* in that history, so in
+  exactly the situation it was written for — the head re-emitting one wrong module forever — it never
+  fired. A duplicate now re-appends a copy of the stored attempt so escalation deepens. Nothing is
+  re-verified or re-scored; only the prompt changes. Test asserts the history grows AND that an
+  always-identical proposer still terminates honestly (no false solve).
+- **`subLevelIterateBudget` — a recovery level gets a smaller purse.** Recovery levels reused the
+  parent's full per-rung budget, so a stuck rung's cost compounded with depth (live: 595s → 1301s on the
+  pinned-carve arms). A child now gets 0.6× with floors. Tests 9r–9r3.
+- **PLAN DEDUPE (`solve.ts`) — a repeated helper name in an FM carve is ground once.** The live
+  FM-general `numberToWords` carve came back as
+  `convertToWords, pluralize, convertToWordsHelper, convertToWordsHelper`. The plan filter dropped
+  entry-collisions and parent-supplied helpers but never deduped WITHIN the plan, so each copy became
+  its own rung (a full per-rung budget spent twice on one goal) and both certified sources landed in
+  `helpers` — where the concatenated module carries two same-named `function` declarations and the later
+  one silently shadows the first, discarding a rung already paid for and certified. Dedupe keeps the
+  FIRST occurrence and runs BEFORE the degeneracy gate, so a carve of `[A, A]` resamples as the
+  single-helper re-bake it actually is instead of burning two rungs to discover that. Tests 9s–9u.
+- **`__decompose_general_scorecard_live.ts` — the NO-TEMPLATE number.** The existing scorecard measures
+  the template REGISTRY: all five classes trip a `templateFor` detector, so the carve is handed over
+  pre-baked and 15/15 says nothing about a task nobody wrote a template for — the only case the doctrine's
+  "novel problems it has not seen" actually cares about. Five tasks (`romanToInt`, `intToRoman`,
+  `compressRuns`, `isBalanced`, `wordFrequencyTop`), each asserted at runtime to miss every detector so
+  the FM must invent the carve. A task that later trips a detector is reported as `TEMPLATED` and skipped
+  rather than quietly folded into the general number.
+- **LIVE RESULT (pinned carve, recursion mechanism, pre-fix code) — honest miss.** `pinned depth 0`:
+  `decompose-failed`, 42 calls, 595s. `pinned depth 1`: `decompose-failed` with **recursion confirmed
+  firing**, 136 calls, 1301s. Recursion fires correctly on a live stuck helper, but the sub-carve
+  (`tensToWords`/`hundredsToWords`) also failed to certify — the 1.5B stalls even on 0..99→words. The live
+  bottleneck is NOT carve depth. Every stall in both logs is the same line: `duplicate proposal (stuck)`,
+  which is what motivated the duplicate-evidence fix above.
+- Benches: decompose 93/0, vgr 238/0, searchbatch 11/0, tsc clean.
+
 ### 2026-07-25 (gap-soundness — RECURSIVE decomposition + carry-forward + raw-llama health + 15/15 aggregate scorecard)
 - **RECURSIVE DECOMPOSITION (`solve.ts`) — the single-level ceiling is gone.** Previously a helper the
   weak head still couldn't one-shot collapsed the WHOLE plan. Now, on the FM-general path (no template),
