@@ -1933,6 +1933,40 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25c (gap-soundness — FIRST general-path number: 2/5, and the malformed-plan salvage)
+- **FIRST LIVE GENERAL (no-template) SCORECARD: 2/5 (40%)**, strict-offline, `CRUCIBLE_NO_DISTILL=1`.
+  `romanToInt` **solved** (90 calls, 692s; rungs romanToNum/parseRoman/subtract/compose all OK),
+  `intToRoman` **solved** (13 calls, 107s), `compressRuns` declined (97 calls), `isBalanced` declined
+  (0 calls, 17s), `wordFrequencyTop` decompose-failed (151 calls). Two genuine solves on novel tasks
+  matching NO detector — the first live evidence the general path earns anything at all. It also puts
+  a real number against the saturated template 15/15, which measures the REGISTRY, not capability.
+- **FM-GENERAL RECURSION PROBE — honest miss on both arms.** depth 0 `decompose-failed` (34 calls,
+  753s, wall-clock on `numberToWordsHelper`); depth 1 `decompose-failed` with recursion firing and
+  `parseDigit` certifying (76 calls, 663s). NOTE: this run DID include the duplicate-evidence commit,
+  and `duplicate proposal (stuck)` still appears ~20× in the depth-1 arm — the escalation reaches the
+  model and it repeats anyway. Proposer-side diversity (sampling seed / top-p, or AST-level rejection
+  rather than exact-fingerprint) is now CONFIRMED necessary, not speculative.
+- **CARVE QUALITY is the newly-exposed defect, upstream of both depth and anchoring.** The FM turned
+  the goal's NEGATIVE formatting constraints ("no commas and no and") into helpers: `removeCommas`,
+  `removeAnd`, `wordSeparatorHelper` — no-ops against any correct implementation — and carved
+  `parseNumber`/`extractDigits`/`convertToBase`, which treat a `number` input as text. These are
+  pattern-matches on the PROSE, not a decomposition of the computation. `SUBFN_SYSTEM`'s "prefer
+  helpers that carve off the tricky parsing / edge-case logic" steers into this, and nothing requires
+  the helpers to COMPOSE back to the entry. `isDegenerateSubFnCarve` only catches 1-helper plans, so
+  four individually-plausible non-composing helpers burn the whole budget.
+- **PARTIAL-PLAN SALVAGE (`fmPlanner.ts`).** `parseSubFunctionPlan` did one `JSON.parse` over the whole
+  array, so one bad character discarded every helper — which is why `isBalanced` declined at ZERO model
+  calls. On a bracket-matching goal the 1.5B emitted unbalanced brackets of its own (`]},` for `],`;
+  `{")]` for `{"]`). Now falls back to a string-aware scan for top-level `{…}` spans, keeping the
+  siblings that parse. String-awareness matters precisely because the payloads ARE bracket characters.
+  Happy path untouched (fallback only on throw). Sound: plans are untrusted; the whole is re-verified
+  against the ORIGINAL cases. Tests 9v–9y.
+  **SCOPE, HONESTLY: this does NOT fix `isBalanced`** — a live re-run still declines at 0 calls, because
+  in that reply EVERY sibling carried the same malformed line, leaving nothing well-formed to salvage.
+  The fix for that class is CONSTRAINED DECODING: `FmCallOpts` already plumbs `gbnf` through
+  `fmComplete`/`callFm`, and the planner call simply does not use it.
+- Benches: decompose 97/0, vgr 238/0, searchbatch 11/0, tsc clean.
+
 ### 2026-07-25b (gap-soundness — duplicate-draw evidence, sub-level budget, plan dedupe, general scorecard)
 - **A DUPLICATE DRAW NOW FEEDS ANCHORING EVIDENCE BACK TO THE PROPOSER (`search.ts`).** A duplicate
   fingerprint was discarded outright — no verify, no budget charged, and crucially **no trace in the

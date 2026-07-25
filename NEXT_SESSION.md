@@ -17,61 +17,68 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-25b (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-25c (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **The live bottleneck is NOT carve depth — it is the head anchoring on one wrong module.** The
-> pinned-carve recursion probe (`__decompose_recursive_live.ts`, `numberToWords`) came back an honest
-> miss on BOTH arms: depth 0 `decompose-failed` (42 calls, 595s); depth 1 `decompose-failed` with
-> **recursion confirmed firing** (136 calls, 1301s). The sub-carve (`tensToWords`/`hundredsToWords`)
-> also failed to certify — the 1.5B stalls even on 0..99→words. Every stall in both logs is the same
-> line repeated: `duplicate proposal (stuck)`. So recursion is proven SOUND and proven to FIRE live,
-> but has not yet EARNED a solve; the thing blocking it is proposal diversity, not depth.
+> **FIRST GENERAL-PATH NUMBER ON RECORD: 2/5 (40%)** — `__decompose_general_scorecard_live.ts`,
+> strict-offline, `CRUCIBLE_NO_DISTILL=1`, five tasks each asserted to match NO detector:
 >
-> **Three fixes landed against that finding:**
-> - **Duplicate draws now feed anchoring evidence back to the proposer (`search.ts`).** A duplicate was
->   discarded with no trace in the history — so `codeProposer`'s anti-anchoring escalation (hotter
->   temperature, rotated structural breaker, stop echoing the anchored code), which keys on repeated
->   failure signals in that history, never fired in exactly the situation it was written for. A duplicate
->   now re-appends a copy of the stored attempt. Nothing is re-verified or re-scored; only the prompt
->   changes. Test asserts the history grows AND an always-identical proposer still terminates honestly.
-> - **`subLevelIterateBudget`** — a recovery level gets 0.6× the parent per-rung purse (with floors),
->   so a stuck rung's cost stops compounding with depth (the 595s→1301s blowup). Tests 9r–9r3.
-> - **Plan dedupe (`solve.ts`)** — the live FM carve was
->   `convertToWords, pluralize, convertToWordsHelper, convertToWordsHelper`. Repeated names were each
->   ground as their own rung (a full budget spent twice on one goal) and both sources landed in the
->   module, where the later same-named `function` declaration silently shadows the first certified one.
->   Dedupe keeps the first occurrence, BEFORE the degeneracy gate, so `[A, A]` resamples as the
->   single-helper re-bake it is. Tests 9s–9u.
+> | task | result | calls | wall |
+> |---|---|---|---|
+> | `romanToInt` | **solved** (romanToNum/parseRoman/subtract/compose all OK) | 90 | 692s |
+> | `intToRoman` | **solved** | 13 | 107s |
+> | `compressRuns` | declined | 97 | 405s |
+> | `isBalanced` | declined | 0 | 17s |
+> | `wordFrequencyTop` | decompose-failed | 151 | 524s |
 >
-> **New harness: `__decompose_general_scorecard_live.ts`** — the NO-TEMPLATE number. All five classes in
-> the existing 15/15 scorecard trip a `templateFor` detector, so that number measures the REGISTRY, not
-> general capability. Five tasks (`romanToInt`, `intToRoman`, `compressRuns`, `isBalanced`,
-> `wordFrequencyTop`), each asserted at runtime to miss every detector (verified: all five clean). A task
-> that later trips a detector reports `TEMPLATED` and is skipped, never folded into the general number.
-> **It has not been run against the live head yet — there is no general-path number on record.**
+> Two genuine solves on novel no-template tasks — the first live evidence the general path earns
+> anything. The template 15/15 measures the REGISTRY; this is the capability number.
 >
-> Benches: decompose 93/0, vgr 238/0, searchbatch 11/0, tsc clean. All work committed.
+> **The FM-general recursion probe missed on both arms** — depth 0 `decompose-failed` (34 calls, 753s);
+> depth 1 `decompose-failed`, recursion fired, `parseDigit` certified (76 calls, 663s). Important: that
+> run **did** include the duplicate-evidence commit, and `duplicate proposal (stuck)` still appears ~20×
+> in the depth-1 arm. The escalation reaches the model and it repeats anyway.
+>
+> **The failure ladder, in the order it actually bites:**
+> 1. **Carve quality (worst, newly exposed).** The FM turned the goal's NEGATIVE formatting constraints
+>    ("no commas and no and") into helpers — `removeCommas`, `removeAnd`, `wordSeparatorHelper`, all
+>    no-ops against a correct implementation — and carved `parseNumber`/`extractDigits`/`convertToBase`,
+>    which treat a `number` input as text. Pattern-matches on the PROSE, not the computation.
+>    `SUBFN_SYSTEM`'s "prefer helpers that carve off the tricky parsing / edge-case logic" steers into
+>    this, and nothing requires the helpers to COMPOSE back to the entry.
+> 2. **Malformed plan JSON.** On a bracket-matching goal the 1.5B emitted unbalanced brackets of its own
+>    (`]},` for `],`; `{")]` for `{"]`), and the all-or-nothing `JSON.parse` discarded the entire plan —
+>    `isBalanced` declined at ZERO model calls in 17s.
+> 3. **Proposal anchoring.** Confirmed still live even with duplicate-evidence escalation shipped.
+> 4. Carve depth — recursion works and is NOT the bottleneck.
+>
+> **Landed this session:** plan dedupe (a repeated helper name was ground twice and the later
+> declaration silently shadowed the first certified one; tests 9s–9u); `subLevelIterateBudget` (0.6×
+> child purse, tests 9r–9r3); duplicate-draw evidence into the proposer history; partial-plan salvage
+> (string-aware scan for top-level `{…}` spans, tests 9v–9y); and the general scorecard harness itself.
+> **Salvage does NOT fix `isBalanced`** — a live re-run still declines at 0 calls, because in that reply
+> EVERY sibling carried the same malformed line. Honest scope: salvage helps when SOME siblings are clean.
+>
+> Benches: decompose 97/0, vgr 238/0, searchbatch 11/0, tsc clean. All work committed.
 >
 > ### OPEN — next priorities (highest leverage first)
 >
-> 1. **Run `__decompose_general_scorecard_live.ts` against the live head** (`LOCAL_INFERENCE_URL=:8080`,
->    `CRUCIBLE_NO_DISTILL=1`). The file exists and typechecks; no live number exists yet. This is the
->    metric that now matters most — the template 15/15 is saturated and measures the registry, not the
->    general path.
-> 2. **Break the duplicate-proposal anchor at the PROPOSER, not just the prompt.** The
->    duplicate-evidence fix (`search.ts`) makes escalation fire, but if live logs still show
->    `duplicate proposal (stuck)` dominating, the next lever is drawing the retry at a different
->    sampling seed / top-p, or hard-rejecting a candidate whose AST matches a prior one rather than
->    only its exact fingerprint.
-> 3. **Re-run the 15/15 template scorecard (`__decompose_scorecard_live.ts`).** `search.ts` and
->    `solve.ts` both changed on paths every template class uses (duplicate evidence, plan dedupe,
->    sub-level budget). That number must be re-earned, not assumed.
-> 4. **Re-run the FM-general recursion probe on the FIXED code.** The recorded 595s/1301s arms predate
->    plan dedupe, the sub-level budget, and duplicate evidence — and the arm-1 carve collapsed on
->    exactly the duplicated helper name that dedupe now removes.
-> 5. **`calculatorWithParens` live AGENT-PATH probe.** The corpus task, template, and scorecard entry
->    all exist and are green offline, but the shunting-yard class has no end-to-end agent-path live
->    probe the way basicCalculator/evalRPN do.
+> 1. **Constrain the planner's decoding with GBNF.** `FmCallOpts` already plumbs `gbnf` through
+>    `fmComplete`/`callFm` (see `__gbnf_malformed_bench.ts` for the existing idiom); the planner call in
+>    `makeFmSubFunctionPlanner` simply does not pass one. A grammar pinned to the plan schema makes the
+>    malformed-JSON class STRUCTURALLY impossible rather than salvageable after the fact — the direct
+>    fix for the `isBalanced` 0-call decline.
+> 2. **Fix carve quality in `SUBFN_SYSTEM` / `buildSubFnUser` (`fmPlanner.ts`).** Require the helpers to
+>    compose back to the entry and to consume the entry's actual argument types; drop or rewrite the
+>    "carve off tricky parsing / edge-case logic" wording that produced `removeCommas`/`removeAnd`
+>    no-ops out of a negative formatting constraint.
+> 3. **Add a non-composing-carve gate** alongside `isDegenerateSubFnCarve`, which today only catches
+>    single-helper plans — every junk 4-helper carve above passed it and burned a full budget.
+> 4. **Break the proposal anchor at the proposer, not the prompt** — vary sampling seed/top-p per retry,
+>    or reject a candidate whose AST matches a prior one rather than only its exact fingerprint.
+>    Confirmed necessary: ~20 `duplicate proposal (stuck)` lines fired WITH escalation already live.
+> 5. **Re-run the 15/15 template scorecard (`__decompose_scorecard_live.ts`).** `search.ts`, `solve.ts`
+>    and `fmPlanner.ts` all changed on paths every template class uses; that number must be re-earned,
+>    not assumed.
 ---
 
 ## PRIOR STATE — cont.97 (historical; superseded by the block above)
