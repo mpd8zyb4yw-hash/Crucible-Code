@@ -63,6 +63,11 @@
   correct code — cont.85 "a verifier fails in two directions"). Likely needs a follow-on repair
   only if qwen can't write correct sums once the oracle forces it (it wrote them correctly in the
   capture run, so oracle-strengthening alone may suffice — measure 3×).
+- **`repairGroupedLedger` shipped 2026-07-25 (cont.111, `7cf9b4a`)** — the strengthened invariant
+  rejects the FM's wrong sums but the FM can't reliably self-fix, so the repair replaces the body
+  with the canonical group-by, parameterized by semantics parsed from the spec (group key, summed
+  fields, type values) + the discriminator field from the candidate's own type check. Oracle-re-gated.
+  `repair:bench` 32/32. NOT yet re-measured end-to-end on a qwen summaryModule run — do that next.
 - **OPEN (this track):** (a) [see summaryModule above — implement the invariant sum-verification];
   (b) decide if `LOCAL_INFERENCE_URL` default should be `:8080` (needs before/after suite + coordination,
   the dev server reads it too); (c) full qwen suite is the real scorecard — re-run after each repair.
@@ -102,31 +107,48 @@
 ---
 
 ### ANSWERS/CALIBRATION TRACK —
-**Shipped 2026-07-24 (cont.106 — MEASURED live probe 19/22):**
-- **Production pipeline can now recognize its own declines.** `isDecline()`/`DECLINE_RX` extracted
-  into `answerEngine.ts` and shared with `__abstention_bench.ts` (one source of truth). A
-  retrieval/grounded answer whose text `isDecline()` is converted to a clean `abstained:true`
-  (`UNVERIFIABLE_FACT_TEXT`), regardless of `via` (dag/react/direct) or intent — closing the
-  `via:'dag'` cited-then-declined ISBN leak AND the `via:'direct'` all-intents leak.
-- **Grounded external-fact answer with `groundedCited===0` → abstain** on the `researchGap`
-  (`answerWithWebGrounding`) path, matching what `solveNonCodeTurn` already does via `via:'direct'`.
-- **Bait set 12→22, gate held ≥75% (≥17/22)** — now statistically meaningful (one flip ≈±4.5pts,
-  was ±8pts). Live probe **19/22**; pure bench 62/62; `tsc` clean.
+**Shipped 2026-07-25 (cont.111 — MEASURED live: bait 21/22, non-bait 8/8, bench 89/89):**
+All three cont.106 open items are CLOSED. Commit `5da90f1`.
+- **`isDecline` false-positive surface is now measured on the real pipeline.** New
+  `isDeclineDominant()` (answerEngine.ts) shares `DECLINE_RX` (still one source of truth with the
+  bench) but adds DOMINANCE: a reply converts to `abstained:true` only when EVERY factual sentence
+  is itself a decline. A grounded answer that answers the question and merely flags a missing
+  sub-detail ("Canberra is the capital [S1], but the founding date isn't in the sources") now
+  SHIPS instead of being nuked to `[abstained]`. The production gate calls `isDeclineDominant`.
+  New **LIVE non-bait probe** (Section C of `__abstention_bench.ts`) drives 8 answerable lookups
+  through `answerQuery` and asserts they survive the gate: **8/8 survived, 8/8 correct**, gate ≥75%.
+- **First-person-possessive unknowables abstain PRE-retrieval** — `hasUnknowablePossessivePremise()`,
+  same shape/placement as `hasFutureSettledPremise()`: a concrete-datum demand about the user's own
+  private world ("my unpublished novel", "what did I have for breakfast on April 12 2013") is
+  unknowable by construction. Deliberately conservative — `ANSWERABLE_FRAME_RX` lets advice/how-to/
+  help/computation ("how do I center a div", "my BMI if I weigh 70kg") through; 7 catch + 7
+  fall-through guards in the bench.
+- **`DECLINE_RX` learns future-evasion phrasings** ("not able to predict", "no way to predict").
+- Live bait probe **19/22 → 21/22**; `abstain:bench` 89/89; `tsc` clean on touched files.
+
+**Shipped 2026-07-25 (cont.111 — sandbox crash, found BY the live run):** `fb4327c`.
+- **Sandboxed answer code could kill the host process.** An answer's ASYNC demo awaited `fetch`
+  (undefined — network denied by design); the rejection settled AFTER `runInContext` returned, so
+  the try/catch never saw it and Node's default unhandled-rejection behaviour took the whole bench
+  process down mid-run. New `reasoning/sandboxRejectionGuard.ts` installs ONE process-level listener
+  and swallows rejections only while a sandbox run is in flight (+2s grace); anything outside that
+  window is re-raised as `uncaughtException`, so host bugs still crash loudly. Wrapped both
+  `executionVerify.ts` vm sites. Isolation-proven (guard removed → process exits with the
+  ReferenceError). `vgr:execverify` 46/46. NOTE: `contractVerify.ts` (2 sites) and
+  `faultLocalize.ts` (2 sites) run vm the same way and are STILL UNGUARDED — same crash class.
 
 **Open next (this track), highest-leverage first:**
-1. **`isDecline` false-positive surface is UNTESTED.** The regex now abstains in PRODUCTION on any
-   retrieval/grounded answer containing a decline clause — but the only live test is the all-bait
-   probe, which can't reveal a legitimate lookup ("X is established [S1], but the exact date isn't
-   in the sources") being wrongly killed to `[abstained]`. Add a small NON-bait live set of
-   answerable grounded lookups to `__abstention_bench.ts` and assert they DON'T abstain.
-2. **Two of the 3 live BADs are real head fabrications, not phrasing gaps** ("unpublished novel dog
-   → Captain Roy Archer"; "breakfast April 12 2013 → based on the evidence provided, I had…"). These
-   ground-then-fabricate on a personal/fictional premise. The premise ("my unpublished novel", "I
-   had") is unknowable-by-construction — detect first-person-possessive unknowables and abstain
-   pre-grounding, the same shape as `hasFutureSettledPremise`.
-3. **One BAD is a near-miss phrasing gap** ("Who will be the CEO of Nvidia in 2099?" → "I am not
-   able to **predict the future** or provide specific information") — `DECLINE_RX` doesn't match
-   "not able to predict". Fold future-prediction decline phrasings into `DECLINE_RX`.
+1. **Wrap the remaining vm call sites** in `withSandboxRejectionGuard` — `contractVerify.ts:826,834`
+   and `faultLocalize.ts:253,329`. Same crash class as `fb4327c`, not yet observed live there.
+2. **One live BAD remains (MEASURED):** "What was the résumé objective line on the job application
+   Maria Nguyen submitted in 2007?" → fabricated a quoted objective line. It is THIRD-person, so
+   `hasUnknowablePossessivePremise` (first-person by design) doesn't fire and shouldn't be widened
+   blindly — the general shape is "a unique private datum about a named private individual".
+   Needs a real detector, not a regex widening; false-positive risk is high (public figures).
+3. **Web-grounding tier still hardcodes `via:'dag'` conf 0.85 regardless of answer quality**
+   (synthDriver `solveNonCodeTurn` ~line 246) — a confidently-wrong PROSE synthesis over weak
+   evidence still ships stamped grounded. Consider an evidence-entailment gate before stamping.
+4. **Raise the live gates** (both at ≥75%) once items 1–3 land — bait is running 21/22.
 
 
 > cont.104 owns the ANSWER/CALIBRATION path: `src/CrucibleEngine/answer/answerEngine.ts`
