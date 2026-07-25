@@ -17,17 +17,32 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-25 (cont.110b coding-bench track + cont.106 answers track — two concurrent tracks, both current) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-26 (cont.112 — answers/calibration track CLOSED its 3 open items; coding track confirmation suite RUN) (REPLACE THIS EVERY SESSION)
 
 > NOTE: two tracks were live. The CODING-BENCH block is first; the ANSWERS/CALIBRATION block
-> (cont.106) follows unchanged. Do not delete either without confirming that track is done.
+> follows. Do not delete either without confirming that track is done.
 
-> **CODING-BENCH UPDATE (cont.111):** summaryModule is now RELIABLE — `repairGroupedLedger`
-> (`synth/repairProposers.ts`) took it 2/3 → **3/3 GREEN** on qwen (repair fired+accepted 3/3);
-> trajectory this session was 3/3 RED → 2/3 (recompute invariant) → 3/3 (+repair). `repair:bench`
-> 32/32. Reliable floor is therefore ~9/10 (bugfixCsv + tagSetModule + summaryModule repair-guaranteed;
-> only usernameModule remains hardened-but-variance). A confirmation full suite with all four fixes
-> in place has NOT been run yet — the 10/10 headline below predates cont.111.
+> **HEADLINE (2026-07-26, cont.112 — CONFIRMATION SUITE, supersedes the cont.111 caveat below):**
+> full offline-strict suite run with all fixes in place = **14/14 overall, 10/10 gen-path GREEN**,
+> "No regressions vs the previous scorecard". This is the confirmation run cont.111 said was still
+> outstanding. Live abstention probe the same session: **22/22** (was 19/22).
+>
+> One RED appeared mid-session and was root-caused + fixed: **tagSetModule failed on a PACKAGING
+> bug, not a reasoning bug.** The head wrote `unionTags`/`intersectTags` with perfect logic, then
+> prefixed the deliverable with `import { strict as assert } from 'assert'` for its inline
+> self-test; the bench project has no `@types/node`, so that single import was the ONLY compile
+> error in the run (TS2591) and `compile=n` cascaded to `hidden=n`. Fixed universally by
+> **`shimNodeAssert` (`synth/assertShim.ts`), applied at write time in `tools/registry.ts`'s
+> `write_file`** — swaps the node import for a local zero-dependency `assert` shim, so assertions
+> still run and still throw (self-test coverage preserved) but the module compiles standalone.
+> tagSetModule RED→GREEN measured in isolation, then GREEN again in the full suite.
+> `__assertShim_bench.ts` 21/21, incl. a check that the shimmed output typechecks with NO
+> `@types/node` — the exact condition that produced the RED.
+
+> **CODING-BENCH NOTE (cont.111, still current):** summaryModule is RELIABLE — `repairGroupedLedger`
+> (`synth/repairProposers.ts`) took it 2/3 → **3/3 GREEN** on qwen (repair fired+accepted 3/3).
+> `repair:bench` 32/32. Reliable floor ~9/10 (bugfixCsv + tagSetModule + summaryModule
+> repair-guaranteed; only usernameModule remains hardened-but-variance).
 
 > **CODING-BENCH HEADLINE (2026-07-25, cont.110b):** authoritative full offline-strict suite on the
 > doctrine head **qwen-1.5b (:8080)** = **14/14 overall, 10/10 gen-path GREEN** (this run), up from a
@@ -288,6 +303,18 @@ judgeable. All are TOTAL-MISS gates (any supported item clears the answer) per c
 - **Live bait floor raised 75% → 85%** (three consecutive runs scored 21/21/22 of 22).
 - Benches: abstain 113/113 pure, 115/115 live; __ground_rank 55/55; tsc clean (also fixed a
   pre-existing TS2353 in retrievalLayer.ts).
+
+**Shipped 2026-07-26 (cont.112 — the three cont.106 open items, MEASURED live 22/22):**
+- **`hasUnknowablePossessivePremise` (`answerEngine.ts`)** — deterministic pre-grounding abstain on a
+  concrete-datum demand about the user's OWN private world ("the dog in my unpublished novel",
+  "what I had for breakfast on April 12 2013"), which the head was grounding-then-FABRICATING.
+  Same shape as `hasFutureSettledPremise`, fires before retrieval, no model. An `ANSWERABLE_FRAME_RX`
+  exempts advice / how-to / help / computation-with-given-data so real "my"/"I" questions pass through.
+- **`isDeclineDominant` replaces bare `isDecline` at the production gate** — closes the untested
+  false-positive surface. A reply converts to `abstained:true` only when EVERY factual sentence is
+  itself a decline; a genuinely cited answer riding alongside a hedged sub-detail ships intact.
+- **Future-prediction phrasings folded into `DECLINE_RX`** ("not able to / can't predict the future").
+- Live probe **19/22 → 22/22**; pure `abstain:bench` **143/143** (with the entailment additions).
 
 **Open next (this track), highest-leverage first:**
 1. **Entailment for the remaining claim shapes.** Quotes, subjects and figures are covered; an

@@ -13,6 +13,7 @@ import { gFetch, googleServicesStatus } from './googleApis'
 import { getUITree, clickElement, typeText, navigateBrowser } from '../macTools'
 import { runCapability, capabilityIntents } from '../agent/macCapabilities'
 import { read_image, read_pdf } from './visionTools'
+import { shimNodeAssert } from '../synth/assertShim'
 
 const tools = new Map<string, ToolDef>()
 
@@ -402,9 +403,17 @@ registry.register({
       if (reason) return { ok: false, output: `Refusing to overwrite ${abs} — marked protected ("${reason}"). Write to a different path instead; this file must not change.` }
     }
     fs.mkdirSync(path.dirname(abs), { recursive: true })
-    fs.writeFileSync(abs, String(args.content ?? ''), 'utf-8')
+    // Deterministic write-time repair: a generated TS/JS module that self-tests with node's
+    // `assert` cannot compile in a project without @types/node — measured as the sole gen-path
+    // RED (tagSetModule, 2026-07-26) on code whose logic was otherwise perfect. Swap the builtin
+    // import for a behavior-preserving local shim. No-ops on every file that doesn't import it.
+    let body = String(args.content ?? '')
+    if (/\.(ts|tsx|mts|cts|js|mjs|cjs|jsx)$/.test(abs)) {
+      try { body = shimNodeAssert(body) } catch { /* fail open — write the original content */ }
+    }
+    fs.writeFileSync(abs, body, 'utf-8')
     ctx.onFileMutated?.([abs])
-    return { ok: true, output: `Wrote ${String(args.content ?? '').length} chars to ${abs}` }
+    return { ok: true, output: `Wrote ${body.length} chars to ${abs}` }
   },
 })
 

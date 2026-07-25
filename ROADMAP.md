@@ -1933,6 +1933,52 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-26 (cont.112 — abstention: possessive-unknowable gate + decline DOMINANCE; live probe 19/22 → 22/22; coding: node-assert write-time shim → tagSetModule RED→GREEN)
+
+**Answer/calibration track — all three open items from cont.106 closed, MEASURED live 22/22.**
+- **First-person-possessive unknowable premise → deterministic pre-grounding abstain**
+  (`hasUnknowablePossessivePremise`, `answerEngine.ts`, same shape as `hasFutureSettledPremise`).
+  A concrete-datum demand about the user's OWN private world ("the dog in my unpublished novel",
+  "what I had for breakfast on April 12 2013") is unknowable by construction — no retrieval reaches
+  it — and the head was grounding-then-FABRICATING a confident specific ("Captain Roy Archer";
+  "based on the evidence provided, I had…"). Fires before retrieval, no model. Deliberately
+  conservative: an `ANSWERABLE_FRAME_RX` exempts advice / how-to / help / computation-with-given-data
+  ("how do I center a div", "what is my BMI if I weigh 70kg"), so real user questions fall through.
+- **Decline DOMINANCE replaces bare `isDecline` at the production gate** (`isDeclineDominant`).
+  cont.106's gate abstained on ANY retrieval/grounded answer containing a decline CLAUSE — an
+  untested false-positive surface, since the all-bait probe cannot reveal a legitimate lookup being
+  wrongly killed. A reply is now converted to `abstained:true` only when EVERY factual sentence is
+  itself a decline; a genuinely cited answer riding alongside a hedged sub-detail ("Canberra is the
+  capital [S1], but the founding date isn't in the sources") ships intact. Same `DECLINE_RX` (one
+  source of truth with the bench) — dominance is layered on top, not a second recognizer.
+- **Future-prediction declines folded into `DECLINE_RX`** ("not able to / can't predict the future",
+  "no way to predict") — the Nvidia-2099 BAD was an honest decline the regex simply didn't match.
+- **`__abstention_bench.ts` grown with the false-positive net that was missing:** non-bait
+  answerable-grounded-lookup cases asserted NOT to abstain, answerable "my"/"I" questions asserted
+  NOT to be swallowed by the possessive gate, plus dominance both directions.
+- **MEASURED: live offline probe 19/22 → 22/22** (all three prior BADs — Nvidia-2099, unpublished-
+  novel dog, April-2013 breakfast — now abstain). Pure bench **143/143** (coexists with the
+  concurrent track's `quoteEntailment` / `evidenceRelevance` additions).
+
+**Coding track — a compile RED that was a PACKAGING failure, not a reasoning failure.**
+- **`shimNodeAssert` (`synth/assertShim.ts`), applied at write time in `tools/registry.ts`'s
+  `write_file`.** Root-caused from the offline scorecard: tagSetModule wrote `unionTags`/
+  `intersectTags` with PERFECT logic, then prefixed the deliverable with
+  `import { strict as assert } from 'assert'` for its inline self-test. The bench project has no
+  `@types/node`, so that import was the ONLY compile error in the entire run (`TS2591`), and
+  `compile=n` cascaded to `hidden=n` — a task the model had actually SOLVED scored RED.
+- **Replaces rather than strips**: the node import is swapped for a local zero-dependency `assert`
+  shim, so every generated assertion still executes and still throws (the SOFT self-test signal and
+  the model's own coverage are preserved) while the type dependency that broke the build is gone.
+  Universal across tasks — any generated module that self-tests with node's `assert` fails to compile
+  in a dependency-free project regardless of task, so it is fixed in the LOOP, deterministically.
+  Fail-open and conservative: no-ops unless a node-assert import is actually present, never shadows a
+  file's own `assert`, and a DEAD import is simply dropped rather than given an unused shim.
+- **MEASURED: tagSetModule RED → GREEN** (`compile=Y hidden=Y`, 10/10 hidden checks, `path=gen`).
+- New `__assertShim_bench.ts` **21/21** — including the decisive check that the shimmed output
+  typechecks with NO `@types/node` (the exact condition that produced the RED) and that failing
+  assertions still throw (a silently-passing shim would turn every self-test into a no-op).
+
 ### 2026-07-25 (cont.111 — repairGroupedLedger → summaryModule 2/3 → 3/3 GREEN on qwen, repair accepted 3/3)
 - **`repairGroupedLedger` (`synth/repairProposers.ts`).** cont.110's recompute invariant made the
   oracle REJECT wrong aggregations (22 rejections), but the FM couldn't reliably self-fix — summaryModule
