@@ -17,68 +17,66 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-25c (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-25d (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **FIRST GENERAL-PATH NUMBER ON RECORD: 2/5 (40%)** — `__decompose_general_scorecard_live.ts`,
-> strict-offline, `CRUCIBLE_NO_DISTILL=1`, five tasks each asserted to match NO detector:
+> **Template scorecard: 15/15 (100%) at 3 draws/class, re-earned live** after `search.ts`,
+> `solve.ts`, `fmPlanner.ts` and `codeProposer.ts` all changed on shared paths — and materially
+> cheaper (`basicCalculator` 264s → 18s median; `coinChange` 3 calls/14s).
 >
-> | task | result | calls | wall |
-> |---|---|---|---|
-> | `romanToInt` | **solved** (romanToNum/parseRoman/subtract/compose all OK) | 90 | 692s |
-> | `intToRoman` | **solved** | 13 | 107s |
-> | `compressRuns` | declined | 97 | 405s |
-> | `isBalanced` | declined | 0 | 17s |
-> | `wordFrequencyTop` | decompose-failed | 151 | 524s |
+> **General (no-template) scorecard: 1/5 (20%) — DOWN from 25c's 2/5.** Reported as measured. n=1
+> per task so the delta is inside the noise band, but this session did NOT raise the general number.
 >
-> Two genuine solves on novel no-template tasks — the first live evidence the general path earns
-> anything. The template 15/15 measures the REGISTRY; this is the capability number.
+> | task | 25c | 25d |
+> |---|---|---|
+> | `romanToInt` | solved, 90 calls, 692s | **solved, 5 calls, 34s** (18× cheaper) |
+> | `intToRoman` | solved, 13 calls | **decompose-failed**, 205 calls — REGRESSION, undiagnosed |
+> | `compressRuns` | declined, 97 calls | decompose-failed, 182 calls |
+> | `isBalanced` | declined, **0 calls**, 17s | decompose-failed, 250 calls, 2288s |
+> | `wordFrequencyTop` | decompose-failed, 151 calls | decompose-failed, 77 calls |
 >
-> **The FM-general recursion probe missed on both arms** — depth 0 `decompose-failed` (34 calls, 753s);
-> depth 1 `decompose-failed`, recursion fired, `parseDigit` certified (76 calls, 663s). Important: that
-> run **did** include the duplicate-evidence commit, and `duplicate proposal (stuck)` still appears ~20×
-> in the depth-1 arm. The escalation reaches the model and it repeats anyway.
+> **Landed 2026-07-25d** (all verifier-gated — each can only cause a resample or a wider sample,
+> never a certification):
+> 1. `subFunctionPlanGrammar()` (`agent/grammars.ts`) pins the plan schema at the SAMPLER;
+>    `makeFmSubFunctionPlanner` passes it as `gbnf`. Malformed plan JSON is unreachable, not
+>    salvaged, and the 2–4-helper cardinality is structural. Live-verified against :8080.
+>    **This is the `isBalanced` fix and it demonstrably worked** — that task went from dying at
+>    ZERO model calls (unparseable plan) to producing a real 4-helper carve and grinding 250 calls.
+> 2. `SUBFN_SYSTEM`/`buildSubFnUser` rewritten around COMPOSES + CONSUMES-THE-REAL-INPUT, with
+>    `firstCaseArgShape` injecting the entry's actual argument types.
+> 3. `isNonComposingCarve` — fires when no helper consumes the entry's input types (the
+>    `numberToWords(1234)` → `removeCommas(string)` case). One-sided and weak by design.
+> 4. `structuralFingerprint` + `SearchOpts.structuralKey` (cosmetic re-emission counts as
+>    stagnation — EVIDENCE only, still verified, so it can never discard a correct candidate);
+>    `topP`/`seed` plumbed `FmCallOpts` → `callFm` → `bonsaiComplete` → llama-server, raised only
+>    once anchoring is detected.
+> 5. `isRebakedHelper` — drops a helper the planner specified with one of the ENTRY's OWN cases.
+>    Every failing carve on the 1/5 run had one (`intToRomanHelper`, `romanNumeralConverter`,
+>    `isBalancedHelper`, `runLength`) and `isDegenerateSubFnCarve` is blind to them because those
+>    plans have four helpers. Naming is deliberately NOT evidence — the one live solve used a carve
+>    containing `romanToIntHelper`. **Landed AFTER the 1/5 measurement; its effect is UNMEASURED.**
 >
-> **The failure ladder, in the order it actually bites:**
-> 1. **Carve quality (worst, newly exposed).** The FM turned the goal's NEGATIVE formatting constraints
->    ("no commas and no and") into helpers — `removeCommas`, `removeAnd`, `wordSeparatorHelper`, all
->    no-ops against a correct implementation — and carved `parseNumber`/`extractDigits`/`convertToBase`,
->    which treat a `number` input as text. Pattern-matches on the PROSE, not the computation.
->    `SUBFN_SYSTEM`'s "prefer helpers that carve off the tricky parsing / edge-case logic" steers into
->    this, and nothing requires the helpers to COMPOSE back to the entry.
-> 2. **Malformed plan JSON.** On a bracket-matching goal the 1.5B emitted unbalanced brackets of its own
->    (`]},` for `],`; `{")]` for `{"]`), and the all-or-nothing `JSON.parse` discarded the entire plan —
->    `isBalanced` declined at ZERO model calls in 17s.
-> 3. **Proposal anchoring.** Confirmed still live even with duplicate-evidence escalation shipped.
-> 4. Carve depth — recursion works and is NOT the bottleneck.
->
-> **Landed this session:** plan dedupe (a repeated helper name was ground twice and the later
-> declaration silently shadowed the first certified one; tests 9s–9u); `subLevelIterateBudget` (0.6×
-> child purse, tests 9r–9r3); duplicate-draw evidence into the proposer history; partial-plan salvage
-> (string-aware scan for top-level `{…}` spans, tests 9v–9y); and the general scorecard harness itself.
-> **Salvage does NOT fix `isBalanced`** — a live re-run still declines at 0 calls, because in that reply
-> EVERY sibling carried the same malformed line. Honest scope: salvage helps when SOME siblings are clean.
->
-> Benches: decompose 97/0, vgr 238/0, searchbatch 11/0, tsc clean. All work committed.
->
-> ### OPEN — next priorities (highest leverage first)
->
-> 1. **Constrain the planner's decoding with GBNF.** `FmCallOpts` already plumbs `gbnf` through
->    `fmComplete`/`callFm` (see `__gbnf_malformed_bench.ts` for the existing idiom); the planner call in
->    `makeFmSubFunctionPlanner` simply does not pass one. A grammar pinned to the plan schema makes the
->    malformed-JSON class STRUCTURALLY impossible rather than salvageable after the fact — the direct
->    fix for the `isBalanced` 0-call decline.
-> 2. **Fix carve quality in `SUBFN_SYSTEM` / `buildSubFnUser` (`fmPlanner.ts`).** Require the helpers to
->    compose back to the entry and to consume the entry's actual argument types; drop or rewrite the
->    "carve off tricky parsing / edge-case logic" wording that produced `removeCommas`/`removeAnd`
->    no-ops out of a negative formatting constraint.
-> 3. **Add a non-composing-carve gate** alongside `isDegenerateSubFnCarve`, which today only catches
->    single-helper plans — every junk 4-helper carve above passed it and burned a full budget.
-> 4. **Break the proposal anchor at the proposer, not the prompt** — vary sampling seed/top-p per retry,
->    or reject a candidate whose AST matches a prior one rather than only its exact fingerprint.
->    Confirmed necessary: ~20 `duplicate proposal (stuck)` lines fired WITH escalation already live.
-> 5. **Re-run the 15/15 template scorecard (`__decompose_scorecard_live.ts`).** `search.ts`, `solve.ts`
->    and `fmPlanner.ts` all changed on paths every template class uses; that number must be re-earned,
->    not assumed.
+> Benches: decompose **116/0** (was 97/0), tsc clean. All work committed (`11acb29`, `7884fb2`).
+
+### OPEN — next priorities (highest leverage first)
+
+1. **Measure `isRebakedHelper`.** It landed after the 1/5 general run, so its effect is currently a
+   claim, not a number. Re-run `__decompose_general_scorecard_live.ts` and compare against the 1/5
+   baseline in the table above before building anything else on top of it.
+2. **Diagnose the `intToRoman` regression** — solved in 13 calls on 25c, `decompose-failed` at 205
+   calls on 25d with `subtractiveRoman` stalled. It is the one row that got strictly worse and it is
+   undiagnosed; the candidates are the rewritten `SUBFN_SYSTEM` steering it into a worse carve, or
+   the plan grammar's cardinality bounds cutting off a helper it needed.
+3. **Raise the general scorecard's n.** Every general number on record is n=1 per task, which cannot
+   distinguish a real regression from sampling noise — exactly the ambiguity blocking item 2. The
+   template scorecard already takes `SCORECARD_RUNS`; the general harness should too.
+4. **`compressRuns`/`isBalanced` now GRIND instead of declining** (182 and 250 calls, ~30–38 min
+   each). That is progress in kind but it makes the general scorecard cost hours. A wall-clock
+   ceiling per general task would make the measurement loop usable.
+5. **The stalling rung is now the bottleneck, not the carve** — `subtractiveRoman`, `isIgnored`,
+   `runLength` each certified their siblings and then pinned. That is the flat-search anchoring
+   problem at rung level, where items 4's `structuralKey`/`topP`/`seed` levers apply but have not
+   been tuned against a measurement.
+
 ---
 
 ## PRIOR STATE — cont.97 (historical; superseded by the block above)

@@ -3,6 +3,9 @@
 // Run:  npx tsx src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts   (live head :8080)
 //   GEN_SCORECARD_RUNS=3          draws per task (default 1)
 //   GEN_SCORECARD_ONLY=romanToInt run a single task by entry name
+//   GEN_SCORECARD_TASK_WALL_MS=600000  abort each task at N ms (default 0 = no ceiling).
+//     A capped run measures "solves within N seconds", which is STRICTER than the uncapped
+//     baselines — the header line records the cap so the two are never confused.
 // ═══════════════════════════════════════════════════════════════════════════════
 //
 // WHY THIS EXISTS SEPARATELY FROM __decompose_scorecard_live.ts. That scorecard measures the
@@ -149,10 +152,24 @@ async function runTask(p: GeneralProbe, runs: number): Promise<TaskResult> {
   for (let i = 0; i < runs; i++) {
     process.stdout.write(`  ${p.entry} draw ${i + 1}/${runs} … `)
     const t0 = Date.now()
+    // WHOLE-TASK WALL-CLOCK CEILING (2026-07-25d). `budget` is a PER-RUNG budget, so a task with
+    // four rungs × three planAttempts can legitimately run for over half an hour — the 25d run had
+    // `isBalanced` grind 2288s and `compressRuns` 1888s, which put a single 5-task draw at ~2 hours
+    // and made raising `GEN_SCORECARD_RUNS` (the only way to tell a real regression from n=1 noise)
+    // practically impossible. This aborts the whole task at a fixed ceiling.
+    //
+    // It measures a DIFFERENT, stricter thing than an unbounded run: "solves within N seconds",
+    // not "solves eventually". That is the honest trade and it is stated in the header line, so a
+    // capped number is never silently compared against an uncapped one. Default OFF (no ceiling)
+    // precisely so the existing baselines stay comparable.
+    const ceilingMs = Number(process.env.GEN_SCORECARD_TASK_WALL_MS || 0)
+    const ac = ceilingMs > 0 ? new AbortController() : null
+    const timer = ac ? setTimeout(() => ac.abort(), ceilingMs) : null
     const d = await decomposeCodeBySubFunction(
       { goal: p.goal, nl: p.goal, entry: p.entry, cases: p.cases },
-      { planAttempts: 3, iterate: budget },
+      { planAttempts: 3, iterate: budget, ...(ac ? { signal: ac.signal } : {}) },
     )
+    if (timer) clearTimeout(timer)
     const wallS = Math.round((Date.now() - t0) / 1000)
     if (d.status === 'solved') solved++
     calls.push(d.modelCalls)
@@ -167,7 +184,9 @@ async function main(): Promise<void> {
   const only = process.env.GEN_SCORECARD_ONLY
   const probes = only ? TASKS.filter(t => t.entry === only) : TASKS
   if (!probes.length) { console.error(`no task named ${only}`); process.exit(1) }
-  console.log(`# LIVE decompose GENERAL (no-template) scorecard — ${probes.length} task(s), ${runs} draw(s) each\n`)
+  const capMs = Number(process.env.GEN_SCORECARD_TASK_WALL_MS || 0)
+  console.log(`# LIVE decompose GENERAL (no-template) scorecard — ${probes.length} task(s), ${runs} draw(s) each` +
+    (capMs > 0 ? `, per-task wall ceiling ${Math.round(capMs / 1000)}s (STRICTER than an uncapped run — do not compare directly)` : '') + '\n')
 
   const results: TaskResult[] = []
   for (const p of probes) results.push(await runTask(p, runs))
