@@ -567,7 +567,25 @@ async function runSubFunctionOnce(
   // Drop any rung that re-proposes a helper already certified by the parent level (see preHelpers):
   // it is proven code, so re-grinding it would only spend budget and risk a WORSE reimplementation.
   const preNames = new Set((opts.preHelpers ?? []).map((h) => h.name))
-  const helperPlan = plan.filter((h) => h.name !== input.entry && !preNames.has(h.name)).slice(0, 5)
+  // DEDUPE BY NAME (2026-07-25, live FM-general numberToWords). The FM planner repeats a helper
+  // name across rows on real draws — that probe's carve was
+  // `convertToWords, pluralize, convertToWordsHelper, convertToWordsHelper`. Without this filter
+  // each copy is ground as its OWN rung (a full per-rung budget spent twice on the same goal), and
+  // then both certified sources land in `helpers` — so `helperBlock` concatenates two `function`
+  // declarations with the same name and the later one silently shadows the earlier, throwing away
+  // a rung that was already paid for and certified. Keep the FIRST occurrence: the planner emits
+  // its best-specified row first, and the dep-closure/stripHelperRedefinitions logic downstream
+  // keys on NAME, so a name must map to exactly one source for any of it to be well-defined.
+  // Deduping BEFORE the degeneracy gate is deliberate — a carve of [A, A] is a single-helper
+  // re-bake wearing a disguise, and should resample rather than burn two rungs discovering that.
+  const seenNames = new Set<string>()
+  const helperPlan = plan
+    .filter((h) => {
+      if (h.name === input.entry || preNames.has(h.name) || seenNames.has(h.name)) return false
+      seenNames.add(h.name)
+      return true
+    })
+    .slice(0, 5)
   emit({ type: 'thought', text: `subfn: ${helperPlan.length} helper(s) — ${helperPlan.map((h) => h.name).join(', ')}` })
   if (!helperPlan.length) {
     return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'no helper distinct from the top-level function' }

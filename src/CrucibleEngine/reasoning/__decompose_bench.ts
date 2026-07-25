@@ -394,6 +394,39 @@ async function main() {
   check('9r3 sub-level budget leaves unset knobs unset (no invented caps)',
     Object.keys(subLevelIterateBudget(undefined)).length === 0 && subLevelIterateBudget({ maxEpochs: 10 }).globalModelCalls === undefined)
 
+  // 9s/9t/9u PLAN DEDUPE. The live FM-general carve (numberToWords, 2026-07-25) repeated a helper
+  //   name — `convertToWords, pluralize, convertToWordsHelper, convertToWordsHelper`. Each copy used
+  //   to be ground as its own rung (a full per-rung budget spent twice on one goal) and both certified
+  //   sources landed in the module, where the second `function` declaration silently shadows the first.
+  const dupSeen: string[] = []
+  const dupProposer: Proposer<string> = async (ctx) => {
+    const entry = (ctx.spec.acceptance as { entry: string }).entry
+    dupSeen.push(entry)
+    if (entry === 'sq') return { value: 'export function sq(x) { return x * x; }', fingerprint: 'sq' }
+    if (entry === 'inc') return { value: 'export function inc(x) { return x + 1; }', fingerprint: 'inc' }
+    return { value: 'export function topf(x) { return inc(sq(x)); }', fingerprint: 'topf' }
+  }
+  const dupCases = [{ args: [2], expected: 5 }, { args: [3], expected: 10 }]
+  const dupPlan: SubFunctionPlanner = async () => [
+    { name: 'sq', goal: 'square x', cases: [{ args: [2], expected: 4 }, { args: [3], expected: 9 }] },
+    { name: 'sq', goal: 'square x again (planner repeat)', cases: [{ args: [4], expected: 16 }, { args: [5], expected: 25 }] },
+    { name: 'inc', goal: 'add one to x', cases: [{ args: [4], expected: 5 }, { args: [9], expected: 10 }] },
+  ]
+  const dupEvents: string[] = []
+  const deduped = await decomposeCodeBySubFunction(
+    { goal: 'compute topf(x) = x*x + 1', entry: 'topf', cases: dupCases },
+    { planner: dupPlan, planAttempts: 1, iterate: { maxEpochs: 3, baseModelCalls: 3, globalModelCalls: 6 },
+      emit: (e: any) => { if (e?.type === 'thought' && typeof e.text === 'string') dupEvents.push(e.text) } },
+    dupProposer,
+  )
+  check('9s plan dedupe: a repeated helper name is ground ONCE, not once per copy',
+    dupSeen.filter((e) => e === 'sq').length === 1, `sq rungs: ${dupSeen.filter((e) => e === 'sq').length} (${dupSeen.join(',')})`)
+  check('9t plan dedupe: the certified module declares the repeated helper exactly once',
+    deduped.status === 'solved' && !!deduped.code && (deduped.code.match(/function sq\b/g) ?? []).length === 1,
+    `${deduped.status} / ${(deduped.code ?? '').match(/function sq\b/g)?.length ?? 0} decls`)
+  check('9u plan dedupe: the announced carve lists each helper name once',
+    dupEvents.some((t) => /^subfn: 2 helper\(s\) — sq, inc$/.test(t)), dupEvents.find((t) => /^subfn: \d+ helper/.test(t)) ?? '(none)')
+
   // 9f DECLINES when the planner offers nothing / only the top-level name.
   const noPlan = await decomposeCodeBySubFunction(fInput, { planner: async () => null }, subWeak)
   check('9f planner with no helpers → declined', noPlan.status === 'declined', noPlan.detail)
