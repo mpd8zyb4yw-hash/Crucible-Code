@@ -1933,6 +1933,44 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-26 (cont.115 — MEASUREMENT VALIDITY: correctness gate, per-task pass rates, catalog-drift guard)
+
+Four concurrent sessions independently produced next-step lists; every one contained some form of
+"our numbers don't mean what we think" (ungated correctness / n=1 scorecards / thresholds chosen by
+reasoning / one flip = 10pts). That convergence is the signal — this entry fixes the measurement
+layer, because every other open item is unfalsifiable without it.
+
+- **The non-bait probe gated SURVIVAL, not CORRECTNESS** (`__abstention_bench.ts`). `correct` was
+  computed and printed but never gated — only `kept` was. That gate is satisfied perfectly by an
+  engine that abstains on nothing and fabricates everything: **it actively rewarded the exact
+  failure mode the whole track exists to prevent.** A survived-but-wrong answer also *printed* as
+  GOOD, so confabulations were invisible (cont.114 scored "Southern Ocean" for the Africa/Australia
+  question as GOOD). Now three outcomes — BAD (abstained) / WRONG (survived, fabricated) / GOOD —
+  and two new gates: a correctness floor, plus `correct > wrong` (a confabulation is strictly worse
+  than an honest abstention).
+- **Floor set from MEASUREMENT, not reasoning:** measured **20/20 correct, 0 survived-but-wrong**
+  this run; floor is 15/20 (the same 75% convention the sibling live gates use), leaving five
+  stochastic flips of headroom. Bait probe **22/22**; pure bench **147/147**.
+- **Every scorecard on record was n=1** (`coding-benchmarks.ts`). A GREEN could mean "reliably
+  solved" or "got lucky once", and the "reliable floor ~9/10" in this file has been hand-estimated
+  from memory. Every run now appends to `coding-bench-history.json`; the scorecard prints per-task
+  pass rates over the window and a **computed** reliable gen-path floor. Cheaper than one 3-hour
+  n=3 invocation, and it accumulates permanently instead of being re-derived each session.
+- **CATALOG DRIFT — found while verifying the above, and it invalidates the naive fix.** bugfixCsv
+  ran `path=gen` (99s); its solution was promoted into `skills/_learned/`; the very next run scored
+  it `path=catalog` (3s). So "just repeat-run 3× for true pass rates" **inflates** the number — the
+  benchmark grades its own memory, which the doctrine explicitly calls debt, not capability. Left
+  unchecked the suite drifts toward catalog and stops measuring generation at all. Pass rates are
+  therefore computed ONLY over runs where the task actually went through generation, and any task
+  that ran both ways inside the window is flagged. Verified: bugfixCsv now reports
+  `1/1 over gen runs (3 total)` + a drift warning, instead of a falsely reassuring `3/3 reliable`.
+- **`iters=2` is NOT an early-exit bug** (correcting a sibling session's item). The loop's caps are
+  `maxIters=32`, soft-extending while progress continues, with a 20-min hard wall
+  (`agent/loop.ts`); the *harness* cuts at 480s (`PER_TASK_TIMEOUT_MS`). Measured this session:
+  ~45-60s per iteration, and 6/10 gen tasks hit the 480s ceiling. The loop is being guillotined
+  mid-work by the harness clock, not stopping short by logic — the escalation code proposed for
+  investigation is already correct. **Throughput (seconds/iteration) is the binding constraint.**
+
 ### 2026-07-26 (cont.112 — abstention: possessive-unknowable gate + decline DOMINANCE; live probe 19/22 → 22/22; coding: node-assert write-time shim → tagSetModule RED→GREEN)
 
 **Answer/calibration track — all three open items from cont.106 closed, MEASURED live 22/22.**

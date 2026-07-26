@@ -17,7 +17,36 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-26 (cont.112 — answers/calibration track CLOSED its 3 open items; coding track confirmation suite RUN) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-26 (cont.115 — measurement layer fixed; parity plan set) (REPLACE THIS EVERY SESSION)
+
+> **READ FIRST (cont.115) — the measurement layer was not trustworthy, and is now partly fixed.**
+> Four concurrent sessions each independently produced a next-steps list, and every one contained
+> a version of "our numbers don't mean what we think". Two root causes are now closed, one is newly
+> discovered and OPEN:
+> - FIXED: the non-bait probe gated SURVIVAL, not CORRECTNESS — an engine that never abstains and
+>   fabricates everything scored perfectly. Now gates correctness (floor 15/20, measured 20/20).
+> - FIXED: every scorecard was n=1. Runs now append to `coding-bench-history.json`; the scorecard
+>   computes per-task pass rates and a reliable gen-path floor.
+> - **OPEN / IMPORTANT — CATALOG DRIFT.** A task solved via `path=gen` gets promoted into
+>   `skills/_learned/`, so the NEXT run scores it `path=catalog` (measured: bugfixCsv, 99s gen →
+>   3s catalog). Repeat-running to build confidence therefore INFLATES reliability. The ledger now
+>   excludes catalog runs from the rate and flags drift, but the underlying promotion still erodes
+>   the gen sample every run. **To re-measure real capability on a drifted task, clear its entry in
+>   `src/CrucibleEngine/synth/skills/_learned/` first.** A no-learn measurement mode is not built.
+>
+> **PARITY FRAME (cont.115).** Three layers, strictly ordered — 2 is unfalsifiable without 1:
+> - **Layer 0, measurement validity** — mostly done above; catalog drift is the remainder.
+> - **Layer 1, loop capability** — where the real gap is. Top item: **throughput.** `iters=2` is
+>   NOT an early-exit bug (the loop's soft caps + 20-min wall in `agent/loop.ts` are correct); the
+>   harness cuts at 480s and iterations cost ~45-60s, so 6/10 gen tasks are guillotined mid-work.
+>   Seconds-per-iteration is the binding constraint. Also here: `classifyFacets` misrouting, and
+>   the reasoning track's stalled rung.
+> - **Layer 2, benchmark scope** — what makes "parity" a meaningful word at all: tasks with no
+>   given public API (today every task hands over the exact signature), enough tasks that one flip
+>   isn't 10pts, and wall-clock as a SCORED axis (today a task that times out at 480s still scores
+>   GREEN — `multiFileLedger` did exactly that).
+>
+> No defensible parity percentage exists yet, and none should be quoted until Layer 2 exists.
 
 > NOTE: two tracks were live. The CODING-BENCH block is first; the ANSWERS/CALIBRATION block
 > follows. Do not delete either without confirming that track is done.
