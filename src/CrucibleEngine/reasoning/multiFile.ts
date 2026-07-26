@@ -24,6 +24,7 @@ import { propertyForFunction } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
 import { type Completer, detectDeclaredFunctions, extractCodeSpec, extractMultiFunctionSpec, harvestExplicitExamples } from './specExtractor'
 import type { Candidate, ProposeContext, Proposer, SearchResult, TaskSpec, Verdict, Verifier } from './types'
+import { span } from '../debug/phaseProfile'
 
 // A path-like token (slash or code extension, no spaces) — same conservative shape emitPlan uses.
 const FILE_RX = /\b((?:\.\.?\/)?(?:[\w.-]+\/)*[\w.-]+\.(?:ts|tsx|js|jsx|mjs|cjs))\b/g
@@ -330,12 +331,12 @@ export async function solveMultiFileRequest(
     // Else fall to model-consensus. When the request names ≥2 functions, extract consensus cases
     // for ALL of them (so every export is verified, not just one); otherwise single-function.
     const mfx = declared.length >= 2
-      ? await extractMultiFunctionSpec(nl, declared, { samples: opts.specSamples, complete: opts.specComplete, signal: opts.signal })
+      ? await span('vgr.specExtract', () => extractMultiFunctionSpec(nl, declared, { samples: opts.specSamples, complete: opts.specComplete, signal: opts.signal }))
       : { ok: false as const, reason: 'fewer than 2 declared functions' }
     if (mfx.ok && mfx.spec) {
       entry = mfx.spec.entry; entries = mfx.spec.entries; cases = mfx.spec.cases; provenance = mfx.detail ?? ''
     } else {
-      const ext = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete, signal: opts.signal })
+      const ext = await span('vgr.specExtract', () => extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete, signal: opts.signal }))
       if (!ext.ok || !ext.spec) return abstain(`could not form a checkable spec: ${ext.reason ?? mfx.reason ?? 'unknown'}`)
       entry = ext.spec.entry; entries = [entry]; cases = ext.spec.cases; provenance = ext.detail ?? ''
     }

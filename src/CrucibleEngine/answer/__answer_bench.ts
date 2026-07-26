@@ -77,6 +77,60 @@ console.log('== facet classification: routing ==')
   check('lookup with no numbers → NOT needsComputation (no over-routing)', !cap2.needsComputation, JSON.stringify(cap2))
   const priceLookup = classifyFacets('What is the price of a Tesla Model 3?')
   check('bare price lookup (no numbers in Q) → NOT needsComputation', !priceLookup.needsComputation, JSON.stringify(priceLookup))
+
+  // ── Interrogative NUCLEUS, not string position (2026-07-26) ──────────────────────
+  // The lookup test used to be `^`-anchored, so any word before the wh-word dropped the turn
+  // into the `converse` catch-all. MEASURED before the fix: all six below routed 'converse',
+  // and three of them are items in __abstention_bench's own live non-bait probe.
+  for (const q of [
+    'In what year did Apollo 11 land on the Moon?',
+    'On what date was the Treaty of Versailles signed?',
+    'In which country is Mount Kilimanjaro located?',
+    'At what temperature does water boil at sea level?',
+    'Do you know who invented the telephone?',
+    'Can you tell me what the population of Japan is?',
+  ]) {
+    check(`fronted frame still routes to lookup: "${q.slice(0, 44)}…"`, classifyFacets(q).intent === 'lookup', JSON.stringify(classifyFacets(q)))
+  }
+  // The frame is a CLOSED class stripped at most once — NOT "contains a wh-word anywhere".
+  // These all begin with a frame-shaped word and must stay conversational; a naive
+  // de-anchoring turns every one of them into a factual lookup.
+  for (const q of [
+    'For what it is worth, I disagree with that.',
+    'In my experience that approach is slower.',
+    'At this point I would rather start over.',
+    'On the whole I liked your answer.',
+    'I was wondering what you meant by that.',
+    'By the way, that was a great explanation.',
+    'Under no circumstances should you delete it.',
+    'From now on, keep answers short.',
+    'Do you know, I think you are right.',
+  ]) {
+    check(`frame-shaped conversational turn stays converse: "${q.slice(0, 40)}…"`, classifyFacets(q).intent === 'converse', JSON.stringify(classifyFacets(q)))
+  }
+
+  // ── A unit NOUN describes the answer's TYPE, not that a derivation is required ────
+  // REASON used to fold rate nouns in with reasoning verbs and let the whole regex select the
+  // intent with no numeric gate. MEASURED before the fix: these routed 'reason', i.e. a
+  // step-by-step-derivation prompt with a 1536-token budget for a one-number fact, and with
+  // corroborateFact (lookup-only) switched off.
+  for (const q of [
+    'What is the speed of light in metres per second?',
+    'What is the top speed of a cheetah in miles per hour?',
+    'How many beats per minute is a normal resting heart rate?',
+  ]) {
+    const f = classifyFacets(q)
+    check(`unit noun alone does NOT force reason: "${q.slice(0, 44)}…"`, f.intent === 'lookup' && !f.needsComputation, JSON.stringify(f))
+  }
+  // …but a unit noun WITH operands is still computation — the numeric gate must still fire.
+  const pct = classifyFacets('What percentage of 250 is 40?')
+  check('unit noun + operands → still reason + needsComputation', pct.intent === 'reason' && pct.needsComputation, JSON.stringify(pct))
+  const avg = classifyFacets('Calculate the average of 3, 7 and 11.')
+  check('"calculate the average of 3, 7 and 11" → reason + needsComputation', avg.intent === 'reason' && avg.needsComputation, JSON.stringify(avg))
+  // A reasoning VERB with no digits at all must still select reason — that is why the verb
+  // class keeps its standalone power while the unit class loses it.
+  const noDigits = classifyFacets('How long would it take to walk there if I set off now?')
+  check('reasoning verb with NO digits still → reason', noDigits.intent === 'reason', JSON.stringify(noDigits))
 }
 
 console.log('== critic pass: arithmetic oracle fixes in place ==')

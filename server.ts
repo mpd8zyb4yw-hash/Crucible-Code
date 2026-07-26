@@ -40,6 +40,7 @@ import { foldAttachmentContext } from './src/CrucibleEngine/agent/attachmentCont
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
+import { beginProfile, endProfile, span as phaseSpan } from './src/CrucibleEngine/debug/phaseProfile'
 // TEMP INSTRUMENTATION (cont.100, env-gated, off by default). CRUCIBLE_TURN_TRACE=1 logs
 // each driveTurn's turnClass + wall-ms + tool-call names to stderr, so we can see WHERE the
 // per-task 480s budget goes (write vs verify-heal vs harden vs post-certification calls).
@@ -545,8 +546,13 @@ async function refreshFreeModels() {
   }
 }
 
-refreshFreeModels()
-setInterval(refreshFreeModels, 6 * 60 * 60 * 1000)
+// Strict mode is offline literally — this hits openrouter.ai to re-enumerate free models,
+// which under CRUCIBLE_OFFLINE=strict can only ever produce an ENOTFOUND (observed in the
+// cont.116 benchmark log). Same standing constraint as the keepalive round and autoAcquire.
+if ((process.env.CRUCIBLE_OFFLINE ?? '1') !== 'strict') {
+  refreshFreeModels()
+  setInterval(refreshFreeModels, 6 * 60 * 60 * 1000)
+}
 
 // ── Autonomous Model Hunter ───────────────────────────────────────────────────
 import { runModelHunter, loadDiscoveredModels } from './src/CrucibleEngine/modelHunter'
@@ -2452,6 +2458,14 @@ app.get('/api/config', (_req, res) => {
     // Exposed so callers can verify the running server is actually in the mode they think
     // it's in, instead of silently testing whatever mode happened to be live.
     offlineMode: process.env.CRUCIBLE_OFFLINE ?? '1',
+    // Same reasoning as offlineMode, and for the same class of silent-miscalibration bug:
+    // distillation (synth/pureCode.ts distillToSkill) and learned-catalog loading
+    // (synth/loadLibrary.ts) both happen INSIDE this process, so a benchmark that exports
+    // CRUCIBLE_NO_LEARN on its own shell changes nothing here. A run believed to be a clean
+    // generation measurement, but actually served by a learning server, is worse than a
+    // known-dirty one: it looks trustworthy. Exposed so the harness can hard-fail on mismatch.
+    noLearn: !!process.env.CRUCIBLE_NO_LEARN,
+    phaseProfile: !!process.env.CRUCIBLE_PHASE_PROFILE,
   })
 })
 
@@ -3406,7 +3420,28 @@ app.post('/api/chat', async (req, res) => {
     // finishes, patchActiveSessionRound() writes the answer into your session, so you
     // come back to a finished result. runAgentLoop's own maxIters bounds true runaways,
     // and the per-round checkpoint means resume covers anything beyond the window.
-    const DISCONNECT_GRACE_MS = 10 * 60_000
+    // MEASURED 2026-07-26 (cont.116, phase profiler): this grace period is the single
+    // largest throughput defect in the offline benchmark, and it was corrupting the
+    // capability number itself.
+    //
+    // The coding harness aborts its HTTP wait at PER_TASK_TIMEOUT_MS (480s) and immediately
+    // fires the NEXT task. `res.on('close')` then starts a 10-MINUTE timer before the
+    // server-side agent is cancelled — so a timed-out agent outlives the entire budget of
+    // the task that follows it. Every model call in the process is funnelled through ONE
+    // serial gate (agent/fmQueue.ts, MAX_CONCURRENT=1, shared by universal.ts's synth calls
+    // and fmReact's glue calls alike), so that zombie does not merely linger: it holds the
+    // only inference lane. One timeout therefore cascades into all remaining tasks.
+    //
+    // The profile shows the cascade exactly. Early gen tasks in a suite run 33-41s wall with
+    // a healthy split (model.synth ~12s/call). Later ones degrade to 613s, 3660s and 5646s,
+    // and the worst single model.synth call measured 5604s — two orders of magnitude above
+    // its 12s median, with no change in the prompt. That is queue starvation, not model
+    // latency, and it means recent suite numbers measured contention rather than capability.
+    //
+    // The 10-minute default is CORRECT for interactive use (walk away from a long task, come
+    // back to a finished answer written into your session by patchActiveSessionRound) and is
+    // kept. Measurement sets it to 0 so an abandoned task dies with its request.
+    const DISCONNECT_GRACE_MS = Number(process.env.CRUCIBLE_DISCONNECT_GRACE_MS ?? 10 * 60_000)
     let graceTimer: ReturnType<typeof setTimeout> | null = null
     res.on('close', () => {
       graceTimer = setTimeout(() => ac.abort(), DISCONNECT_GRACE_MS)
@@ -3807,6 +3842,16 @@ app.post('/api/chat', async (req, res) => {
       const fmt = PROGRESS_EVENTS[ev?.type]
       if (fmt) { try { send({ type: 'thought', text: fmt(ev?.data) }) } catch { /* stream gone */ } }
     })
+    // Wall-clock attribution for the WHOLE agent request, not just the agent loop.
+    // MEASURED (cont.116): caseCompareModule finishes in the VGR block at t+22.9s with
+    // handled=true and never reaches runAgentLoop at all (iters=0), so a profile scoped to
+    // the loop would have reported nothing for the majority of benchmark tasks. The session
+    // opens here, before the pure-code fast path, and closes in this handler's finally.
+    // Declared OUTSIDE the try on purpose: a `const` inside the try block is not in scope in
+    // the finally, and referencing it there throws a ReferenceError from the finally that
+    // masks the real outcome and skips unsubProgress()/endAgent() (observed: every bench task
+    // reporting error="terminated" with leaked debugBus subscriptions).
+    const ownsRequestProfile = beginProfile(String(message ?? '').slice(0, 60))
     try {
     let handled = false
 
@@ -3823,7 +3868,7 @@ app.post('/api/chat', async (req, res) => {
     // an in-request verification never stalls other in-flight SSE streams.
     if (!resumable && !iterCheckpoint && isCodeImplementationTask(message ?? '')) {
       try {
-        const pc = await synthesizePureCode(message ?? '', { enumTimeBudgetMs: 2500, projectPath })
+        const pc = await phaseSpan('synth.fastPath', () => synthesizePureCode(message ?? '', { enumTimeBudgetMs: 2500, projectPath }))
         if (pc.verified && pc.files.length && pc.source) {
           const how = pc.source === 'primitive'
             ? `verified '${pc.skillId}' primitive`
@@ -3988,7 +4033,7 @@ app.post('/api/chat', async (req, res) => {
           // proposer is nondeterministic and multi-file certification abstains honestly, so a
           // fresh attempt is pure upside (never a wrong write). Bounded + abort-aware.
           const MF_MAX_ATTEMPTS = Math.max(1, Number(process.env.CRUCIBLE_VGR_ATTEMPTS ?? 3))
-          let mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: vgrSignal })
+          let mf = await phaseSpan('vgr.multiFile', () => solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfContext, signal: vgrSignal }))
           // Escalation for the multi-file path (mirrors the single-file ladder): once the first
           // attempt fails, fold a WEB reference approach into the proposer's grounding context on
           // retries. Fetched once (retrieveForTask caches), best-effort. Certification unchanged —
@@ -4002,7 +4047,7 @@ app.post('/api/chat', async (req, res) => {
               } catch { /* best-effort */ }
             }
             send({ type: 'thought', text: `VGR multi-file · attempt ${attempt - 1}/${MF_MAX_ATTEMPTS} did not certify (${mf.status}) — escalating${mfWebGrounded ? ' with web grounding' : ''}` })
-            mf = await solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfWebGrounded ?? mfContext, signal: vgrSignal })
+            mf = await phaseSpan('vgr.multiFile', () => solveMultiFileRequest(message ?? '', { maxModelCalls: 10, beamWidth: 2, context: mfWebGrounded ?? mfContext, signal: vgrSignal }))
             if (mf.status === 'solved' && mf.files?.length) send({ type: 'thought', text: `VGR multi-file · certified on attempt ${attempt}/${MF_MAX_ATTEMPTS}` })
           }
           debugBus.emit('agent', 'vgr_multifile_result', { status: mf.status, files: mf.files?.map(f => f.path), calls: mf.search?.modelCalls }, { severity: 'info' })
@@ -4477,6 +4522,10 @@ app.post('/api/chat', async (req, res) => {
       console.error('[Agent] Fatal error:', agentErr?.message ?? agentErr)
       try { send({ type: 'error', message: `Agent task failed: ${agentErr?.message ?? 'unknown error'}` }) } catch {}
     } finally {
+      if (ownsRequestProfile) {
+        const profile = endProfile()
+        if (profile) { try { send({ type: 'phase_profile', profile }) } catch { /* stream gone */ } }
+      }
       unsubProgress()
       endAgent()
     }
@@ -9406,8 +9455,22 @@ function startListening(port: number, attempt = 0) {
       .then(({ ensureEmbedderReady }) => ensureEmbedderReady())
       .catch(() => {})
 
-    runKeepaliveRound()
-    setInterval(runKeepaliveRound, KEEPALIVE_INTERVAL_MS)
+    // Same standing constraint as autoAcquire above: under CRUCIBLE_OFFLINE=strict, NO
+    // external calls — ever, measurement included (CLAUDE.md failure mode #1). The keepalive
+    // round pings ~36 EXTERNAL free models every 4 minutes to keep them warm, which is
+    // exactly the thing strict mode exists to forbid. Found 2026-07-26 (cont.116) in the
+    // server log of an offline-strict benchmark run, interleaved with the suite:
+    //   [Keepalive] Pinged 36 models   ×15
+    //   [Driver] Llama 3.3 70B failed (Connection error.) — falling back
+    //   [ModelRefresh] Failed to refresh model list: getaddrinfo ENOTFOUND openrouter.ai
+    // Beyond the doctrine breach it is measurement contention: 36 staggered fetches plus
+    // their timeouts compete for the event loop with the very run being timed.
+    if ((process.env.CRUCIBLE_OFFLINE ?? '1') !== 'strict') {
+      runKeepaliveRound()
+      setInterval(runKeepaliveRound, KEEPALIVE_INTERVAL_MS)
+    } else {
+      console.log('[Keepalive] disabled — CRUCIBLE_OFFLINE=strict (no external model calls)')
+    }
 
     // B4 meta-pipeline: poll for pending tasks every 30 min, run via internal agent call
     setInterval(async () => {

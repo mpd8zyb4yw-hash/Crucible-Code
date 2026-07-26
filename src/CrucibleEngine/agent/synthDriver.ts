@@ -40,6 +40,7 @@ import { buildEditSpec, parseSectionPatches, applyPatch, isSectionPatchOutput } 
 import { ensureIndex } from '../state/codebaseIndex'
 import { registry } from '../tools/registry'
 import { debugBus } from '../debug/bus'
+import { span } from '../debug/phaseProfile'
 import type { DriveTurn, DriveTurnResult } from './loop'
 import { retrieveForTask, namesExternalLibrary } from '../retrieval/retrievalLayer'
 import { runResearchDag } from '../research/researchDag'
@@ -2145,6 +2146,7 @@ async function solveCodeWrite(
   targetPath: string,
   state: CurrentState,
   projectPath: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   try { ensureIndex(projectPath) } catch { /* best-effort */ }
 
@@ -2178,11 +2180,11 @@ async function solveCodeWrite(
   // already accepts retrievalBlock but nothing fed it, so code was written from parametric memory.
   // Only the primary implementation file is grounded: secondary/test files write against the
   // already-written primary API, where a web reference is noise, not signal.
-  const retrievalBlock = isSecondary ? '' : await synthesisGroundingBlock(state.goal)
+  const retrievalBlock = isSecondary ? '' : await span('retrieval.grounding', () => synthesisGroundingBlock(state.goal))
 
   let result
   try {
-    result = await synthesizeUniversal(spec, {
+    result = await span('synth.universal', () => synthesizeUniversal(spec, {
       projectPath,
       distill: true,
       maxFmRounds: MAX_FM_ROUNDS,
@@ -2198,7 +2200,10 @@ async function solveCodeWrite(
       // error in it is a real defect this gate must still catch (cont.85 — a verifier fails in
       // two directions; widening scope past the pending set would false-CERTIFY).
       changeSetScope: state.goalPaths.filter(p => p !== targetPath && !state.writtenPaths.includes(p)),
-    })
+      // Cancellation must reach the proposer: this is the call that holds the process's
+      // single serialized inference lane (cont.116).
+      signal,
+    }))
   } catch (e: any) {
     throw new OfflineEscalateError(`synthesizeUniversal threw: ${String(e?.message ?? e).slice(0, 200)}`)
   }
@@ -2278,7 +2283,7 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     if (turnClass === 'glue') {
       const fmUp = await checkFmAvailable()
       if (!fmUp) throw new OfflineEscalateError('Apple FM daemon unavailable (port 11435) — glue escalating')
-      const text = await fmComplete(messages as Array<{ role: string; content: string }>)
+      const text = await span('model.glue', () => fmComplete(messages as Array<{ role: string; content: string }>))
       if (!text.trim()) throw new OfflineEscalateError('FM returned empty glue completion — escalating')
       debugBus.emit('agent', 'offline_glue_hit', { len: text.length }, { severity: 'info' })
       return { text, toolCalls: [] }
@@ -2441,7 +2446,7 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
         }
       }
       debugBus.emit('agent', 'offline_noncode_attempt', { goal: goal.slice(0, 80), priorTurns: priorTurns.length }, { severity: 'info' })
-      const answer = await solveNonCodeTurn(goal, projectPath, priorTurns.slice(-6))
+      const answer = await span('answer.nonCode', () => solveNonCodeTurn(goal, projectPath, priorTurns.slice(-6)))
       return { text: answer, toolCalls: [] }
     }
 
@@ -2474,7 +2479,7 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
       try {
         content = nextPath.endsWith('.html')
           ? await solveHtmlWrite(nextPath, state)
-          : await solveCodeWrite(nextPath, state, projectPath)
+          : await solveCodeWrite(nextPath, state, projectPath, signal)
       } catch (e) {
         if (e instanceof OfflineEscalateError) throw e
         throw new OfflineEscalateError(`solveCodeWrite threw: ${String((e as any)?.message ?? e).slice(0, 120)}`)
@@ -2525,7 +2530,7 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     if (hasTscErrors && state.writeCycles < goalPaths.length + MAX_WRITE_CYCLES) {
       let content: string
       try {
-        content = await solveCodeWrite(primaryPath, state, projectPath)
+        content = await solveCodeWrite(primaryPath, state, projectPath, signal)
       } catch (e) {
         if (e instanceof OfflineEscalateError) throw e
         throw new OfflineEscalateError(`retry threw: ${String((e as any)?.message ?? e).slice(0, 120)}`)
@@ -2562,7 +2567,7 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     if (state.selfTestRan && hasTestFailures && state.writeCycles < goalPaths.length + MAX_WRITE_CYCLES) {
       let content: string
       try {
-        content = await solveCodeWrite(primaryPath, state, projectPath)
+        content = await solveCodeWrite(primaryPath, state, projectPath, signal)
       } catch (e) {
         if (e instanceof OfflineEscalateError) throw e
         throw new OfflineEscalateError(`self-test retry threw: ${String((e as any)?.message ?? e).slice(0, 120)}`)

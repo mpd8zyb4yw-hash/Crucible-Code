@@ -88,7 +88,26 @@ const LANG_INSTRUMENT = /\b(?:in|using|with|for)\s+(?:an?\s+)?(?:python|javascri
 // turn and, empirically, garbles trivial answers. Stage 3 will harden DAG grounding quality.
 const EXTERNAL_FACT = /\b(latest|current(ly)?|todays?|tonight|right now|this (week|month|year)|last (week|month|year)|yesterday|recent(ly)?|news|headline|prices?|stock|shares?|market|weather|forecast|temperature|scores?|who won|standings?|release date|released|newest|as of|up to date|nowadays|who (is|are) the (current |reigning )?(ceo|president|prime minister|chancellor|pope|coach|manager|owner|champion|record holder|richest|oldest living|leader|head))\b/i
 const MULTISTEP = /\b(and then|first[, ]|then |after that|finally|step by step|as well as)\b|.*\?.*\?/i
-const REASON = /\b(if\b[^?]*\b(then|will|would|does)|how (long|far|fast|many|much) (until|before|would|will|does|do)|calculate|solve|prove|derive|catch up|how old|what time|percentage|ratio|average|per (hour|day|week|minute|second)|mph|km\/h)\b/i
+// REASON is deliberately TWO classes, because they license different things.
+//
+// REASON_VERB — reasoning verbs and conditionals. These describe an OPERATION the answer
+// requires (derive it, solve it, project it forward), so they may select 'reason' on their own,
+// with or without numbers present: "how long would it take to boil an egg" has no digits and is
+// still a derivation.
+const REASON_VERB = /\b(if\b[^?]*\b(then|will|would|does)|how (long|far|fast|many|much) (until|before|would|will|does|do)|calculate|solve|prove|derive|catch up|how old|what time)\b/i
+// REASON_UNIT — rate and quantity NOUNS. These describe the TYPE OF THE ANSWER, not whether any
+// derivation is needed. "the speed of light in metres per second" is a single retrieved constant;
+// naming its unit does not make it a calculation. MEASURED (2026-07-26): with these folded into
+// the intent selector, "What is the speed of light in metres per second?", "What is the top speed
+// of a cheetah in miles per hour?" and "How many beats per minute is a normal resting heart rate?"
+// all routed to 'reason' — a step-by-step-derivation prompt with a 1536-token budget for a
+// one-number fact, and with corroborateFact (lookup-only) switched off.
+// So units may only reach 'reason' through needsComputation, which is NUMERIC-gated and already
+// applies the right discipline. Every genuine reason-intent control in __answer_bench's routing
+// block sets needsComputation=true independently, so this removes false positives only.
+const REASON_UNIT = /\b(percentage|ratio|average|per (hour|day|week|minute|second)|mph|km\/h)\b/i
+// Union, for the numeric-gated computation test below — unchanged behavior there.
+const REASON = new RegExp(`(?:${REASON_VERB.source})|(?:${REASON_UNIT.source})`, 'i')
 // A quantitative ASK that REASON misses — discount/percent/money math and "what is the <quantity>"
 // questions. Gated by NUMERIC below, so it never fires without numbers to compute over. This is
 // what routes an arithmetic question into deterministic recomputation instead of a raw FM guess.
@@ -108,6 +127,34 @@ const DEFINE = /^\s*(?:can you |could you |please )?(?:what(?:'s| is| are)\s+(?:
 const DEFINE_EXPANDER = /\b(how|why|works?|working|difference|differ|compare|comparison|versus|vs\.?|explain|walk me through|pros and cons|trade-?offs?|used for|use case|examples?|step by step|in detail|detailed|deep dive|elaborate|derive|derivation|internals?)\b/i
 // Relational/entity nouns that make a "what is the X of Y" a specific FACT lookup, not a term def.
 const FACTUAL_LOOKUP = /\b(capital|population|currency|language|president|prime minister|ceo|founder|author|inventor|distance|height|weight|born|died|located|time in|weather|price|gdp|area of)\b/i
+
+// ── Lookup nucleus ─────────────────────────────────────────────────────────────
+// What makes a turn a factual lookup is that its interrogative nucleus is a fact-seeking
+// wh-word — NOT that the wh-word sits at character 0. English routinely fronts a preposition
+// ("In what year…", "On what date…", "At what temperature…") or wraps the question in a
+// knowledge frame ("Do you know who…", "Can you tell me what…"). MEASURED (2026-07-26): the
+// old `^`-anchored test dropped all six of those shapes into the `converse` catch-all,
+// including three items in __abstention_bench's own live non-bait probe.
+//
+// The frame is a CLOSED class and is stripped at most once, so this widens the nucleus test
+// without turning it into "contains a wh-word anywhere" — that would swallow conversational
+// turns like "I was wondering what you meant" and regress the confabulation work. Anything not
+// in the class still falls through to `converse` exactly as before.
+const LOOKUP_NUCLEUS = /^\s*(what|who|when|where|which|name|list|define|how (many|much|old|tall|far))\b/i
+const INTERROGATIVE_FRAME = new RegExp(
+  '^\\s*(?:' +
+    // Fronted preposition: "In what year…", "On what date…", "At what temperature…".
+    '(?:in|on|at|by|from|during|under|over|within|near|into|through|around)\\s+' +
+    // Knowledge/politeness frame: "Do you know who…", "Could you tell me what…".
+    '|(?:do|does|did)\\s+you\\s+(?:know|recall|remember)\\s+' +
+    '|(?:can|could|would)\\s+you\\s+(?:please\\s+)?(?:tell\\s+me|remind\\s+me)\\s+' +
+    '|(?:please\\s+)?tell\\s+me\\s+' +
+  ')',
+  'i',
+)
+function stripInterrogativeFrame(m: string): string {
+  return m.replace(INTERROGATIVE_FRAME, '')
+}
 
 function isDefinitionAsk(m: string): boolean {
   if (!DEFINE.test(m) || DEFINE_EXPANDER.test(m) || FACTUAL_LOOKUP.test(m)) return false
@@ -142,11 +189,13 @@ export function classifyFacets(message: string): AnswerFacets {
   // the prose critics then fail to flag as a non-answer. A dedicated 'code' intent carries a
   // code-appropriate prompt (no "Answer:" line) and a code-shaped non-answer critic downstream.
   if (isCode) intent = 'code'
-  else if (needsComputation || REASON.test(m)) intent = 'reason'
+  // REASON_VERB, not REASON: a unit noun may only reach 'reason' via needsComputation (which is
+  // NUMERIC-gated). See the REASON_VERB/REASON_UNIT split above.
+  else if (needsComputation || REASON_VERB.test(m)) intent = 'reason'
   // Definition BEFORE explain: "what is a <term>" trips EXPLAIN, but a bare definition is lighter.
   else if (isDefinitionAsk(m)) intent = 'definition'
   else if (EXPLAIN.test(m)) intent = 'explain'
-  else if (/^\s*(what|who|when|where|which|name|list|define|how (many|much|old|tall|far))\b/i.test(m)) intent = 'lookup'
+  else if (LOOKUP_NUCLEUS.test(stripInterrogativeFrame(m))) intent = 'lookup'
   else intent = 'converse'
 
   return { needsExternalFact, needsComputation, needsMultiStep, isCode, intent }

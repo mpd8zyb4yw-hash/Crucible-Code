@@ -615,19 +615,43 @@ adds several transactions across categories, and asserts balance() and categoryT
 interface FireResult {
   done: boolean; finalText: string; agentError: string | null
   iters: number; selfTestPassed: boolean | null; events: number; elapsedMs: number
-  // 'catalog'  — server matched a proven skill-catalog primitive, zero model inference.
-  // 'generated' — no catalog match; the task actually stressed the FM/model generation path.
-  // A task can only ever be a valid signal on generative capability when this is 'generated' —
-  // 'catalog' GREENs prove catalog coverage, not the offline agent's ability to write new code.
-  synthPath: 'catalog' | 'generated' | null
+  // 'catalog'   — server matched a stored, proven skill-catalog PRIMITIVE. Zero model inference
+  //               AND zero search: a memorized answer. Doctrine calls this debt, not capability.
+  // 'enumerative' — no primitive matched, so L1 ran a bottom-up ENUMERATIVE PROGRAM SEARCH from
+  //               the spec's worked examples and the execution oracle certified the result. Zero
+  //               model inference, but this is genuine reasoning about a task the system had no
+  //               stored answer for — propose->verify->backtrack with a search-based proposer
+  //               instead of a model-based one, which is the doctrine's own loop.
+  // 'generated' — neither fast path certified; the task stressed the model generation path.
+  //
+  // WHY THREE AND NOT TWO (2026-07-26): the server has always sent `source: 'primitive' |
+  // 'enumerative'` on the synth_match event, but this harness collapsed BOTH to 'catalog' and
+  // printed "not a generative-capability signal" over the top. That mislabels the L1 search —
+  // the one component that most directly embodies "correctness comes from the LOOP" — as a
+  // memorized lookup, and it does so in the direction that UNDER-states capability. bugfixCsv's
+  // two `path=catalog` rows in the rolling ledger are literally logged server-side as "pure-code
+  // enumerative program search".
+  //
+  // The HEADLINE gen-path number deliberately still means 'generated' only, so it stays
+  // comparable with every scorecard on record; 'enumerative' is broken out beside it rather
+  // than folded in. Reporting a new, larger number under the old name would be the exact
+  // silent-redefinition the doctrine forbids.
+  synthPath: 'catalog' | 'enumerative' | 'generated' | null
+  // TRUE iff PER_TASK_TIMEOUT_MS fired and we aborted the stream. Set from the timer itself, not
+  // sniffed out of agentError. When this is true `elapsedMs` is RIGHT-CENSORED: it is the cap, a
+  // LOWER BOUND on the real cost, not a measurement of it. Every wall-clock statistic below must
+  // say so, otherwise a whole cohort of tasks reports the same saturated number and a latency
+  // regression inside that cohort is structurally invisible.
+  timedOut: boolean
 }
 async function fireTask(task: Task, dir: string, token: string): Promise<FireResult> {
   const t0 = Date.now()
   const ctrl = new AbortController()
-  const timer = setTimeout(() => ctrl.abort(), PER_TASK_TIMEOUT_MS)
+  let timedOut = false
+  const timer = setTimeout(() => { timedOut = true; ctrl.abort() }, PER_TASK_TIMEOUT_MS)
   let done = false, finalText = '', agentError: string | null = null
   let iters = 0, events = 0, selfTestPassed: boolean | null = null
-  let synthPath: 'catalog' | 'generated' | null = null
+  let synthPath: 'catalog' | 'enumerative' | 'generated' | null = null
   try {
     const res = await fetch(`${API}/api/chat`, {
       method: 'POST',
@@ -635,7 +659,7 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
       body: JSON.stringify({ message: task.prompt, mode: 'agent', device: 'desktop', projectPath: dir, agentMode: true }),
       signal: ctrl.signal,
     })
-    if (!res.ok) { agentError = `HTTP ${res.status}`; return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0 } }
+    if (!res.ok) { agentError = `HTTP ${res.status}`; return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0, synthPath, timedOut } }
     const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
@@ -655,7 +679,8 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
           if (ev.type === 'verify' && typeof ev.passed === 'boolean') selfTestPassed = ev.passed
           if (ev.type === 'agent_error') agentError = String(ev.error ?? 'agent_error').slice(0, 200)
           if (ev.type === 'final' && typeof ev.text === 'string') { finalText = ev.text; done = true }
-          if (ev.type === 'synth_match') synthPath = 'catalog'
+          // The server distinguishes a stored primitive from an enumerative search win; keep it.
+          if (ev.type === 'synth_match') synthPath = ev.source === 'enumerative' ? 'enumerative' : 'catalog'
           if (ev.type === 'synth_miss') synthPath = 'generated'
         } catch { /* keepalive / non-JSON */ }
       }
@@ -664,7 +689,7 @@ async function fireTask(task: Task, dir: string, token: string): Promise<FireRes
     if (e?.name !== 'AbortError') agentError = String(e?.message ?? e).slice(0, 200)
     else agentError = `timeout after ${(PER_TASK_TIMEOUT_MS / 1000).toFixed(0)}s`
   } finally { clearTimeout(timer) }
-  return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0, synthPath }
+  return { done, finalText, agentError, iters, selfTestPassed, events, elapsedMs: Date.now() - t0, synthPath, timedOut }
 }
 
 // ── audit: checks the agent never saw ─────────────────────────────────────────────
@@ -761,7 +786,9 @@ async function rubricScore(dir: string): Promise<number | null> {
 interface TaskScore extends AuditResult {
   id: string; title: string; fired: boolean; agentError: string | null
   selfTestPassed: boolean | null; rubric: number | null; iters: number; elapsedMs: number
-  synthPath: 'catalog' | 'generated' | null
+  synthPath: 'catalog' | 'enumerative' | 'generated' | null
+  /** See FireResult.timedOut — when true, elapsedMs is the cap (a lower bound), not a measurement. */
+  timedOut: boolean
 }
 
 async function serverUp(token: string): Promise<boolean> {
@@ -778,10 +805,10 @@ async function serverUp(token: string): Promise<boolean> {
 // session's worth of meaningless "rate-limit exhaustion" data before this check existed
 // (the real bug turned out to be an offline-driver capability gap, not free-tier quota —
 // see ROADMAP.md). Fetch what the live server is actually running and fail loud on mismatch.
-async function liveOfflineMode(token: string): Promise<string> {
+async function liveServerConfig(token: string): Promise<{ offlineMode: string; noLearn: boolean }> {
   const res = await fetch(`${API}/api/config`, { signal: AbortSignal.timeout(4000), headers: { 'Cookie': `crucible_session=${token}` } })
-  const cfg = await res.json() as { offlineMode?: string }
-  return cfg.offlineMode ?? '1'
+  const cfg = await res.json() as { offlineMode?: string; noLearn?: boolean }
+  return { offlineMode: cfg.offlineMode ?? '1', noLearn: !!cfg.noLearn }
 }
 
 function describeMode(mode: string): string {
@@ -813,7 +840,7 @@ async function main() {
   }
 
   const requestedMode = process.env.CRUCIBLE_OFFLINE
-  const liveMode = await liveOfflineMode(token)
+  const { offlineMode: liveMode, noLearn: liveNoLearn } = await liveServerConfig(token)
   if (requestedMode && requestedMode !== liveMode) {
     console.error(
       `\nFAIL — this script was launched with CRUCIBLE_OFFLINE=${requestedMode}, but that only sets the env of ` +
@@ -824,6 +851,31 @@ async function main() {
     process.exit(2)
   }
   console.log(`Live server offline mode: ${liveMode} (${describeMode(liveMode)})`)
+
+  // ── CATALOG-DRIFT GUARD ────────────────────────────────────────────────────────
+  // A task solved via path=gen has its solution distilled into synth/skills/_learned/, so the
+  // NEXT run of that task matches it and scores path=catalog (MEASURED: bugfixCsv, 99s gen ->
+  // 3s catalog). Repeat-running to build confidence therefore measures the benchmark's own
+  // memory. CRUCIBLE_NO_LEARN=1 closes both halves — but ONLY in the process that distils and
+  // loads, which is the SERVER, not this script. Exporting it here would be a no-op that reads
+  // like a guarantee, so ask the live server what it is actually doing and say so out loud.
+  if (process.env.CRUCIBLE_NO_LEARN && !liveNoLearn) {
+    console.error(
+      `\nFAIL — CRUCIBLE_NO_LEARN is set on THIS process, but the live server at ${API} reports ` +
+      `noLearn=false. Distillation and learned-catalog loading both happen inside the server, so ` +
+      `this run would still promote its own answers into synth/skills/_learned/ and would still ` +
+      `match previously-promoted ones — i.e. exactly the contaminated measurement the flag exists ` +
+      `to prevent, but labelled clean. Restart the server with CRUCIBLE_NO_LEARN=1 in its OWN ` +
+      `launch command, then re-run this.`,
+    )
+    process.exit(2)
+  }
+  console.log(
+    liveNoLearn
+      ? `Learned-catalog: SUPPRESSED (server noLearn=1) — no distillation, no _learned/ matches. Gen-path numbers are uncontaminated.`
+      : `Learned-catalog: ACTIVE — this run may both match and create entries in synth/skills/_learned/. ` +
+        `Repeat runs of the same task will drift gen -> catalog; treat per-task pass rates accordingly.`,
+  )
 
   const prev = loadPrevious()
   const scores: TaskScore[] = []
@@ -865,7 +917,7 @@ async function main() {
     const score: TaskScore = {
       id: task.id, title: task.title, fired: fire.done || !!audit.moduleExists, agentError: fire.agentError,
       selfTestPassed: fire.selfTestPassed, rubric, iters: fire.iters, elapsedMs: fire.elapsedMs,
-      synthPath: fire.synthPath, ...audit,
+      synthPath: fire.synthPath, timedOut: fire.timedOut, ...audit,
     }
     scores.push(score)
     console.log(`  [HARD] module exists : ${audit.moduleExists ? 'PASS' : 'FAIL'}`)
@@ -873,21 +925,51 @@ async function main() {
     console.log(`  [HARD] hidden suite  : ${audit.hiddenPassed ? 'PASS' : 'FAIL'}  :: ${audit.hiddenDetail}`)
     console.log(`  [SOFT] self-test     : ${score.selfTestPassed === null ? 'n/a' : score.selfTestPassed ? 'PASS' : 'FAIL'}`)
     console.log(`  [SOFT] LLM rubric    : ${rubric === null ? 'n/a' : rubric + '/100'}`)
-    console.log(`  [INFO] synth path    : ${fire.synthPath ?? 'unknown'}${fire.synthPath === 'catalog' ? ' — proven-skill match, zero model inference; not a generative-capability signal' : ''}`)
+    const pathNote = fire.synthPath === 'catalog'
+      ? ' — stored proven-skill primitive, zero model inference AND zero search; not a generative-capability signal'
+      : fire.synthPath === 'enumerative'
+      ? ' — L1 enumerative program search, zero model inference but no stored answer either; real reasoning, reported apart from the model-generation headline'
+      : ''
+    console.log(`  [INFO] synth path    : ${fire.synthPath ?? 'unknown'}${pathNote}`)
   }
 
   // ── scorecard + regression check ────────────────────────────────────────────────
   fs.mkdirSync(path.dirname(SCORECARD), { recursive: true })
   const passedHard = scores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
-  fs.writeFileSync(SCORECARD, JSON.stringify({ ts: Date.now(), passedHard, total: scores.length, tasks: scores }, null, 2))
+  // WALL CLOCK AS A SCORED AXIS (2026-07-26). `passedHard` deliberately keeps its exact old
+  // meaning — it is the number the doctrine says to quote, and changing it silently would break
+  // comparability with every scorecard on record and with the regression check below. What was
+  // missing is that it says NOTHING about cost: a task cut off at PER_TASK_TIMEOUT_MS still scored
+  // GREEN (measured: multiFileLedger, 480s, agentError="timeout after 480s", all three HARD checks
+  // PASS — and 5 more greens in the same run). That GREEN is not a scoring bug: the audit reads a
+  // real snapshot and the hidden adversarial suite really passed, so calling it RED would report
+  // correct code as incorrect. But it is not a full pass either — the agent never terminated, so
+  // the run was CENSORED, and a frontier-SWE bar that ignores whether work ever finishes is not a
+  // bar. Hence a THIRD state (AMBER) and a second, stricter count reported alongside.
+  const censored = scores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed && s.timedOut)
+  const passedHardInBudget = passedHard - censored.length
+  const capS = (PER_TASK_TIMEOUT_MS / 1000).toFixed(0)
+  fs.writeFileSync(SCORECARD, JSON.stringify({ ts: Date.now(), passedHard, passedHardInBudget, capMs: PER_TASK_TIMEOUT_MS, total: scores.length, tasks: scores }, null, 2))
 
   console.log('\n=== SCORECARD ===')
   for (const s of scores) {
     const hard = s.moduleExists && s.compiled && s.hiddenPassed
-    const path = s.synthPath === 'catalog' ? 'catalog' : s.synthPath === 'generated' ? 'gen' : '?'
-    console.log(`  ${hard ? 'GREEN' : ' RED '}  ${s.id.padEnd(12)} compile=${s.compiled ? 'Y' : 'n'} hidden=${s.hiddenPassed ? 'Y' : 'n'} self=${s.selfTestPassed === null ? '-' : s.selfTestPassed ? 'Y' : 'n'} rubric=${s.rubric ?? '-'} path=${path.padEnd(7)} ${(s.elapsedMs / 1000).toFixed(0)}s`)
+    const path = s.synthPath === 'catalog' ? 'catalog' : s.synthPath === 'enumerative' ? 'enum' : s.synthPath === 'generated' ? 'gen' : '?'
+    // GREEN = correct AND converged in budget. AMBER = correct code on disk, but the harness cut
+    // the agent off at the cap. RED = a HARD check failed. '+' marks a censored elapsed.
+    const state = !hard ? ' RED ' : s.timedOut ? 'AMBER' : 'GREEN'
+    const prevMs = prev[s.id]?.elapsedMs
+    const delta = typeof prevMs === 'number' && prevMs > 0
+      ? ` (${s.elapsedMs >= prevMs ? '+' : ''}${(((s.elapsedMs - prevMs) / prevMs) * 100).toFixed(0)}% vs prev)` : ''
+    console.log(`  ${state}  ${s.id.padEnd(12)} compile=${s.compiled ? 'Y' : 'n'} hidden=${s.hiddenPassed ? 'Y' : 'n'} self=${s.selfTestPassed === null ? '-' : s.selfTestPassed ? 'Y' : 'n'} rubric=${s.rubric ?? '-'} path=${path.padEnd(7)} ${(s.elapsedMs / 1000).toFixed(0)}s${s.timedOut ? '+' : ' '}${delta}`)
   }
   console.log(`\n  Claude-level (all HARD green): ${passedHard}/${scores.length} tasks`)
+  console.log(`    of which CONVERGED inside the ${capS}s box (GREEN)     : ${passedHardInBudget}/${scores.length}`)
+  if (censored.length) {
+    console.log(`    of which CENSORED at the ${capS}s cap (AMBER)         : ${censored.length}/${scores.length} — ${censored.map(s => s.id).join(', ')}`)
+    console.log(`      AMBER = the audited code is correct, but the agent never terminated; the harness aborted and`)
+    console.log(`      snapshotted mid-run. Their elapsed is the CAP, a lower bound — not a measurement of cost.`)
+  }
   // A 'catalog' GREEN proves proven-skill coverage, NOT that the offline agent can generate
   // new code — it never touched the model. Only 'generated' tasks stress real capability;
   // conflating the two is exactly what produced last session's misleading 4/5 "Claude-level"
@@ -896,20 +978,70 @@ async function main() {
   const genPassed = genScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
   const catScores = scores.filter(s => s.synthPath === 'catalog')
   const catPassed = catScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
-  console.log(`    of which via catalog-primitive match (zero inference): ${catPassed}/${catScores.length} green`)
-  console.log(`    of which via genuine model generation (real signal)  : ${genPassed}/${genScores.length} green`)
-  if (genScores.length === 0) console.log(`    ⚠ no task in this run exercised genuine generation — the summary above says nothing about offline-agent coding capability`)
+  // Broken out from 'catalog' (2026-07-26). An L1 enumerative win used the model zero times, like a
+  // primitive — but unlike a primitive it had NO stored answer and had to SEARCH for a program,
+  // certified by the execution oracle. That is the doctrine's loop with a search-based proposer,
+  // so filing it under "memorized" understated capability. It is still reported apart from the
+  // model-generation headline, because it measures a different faculty.
+  const enumScores = scores.filter(s => s.synthPath === 'enumerative')
+  const enumPassed = enumScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed).length
+  const genPassedInBudget = genScores.filter(s => s.moduleExists && s.compiled && s.hiddenPassed && !s.timedOut).length
+  console.log(`    of which via catalog-primitive match (memorized, zero search): ${catPassed}/${catScores.length} green`)
+  if (enumScores.length) {
+    console.log(`    of which via ENUMERATIVE program search (zero model, real)   : ${enumPassed}/${enumScores.length} green`)
+    console.log(`      enum = no stored answer existed; L1 searched for a program and the execution oracle`)
+    console.log(`      certified it. Genuine reasoning, but a DIFFERENT faculty from model generation —`)
+    console.log(`      kept out of the gen headline so that number stays comparable with past scorecards.`)
+  }
+  console.log(`    of which via genuine model generation (real signal)  : ${genPassed}/${genScores.length} green  |  in-budget: ${genPassedInBudget}/${genScores.length}`)
+  if (genScores.length === 0) console.log(`    ⚠ no task in this run exercised genuine MODEL generation — the summary above says nothing about the offline agent's ability to write new code${enumScores.length ? ` (${enumScores.length} task(s) were certified by enumerative search instead)` : ''}`)
+
+  // ── WALL CLOCK — the scored axis the scorecard was missing ─────────────────────
+  // Printed for the gen path only, for the same reason pass rates are: a catalog hit is a memory
+  // lookup (measured: 3s) and folding it in would flatter the median into meaninglessness.
+  const genTimed = scores.filter(s => s.synthPath === 'generated')
+  if (genTimed.length) {
+    const ms = genTimed.map(s => s.elapsedMs).sort((a, b) => a - b)
+    const q = (p: number) => ms[Math.min(ms.length - 1, Math.floor(p * (ms.length - 1)))]
+    const atCap = genTimed.filter(s => s.timedOut).length
+    console.log(`\n=== WALL CLOCK (gen path, cap ${capS}s/task) ===`)
+    console.log(`  median ${(q(0.5) / 1000).toFixed(0)}s   p90 ${(q(0.9) / 1000).toFixed(0)}s   max ${(ms[ms.length - 1] / 1000).toFixed(0)}s   at cap: ${atCap}/${genTimed.length}`)
+    const slow = [...genTimed].sort((a, b) => b.elapsedMs - a.elapsedMs).slice(0, 3)
+    console.log(`  slowest: ${slow.map(s => `${s.id} ${(s.elapsedMs / 1000).toFixed(0)}s${s.timedOut ? '+' : ''}`).join(', ')}`)
+    if (atCap) {
+      console.log(`  ⚠ ${atCap}/${genTimed.length} gen tasks are pinned AT the cap. Inside that cohort every task reports the same`)
+      console.log(`    ${capS}s regardless of how much slower it actually got — a latency regression there is INVISIBLE by`)
+      console.log(`    construction. Raise CRUCIBLE_CODE_BENCH_TIMEOUT to un-saturate, or cut seconds/iteration.`)
+    }
+    const regressed: string[] = []
+    for (const s of genTimed) {
+      const p = prev[s.id]?.elapsedMs
+      // Thresholds are deliberately loose: same-task wall time is documented to swing 137s→480s
+      // purely on server contention (ROADMAP 2026-07-22h), so a tight bound would be a false-alarm
+      // machine. This never changes the exit code — it reports, the human judges.
+      if (typeof p === 'number' && p > 0 && s.elapsedMs > p * 1.25 && s.elapsedMs - p > 30_000) {
+        regressed.push(`${s.id} ${(p / 1000).toFixed(0)}s→${(s.elapsedMs / 1000).toFixed(0)}s`)
+      }
+    }
+    if (regressed.length) console.log(`  ⚠ SLOWER vs the previous scorecard (>25% and >30s): ${regressed.join(', ')}`)
+  }
 
   // ── Per-task pass rates over the last N runs (n>1 signal) ──────────────────────
   // A single run cannot tell a real fix from variance. Append this run, then report each task's
   // rate across the window so a "GREEN" is qualified by how often it is actually green.
-  type HistRun = { ts: number; tasks: Record<string, { hard: boolean; gen: boolean }> }
+  // `ms`/`to` ride along with hard/gen so wall clock accumulates the SAME way pass rates do — one
+  // run cannot tell a real slowdown from contention any more than it can tell a fix from variance.
+  // Both are optional: entries written before 2026-07-26 have neither and must read as "unknown",
+  // never as 0.
+  type HistRun = { ts: number; tasks: Record<string, { hard: boolean; gen: boolean; ms?: number; to?: boolean }> }
   let history: HistRun[] = []
   try { history = JSON.parse(fs.readFileSync(HISTORY, 'utf-8')) } catch { history = [] }
   if (!Array.isArray(history)) history = []
   const thisRun: HistRun = { ts: Date.now(), tasks: {} }
   for (const s of scores) {
-    thisRun.tasks[s.id] = { hard: !!(s.moduleExists && s.compiled && s.hiddenPassed), gen: s.synthPath === 'generated' }
+    // NOTE: `hard` intentionally stays the OLD predicate (AMBER counts as hard here). The ledger's
+    // job is comparability across runs; `to` carries the censoring separately.
+    thisRun.tasks[s.id] = { hard: !!(s.moduleExists && s.compiled && s.hiddenPassed), gen: s.synthPath === 'generated', ms: s.elapsedMs, to: s.timedOut }
   }
   history.push(thisRun)
   // Keep a bounded tail — enough to compute the window plus a little context.
@@ -943,8 +1075,26 @@ async function main() {
     const tag = genRuns.length === 0 ? 'catalog-only (NO gen signal)'
       : genRuns.length < 2 ? 'n=1 (UNPROVEN)'
       : rate === 1 ? 'reliable' : rate === 0 ? 'reliably RED' : 'VARIANCE'
-    console.log(`  ${s.id.padEnd(18)} ${greens}/${genRuns.length} green over gen runs (${runs.length} total)  ${isGen ? 'gen    ' : 'catalog'}  ${tag}`)
+    // Median wall clock over the same gen runs, with the censored count, so "reliable" is always
+    // read next to what it cost. A task can hold 3/3 green while tripling in wall time.
+    const genMs = genRuns.map(r => r.tasks[s.id].ms).filter((m): m is number => typeof m === 'number').sort((a, b) => a - b)
+    const capped = genRuns.filter(r => r.tasks[s.id].to).length
+    const msCol = genMs.length ? `  med ${(genMs[Math.floor((genMs.length - 1) / 2)] / 1000).toFixed(0)}s${capped ? ` (${capped} at cap)` : ''}` : ''
+    console.log(`  ${s.id.padEnd(18)} ${greens}/${genRuns.length} green over gen runs (${runs.length} total)  ${isGen ? 'gen    ' : 'catalog'}  ${tag}${msCol}`)
   }
+  // Wall-clock drift against the ledger, the mirror of the pass-rate check above.
+  const slower: string[] = []
+  for (const s of scores) {
+    if (s.synthPath !== 'generated') continue
+    const priorMs = window.slice(0, -1).filter(r => r.tasks[s.id]?.gen)
+      .map(r => r.tasks[s.id].ms).filter((m): m is number => typeof m === 'number').sort((a, b) => a - b)
+    if (priorMs.length < 2) continue
+    const med = priorMs[Math.floor((priorMs.length - 1) / 2)]
+    if (med > 0 && s.elapsedMs > med * 1.5 && s.elapsedMs - med > 60_000) {
+      slower.push(`${s.id} ${(med / 1000).toFixed(0)}s→${(s.elapsedMs / 1000).toFixed(0)}s`)
+    }
+  }
+  if (slower.length) console.log(`\n  ⚠ WALL-CLOCK DRIFT vs the ledger median (>1.5× and >60s slower): ${slower.join(', ')}`)
   if (drifted.length) {
     console.log(`\n  ⚠ CATALOG DRIFT — these ran BOTH gen and catalog inside the window: ${drifted.join(', ')}`)
     console.log(`    Their solutions were promoted into skills/_learned/, so later runs are memorized lookups,`)

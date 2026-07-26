@@ -17,68 +17,167 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-26 (cont.115 — measurement layer fixed; parity plan set) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-26 (cont.116 — throughput root-caused and fixed; the benchmark was measuring queue contention) (REPLACE THIS EVERY SESSION)
 
-> **READ FIRST (cont.115) — the measurement layer was not trustworthy, and is now partly fixed.**
-> Four concurrent sessions each independently produced a next-steps list, and every one contained
-> a version of "our numbers don't mean what we think". Two root causes are now closed, one is newly
-> discovered and OPEN:
-> - FIXED: the non-bait probe gated SURVIVAL, not CORRECTNESS — an engine that never abstains and
->   fabricates everything scored perfectly. Now gates correctness (floor 15/20, measured 20/20).
-> - FIXED: every scorecard was n=1. Runs now append to `coding-bench-history.json`; the scorecard
->   computes per-task pass rates and a reliable gen-path floor.
-> - **OPEN / IMPORTANT — CATALOG DRIFT.** A task solved via `path=gen` gets promoted into
->   `skills/_learned/`, so the NEXT run scores it `path=catalog` (measured: bugfixCsv, 99s gen →
->   3s catalog). Repeat-running to build confidence therefore INFLATES reliability. The ledger now
->   excludes catalog runs from the rate and flags drift, but the underlying promotion still erodes
->   the gen sample every run. **To re-measure real capability on a drifted task, clear its entry in
->   `src/CrucibleEngine/synth/skills/_learned/` first.** A no-learn measurement mode is not built.
+> **READ FIRST (cont.116) — the top parity item was measured, and the answer inverted the plan again.**
+> cont.115 said "throughput is the binding constraint; profile it before touching any prompt or
+> oracle." That was the right call, and the profile says the cost was NOT model latency and NOT the
+> loop's stopping logic. It was **one abandoned task starving every task after it through a global
+> serial model queue.** Recent suite numbers measured contention, not capability.
 >
-> **PARITY FRAME (cont.115).** Three layers, strictly ordered — 2 is unfalsifiable without 1:
-> - **Layer 0, measurement validity** — mostly done above; catalog drift is the remainder.
-> - **Layer 1, loop capability** — where the real gap is. Top item: **throughput.** `iters=2` is
->   NOT an early-exit bug (the loop's soft caps + 20-min wall in `agent/loop.ts` are correct); the
->   harness cuts at 480s and iterations cost ~45-60s, so 6/10 gen tasks are guillotined mid-work.
->   Seconds-per-iteration is the binding constraint. Also here: `classifyFacets` misrouting, and
->   the reasoning track's stalled rung.
-> - **Layer 2, benchmark scope** — what makes "parity" a meaningful word at all: tasks with no
->   given public API (today every task hands over the exact signature), enough tasks that one flip
->   isn't 10pts, and wall-clock as a SCORED axis (today a task that times out at 480s still scores
->   GREEN — `multiFileLedger` did exactly that).
+> **The mechanism, end to end (all three links verified in code, not inferred):**
+> 1. `coding-benchmarks.ts` aborts its HTTP wait at `PER_TASK_TIMEOUT_MS` (480s) and immediately
+>    fires the next task.
+> 2. `server.ts`'s `res.on('close')` then waited **`DISCONNECT_GRACE_MS = 10 minutes`** before
+>    calling `ac.abort()`. The grace is longer than the entire per-task budget, so a timed-out
+>    agent outlives the whole of the next task.
+> 3. Every model call in the process — `universal.ts` synth AND `fmReact` glue alike — funnels
+>    through **one** serial gate (`agent/fmQueue.ts`, `MAX_CONCURRENT = 1`). So the zombie does not
+>    merely linger; it holds the only inference lane.
 >
-> No defensible parity percentage exists yet, and none should be quoted until Layer 2 exists.
-
-> NOTE: two tracks were live. The CODING-BENCH block is first; the ANSWERS/CALIBRATION block
-> follows. Do not delete either without confirming that track is done.
-
-> **HEADLINE (2026-07-26, cont.112 — CONFIRMATION SUITE, supersedes the cont.111 caveat below):**
-> full offline-strict suite run with all fixes in place = **14/14 overall, 10/10 gen-path GREEN**,
-> "No regressions vs the previous scorecard". This is the confirmation run cont.111 said was still
-> outstanding. Live abstention probe the same session: **22/22** (was 19/22).
+> **The measured signature (new `CRUCIBLE_PHASE_PROFILE=1`, 14 profiles):** early gen tasks ran
+> 33–41s server-side wall with `model.synth` at ~12s/call, then degraded to 613s, 3660s and 5646s as
+> zombies accumulated. The worst single `model.synth` call in the suite was **5604s** (clampModule,
+> whose scorecard row reads `elapsed=5899s`) against a ~12s median for the identical lane. That is
+> queue starvation with a two-orders-of-magnitude tail, and it explains why sessions disagreed about
+> "45–60s/iteration" vs "240s/iteration" — they were measuring different zombie counts, not
+> different models.
 >
-> One RED appeared mid-session and was root-caused + fixed: **tagSetModule failed on a PACKAGING
-> bug, not a reasoning bug.** The head wrote `unionTags`/`intersectTags` with perfect logic, then
-> prefixed the deliverable with `import { strict as assert } from 'assert'` for its inline
-> self-test; the bench project has no `@types/node`, so that single import was the ONLY compile
-> error in the run (TS2591) and `compile=n` cascaded to `hidden=n`. Fixed universally by
-> **`shimNodeAssert` (`synth/assertShim.ts`), applied at write time in `tools/registry.ts`'s
-> `write_file`** — swaps the node import for a local zero-dependency `assert` shim, so assertions
-> still run and still throw (self-test coverage preserved) but the module compiles standalone.
-> tagSetModule RED→GREEN measured in isolation, then GREEN again in the full suite.
-> `__assertShim_bench.ts` 21/21, incl. a check that the shimmed output typechecks with NO
-> `@types/node` — the exact condition that produced the RED.
+> **Same-task before/after — filterModule, identical prompt, identical head:**
+>
+> | | pre-fix | post-fix |
+> |---|---|---|
+> | server-side wall | **730s** (harness gave up at its own 480s cap; the server kept going) | **354s, converged** |
+> | `model.synth` total | 342.0s over 25 calls | 171.1s over 18 calls |
+> | `model.synth` avg / **worst** | 13.7s / **29.5s** | 9.5s / **13.6s** |
+>
+> Note what the pre-fix row actually shows: the harness recorded `elapsed=480s timeout`, but the
+> server was still working at 730s. That gap IS the zombie, in the data.
 
-> **CODING-BENCH NOTE (cont.111, still current):** summaryModule is RELIABLE — `repairGroupedLedger`
-> (`synth/repairProposers.ts`) took it 2/3 → **3/3 GREEN** on qwen (repair fired+accepted 3/3).
-> `repair:bench` 32/32. Reliable floor ~9/10 (bugfixCsv + tagSetModule + summaryModule
-> repair-guaranteed; only usernameModule remains hardened-but-variance).
+### WHERE ITERATION TIME ACTUALLY GOES (the cont.115 question, answered)
 
-> **CODING-BENCH HEADLINE (2026-07-25, cont.110b):** authoritative full offline-strict suite on the
-> doctrine head **qwen-1.5b (:8080)** = **14/14 overall, 10/10 gen-path GREEN** (this run), up from a
-> 7/10 qwen baseline. RELIABLE floor ~8/10: bugfixCsv + tagSetModule are repair-guaranteed;
-> usernameModule + summaryModule are strengthened-oracle green but VARIANCE (a bad run can still RED
-> them — the oracle catches the FM's wrong code but the FM can't always self-fix). Measure on qwen
-> with `LOCAL_INFERENCE_URL=http://localhost:8080` — the synth default (:11435) is Apple FM, off-doctrine.
+Measured on a clean post-fix gen task (filterModule, 354s, 18 model calls). Self-time attribution —
+nested spans subtracted, so these sum to real wall clock:
+
+| lane | share | calls | per call |
+|---|---|---|---|
+| `model.synth` (qwen-1.5b codegen) | **51%** | 18 | 9.5s |
+| `oracle.gateA.tsc` | **17%** | 34 | 1.7s |
+| `vgr.specExtract` | **16%** | 2 | 26.8s |
+| `retrieval.grounding` | **15%** | 4 (1 real, 3 cached) | 50.8s once/task |
+| `tool.*` round-trips | **~0.1%** | 8 | 0.03s |
+| `oracle.gateB.exec` (execution verify) | **~0.6%** | 4 | 0.4s |
+
+**The tool round-trip and the execution verifier are not the problem — together they are under 1%.**
+The doctrine's own loop (execute the candidate against ground truth) is essentially free. Cost is
+concentrated in model calls (51%) and in three non-model lanes nobody had counted.
+
+### SHIPPED THIS SESSION (cont.116)
+
+- **`CRUCIBLE_DISCONNECT_GRACE_MS`** (`server.ts`) — grace period is now configurable; the 10-minute
+  default is kept because it is correct for interactive use (walk away, come back to a finished
+  answer). **Measurement must set it to 0.**
+- **Drop-on-cancel in `agent/fmQueue.ts`** — `enqueueFm({signal})` rejects a queued job at DEQUEUE if
+  its request already aborted, so a cancelled run cannot occupy the only inference lane. Checked at
+  dequeue, not enqueue, because the abort lands while the job waits behind a long call.
+  `npm run fmqueue:bench` **12/12**, isolation-proven (6 assertions flip when the drop is neutered,
+  including the deadlock guard — a drop that forgets to re-`pump()` would hang everything behind it).
+- **Cancellation threaded into the model call** — `synthDriver.solveCodeWrite` →
+  `synthesizeUniversal({signal})` → `defaultLocalSynth`, which now passes the signal to BOTH
+  `enqueueFm` and the `fetch`, so an in-flight call dies with its request instead of running out the
+  600s `LOCAL_SYNTH_TIMEOUT_MS` for a listener that is gone.
+- **`CRUCIBLE_OFFLINE=strict` now actually means offline.** The server was pinging **36 external
+  models every 4 minutes** (`runKeepaliveRound`) and re-enumerating openrouter.ai free models, during
+  offline-strict benchmark runs — CLAUDE.md failure-mode #1, sitting in the server log as
+  `[Keepalive] Pinged 36 models` interleaved with the suite. Both are now gated on strict, matching
+  the existing `autoAcquire` precedent.
+- **`CRUCIBLE_PHASE_PROFILE=1`** (`debug/phaseProfile.ts`) — per-task wall-clock attribution by lane,
+  AsyncLocalStorage-based so concurrent siblings nest correctly, self-time so nested spans do not
+  double-count. Zero cost when unset. Emits `phase_profile` on the SSE stream and to stderr.
+
+### CORRECTIONS TO THE cont.115 PLAN (do not re-derive these)
+
+- **The "reasoning track's stalled rung" was a PHANTOM. Do not work it.** `isOpen`, `wordFrequency`
+  and `compressRuns` **do not exist as identifiers on this branch** (grep returns one unrelated
+  tokenizer regex and a catalog primitive). They are helper names invented by ONE stochastic FM
+  planner draw on the unmerged branch `claude/gap-soundness` @ `7c92a28` (71 commits ahead, 63
+  behind, +3979/−2643 across 41 files in `reasoning/`). The harness that produced the claim,
+  `__decompose_general_scorecard_live.ts`, does not exist on HEAD and cannot be ported (it imports
+  `hasDecomposeTemplate`/`decomposePerRungBudget`, which HEAD's `fmPlanner.ts` does not export).
+  `decomposeCodeBySubFunction` has **zero production callers** — `smoke:code:offline` goes over HTTP
+  to `solveCodingRequest`, which never calls it. **Nothing about that item can move the doctrine's
+  number.** If the track is resumed, the blocking task is a branch MERGE, not a rung fix.
+- **`path=catalog` was over-reported — the harness was collapsing two different things.** The server
+  has always sent `source: 'primitive' | 'enumerative'` on `synth_match`; the harness mapped both to
+  `catalog` and printed "not a generative-capability signal" over the top. An L1 **enumerative**
+  win uses the model zero times but has **no stored answer** — it searches for a program and the
+  execution oracle certifies it. That is the doctrine's loop with a search-based proposer, and
+  filing it as "memorized" **understated** capability. Now reported as a third path (`enum`),
+  deliberately kept OUT of the gen headline so that number stays comparable with past scorecards.
+- **Catalog-drift blast radius is bounded to 2 of 14 tasks, not the whole suite.** `_learned/` holds
+  13 files but only **7 distinct implementations**, and 6 of those 7 duplicate skills already in
+  `_manifest.ts`. Offline replay of the matcher against all 14 task prompts: only `clampModule`
+  (via `01916e41e5f6`, tracked since 2026-07-04) and `bugfixCsv` (four byte-identical `parseCsv`
+  clones) score above 0. The only genuinely unique content in `_learned/` is the bugfixCsv answer.
+
+### THE SAMPLE-EFFICIENCY GAP (the real parity lever, newly measurable)
+
+DOCTRINE.md: *"Maximize information per model call. Sample-efficiency is the moat. Optimize it
+above almost everything else."* Nothing measured it until now. Two clean gen tasks:
+
+| | filterModule (354s, GREEN) | sortModule (481s, AMBER) |
+|---|---|---|
+| `model.synth` calls | 18 | 17 |
+| candidate verifications (`oracle.stage`) | 34 | 19 |
+| verifications that **executed anything** (`oracle.gateB.exec`) | **4** | **7** |
+
+So on filterModule, **34 candidates were judged and only 4 were ever run.** The doctrine's ground
+truth is execution; 30 of 34 verdicts were reached statically.
+
+**Do NOT assume those 30 were typecheck failures — that is not established, and I nearly recorded
+it as if it were.** `synth/oracle.ts` has FIVE pre-execution exits, any of which returns
+`gateB:false` without running a line: gate-A typecheck fail (:311), `lintCandidates` (:316),
+`checkDuplicateExports` (:318), `checkContract` (:320), and — easy to miss — `!testFile` at :321,
+*"compiles, but no behavioral test to confirm correctness"*. That last one means a candidate can be
+**perfectly correct, compile clean, and still never be executed**, because `deriveTests` produced
+nothing for it. Which exit dominates decides which fix is right, and they point opposite ways:
+constrained decoding if it is typecheck, better test derivation if it is `!testFile`.
+
+**Next measurement (one line, do this FIRST):** tag each verification with its exit reason and
+count them. `phaseProfile.span` already gives the shape; a `verify.exit.<reason>` lane on each of
+the five returns turns this into data in a single run. Do not build either fix before that number
+exists — that is exactly the "this should help" move doctrine rule #4 bans.
+
+Also worth noting from the same run: **filterModule's deliverable was fully correct and certified
+(15/15 hidden checks, tsc clean, `path=gen`), and the run still ended in an escalate — because the
+agent could not write a clean `src/index.ts` SELF-TEST**, which the audit scores `n/a` (SOFT). The
+graded artifact was done; the budget went to an ungraded one.
+
+### OPEN — highest leverage first
+
+1. **`vgr.specExtract` — 26.8s/call, 16% of a gen task, and it produces UNTRUSTED input.**
+   `reasoning/multiFile.ts` calls `extractMultiFunctionSpec`/`extractCodeSpec` to have the model
+   invent example I/O, then verifies candidates against those invented cases. It is the second-most
+   expensive lane and the one whose output the doctrine trusts least. Two independent questions:
+   is 27s/call reducible, and is a model-invented spec the right ground truth at all?
+2. **`oracle.gateA.tsc` spawns `npx` 34× per task** (`synth/oracle.ts:310`,
+   `runAsync('npx', ['tsc', ...])`). Each `npx` re-resolves the binary before tsc even starts.
+   Resolving `typescript/bin/tsc` once and spawning `node` directly should remove most of the ~1.7s
+   floor. Cheap, low-risk, and now MEASURABLE — the scorecard has a wall-clock section.
+3. **`retrieval.grounding` costs ~50s once per gen task** (`synthDriver.synthesisGroundingBlock`,
+   `retrieveForTask({budget:2600, maxPages:3})`). The network was verified reachable, so this is
+   real retrieval work, not a timeout — but it is 15% of the budget on tasks whose spec already
+   hands over the exact API. Worth an A/B: it is one flag away from testable. Do NOT just delete it;
+   grounding is doctrine (facts retrieved, not memorized).
+4. **`_learned/` dedupe is broken and accretes.** `contentAddressedId` = sha256(**spec** + content)
+   (`synth/pureCode.ts:159`), and the spec text varies run to run, so byte-identical answers keep
+   minting new ids — four `parseCsv` clones, three written within 17 seconds. A catalog hit can
+   itself re-distil, so the file count grows on runs that produced no new capability. Key the
+   persisted file on CONTENT alone.
+5. **Layer 2 — benchmark scope is still what makes "parity" meaningful.** Every task hands the agent
+   its exact signature; 14 tasks means one flip is 7 points. Wall clock is now a scored axis (GREEN /
+   AMBER / RED, where AMBER = correct code but the agent never terminated). Still needed: tasks with
+   **no given public API**, and enough of them that variance is visible.
 
 ### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.108 — DOCTRINE-CORRECT qwen head measurement):
 - **All prior numbers were on Apple FM (:11435), NOT the qwen-1.5b head (:8080)** — the offline

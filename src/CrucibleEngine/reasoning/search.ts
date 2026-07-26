@@ -20,6 +20,7 @@
 import type {
   Attempt, Candidate, Proposer, SearchResult, TaskSpec, Verdict, Verifier,
 } from './types'
+import { span } from '../debug/phaseProfile'
 
 export interface SearchOpts {
   /** How many candidate lines to keep alive between rounds. Width of exploration. */
@@ -64,7 +65,7 @@ export async function search<T>(
   let stagnantRounds = 0
 
   const verifyOne = async (c: Candidate<T>): Promise<Verdict> => {
-    try { return await verifier(c, spec) }
+    try { return await span('vgr.verify', () => verifier(c, spec)) }
     catch (e: any) {
       return { pass: false, score: -Infinity, signals: [`verifier threw: ${String(e?.message ?? e)}`] }
     }
@@ -113,7 +114,7 @@ export async function search<T>(
 
         let candidate: Candidate<T> | null = null
         try {
-          candidate = await proposer({ spec, history, diversify, signal: opts.signal })
+          candidate = await span('vgr.propose', () => proposer({ spec, history, diversify, signal: opts.signal }))
         } catch (e: any) {
           emit({ type: 'thought', text: `proposer error: ${String(e?.message ?? e)}` })
         }

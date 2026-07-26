@@ -35,10 +35,11 @@ import { synthesizePureCode, distillToSkill } from './pureCode'
 import { deriveGoalExampleTests } from './goalExampleOracle'
 import { buildRepoContext, withRetrieval, type OracleContextFile } from './repoContext'
 import { ensureIndex } from '../state/codebaseIndex'
+import { span } from '../debug/phaseProfile'
 
 const LOCAL_FM_URL = process.env.LOCAL_INFERENCE_URL ?? 'http://127.0.0.1:11435'
 
-export type LocalSynth = (system: string, user: string) => Promise<string>
+export type LocalSynth = (system: string, user: string, signal?: AbortSignal) => Promise<string>
 
 export interface UniversalResult {
   files: SynthFile[]
@@ -182,8 +183,21 @@ const LOCAL_SYNTH_TIMEOUT_MS = Number(
 )
 
 /** Default proposer: the on-device Apple FM (offline). Injectable for tests / other backends. */
-async function defaultLocalSynth(system: string, user: string): Promise<string> {
+async function defaultLocalSynth(system: string, user: string, signal?: AbortSignal): Promise<string> {
   // Serialized through the FM queue (single-session daemon); synthesis is foreground → high.
+  //
+  // `signal` is the REQUEST's abort signal, and it is threaded into two distinct places
+  // (cont.116) because a synth call can be stalled in either of them:
+  //   - enqueueFm({signal}) — drops the job at dequeue if the request died while it waited
+  //     behind a long call. This is the common case: MAX_CONCURRENT is 1.
+  //   - the fetch itself — kills a call already in flight, instead of letting it run out
+  //     the 600s LOCAL_SYNTH_TIMEOUT_MS on behalf of a request nobody is listening to.
+  // Without both, a cancelled task keeps the process's only inference lane busy; the phase
+  // profiler measured a single synth call held for 5604s against a 12s median that way.
+  const deadline = AbortSignal.timeout(LOCAL_SYNTH_TIMEOUT_MS)
+  const fetchSignal = signal
+    ? (typeof (AbortSignal as any).any === 'function' ? (AbortSignal as any).any([deadline, signal]) : signal)
+    : deadline
   const call = () => enqueueFm(() => fetch(`${LOCAL_FM_URL}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -191,8 +205,8 @@ async function defaultLocalSynth(system: string, user: string): Promise<string> 
       messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       max_tokens: 1200, temperature: 0.2,
     }),
-    signal: AbortSignal.timeout(LOCAL_SYNTH_TIMEOUT_MS),
-  }), { priority: 'high', label: 'universalSynth' })
+    signal: fetchSignal,
+  }), { priority: 'high', label: 'universalSynth', signal })
   // Transient-5xx retry (cont.101): the single-session FM daemon returns 503 when it is warming
   // or momentarily saturated (measured: sortModule died mid-suite on a bare "local FM 503" while
   // other tasks kept the daemon busy). A 503 discards the ENTIRE synth round for zero output, so a
@@ -201,6 +215,7 @@ async function defaultLocalSynth(system: string, user: string): Promise<string> 
   const TRANSIENT = new Set([502, 503, 504])
   let res: Response | null = null
   for (let attempt = 0; attempt < 3; attempt++) {
+    if (signal?.aborted) throw new Error('local FM call cancelled')
     res = await call()
     if (res.ok || !TRANSIENT.has(res.status)) break
     if (attempt < 2) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)))
@@ -239,6 +254,9 @@ export async function synthesizeUniversal(
      *  failing gate A, so the transiently-broken intermediate states of a multi-file refactor
      *  are reachable. See scopeTsErrors in oracle.ts (cont.99). */
     changeSetScope?: string[]
+    /** The originating request's abort signal. Threaded to the proposer so a cancelled
+     *  run stops consuming the single serialized inference lane (see defaultLocalSynth). */
+    signal?: AbortSignal
   } = {},
 ): Promise<UniversalResult> {
   const feats = extractFeatures(spec)
@@ -282,7 +300,7 @@ export async function synthesizeUniversal(
   }
 
   // ── L0 + L1: the pure-code cascade (zero model). Ships oracle-verified code or escalates. ──
-  const pc = await synthesizePureCode(spec, { minConfidence: opts.minConfidence, distill: opts.distill, verify: 'sync', projectPath: opts.projectPath })
+  const pc = await span('synth.catalogL0L1', () => synthesizePureCode(spec, { minConfidence: opts.minConfidence, distill: opts.distill, verify: 'sync', projectPath: opts.projectPath }))
   if (pc.verified && pc.files.length && pc.source) {
     return { files: pc.files, source: pc.source, verified: true, testsDerived: pc.testsDerived, fmCalls: 0, detail: pc.detail }
   }
@@ -371,12 +389,12 @@ export async function synthesizeUniversal(
         ? `Your previous attempt was REJECTED by the test oracle with:\n${priorError}\n\nFix it. Re-output the COMPLETE corrected file for ${modulePath}.\n\nSPEC:\n${sigBlock}`
         : `Write the complete file ${modulePath} implementing this spec exactly:\n\n${sigBlock}`
       let candidate = ''
-      try { candidate = stripDegenerateRepetition(stripFences(await localSynth(system, user))); fmCalls++ } catch (e: any) {
+      try { candidate = stripDegenerateRepetition(stripFences(await span('model.synth', () => localSynth(system, user, opts.signal)))); fmCalls++ } catch (e: any) {
         return { files: [], source: null, verified: false, testsDerived, fmCalls, detail: `FM proposer unavailable: ${String(e?.message ?? e).slice(0, 120)} — escalating` }
       }
       if (!candidate) { priorError = 'empty output'; continue }
       const files: SynthFile[] = [{ path: modulePath, content: candidate }]
-      const v = await verifyCandidateAsync(files, effectiveDerived.testFile, oracleOpts)
+      const v = await span('oracle.verify', () => verifyCandidateAsync(files, effectiveDerived.testFile, oracleOpts))
       logFmRound({
         modulePath, gate: kindLabel, round: r + 1, of: rounds,
         priorError: priorError.slice(0, 400) || null,
@@ -397,7 +415,7 @@ export async function synthesizeUniversal(
       // keyed off the closed-world failure shapes our own derivers emit, re-gated by the SAME
       // oracle. A wrong transform is rejected like any wrong candidate — WRONG=0 untouched.
       for (const repaired of proposeRepairs(candidate, v.detail, spec)) {
-        const rv = await verifyCandidateAsync([{ path: modulePath, content: repaired }], effectiveDerived.testFile, oracleOpts)
+        const rv = await span('oracle.verify', () => verifyCandidateAsync([{ path: modulePath, content: repaired }], effectiveDerived.testFile, oracleOpts))
         logFmRound({
           modulePath, gate: kindLabel, round: r + 1, of: rounds, repair: true,
           accepted: rv.accepted, verdict: rv.detail.slice(0, 400),
@@ -451,7 +469,7 @@ export async function synthesizeUniversal(
       ? `Your previous attempt failed tsc with:\n${priorError}\n\nFix it. Re-output the COMPLETE corrected file for ${modulePath}.\n\nSPEC:\n${sigBlock}`
       : `Write the complete file ${modulePath} implementing this spec exactly:\n\n${sigBlock}`
     let candidate = ''
-    try { candidate = stripDegenerateRepetition(stripFences(await localSynth(system, user))); fmCalls++ } catch (e: any) {
+    try { candidate = stripDegenerateRepetition(stripFences(await span('model.synth', () => localSynth(system, user, opts.signal)))); fmCalls++ } catch (e: any) {
       return { files: [], source: null, verified: false, testsDerived: 0, fmCalls, detail: `FM proposer unavailable: ${String(e?.message ?? e).slice(0, 120)} — escalating` }
     }
     if (!candidate) { priorError = 'empty output'; continue }
@@ -461,7 +479,7 @@ export async function synthesizeUniversal(
     // correctness is the responsibility of the downstream agent loop verify step.
     const files: SynthFile[] = [{ path: modulePath, content: candidate }]
     // Gate A only (no testFile). Pass contextFiles so tsc finds project imports.
-    const v = await verifyCandidateAsync(files, undefined, oracleOpts)
+    const v = await span('oracle.verify', () => verifyCandidateAsync(files, undefined, oracleOpts))
     logFmRound({
       modulePath, gate: 'compile-only', round: r + 1, of: rounds,
       priorError: priorError.slice(0, 400) || null,
@@ -478,7 +496,7 @@ export async function synthesizeUniversal(
     // the dominant tier-2 residual) burned a full FM round the model could not self-correct.
     for (const repaired of proposeRepairs(candidate, v.detail, sigBlock, { modulePath, files: contextFiles.map(c => c.rel) })) {
       const rf: SynthFile[] = [{ path: modulePath, content: repaired }]
-      const rv = await verifyCandidateAsync(rf, undefined, oracleOpts)
+      const rv = await span('oracle.verify', () => verifyCandidateAsync(rf, undefined, oracleOpts))
       logFmRound({
         modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true,
         accepted: rv.gateA, verdict: rv.detail.slice(0, 400),
@@ -492,7 +510,7 @@ export async function synthesizeUniversal(
     // change-set, re-gated by the same oracle.
     for (const sib of proposeSiblingRepairs(v.detail, modulePath, contextFiles, sigBlock)) {
       const rf: SynthFile[] = [...files, sib]
-      const rv = await verifyCandidateAsync(rf, undefined, oracleOpts)
+      const rv = await span('oracle.verify', () => verifyCandidateAsync(rf, undefined, oracleOpts))
       logFmRound({
         modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true, siblingRepair: sib.path,
         accepted: rv.gateA, verdict: rv.detail.slice(0, 400),
@@ -516,7 +534,7 @@ export async function synthesizeUniversal(
         for (const repairedCand of proposeRepairs(candidate, rv.detail, sigBlock, { modulePath, files: contextFiles.map(c => c.rel) })) {
           if (repairedCand === candidate) continue
           const both: SynthFile[] = [{ path: modulePath, content: repairedCand }, sib]
-          const bv = await verifyCandidateAsync(both, undefined, oracleOpts)
+          const bv = await span('oracle.verify', () => verifyCandidateAsync(both, undefined, oracleOpts))
           logFmRound({
             modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true,
             siblingRepair: sib.path, combinedRepair: true,

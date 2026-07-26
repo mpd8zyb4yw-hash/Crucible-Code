@@ -26,8 +26,18 @@ interface Queued<T> {
   priority: number
   seq: number
   label: string
+  /** When present and already aborted at dequeue time, the job is DROPPED unrun. */
+  signal?: AbortSignal
   resolve: (v: T) => void
   reject: (e: unknown) => void
+}
+
+/** Thrown to a caller whose queued job was dropped because its request was cancelled. */
+export class FmCancelledError extends Error {
+  constructor(label: string) {
+    super(`FM call '${label}' cancelled before it reached the daemon`)
+    this.name = 'FmCancelledError'
+  }
 }
 
 const MAX_CONCURRENT = Number(process.env.CRUCIBLE_FM_CONCURRENCY ?? 1)
@@ -36,7 +46,7 @@ let active = 0
 let seqCounter = 0
 
 // Lightweight observability — read by /api/diag or debug to see contention.
-export const fmQueueStats = { enqueued: 0, completed: 0, failed: 0, maxDepth: 0, get depth() { return pending.length }, get active() { return active } }
+export const fmQueueStats = { enqueued: 0, completed: 0, failed: 0, dropped: 0, maxDepth: 0, get depth() { return pending.length }, get active() { return active } }
 
 function pump(): void {
   while (active < MAX_CONCURRENT && pending.length) {
@@ -47,6 +57,16 @@ function pump(): void {
       if (a.priority < b.priority || (a.priority === b.priority && a.seq < b.seq)) bestIdx = i
     }
     const item = pending.splice(bestIdx, 1)[0]
+    // Drop-on-cancel (cont.116). Concurrency here is 1, so a job that was queued by a run
+    // which has since been cancelled would otherwise still occupy the ONLY inference lane
+    // when it finally reaches the front — starving the live request that is actually being
+    // measured. Checking at DEQUEUE (not enqueue) is the point: the abort almost always
+    // lands while the job is sitting in `pending` behind a long call.
+    if (item.signal?.aborted) {
+      fmQueueStats.dropped++
+      item.reject(new FmCancelledError(item.label))
+      continue
+    }
     active++
     Promise.resolve()
       .then(item.fn)
@@ -75,7 +95,10 @@ export function beginForeground(): void { foregroundCount++ }
 export function endForeground(): void { foregroundCount = Math.max(0, foregroundCount - 1) }
 export function isForegroundActive(): boolean { return foregroundCount > 0 }
 
-export function enqueueFm<T>(fn: () => Promise<T>, opts: { priority?: FmPriority; label?: string } = {}): Promise<T> {
+export function enqueueFm<T>(
+  fn: () => Promise<T>,
+  opts: { priority?: FmPriority; label?: string; signal?: AbortSignal } = {},
+): Promise<T> {
   fmQueueStats.enqueued++
   return new Promise<T>((resolve, reject) => {
     pending.push({
@@ -83,6 +106,7 @@ export function enqueueFm<T>(fn: () => Promise<T>, opts: { priority?: FmPriority
       priority: RANK[opts.priority ?? 'normal'],
       seq: seqCounter++,
       label: opts.label ?? 'fm',
+      signal: opts.signal,
       resolve: resolve as (v: unknown) => void,
       reject,
     })

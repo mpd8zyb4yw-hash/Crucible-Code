@@ -18,6 +18,7 @@ import { runLocalHardenFuzz } from './localHardenFuzz'
 import { resolveAmbiguity } from '../ambiguity'
 import { assessStakes } from './stakesRouter'
 import { ensureSemanticIndex } from '../state/semanticIndex'
+import { beginProfile, endProfile, span } from '../debug/phaseProfile'
 
 export interface DriveTurnResult {
   text: string
@@ -280,6 +281,10 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   let toolCallCount = 0
   let verifiedSignal: VerifyResult['signal'] | undefined
   const start = Date.now()
+  // Wall-clock attribution (CRUCIBLE_PHASE_PROFILE=1; no-op otherwise). Only the
+  // OUTERMOST loop owns the session — a meta-router subtask loop gets false here
+  // and leaves the report open for its siblings.
+  const ownsProfile = beginProfile(goal.slice(0, 60))
 
   // ── Keep-working-until-done policy (2026-07-07) ─────────────────────────────
   // maxIters / budgetTokens are SOFT caps: while the loop is demonstrably making
@@ -437,7 +442,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
 
     let turn: DriveTurnResult
     try {
-      turn = await driveTurn(messages, tools, signal)
+      turn = await span('driveTurn', () => driveTurn(messages, tools, signal))
     } catch (e: any) {
       if (signal?.aborted) return done('cancelled', '', iter)
       // All driver candidates failed — attempt emergency compression before giving up.
@@ -447,13 +452,13 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       if (/413|too.?large|token.*limit|context.?length/i.test(errMsg)) {
         try {
           debugBus.emit('agent', 'emergency_compress', { iter, reason: errMsg.slice(0, 80) }, { severity: 'warn' })
-          const comprResult = await maybeCompressMessages(messages, goal, opts.compressCallModel ?? null, true /* force */)
+          const comprResult = await span('loop.compress', () => maybeCompressMessages(messages, goal, opts.compressCallModel ?? null, true /* force */))
           if (comprResult.compressed) {
             messages.splice(0, messages.length, ...comprResult.messages)
             const discrepancy = validateCompression(anchorId, comprResult.anchorBlock)
             if (discrepancy.patch) messages.push({ role: 'user', content: discrepancy.patch })
             emit({ type: 'thought', text: '[Context compressed — retrying turn]', iter })
-            turn = await driveTurn(messages, tools, signal)
+            turn = await span('driveTurn', () => driveTurn(messages, tools, signal))
             recovered = true
           }
         } catch { /* compression or retry also failed — fall through to error */ }
@@ -536,7 +541,10 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
           function: { name: c.name, arguments: JSON.stringify(c.args) },
         })),
       })
-      const results = await Promise.all(turn.toolCalls.map(c => registry.exec(c, ctx)))
+      // Per-tool lanes: a `run` that shells out to tsc or `npx tsx` is a completely
+      // different cost centre from a write_file, and lumping them as "tools" hides
+      // exactly the distinction this profile exists to make.
+      const results = await Promise.all(turn.toolCalls.map(c => span(`tool.${c.name}`, () => registry.exec(c, ctx))))
       toolCallCount += results.length
       turn.toolCalls.forEach((c, i) => {
         debugBus.emit('tool', c.name, { args: c.args, ok: results[i].ok, output: results[i].output.slice(0, 300) }, { severity: results[i].ok ? 'info' : 'error' })
@@ -570,7 +578,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       // Context compression — fires when raw transcript exceeds ~15k tokens.
       // Model-assisted when compressCallModel is provided; structural fallback otherwise.
       try {
-        const comprResult = await maybeCompressMessages(messages, goal, opts.compressCallModel ?? null)
+        const comprResult = await span('loop.compress', () => maybeCompressMessages(messages, goal, opts.compressCallModel ?? null))
         if (comprResult.compressed) {
           // Replace message array in-place so checkpoint/tool refs stay valid
           messages.splice(0, messages.length, ...comprResult.messages)
@@ -645,7 +653,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
 
     // No tool calls — model thinks it's done. Verify before accepting.
     if (verify) {
-      const v = await verify(turn.text, ctx)
+      const v = await span('loop.verify', () => verify(turn.text, ctx))
       emit({ type: 'verify', passed: v.passed, signal: v.signal, report: v.report.slice(0, 1500), escalate: v.escalate ?? false, unverified: v.unverified ?? false })
       if (!v.passed && v.escalate) {
         // Heal cap hit or same failure repeating — stop honestly instead of thrashing.
@@ -674,7 +682,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     // checker error or unparseable verdict accepts the answer, so it can never wedge
     // a task. Bounded by MAX_GROUNDING_RETRIES so a stubborn checker can't loop.
     if (groundFinal && toolCallCount > 0 && turn.text.trim() && groundingRetries < MAX_GROUNDING_RETRIES) {
-      const verdict = await checkGrounding(goal, turn.text, messages, driveTurn, signal)
+      const verdict = await span('loop.groundGate', () => checkGrounding(goal, turn.text, messages, driveTurn, signal))
       if (verdict && !verdict.grounded) {
         groundingRetries++
         debugBus.emit('agent', 'grounding_rejected', { iter, issue: verdict.issue.slice(0, 160) }, { severity: 'warn' })
@@ -702,7 +710,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     if (hardenFinal && hardenRounds < MAX_HARDEN_ROUNDS) {
       const sources = readProjectSources(projectPath)
       if (sources) {
-        const review = await runHardenReview(goal, sources, driveTurn, signal)
+        const review = await span('loop.hardenGate', () => runHardenReview(goal, sources, driveTurn, signal))
         if (review && !review.solid && review.findings.trim()) {
           hardenRounds++
           // Deterministic auto-repair (2026-07-06) for the one finding shape that's
@@ -753,6 +761,13 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   ): AgentLoopResult {
     const ok = stopped === 'final'
     deleteAnchor(anchorId)
+    // Emit the wall-clock breakdown BEFORE agent_done so a harness reading the SSE
+    // stream still has the socket open when it arrives (agent_done is often followed
+    // immediately by [DONE] and a disconnect).
+    if (ownsProfile) {
+      const profile = endProfile()
+      if (profile) emit({ type: 'phase_profile', profile })
+    }
     emit({ type: 'agent_done', ok, stopped, iters, toolCallCount, spentTokens, ms: Date.now() - start })
     // Self-reflection — runs async, never blocks the response
     if (ok && finalText) {

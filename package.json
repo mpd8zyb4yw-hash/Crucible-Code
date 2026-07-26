@@ -24,6 +24,8 @@
     "contract:bench": "tsx src/CrucibleEngine/synth/__contractGate_bench.ts",
     "lintgate:bench": "tsx src/CrucibleEngine/synth/__lintGate_bench.ts",
     "repair:bench": "tsx src/CrucibleEngine/synth/__repairProposers_bench.ts",
+    "nolearn:bench": "tsx src/CrucibleEngine/synth/__noLearn_bench.ts",
+    "fmqueue:bench": "tsx src/CrucibleEngine/agent/__fmQueue_bench.ts",
     "rolebleed:bench": "tsx src/CrucibleEngine/answer/__rolebleed_bench.ts",
     "audit:reach": "node scripts/audit-reachability.mjs",
     "generate:skills": "tsx src/CrucibleEngine/synth/generate.ts",

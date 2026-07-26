@@ -33,6 +33,18 @@ export async function ensureLibraryLoaded(): Promise<void> {
     ))
 
     // Phase A: load durable distilled skills from _learned/ (oracle-verified at distillation time)
+    //
+    // MEASUREMENT MODE (CRUCIBLE_NO_LEARN=1) skips this load entirely. Rationale: a task
+    // solved via path=gen has its solution distilled into _learned/ (pureCode.ts
+    // distillToSkill), so the NEXT run of the same task matches it here and scores
+    // path=catalog — measured on bugfixCsv, 99s gen -> 3s catalog. That makes repeat runs
+    // grade the benchmark's own memory instead of its generation, and it silently erodes
+    // the gen sample over time. This is the READ half of the guard; distillToSkill holds
+    // the WRITE half. Both must be off to get an uncontaminated capability number.
+    if (process.env.CRUCIBLE_NO_LEARN) {
+      libraryReady = true
+      return
+    }
     try {
       const learnedFiles = fs.readdirSync(LEARNED_DIR)
         .filter(f => f.endsWith('.ts') || f.endsWith('.js'))

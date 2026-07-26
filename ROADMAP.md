@@ -1933,6 +1933,72 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-26 (cont.116 — THROUGHPUT ROOT-CAUSED: the benchmark was measuring queue contention)
+
+cont.115's top item was "throughput is the binding constraint — profile where iteration time goes
+BEFORE touching any prompt or oracle." Doing exactly that inverted the plan a second time. The cost
+was neither model latency nor the loop's stopping logic. **One abandoned task was starving every
+task after it through a global serial model queue**, so recent suite numbers measured contention
+rather than capability.
+
+**Mechanism (three links, each verified in code):**
+1. `coding-benchmarks.ts` aborts its HTTP wait at `PER_TASK_TIMEOUT_MS` (480s) and fires the next task.
+2. `server.ts` `res.on('close')` then waited `DISCONNECT_GRACE_MS = 10 minutes` before `ac.abort()` —
+   longer than the entire per-task budget, so a timed-out agent outlives the whole of the next task.
+3. Every model call in the process — `universal.ts` synth AND `fmReact` glue — funnels through ONE
+   serial gate (`agent/fmQueue.ts`, `MAX_CONCURRENT = 1`). The zombie holds the only inference lane.
+
+**Evidence (new `CRUCIBLE_PHASE_PROFILE=1`).** Early gen tasks ran 33–41s server-side wall with
+`model.synth` ~12s/call; later ones degraded to 613s, 3660s, 5646s as zombies accumulated. Worst
+single `model.synth` call: **5604s** (clampModule, scorecard row `elapsed=5899s`) against a ~12s
+median for the same lane. Same-task before/after, filterModule, identical prompt and head:
+
+| | pre-fix | post-fix |
+|---|---|---|
+| server-side wall | 730s (harness gave up at its own 480s cap; server kept working) | **354s, converged** |
+| `model.synth` total | 342.0s / 25 calls | 171.1s / 18 calls |
+| `model.synth` avg / worst | 13.7s / **29.5s** | 9.5s / **13.6s** |
+| clampModule wall | **5899s** | **231s** |
+
+The pre-fix gap between the harness's recorded 480s and the server's 730s IS the zombie, in the data.
+
+**Shipped:**
+- `CRUCIBLE_DISCONNECT_GRACE_MS` (`server.ts`) — configurable; 10-min default kept (correct for
+  interactive use), measurement sets 0.
+- Drop-on-cancel in `agent/fmQueue.ts` — `enqueueFm({signal})` rejects a queued job at DEQUEUE if its
+  request already aborted. Checked at dequeue because the abort lands while the job waits behind a
+  long call. `npm run fmqueue:bench` **12/12**, isolation-proven (6 assertions flip when neutered,
+  including the re-`pump()` deadlock guard).
+- Cancellation threaded `solveCodeWrite` → `synthesizeUniversal({signal})` → `defaultLocalSynth`,
+  which passes it to BOTH `enqueueFm` and the `fetch`, so an in-flight call dies with its request
+  instead of running out the 600s `LOCAL_SYNTH_TIMEOUT_MS` for a listener that is gone.
+- **`CRUCIBLE_OFFLINE=strict` now actually means offline.** The server was pinging **36 external
+  models every 4 minutes** (`runKeepaliveRound`) and re-enumerating openrouter.ai free models during
+  offline-strict runs — CLAUDE.md failure-mode #1, sitting in the log as `[Keepalive] Pinged 36
+  models` interleaved with the suite. Both gated on strict, matching the `autoAcquire` precedent.
+- `debug/phaseProfile.ts` — per-task wall-clock attribution by lane. AsyncLocalStorage so concurrent
+  siblings nest correctly; SELF time so nested spans don't double-count; zero cost when unset.
+
+**Where iteration time goes** (clean post-fix gen task, filterModule): `model.synth` 51% (18 calls,
+9.5s each) · `oracle.gateA.tsc` 17% (34 calls, 1.7s) · `vgr.specExtract` 16% (2 calls, 26.8s) ·
+`retrieval.grounding` 15% (~50s once/task, cached) · **tool round-trips 0.1% · execution verify
+0.6%**. The tool loop and the execution oracle are NOT the bottleneck — together under 1%.
+
+**Sample-efficiency finding (the real parity lever).** filterModule: 18 model calls, 34 candidate
+verifications, **4 that executed anything**. sortModule: 17 / 19 / **7**. Ground truth is execution,
+and ~90% of verdicts were reached statically. `synth/oracle.ts` has FIVE pre-execution exits —
+gate-A typecheck (:311), lint (:316), duplicate-export (:318), contract (:320), and `!testFile`
+(:321, *"compiles, but no behavioral test to confirm correctness"*). **Which one dominates is NOT
+yet measured, and it decides the fix** — constrained decoding if typecheck, better test derivation
+if `!testFile`. clampModule's live escalate was `duplicate exported symbol`, i.e. NOT typecheck, so
+the intuitive guess would have been wrong. Next step is a `verify.exit.<reason>` lane, not a fix.
+
+**Also corrected:** the "reasoning track's stalled rung" carried since cont.115 is a PHANTOM —
+`isOpen`/`wordFrequency`/`compressRuns` do not exist on this branch; they are one stochastic FM
+planner draw's helper names on the unmerged `claude/gap-soundness` @ `7c92a28`, whose harness cannot
+run on HEAD and whose `decomposeCodeBySubFunction` has zero production callers. Nothing there can
+move `smoke:code:offline`. See NEXT_SESSION.md CURRENT STATE.
+
 ### 2026-07-26 (cont.115 — MEASUREMENT VALIDITY: correctness gate, per-task pass rates, catalog-drift guard)
 
 Four concurrent sessions independently produced next-step lists; every one contained some form of

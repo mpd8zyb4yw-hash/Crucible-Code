@@ -23,6 +23,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { spawnSync, spawn } from 'child_process'
+import { span, spanSync } from '../debug/phaseProfile'
 import { fileURLToPath } from 'url'
 import type { SynthFile } from './synthEngine'
 import { lintCandidates } from './lintGate'
@@ -305,9 +306,9 @@ export async function verifyCandidateAsync(
   opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string; changeSetScope?: string[] } = {},
 ): Promise<Verdict> {
   if (!files.length) return { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false }
-  const { scratch, cfgDir, cfgPath, testAbs } = stage(files, testFile, opts.contextFiles, opts.projectPath)
+  const { scratch, cfgDir, cfgPath, testAbs } = spanSync('oracle.stage', () => stage(files, testFile, opts.contextFiles, opts.projectPath))
   try {
-    const tc = await runAsync('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000)
+    const tc = await span('oracle.gateA.tsc', () => runAsync('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000))
     const scoped = scopeTsErrors(tc.out, opts.changeSetScope, scratch)
     if (!tc.ok && scoped.fatal.length) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false }
     if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
@@ -318,7 +319,7 @@ export async function verifyCandidateAsync(
     const cv = checkContract(opts.spec ?? '', files)
     if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
     if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
-    const tb = await runAsync('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
+    const tb = await span('oracle.gateB.exec', () => runAsync('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000))
     return {
       accepted: tb.ok, gateA: true, gateB: tb.ok,
       detail: tb.timedOut ? 'behavioral test TIMED OUT (candidate reaped)' : (testTail(tb.out) || tb.out.slice(0, 200)),

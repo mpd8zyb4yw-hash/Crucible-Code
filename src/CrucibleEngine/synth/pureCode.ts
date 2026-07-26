@@ -164,6 +164,14 @@ function contentAddressedId(spec: string, content: string): string {
 }
 
 export function distillToSkill(spec: string, modulePath: string, content: string): void {
+  // MEASUREMENT MODE (CRUCIBLE_NO_LEARN=1) — the WRITE half of the catalog-drift guard
+  // (loadLibrary.ts holds the read half). Without this, measuring a task twice promotes
+  // run 1's generated solution into the catalog and run 2 scores it path=catalog in ~3s,
+  // so "run it 3x for confidence" reports memorized reliability, not generative
+  // reliability. Suppressing BOTH halves keeps every repeat run a true generation run.
+  // Note this also skips the in-memory registerSkill below, not just the file write —
+  // in-process registration alone is enough to flip a later task in the same suite.
+  if (process.env.CRUCIBLE_NO_LEARN) return
   const feats = extractFeatures(spec)
   const exports = feats.exports
   const hash = contentAddressedId(spec, content)
