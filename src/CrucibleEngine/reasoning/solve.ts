@@ -26,6 +26,7 @@ import { search, type SearchOpts } from './search'
 import { type Completer, extractCodeSpec, harvestExplicitExamples } from './specExtractor'
 import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
 import { makeMutationRepairProposer } from './mutationRepair'
+import { makeMechanicalRepairProposer } from './mechanicalRepair'
 import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 /**
@@ -146,16 +147,39 @@ export async function solveCodeTask(
   // Gate the fast-path on the LIVE proposer only: the deterministic benches inject a
   // proposerOverride precisely to prove the harness accounting for an arbitrary proposer,
   // and must not have this mechanical repair fire ahead of their controlled one.
-  const proposer: Proposer<string> = input.buggyCode && !proposerOverride
-    ? composeProposers(makeMutationRepairProposer(input.buggyCode), proposeCode)
-    : (proposerOverride ?? proposeCode)
+  // SIGNAL-DIRECTED MECHANICAL REPAIR (2026-07-26) — composed ahead of the FM on every live
+  // synthesis, not just repair tasks. Measured motivation (__direct_vs_decompose_live.ts, 3 runs
+  // × 10 tasks × 8 draws): roughly a THIRD of terminal best-of-8 failures were not reasoning
+  // failures — the head had the right algorithm and lost to a JS gotcha the verifier NAMES
+  // ("Assignment to constant variable", `"lastNumber" has already been declared`,
+  // "frequencyMap.entries(...).sort is not a function"). Redrawing costs ~4000ms and usually
+  // reproduces the same idiom; the licensed deterministic edit costs ~36ms and the verifier
+  // certifies it. Unlike makeMutationRepairProposer this needs no `buggyCode`: it repairs the
+  // last FAILING ATTEMPT using that attempt's own signals, which only exist mid-search.
+  // Sound + free: every repair is still executed against the same acceptance cases, and the
+  // candidate carries modelFree so it never charges the model-call budget.
+  const base: Proposer<string> = proposerOverride ?? proposeCode
+  const proposer: Proposer<string> = proposerOverride
+    ? base
+    : composeProposers(
+        makeMechanicalRepairProposer(),
+        input.buggyCode ? composeProposers(makeMutationRepairProposer(input.buggyCode), base) : base,
+      )
   const verifier: Verifier<string> = verifyCode
   // W3 continuous batching on the LIVE path (opt-in via CRUCIBLE_VGR_BATCH=1). Only when the
   // proposer is the PLAIN FM proposer — a composed proposer (mutation-repair fast-path, or a test
   // override) has per-call ordering semantics the flat batch draw would flatten, so those keep the
   // serial path. proposeCodeMany draws a whole round's slots across llama-server KV slots at once;
   // search()'s batch path is proven accounting-identical to serial (see __search_batch_bench).
-  const useBatch = process.env.CRUCIBLE_VGR_BATCH === '1' && !opts.batchProposer && proposer === proposeCode
+  // Key the batch decision off the BASE proposer, not the composed one. The mechanical-repair
+  // wrapper is now always present on the live path, so `proposer === proposeCode` would be
+  // permanently false and would silently disable the opt-in batch path. Note the real trade this
+  // encodes: search() ignores `proposer` entirely when a batchProposer is supplied, so the
+  // mechanical repair does NOT fire on the batch path. That is acceptable while batching is
+  // opt-in and off by default; wiring repair into the batch path means teaching search.ts to run
+  // it on a failing verdict, which is a change to the shared engine and is deliberately deferred.
+  const useBatch = process.env.CRUCIBLE_VGR_BATCH === '1' && !opts.batchProposer &&
+    base === proposeCode && !input.buggyCode
   // BATCH-PATH SAMPLE BUMP (item 3, 2026-07-22). The pass@k experiment proved the loop is STARVED,
   // not weak: pass@1 52.5% → pass@10 83.3% — the correct answer is in the distribution, just rare,
   // so drawing MORE candidates per round converts directly to solves. Batching makes concurrent

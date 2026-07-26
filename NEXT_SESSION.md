@@ -17,63 +17,87 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-25e (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-26 (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **Template scorecard: 15/15 (100%)** at 3 draws/class, re-earned live and materially cheaper
-> (`basicCalculator` 264s → 18s median; `coinChange` 3 calls/14s).
->
-> **General (no-template) scorecard: 2/5 (40%)** — the 25c baseline, restored after this session's own
-> changes briefly drove it to 1/5 then 0/5, and now measured under a STRICTER 900s-per-task cap.
->
-> | task | 25c (uncapped) | 25e final (900s cap) |
-> |---|---|---|
-> | `romanToInt` | solved, 90 calls, 692s | **solved, 16 calls, 62s** (11× cheaper) |
-> | `intToRoman` | solved, 13 calls | **solved, 41 calls, 186s** — via RECURSION |
-> | `compressRuns` | declined, 97 calls | decompose-failed, 56 calls |
-> | `isBalanced` | declined, **0 calls** | decompose-failed, 92 calls (recursed one level) |
-> | `wordFrequencyTop` | decompose-failed, 151 calls | decompose-failed, 115 calls |
->
-> **THE COUNT IS FLAT AT 2/5. What moved is the failure MODE — read this before planning work.**
-> Not one task now dies at plan-parse or on a junk carve. Every remaining failure is a
-> `decompose-failed` naming a STALLED RUNG (`isOpen`, `wordFrequency`, the `compressRuns` fold). The
-> bottleneck has moved from "the planner cannot produce a usable carve" to "one rung will not
-> certify". Recursion is load-bearing now: `intToRoman` SOLVES through it.
->
-> **Landed 25d+25e** (all verifier-gated — can only cause a resample or a wider sample, never a
-> certification): `subFunctionPlanGrammar()` pinning the plan schema at the sampler (compact JSON,
-> `ws ::= ""`, `maxTokens` 1100); `isNonComposingCarve`; `isRebakedHelper` + alias-emptied plans
-> resampling instead of declining; `structuralFingerprint`/`SearchOpts.structuralKey` (EVIDENCE only,
-> never a dedup — a structural repeat is still verified); `topP`/`seed` plumbed to llama-server;
-> `GEN_SCORECARD_TASK_WALL_MS`.
->
-> **THE DURABLE LESSON OF THIS SESSION — do not re-learn it the expensive way.** The 25c prompt
-> rewrite added ~120 words of carve rules to `buildSubFnUser`. The slot context is **~1024 tokens**,
-> so that preamble crowded the GOAL out: live A/B on the same head, the bare prompt returned a clean
-> 3-helper carve and the verbose one returned NULL. Worse, "the FIRST helper must take the top-level
-> function's OWN arguments" reads to a 1.5B as "emit the top-level function AS helper #1" — the
-> rewrite was MANUFACTURING the re-bake that a later gate was added to catch. On this hardware a
-> prompt rule is not free; it is paid for out of the goal. **Prompt asks; the verifier decides — put
-> enforcement in a deterministic gate, which costs no context.**
->
-> Benches: decompose **116/0** (was 97/0), tsc clean. All committed (`11acb29` … `a02aaef`).
+> **This session measured instead of optimizing. Four premises the last four sessions planned
+> against turned out FALSE. Read all four before writing any code.**
+
+**1. A model draw costs 2–5s, NOT 45–60s.** (`npm run draw:anatomy`.) Cold draw 4.9s = 233 prompt
+tok + 139 generated @ 44.6 tok/s. `max_tokens` 1536 is ~15× above typical and never binds; the
+fenced grammar DOES terminate at the closing fence. **So task wall clock is set by HOW MANY DRAWS
+the architecture spends, not by draw cost.** Any plan that starts "make each draw cheaper" is
+aimed at the wrong thing.
+
+**2. Slot context is 4096 tokens, NOT ~1024.** A 3930-token prompt processed in full and answered
+correctly (`total_slots: 4`, each slot `n_ctx: 4096`). **The 25e "durable lesson" — "the slot
+context is ~1024 tokens so the preamble crowded the GOAL out" — is built on a false premise** and
+was recorded as a binding rule. Do not cite it as written. The 25c A/B may have been real; its
+stated mechanism is not.
+
+**3. Concurrency across the 4 slots is a ~1.2× WIN, not a loss** (k=2 1.22×, k=4 1.17×, k=8 1.19×).
+The recorded "batching is a wall-clock LOSS / linear s/solve / ZERO parallel throughput" is wrong
+in sign. **But the conclusion survives**: 1.2× is nowhere near the 4× that would make blind
+parallel pass@K beat feedback-guided serial draws. There is no multi-× unlock behind `--parallel`.
+
+**4. THE BIG ONE — the general scorecard measures decomposition IN ISOLATION, not the system, and
+decomposition is a 10–40× tax on tasks the model can already do.** New control arm
+(`npm run direct:arm`), 3 runs × 10 tasks × 8 draws:
+
+| task | DIRECT | DECOMPOSE (25e) |
+|---|---|---|
+| `romanToInt` | solved @draw 1, **4–7s**, 3/3 | solved, 16 calls, **62s** |
+| `intToRoman` | solved @draw 1–3, **4–19s**, 3/3 | solved, 41 calls, **186s** |
+| `compressRuns` | solved 2/3, 4–48s | **decompose-FAILED**, 56 calls |
+| `coinChange` | solved @draw 1, 4s, 2/3 | template 3/3, 14s |
+| `isBalanced`, `wordFrequencyTop` | 0/3 | decompose-failed |
+| `basicCalculator`, `evalRPN`, `editDistance`, `calculatorWithParens` | **~0/3** | **template 3/3** |
+
+`__decompose_general_scorecard_live.ts` calls `decomposeCodeBySubFunction` DIRECTLY, skipping the
+flat tier `solveCodingRequest` runs first — so 2/5 is not the product's number.
+
+**AND THE 15/15 TEMPLATE SCORECARD IS REAL CAPABILITY.** The standing "retire it, it's a lookup
+table" recommendation is **wrong in its reasoning**: four template tasks fail the direct path ~0/3
+at 8 draws and the template carve solves them 3/3. Templates are carves, not answers.
+**⇒ The bottleneck is CARVE SYNTHESIS, and the carve is the ONE component in the loop with no
+verifier.** A bad carve is only discovered after ~90 wasted calls.
+
+**Shipped (verifier-gated; none can certify a wrong answer):**
+- **`traceSpec.ts` / `npm run tracespec:bench` (13/13, 89ms per trace run)** — trace-derived helper
+  specs. The planner never invents a helper's expected output again: instrument the composed module
+  (rename-and-wrap, so internal helper→helper calls and recursion record too), run the ENTRY's GOLD
+  cases, derive each helper's spec from calls on cases the entry PASSED. On the live `isBalanced`
+  carve the derived `isOpen` spec is 11 cases containing BOTH `true` and `false`, where the
+  planner's invented `isBracket` spec was all-`true` and `() => true` certified it. Also ships
+  `localizeFault` (Ochiai fault localization over helper call spectra) and dead-rung detection.
+- **`mechanicalRepair.ts` / `npm run mechrepair:bench` (8/8, 36ms per variant)** — signal-directed
+  deterministic repair, composed ahead of the FM in `solveCodeTask`. The verifier's error message
+  IS the localizer. **Honest: proven at unit level, UNPROVEN end-to-end** (8/15 → 9/15 = noise;
+  these 5 tasks fail algorithmically, not mechanically). Do not quote as a scorecard win.
+- `generalizeFailures` wired into `verifyCode` behind `CRUCIBLE_DERIVED_FACTS=1`, **default OFF —
+  it MEASURED WORSE**: 7/15 vs 9/15 solved and 1072s vs 587s at n=3 each.
 
 ### OPEN — next priorities (highest leverage first)
 
-1. **Attack the STALLED RUNG — this is now the whole bottleneck.** `isOpen`, `wordFrequency` and the
-   `compressRuns` fold each certified their siblings and then pinned. The carve is fine; one leaf
-   will not certify. Everything else below is subordinate to this.
-2. **Tune the anti-anchor levers against a measurement.** `structuralKey`, `topP` (0.97/0.99) and the
-   per-retry `seed` in `codeProposer.buildProposalPrompt` all shipped untuned — the thresholds were
-   chosen by reasoning, and this session is a case study in why that is not enough.
-3. **Raise general-scorecard n now that it is affordable.** The 5-task sweep is ~20 min with
-   `GEN_SCORECARD_TASK_WALL_MS=900000`, so `GEN_SCORECARD_RUNS=3` is practical. Every general number
-   on record is n=1, which cannot separate a real regression from noise — that ambiguity cost this
-   session two full measurement cycles.
-4. **Re-verify the template 15/15** after any rung-level change: it shares `search.ts`/`solve.ts`/
-   `codeProposer.ts` with the general path and must be re-earned, never assumed.
-5. **Consider whether `isRebakedHelper` still earns its place** once item 1 lands. It was added to fix
-   a re-bake that the (now reverted) prompt was itself causing; its independent value is unmeasured,
-   and its first version introduced the declined-instead-of-resample defect.
+1. **`traceSpec.ts` is BUILT AND BENCHED BUT NOT WIRED INTO `decomposeCodeBySubFunction`.** This is
+   the whole capability play and it is one integration away. Concretely: after the planner returns a
+   carve, draw ONE composed module, `traceEntryCases` it against the gold cases, and use
+   `deriveHelperSpecs` for the rung acceptance sets instead of the planner's invented `cases`, with
+   `isNonDiscriminating` rejecting weak ones. Then use `localizeFault` to spend the per-rung budget
+   on the SUSPECT rung instead of uniformly.
+2. **Build the difficulty-proportional escalation ladder in `solveCodingRequest`** — tier 0: K
+   concurrent blind draws (~6s); tier 1: serial + feedback + mechanical repair (~30s); tier 2:
+   deterministic operators; tier 3: decomposition. Today everything goes straight to the most
+   expensive tier, which is the entire 10–40× tax in item 4 above. Report which tier solved it.
+3. **Fix the general scorecard to measure the SYSTEM, not one tier.** Route
+   `__decompose_general_scorecard_live.ts` through the real ladder, and keep the direct arm as a
+   permanent control column so "decomposition helped" is never again assumed.
+4. **Re-measure the template 15/15 under `CRUCIBLE_NO_DISTILL=1`** and confirm nothing in
+   `synth/skills/_learned/` overlaps those tasks. The control arm makes the template number look
+   like real capability; that inference is only safe if no memorized catalog entry is behind it,
+   and that was NOT verified this session.
+5. **Wire `localizeFault`'s dead-rung signal into the plan gates.** A helper the composition never
+   calls is a provably dead branch, catchable for 89ms — strictly better evidence than
+   `isNonComposingCarve`'s static shape check, and it is the `isBracketPair` failure exactly.
 
 ---
 

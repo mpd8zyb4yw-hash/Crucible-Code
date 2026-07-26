@@ -21,6 +21,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { build, transform } from 'esbuild'
 import type { Candidate, TaskSpec, Verdict } from './types'
+import { generalizeFailures } from './failureGeneralize'
 
 export interface CodeCase {
   /** Positional arguments applied to the entry function. */
@@ -44,7 +45,7 @@ export interface CodeAcceptance {
   [k: string]: unknown
 }
 
-interface CaseOutcome {
+export interface CaseOutcome {
   ok: boolean
   name: string
   /** The positional input the case ran with — threaded into failure feedback so the proposer sees
@@ -70,6 +71,29 @@ function signalFor(o: CaseOutcome): string {
  * it against the acceptance cases. Deterministic ground truth. Never trusts the model.
  */
 export async function verifyCode(candidate: Candidate<string>, spec: TaskSpec): Promise<Verdict> {
+  return (await verifyCodeDetailed(candidate, spec)).verdict
+}
+
+/**
+ * The same ground-truth execution as `verifyCode`, but ALSO returning the structured per-case
+ * outcomes instead of only their rendered strings.
+ *
+ * WHY THIS EXISTS. `verifyCode` computes a full `CaseOutcome[]` — every input, the actual value,
+ * the thrown error — and then discards all of it, keeping at most six strings. That throws away
+ * the single most valuable asset the loop produces. The proposer is handed a list of INSTANCES
+ * ("case #1 on 'abc' → got false, expected true") when what would actually converge it is the
+ * INVARIANT that separates the failing cases from the passing ones ("every failing input contains
+ * a character outside ()[]{} ; no passing input does"). Deriving that is pure deterministic
+ * analysis over these outcomes — zero model calls — and it is exactly the doctrine's
+ * "maximize information per model call" applied to the feedback channel itself.
+ *
+ * `verifyCode`'s own contract is unchanged and it remains the Verifier the search engine wires up,
+ * so nothing on the shared path shifts. See `failureGeneralize.ts` for the consumer.
+ */
+export async function verifyCodeDetailed(
+  candidate: Candidate<string>,
+  spec: TaskSpec,
+): Promise<{ verdict: Verdict; outcomes: CaseOutcome[] }> {
   const acc = spec.acceptance as unknown as CodeAcceptance
   const src = candidate.value
   const timeoutMs = acc.timeoutMs ?? 5000
@@ -88,7 +112,7 @@ export async function verifyCode(candidate: Candidate<string>, spec: TaskSpec): 
       js = out.code
     } catch (e: any) {
       const msg = (e?.errors?.[0]?.text ?? e?.message ?? 'syntax error') as string
-      return { pass: false, score: -1000, signals: [`syntax error (does not compile): ${String(msg).slice(0, 200)}`] }
+      return { verdict: { pass: false, score: -1000, signals: [`syntax error (does not compile): ${String(msg).slice(0, 200)}`] }, outcomes: [] }
     }
     fs.writeFileSync(modPath, js, 'utf-8')
     fs.writeFileSync(runPath, RUNNER(acc.entry, acc.cases), 'utf-8')
@@ -106,20 +130,58 @@ export async function verifyCode(candidate: Candidate<string>, spec: TaskSpec): 
 
     if (!parsed) {
       const reason = firstError(out.stderr) || 'candidate failed to load or run (no result emitted)'
-      return { pass: false, score: -1000, signals: [`load/runtime error: ${reason}`] }
+      return { verdict: { pass: false, score: -1000, signals: [`load/runtime error: ${reason}`] }, outcomes: [] }
     }
 
     const outcomes = parsed.outcomes
     const failing = outcomes.filter(o => !o.ok)
     if (failing.length === 0) {
-      return { pass: true, score: 0, signals: [`all ${outcomes.length} case(s) passed`] }
+      return { verdict: { pass: true, score: 0, signals: [`all ${outcomes.length} case(s) passed`] }, outcomes }
     }
 
     // Rich per-case feedback — the input, the actual value vs expected, or the thrown error.
     const signals = failing.slice(0, 6).map(signalFor)
     if (failing.length > 6) signals.push(`…and ${failing.length - 6} more failing case(s)`)
 
-    return { pass: false, score: -failing.length, signals }
+    // DERIVED INVARIANTS (2026-07-26) — say what the failures have in COMMON, not just what they
+    // are. The lines above are INSTANCES; a 1.5B does not infer the rule behind them. Measured
+    // live this session: `isBalanced` was handed `"abc" → got false, expected true` on eight
+    // consecutive draws across three independent runs and never generalized it to "characters
+    // outside ()[]{} must be ignored" — it re-emitted a variant of the same wrong program every
+    // time. `generalizeFailures` derives that separating invariant mechanically from the
+    // structured outcomes the verifier already computes, at zero model calls.
+    //
+    // APPENDED, never prepended: `signals[0]` is load-bearing elsewhere — codeProposer's anchor
+    // detection keys the identical-failure run on it, and search's stagnation accounting follows
+    // that. Keeping the first concrete counterexample in slot 0 leaves those semantics untouched.
+    //
+    // Sound: a Verdict signal is proposer-facing FEEDBACK only. It cannot certify anything — the
+    // pass/score fields above are computed purely from executed outcomes and are not touched here,
+    // so a wrong generalization can waste a draw but can never admit a wrong answer.
+    // ── MEASURED 2026-07-26, AND IT DID NOT WORK. DEFAULT OFF. ───────────────────────────────
+    // A/B on the direct arm (3 runs × 5 general tasks × 8 draws, live head), facts ON vs OFF:
+    //   • `isBalanced` was handed the derived fact verbatim — "Every failing input contains the
+    //     characters "a" "b" "c" and NO passing input does. That is the distinguishing feature of
+    //     the inputs you get wrong — handle it explicitly." — and STILL returned false for "abc"
+    //     on all 8 draws. Stating the invariant did not break the anchor.
+    //   • WORSE ON BOTH AXES, n=3 vs n=3: solved 7/15 with facts on (2,3,2) vs 9/15 off (3,3,3),
+    //     and 1072s of wall clock vs 587s — 1.8x slower for two fewer solves.
+    // One confound worth carrying: `romanToInt` also went 4-7s → 8-11s, and it solves at draw 1
+    // with NO feedback in the prompt at all, so the facts cannot explain that row — some of the
+    // slowdown is ambient server state (the box had run inference continuously for hours). That
+    // weakens the wall-clock magnitude but not the direction, and it does not touch the solve-rate
+    // arm at all. Enabling this made the loop worse; that is established well enough to ship off.
+    //
+    // So this ships OFF. It is kept, wired, and one env flag from running because the analysis is
+    // sound and a stronger head (or a shorter, single-fact variant) may well convert it — but
+    // this repo's 25c/25d sessions each shipped a principled-looking prompt change that measured
+    // NEGATIVE and cost two full cycles to find, and "it should help" is not evidence.
+    // Re-measure with: CRUCIBLE_DERIVED_FACTS=1 DIRECT_K=8 npx tsx …/__direct_vs_decompose_live.ts
+    if (process.env.CRUCIBLE_DERIVED_FACTS === '1') {
+      for (const fact of generalizeFailures(outcomes)) signals.push(fact)
+    }
+
+    return { verdict: { pass: false, score: -failing.length, signals }, outcomes }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* best-effort */ }
   }

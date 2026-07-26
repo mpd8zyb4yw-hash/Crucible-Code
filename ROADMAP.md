@@ -1933,6 +1933,104 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-26 (gap-soundness — the control arm nobody ran, and what it overturned)
+
+**This session measured rather than optimized, and four load-bearing premises turned out false.**
+Every number below is reproducible from a checked-in probe.
+
+**1. A model draw costs 2–5s, not 45–60s.** `npm run draw:anatomy` posts the repo's OWN
+`buildProposalPrompt` output to the live head and reads llama-server's `timings`: cold draw 4.9s
+(233 prompt tok, 139 generated @ 44.6 tok/s); a 3-attempt repair draw 3.2s. `max_tokens` is 1536
+but a typical draw emits 85–140 tokens, so the cap is ~15× above typical and never binds. The
+`fencedCodeGrammar` DOES force termination at the closing fence — it is not a runaway source.
+**Consequence: task wall clock (300–900s) is set by HOW MANY DRAWS the architecture spends, not
+by draw cost.** Throughput work aimed at the draw was aimed at the wrong thing.
+
+**2. The slot context is 4096 tokens, not ~1024.** Same probe, escalating prompt sizes: a
+3930-token prompt was processed in full and answered correctly (`total_slots: 4`, each slot
+`n_ctx: 4096`). **The 25e "durable lesson" — "the slot context is ~1024 tokens, so the carve-rules
+preamble crowded the GOAL out" — rests on a false premise**, and it was written down as a binding
+rule ("on this hardware a prompt rule is not free; it is paid for out of the goal"). A 240-token
+preamble against a 4096-token window crowds out nothing. The 25c A/B may still have been real;
+its stated mechanism is not. That rule should not be cited again as written.
+
+**3. Concurrency across the 4 KV slots is a ~1.2× WIN, not a loss.** Fixed-work probe (220
+decoded tokens/draw, `ignore_eos`, cache off): k=2 1.22×, k=4 1.17×, k=8 1.19×. The recorded
+"batching is a wall-clock LOSS, s/solve scales LINEARLY, the slots give ZERO parallel decode
+throughput" is wrong in sign. **But the practical conclusion survives**: 1.2× is nowhere near the
+4× that would make blind parallel pass@K beat feedback-guided serial draws on time-to-first-solve.
+There is no multi-× unlock hiding behind a `--parallel` flag; stop looking for one.
+
+**4. THE BIG ONE — the general scorecard measures decomposition in isolation, not the system, and
+decomposition is a 10–40× tax on tasks the model can already do.** New control arm
+(`npm run direct:arm`, `__direct_vs_decompose_live.ts`): draw the whole function directly, verify
+with the real `verifyCode`, repeat. 3 runs × 10 tasks × 8 draws.
+
+| task | DIRECT | DECOMPOSE (25e baseline) |
+|---|---|---|
+| `romanToInt` | solved @draw 1, **4–7s**, 3/3 runs | solved, 16 calls, **62s** |
+| `intToRoman` | solved @draw 1–3, **4–19s**, 3/3 | solved, 41 calls, **186s** |
+| `compressRuns` | solved 2/3 runs, 4–48s | **decompose-FAILED**, 56 calls |
+| `coinChange` | solved @draw 1, 4s, 2/3 | template 3/3, 14s |
+| `isBalanced`, `wordFrequencyTop` | 0/3 | decompose-failed |
+| `basicCalculator`, `evalRPN`, `editDistance`, `calculatorWithParens` | **~0/3** | **template 3/3** |
+
+`__decompose_general_scorecard_live.ts` calls `decomposeCodeBySubFunction` DIRECTLY, skipping the
+flat tier `solveCodingRequest` actually runs first — so the 2/5 that four sessions optimized is
+not the product's number.
+
+**AND THE 15/15 TEMPLATE SCORECARD IS REAL CAPABILITY.** The standing recommendation to retire it
+as "a hand-written registry, a lookup table with extra steps" is **wrong in its reasoning**:
+`basicCalculator`/`evalRPN`/`editDistance`/`calculatorWithParens` fail the direct path ~0/3 at 8
+draws and the template carve solves them 3/3. Templates are not memorized answers, they are
+carves, and the carve does genuine work. **The real problem is that the model cannot INVENT carves
+as good as the hand-written ones — so the bottleneck is CARVE SYNTHESIS, and the carve is the one
+component in the whole loop with no verifier.**
+
+**Shipped (all verifier-gated; none can certify a wrong answer):**
+- **`traceSpec.ts` + `npm run tracespec:bench` (13/13)** — trace-derived helper specs, the root fix
+  for the untrusted-spec hole. The planner never invents a helper's expected output again: the
+  composed module is INSTRUMENTED (rename-and-wrap, so internal helper→helper calls and recursion
+  are recorded too), the ENTRY's gold cases are run through it, and each helper's spec is DERIVED
+  from calls recorded on cases the entry PASSED. On the live `isBalanced` carve the derived
+  `isOpen` spec is 11 cases from 6 gold entry cases containing BOTH `true` and `false` — where the
+  planner's invented `isBracket` spec was all-`true` and `() => true` certified it. Also ships
+  `localizeFault` (Ochiai spectrum-based fault localization over helper call spectra — today the
+  per-rung budget is spent UNIFORMLY, blind to which rung is broken) and dead-rung detection
+  (`isBracketPair` planned, implemented, never called). Cost: 89ms per trace run, zero model calls.
+- **`mechanicalRepair.ts` + `npm run mechrepair:bench` (8/8)** — signal-directed deterministic
+  repair, composed ahead of the FM on every live synthesis in `solveCodeTask`. The verifier's
+  error message IS the localizer: `Assignment to constant variable` → `const`→`let` on the
+  reassigned binding; `"x" has already been declared` → demote/rename; `.sort is not a function`
+  → spread the Map/Set iterator; unterminated string; bare `.sort()` on numbers; bare `/` where
+  the spec truncates. 36ms/variant against ~4000ms/draw. Distinct from `mutationRepair.ts`, which
+  is a BLIND operator-inversion shotgun gated behind `buggyCode` the synthesis path never sets.
+- `__draw_anatomy_live.ts`, `__direct_vs_decompose_live.ts` — the two instruments that produced
+  everything above, registered as `npm run draw:anatomy` / `npm run direct:arm`.
+
+**Shipped OFF, because it MEASURED NEGATIVE — read this before re-enabling it.**
+`generalizeFailures` (counterexample generalization: state what the failures have in COMMON, not
+what they are) is wired into `verifyCode` behind `CRUCIBLE_DERIVED_FACTS=1`, **default off**. The
+derived facts are correct and cheap (3 facts, ~123 tokens) — `isBalanced` was handed "Every
+failing input contains the characters "a" "b" "c" and NO passing input does" verbatim — and the
+head **still returned false for "abc" on all 8 draws**. **Worse on both axes at n=3 vs n=3:
+solved 7/15 with facts on (2,3,2) against 9/15 off (3,3,3), and 1072s of wall clock against 587s —
+1.8× slower for two fewer solves.** One confound to carry forward: `romanToInt` also went 4–7s →
+8–11s and it solves at draw 1 with NO feedback in the prompt at all, so the facts cannot explain
+that row and some of the slowdown is ambient server state (hours of continuous inference). That
+weakens the wall-clock magnitude but not its direction, and does not touch the solve-rate arm.
+Kept wired because the analysis is sound and a shorter single-fact variant may convert it — but 25c
+and 25d each shipped a principled-looking prompt change that measured negative, and "it should
+help" is not evidence.
+
+**Honest negative on the mechanical repair too:** its bench is 8/8 on its target fault classes,
+but an end-to-end A/B on the 5 general tasks moved 8/15 → 9/15, which is noise — those tasks'
+terminal failures are algorithmic, not mechanical. The mechanical faults were concentrated in the
+template tasks, which were not re-run under the repair arm. **It is proven at the unit level and
+UNPROVEN end-to-end.** Do not quote it as a scorecard win.
+
+tsc clean; `mechrepair:bench` 8/8; `tracespec:bench` 13/13.
+
 ### 2026-07-25e (gap-soundness — measuring 25d's own changes, and reverting the one that hurt)
 25d shipped five mechanisms and reported a general-path number that had gone DOWN (2/5 → 1/5). This
 session measured that instead of explaining it away, and the answer was that one of 25d's own changes
