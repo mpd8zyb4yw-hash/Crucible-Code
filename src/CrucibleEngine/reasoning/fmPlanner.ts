@@ -121,21 +121,28 @@ export interface PlannedSubFunction {
 // Both are restated as a mechanical self-check in the user turn, and (a) is re-checked
 // deterministically downstream by `isNonComposingCarve` — this prompt only makes the good carve
 // more likely, it never gets to certify one.
+// PARTLY REVERTED 2026-07-25e — MEASURED, not reasoned. The 25c rewrite above stated (a) and (b) as
+// an explicit numbered self-check plus a worked argument-shape paragraph: roughly 120 extra words in
+// the user turn. On the live head that made the general scorecard WORSE, 2/5 → 1/5 → 0/5, and the
+// mechanism is documented elsewhere in this repo: the slot context is ~1024 tokens, so a long
+// preamble CROWDS THE GOAL OUT. Live evidence — with the bare prompt the head returns a clean
+// 3-helper carve (isBracket/matchPair/isNested); with the verbose prompt it returned NULL on the
+// same goal, and on compressRuns it returned two helpers that were both the ENTRY restated.
+// Telling a 1.5B "the first helper must take the top-level function's own arguments" is, to it, an
+// instruction to emit the top-level function as helper #1.
+// So the two properties are kept as ONE short clause each, and the mechanical enforcement lives
+// where it belongs — in the deterministic gates (`isNonComposingCarve`, `isRebakedHelper`), which
+// cost no context at all. Prompt asks; the verifier decides.
+
 /** Sampler-level pin on the plan schema — built once (pure string). See subFunctionPlanGrammar. */
 const SUBFN_GRAMMAR = subFunctionPlanGrammar()
 
 const SUBFN_SYSTEM =
-  'You are a decomposition planner. Given ONE hard function to implement, you propose 2–4 SMALLER, ' +
-  'PURE helper functions it can be built from — each doing one simple, self-contained job that a weak ' +
-  'model can get right on its own. For each helper give a name, a one-line purpose, and 2–3 concrete ' +
-  'input/output examples. You never write the code.\n' +
-  'A plan is only useful if the helpers COMPOSE BACK into the top-level function: the top-level body ' +
-  'must be writable as a short expression that calls your helpers and nothing else. So the FIRST ' +
-  'helper must take the top-level function\'s OWN arguments, each later helper must take what an ' +
-  'earlier one returns, and the LAST one must return the top-level function\'s return value. ' +
-  'Split the work into consecutive STAGES of that pipeline. ' +
-  'Never propose a helper for a formatting rule the goal only forbids, and never invent an input ' +
-  'type the top-level function is never given.'
+  'You are a decomposition planner. Given ONE hard function to implement, you propose 2\u20134 SMALLER, ' +
+  'PURE helper functions it can be built from \u2014 each doing one simple, self-contained job that a weak ' +
+  'model can get right on its own. For each helper give a name, a one-line purpose, and 2\u20133 concrete ' +
+  'input/output examples. You never write the code. The helpers must be consecutive STAGES that compose ' +
+  'back into the top-level function \u2014 never a helper that just redoes the whole task.'
 
 function buildSubFnUser(goal: string, entry: string, sampleCases: unknown[]): string {
   const argShape = firstCaseArgShape(sampleCases)
@@ -143,34 +150,41 @@ function buildSubFnUser(goal: string, entry: string, sampleCases: unknown[]): st
     `TOP-LEVEL FUNCTION: ${entry}`,
     `GOAL:\n${goal}`,
     sampleCases.length ? `Example top-level behavior:\n${JSON.stringify(sampleCases.slice(0, 4))}` : '',
-    argShape
-      ? `${entry} is called as ${entry}(${argShape}). Your FIRST helper must accept exactly those argument types.`
-      : '',
-    `Before you answer, check your plan against BOTH rules:\n` +
-      `1. COMPOSES: you can write \`${entry}\` as one short line that only calls your helpers — write that line in your head; if you cannot, change the plan.\n` +
-      `2. CONSUMES THE REAL INPUT: the first helper's example args are the SAME kind of values ${entry} itself receives above.`,
-    'Output ONLY a JSON array of 2–4 helpers, each: ' +
+    argShape ? `${entry} takes exactly ${argShape.arity} argument(s): ${argShape.text}. Your first helper must accept those.` : '',
+    'Output ONLY a JSON array of 2\u20134 helpers, each: ' +
       '{"name":"<camelCaseHelper>","purpose":"<one line>","examples":[{"args":[...],"expected":<value>}]}. ' +
-      'No prose, no code, no markdown fences — just the JSON array.',
+      'No prose, no code, no markdown fences \u2014 just the JSON array.',
   ].filter(Boolean).join('\n\n')
 }
 
 /**
- * Render the top-level entry's ACTUAL argument shape from its first sample case, e.g.
- * `1234: number` or `"abc": string, [1,2]: number[]`. Handed to the planner so "consume the entry's
+ * Render the top-level entry's ACTUAL argument shape and ARITY from its richest sample case, e.g.
+ * `{text: '1234: number', arity: 1}`. Handed to the planner so "consume the entry's
  * argument types" is a concrete instruction rather than an abstract rule — the live failure was a
  * planner inventing a string input for a function that only ever receives a number. Best-effort and
  * purely advisory: returns null when the cases don't carry a recognizable `args` array.
  */
-function firstCaseArgShape(sampleCases: unknown[]): string | null {
-  const first = sampleCases.find((c) => Array.isArray((c as any)?.args)) as { args: unknown[] } | undefined
-  if (!first || !first.args.length) return null
+function firstCaseArgShape(sampleCases: unknown[]): { text: string; arity: number } | null {
+  const withArgs = sampleCases.filter((c) => Array.isArray((c as any)?.args) && (c as any).args.length) as { args: unknown[] }[]
+  if (!withArgs.length) return null
+  // Pick the MOST INFORMATIVE case, not literally the first (2026-07-25e). Case lists are written
+  // degenerate-first — `compressRuns`'s first case is `{args:[''],expected:''}` — so "the first
+  // case" rendered the hint as `"": string`, an empty example that taught the planner nothing about
+  // the real input. It then proposed helpers taking FIVE separate character arguments for a
+  // one-string entry. Score by JSON size and take the richest.
+  const richest = withArgs.reduce((best, c) => {
+    const size = (x: { args: unknown[] }) => { try { return JSON.stringify(x.args).length } catch { return 0 } }
+    return size(c) > size(best) ? c : best
+  }, withArgs[0])
   const shape = (v: unknown): string =>
     v === null ? 'null'
       : Array.isArray(v) ? `${shape(v[0]) || 'unknown'}[]`
       : typeof v === 'object' ? 'object'
       : typeof v
-  return first.args.map((a) => `${JSON.stringify(a)}: ${shape(a)}`).join(', ')
+  return {
+    text: richest.args.map((a) => `${JSON.stringify(a)}: ${shape(a)}`).join(', '),
+    arity: richest.args.length,
+  }
 }
 
 /**
@@ -841,7 +855,12 @@ export function makeFmSubFunctionPlanner(opts: FmPlannerOpts = {}): (
       // grammar the malformed sibling is unreachable at the sampler, and the 2–4-helper cardinality
       // is enforced structurally rather than asked for in prose. A backend without grammar support
       // ignores the field and the salvage path still covers it.
-      { temperature: opts.temperature ?? 0.4, maxTokens: opts.maxTokens ?? 600, timeoutMs: opts.timeoutMs, signal, gbnf: SUBFN_GRAMMAR },
+      // maxTokens 600 → 1100 (2026-07-25e): a 4-helper × 3-example plan does not FIT in 600 tokens,
+      // and a truncated plan is silently salvaged down to one helper — which trips the
+      // degenerate-carve gate and burns all three planAttempts on an honest decline at ZERO model
+      // calls. Measured on `isBalanced`. The compact-JSON grammar (`ws ::= ""`) buys most of the
+      // headroom back; this covers the rest so a full plan is never cut off mid-array.
+      { temperature: opts.temperature ?? 0.4, maxTokens: opts.maxTokens ?? 1100, timeoutMs: opts.timeoutMs, signal, gbnf: SUBFN_GRAMMAR },
     )
     const plan = parseSubFunctionPlan(raw)
     return plan.length >= 1 ? plan : null

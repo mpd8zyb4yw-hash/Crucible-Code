@@ -112,6 +112,15 @@ export function subFunctionPlanGrammar(): string {
     `strval ::= "\\"" ( [^"\\\\] | "\\\\" ["\\\\/bfnrt] )* "\\""`,
     `numval ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [-+]? [0-9]+)?`,
     `boolval ::= "true" | "false"`,
-    `ws ::= [ \\t\\n]*`,
+    // CANONICAL COMPACT JSON — `ws` is EMPTY, not `[ \t\n]*` (2026-07-25e).
+    //
+    // The permissive version let the model pretty-print: newlines and two-space indents at every
+    // level. Measured cost: with `maxTokens: 600` the plan generation TRUNCATED mid-array, the
+    // salvage path recovered only the objects that had completed, and a 4-helper plan arrived as a
+    // ONE-helper plan — which then correctly tripped the degenerate-carve gate and resampled three
+    // times into an honest decline at ZERO model calls. `isBalanced` failed exactly this way on the
+    // 25e general run. Indentation is pure token cost with no informational content, so forbidding
+    // it is free: it buys roughly a 2x longer plan inside the same token budget.
+    `ws ::= ""`,
   ].join('\n')
 }
