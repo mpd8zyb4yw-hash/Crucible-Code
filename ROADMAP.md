@@ -1933,6 +1933,45 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-25e (gap-soundness — measuring 25d's own changes, and reverting the one that hurt)
+25d shipped five mechanisms and reported a general-path number that had gone DOWN (2/5 → 1/5). This
+session measured that instead of explaining it away, and the answer was that one of 25d's own changes
+was the cause.
+
+- **General scorecard after 25d's alias gate: 0/5.** Down again. `compressRuns` and `isBalanced` both
+  collapsed to a 0-call decline in ~17s — the signature of a plan that was emptied before any rung ran.
+- **The alias gate was NOT the culprit.** A direct probe showed it dropping ZERO helpers on the
+  hypothesised tasks. The hypothesis was wrong and the probe said so before anything was reverted.
+- **The culprit was 25c/25d's PROMPT rewrite.** `buildSubFnUser` had grown a numbered self-check plus
+  a worked argument-shape paragraph — ~120 extra words. The slot context on this head is **~1024
+  tokens**, a constraint this repo already documents, so the preamble crowded the GOAL out. Live A/B
+  on the same head, same goal:
+  - bare prompt → clean 3-helper carve (`isBracket`/`matchPair`/`isNested`)
+  - verbose prompt → planner returned **NULL**; on `compressRuns` it returned two helpers that were
+    both the ENTRY restated
+  Telling a 1.5B "the FIRST helper must take the top-level function's OWN arguments" reads to it as
+  an instruction to emit the top-level function AS helper #1 — **the rewrite was manufacturing the
+  very re-bake the alias gate was then added to catch.**
+- **Reverted to one short clause each.** Both carve properties are still stated, but enforcement moved
+  entirely to the deterministic gates (`isNonComposingCarve`, `isRebakedHelper`), which cost no
+  context. The durable lesson, and the reason this is written at length: on a 1024-token slot, a
+  prompt rule is not free — it is paid for out of the goal. Prompt asks; the verifier decides.
+- **Two real defects found in 25d's own grammar work, both measured:**
+  - `ws ::= [ \t\n]*` let the model PRETTY-PRINT, and at `maxTokens: 600` the plan truncated
+    mid-array. Salvage then recovered a single helper, which correctly tripped the degenerate gate and
+    burned all three `planAttempts` on a 0-call decline. Now `ws ::= ""` — measured **703 chars
+    constrained vs 1855 unconstrained** for the same content. `maxTokens` 600 → 1100.
+  - `firstCaseArgShape` took the FIRST case, but case lists are written degenerate-first, so
+    `compressRuns` rendered the hint as `"": string`. Now picks the richest case.
+- **Verified on the live head after the fix:** `compressRuns` carves a genuine 4-stage pipeline
+  (`splitRun`/`countRunLength`/`encodeRun`/`concatenateRuns`, 0 dropped); `isBalanced` went from NULL
+  to 4 helpers with the alias gate dropping exactly the 2 that restate the entry.
+- **`GEN_SCORECARD_TASK_WALL_MS`** — whole-task wall ceiling for the general harness. One uncapped
+  draw of five tasks cost ~2 hours, which made `GEN_SCORECARD_RUNS>1` impractical — and n=1 is
+  precisely why a real regression could not be told from noise. Default off; when set, the header line
+  records the cap, because "solves within N seconds" must never be compared against "solves eventually".
+- `__decompose_bench`: **111 → 116 passed, 0 failed** (6g1–6g5, incl. a naming negative control).
+
 ### 2026-07-25d (gap-soundness — the whole carve-quality failure ladder, closed at the mechanism)
 Every item on 25c's failure ladder got a mechanism, not a mitigation. All five are verifier-gated:
 each can only cause a resample or a wider sample, never a certification.

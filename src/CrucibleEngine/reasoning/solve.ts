@@ -693,6 +693,15 @@ async function runSubFunctionOnce(
   if (rebaked.length) emit({ type: 'thought', text: `subfn: dropped ${rebaked.join(', ')} — specified with the top-level function's own case (alias re-bake)` })
   emit({ type: 'thought', text: `subfn: ${helperPlan.length} helper(s) — ${helperPlan.map((h) => h.name).join(', ')}` })
   if (!helperPlan.length) {
+    // A plan emptied by the ALIAS-REBAKE filter is a BAD PLAN, not an impossible task — the head
+    // proposed helpers that all restate the entry, and a fresh stochastic draw may well carve it
+    // properly. `declined` exits the planAttempts loop immediately, so returning it here threw away
+    // both remaining attempts and reported a 0-call/3s decline (live 25e: intToRoman, compressRuns).
+    // `decompose-failed` is the status that resamples. A plan emptied for any OTHER reason (every
+    // helper collided with the entry name or a parent's pre-certified set) keeps the honest decline.
+    if (rebaked.length) {
+      return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls, detail: `every helper restated the entry (${rebaked.join(', ')}); resample plan` }
+    }
     return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'no helper distinct from the top-level function' }
   }
   // PLAN-QUALITY GATE (universal, template-free path only). A single-helper carve is degenerate:
