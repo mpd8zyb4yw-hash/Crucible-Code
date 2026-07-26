@@ -1993,6 +1993,15 @@ yet measured, and it decides the fix** — constrained decoding if typecheck, be
 if `!testFile`. clampModule's live escalate was `duplicate exported symbol`, i.e. NOT typecheck, so
 the intuitive guess would have been wrong. Next step is a `verify.exit.<reason>` lane, not a fix.
 
+**Suite (offline-strict, qwen :8080, `CRUCIBLE_NO_LEARN=1`): 13/14 overall, gen-path 9/10 green,
+8/10 in budget, 1 AMBER (sortModule at cap), 1 RED (multiFileLedger).** Wall clock gen path:
+median 237s, p90 354s, max 481s. Per-task vs previous scorecard: clampModule −96%, tagSetModule
+−90%, caseCompareModule −77%, usernameModule −76%, leaderboardModule −72%, summaryModule −62%.
+CAVEAT: the ledger's "reliable floor 2/10" / "VARIANCE" labels are arithmetic over a window whose
+only other run is the queue-starved one, so they read `R G` and establish nothing about variance
+yet — honest reading is n=1-since-the-fix. bugfixCsv with `_learned/` suppressed scored
+`path=generated` 9/9 hidden at 289s (vs a memorized 3s), so its capability is real.
+
 **Also corrected:** the "reasoning track's stalled rung" carried since cont.115 is a PHANTOM —
 `isOpen`/`wordFrequency`/`compressRuns` do not exist on this branch; they are one stochastic FM
 planner draw's helper names on the unmerged `claude/gap-soundness` @ `7c92a28`, whose harness cannot

@@ -120,6 +120,36 @@ concentrated in model calls (51%) and in three non-model lanes nobody had counte
   (via `01916e41e5f6`, tracked since 2026-07-04) and `bugfixCsv` (four byte-identical `parseCsv`
   clones) score above 0. The only genuinely unique content in `_learned/` is the bugfixCsv answer.
 
+### THE NUMBER (2026-07-26, cont.116, offline-strict + qwen :8080 + `CRUCIBLE_NO_LEARN=1`)
+
+**13/14 overall · gen-path 9/10 green · 8/10 in-budget · 1 AMBER (sortModule, at cap) · 1 RED
+(multiFileLedger).** Wall clock, gen path: median 237s, p90 354s, max 481s, 1/10 at cap.
+
+Per-task wall clock vs the previous scorecard: clampModule −96%, tagSetModule −90%,
+caseCompareModule −77%, usernameModule −76%, leaderboardModule −72%, summaryModule −62%,
+filterModule −26%.
+
+**READ THE LEDGER'S "reliable floor 2/10" AND "VARIANCE" LABELS WITH THIS CAVEAT.** They are
+correct arithmetic over a window that contains a run we now know was invalid. For every module
+task the window holds exactly TWO runs: the 17:18 run (all RED — that is the queue-starved run,
+the one with clampModule at 5899s) and tonight's (all GREEN). So `filterModule 1/2 VARIANCE` is
+literally `R G` where the R was measuring contention. **Nothing about task-level variance is
+established yet; the honest reading is n=1-since-the-fix.** The ledger cannot know a run was
+contaminated — which is itself the next measurement-hygiene item: record the server's config
+(grace ms, keepalive on/off, noLearn) into each ledger entry so an invalid run is identifiable
+after the fact instead of silently dragging the floor down forever.
+
+Two `⚠ SLOWER` flags in this run are FALSE ALARMS of a known shape: `bugfixCsv 0s→289s` and
+`multiFileLedger 0s→237s` compare a catalog/no-fire previous run against a gen run. That is a
+path change, not a latency regression. The wall-clock comparator should skip pairs whose
+`synthPath` differs.
+
+**bugfixCsv is the clean catalog-drift read.** With the four learned `parseCsv` clones suppressed
+it scored `path=generated`, 9/9 hidden checks, tsc clean, 289s — versus the memorized 3s. The
+capability is real; the drift was only making it look fast. The 10/10 gen headline was not
+inflated by `_learned/` for this task. End-to-end confirmation that `NO_LEARN` holds: 13 learned
+files before the suite, 13 after, zero written.
+
 ### THE SAMPLE-EFFICIENCY GAP (the real parity lever, newly measurable)
 
 DOCTRINE.md: *"Maximize information per model call. Sample-efficiency is the moat. Optimize it
