@@ -17,65 +17,63 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-25d (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-25e (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **Template scorecard: 15/15 (100%) at 3 draws/class, re-earned live** after `search.ts`,
-> `solve.ts`, `fmPlanner.ts` and `codeProposer.ts` all changed on shared paths — and materially
-> cheaper (`basicCalculator` 264s → 18s median; `coinChange` 3 calls/14s).
+> **Template scorecard: 15/15 (100%)** at 3 draws/class, re-earned live and materially cheaper
+> (`basicCalculator` 264s → 18s median; `coinChange` 3 calls/14s).
 >
-> **General (no-template) scorecard: 1/5 (20%) — DOWN from 25c's 2/5.** Reported as measured. n=1
-> per task so the delta is inside the noise band, but this session did NOT raise the general number.
+> **General (no-template) scorecard: 2/5 (40%)** — the 25c baseline, restored after this session's own
+> changes briefly drove it to 1/5 then 0/5, and now measured under a STRICTER 900s-per-task cap.
 >
-> | task | 25c | 25d |
+> | task | 25c (uncapped) | 25e final (900s cap) |
 > |---|---|---|
-> | `romanToInt` | solved, 90 calls, 692s | **solved, 5 calls, 34s** (18× cheaper) |
-> | `intToRoman` | solved, 13 calls | **decompose-failed**, 205 calls — REGRESSION, undiagnosed |
-> | `compressRuns` | declined, 97 calls | decompose-failed, 182 calls |
-> | `isBalanced` | declined, **0 calls**, 17s | decompose-failed, 250 calls, 2288s |
-> | `wordFrequencyTop` | decompose-failed, 151 calls | decompose-failed, 77 calls |
+> | `romanToInt` | solved, 90 calls, 692s | **solved, 16 calls, 62s** (11× cheaper) |
+> | `intToRoman` | solved, 13 calls | **solved, 41 calls, 186s** — via RECURSION |
+> | `compressRuns` | declined, 97 calls | decompose-failed, 56 calls |
+> | `isBalanced` | declined, **0 calls** | decompose-failed, 92 calls (recursed one level) |
+> | `wordFrequencyTop` | decompose-failed, 151 calls | decompose-failed, 115 calls |
 >
-> **Landed 2026-07-25d** (all verifier-gated — each can only cause a resample or a wider sample,
-> never a certification):
-> 1. `subFunctionPlanGrammar()` (`agent/grammars.ts`) pins the plan schema at the SAMPLER;
->    `makeFmSubFunctionPlanner` passes it as `gbnf`. Malformed plan JSON is unreachable, not
->    salvaged, and the 2–4-helper cardinality is structural. Live-verified against :8080.
->    **This is the `isBalanced` fix and it demonstrably worked** — that task went from dying at
->    ZERO model calls (unparseable plan) to producing a real 4-helper carve and grinding 250 calls.
-> 2. `SUBFN_SYSTEM`/`buildSubFnUser` rewritten around COMPOSES + CONSUMES-THE-REAL-INPUT, with
->    `firstCaseArgShape` injecting the entry's actual argument types.
-> 3. `isNonComposingCarve` — fires when no helper consumes the entry's input types (the
->    `numberToWords(1234)` → `removeCommas(string)` case). One-sided and weak by design.
-> 4. `structuralFingerprint` + `SearchOpts.structuralKey` (cosmetic re-emission counts as
->    stagnation — EVIDENCE only, still verified, so it can never discard a correct candidate);
->    `topP`/`seed` plumbed `FmCallOpts` → `callFm` → `bonsaiComplete` → llama-server, raised only
->    once anchoring is detected.
-> 5. `isRebakedHelper` — drops a helper the planner specified with one of the ENTRY's OWN cases.
->    Every failing carve on the 1/5 run had one (`intToRomanHelper`, `romanNumeralConverter`,
->    `isBalancedHelper`, `runLength`) and `isDegenerateSubFnCarve` is blind to them because those
->    plans have four helpers. Naming is deliberately NOT evidence — the one live solve used a carve
->    containing `romanToIntHelper`. **Landed AFTER the 1/5 measurement; its effect is UNMEASURED.**
+> **THE COUNT IS FLAT AT 2/5. What moved is the failure MODE — read this before planning work.**
+> Not one task now dies at plan-parse or on a junk carve. Every remaining failure is a
+> `decompose-failed` naming a STALLED RUNG (`isOpen`, `wordFrequency`, the `compressRuns` fold). The
+> bottleneck has moved from "the planner cannot produce a usable carve" to "one rung will not
+> certify". Recursion is load-bearing now: `intToRoman` SOLVES through it.
 >
-> Benches: decompose **116/0** (was 97/0), tsc clean. All work committed (`11acb29`, `7884fb2`).
+> **Landed 25d+25e** (all verifier-gated — can only cause a resample or a wider sample, never a
+> certification): `subFunctionPlanGrammar()` pinning the plan schema at the sampler (compact JSON,
+> `ws ::= ""`, `maxTokens` 1100); `isNonComposingCarve`; `isRebakedHelper` + alias-emptied plans
+> resampling instead of declining; `structuralFingerprint`/`SearchOpts.structuralKey` (EVIDENCE only,
+> never a dedup — a structural repeat is still verified); `topP`/`seed` plumbed to llama-server;
+> `GEN_SCORECARD_TASK_WALL_MS`.
+>
+> **THE DURABLE LESSON OF THIS SESSION — do not re-learn it the expensive way.** The 25c prompt
+> rewrite added ~120 words of carve rules to `buildSubFnUser`. The slot context is **~1024 tokens**,
+> so that preamble crowded the GOAL out: live A/B on the same head, the bare prompt returned a clean
+> 3-helper carve and the verbose one returned NULL. Worse, "the FIRST helper must take the top-level
+> function's OWN arguments" reads to a 1.5B as "emit the top-level function AS helper #1" — the
+> rewrite was MANUFACTURING the re-bake that a later gate was added to catch. On this hardware a
+> prompt rule is not free; it is paid for out of the goal. **Prompt asks; the verifier decides — put
+> enforcement in a deterministic gate, which costs no context.**
+>
+> Benches: decompose **116/0** (was 97/0), tsc clean. All committed (`11acb29` … `a02aaef`).
 
 ### OPEN — next priorities (highest leverage first)
 
-1. **Measure `isRebakedHelper`.** It landed after the 1/5 general run, so its effect is currently a
-   claim, not a number. Re-run `__decompose_general_scorecard_live.ts` and compare against the 1/5
-   baseline in the table above before building anything else on top of it.
-2. **Diagnose the `intToRoman` regression** — solved in 13 calls on 25c, `decompose-failed` at 205
-   calls on 25d with `subtractiveRoman` stalled. It is the one row that got strictly worse and it is
-   undiagnosed; the candidates are the rewritten `SUBFN_SYSTEM` steering it into a worse carve, or
-   the plan grammar's cardinality bounds cutting off a helper it needed.
-3. **Raise the general scorecard's n.** Every general number on record is n=1 per task, which cannot
-   distinguish a real regression from sampling noise — exactly the ambiguity blocking item 2. The
-   template scorecard already takes `SCORECARD_RUNS`; the general harness should too.
-4. **`compressRuns`/`isBalanced` now GRIND instead of declining** (182 and 250 calls, ~30–38 min
-   each). That is progress in kind but it makes the general scorecard cost hours. A wall-clock
-   ceiling per general task would make the measurement loop usable.
-5. **The stalling rung is now the bottleneck, not the carve** — `subtractiveRoman`, `isIgnored`,
-   `runLength` each certified their siblings and then pinned. That is the flat-search anchoring
-   problem at rung level, where items 4's `structuralKey`/`topP`/`seed` levers apply but have not
-   been tuned against a measurement.
+1. **Attack the STALLED RUNG — this is now the whole bottleneck.** `isOpen`, `wordFrequency` and the
+   `compressRuns` fold each certified their siblings and then pinned. The carve is fine; one leaf
+   will not certify. Everything else below is subordinate to this.
+2. **Tune the anti-anchor levers against a measurement.** `structuralKey`, `topP` (0.97/0.99) and the
+   per-retry `seed` in `codeProposer.buildProposalPrompt` all shipped untuned — the thresholds were
+   chosen by reasoning, and this session is a case study in why that is not enough.
+3. **Raise general-scorecard n now that it is affordable.** The 5-task sweep is ~20 min with
+   `GEN_SCORECARD_TASK_WALL_MS=900000`, so `GEN_SCORECARD_RUNS=3` is practical. Every general number
+   on record is n=1, which cannot separate a real regression from noise — that ambiguity cost this
+   session two full measurement cycles.
+4. **Re-verify the template 15/15** after any rung-level change: it shares `search.ts`/`solve.ts`/
+   `codeProposer.ts` with the general path and must be re-earned, never assumed.
+5. **Consider whether `isRebakedHelper` still earns its place** once item 1 lands. It was added to fix
+   a re-bake that the (now reverted) prompt was itself causing; its independent value is unmeasured,
+   and its first version introduced the declined-instead-of-resample defect.
 
 ---
 

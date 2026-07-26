@@ -1972,6 +1972,32 @@ was the cause.
   records the cap, because "solves within N seconds" must never be compared against "solves eventually".
 - `__decompose_bench`: **111 → 116 passed, 0 failed** (6g1–6g5, incl. a naming negative control).
 
+- **One more defect, found by the same loop.** With the alias gate live, a plan whose helpers ALL
+  restated the entry emptied to zero survivors and returned `declined` — and `declined` EXITS the
+  `planAttempts` loop, so both remaining stochastic draws were discarded. Live signature: a 0-call
+  decline in 3–6s on `intToRoman` and `compressRuns`. An alias-emptied plan is a bad PLAN, not an
+  impossible task, so it now returns `decompose-failed` and resamples.
+
+**General scorecard, FINAL for this session — 2/5 (40%), baseline restored under a STRICTER cap:**
+
+| task | 25c (uncapped) | 25e final (900s/task cap) |
+|---|---|---|
+| `romanToInt` | solved, 90 calls, 692s | **solved, 16 calls, 62s** — 11× cheaper |
+| `intToRoman` | solved, 13 calls | **solved, 41 calls, 186s** — via RECURSION (`digitToRoman` stalled → `parseDigit`/`convertToRoman` certified → composed) |
+| `compressRuns` | declined, 97 calls | decompose-failed, 56 calls |
+| `isBalanced` | declined, **0 calls** | decompose-failed, 92 calls (recursed one level) |
+| `wordFrequencyTop` | decompose-failed, 151 calls | decompose-failed, 115 calls |
+
+The count is flat at 2/5, and that is the honest headline. What changed underneath it:
+- **The failure MODE moved.** Not one task now dies at plan-parse. Every remaining failure is a
+  `decompose-failed` with a named STALLED RUNG — `isOpen`, `wordFrequency`, `compressRuns`' fold.
+  The bottleneck is no longer "the planner cannot produce a usable carve"; it is "one rung will not
+  certify". That is a different, better-posed problem, and it is where the next session should aim.
+- **Recursion is now load-bearing**, not just present: `intToRoman` SOLVES through it, and
+  `isBalanced` gets a full level deep with four sub-helpers certified.
+- **Cost fell sharply** on the tasks that work, and the whole 5-task sweep now fits in ~20 minutes
+  instead of ~2 hours, which finally makes `GEN_SCORECARD_RUNS>1` affordable.
+
 ### 2026-07-25d (gap-soundness — the whole carve-quality failure ladder, closed at the mechanism)
 Every item on 25c's failure ladder got a mechanism, not a mitigation. All five are verifier-gated:
 each can only cause a resample or a wider sample, never a certification.
