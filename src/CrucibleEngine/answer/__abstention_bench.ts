@@ -505,17 +505,55 @@ async function liveNonBaitProbe() {
       text = `__ERROR__ ${e?.message ?? e}`
     }
     const killed = abstained || isDeclineDominant(text)
+    const right = !killed && expect.test(text)
     if (!killed) kept++
-    if (!killed && expect.test(text)) correct++
-    console.log(`  ${killed ? 'BAD ' : 'GOOD'} "${q.slice(0, 48)}…" → ${abstained ? '[abstained] ' : ''}${text.slice(0, 90).replace(/\n/g, ' ')}`)
+    if (right) correct++
+    // THREE outcomes, not two. cont.114 scored SURVIVED-BUT-WRONG as GOOD ("Southern Ocean" for
+    // the Africa/Australia question), which made the worst failure mode invisible: a reply that
+    // confidently states a wrong specific is a CONFABULATION, strictly worse than an honest
+    // abstention, yet it looked identical to a correct answer in the log and in the gate.
+    const label = killed ? 'BAD ' : right ? 'GOOD' : 'WRONG'
+    console.log(`  ${label} "${q.slice(0, 48)}…" → ${abstained ? '[abstained] ' : ''}${text.slice(0, 90).replace(/\n/g, ' ')}`)
   }
-  console.log(`\n  LIVE non-bait score: ${kept}/${answerable.length} answerable lookups survived the abstention gate (${correct} also carried the right answer)`)
+  const wrong = kept - correct
+  console.log(`\n  LIVE non-bait score: ${kept}/${answerable.length} survived the abstention gate — ${correct} CORRECT, ${wrong} survived-but-WRONG (confabulations)`)
   // Gate: the abstention router must not eat answerable questions. Held at the same 75% bar as the
   // bait probe — the head is stochastic and an occasional genuine "I can't verify that offline" on
   // a cold retrieval is honest, not a bug; a systematic false-positive regression (the regex being
   // widened until it swallows real answers) drops this well below the floor. Denominator grown
   // 8 → 20 in cont.112, so the floor is ≥15 and one flip is ±5pts rather than ±12.5.
   check(`live: ≥75% of answerable lookups are NOT abstained`, kept * 4 >= answerable.length * 3, `${kept}/${answerable.length}`)
+
+  // ── Correctness gate (cont.115) — the survival gate above is NOT sufficient on its own ────────
+  // Gating only on `kept` measures whether the abstention router lets answers THROUGH, never
+  // whether they are RIGHT. Taken to its limit that gate is satisfied perfectly by an engine that
+  // abstains on nothing and fabricates everything — i.e. the survival gate, alone, actively rewards
+  // the exact failure this whole track exists to prevent. `correct` was already being computed and
+  // printed here; it simply was not gated, so a confabulated answer scored identically to a right
+  // one. cont.114 measured that in the wild: "Southern Ocean" for the Africa/Australia question
+  // counted as a GOOD. Both gates now have to hold — answers must survive AND be correct.
+  //
+  // FLOOR — set from MEASUREMENT, never from reasoning. Measured on the run that introduced this
+  // gate (cont.115, offline-strict, qwen-1.5b head): **20/20 correct, 0 survived-but-wrong**. The
+  // floor is set at the same 75% convention the two sibling live gates already use (15/20), which
+  // leaves five stochastic flips of headroom below the observed value. That is deliberate: this
+  // gate exists to catch a SYSTEMATIC collapse — retrieval breaking, a router change silently
+  // swapping the answer path, the entailment gates being loosened until guesses flow — not to fail
+  // the suite on ordinary per-run variance. Raise it only against another measured run.
+  const CORRECT_FLOOR = Number(process.env.CRUCIBLE_NONBAIT_CORRECT_FLOOR ?? 15)
+  check(
+    `live: ≥${CORRECT_FLOOR}/${answerable.length} answerable lookups carry the RIGHT answer (not just survival)`,
+    correct >= CORRECT_FLOOR,
+    `${correct}/${answerable.length} correct, ${wrong} survived-but-wrong`,
+  )
+  // A confabulation is worse than an abstention, so a run where WRONG answers outnumber correct
+  // ones is a failure even if survival is perfect — that shape means the router is shipping the
+  // head's guesses rather than grounded answers.
+  check(
+    `live: correct answers outnumber survived-but-wrong ones`,
+    correct > wrong,
+    `${correct} correct vs ${wrong} wrong`,
+  )
 }
 
 async function main() {

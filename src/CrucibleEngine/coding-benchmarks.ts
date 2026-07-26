@@ -32,6 +32,14 @@ const HIDDEN_DIR = path.join(HERE, 'coding-bench')
 const API = process.env.CRUCIBLE_API ?? 'http://localhost:3001'
 const BENCH_ROOT = path.join(os.homedir(), 'Desktop', 'crucible-bench')
 const SCORECARD = path.join(CODE_DIR, '.crucible', 'coding-bench-last.json')
+// Rolling per-run history → true per-task PASS RATES. Every scorecard on record has been n=1, so
+// a GREEN could mean "reliably solved" or "got lucky once", and the ROADMAP has repeatedly had to
+// hand-estimate a "reliable floor ~9/10" from memory of past runs. One n=1 run cannot distinguish
+// a real fix from variance — which is the single thing four independent sessions each flagged.
+// Rather than force one 3-hour n=3 invocation, EVERY run appends here and the scorecard reports
+// the rate over the last N. The ledger accumulates permanently, so the answer sharpens for free.
+const HISTORY = path.join(CODE_DIR, '.crucible', 'coding-bench-history.json')
+const HISTORY_WINDOW = Number(process.env.CRUCIBLE_BENCH_HISTORY_WINDOW ?? 5)
 const PER_TASK_TIMEOUT_MS = Number(process.env.CRUCIBLE_CODE_BENCH_TIMEOUT ?? 8 * 60 * 1000)
 
 // ── env: pull JWT_SECRET (+ optional Groq key) from .env.local if not already set ──
@@ -891,6 +899,69 @@ async function main() {
   console.log(`    of which via catalog-primitive match (zero inference): ${catPassed}/${catScores.length} green`)
   console.log(`    of which via genuine model generation (real signal)  : ${genPassed}/${genScores.length} green`)
   if (genScores.length === 0) console.log(`    ⚠ no task in this run exercised genuine generation — the summary above says nothing about offline-agent coding capability`)
+
+  // ── Per-task pass rates over the last N runs (n>1 signal) ──────────────────────
+  // A single run cannot tell a real fix from variance. Append this run, then report each task's
+  // rate across the window so a "GREEN" is qualified by how often it is actually green.
+  type HistRun = { ts: number; tasks: Record<string, { hard: boolean; gen: boolean }> }
+  let history: HistRun[] = []
+  try { history = JSON.parse(fs.readFileSync(HISTORY, 'utf-8')) } catch { history = [] }
+  if (!Array.isArray(history)) history = []
+  const thisRun: HistRun = { ts: Date.now(), tasks: {} }
+  for (const s of scores) {
+    thisRun.tasks[s.id] = { hard: !!(s.moduleExists && s.compiled && s.hiddenPassed), gen: s.synthPath === 'generated' }
+  }
+  history.push(thisRun)
+  // Keep a bounded tail — enough to compute the window plus a little context.
+  history = history.slice(-Math.max(HISTORY_WINDOW * 4, 20))
+  try { fs.writeFileSync(HISTORY, JSON.stringify(history, null, 2)) } catch { /* non-fatal — the run's own result still stands */ }
+
+  // Only runs that actually EXERCISED a task count toward its rate; a task-filtered invocation
+  // (`smoke:code:offline tagSetModule`) must not be read as the other 13 tasks failing.
+  const window = history.slice(-HISTORY_WINDOW)
+  console.log(`\n=== PER-TASK PASS RATE (last ${window.length} run${window.length === 1 ? '' : 's'} that exercised each task) ===`)
+  const variance: string[] = []
+  const drifted: string[] = []
+  let reliableGen = 0, genTracked = 0
+  for (const s of scores) {
+    // CONTAMINATION GUARD — rate ONLY over runs where this task actually went through generation.
+    // Measured 2026-07-26: bugfixCsv ran path=gen (99s), its solution was promoted into
+    // skills/_learned/, and the very next run scored it path=catalog (3s). A naive repeat-run
+    // reliability number would therefore climb toward 100% simply because the catalog absorbs
+    // run 1's answer — the benchmark would be grading its own memory, which the doctrine calls
+    // debt, not capability. Catalog runs are excluded from the rate rather than counted as wins.
+    const runs = window.filter(r => r.tasks[s.id])
+    const genRuns = runs.filter(r => r.tasks[s.id].gen)
+    const greens = genRuns.filter(r => r.tasks[s.id].hard).length
+    const rate = genRuns.length ? greens / genRuns.length : 0
+    const isGen = s.synthPath === 'generated'
+    if (isGen) { genTracked++; if (genRuns.length > 1 && rate === 1) reliableGen++ }
+    if (genRuns.length > 1 && rate > 0 && rate < 1) variance.push(s.id)
+    // A task that has run BOTH ways in the window has drifted into the catalog — its future runs
+    // stop measuring generation, so the gen sample silently stops growing.
+    if (runs.length > genRuns.length && genRuns.length > 0) drifted.push(s.id)
+    const tag = genRuns.length === 0 ? 'catalog-only (NO gen signal)'
+      : genRuns.length < 2 ? 'n=1 (UNPROVEN)'
+      : rate === 1 ? 'reliable' : rate === 0 ? 'reliably RED' : 'VARIANCE'
+    console.log(`  ${s.id.padEnd(18)} ${greens}/${genRuns.length} green over gen runs (${runs.length} total)  ${isGen ? 'gen    ' : 'catalog'}  ${tag}`)
+  }
+  if (drifted.length) {
+    console.log(`\n  ⚠ CATALOG DRIFT — these ran BOTH gen and catalog inside the window: ${drifted.join(', ')}`)
+    console.log(`    Their solutions were promoted into skills/_learned/, so later runs are memorized lookups,`)
+    console.log(`    not generation. Repeat-running to build confidence INFLATES the number unless gen runs are`)
+    console.log(`    isolated (as above). To re-measure real capability, clear the learned entry for the task.`)
+  }
+  if (window.length < 2) {
+    console.log(`\n  ⚠ Only ${window.length} run in the ledger — every rate above is n=1 and proves nothing about reliability.`)
+    console.log(`    Re-run the suite to start separating real capability from variance.`)
+  } else {
+    // The "reliable floor" the ROADMAP has been estimating by hand, now computed: gen tasks green
+    // in EVERY windowed run that exercised them. This is the number that should be quoted as
+    // capability, because the headline passedHard can be inflated by a lucky run.
+    console.log(`\n  Reliable gen-path floor (green in ALL ${window.length} windowed runs): ${reliableGen}/${genTracked}`)
+    console.log(`  Headline gen-path this run: ${genPassed}/${genScores.length}${reliableGen < genPassed ? '  ← headline exceeds the reliable floor; the difference is variance, not capability' : ''}`)
+    if (variance.length) console.log(`  VARIANCE tasks (green some runs, red others): ${variance.join(', ')}`)
+  }
 
   // Regression = a task that previously passed a HARD check now fails it.
   const regressions: string[] = []
