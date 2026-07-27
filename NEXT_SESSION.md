@@ -17,10 +17,53 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-26 (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-27 (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **This session measured instead of optimizing. Four premises the last four sessions planned
-> against turned out FALSE. Read all four before writing any code.**
+> **2026-07-27 shipped the two integrations 2026-07-26's control arm pointed at. The four
+> overturned premises below are still load-bearing — read them before writing any code.**
+
+### SHIPPED 2026-07-27 — the carve got a verifier, and effort got proportional to difficulty
+
+**1. `traceCarve.ts` + `npm run ladder:bench` (43/43 hermetic).** `traceSpec.ts` is no longer
+uncalled. `decomposeCodeBySubFunction` now spends ONE draw drafting the whole carve and ~40ms
+tracing it BEFORE any rung budget: it sometimes just solves the task (certified by `verifyCode`
+against the ORIGINAL cases), it replaces the planner's INVENTED helper outputs with I/O witnessed on
+gold cases the entry PASSED, and it prunes rungs a working composition never calls.
+`localizeFault` now skews the per-rung budget (1.5× the suspect, 0.6× a rung the draft got right)
+instead of spending it uniformly. Gated to the FM-general path at depth 0 — a caller-supplied
+planner (every hermetic bench) and template classes are exempt, which is why `vgr:decompose` stayed
+116/116.
+
+**The rule that makes the dead-rung signal safe, and DO NOT WEAKEN IT:** `neverCalled` cannot tell
+"the composition doesn't need this helper" from "this draw ignored the plan". Measured: every
+hermetic decompose-bench proposer's cold draw marks EVERY helper never-called at suspicion 1.0. A
+rung is dead only when the draft passed ≥1 gold case AND declared the helper in an instrumentable
+form (`declaredHelpers`).
+
+**2. The escalation ladder — `solveByLadder` in `solve.ts`.** All three case-based spec tiers route
+through it; it stops at the first tier that certifies and REPORTS WHICH (`result.tier`,
+`result.ladder`). tier 0 = K concurrent blind draws + free repair sweep · tier 1 = converge/serial
+search + mechanical repair · tier 2 = model-free operators · tier 3 = decomposition. Tiers feed each
+other: tier 0's best failing draw becomes tier 1's `buggyCode`; tier 2's poisoned-case recovery reads
+tier 0's blind draws (the most INDEPENDENT impls the system produces).
+
+**3. `__decompose_general_scorecard_live.ts` measures the SYSTEM now**, with decomposition as a
+permanent control column (`GEN_SCORECARD_ARM=both|ladder|decompose`, default `both`) and a
+solves-by-tier histogram.
+
+**LIVE (`CRUCIBLE_NO_DISTILL=1`, 300s cap, both arms, same goal/entry/cases):**
+
+| task | LADDER (the system) | DECOMPOSE alone (control) | 25e baseline |
+|---|---|---|---|
+| `romanToInt` | **solved @tier 0**, 4 calls, 27s | decompose-FAILED, 0 calls, 27s | solved, 16 calls, 62s |
+
+**CORRECTION to the handoff's own estimate:** tier 0 at K=4 costs **~27s, not ~6s**. That is
+consistent with premise 3 below (concurrency is 1.2×, not 4×) — the "~6s" figure assumed a parallel
+speedup that measurement had already ruled out. Do not re-derive plans from the 6s number.
+
+---
+
+> **The four premises 2026-07-26 overturned. Still true, still load-bearing.**
 
 **1. A model draw costs 2–5s, NOT 45–60s.** (`npm run draw:anatomy`.) Cold draw 4.9s = 233 prompt
 tok + 139 generated @ 44.6 tok/s. `max_tokens` 1536 is ~15× above typical and never binds; the
@@ -78,26 +121,29 @@ verifier.** A bad carve is only discovered after ~90 wasted calls.
 
 ### OPEN — next priorities (highest leverage first)
 
-1. **`traceSpec.ts` is BUILT AND BENCHED BUT NOT WIRED INTO `decomposeCodeBySubFunction`.** This is
-   the whole capability play and it is one integration away. Concretely: after the planner returns a
-   carve, draw ONE composed module, `traceEntryCases` it against the gold cases, and use
-   `deriveHelperSpecs` for the rung acceptance sets instead of the planner's invented `cases`, with
-   `isNonDiscriminating` rejecting weak ones. Then use `localizeFault` to spend the per-rung budget
-   on the SUSPECT rung instead of uniformly.
-2. **Build the difficulty-proportional escalation ladder in `solveCodingRequest`** — tier 0: K
-   concurrent blind draws (~6s); tier 1: serial + feedback + mechanical repair (~30s); tier 2:
-   deterministic operators; tier 3: decomposition. Today everything goes straight to the most
-   expensive tier, which is the entire 10–40× tax in item 4 above. Report which tier solved it.
-3. **Fix the general scorecard to measure the SYSTEM, not one tier.** Route
-   `__decompose_general_scorecard_live.ts` through the real ladder, and keep the direct arm as a
-   permanent control column so "decomposition helped" is never again assumed.
-4. **Re-measure the template 15/15 under `CRUCIBLE_NO_DISTILL=1`** and confirm nothing in
+1. **Run the FULL 5-task general scorecard on both arms, n≥3** — `GEN_SCORECARD_RUNS=3
+   GEN_SCORECARD_TASK_WALL_MS=300000 CRUCIBLE_NO_DISTILL=1 npx tsx
+   src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts`. Only `romanToInt` (ladder
+   tier 0, 4 calls/27s vs decompose-FAILED) and `isBalanced` have been run at n=1. The ladder's
+   headline number and the solves-by-tier histogram are both currently unmeasured at n≥3, and
+   everything below depends on knowing which tier actually earns the solves.
+2. **Measure the carve probe's ISOLATED effect with `CRUCIBLE_CARVE_PROBE=0` vs `=1` on the
+   `decompose` arm only.** Right now a ladder solve can come from tier 0 and never exercise
+   `traceCarve.ts` at all, so the probe's contribution to carve quality — the derived rung specs,
+   the dead-rung pruning, the `skewRungBudget` skew — is UNMEASURED end-to-end. It is proven at unit
+   level (43/43) and reasoned about; do not quote it as a scorecard win until this A/B exists.
+3. **Re-measure the template 15/15 under `CRUCIBLE_NO_DISTILL=1`** and confirm nothing in
    `synth/skills/_learned/` overlaps those tasks. The control arm makes the template number look
    like real capability; that inference is only safe if no memorized catalog entry is behind it,
-   and that was NOT verified this session.
-5. **Wire `localizeFault`'s dead-rung signal into the plan gates.** A helper the composition never
-   calls is a provably dead branch, catchable for 89ms — strictly better evidence than
-   `isNonComposingCarve`'s static shape check, and it is the `isBracketPair` failure exactly.
+   and that has still NOT been verified.
+4. **Tune `CRUCIBLE_LADDER_K`.** It defaults to 4 and is clamped to half the caller's flat budget.
+   K=4 measured 27s, so the tier-0/tier-1 crossover is much closer than assumed — K=2 may dominate
+   on wall clock, and the pass@k curve says 4–8 is where the marginal draw still pays. These two
+   pull opposite ways and nobody has measured the product.
+5. **Teach `search.ts` to accept seed history so tier 0's draws are not thrown away.** Today tier 0's
+   information reaches tier 1 only as `buggyCode` (one candidate). The other K−1 verified failing
+   attempts are discarded, and `search()` has no way to be handed a starting history — that is the
+   remaining structural waste in the ladder.
 
 ---
 

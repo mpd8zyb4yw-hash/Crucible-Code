@@ -1933,6 +1933,82 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-27 (gap-soundness — the carve gets a verifier, and effort gets proportional to difficulty)
+
+**Acting on the two things the 2026-07-26 control arm pointed at.** Both were sitting one
+integration away: `traceSpec.ts` was built and benched with ZERO callers, and every case-based path
+in `solveCodingRequest` ran the most expensive tier first.
+
+**1. `traceCarve.ts` — the CARVE finally has a verifier** (`npm run ladder:bench`, 43/43 hermetic).
+The carve was the one component in the decomposition loop with nothing checking it: the planner
+invented each helper's name, signature AND EXPECTED OUTPUTS, and those invented outputs became that
+rung's acceptance criteria — the model seeding its own oracle, discovered only after ~90 wasted
+calls. Now, after the plan gates and BEFORE any rung budget, `decomposeCodeBySubFunction` spends ONE
+draw drafting the whole carve and ~40ms tracing it (`traceEntryCases`). Three payoffs:
+  - **it sometimes just solves the task** — certified by `verifyCode` against the ORIGINAL gold
+    cases, not by the trace runner;
+  - **gold flows DOWN the carve** — `deriveHelperSpecs` replaces invented expected values with I/O
+    witnessed on gold cases the entry PASSED, gated by `isNonDiscriminating` so a spec a constant
+    satisfies is rejected and the planner's cases are kept instead (no regression);
+  - **dead rungs become visible** — a helper a WORKING composition never calls is pruned, and if
+    pruning leaves a degenerate carve the plan resamples.
+  - `localizeFault`'s Ochiai ranking now SKEWS the per-rung budget (`skewRungBudget`): 1.5× to the
+    suspect rung, 0.6× to one the draft already got right. Previously uniform.
+
+**The false-dead-rung trap, and the rule that avoids it.** `neverCalled` cannot tell "the
+composition doesn't need this helper" from "this draw ignored the plan" — and the second is the
+COMMON case for a weak head. Measured: every hermetic decompose-bench proposer produces a cold draw
+that marks *every* helper never-called at suspicion 1.0. So a rung is dead only when the draft passed
+≥1 gold case AND declared the helper in an instrumentable form (`declaredHelpers`, new in
+`traceSpec.ts`). Missing evidence never fires a gate.
+
+**2. The ESCALATION LADDER in `solveCodingRequest`.** All three case-based spec tiers (gold,
+differential, model-invented) now route through one `solveByLadder`, which stops at the first tier
+that certifies and REPORTS WHICH ONE DID (`result.tier`, `result.ladder`):
+
+| tier | what | cost |
+|---|---|---|
+| 0 | K concurrent blind draws + a free deterministic repair sweep | ~27s (K=4), 1 round trip |
+| 1 | converge / serial search with verifier feedback + mechanical repair | ~30s |
+| 2 | model-free operators (poisoned-case recovery) over everything drawn so far | 0 model calls |
+| 3 | sub-function decomposition | ~60–200s |
+
+Tiers feed each other rather than restarting cold: tier 0's best failing draw becomes tier 1's
+`buggyCode` (so tier 1 opens with executed failure evidence + the model-free mutation sweep), and
+tier 2's poisoned-case recovery reads tier 0's blind draws too — the most INDEPENDENT
+implementations the system produces, which is exactly what its cross-derivation argument requires.
+The old arithmetic-class early-carve routing survives inside the ladder (template classes skip tiers
+1–2) but now takes the cheap tier-0 ticket first.
+
+**LIVE, both arms, same goal/entry/cases, `CRUCIBLE_NO_DISTILL=1`, 300s cap:**
+
+| task | LADDER (the system) | DECOMPOSE alone (control) | 25e baseline |
+|---|---|---|---|
+| `romanToInt` | **solved @tier 0**, 4 calls, 27s | decompose-FAILED, 0 calls, 27s | solved, 16 calls, 62s |
+
+**3. `__decompose_general_scorecard_live.ts` now measures the SYSTEM, not one tier.** It called
+`decomposeCodeBySubFunction` directly — every general number ever recorded came from a single tier,
+which is how four sessions were spent improving tier 3 without anyone noticing tier 3 was not the
+tier doing the work. It now runs the ladder as the headline arm with decomposition as a PERMANENT
+control column (`GEN_SCORECARD_ARM=both|ladder|decompose`, default `both`) and prints a
+solves-by-tier histogram.
+
+**Also fixed (reporting honesty, found while integrating):**
+- **Carry-forward keyed on `name + goal` only.** The probe rewrites a rung's cases while preserving
+  its goal, so a reused helper could be reported `certified: true` under a spec nothing ever checked
+  it against. Now keyed on `rungSpecKey` = goal AND cases. Composition re-verify would still have
+  caught a wrong whole, so this was a reporting lie rather than a soundness hole — which is exactly
+  the class of bug this repo refuses to keep.
+- **Tier 0 undercounted its own model calls**, billing 1 for a 4-slot batch because it returned early
+  on the first passing candidate. All K slots decode before any is verified, so all K are charged.
+
+**Soundness is unchanged and that is checkable.** Every tier answers to the same `verifyCode` and the
+same independent invariant gates; a derived rung spec is a PROPOSAL that `verifyCode` still executes
+against, and the composed whole is still re-verified against the ORIGINAL cases. Nothing here can
+admit a wrong answer — the worst a misordered ladder or a bad derivation can do is waste draws.
+Benches: `ladder:bench` 43/43 (new), `tracespec:bench` 13/13, `vgr:decompose` 116/116,
+`vgr:bench` 238/238.
+
 ### 2026-07-26 (gap-soundness — the control arm nobody ran, and what it overturned)
 
 **This session measured rather than optimized, and four load-bearing premises turned out false.**

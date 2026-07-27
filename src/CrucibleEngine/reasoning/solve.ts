@@ -13,13 +13,14 @@
 // unverified guess (mission: abstain means abstain).
 // ═══════════════════════════════════════════════════════════════════════════════
 
-import { proposeCode, proposeCodeMany, structuralFingerprint } from './codeProposer'
+import { proposeCode, proposeCodeBatch, proposeCodeMany, structuralFingerprint } from './codeProposer'
 import { type CodeAcceptance, verifyCode } from './codeVerifier'
 import { makeCodeResearchFn, mergeCodeAcceptance, buildCodeSearchQuery, WEB_GROUND_MARK } from './codeResearch'
 import { deriveDifferentialSpec, type DifferentialOpts } from './differentialSpec'
 import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
 import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate, composeHintFor, decomposePerRungBudget } from './fmPlanner'
+import { probeCarve, skewRungBudget, type CarveProbe } from './traceCarve'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -27,7 +28,7 @@ import { type Completer, extractCodeSpec, harvestExplicitExamples } from './spec
 import { makeRetrievalProposer, composeProposers } from './retrievalProposer'
 import { makeMutationRepairProposer } from './mutationRepair'
 import { makeMechanicalRepairProposer } from './mechanicalRepair'
-import type { Proposer, SearchResult, TaskSpec, Verifier } from './types'
+import type { Attempt, Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 /**
  * Compose the RETRIEVAL proposer in front of a base (FM) proposer for one rung/solve. The
@@ -493,6 +494,16 @@ export async function decomposeCodeBySubFunction(
      * whatever is built on them is still re-verified as a whole against the original cases here.
      */
     preHelpers?: { name: string; source: string }[]
+    /**
+     * CARVE PROBE (2026-07-26) — spend ONE draw drafting the whole carve, then trace it, BEFORE
+     * committing a per-rung budget to a plan nobody has checked. See traceCarve.ts for the full
+     * argument; in short it (a) sometimes just solves the task in 1 call, (b) replaces the
+     * planner's INVENTED helper outputs with GOLD-WITNESSED ones, and (c) exposes rungs a working
+     * composition never calls. Defaults ON for the FM-general path; set false (or
+     * `CRUCIBLE_CARVE_PROBE=0`) to measure the un-probed carve in isolation — which is what the
+     * general scorecard needs in order to keep reporting carve quality rather than probe luck.
+     */
+    traceProbe?: boolean
   } = {},
   proposerOverride?: Proposer<string>,
 ): Promise<SubFunctionResult> {
@@ -504,8 +515,8 @@ export async function decomposeCodeBySubFunction(
   let spentCalls = 0
   // Persists certified helpers across attempts so a retry re-grinds only the rung that failed,
   // not the easy ones it already got (the DP-fold scorecard showed a failed editDistance re-running
-  // subCost/nextRow + a full editRow window every attempt → ~1200s). Reuse is exact-goal-gated.
-  const carry = new Map<string, { source: string; goal: string }>()
+  // subCost/nextRow + a full editRow window every attempt → ~1200s). Reuse is exact-SPEC-gated.
+  const carry = new Map<string, { source: string; spec: string }>()
   for (let attempt = 0; attempt < planAttempts; attempt++) {
     if (opts.signal?.aborted) break
     if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
@@ -527,6 +538,21 @@ export async function decomposeCodeBySubFunction(
  */
 export function isDegenerateSubFnCarve(hasCustomPlanner: boolean, helperCount: number, hasTemplate: boolean): boolean {
   return !hasCustomPlanner && helperCount < 2 && !hasTemplate
+}
+
+/**
+ * The identity of a RUNG's problem — its goal AND its acceptance cases — used to decide whether a
+ * helper certified on an earlier plan attempt may be reused verbatim (carry-forward).
+ *
+ * Keying on the goal alone was already loose (a stochastic re-plan can keep a one-line purpose and
+ * change its examples) and the carve probe makes it wrong outright: the probe rewrites a rung's
+ * cases from trace evidence while preserving its goal, so a goal-only key would report a rung
+ * `certified` under a spec nothing ever checked it against. Pure — unit-tested in __decompose_bench.
+ */
+export function rungSpecKey(rung: { goal: string; cases: CodeAcceptance['cases'] }): string {
+  let cases: string
+  try { cases = JSON.stringify(rung.cases) } catch { cases = String(rung.cases) }
+  return `${rung.goal} ${cases}`
 }
 
 /** Coarse runtime type-shape of a case value, used only to compare a helper's declared inputs
@@ -647,14 +673,21 @@ export function subLevelIterateBudget(
 
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[] },
+  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[]; traceProbe?: boolean },
   proposerOverride?: Proposer<string>,
-  // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by name→{source,goal}.
-  // A rung whose plan is IDENTICAL (same name AND same goal) reuses the stored source instead of
+  // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by
+  // name→{source, spec}. A rung whose plan is IDENTICAL reuses the stored source instead of
   // re-certifying — so a retry spends its whole budget on the rung that actually failed, not on
-  // re-grinding the easy ones. Only exact-goal matches are reused, so a stochastic FM re-plan whose
-  // rung goal changed is (correctly) re-certified.
-  carry?: Map<string, { source: string; goal: string }>,
+  // re-grinding the easy ones.
+  //
+  // The key covers the goal AND THE ACCEPTANCE CASES (`rungSpecKey`), not the goal alone. Goal-only
+  // was already loose — a stochastic re-plan can keep a one-line purpose and change its examples —
+  // and the carve probe makes it outright wrong, since a rung's cases are now rewritten from the
+  // trace while its goal is preserved verbatim. Reusing across that boundary would report
+  // `certified: true` for a rung nothing ever checked against the spec it is being reused under.
+  // Composition re-verify would still catch a wrong whole, so this is a reporting-honesty fix
+  // rather than a soundness one — which is exactly the class of bug this repo refuses to keep.
+  carry?: Map<string, { source: string; spec: string }>,
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})
   const proposer = proposerOverride ?? proposeCode
@@ -748,12 +781,62 @@ async function runSubFunctionOnce(
     return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls, detail: 'non-composing carve (no helper takes the entry input); resample plan' }
   }
 
+  // 1.5) CARVE PROBE — the carve's missing verifier (2026-07-26). Every gate above is STATIC: it
+  // reads the plan's own text and argument shapes. None of them executes anything, so a carve that
+  // is merely *plausible* still gets a full per-rung budget before anyone learns it was junk (live:
+  // isBalanced 92 calls, wordFrequencyTop 115). Spend ONE draw drafting the whole carve and 89ms
+  // tracing it instead. Three outcomes, all strictly better than proceeding blind — see traceCarve.ts:
+  //   • the draft passes the ORIGINAL cases under verifyCode → done, in one call;
+  //   • the trace witnesses helper I/O on gold-passing cases → those replace the planner's INVENTED
+  //     expected values as the rung acceptance sets, closing the seeds-its-own-oracle hole;
+  //   • a helper a working composition never calls is a dead branch → prune it or resample.
+  // Gated to the FM-GENERAL path at depth 0: a caller-supplied planner (tests) must keep its exact
+  // model-call accounting, a TEMPLATE class's cases are hand-authored constants rather than model
+  // inventions (so the hole this closes does not exist there, and its rungs are known-good), and the
+  // recursion/glue levels already run on a shrunken budget where another draw is not worth it.
+  const probeOn = opts.traceProbe ?? process.env.CRUCIBLE_CARVE_PROBE !== '0'
+  let probe: CarveProbe | null = null
+  let rungPlan = helperPlan
+  if (probeOn && !opts.planner && !opts.preHelpers?.length && (opts.depth ?? 0) === 0 &&
+      !hasDecomposeTemplate(input.nl ?? input.goal, input.entry) &&
+      input.cases.length >= 2 && !opts.signal?.aborted) {
+    probe = await probeCarve(
+      { goal: input.goal, entry: input.entry, cases: input.cases, context: input.context, timeoutMs: input.timeoutMs },
+      helperPlan, proposer, { signal: opts.signal, emit: opts.emit },
+    )
+    modelCalls += probe.modelCalls
+    if (probe.status === 'solved' && probe.certified) {
+      // Certified by verifyCode against the ORIGINAL gold cases — the same judge the composition
+      // rung answers to. Reported as its own rung so a scorecard can tell a probe solve apart from
+      // a carve solve rather than banking one as evidence for the other.
+      rungs.push({ name: `probe:${input.entry}`, status: 'solved', bestScore: 1, modelCalls: probe.modelCalls, certified: true })
+      return { status: 'solved', code: probe.certified, helpers: [], rungs, modelCalls,
+        detail: `carve probe drafted a composed module certified against all ${input.cases.length} original case(s) in ${modelCalls} model call(s) — no rung was ground` }
+    }
+    if (probe.status === 'grounded') {
+      rungPlan = probe.plan
+      if (probe.dead.length) {
+        // A rung the working composition never reaches cannot be part of a correct whole. Prune it;
+        // if pruning leaves a carve the degeneracy gate would have rejected, resample instead of
+        // grinding a re-bake. Sound either way — this only ever changes which PATH we spend on.
+        const live = rungPlan.filter((h) => !probe!.dead.includes(h.name))
+        if (isDegenerateSubFnCarve(false, live.length, false)) {
+          emit({ type: 'thought', text: `subfn: pruning dead rung(s) ${probe.dead.join(', ')} leaves a degenerate carve — resampling the plan` })
+          return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls,
+            detail: `carve probe found ${probe.dead.join(', ')} unreachable from a working composition; too few rungs remain — resample plan` }
+        }
+        rungPlan = live
+      }
+    }
+    emit({ type: 'thought', text: `subfn: ${probe.detail}` })
+  }
+
   // 2) Certify each helper independently. A helper that can't certify collapses the plan.
   // PRE-CERTIFIED helpers handed down by a parent level (glue re-decomposition): their sources are
   // already verifier-certified and must be part of THIS level's module, or the sub-solve would be
   // asked to compose against functions that exist only as prompt text and could never certify.
   const helpers: { name: string; source: string }[] = (opts.preHelpers ?? []).map((h) => ({ ...h }))
-  for (const h of helperPlan) {
+  for (const h of rungPlan) {
     if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers, rungs, modelCalls, detail: `aborted at helper ${h.name}` }
     // CARRY-FORWARD: this exact rung (name + identical goal) already certified on a prior
     // planAttempt — reuse its source at zero model cost instead of re-grinding it. Sound: the
@@ -761,7 +844,7 @@ async function runSubFunctionOnce(
     // re-verified downstream against the ORIGINAL cases regardless, so a stale reuse can only
     // cost a compose failure, never a false certification.
     const carried = carry?.get(h.name)
-    if (carried && carried.goal === h.goal) {
+    if (carried && carried.spec === rungSpecKey(h)) {
       helpers.push({ name: h.name, source: carried.source })
       rungs.push({ name: h.name, status: 'solved', bestScore: 1, modelCalls: 0, certified: true })
       emit({ type: 'thought', text: `subfn: helper \`${h.name}\` reused from a prior attempt (0 calls)` })
@@ -798,7 +881,12 @@ async function runSubFunctionOnce(
     // executable candidates straight from web source before the FM guesses (which it provably
     // can't for the kernel). Same webGround the research fn uses, queried on the helper's goal.
     const rungProposer = withRetrieval(proposer, h.name, h.goal, h.cases, webGround, buildCodeSearchQuery(h.goal), opts.emit)
-    const res = await iterate<string>(spec, rungProposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
+    // BUDGET SKEW. Without the probe every rung gets the same purse whether or not it is the broken
+    // one. With it, Ochiai over the draft's helper-call spectra says where the failures ran, so the
+    // suspect rung gets 1.5× and a rung the draft already got right gets 0.6× (see skewRungBudget).
+    // A budget is not a truth claim — a mis-ranked rung costs draws, never certification.
+    const rungBudget = probe?.status === 'grounded' ? skewRungBudget(opts.iterate, probe.suspects, h.name) : opts.iterate
+    const res = await iterate<string>(spec, rungProposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...rungBudget, signal: opts.signal, emit: opts.emit })
     modelCalls += res.modelCalls
     const certified = res.status === 'solved' && !!res.solution
     rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
@@ -834,7 +922,7 @@ async function runSubFunctionOnce(
           // helper it redefined — extractOwnFunction would wrongly drop the sub-helpers it needs.
           const recSource = stripHelperRedefinitions(sub.code, helpers.map((x) => x.name))
           helpers.push({ name: h.name, source: recSource })
-          carry?.set(h.name, { source: recSource, goal: h.goal })
+          carry?.set(h.name, { source: recSource, spec: rungSpecKey(h) })
           emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified via recursion (${modelCalls} calls so far)` })
           continue
         }
@@ -848,7 +936,7 @@ async function runSubFunctionOnce(
     const ownSource = extractOwnFunction(res.solution!.value, h.name)
     helpers.push({ name: h.name, source: ownSource })
     // Record for carry-forward: a later planAttempt with this identical rung reuses it at 0 cost.
-    carry?.set(h.name, { source: ownSource, goal: h.goal })
+    carry?.set(h.name, { source: ownSource, spec: rungSpecKey(h) })
     emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified (${modelCalls} calls so far)` })
   }
 
@@ -907,8 +995,8 @@ async function runSubFunctionOnce(
       // rung (same name AND goal) reuses the proven source at zero model cost.
       const glueCarry = new Map(carry ?? [])
       for (const h of helpers) {
-        const planned = helperPlan.find((p) => p.name === h.name)
-        if (planned) glueCarry.set(h.name, { source: h.source, goal: planned.goal })
+        const planned = rungPlan.find((p) => p.name === h.name)
+        if (planned) glueCarry.set(h.name, { source: h.source, spec: rungSpecKey(planned) })
       }
       const sub = await decomposeCodeBySubFunction(
         { ...input, goal: `${input.goal}\n\n${glueNote}`, context: [input.context, `${WEB_GROUND_MARK}\n${helperBlock}`].filter(Boolean).join('\n\n') || undefined },
@@ -939,6 +1027,255 @@ async function runSubFunctionOnce(
   return { status: 'solved', code: fullModule, helpers, rungs, modelCalls, detail: `sub-function decomposition solved ${input.entry} via ${helpers.length} helper(s), ${modelCalls} model call(s)` }
 }
 
+// ── THE ESCALATION LADDER — spend effort in proportion to measured difficulty ────
+//
+// THE MEASUREMENT THAT FORCED THIS (2026-07-26 control arm, `npm run direct:arm`, 3 runs × 10 tasks
+// × 8 draws). Every case-based path in `solveCodingRequest` used to run the same fixed sequence —
+// converge → flat search → poisoned-case recovery → decomposition — regardless of whether the task
+// was hard. It is usually not:
+//
+//   romanToInt   DIRECT solved @draw 1, 4–7s, 3/3   │  DECOMPOSE solved, 16 calls, 62s
+//   intToRoman   DIRECT solved @draw 1–3, 4–19s, 3/3│  DECOMPOSE solved, 41 calls, 186s
+//
+// A 10–40× tax, paid on tasks the head answers on the first try. But the same arm also proved the
+// opposite for four other tasks (basicCalculator, evalRPN, editDistance, calculatorWithParens):
+// ~0/3 direct at EIGHT draws, 3/3 under decomposition. So neither path dominates, and the right
+// answer is not to pick one — it is to ORDER them by cost and stop at the first that certifies:
+//
+//   tier 0  K concurrent blind draws + a free deterministic repair sweep     ~5s     1 round trip
+//   tier 1  serial search with verifier feedback + mechanical repair         ~30s    K model calls
+//   tier 2  model-free operators over everything drawn so far                ~0s     0 model calls
+//   tier 3  sub-function decomposition                                       ~60-200s
+//
+// EVERY TIER ANSWERS TO THE SAME VERIFIER. Escalation changes only how much is spent looking; it
+// never changes what counts as correct, and a tier-0 solve clears the identical invariant gates a
+// tier-3 solve does. Cheap-first is therefore free of soundness risk by construction — the worst a
+// misordered ladder can do is waste ~5s.
+//
+// WHY EACH TIER FEEDS THE NEXT rather than restarting cold:
+//   • tier 0's best failing draw becomes tier 1's `buggyCode`, so tier 1 opens with executed
+//     failure evidence AND the model-free single-token mutation sweep, instead of a cold prompt.
+//   • tier 2's poisoned-case recovery reads tier 0's draws TOO. It needs ≥2 INDEPENDENT
+//     implementations agreeing a case is wrong, and K blind concurrent draws are the most
+//     independent candidates this system produces — strictly better evidence than the correlated
+//     candidates a single feedback-guided search yields.
+
+export type LadderTier = 0 | 1 | 2 | 3
+
+/** One rung of the ladder, recorded whether or not it certified — the audit trail of the spend. */
+export interface LadderStep {
+  tier: LadderTier
+  label: string
+  modelCalls: number
+  wallMs: number
+  solved: boolean
+  detail: string
+}
+
+export interface LadderOutcome {
+  status: 'solved' | 'unsolved'
+  code: string | null
+  /** Which tier certified it; null when none did. */
+  tier: LadderTier | null
+  /** The case set the winner was certified against — tier 2 may have dropped a poisoned case. */
+  cases: CodeAcceptance['cases']
+  steps: LadderStep[]
+  /** Tier 1's flat search result, when it ran. Callers still read `.attempts`. */
+  search: SearchResult<string> | null
+  modelCalls: number
+  detail: string
+  /** Set only when the tier-1 CONVERGE loop produced the solution (epochs > 1 ⇒ it earned it). */
+  converged?: { epochs: number; modelCalls: number }
+}
+
+/**
+ * How many concurrent blind draws tier 0 gets.
+ *
+ * `CRUCIBLE_LADDER_K` (default 4) sets the ceiling; measured pass@k says 4–8 is where the marginal
+ * draw still pays, and the llama-server slot count is 4. It is then clamped to HALF the caller's
+ * flat budget, so a caller that asked for a 6-call search never has the majority of it consumed by
+ * a tier that runs without feedback. Pure — unit-tested in __ladder_bench.
+ */
+export function tier0Draws(maxModelCalls?: number): number {
+  const want = Math.max(1, Number(process.env.CRUCIBLE_LADDER_K || 4))
+  return Math.max(1, Math.min(want, Math.floor((maxModelCalls ?? 12) / 2)))
+}
+
+/**
+ * TIER 0 — K blind draws issued concurrently across the backend's KV slots, each verified, plus a
+ * zero-model mechanical repair sweep over the failures.
+ *
+ * No feedback, no beam, no epochs: this is the "is it actually easy?" probe, and on the tasks the
+ * control arm solves at draw 1 it is the whole answer for ~5s. The repair sweep is included because
+ * it costs ~36ms and the same control arm measured roughly a THIRD of terminal failures being JS
+ * gotchas the verifier NAMES ("Assignment to constant variable") rather than reasoning failures.
+ *
+ * Returns the certified code plus the full attempt list, which the later tiers consume as evidence.
+ */
+async function ladderTier0(
+  spec: TaskSpec, k: number, signal?: AbortSignal,
+): Promise<{ code: string | null; attempts: Attempt<string>[]; modelCalls: number; detail: string }> {
+  let cands
+  try {
+    cands = await proposeCodeBatch({ spec, history: [], diversify: true, signal }, k)
+  } catch (e: any) {
+    // A backend without batch support must cost the ladder nothing — fall straight through to
+    // tier 1, which uses the plain serial proposer.
+    return { code: null, attempts: [], modelCalls: 0, detail: `blind draw unavailable: ${String(e?.message ?? e).slice(0, 80)}` }
+  }
+  // ACCOUNTING: charge all `k` slots, not the number of candidates we happened to inspect before an
+  // early return. The batch decodes every slot concurrently BEFORE any of them is verified, so the
+  // model work is already spent when the first one passes — billing 1 for a 4-slot batch would
+  // understate the tier in exactly the reports that decide whether it earns its place. Slots that
+  // came back empty still cost a decode, so they are charged too. (Matches the control arm's own
+  // `calls: K` in __direct_vs_decompose_live.ts.)
+  const modelCalls = k
+  const attempts: Attempt<string>[] = []
+  for (const c of cands) {
+    const verdict = await verifyCode(c, spec)
+    attempts.push({ candidate: c, verdict })
+    if (verdict.pass) {
+      return { code: c.value, attempts, modelCalls, detail: `blind draw ${attempts.length}/${k} certified` }
+    }
+  }
+  if (signal?.aborted || !attempts.length) {
+    return { code: null, attempts, modelCalls: attempts.length ? modelCalls : 0, detail: attempts.length ? 'aborted' : 'no candidate drawn' }
+  }
+  // Free deterministic sweep licensed by the failing draws' own verifier signals. No model call, so
+  // it is not charged — and it is still executed against the same cases before it can be returned.
+  try {
+    const fixed = await makeMechanicalRepairProposer()({ spec, history: attempts, diversify: false, signal })
+    if (fixed) {
+      const v = await verifyCode(fixed, spec)
+      attempts.push({ candidate: fixed, verdict: v })
+      if (v.pass) return { code: fixed.value, attempts, modelCalls, detail: `mechanical repair of a blind draw certified (0 extra model calls)` }
+    }
+  } catch { /* a repair failure must never sink the tier */ }
+  const best = attempts.reduce((a, b) => (b.verdict.score > a.verdict.score ? b : a))
+  return { code: null, attempts, modelCalls, detail: `${k} blind draw(s) + repair sweep did not certify (best score ${best.verdict.score})` }
+}
+
+/**
+ * Run a case-based spec up the ladder and stop at the first tier that CERTIFIES.
+ *
+ * `gate` is the caller's independent invariant check (metamorphic + supplemental property). It is
+ * applied identically at every tier — a cheap tier is never allowed to ship something an expensive
+ * one would have been rejected for.
+ */
+export async function solveByLadder(
+  nl: string,
+  entry: string,
+  cases: CodeAcceptance['cases'],
+  opts: SolveCodingOpts,
+  gate: (code: string | null, entry?: string) => Promise<boolean>,
+  /** All functions the module must export, for multi-function gold specs. Defaults to [entry]. */
+  entries?: string[],
+): Promise<LadderOutcome> {
+  const emit = opts.emit ?? (() => {})
+  const steps: LadderStep[] = []
+  let modelCalls = 0
+  let search: SearchResult<string> | null = null
+  const multi = entries && entries.length > 1 ? entries : undefined
+  const spec: TaskSpec = { goal: nl, domain: 'code', acceptance: { entry, entries: multi, cases } as unknown as Record<string, unknown> }
+
+  const record = (tier: LadderTier, label: string, t0: number, calls: number, solved: boolean, detail: string) => {
+    steps.push({ tier, label, modelCalls: calls, wallMs: Date.now() - t0, solved, detail })
+    emit({ type: 'thought', text: `ladder tier ${tier} (${label}): ${solved ? 'CERTIFIED' : 'no'} — ${detail}` })
+  }
+  const won = (tier: LadderTier, code: string, winCases: CodeAcceptance['cases'], detail: string): LadderOutcome => ({
+    status: 'solved', code, tier, cases: winCases, steps, search, modelCalls, detail,
+  })
+
+  // A class with a known algorithm-shaped carve is provably ~0% by sampling (basicCalculator,
+  // evalRPN, editDistance, calculatorWithParens: ~0/3 at eight direct draws) — so tiers 1 and 2 are
+  // budget poured into a search the control arm says cannot converge. Take the cheap tier-0 lottery
+  // ticket anyway (~5s) and then jump straight to the carve. This preserves the old EARLY-CARVE
+  // routing while adding the one tier that is too cheap to skip.
+  const templated = hasDecomposeTemplate(nl, entry) && !!opts.decompose
+
+  // ── tier 0 ────────────────────────────────────────────────────────────────────
+  // Kept in scope for tier 2: the K blind draws are the most INDEPENDENT implementations the system
+  // produces, which is exactly the evidence poisoned-case recovery needs.
+  let tier0Attempts: Attempt<string>[] = []
+  if (opts.tier0 !== false && process.env.CRUCIBLE_LADDER_T0 !== '0' && !opts.signal?.aborted) {
+    const t0 = Date.now()
+    const r = await ladderTier0(spec, tier0Draws(opts.maxModelCalls), opts.signal)
+    modelCalls += r.modelCalls
+    tier0Attempts = r.attempts
+    const pass = !!r.code && await gate(r.code, entry)
+    record(0, 'blind concurrent draws', t0, r.modelCalls, pass, r.code && !pass ? `${r.detail} but failed the invariant gate` : r.detail)
+    if (pass) return won(0, r.code!, cases, `tier 0 (${r.detail}) in ${r.modelCalls} model call(s)`)
+    // Hand the best failing draw forward: tier 1 then opens with executed failure evidence and the
+    // model-free single-token mutation sweep instead of a cold prompt. Never overrides a caller's
+    // own repair seed.
+    if (!opts.buggyCode && r.attempts.length) {
+      const best = r.attempts.reduce((a, b) => (b.verdict.score > a.verdict.score ? b : a))
+      opts = { ...opts, buggyCode: best.candidate.value }
+    }
+  }
+
+  // ── tier 1 — serial search with verifier feedback (+ mechanical & mutation repair) ──
+  if (!templated && !opts.signal?.aborted) {
+    if (opts.converge) {
+      const t0 = Date.now()
+      const it = await iterateCodeTask({ goal: nl, nl, entry, cases, webGround: opts.webGround }, {
+        signal: opts.signal, emit: opts.emit, ...opts.iterate,
+      })
+      modelCalls += it.modelCalls
+      const pass = it.status === 'solved' && !!it.solution && await gate(it.solution.value, entry)
+      record(1, 'converge', t0, it.modelCalls, pass, it.detail)
+      if (pass) {
+        return {
+          ...won(1, it.solution!.value, cases, `tier 1 converged in ${it.epochs} epoch(s) (${it.modelCalls} model call(s)); ${it.detail}`),
+          // Surfaced so callers can keep reporting when convergence EARNED the answer (epochs > 1).
+          converged: { epochs: it.epochs, modelCalls: it.modelCalls },
+        }
+      }
+    }
+    const t0 = Date.now()
+    const result = await solveCodeTask({ goal: nl, entry, entries: multi, cases, buggyCode: opts.buggyCode }, opts)
+    search = result
+    modelCalls += result.modelCalls
+    const pass = result.status === 'solved' && await gate(result.solution?.value ?? null, entry)
+    record(1, 'serial search + repair', t0, result.modelCalls, pass, result.detail)
+    if (pass) return won(1, result.solution!.value, cases, `tier 1 flat search; ${result.detail}`)
+  }
+
+  // ── tier 2 — model-free operators over everything drawn so far ─────────────────
+  if (!templated && !opts.signal?.aborted) {
+    const t0 = Date.now()
+    const pool = [...tier0Attempts, ...(search?.attempts ?? [])]
+    const rec = await recoverFromPoisonedCase(entry, cases, pool)
+    const pass = !!rec && await gate(rec.code, entry)
+    record(2, 'poisoned-case recovery', t0, 0, pass,
+      rec ? `${rec.nAgree} independent impls agreed one case was wrong` : `no case had ≥2 independent impls against it (${pool.length} attempt(s) examined)`)
+    if (pass) return won(2, rec!.code, rec!.cleaned, `tier 2 dropped 1 suspect case (${rec!.nAgree} independent impls agreed it was wrong), certified against ${rec!.cleaned.length}`)
+  }
+
+  // ── tier 3 — sub-function decomposition ───────────────────────────────────────
+  // Single-entry only: this machinery carves and composes ONE function, so a multi-function gold
+  // spec has nothing here to escalate to. Needs ≥3 cases to both carve helpers and re-verify the
+  // composed whole meaningfully.
+  if (opts.decompose && cases.length >= 3 && !multi && !opts.signal?.aborted) {
+    const t0 = Date.now()
+    const d = await decomposeCodeBySubFunction(
+      { goal: nl, nl, entry, cases },
+      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit,
+        iterate: opts.iterate ?? decomposePerRungBudget(nl, entry) },
+    )
+    modelCalls += d.modelCalls
+    const pass = d.status === 'solved' && !!d.code && await gate(d.code, entry)
+    record(3, 'sub-function decomposition', t0, d.modelCalls, pass, d.detail)
+    if (pass) {
+      const how = d.helpers.length ? `via ${d.helpers.length} certified helper(s)` : 'via a single probe draft'
+      return won(3, d.code!, cases, `tier 3 decomposition certified ${how} (${d.modelCalls} model call(s))`)
+    }
+  }
+
+  return { status: 'unsolved', code: null, tier: null, cases, steps, search, modelCalls,
+    detail: `no tier certified (${steps.map(s => `t${s.tier}:${s.modelCalls}c/${Math.round(s.wallMs / 1000)}s`).join(' ')})` }
+}
+
 export interface CodingRequestResult {
   /** 'solved' → certified code in .code; 'abstained' → no trustworthy spec/solution. */
   status: SearchResult<string>['status'] | 'abstained'
@@ -953,6 +1290,19 @@ export interface CodingRequestResult {
    * watch to decide whether converge is worth turning on by default. Absent on the single-shot path.
    */
   converged?: { epochs: number; modelCalls: number }
+  /**
+   * WHICH LADDER TIER certified this (0 = K blind concurrent draws, 1 = feedback search, 2 =
+   * model-free operators, 3 = decomposition). Null when nothing certified, absent on the paths that
+   * do not use the ladder (property / metamorphic / canonical, which are case-free by construction).
+   *
+   * This field exists because the 2026-07-26 control arm found four sessions of work had been spent
+   * improving tier 3 without anyone measuring whether tier 3 was the tier doing the work — it was
+   * not, on 4 of 5 general tasks. An unattributed solve is how that happens; reporting the tier is
+   * how it stops happening.
+   */
+  tier?: LadderTier | null
+  /** Every tier attempted, with its own model-call and wall-clock cost — solved or not. */
+  ladder?: LadderStep[]
 }
 
 /**
@@ -966,9 +1316,7 @@ export interface CodingRequestResult {
  * code: if no trustworthy spec forms, or the loop can't certify an implementation within
  * budget, `status` is a non-'solved' value and `code` is null. Abstain means abstain.
  */
-export async function solveCodingRequest(
-  nl: string,
-  opts: SearchOpts & {
+export type SolveCodingOpts = SearchOpts & {
     specSamples?: number
     specComplete?: Completer
     differential?: DifferentialOpts | false
@@ -1009,27 +1357,19 @@ export async function solveCodingRequest(
      * server turns it on only for demonstrably-hard attempts. Absent → the ladder is unchanged.
      */
     decompose?: boolean
-  } = {},
-): Promise<CodingRequestResult> {
-  // Shared converging attempt for the case-based tiers. Returns a solved CodingRequestResult
-  // or null (→ caller falls through to the single-shot path, preserving recovery/metaGate).
-  const tryConverge = async (
-    entry: string, cases: CodeAcceptance['cases'], detailPrefix: string,
-  ): Promise<CodingRequestResult | null> => {
-    if (!opts.converge) return null
-    const it = await iterateCodeTask({ goal: nl, nl, entry, cases, webGround: opts.webGround }, {
-      signal: opts.signal, emit: opts.emit, ...opts.iterate,
-    })
-    if (it.status === 'solved' && it.solution && await invariantGate(it.solution.value, entry)) {
-      return {
-        status: 'solved', code: it.solution.value, entry, cases, search: null,
-        detail: `${detailPrefix} → converged in ${it.epochs} epoch(s) (${it.modelCalls} model call(s)); ${it.detail}`,
-        converged: { epochs: it.epochs, modelCalls: it.modelCalls },
-      }
-    }
-    return null
+    /**
+     * LADDER TIER 0 — K concurrent blind draws before any feedback-guided search. Default ON; set
+     * false (or `CRUCIBLE_LADDER_T0=0`) to measure the ladder without it. See the ladder block
+     * above for why it leads: it costs one round trip and the control arm says it is the whole
+     * answer on a large fraction of tasks.
+     */
+    tier0?: boolean
   }
 
+export async function solveCodingRequest(
+  nl: string,
+  opts: SolveCodingOpts = {},
+): Promise<CodingRequestResult> {
   // Ground-truth priority (DOCTRINE.md — trust order): 1) the USER's own worked examples (gold),
   // 2) a NAME-GATED PROPERTY (sort=sorted-permutation, codec=roundtrip, …; a true invariant),
   // 2.5) a METAMORPHIC RELATION detected from the SPEC TEXT (name-independent; also a true
@@ -1044,33 +1384,23 @@ export async function solveCodingRequest(
   // 1) USER-stated examples — gold, trusted without consensus.
   const harvested = harvestExplicitExamples(nl)
   if (harvested.cases.length >= 1) {
-    const result = await solveCodeTask({ goal: nl, entry: harvested.entry, entries: harvested.entries, cases: harvested.cases, buggyCode: opts.buggyCode }, opts)
     const nFns = harvested.entries.length
-    // EARLY CLASS-ROUTING on the GOLD tier (2026-07-22l). When flat search abstains AND this is a
-    // provably-0%-by-sampling class (arithmetic/parser precedence — see isArithmeticExprGoal), carve
-    // the GOLD cases into certified helpers before conceding. Without this a calculator task with
-    // harvestable examples flat-fails here and RETURNS red, never reaching the decompose lever the
-    // vgr:decompose:calc probe proved solves it in 7 calls. Single-entry only (decomposition composes
-    // one function). Sound: decomposeCodeBySubFunction re-verifies the whole against these gold cases.
-    if (result.status !== 'solved' && opts.decompose && nFns <= 1 && harvested.cases.length >= 3 &&
-        hasDecomposeTemplate(nl, harvested.entry) && !opts.signal?.aborted) {
-      const d = await decomposeCodeBySubFunction(
-        { goal: nl, nl, entry: harvested.entry, cases: harvested.cases },
-        { webGround: opts.webGround, signal: opts.signal, emit: opts.emit,
-          // Class-aware per-rung budget when the caller didn't set one, so a DP-fold carve
-          // (editRow/relaxCoin) gets its 420s wall even off the server path (entry now known).
-          iterate: opts.iterate ?? decomposePerRungBudget(nl, harvested.entry) },
-      )
-      if (d.status === 'solved' && d.code) {
-        return { status: 'solved', code: d.code, entry: harvested.entry, cases: harvested.cases, search: result,
-          detail: `${harvested.cases.length} user example(s) (gold); flat abstained → arithmetic-class sub-function decomposition certified via ${d.helpers.length} helper(s) (${d.modelCalls} model call(s))` }
-      }
+    // GOLD needs no invariant gate: the cases came from the USER, which is the highest-trust ground
+    // truth this system has. metaGate/suppGate exist to protect the LOWER tiers, whose outputs were
+    // fuzzed or model-guessed. (They are also not yet in scope here — they are derived below.)
+    const lad = await solveByLadder(nl, harvested.entry, harvested.cases, opts, async () => true, harvested.entries)
+    const goldPrefix = `${harvested.cases.length} user example(s) (gold)${nFns > 1 ? ` across ${nFns} functions [${harvested.entries.join(', ')}]` : ''}`
+    if (lad.status === 'solved') {
+      return { status: 'solved', code: lad.code, entry: harvested.entry, cases: lad.cases, search: lad.search,
+        tier: lad.tier, ladder: lad.steps, converged: lad.converged,
+        detail: `${goldPrefix}; ${lad.detail}` }
     }
     return {
-      status: result.status,
-      code: result.status === 'solved' ? (result.solution?.value ?? null) : null,
-      entry: harvested.entry, cases: harvested.cases, search: result,
-      detail: `${harvested.cases.length} user example(s) (gold)${nFns > 1 ? ` across ${nFns} functions [${harvested.entries.join(', ')}]` : ''}; ${result.detail}`,
+      status: lad.search?.status ?? 'abstained',
+      code: null,
+      entry: harvested.entry, cases: harvested.cases, search: lad.search,
+      tier: null, ladder: lad.steps,
+      detail: `${goldPrefix}; ${lad.detail}`,
     }
   }
 
@@ -1169,30 +1499,22 @@ export async function solveCodingRequest(
   const invariantGate = async (code: string | null, entry?: string): Promise<boolean> =>
     (await metaGate(code)) && (await suppGate(code, entry))
 
-  // LAST-RESORT DECOMPOSITION (item 2). A case-based tier that could neither certify a flat
-  // candidate nor recover a poisoned case escalates here before it abstains: carve the goal into
-  // small verifier-certified helpers and re-verify the composed whole against the SAME cases. Only
-  // fires when `decompose` is on and there are enough cases to both carve helpers and re-verify
-  // meaningfully. Sound: decomposeCodeBySubFunction re-runs the full module against these cases,
-  // and we still clear invariantGate — a decomposition can only certify a genuinely-correct impl.
-  // Returns a solved result or null (→ caller keeps its honest non-solve).
-  const tryDecompose = async (
+  // Run a case-based spec up the escalation ladder (tier 0 blind draws → tier 1 feedback search →
+  // tier 2 model-free operators → tier 3 decomposition), stopping at the first tier the verifier
+  // AND both independent invariant gates accept. Replaces the old fixed converge → search →
+  // recovery → decompose sequence, which paid the most expensive path's price on every task.
+  const runLadder = async (
     entry: string, cases: CodeAcceptance['cases'], detailPrefix: string,
-  ): Promise<CodingRequestResult | null> => {
-    if (!opts.decompose || opts.signal?.aborted) return null
-    if (cases.length < 3) return null
-    const d = await decomposeCodeBySubFunction(
-      { goal: nl, nl, entry, cases },
-      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit,
-        iterate: opts.iterate ?? decomposePerRungBudget(nl, entry) },
-    )
-    if (d.status === 'solved' && d.code && await invariantGate(d.code, entry)) {
-      return {
-        status: 'solved', code: d.code, entry, cases, search: null,
-        detail: `${detailPrefix}; flat search abstained → sub-function decomposition certified via ${d.helpers.length} helper(s) (${d.modelCalls} model call(s))`,
-      }
+  ): Promise<CodingRequestResult> => {
+    const lad = await solveByLadder(nl, entry, cases, opts, invariantGate)
+    if (lad.status === 'solved') {
+      const gated = [meta && `${meta.family}`, supp && `${supp.family}`].filter(Boolean).join(' + ')
+      return { status: 'solved', code: lad.code, entry, cases: lad.cases, search: lad.search,
+        tier: lad.tier, ladder: lad.steps, converged: lad.converged,
+        detail: `${detailPrefix}${gated ? ` (also passed the ${gated} invariant)` : ''}; ${lad.detail}` }
     }
-    return null
+    return { status: lad.search?.status ?? 'abstained', code: null, entry, cases, search: lad.search,
+      tier: null, ladder: lad.steps, detail: `${detailPrefix}; ${lad.detail}` }
   }
 
   // 3) DIFFERENTIAL CONSENSUS — for arbitrary functions with no named-property family. The
@@ -1204,37 +1526,11 @@ export async function solveCodingRequest(
     const diff = await deriveDifferentialSpec(nl, { ...opts.differential })
     if (diff.ok && diff.spec) {
       const { entry, cases } = diff.spec
-      // EARLY CLASS-ROUTING (2026-07-22l). A class that is provably 0% by sampling (arithmetic/parser
-      // precedence — pass@k flat is zero, live-measured) must NOT spend the whole budget on flat
-      // tryConverge → solveCodeTask → poisoned-case recovery before it ever reaches decompose (that is
-      // exactly why the agent-path scorecard for basicCalculator TIMED OUT at 420s while the direct
-      // decompose probe solved it in 7 calls). When the class is detected and decompose is enabled,
-      // CARVE FIRST. Sound: tryDecompose re-verifies the composed whole against these same cases and
-      // clears invariantGate; on any non-solve we fall straight through to the normal ladder, so a
-      // misdetection costs at most one decompose attempt and never changes what can certify.
-      if (hasDecomposeTemplate(nl, entry)) {
-        const early = await tryDecompose(entry, cases, `${diff.detail} · arithmetic-class early-carve`)
-        if (early) return early
-      }
-      const conv = await tryConverge(entry, cases, diff.detail)
-      if (conv) return conv
-      const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
-      if (result.status === 'solved' && await invariantGate(result.solution?.value ?? null, entry)) {
-        const gated = [meta && `${meta.family}`, supp && `${supp.family}`].filter(Boolean).join(' + ')
-        return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
-          detail: `${diff.detail}${gated ? ` (also passed the ${gated} invariant)` : ''}; ${result.detail}` }
-      }
-      // A differentially-agreed case can still be poisoned by a shared systematic bug — the same
-      // cross-derivation recovery applies (independent impls unanimously failing ONE case → drop it).
-      const rec = await recoverFromPoisonedCase(entry, cases, result.attempts)
-      if (rec && await invariantGate(rec.code, entry)) {
-        return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
-          detail: `${diff.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against ${rec.cleaned.length}` }
-      }
-      // Neither flat search nor recovery certified → escalate to sub-function decomposition (the
-      // hard-task lever) before conceding the differential path.
-      const dec = await tryDecompose(entry, cases, diff.detail)
-      if (dec) return dec
+      // The old EARLY CLASS-ROUTING (2026-07-22l) lives inside the ladder now: a class with an
+      // algorithm-shaped template is ~0% by sampling, so the ladder still skips tiers 1-2 for it and
+      // carves — but it takes the ~5s tier-0 ticket first, which the old branch could not.
+      const lad = await runLadder(entry, cases, diff.detail)
+      if (lad.status === 'solved') return lad
       // Fall through to the weaker path only if differential could not certify.
     }
   }
@@ -1243,28 +1539,11 @@ export async function solveCodingRequest(
   const extraction = await extractCodeSpec(nl, { samples: opts.specSamples, complete: opts.specComplete })
   if (extraction.ok && extraction.spec) {
     const { entry, cases } = extraction.spec
-    const conv = await tryConverge(entry, cases, extraction.detail)
-    if (conv) return conv
-    const result = await solveCodeTask({ goal: nl, entry, cases, buggyCode: opts.buggyCode }, opts)
-    if (result.status === 'solved' && await invariantGate(result.solution?.value ?? null, entry)) {
-      const gated = [meta && `${meta.family}`, supp && `${supp.family}`].filter(Boolean).join(' + ')
-      return { status: result.status, code: result.solution?.value ?? null, entry, cases, search: result,
-        detail: `${extraction.detail}${gated ? ` (also cleared the ${gated} invariant)` : ''}; ${result.detail}` }
-    }
-    // Recovery: a model-invented case may be WRONG, making a solvable spec unsatisfiable. If
-    // multiple INDEPENDENT candidates unanimously fail the SAME single case (and pass all
-    // others), that case — not the code — is the bad one (cross-derivation agreement). Drop it
-    // and re-certify against the cleaned set. Never ships code failing a case we still trust.
-    const rec = await recoverFromPoisonedCase(entry, cases, result.attempts)
-    if (rec && await invariantGate(rec.code, entry)) {
-      return { status: 'solved', code: rec.code, entry, cases: rec.cleaned, search: result,
-        detail: `${extraction.detail}; dropped 1 suspect case (${rec.nAgree} independent impls agreed it was wrong), certified against the remaining ${rec.cleaned.length}` }
-    }
-    // Final escalation on the weakest tier: carve into certified helpers before abstaining.
-    const dec = await tryDecompose(entry, cases, extraction.detail)
-    if (dec) return dec
-    return { status: result.status, code: null, entry, cases, search: result,
-      detail: `${extraction.detail}; ${result.detail}` }
+    // Tier 2's poisoned-case recovery matters most HERE: a model-invented case may simply be WRONG,
+    // making a solvable spec unsatisfiable, and the ladder now feeds that recovery tier 0's blind
+    // concurrent draws as well as tier 1's — i.e. genuinely independent implementations, which is
+    // exactly the evidence the cross-derivation argument requires.
+    return runLadder(entry, cases, extraction.detail)
   }
 
   return { status: 'abstained', code: null, entry: null, cases: null, search: null,

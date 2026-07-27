@@ -92,6 +92,29 @@ const REC = '__crucible_rec'
 
 function esc(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
 
+/** The two declaration forms `instrumentForTrace` can rename-and-wrap, for one helper name. */
+function declPatterns(name: string): RegExp[] {
+  const n = esc(name)
+  return [
+    new RegExp(`(^|\\n)(\\s*)(export\\s+)?function(\\s+)${n}\\s*\\(`, 'g'),
+    new RegExp(`(^|\\n)(\\s*)(export\\s+)?(const|let|var)(\\s+)${n}\\s*=`, 'g'),
+  ]
+}
+
+/**
+ * Which of `names` does `src` DECLARE in a form this module can instrument?
+ *
+ * Exported because the difference between "the module defines this helper and never calls it"
+ * and "the module never defined it at all" is the difference between a provably DEAD RUNG and a
+ * draft that simply ignored the plan — and `TraceRun.neverCalled` cannot tell them apart. Any
+ * caller that treats `neverCalled` as evidence ABOUT THE CARVE must intersect it with this, or it
+ * will reject good carves on the strength of one lazy draw. Same regexes the instrumenter uses,
+ * so the two can never drift.
+ */
+export function declaredHelpers(src: string, names: string[]): string[] {
+  return names.filter(n => declPatterns(n).some(re => re.test(src)))
+}
+
 /**
  * Rewrite `src` so every named helper records its calls.
  *
@@ -109,15 +132,15 @@ export function instrumentForTrace(src: string, helperNames: string[]): string {
   const wrapped: string[] = []
 
   for (const name of helperNames) {
-    const n = esc(name)
     const before = out
+    const [fnDecl, varDecl] = declPatterns(name)
 
     // `export function NAME(` / `function NAME(`  → rename the definition
-    out = out.replace(new RegExp(`(^|\\n)(\\s*)(export\\s+)?function(\\s+)${n}\\s*\\(`, 'g'),
+    out = out.replace(fnDecl,
       (_m, lead: string, indent: string, _exp: string, sp: string) => `${lead}${indent}function${sp}${PREFIX}${name}(`)
 
     // `export const NAME = ` / `const NAME = ` (arrow or function expression)
-    out = out.replace(new RegExp(`(^|\\n)(\\s*)(export\\s+)?(const|let|var)(\\s+)${n}\\s*=`, 'g'),
+    out = out.replace(varDecl,
       (_m, lead: string, indent: string, _exp: string, kind: string, sp: string) => `${lead}${indent}${kind}${sp}${PREFIX}${name} =`)
 
     if (out !== before) wrapped.push(name)
