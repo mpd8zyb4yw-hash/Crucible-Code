@@ -1933,6 +1933,84 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-27c (gap-soundness — the compiler was never looking, and the carve probe finally A/B'd)
+
+**`npm run typecheck:engine` / `typecheck:engine:core` — the reasoning engine typechecks for the
+first time. 130 errors → 17, and `reasoning/` is GREEN.** New `tsconfig.engine.json` compiles
+`src/CrucibleEngine` the way tsx actually runs it (module esnext / moduleResolution bundler /
+target es2022). Why this was needed and why the existing configs could not do it: `tsconfig.json`
+is `{files: [], references: [app, node]}` and `tsconfig.app.json` EXCLUDES `src/CrucibleEngine`, so
+`tsc -p tsconfig.json` checked zero engine files; `tsconfig.server.json` does include it but targets
+the CJS `server-dist` build against a `"type":"module"` repo, which — measured, not assumed —
+manufactures **95 runtime-impossible diagnostics** (47 TS1343 `import.meta`, 48 TS1378 top-level
+await) **while hiding 4 real TS2339s**. Sole exclusion is `**/*.hidden.ts`, bench fixtures importing
+`../src/<name>` (a module written at bench time by `fs.copyFileSync`; six call sites). Proven narrow:
+no-exclude 410 errors, gated 130, and the 129 non-TS2307 diagnostics are byte-identical across the
+two — the exclude swept zero real errors. **TRAP 1 in NEXT_SESSION.md is now closed.**
+
+**The gate found four LIVE bugs on its first run, not type nits:**
+
+1. **`corpus_query` was 100% broken whenever the corpus had anything to say.** It read
+   `h.title/h.url/h.text` off a `CorpusHit`, whose actual shape is `{chunk, similarity, superseded}`
+   — `h.text.slice(0,600)` threw a `TypeError` on every hit, caught at `fmReact.ts:637` and handed
+   to the model as `"Tool error: ..."`. An empty corpus returns early, which is exactly why it
+   survived. **The ReAct agent's only path to the living corpus was dead**, so the core was
+   answering from parametric memory on precisely the questions retrieval exists to ground — a
+   direct violation of the doctrine's "facts are retrieved, not remembered."
+2. **The proposer's anti-anchor `topP`/`seed` never left the process on the local-head BATCH path.**
+   `bonsaiCompleteBatch.oneDirect` accepted opts declaring both and put neither in the request body,
+   while the sibling branch honoured them. Every batch-path diversity claim predates this fix.
+3. **All 65 tier-1 `knowledge-base.ts` entries omit `name/tags/qualitySignals/hitCount`.**
+   `scoring-engine.ts:243` iterates `bestEntry.qualitySignals` unguarded above a 0.6 similarity ⇒
+   "not iterable" TypeError; `:230` `entry.hitCount++` ⇒ NaN. The data was wrong, not the interface.
+4. **The decompose planner was billed ZERO model calls** — `modelCalls` starts at 0 and first
+   increments at the carve probe, so every draw dying at or before the plan reported `0 calls` after
+   spending a real draw. Caught live in this session's own A/B, both arms
+   (`declined (0 calls, 28s)`; `decompose-failed (0 calls, 12s)` = three plan attempts). Same class
+   as the tier-0 four-slots-billed-as-one bug. **Every decompose call count ever recorded undercounts
+   by one per plan attempt — including "tier 3 costs 27–43 calls."**
+
+Also: `SearchOpts<T = unknown>`'s default collapsed T to `unknown` across five declarations and
+`DEFAULTS` itself, poisoning `search()`'s inference (the `search.ts:61` / `solve.ts:196` variance
+family). Two `as any` casts removed from the `isNonComposingCarve` call — the gate whose job is to
+reject wrong-shaped carves is the last place a cast belongs. `res.json()` on untrusted network
+payloads is now narrowed by real guards rather than cast (a cast there is oracle-trust in a remote
+provider). Deleted `destructiveRunMatch`, dead since its pattern list was removed.
+
+**THE CARVE PROBE IS MEASURED (the isolated A/B that was open since 2026-07-26).**
+`GEN_SCORECARD_ARM=decompose`, n=3 × 5 tasks, 180s ceiling, `CRUCIBLE_NO_DISTILL=1`, head confirmed
+`qwen2.5-1.5b`; both arms ran byte-identical code (a mid-flight billing fix was reverted and
+re-applied afterwards precisely so they would).
+
+| task | `CARVE_PROBE=0` | `CARVE_PROBE=1` |
+|---|---|---|
+| `romanToInt` | 1/3 (3 calls) | **2/3 (1 call)** |
+| `intToRoman` | 0/3 | **2/3** |
+| `compressRuns` | 1/3 | 0/3 |
+| `isBalanced` | 0/3 | 0/3 |
+| `wordFrequencyTop` | 0/3 | 0/3 |
+| **total** | **2/15** | **4/15** |
+
+**The aggregate is not the finding, and must not be quoted as "the probe doubled the decompose
+arm":** 2/15 vs 4/15 is Fisher p=0.65 two-sided (0.33 one-sided) — not significant. What IS
+deterministic is the attribution: **3 of arm 1's 4 solves came through a `probe:<entry>` rung**, a
+mechanism that cannot exist in arm 0, each in **one model call**. Solves attributable to an actual
+carve went **2 → 1**. ⇒ **The probe's measured value is entirely "sometimes drafting the whole thing
+in one call works" — tier 0's thesis arriving inside tier 3. The grounded-spec mechanism
+`traceCarve.ts` was built for earned ZERO solves.** It stays ON (a 1-call solve is the cheapest
+thing in the system) and it still closes the seeds-its-own-oracle hole, but it has no measured
+solve-rate warrant and should stop being credited to carve synthesis. The carve remains the
+bottleneck: `compressRuns`/`isBalanced`/`wordFrequencyTop` are 0/3 in BOTH arms at 37–64 calls a draw.
+
+**NEW BLOCKER FOUND: the 180s task ceiling does not bind.** `wordFrequencyTop` ran **955s and 947s**
+against `GEN_SCORECARD_TASK_WALL_MS=180000` (5.3×). Between-rung abort granularity explains a 193s
+or 197s overrun, not a 5× one. Until it is found, every "solves within N seconds" claim from a capped
+run is unsupported — and it is direct evidence for the still-open budget item: not even the
+AbortSignal reliably binds.
+
+Green after all of the above: vgr 238/238, ladder+carve-probe 43/43, decompose 116/116, tracespec
+20/20, mechrepair 8/8, stakes 17/17, source hygiene 5/5.
+
 ### 2026-07-27b (gap-soundness — the ladder measured at n=3, and the refutation pass that found a soundness regression)
 
 **THE HEADLINE. The ladder solves 14/15; decomposition alone solves 1/15.** Full general scorecard,
