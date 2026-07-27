@@ -29,6 +29,8 @@ import { matchMeta } from './conversational'
 import { answerWithWebGrounding } from './groundedAnswer'
 import { isCodingQuery, namesExternalLibrary } from '../retrieval/retrievalLayer'
 import { buildRecallContextAsync } from './conversationMemory'
+import { isAboutSelf } from './referent'
+import { selfFactsBlock } from './selfModel'
 import { detectTruncation, buildContinuationMessages, stitchContinuation } from './longOutput'
 
 export type AnswerIntent = 'lookup' | 'definition' | 'explain' | 'reason' | 'converse' | 'code'
@@ -310,8 +312,26 @@ function historyToMessages(history?: ConvTurn[]): Array<{ role: string; content:
 // fixed-fact layer therefore stay disjoint in practice: matchMeta hits return before this is read.
 export const SELF_REF_RX =
   /\b(how\s+(smart|intelligent|clever|capable|good|powerful|advanced|fast)\s+(are|r)\s+you|what('?s| is| are)\s+you\b|what('?s| is)\s+your\s+(iq|eq|intelligence|training data|architecture|parameter|context window|knowledge cutoff)|who\s+(are|r|made|built|created|trained|designed)\s+you|what\s+(kind|type|sort)\s+of\s+(ai|model|assistant|thing)\s+are\s+you|what\s+model\s+are\s+you|are\s+you\s+(conscious|sentient|alive|human|real|self.?aware|an?\s+(ai|llm|robot|model|human))|are\s+you\s+(smarter|dumber|better|worse|faster|slower|stronger|weaker|more\s+\w+|less\s+\w+)\s+than|do\s+you\s+have\s+(feelings|emotions|a\s+soul|consciousness|opinions|a\s+memory|self.?awareness)|when\s+were\s+you\s+(trained|made|built|created|born)|what\s+(data|dataset|corpus)\s+(were|was|are)\s+you\s+trained\s+on|tell\s+me\s+about\s+yourself|introduce\s+yourself|what\s+can\s+you\s+do|what\s+are\s+your\s+(capabilit|limitation|strength|weakness))/i
+/**
+ * Is this question about Crucible itself?
+ *
+ * cont.118 — this is now REFERENT RESOLUTION with the old regex kept only as a safety net.
+ *
+ * `SELF_REF_RX` above is an ENUMERATION of self-question phrasings, and an enumeration of an open
+ * class always has a tail. The observed failure was `"are you made in china"`: the regex has
+ * `are you made BY <x>` and not `are you made IN <x>`, so the message fell past this gate, past
+ * the `!isSelfReferential` web-grounding veto below, and was searched on the open web — returning
+ * pages about goods manufactured in China. One preposition separated shipping from broken. Adding
+ * `made in` would have been whack-a-mole (`crucible-no-templates-universal-fix`).
+ *
+ * `resolveReferent` asks the CLOSED grammatical question instead — what is the referent of the
+ * subject? — which covers "made in", "assembled in", "owned by", "trained on", "spying on", and
+ * every phrasing nobody has thought of yet. The union with SELF_REF_RX is belt-and-braces: it
+ * makes the new behaviour a provable strict superset of the old, which `__referent_bench.ts`
+ * asserts directly rather than trusting.
+ */
 export function isSelfReferential(message: string): boolean {
-  return SELF_REF_RX.test(message ?? '')
+  return isAboutSelf(message) || SELF_REF_RX.test(message ?? '')
 }
 export const CRUCIBLE_SELF_FACTS =
   `- Crucible is a private AI assistant that runs entirely on the user's own device (offline-first); in strict mode it makes no external calls at all.\n` +
@@ -587,7 +607,12 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // facts about what Crucible is, so the model reasons over ground truth instead of inventing a
   // persona. Paired with the calibrated-honesty rule in `base`, this closes the confabulation gap.
   if (isSelfReferential(message)) {
-    sys += `\n\n## About you (Crucible) — ground ANY question about yourself in THESE facts. Do not invent a biography, authors, a persona, or an IQ; if asked something about yourself not covered here, say you are not sure.\n${CRUCIBLE_SELF_FACTS}`
+    // cont.118 — the facts are now DERIVED from the running system (resolved GGUF on disk, the
+    // live CRUCIBLE_OFFLINE flag, git HEAD, real memory) and RANKED against this question, rather
+    // than being one static paragraph pasted in regardless of what was asked. A computed fact
+    // cannot drift from reality the way a hand-written one silently does, and ranking means the
+    // model reads the 6 facts that bear on the question instead of hunting through all of them.
+    sys += `\n\n## About you (Crucible) — ground ANY question about yourself in THESE facts. Do not invent a biography, authors, a persona, or an IQ; if asked something about yourself not covered here, say you are not sure.\n${selfFactsBlock(message)}`
   }
   // Fold the older-turn recall into the system prompt as labeled context the FM reads reliably.
   if (recall.recallBlock) {
