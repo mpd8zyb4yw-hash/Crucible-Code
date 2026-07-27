@@ -96,6 +96,7 @@
     "mechrepair:bench": "tsx src/CrucibleEngine/reasoning/__mechrepair_bench.ts",
     "tracespec:bench": "tsx src/CrucibleEngine/reasoning/__tracespec_bench.ts",
     "ladder:bench": "tsx src/CrucibleEngine/reasoning/__ladder_bench.ts",
+    "hygiene:bench": "tsx src/CrucibleEngine/reasoning/__source_hygiene_bench.ts",
     "direct:arm": "tsx src/CrucibleEngine/reasoning/__direct_vs_decompose_live.ts",
     "draw:anatomy": "tsx src/CrucibleEngine/reasoning/__draw_anatomy_live.ts"
   },

@@ -552,7 +552,7 @@ export function isDegenerateSubFnCarve(hasCustomPlanner: boolean, helperCount: n
 export function rungSpecKey(rung: { goal: string; cases: CodeAcceptance['cases'] }): string {
   let cases: string
   try { cases = JSON.stringify(rung.cases) } catch { cases = String(rung.cases) }
-  return `${rung.goal} ${cases}`
+  return `${rung.goal}\x00${cases}`
 }
 
 /** Coarse runtime type-shape of a case value, used only to compare a helper's declared inputs

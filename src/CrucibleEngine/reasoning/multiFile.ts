@@ -85,7 +85,7 @@ function fingerprintFiles(files: CandidateFile[]): string {
   const norm = [...files]
     .map(f => `${f.path.replace(/^\.\//, '')}::${f.source.replace(/\s+/g, ' ').trim()}`)
     .sort()
-    .join('')
+    .join('\x01')
   let h = 5381
   for (let i = 0; i < norm.length; i++) h = ((h << 5) + h + norm.charCodeAt(i)) | 0
   return `m${(h >>> 0).toString(36)}`
