@@ -259,6 +259,50 @@ function testTail(out: string): string {
 }
 
 /**
+ * Tag a verification's TERMINAL EXIT so the phase profile can count which gate ends runs.
+ *
+ * WHY (cont.117). The cont.116 sample-efficiency read established that filterModule judged 34
+ * candidates and EXECUTED only 4 — but not which gate stopped the other 30, and the candidate
+ * explanations point at opposite fixes: gate-A dominance argues for constrained decoding, while
+ * `no-test` dominance argues the fix is in `deriveTests` (a candidate can be perfectly correct,
+ * compile clean, and still never run because no behavioral test was derived for it). Guessing
+ * here is exactly the "this should help" move doctrine rule #4 bans, so the distribution has to
+ * be data.
+ *
+ * READ THE `calls` COLUMN, NOT `self`. These lanes wrap an empty thunk, so their self time is ~0
+ * by construction — they are counters that ride the existing profiler rather than a second
+ * accumulator that could drift out of sync with it.
+ *
+ * INVARIANT (parse-time self-check, and the reason every post-stage return is tagged rather than
+ * just the five interesting ones):
+ *     sum(verify.exit.*)      === oracle.stage.calls          // async twin
+ *     sum(verify.sync.exit.*) === oracle.stage.sync.calls     // sync twin
+ * If a side disagrees, a return path is untagged and the distribution is silently under-counting
+ * — the aggregator fails loud on that rather than reporting a plausible-looking split.
+ *
+ * WHAT THE TWO PREFIXES ACTUALLY SPLIT — read this before labelling the number. They split by
+ * WHICH FUNCTION WAS CALLED, not by provenance. It is tempting to read async as "the gen path"
+ * and sync as "the catalog path"; that is WRONG, and the wrong version was written here first:
+ *   - `verify.sync.exit.*` covers only callers that explicitly pass `verify: 'sync'` — in
+ *     production that is exactly `synth.catalogL0L1` (universal.ts:303), L0/L1.
+ *   - `verify.exit.*` covers EVERYTHING ELSE, which is gen-path FM candidates AND their repair
+ *     proposals AND L2 `structuralSynthBridge` skill probes AND the whole L0/L1/L2 cascade under
+ *     the server's `synth.fastPath` (server.ts:3871 omits `verify`, so it defaults to async).
+ * So a `verify.exit.exec-pass` is not necessarily a model candidate that ran. The saving grace is
+ * that this is precisely the population `oracle.stage` has ALWAYS counted, so the distribution is
+ * directly comparable to cont.116's "34 verifications, 4 executed" — which is the comparison the
+ * measurement exists to explain. Do NOT reroute the L2/fast-path callers to the sync twin to make
+ * the labels prettier: that would change the denominator and break that comparison. If provenance
+ * is wanted later, thread an explicit `oracleLane: 'gen' | 'catalog'` through `opts` instead.
+ * Splitting the twins at all is still worth it: `synth.catalogL0L1`'s verifications were counted
+ * by no lane whatsoever before this.
+ */
+function tagExit(prefix: string, reason: string, v: Verdict): Verdict {
+  spanSync(`${prefix}.${reason}`, () => {})
+  return v
+}
+
+/**
  * Verify candidate files. `testFile` (optional) is a spec-derived tsx script that imports
  * the candidate and asserts behavior, exiting non-zero on any failure. Without it only the
  * static gate runs (and ranAssertions=false → the caller should treat as low-confidence).
@@ -268,30 +312,35 @@ export function verifyCandidate(
   testFile?: SynthFile,
   opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string; changeSetScope?: string[] } = {},
 ): Verdict {
-  if (!files.length) return { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false }
-  const { scratch, cfgDir, cfgPath, testAbs } = stage(files, testFile, opts.contextFiles, opts.projectPath)
+  const X = 'verify.sync.exit'
+  if (!files.length) return tagExit('verify.sync.skip', 'nofiles', { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false })
+  // `stage()` inside the try — see the twin above for why (a throwing stage() would otherwise
+  // count a staged verification with no exit tag and leak its scratch dirs).
+  let staged: ReturnType<typeof stage> | null = null
   try {
+    staged = spanSync('oracle.stage.sync', () => stage(files, testFile, opts.contextFiles, opts.projectPath))
+    const { scratch, cfgPath, testAbs } = staged
     const tc = run('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000)
     const scoped = scopeTsErrors(tc.out, opts.changeSetScope, scratch)
-    if (!tc.ok && scoped.fatal.length) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false }
+    if (!tc.ok && scoped.fatal.length) return tagExit(X, 'typecheck', { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false })
     if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
-    if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
+    if (!lv.ok) return tagExit(X, 'lint', { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false })
     const dv = checkDuplicateExports(files, opts.contextFiles)
-    if (!dv.ok) return { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false }
+    if (!dv.ok) return tagExit(X, 'dupexport', { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false })
     const cv = checkContract(opts.spec ?? '', files)
-    if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
-    if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
+    if (!cv.ok) return tagExit(X, 'contract', { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false })
+    if (!testFile || !testAbs) return tagExit(X, 'no-test', { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false })
     const tb = run('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
-    return {
+    return tagExit(X, tb.ok ? 'exec-pass' : 'exec-fail', {
       accepted: tb.ok, gateA: true, gateB: tb.ok,
       detail: tb.timedOut ? 'behavioral test TIMED OUT (candidate reaped)' : (testTail(tb.out) || tb.out.slice(0, 200)),
       ranAssertions: true,
-    }
+    })
   } catch (e: any) {
-    return { accepted: false, gateA: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false }
+    return tagExit(X, 'error', { accepted: false, gateA: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false })
   } finally {
-    cleanup(scratch, cfgDir)
+    if (staged) cleanup(staged.scratch, staged.cfgDir)
   }
 }
 
@@ -305,30 +354,41 @@ export async function verifyCandidateAsync(
   testFile?: SynthFile,
   opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string; changeSetScope?: string[] } = {},
 ): Promise<Verdict> {
-  if (!files.length) return { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false }
-  const { scratch, cfgDir, cfgPath, testAbs } = spanSync('oracle.stage', () => stage(files, testFile, opts.contextFiles, opts.projectPath))
+  const X = 'verify.exit'
+  if (!files.length) return tagExit('verify.skip', 'nofiles', { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false })
+  // `stage()` is INSIDE the try (cont.117). It used to sit outside it, which broke the exit
+  // invariant in a way that only shows up under filesystem pressure: `spanSync` records its call
+  // from a `finally`, so a throwing `stage()` still increments `oracle.stage.calls` — but the
+  // throw escaped the function, so no exit was tagged and no `cleanup` ran. sum(exits) would then
+  // sit one below the stage count and the aggregator would blame an untagged return path that
+  // does not exist, discarding a whole run's distribution over one ENOSPC. Catching it here also
+  // matches what the existing catch was already for: an oracle that cannot stage is an oracle
+  // error, and every caller already handles a rejected verdict.
+  let staged: ReturnType<typeof stage> | null = null
   try {
+    staged = spanSync('oracle.stage', () => stage(files, testFile, opts.contextFiles, opts.projectPath))
+    const { scratch, cfgPath, testAbs } = staged
     const tc = await span('oracle.gateA.tsc', () => runAsync('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000))
     const scoped = scopeTsErrors(tc.out, opts.changeSetScope, scratch)
-    if (!tc.ok && scoped.fatal.length) return { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false }
+    if (!tc.ok && scoped.fatal.length) return tagExit(X, 'typecheck', { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false })
     if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
-    if (!lv.ok) return { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false }
+    if (!lv.ok) return tagExit(X, 'lint', { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false })
     const dv = checkDuplicateExports(files, opts.contextFiles)
-    if (!dv.ok) return { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false }
+    if (!dv.ok) return tagExit(X, 'dupexport', { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false })
     const cv = checkContract(opts.spec ?? '', files)
-    if (!cv.ok) return { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false }
-    if (!testFile || !testAbs) return { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false }
+    if (!cv.ok) return tagExit(X, 'contract', { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false })
+    if (!testFile || !testAbs) return tagExit(X, 'no-test', { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false })
     const tb = await span('oracle.gateB.exec', () => runAsync('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000))
-    return {
+    return tagExit(X, tb.ok ? 'exec-pass' : 'exec-fail', {
       accepted: tb.ok, gateA: true, gateB: tb.ok,
       detail: tb.timedOut ? 'behavioral test TIMED OUT (candidate reaped)' : (testTail(tb.out) || tb.out.slice(0, 200)),
       ranAssertions: true,
-    }
+    })
   } catch (e: any) {
-    return { accepted: false, gateA: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false }
+    return tagExit(X, 'error', { accepted: false, gateA: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false })
   } finally {
-    cleanup(scratch, cfgDir)
+    if (staged) cleanup(staged.scratch, staged.cfgDir)
   }
 }
 
