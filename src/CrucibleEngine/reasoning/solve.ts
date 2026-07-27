@@ -506,6 +506,14 @@ export async function decomposeCodeBySubFunction(
     traceProbe?: boolean
   } = {},
   proposerOverride?: Proposer<string>,
+  /**
+   * Certified helpers inherited from a PARENT level (glue re-decomposition), so a sub-plan that
+   * re-proposes an identical rung reuses the proven source at zero model cost. Was previously passed
+   * by the glue call site as a 4th argument to a 3-parameter function — silently dropped by JS, and
+   * invisible because no build typechecks this directory (tsconfig.json is `files: []` referencing
+   * only app+node; tsconfig.server.json is referenced by nothing).
+   */
+  carrySeed?: Map<string, { source: string; spec: string }>,
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})
   const planAttempts = Math.max(1, opts.planAttempts ?? 3)
@@ -516,7 +524,7 @@ export async function decomposeCodeBySubFunction(
   // Persists certified helpers across attempts so a retry re-grinds only the rung that failed,
   // not the easy ones it already got (the DP-fold scorecard showed a failed editDistance re-running
   // subCost/nextRow + a full editRow window every attempt → ~1200s). Reuse is exact-SPEC-gated.
-  const carry = new Map<string, { source: string; spec: string }>()
+  const carry = new Map<string, { source: string; spec: string }>(carrySeed ?? [])
   for (let attempt = 0; attempt < planAttempts; attempt++) {
     if (opts.signal?.aborted) break
     if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
@@ -1093,8 +1101,15 @@ export interface LadderOutcome {
  *
  * `CRUCIBLE_LADDER_K` (default 4) sets the ceiling; measured pass@k says 4–8 is where the marginal
  * draw still pays, and the llama-server slot count is 4. It is then clamped to HALF the caller's
- * flat budget, so a caller that asked for a 6-call search never has the majority of it consumed by
- * a tier that runs without feedback. Pure — unit-tested in __ladder_bench.
+ * flat budget, so tier 0 alone cannot exceed half of it. Pure — unit-tested in __ladder_bench.
+ *
+ * WHAT THIS DOES *NOT* DO, and do not re-read it as doing: the clamp is not SUBTRACTIVE. No tier
+ * decrements `opts.maxModelCalls`, so tier 1 receives the caller's full budget again (solveCodeTask
+ * is handed `opts` verbatim) and tier 3's per-rung `iterate` budgets are not bounded by it at all.
+ * A caller passing `maxModelCalls: 6` can therefore see up to 6/2 + 6 = 9 flat calls plus tier 3 on
+ * top; in practice only the AbortSignal binds. The 2026-07-27 scorecard was measured under exactly
+ * these semantics, so per-task call counts there are real measurements, not budget-derived — but any
+ * claim of the form "solved within the caller's N-call budget" is NOT supported by this code.
  */
 export function tier0Draws(maxModelCalls?: number): number {
   const want = Math.max(1, Number(process.env.CRUCIBLE_LADDER_K || 4))
@@ -1139,7 +1154,11 @@ async function ladderTier0(
     }
   }
   if (signal?.aborted || !attempts.length) {
-    return { code: null, attempts, modelCalls: attempts.length ? modelCalls : 0, detail: attempts.length ? 'aborted' : 'no candidate drawn' }
+    // Charge `k` here too. `attempts` is empty whenever every slot decoded to empty/whitespace —
+    // proposeCodeBatch drops nulls, and fmComplete swallows a timeout or a downed sidecar to ''. The
+    // decodes still happened, so billing 0 would hide exactly the runs where the head is misbehaving
+    // (and would repeat, on this branch, the 4-slots-billed-as-1 bug this tier already fixed above).
+    return { code: null, attempts, modelCalls, detail: attempts.length ? 'aborted' : 'no candidate drawn (all slots decoded empty)' }
   }
   // Free deterministic sweep licensed by the failing draws' own verifier signals. No model call, so
   // it is not charged — and it is still executed against the same cases before it can be returned.
@@ -1170,6 +1189,12 @@ export async function solveByLadder(
   gate: (code: string | null, entry?: string) => Promise<boolean>,
   /** All functions the module must export, for multi-function gold specs. Defaults to [entry]. */
   entries?: string[],
+  /**
+   * TRUE when `cases` are the USER's own stated examples. Disables tier 2, whose entire warrant is
+   * that independent implementations outvote ONE MODEL-INVENTED value — an argument that does not
+   * transfer to a value a human wrote. See the tier-2 block.
+   */
+  casesAreGold = false,
 ): Promise<LadderOutcome> {
   const emit = opts.emit ?? (() => {})
   const steps: LadderStep[] = []
@@ -1191,7 +1216,13 @@ export async function solveByLadder(
   // budget poured into a search the control arm says cannot converge. Take the cheap tier-0 lottery
   // ticket anyway (~5s) and then jump straight to the carve. This preserves the old EARLY-CARVE
   // routing while adding the one tier that is too cheap to skip.
-  const templated = hasDecomposeTemplate(nl, entry) && !!opts.decompose
+  // Tier 3's OWN guards (≥3 cases, single-entry) are stricter than `opts.decompose`, so the skip
+  // must be conditioned on the carve actually being reachable. Otherwise a templated task with 2
+  // examples, or a multi-function one, skips tiers 1 AND 2 toward a tier 3 that never runs — it
+  // spends the tier-0 draws and abstains with the rest of the caller's budget untouched, which is
+  // strictly worse than the pre-ladder path (that one always ran the flat search).
+  const willCarve = !!opts.decompose && cases.length >= 3 && !multi
+  const templated = hasDecomposeTemplate(nl, entry) && willCarve
 
   // ── tier 0 ────────────────────────────────────────────────────────────────────
   // Kept in scope for tier 2: the K blind draws are the most INDEPENDENT implementations the system
@@ -1242,7 +1273,13 @@ export async function solveByLadder(
   }
 
   // ── tier 2 — model-free operators over everything drawn so far ─────────────────
-  if (!templated && !opts.signal?.aborted) {
+  // NEVER on gold. recoverFromPoisonedCase DELETES an acceptance case when ≥2 independent impls
+  // agree it is wrong, and its warrant (see its docstring) is explicitly "independent
+  // implementations agreeing outweigh one MODEL-INVENTED value". Against a case the USER wrote that
+  // warrant inverts: two drafts making the same mistake would silently erase the user's stated
+  // requirement and return `cases: rec.cleaned`, so the caller reports 'solved' with code that
+  // contradicts an example the user typed. That is shipping a wrong answer, not abstaining.
+  if (!templated && !casesAreGold && !opts.signal?.aborted) {
     const t0 = Date.now()
     const pool = [...tier0Attempts, ...(search?.attempts ?? [])]
     const rec = await recoverFromPoisonedCase(entry, cases, pool)
@@ -1388,7 +1425,7 @@ export async function solveCodingRequest(
     // GOLD needs no invariant gate: the cases came from the USER, which is the highest-trust ground
     // truth this system has. metaGate/suppGate exist to protect the LOWER tiers, whose outputs were
     // fuzzed or model-guessed. (They are also not yet in scope here — they are derived below.)
-    const lad = await solveByLadder(nl, harvested.entry, harvested.cases, opts, async () => true, harvested.entries)
+    const lad = await solveByLadder(nl, harvested.entry, harvested.cases, opts, async () => true, harvested.entries, true)
     const goldPrefix = `${harvested.cases.length} user example(s) (gold)${nFns > 1 ? ` across ${nFns} functions [${harvested.entries.join(', ')}]` : ''}`
     if (lad.status === 'solved') {
       return { status: 'solved', code: lad.code, entry: harvested.entry, cases: lad.cases, search: lad.search,

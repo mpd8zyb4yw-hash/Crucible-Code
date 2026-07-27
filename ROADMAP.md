@@ -1933,6 +1933,102 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-27b (gap-soundness — the ladder measured at n=3, and the refutation pass that found a soundness regression)
+
+**THE HEADLINE. The ladder solves 14/15; decomposition alone solves 1/15.** Full general scorecard,
+both arms, n=3, same goal/entry/cases, `CRUCIBLE_NO_DISTILL=1`, 180s per-task ceiling, head confirmed
+`qwen2.5-1.5b` before the run (see the worktree warning in NEXT_SESSION.md).
+
+| task | LADDER solved | calls (med) | wall (med) | tiers | DECOMPOSE alone | calls | wall |
+|---|---|---|---|---|---|---|---|
+| `romanToInt`       | **3/3** | 4 | 15s | 0,0,0 | 1/3 | 1  | 16s |
+| `intToRoman`       | **3/3** | 4 | 22s | 0,0,0 | 0/3 | 27 | 182s |
+| `compressRuns`     | **3/3** | 4 | 12s | 0,0,0 | 0/3 | 35 | 181s |
+| `isBalanced`       | **3/3** | 4 | 17s | 0,0,1 | 0/3 | 43 | 182s |
+| `wordFrequencyTop` | **2/3** | 5 | 53s | 0,1   | 0/3 | 36 | 182s |
+| **total**          | **14/15** | | | **t0:12 t1:2** | **1/15** | | |
+
+Read that against 2026-07-26's control arm, which is where the priority ladder came from: it had
+`isBalanced` and `wordFrequencyTop` at **0/3** and the rest decompose-failed. The gain is not a better
+carve — **it is routing.** Twelve of fourteen solves are tier 0 (K=4 blind draws + a free mechanical
+repair sweep, ~12–22s). Tier 2 never earned a solve. Tier 3 never earned one either. Four sessions of
+carve work were spent on the tier that, on this task set, does not do the work.
+
+**CAVEAT, do not drop it:** a tier-0 solve never reaches `traceCarve.ts`, so the carve probe's
+contribution is still measured only where the decompose arm ran — its one solve there (`probe:romanToInt`,
+1 call) is the probe working, but n=1. The isolated A/B (`CRUCIBLE_CARVE_PROBE=0` vs `=1`) is still open.
+
+**A SOUNDNESS REGRESSION I SHIPPED IN aab9a79, now fixed.** `solveByLadder`'s tier 2 calls
+`recoverFromPoisonedCase`, which DELETES an acceptance case when ≥2 independent drafts agree it is
+wrong. Its warrant, in its own docstring, is "independent implementations agreeing outweigh one
+MODEL-INVENTED value". aab9a79 routed the GOLD path (the user's own stated examples, `solve.ts:1391`,
+gate `async () => true`) through the same ladder — so two drafts making the same mistake could erase a
+requirement the USER typed, and the caller returned `status: 'solved'` with `cases: rec.cleaned`. For
+"fee(4) returns 35" that ships `n * 10` and reports success. Before aab9a79 the gold branch called
+`solveCodeTask` directly and never reached tier 2. Fixed with an explicit `casesAreGold` parameter;
+tier 2 is now unreachable on gold. This is the cardinal sin (shipping a wrong answer, not abstaining)
+and it existed for exactly one commit.
+
+**THE ENGINE HAS NEVER BEEN TYPECHECKED, which is why the next bug was invisible.** `tsconfig.json` is
+`{"files": [], "references": [app, node]}`; `tsconfig.app.json` EXCLUDES `src/CrucibleEngine`;
+`tsconfig.server.json` includes it but is referenced by nothing and run by no npm script. So
+`npx tsc --noEmit -p tsconfig.json` exits 0 while checking none of the reasoning code — I ran exactly
+that earlier this session and reported "typecheck clean". Under real flags the engine has 23+ errors,
+including `solve.ts(1005,9): TS2554: Expected 1-3 arguments, but got 4` — the glue re-decomposition
+passed `glueCarry` as a 4th argument to a 3-parameter `decomposeCodeBySubFunction`, so JS dropped it
+silently and the glue level always started with an EMPTY carry map. The `helperPlan`→`rungPlan` seeding
+fix in aab9a79 was dead code. Fixed by giving the function a real `carrySeed` parameter.
+
+**Three more defects in aab9a79's own ladder, all fixed:**
+- `templated` skipped tiers 1 AND 2 on the assumption tier 3 would run, but tier 3 has stricter guards
+  (`cases.length >= 3`, single-entry). A templated task with 2 examples, or a multi-function one, ran
+  ONLY tier 0 and abstained with the rest of the budget unspent — strictly worse than the pre-ladder
+  path, which always ran the flat search. Now gated on the carve actually being reachable.
+- `ladderTier0` returned `modelCalls: 0` whenever every slot decoded to empty (a timeout, or the silent
+  apple-fm fallback). Same class as the 4-slots-billed-as-1 bug the commit claimed to close, left open
+  on the empty branch. Now charges `k`.
+- `tier0Draws`' docstring claimed the half-budget clamp stops a caller's search being consumed by a
+  feedback-free tier. **The clamp is not subtractive.** No tier decrements `opts.maxModelCalls`, so
+  tier 1 gets the full budget again and tier 3's per-rung budgets are not bounded by it at all; only
+  the AbortSignal binds. Docstring corrected to state the real semantics. Behaviour deliberately
+  unchanged — the scorecard above was measured under it, and changing budget semantics would have
+  invalidated the numbers in the same commit that reports them.
+
+**Four ways the tracer was lying, fixed + pinned (`tracespec:bench` 13→20).** Each one either threw
+away a good carve or specified a rung with a value no execution produced:
+- a helper that signalled by THROWING was recorded only on the normal-return path, so `neverCalled`
+  actually meant "never returned" and the rung was pruned as unreachable. Now recorded in both paths,
+  with a `threw` flag so it contributes no return witness.
+- a helper called only during MODULE EVALUATION (a precomputed table) was wiped by the per-case trace
+  reset and reported never-called. Now captured as `caseIndex: -1`, which proves the helper was reached
+  while contributing no per-case witness.
+- args were stored BY REFERENCE and serialized at end-of-case, so a MUTATING helper had its derived
+  spec rewritten to a pair it never produced (`pushAndCount([], 'a') -> 1` recorded as
+  `[['a'],'a'] -> 1`). Now snapshot at CALL time — and the first fix for this was still wrong (it
+  snapshotted after invoking the original); the new bench check is what caught that.
+- `declPatterns` allowed leading indentation, so a NESTED declaration counted as instrumentable;
+  rename-and-wrap then renamed it in place while hoisting the wrapper to module scope, leaving
+  `__crucible_orig_*` out of scope so every call threw ReferenceError — corrupting `casePassed`, and
+  therefore the witness set AND `localizeFault`. Now top-level only.
+
+**Source hygiene: a raw NUL made `grep` silently blind.** `rungSpecKey` (aab9a79, mine) joined a rung's
+goal and cases with a literal `0x00`. One control byte makes `file(1)` report `data` and grep treat the
+file as binary — no matches, no warning, exit 1. Against CLAUDE.md's "confirm a feature is actually
+wired in (grep for callers)" that is a false-negative machine, and it produced two confidently wrong
+conclusions this session (that `traceCarve.ts` was unwired, and that `CRUCIBLE_CARVE_PROBE` did not
+exist — both false). Fixed to the escape `'\x00'` (byte-identical at runtime, plain-text source);
+`__source_hygiene_bench.ts` + `npm run hygiene:bench` now enforces it over all 1080 tracked .ts/.tsx,
+with its own positive and negative controls. It found two sites I did not know about
+(`answer/conversationMemory.ts`, `synth/derive.ts`), so the idiom predates me.
+
+**PROCESS, stated plainly:** the adversarial refutation workflow died on a session limit — 42 of 46
+agents errored — so its `confirmed: []` is an artifact of mass failure, not a clean bill of health. The
+13 findings above were recovered from the run journal, where they had been dropped because their
+refuters never voted. Each carries a hermetic repro and I verified the load-bearing ones myself
+(TS2554 reproduced; the gold/tier-2 path traced end-to-end; the four tracer lies now have bench checks
+that fail without the fix). **They have NOT had an independent refutation pass.** Benches:
+tracespec 20/20, ladder 43/43, decompose 116/116, hygiene 5/5.
+
 ### 2026-07-27 (gap-soundness — the carve gets a verifier, and effort gets proportional to difficulty)
 
 **Acting on the two things the 2026-07-26 control arm pointed at.** Both were sitting one

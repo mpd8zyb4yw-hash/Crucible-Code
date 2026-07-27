@@ -69,8 +69,15 @@ export interface TraceCall {
   helper: string
   args: unknown[]
   returned: unknown
-  /** Index of the entry case that was running when this call happened. */
+  /**
+   * Index of the entry case that was running when this call happened, or -1 for a call made during
+   * MODULE EVALUATION (before any case ran). -1 deliberately fails the `casePassed[caseIndex]`
+   * lookup in `deriveHelperSpecs`, so such a call proves the helper was REACHED without ever
+   * contributing an I/O witness to a rung's acceptance set.
+   */
   caseIndex: number
+  /** The helper threw instead of returning. Counts as CALLED; contributes no return witness. */
+  threw?: boolean
 }
 
 /** The outcome of running the entry's gold cases against an instrumented module. */
@@ -89,15 +96,27 @@ export interface TraceRun {
 
 const PREFIX = '__crucible_orig_'
 const REC = '__crucible_rec'
+const SNAP = '__crucible_snap'
 
 function esc(s: string): string { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
 
-/** The two declaration forms `instrumentForTrace` can rename-and-wrap, for one helper name. */
+/**
+ * The two declaration forms `instrumentForTrace` can rename-and-wrap, for one helper name.
+ *
+ * TOP-LEVEL ONLY — deliberately no leading-whitespace allowance. Rename-and-wrap hoists a fresh
+ * `export function <name>` to module scope, so it is only sound for a declaration that already
+ * lives there. Matching an INDENTED (nested) declaration renamed it in place while the wrapper went
+ * to module scope, leaving the wrapper's `__crucible_orig_<name>` out of scope: every call through
+ * it threw ReferenceError, which corrupted `casePassed` (and therefore both the derived-spec witness
+ * set and localizeFault) and then reported the helper never-called so the carve's rung was pruned.
+ * A nested helper now simply goes un-instrumented AND un-declared, which is the safe direction: the
+ * dead-rung rule requires BOTH never-called and declared, so it cannot fire on one.
+ */
 function declPatterns(name: string): RegExp[] {
   const n = esc(name)
   return [
-    new RegExp(`(^|\\n)(\\s*)(export\\s+)?function(\\s+)${n}\\s*\\(`, 'g'),
-    new RegExp(`(^|\\n)(\\s*)(export\\s+)?(const|let|var)(\\s+)${n}\\s*=`, 'g'),
+    new RegExp(`(^|\\n)(export\\s+)?function(\\s+)${n}\\s*\\(`, 'g'),
+    new RegExp(`(^|\\n)(export\\s+)?(const|let|var)(\\s+)${n}\\s*=`, 'g'),
   ]
 }
 
@@ -137,25 +156,42 @@ export function instrumentForTrace(src: string, helperNames: string[]): string {
 
     // `export function NAME(` / `function NAME(`  → rename the definition
     out = out.replace(fnDecl,
-      (_m, lead: string, indent: string, _exp: string, sp: string) => `${lead}${indent}function${sp}${PREFIX}${name}(`)
+      (_m, lead: string, _exp: string, sp: string) => `${lead}function${sp}${PREFIX}${name}(`)
 
     // `export const NAME = ` / `const NAME = ` (arrow or function expression)
     out = out.replace(varDecl,
-      (_m, lead: string, indent: string, _exp: string, kind: string, sp: string) => `${lead}${indent}${kind}${sp}${PREFIX}${name} =`)
+      (_m, lead: string, _exp: string, kind: string, sp: string) => `${lead}${kind}${sp}${PREFIX}${name} =`)
 
     if (out !== before) wrapped.push(name)
   }
 
   if (!wrapped.length) return src
 
-  const wrappers = wrapped.map(name =>
-    `export function ${name}(...a) { const r = ${PREFIX}${name}(...a); ${REC}(${JSON.stringify(name)}, a, r); return r }`,
-  ).join('\n')
+  // A THROWING helper must still count as CALLED. Recording only on the normal-return path made
+  // `neverCalled` actually mean "never RETURNED", so any validator/parser rung that signals failure
+  // by throwing looked unreachable and was pruned as a dead branch of the carve.
+  // ARGS ARE SNAPSHOT BEFORE THE CALL. Taking it afterwards observes the arguments the helper has
+  // already MUTATED, which is how `pushAndCount([], 'a') -> 1` was recorded as `[['a'], 'a'] -> 1`
+  // — a pair the helper never produced, installed as the rung's acceptance target.
+  const wrappers = wrapped.map(name => {
+    const n = JSON.stringify(name)
+    return `export function ${name}(...a) { var __a = ${SNAP}(a); ` +
+           `try { var r = ${PREFIX}${name}(...a); ${REC}(${n}, __a, ${SNAP}(r), false); return r } ` +
+           `catch (e) { ${REC}(${n}, __a, null, true); throw e } }`
+  }).join('\n')
 
   // The recorder is declared with `var` and hoisted so a wrapper invoked during module
   // evaluation (a top-level call in the carve) still finds it.
+  //
+  // SNAPSHOT AT CALL TIME, not at end-of-case. Args and return values were previously pushed BY
+  // REFERENCE and serialized only after the case finished, so any helper that mutates an argument
+  // (or returns a container the caller then mutates) had its derived acceptance case rewritten to an
+  // (args → expected) pair no execution ever produced — the exact "rung specified by a wrong value"
+  // shape this module exists to eliminate. A throwing call records its args but NO return witness.
   const preamble =
-    `var ${REC} = (n, a, r) => { (globalThis.__crucible_trace ||= []).push({ helper: n, args: a, returned: r }) };\n`
+    `var ${SNAP} = (v) => { try { return JSON.parse(JSON.stringify(v)) } catch { return null } };\n` +
+    `var ${REC} = (n, a, r, threw) => { (globalThis.__crucible_trace ||= []).push(` +
+    `{ helper: n, args: a, returned: threw ? null : r, threw: !!threw }) };\n`
 
   return `${preamble}${out}\n${wrappers}\n`
 }
@@ -176,6 +212,16 @@ const eq = (a, b) => {
 
 const casePassed = []
 const calls = []
+
+// MODULE-EVALUATION CALLS. The import above is hoisted, so a helper invoked while the module
+// evaluates (a precomputed lookup table, a memo warm-up) has already run before this loop starts.
+// Resetting the buffer at the top of case 0 discarded those calls entirely, so such a helper was
+// reported never-called — and since it IS declared and some case DOES pass, the dead-rung rule
+// fired and pruned a rung the working composition depends on. caseIndex -1 marks them as belonging
+// to no single case, which keeps them out of the per-case witness sets while still proving the
+// helper was reached.
+for (const t of (globalThis.__crucible_trace || [])) calls.push({ ...t, caseIndex: -1 })
+
 for (let i = 0; i < CASES.length; i++) {
   globalThis.__crucible_trace = []
   const c = CASES[i]
@@ -183,14 +229,8 @@ for (let i = 0; i < CASES.length; i++) {
   let ok = false
   try { ok = typeof fn === 'function' && eq(fn(...c.args), c.expected) } catch { ok = false }
   casePassed.push(ok)
-  for (const t of (globalThis.__crucible_trace || [])) {
-    // Serialize defensively: a helper may return a Map/Set/undefined the JSON round-trip
-    // cannot represent, and a trace that crashes the runner is worse than a lossy one.
-    let args, returned
-    try { args = JSON.parse(JSON.stringify(t.args)) } catch { args = null }
-    try { returned = JSON.parse(JSON.stringify(t.returned)) } catch { returned = null }
-    calls.push({ helper: t.helper, args, returned, caseIndex: i })
-  }
+  // Already snapshot-serialized inside the recorder, at call time.
+  for (const t of (globalThis.__crucible_trace || [])) calls.push({ ...t, caseIndex: i })
 }
 process.stdout.write('\\n' + JSON.stringify({ __trace: true, casePassed, calls }) + '\\n')
 `
@@ -266,6 +306,9 @@ export function deriveHelperSpecs(run: TraceRun): DerivedSpec[] {
   const byHelper = new Map<string, TraceCall[]>()
   for (const c of run.calls) {
     if (!run.casePassed[c.caseIndex]) continue
+    // A thrown call witnessed no return value. Admitting it would install `expected: null` as the
+    // rung's acceptance for those args — a value the helper never produced.
+    if (c.threw) continue
     const list = byHelper.get(c.helper)
     if (list) list.push(c); else byHelper.set(c.helper, [c])
   }

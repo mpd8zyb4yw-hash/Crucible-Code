@@ -14,7 +14,7 @@
 
 import {
   instrumentForTrace, traceEntryCases, deriveHelperSpecs, localizeFault,
-  isNonDiscriminating, describeLocalization,
+  isNonDiscriminating, describeLocalization, declaredHelpers,
 } from './traceSpec'
 import type { CodeAcceptance } from './codeVerifier'
 
@@ -148,6 +148,88 @@ async function main(): Promise<void> {
   check('dead rung is described as a dead branch of the carve',
     deadLines.some(l => l.includes('isBracketPair') && l.includes('NEVER CALLED')),
     deadLines.join(' | '))
+
+  // ── 4b. FALSE-DEAD and FALSE-WITNESS regressions (2026-07-27) ─────────────────
+  // Four ways the tracer used to lie. Each made `neverCalled` mean something other than "the
+  // composition does not need this", or put a value in a rung's acceptance set that no execution
+  // ever produced. All four are pruning/spec decisions, so a lie here throws away a good carve or
+  // grinds a rung against an impossible target.
+
+  // (a) A helper that signals by THROWING was recorded only on the normal-return path, so
+  //     "never called" actually meant "never returned" and the rung was pruned as unreachable.
+  const THROWS = `
+export function strictHead(a) { if (!a.length) throw new Error('empty'); return a[0] }
+export function sum(a) { return a.reduce((x, y) => x + y, 0) }
+export function headOrSum(a) { try { return strictHead(a) } catch { return sum(a) } }
+`
+  const thrownAcc: CodeAcceptance = { entry: 'headOrSum', cases: [
+    { args: [[]], expected: 0 }, { args: [[5, 1]], expected: 5 },
+  ] }
+  const thrown = await traceEntryCases(THROWS, ['strictHead', 'sum'], thrownAcc)
+  check('a THROWING helper is still recorded as called (not a dead rung)',
+    !thrown.neverCalled.includes('strictHead'),
+    `neverCalled = ${JSON.stringify(thrown.neverCalled)}`)
+  const strictSpec = deriveHelperSpecs(thrown).find(s => s.helper === 'strictHead')
+  check('a thrown call contributes NO return witness to the derived spec',
+    !strictSpec || !strictSpec.cases.some(c => c.expected === null),
+    `strictHead cases = ${JSON.stringify(strictSpec?.cases ?? [])}`)
+
+  // (b) A helper invoked only while the MODULE EVALUATES (a precomputed table) was wiped by the
+  //     per-case trace reset, so it looked never-called while being load-bearing.
+  const BOOT = `
+export function buildTable() { return { I: 1, V: 5, X: 10 } }
+const TABLE = buildTable()
+export function valueOf(ch) { return TABLE[ch] ?? 0 }
+export function romanSum(s) { let t = 0; for (const ch of s) t += valueOf(ch); return t }
+`
+  const bootAcc: CodeAcceptance = { entry: 'romanSum', cases: [
+    { args: ['II'], expected: 2 }, { args: ['XV'], expected: 15 },
+  ] }
+  const boot = await traceEntryCases(BOOT, ['buildTable', 'valueOf'], bootAcc)
+  check('a module-evaluation-only helper is NOT reported never-called',
+    !boot.neverCalled.includes('buildTable'),
+    `casePassed=${JSON.stringify(boot.casePassed)} neverCalled=${JSON.stringify(boot.neverCalled)}`)
+  const bootSpec = deriveHelperSpecs(boot).find(s => s.helper === 'buildTable')
+  check('...but contributes no per-case witness either (caseIndex -1)',
+    !bootSpec || bootSpec.cases.length === 0,
+    `buildTable cases = ${JSON.stringify(bootSpec?.cases ?? [])}`)
+
+  // (c) Args were stored BY REFERENCE and serialized at end-of-case, so a helper that mutates an
+  //     argument had its spec rewritten to an (args -> expected) pair it never produced.
+  const MUT = `
+export function pushAndCount(acc, x) { acc.push(x); return acc.length }
+export function countUp(s) { const acc = []; for (const ch of s) pushAndCount(acc, ch); return acc.length }
+`
+  const mutAcc: CodeAcceptance = { entry: 'countUp', cases: [
+    { args: ['ab'], expected: 2 }, { args: ['xyz'], expected: 3 },
+  ] }
+  const mut = await traceEntryCases(MUT, ['pushAndCount'], mutAcc)
+  const mutSpec = deriveHelperSpecs(mut).find(s => s.helper === 'pushAndCount')
+  const firstCall = mutSpec?.cases.find(c => c.expected === 1)
+  check('a MUTATING helper derives the args as they were AT CALL TIME',
+    !!firstCall && Array.isArray((firstCall.args as unknown[])[0]) &&
+      ((firstCall.args as unknown[])[0] as unknown[]).length === 0,
+    `expected===1 case = ${JSON.stringify(firstCall ?? null)}`)
+
+  // (d) `declPatterns` allowed leading indentation, so a NESTED declaration counted as declared;
+  //     instrumenting it renamed the inner definition while hoisting the wrapper to module scope,
+  //     leaving __crucible_orig_* out of scope and throwing ReferenceError on every call.
+  const NESTED = `
+export function classify(n) {
+  function isBig(x) { return x > 100 }
+  return n === 0 ? 'zero' : (isBig(n) ? 'big' : 'small')
+}
+`
+  check('a NESTED declaration is not reported as declared-and-instrumentable',
+    declaredHelpers(NESTED, ['isBig']).length === 0,
+    `declaredHelpers = ${JSON.stringify(declaredHelpers(NESTED, ['isBig']))}`)
+  const nestedAcc: CodeAcceptance = { entry: 'classify', cases: [
+    { args: [0], expected: 'zero' }, { args: [5], expected: 'small' }, { args: [200], expected: 'big' },
+  ] }
+  const nested = await traceEntryCases(NESTED, ['isBig'], nestedAcc)
+  check('instrumenting a nested helper does not corrupt the entry\'s own results',
+    nested.casePassed.length === 3 && nested.casePassed.every(Boolean),
+    `casePassed = ${JSON.stringify(nested.casePassed)} error=${nested.error ?? 'none'}`)
 
   // ── 5. cost ───────────────────────────────────────────────────────────────────
   const t0 = Date.now()

@@ -17,59 +17,77 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-27 (gap-soundness) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-27b (gap-soundness) (REPLACE THIS EVERY SESSION)
 
-> **2026-07-27 shipped the two integrations 2026-07-26's control arm pointed at. The four
-> overturned premises below are still load-bearing — read them before writing any code.**
+> **The ladder is measured and it is the biggest routing win the project has had. The same session
+> found a SOUNDNESS regression in it and three functional bugs. Read the three traps below before
+> writing code or trusting any number.**
 
-### SHIPPED 2026-07-27 — the carve got a verifier, and effort got proportional to difficulty
+### THE NUMBER — the ladder solves 14/15; decomposition alone solves 1/15
 
-**1. `traceCarve.ts` + `npm run ladder:bench` (43/43 hermetic).** `traceSpec.ts` is no longer
-uncalled. `decomposeCodeBySubFunction` now spends ONE draw drafting the whole carve and ~40ms
-tracing it BEFORE any rung budget: it sometimes just solves the task (certified by `verifyCode`
-against the ORIGINAL cases), it replaces the planner's INVENTED helper outputs with I/O witnessed on
-gold cases the entry PASSED, and it prunes rungs a working composition never calls.
-`localizeFault` now skews the per-rung budget (1.5× the suspect, 0.6× a rung the draft got right)
-instead of spending it uniformly. Gated to the FM-general path at depth 0 — a caller-supplied
-planner (every hermetic bench) and template classes are exempt, which is why `vgr:decompose` stayed
-116/116.
+Both arms, n=3, same goal/entry/cases, `CRUCIBLE_NO_DISTILL=1`, 180s ceiling, head confirmed
+`qwen2.5-1.5b`. `GEN_SCORECARD_RUNS=3 GEN_SCORECARD_TASK_WALL_MS=180000`.
 
-**The rule that makes the dead-rung signal safe, and DO NOT WEAKEN IT:** `neverCalled` cannot tell
-"the composition doesn't need this helper" from "this draw ignored the plan". Measured: every
-hermetic decompose-bench proposer's cold draw marks EVERY helper never-called at suspicion 1.0. A
-rung is dead only when the draft passed ≥1 gold case AND declared the helper in an instrumentable
-form (`declaredHelpers`).
+| task | LADDER | calls | wall | tiers | DECOMPOSE alone |
+|---|---|---|---|---|---|
+| `romanToInt`       | **3/3** | 4 | 15s | 0,0,0 | 1/3 (1 call, `probe:romanToInt`) |
+| `intToRoman`       | **3/3** | 4 | 22s | 0,0,0 | 0/3 (27 calls, 182s) |
+| `compressRuns`     | **3/3** | 4 | 12s | 0,0,0 | 0/3 (35 calls, 181s) |
+| `isBalanced`       | **3/3** | 4 | 17s | 0,0,1 | 0/3 (43 calls, 182s) |
+| `wordFrequencyTop` | **2/3** | 5 | 53s | 0,1   | 0/3 (36 calls, 182s) |
+| **total** | **14/15** | | | **t0:12 t1:2** | **1/15** |
 
-**2. The escalation ladder — `solveByLadder` in `solve.ts`.** All three case-based spec tiers route
-through it; it stops at the first tier that certifies and REPORTS WHICH (`result.tier`,
-`result.ladder`). tier 0 = K concurrent blind draws + free repair sweep · tier 1 = converge/serial
-search + mechanical repair · tier 2 = model-free operators · tier 3 = decomposition. Tiers feed each
-other: tier 0's best failing draw becomes tier 1's `buggyCode`; tier 2's poisoned-case recovery reads
-tier 0's blind draws (the most INDEPENDENT impls the system produces).
+2026-07-26's control arm had `isBalanced` and `wordFrequencyTop` at 0/3. **The gain is ROUTING, not a
+better carve.** 12 of 14 solves are tier 0 (K=4 blind draws + free mechanical repair, ~12–22s). Tier 2
+earned nothing. Tier 3 earned nothing. Four sessions went into the tier that does not do the work.
 
-**3. `__decompose_general_scorecard_live.ts` measures the SYSTEM now**, with decomposition as a
-permanent control column (`GEN_SCORECARD_ARM=both|ladder|decompose`, default `both`) and a
-solves-by-tier histogram.
+**Still unmeasured:** a tier-0 solve never reaches `traceCarve.ts`, so the carve probe has one live
+data point (`probe:romanToInt`, 1 call) and no isolated A/B. `CRUCIBLE_CARVE_PROBE=0` vs `=1` on
+`GEN_SCORECARD_ARM=decompose` is the experiment; the switch EXISTS (`solve.ts:797`).
 
-**LIVE (`CRUCIBLE_NO_DISTILL=1`, 300s cap, both arms, same goal/entry/cases, qwen2.5-1.5b):**
+### FIXED THIS SESSION — one soundness regression, three functional bugs
 
-| task | LADDER (the system) | DECOMPOSE alone (control) | 25e baseline |
-|---|---|---|---|
-| `romanToInt` | **solved @tier 0**, 4 calls, 22s | **solved, 1 call, 30s** (`probe:romanToInt`) | solved, 16 calls, 62s |
+1. **SOUNDNESS (shipped in aab9a79, lived one commit).** Tier 2's `recoverFromPoisonedCase` DELETES an
+   acceptance case when ≥2 drafts agree it is wrong — warranted only against a MODEL-INVENTED value.
+   aab9a79 routed the GOLD path (user's own examples, no-op gate) through it, so two drafts sharing a
+   mistake could erase a requirement the USER typed and still return `status: 'solved'`. Fixed via an
+   explicit `casesAreGold` parameter. **Do not re-route gold through tier 2.**
+2. **`glueCarry` was silently discarded** — passed as a 4th argument to a 3-parameter
+   `decomposeCodeBySubFunction`. The glue level always started with an empty carry map; aab9a79's
+   `helperPlan`→`rungPlan` seeding fix was dead code. Now a real `carrySeed` parameter.
+3. **`templated` skipped tiers 1 AND 2** assuming tier 3 would run, but tier 3 needs ≥3 cases and a
+   single entry. A templated 2-example or multi-function task ran ONLY tier 0 then abstained — worse
+   than the pre-ladder path. Now gated on the carve being reachable.
+4. **`ladderTier0` billed 0 calls** when every slot decoded empty (timeout / silent apple-fm fallback).
+   Now charges `k`.
+5. **Four tracer lies** (`tracespec:bench` 13→20): a THROWING helper counted as never-called; a
+   MODULE-EVAL-only helper counted as never-called; a MUTATING helper's args were snapshot after the
+   mutation, fabricating its derived spec; a NESTED declaration was treated as instrumentable and
+   rename-and-wrap then broke scope, corrupting `casePassed` itself.
 
-**CORRECTION to the handoff's own estimate:** tier 0 at K=4 costs **~22s, not ~6s**. That is
-consistent with premise 3 below (concurrency is 1.2×, not 4×) — the "~6s" figure assumed a parallel
-speedup that measurement had already ruled out. Do not re-derive plans from the 6s number.
+---
 
-### ⚠ READ THIS BEFORE RUNNING ANY LIVE BENCH FROM A WORKTREE
+### ⚠ TRAP 1 — `tsc` DOES NOT TYPECHECK THE REASONING ENGINE
 
-**A live bench run from `.claude/worktrees/*` silently measures `apple-fm`, NOT the local head.**
-`useLocalHead()` (`agent/fmReact.ts`) requires `isBonsaiInstalled()`, which stats
-`<repo>/.crucible/{prismml-bin,models}` — gitignored, so it exists only in the MAIN repo. The check
-fails and `callFm` falls through to the Apple FM daemon with **no warning**, while
-`curl :8080/health` still returns ok so the head looks up. apple-fm also **ignores `grammar`**, so
-every GBNF-constrained call degrades to free text — the sub-function planner returned NULL on 2 of 3
-draws and emitted Python prose, which reads as a planner-quality bug and is not one.
+`tsconfig.json` is `{"files": [], "references": [app, node]}`; `tsconfig.app.json` EXCLUDES
+`src/CrucibleEngine`; `tsconfig.server.json` includes it but is referenced by NOTHING and run by no
+npm script. **`npx tsc --noEmit -p tsconfig.json` exits 0 having checked none of it** — that is how a
+`TS2554: Expected 1-3 arguments, but got 4` sat in `solve.ts:1005` unnoticed. To actually typecheck:
+
+```bash
+npx tsc --noEmit --ignoreConfig --skipLibCheck --module esnext --moduleResolution bundler \
+  --target es2022 --lib ES2023 src/CrucibleEngine/reasoning/solve.ts
+```
+
+The engine has 23+ pre-existing errors under real flags, so grep for the file/rule you care about
+rather than expecting a clean exit. **Wiring this into a script is an open item.**
+
+### ⚠ TRAP 2 — a live bench from a worktree silently measures `apple-fm`
+
+`useLocalHead()` requires `isBonsaiInstalled()`, which stats `<repo>/.crucible/` — gitignored, so it
+exists only in the MAIN repo. The check fails and `callFm` falls through to Apple FM with NO warning,
+while `curl :8080/health` still returns ok. apple-fm also IGNORES `grammar`, so every GBNF-constrained
+call degrades to free text and the sub-function planner looks like it has a JSON bug it does not have.
 
 ```bash
 MAIN=/Users/justin/crucible-local/crucible-local
@@ -77,9 +95,16 @@ export CRUCIBLE_BONSAI_BIN=$MAIN/.crucible/prismml-bin/llama-server
 export CRUCIBLE_BONSAI_MODEL=$MAIN/.crucible/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
 ```
 
-Confirm `headModelName()` prints `qwen2.5-1.5b` before trusting a number. The same `romanToInt` run
-flipped from "decompose-FAILED, 0 calls" to "solved, 1 call" purely from this. **The `isBalanced`
-0/1 result taken earlier this session is INVALID for the same reason and must be re-run.**
+Confirm `headModelName()` prints `qwen2.5-1.5b` before trusting any number.
+
+### ⚠ TRAP 3 — an empty `grep` is not proof of absence
+
+A single raw control byte makes `file(1)` report `data` and grep treat the file as BINARY: no matches,
+no warning, exit 1. A NUL in `rungSpecKey` did this to `solve.ts` and produced two confidently wrong
+conclusions in one session (that `traceCarve.ts` was unwired; that `CRUCIBLE_CARVE_PROBE` did not
+exist — both false). Now enforced by `npm run hygiene:bench` over all tracked .ts/.tsx. If a grep you
+expect to hit comes back empty, run `file -b <path>` before concluding anything, and never trust `$?`
+from `grep ... | head` (that is head's status).
 
 ---
 
@@ -141,28 +166,28 @@ verifier.** A bad carve is only discovered after ~90 wasted calls.
 
 ### OPEN — next priorities (highest leverage first)
 
-1. **Run the FULL 5-task general scorecard on both arms, n≥3, WITH THE HEAD ENV SET** (see the
-   worktree warning above) — `GEN_SCORECARD_RUNS=3 GEN_SCORECARD_TASK_WALL_MS=300000
-   CRUCIBLE_NO_DISTILL=1 npx tsx src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts`.
-   Only `romanToInt` has a valid n=1 number. The ladder's headline number and the solves-by-tier
-   histogram are unmeasured at n≥3, and everything below depends on knowing which tier earns solves.
-2. **Measure the carve probe's ISOLATED effect with `CRUCIBLE_CARVE_PROBE=0` vs `=1` on the
-   `decompose` arm only.** Right now a ladder solve can come from tier 0 and never exercise
-   `traceCarve.ts` at all, so the probe's contribution to carve quality — the derived rung specs,
-   the dead-rung pruning, the `skewRungBudget` skew — is UNMEASURED end-to-end. It is proven at unit
-   level (43/43) and reasoned about; do not quote it as a scorecard win until this A/B exists.
-3. **Re-measure the template 15/15 under `CRUCIBLE_NO_DISTILL=1`** and confirm nothing in
-   `synth/skills/_learned/` overlaps those tasks. The control arm makes the template number look
-   like real capability; that inference is only safe if no memorized catalog entry is behind it,
-   and that has still NOT been verified.
-4. **Tune `CRUCIBLE_LADDER_K`.** It defaults to 4 and is clamped to half the caller's flat budget.
-   K=4 measured 27s, so the tier-0/tier-1 crossover is much closer than assumed — K=2 may dominate
-   on wall clock, and the pass@k curve says 4–8 is where the marginal draw still pays. These two
-   pull opposite ways and nobody has measured the product.
-5. **Teach `search.ts` to accept seed history so tier 0's draws are not thrown away.** Today tier 0's
-   information reaches tier 1 only as `buggyCode` (one candidate). The other K−1 verified failing
-   attempts are discarded, and `search()` has no way to be handed a starting history — that is the
-   remaining structural waste in the ladder.
+1. **Give the reasoning engine a REAL typecheck script** (`npm run typecheck:engine`, wired to
+   `tsconfig.server.json` with a working `module` setting) and burn down the 23+ existing errors. A
+   dropped 4th argument survived review, benches and a "clean" tsc run; nothing else on this list
+   matters if the compiler is not looking. Start with `search.ts:61` and `solve.ts:196` (the
+   `SearchOpts<unknown>` vs `<string>` variance), which are real.
+2. **A/B the carve probe in isolation** — `CRUCIBLE_CARVE_PROBE=0` vs `=1`, `GEN_SCORECARD_ARM=decompose`,
+   n≥3. Tier 0 short-circuits the probe on every easy task, so `traceCarve.ts` has ONE live data point.
+   If the probe does not move the decompose arm, the honest conclusion is that the carve is not the
+   bottleneck and `traceCarve.ts` should be judged on that.
+3. **Independently refute the 13 findings from the 2026-07-27b review.** The refutation workflow died
+   on a session limit (42/46 agents errored); the findings were recovered from the run journal and only
+   self-verified. Unrefuted claims still open: post-prune gates (`isNonComposingCarve` and
+   `isRebakedHelper` are never re-run after the dead-rung prune, `solve.ts:817`/`:823`) and
+   `rungSpecKey` not capturing sibling context (`solve.ts:847`).
+4. **Decide what tier 3 is FOR.** It earned 0 of 14 solves and costs 27–43 calls when it runs. Either
+   it justifies itself on a task class the flat tiers provably cannot reach (the template 15/15 is the
+   candidate — and is itself unverified against `_learned/` memorization), or it should stop being the
+   default escalation.
+5. **Make the budget subtractive, or stop claiming a ceiling.** No tier decrements `opts.maxModelCalls`;
+   tier 1 gets the full budget after tier 0 spent K, and tier 3's per-rung budgets are unbounded by it.
+   Only the AbortSignal binds. The docstring now says so honestly, but any "solved within N calls"
+   claim remains unsupported until this is real.
 
 ---
 

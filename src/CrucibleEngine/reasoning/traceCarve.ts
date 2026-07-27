@@ -200,12 +200,12 @@ export function skewRungBudget(
       : 1
   if (scale === 1) return { ...(base ?? {}) }
 
-  const out = { ...(base ?? {}) } as Partial<IterateOpts<string>> & Record<string, unknown>
-  const bend = (v: unknown, floor: number) =>
+  const out: Partial<IterateOpts<string>> = { ...(base ?? {}) }
+  const bend = (v: number | undefined, floor: number): number | undefined =>
     typeof v === 'number' && Number.isFinite(v) ? Math.max(floor, Math.round(v * scale)) : v
-  if ('globalModelCalls' in out) out.globalModelCalls = bend(out.globalModelCalls, 3)
-  if ('wallClockMs' in out) out.wallClockMs = bend(out.wallClockMs, 30_000)
-  if ('maxEpochs' in out) out.maxEpochs = bend(out.maxEpochs, 2)
+  if (out.globalModelCalls !== undefined) out.globalModelCalls = bend(out.globalModelCalls, 3)
+  if (out.wallClockMs !== undefined) out.wallClockMs = bend(out.wallClockMs, 30_000)
+  if (out.maxEpochs !== undefined) out.maxEpochs = bend(out.maxEpochs, 2)
   return out
 }
 
