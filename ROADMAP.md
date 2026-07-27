@@ -1980,11 +1980,27 @@ implementations the system produces, which is exactly what its cross-derivation 
 The old arithmetic-class early-carve routing survives inside the ladder (template classes skip tiers
 1–2) but now takes the cheap tier-0 ticket first.
 
-**LIVE, both arms, same goal/entry/cases, `CRUCIBLE_NO_DISTILL=1`, 300s cap:**
+**LIVE, both arms, same goal/entry/cases, `CRUCIBLE_NO_DISTILL=1`, 300s cap, qwen2.5-1.5b head:**
 
 | task | LADDER (the system) | DECOMPOSE alone (control) | 25e baseline |
 |---|---|---|---|
-| `romanToInt` | **solved @tier 0**, 4 calls, 27s | decompose-FAILED, 0 calls, 27s | solved, 16 calls, 62s |
+| `romanToInt` | **solved @tier 0**, 4 calls, 22s | **solved, 1 call, 30s** (`probe:romanToInt`) | solved, 16 calls, 62s |
+
+Both mechanisms fired and both beat the baseline. Note the carve probe (1 call) beat tier 0's blind
+draws (4 calls) on call count — its draw is CARVE-GUIDED (handed the helper sketch) where tier 0's
+is blind, which is a hypothesis worth testing properly, not a result.
+
+**MEASUREMENT TRAP FOUND AND RECORDED — every live bench run from a git WORKTREE silently measures
+`apple-fm`, not the local head.** `useLocalHead()` requires `isBonsaiInstalled()`, which stats
+`<repo>/.crucible/{prismml-bin,models}` — gitignored, so present only in the MAIN repo and never in a
+worktree. The check fails and `callFm` falls through to the Apple FM daemon with no warning, while
+`curl :8080/health` still returns ok so the head looks up. Worse, apple-fm ignores the `grammar`
+field, so every GBNF-constrained call degrades to free text: the sub-function planner returned NULL
+on 2 of 3 draws and emitted Python prose, which reads as a planner-quality bug and is not one. The
+FIRST run of the table above was taken this way and reported `romanToInt` as decompose-FAILED at 0
+calls; re-run against the real head it is a 1-call solve. Before trusting any live number, export
+`CRUCIBLE_BONSAI_BIN` + `CRUCIBLE_BONSAI_MODEL` at the main repo's copies and confirm
+`headModelName()` prints `qwen2.5-1.5b`.
 
 **3. `__decompose_general_scorecard_live.ts` now measures the SYSTEM, not one tier.** It called
 `decomposeCodeBySubFunction` directly — every general number ever recorded came from a single tier,

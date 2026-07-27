@@ -51,15 +51,35 @@ tier 0's blind draws (the most INDEPENDENT impls the system produces).
 permanent control column (`GEN_SCORECARD_ARM=both|ladder|decompose`, default `both`) and a
 solves-by-tier histogram.
 
-**LIVE (`CRUCIBLE_NO_DISTILL=1`, 300s cap, both arms, same goal/entry/cases):**
+**LIVE (`CRUCIBLE_NO_DISTILL=1`, 300s cap, both arms, same goal/entry/cases, qwen2.5-1.5b):**
 
 | task | LADDER (the system) | DECOMPOSE alone (control) | 25e baseline |
 |---|---|---|---|
-| `romanToInt` | **solved @tier 0**, 4 calls, 27s | decompose-FAILED, 0 calls, 27s | solved, 16 calls, 62s |
+| `romanToInt` | **solved @tier 0**, 4 calls, 22s | **solved, 1 call, 30s** (`probe:romanToInt`) | solved, 16 calls, 62s |
 
-**CORRECTION to the handoff's own estimate:** tier 0 at K=4 costs **~27s, not ~6s**. That is
+**CORRECTION to the handoff's own estimate:** tier 0 at K=4 costs **~22s, not ~6s**. That is
 consistent with premise 3 below (concurrency is 1.2×, not 4×) — the "~6s" figure assumed a parallel
 speedup that measurement had already ruled out. Do not re-derive plans from the 6s number.
+
+### ⚠ READ THIS BEFORE RUNNING ANY LIVE BENCH FROM A WORKTREE
+
+**A live bench run from `.claude/worktrees/*` silently measures `apple-fm`, NOT the local head.**
+`useLocalHead()` (`agent/fmReact.ts`) requires `isBonsaiInstalled()`, which stats
+`<repo>/.crucible/{prismml-bin,models}` — gitignored, so it exists only in the MAIN repo. The check
+fails and `callFm` falls through to the Apple FM daemon with **no warning**, while
+`curl :8080/health` still returns ok so the head looks up. apple-fm also **ignores `grammar`**, so
+every GBNF-constrained call degrades to free text — the sub-function planner returned NULL on 2 of 3
+draws and emitted Python prose, which reads as a planner-quality bug and is not one.
+
+```bash
+MAIN=/Users/justin/crucible-local/crucible-local
+export CRUCIBLE_BONSAI_BIN=$MAIN/.crucible/prismml-bin/llama-server
+export CRUCIBLE_BONSAI_MODEL=$MAIN/.crucible/models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+```
+
+Confirm `headModelName()` prints `qwen2.5-1.5b` before trusting a number. The same `romanToInt` run
+flipped from "decompose-FAILED, 0 calls" to "solved, 1 call" purely from this. **The `isBalanced`
+0/1 result taken earlier this session is INVALID for the same reason and must be re-run.**
 
 ---
 
@@ -121,12 +141,11 @@ verifier.** A bad carve is only discovered after ~90 wasted calls.
 
 ### OPEN — next priorities (highest leverage first)
 
-1. **Run the FULL 5-task general scorecard on both arms, n≥3** — `GEN_SCORECARD_RUNS=3
-   GEN_SCORECARD_TASK_WALL_MS=300000 CRUCIBLE_NO_DISTILL=1 npx tsx
-   src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts`. Only `romanToInt` (ladder
-   tier 0, 4 calls/27s vs decompose-FAILED) and `isBalanced` have been run at n=1. The ladder's
-   headline number and the solves-by-tier histogram are both currently unmeasured at n≥3, and
-   everything below depends on knowing which tier actually earns the solves.
+1. **Run the FULL 5-task general scorecard on both arms, n≥3, WITH THE HEAD ENV SET** (see the
+   worktree warning above) — `GEN_SCORECARD_RUNS=3 GEN_SCORECARD_TASK_WALL_MS=300000
+   CRUCIBLE_NO_DISTILL=1 npx tsx src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts`.
+   Only `romanToInt` has a valid n=1 number. The ladder's headline number and the solves-by-tier
+   histogram are unmeasured at n≥3, and everything below depends on knowing which tier earns solves.
 2. **Measure the carve probe's ISOLATED effect with `CRUCIBLE_CARVE_PROBE=0` vs `=1` on the
    `decompose` arm only.** Right now a ladder solve can come from tier 0 and never exercise
    `traceCarve.ts` at all, so the probe's contribution to carve quality — the derived rung specs,
