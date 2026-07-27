@@ -37,6 +37,27 @@ function messageText(msg: any): string {
   return stripThink(r)
 }
 
+/**
+ * Narrow a raw `res.json()` — typed `unknown`, because it is an untrusted network payload — down to
+ * the one field we read: `choices[0].message`. A cast would assert a shape we never checked, which
+ * is oracle-trust in a remote provider; this VERIFIES it and returns undefined when the body is not
+ * the OpenAI completion shape. Undefined is exactly what the previous `data.choices?.[0]?.message`
+ * produced, and both consumers already treat it as "no text, no tool calls", so behaviour is
+ * unchanged for every real body. (Known residual, unchanged by this edit: a 200 carrying an
+ * `{error:…}` envelope still degrades to empty text rather than throwing. Making it throw would
+ * change provider-fallback semantics, so it stays a separate decision.)
+ */
+function firstChoiceMessage(body: unknown): Record<string, unknown> | undefined {
+  if (typeof body !== 'object' || body === null) return undefined
+  const choices = (body as { choices?: unknown }).choices
+  if (!Array.isArray(choices)) return undefined
+  const first: unknown = choices[0]
+  if (typeof first !== 'object' || first === null) return undefined
+  const message = (first as { message?: unknown }).message
+  if (typeof message !== 'object' || message === null) return undefined
+  return message as Record<string, unknown>
+}
+
 export function currentDriverLabel(): string {
   return selectDriverCandidates()[0]?.label ?? '(none)'
 }
@@ -117,8 +138,7 @@ async function turnOnModel(
       }),
     })
     if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`)
-    const data = await res.json()
-    const msg = data.choices?.[0]?.message
+    const msg = firstChoiceMessage(await res.json())
     return { text: messageText(msg), toolCalls: fromOpenAIToolCalls(msg) }
   }
 

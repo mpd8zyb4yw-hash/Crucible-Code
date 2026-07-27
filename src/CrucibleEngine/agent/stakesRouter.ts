@@ -58,11 +58,6 @@ const EXPLICIT_VERBS: Record<string, RegExp> = {
   create_tool: /\b(delete|remove|erase|wipe|overwrite|shell out|run (?:a |an )?(?:arbitrary|shell) command)\b/i,
 }
 
-function destructiveRunMatch(command: string): { label: string; blastRadius: 'narrow' | 'wide' } | null {
-  for (const p of DESTRUCTIVE_RUN_PATTERNS) if (p.re.test(command)) return { label: p.label, blastRadius: p.blastRadius }
-  return null
-}
-
 export function assessStakes(toolName: string, args: Record<string, unknown>, goal: string): StakesAssessment {
   let irreversibleLabel: string | null = null
   let blastRadius: 'narrow' | 'wide' = 'narrow'

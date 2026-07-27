@@ -123,7 +123,7 @@ export function repairGoal(t: FaultTarget): string {
 export async function runFaultTrial(
   t: FaultTarget,
   mutation: Mutation,
-  opts: SearchOpts & { proposer?: Proposer<string> } = {},
+  opts: SearchOpts<string> & { proposer?: Proposer<string> } = {},
 ): Promise<FaultTrial> {
   const mutated = mutation.apply(t.code)
   if (mutated === null || mutated === t.code) {
@@ -160,7 +160,7 @@ export async function runFaultTrial(
 /** Full sweep: every target × every mutation, aggregated. */
 export async function runFaultSuite(
   targets: FaultTarget[],
-  opts: SearchOpts & { proposer?: Proposer<string>; mutations?: Mutation[] } = {},
+  opts: SearchOpts<string> & { proposer?: Proposer<string>; mutations?: Mutation[] } = {},
 ): Promise<FaultReport> {
   const muts = opts.mutations ?? MUTATIONS
   const trials: FaultTrial[] = []

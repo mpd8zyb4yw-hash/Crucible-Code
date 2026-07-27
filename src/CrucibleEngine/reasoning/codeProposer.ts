@@ -183,11 +183,30 @@ export function pickFeedbackAttempts(history: Attempt[]): { shown: Attempt[]; be
 }
 
 /**
+ * Everything ONE draw needs from the prompt builder: the two message bodies PLUS the sampling knobs
+ * the anti-anchor escalation sets. `topP`/`seed` are OPTIONAL and stay `undefined` on the calm path —
+ * every transport below omits an absent knob entirely, so the backend keeps its own default.
+ *
+ * This shape was previously written inline WITHOUT topP/seed while the function returned them
+ * anyway, so the return statement was an excess-property error and every destructure a TS2339.
+ * Nothing caught it because `tsc -p tsconfig.json` typechecks none of src/CrucibleEngine.
+ */
+export interface ProposalPrompt {
+  system: string
+  user: string
+  temperature: number
+  /** Nucleus cutoff — set only once anchoring is detected; undefined ⇒ backend default. */
+  topP?: number
+  /** Per-draw RNG stream — set only once anchoring is detected; undefined ⇒ backend default. */
+  seed?: number
+}
+
+/**
  * The full proposal prompt for a given search state — extracted so ANY local engine
  * (Apple FM, MiniCPM, a future GGUF) can be benched as a proposer with IDENTICAL
  * prompting (see __fault_headtohead.ts). Pure + deterministic.
  */
-export function buildProposalPrompt(ctx: ProposeContext<string>): { system: string; user: string; temperature: number } {
+export function buildProposalPrompt(ctx: ProposeContext<string>): ProposalPrompt {
   const { spec, history, diversify } = ctx
   const acc = spec.acceptance as { entry: string; entries?: string[]; cases?: Array<{ args: unknown[]; entry?: string }> }
   const multi = acc.entries && acc.entries.length > 1 ? acc.entries : null

@@ -375,6 +375,12 @@ export async function bonsaiCompleteBatch(
       }
       if (!opts.think) body.chat_template_kwargs = { enable_thinking: false }
       if (opts.gbnf) body.grammar = opts.gbnf
+      // The SAME sampling knobs bonsaiComplete maps (see above). Omitted from this body originally,
+      // so the concurrent path silently ignored an anti-anchor top_p/seed even when the caller set
+      // one — while the `IS_BIG || length === 1` branch above, which delegates to bonsaiComplete,
+      // honoured them. Two paths, two behaviours, from the same opts. Now identical.
+      if (typeof opts.topP === 'number') body.top_p = opts.topP
+      if (typeof opts.seed === 'number') body.seed = opts.seed
       const res = await fetch(`${BASE}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

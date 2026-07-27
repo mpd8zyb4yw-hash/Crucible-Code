@@ -126,7 +126,7 @@ export function batchBudget(opts: SearchOpts<string>): { proposalsPerNode: numbe
  */
 export async function solveCodeTask(
   input: SolveCodeInput,
-  opts: SearchOpts = {},
+  opts: SearchOpts<string> = {},
   proposerOverride?: Proposer<string>,
 ): Promise<SearchResult<string>> {
   const acceptance = {
@@ -638,8 +638,15 @@ export function isRebakedHelper(
  */
 export function isNonComposingCarve(
   hasCustomPlanner: boolean,
-  plan: { cases?: { args: unknown[] }[] }[],
-  entryCases: { args: unknown[] }[],
+  // `expected` is declared-but-unused ON PURPOSE. This gate reads ARG SHAPES only, but every real
+  // caller passes full acceptance cases which DO carry `expected`; an element type without it made
+  // those literals excess-property errors, which is why both call sites in this file reached for
+  // `as any` — and an `as any` on the plan is exactly how a wrong-shaped carve would slip past a
+  // gate whose whole job is to reject wrong-shaped carves. Declaring the field lets the casts go.
+  // `name`/`goal` likewise: unread here, but present on every real `SubFunctionSpec`, and without
+  // them an inline plan literal (the unit bench) is an excess-property error.
+  plan: { name?: string; goal?: string; cases?: { args: unknown[]; expected?: unknown }[] }[],
+  entryCases: { args: unknown[]; expected?: unknown }[],
   hasTemplate: boolean,
 ): boolean {
   if (hasCustomPlanner || hasTemplate) return false
@@ -671,7 +678,12 @@ export function subLevelIterateBudget(
   scale = 0.6,
 ): Partial<IterateOpts<string>> {
   const scaled = { ...(parent ?? {}) } as Partial<IterateOpts<string>> & Record<string, unknown>
-  const shrink = (v: unknown, floor: number) =>
+  // Generic in the INPUT type rather than taking `unknown`: the non-numeric branch returns `v`
+  // UNCHANGED, so an `unknown` parameter widened every result to `unknown` and the three
+  // assignments below were each a TS2322 against a `number | undefined` field. `T | number` says
+  // what the function actually does — shrink a finite number, pass anything else through
+  // untouched — and preserves that pass-through exactly.
+  const shrink = <T,>(v: T, floor: number): T | number =>
     typeof v === 'number' && Number.isFinite(v) ? Math.max(floor, Math.round(v * scale)) : v
   if ('globalModelCalls' in scaled) scaled.globalModelCalls = shrink(scaled.globalModelCalls, 3)
   if ('wallClockMs' in scaled) scaled.wallClockMs = shrink(scaled.wallClockMs, 30_000)
@@ -715,14 +727,32 @@ async function runSubFunctionOnce(
   if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers: [], rungs, modelCalls, detail: 'aborted before planning' }
 
   // 1) Untrusted helper plan.
+  // ACCOUNTING (2026-07-27c). The DEFAULT planner is a MODEL CALL and was billed ZERO: `modelCalls`
+  // is initialised at 0 above and was first incremented at the carve probe, so every draw that died
+  // at or before the plan reported `0 calls` after spending a real draw. Live in this session's own
+  // carve-probe A/B, both arms: `romanToInt [decompose] declined (0 calls, 28s)`,
+  // `intToRoman [decompose] decompose-failed (0 calls, 12s)` — 12s is three plan attempts at ~4s.
+  // Same class as the tier-0 four-slots-billed-as-one bug: the runs where the head misbehaves are
+  // exactly the ones a 0-call report then hides. Every decompose-arm call count ever recorded is an
+  // UNDERCOUNT by one per plan attempt, the "tier 3 costs 27-43 calls" figure included.
+  //
+  // Billed at the CALL SITE, not inside the closure, so a caller-supplied planner (tests) keeps its
+  // exact zero-cost accounting. makeFmSubFunctionPlanner issues exactly ONE fmComplete per
+  // invocation and NONE when a template matches (its `templateFor` fast-path returns first), so the
+  // charge is gated on that same predicate — against `input.goal`, the value the closure forwards
+  // as `inp.goal`, NOT the `input.nl ?? input.goal` used for routing elsewhere in this function.
   const planner: SubFunctionPlanner = opts.planner ?? (async (inp, signal) => {
     const fn = makeFmSubFunctionPlanner()
     const plan = await fn(inp.goal, inp.entry, inp.cases.map((c) => ({ args: c.args, expected: c.expected })), signal)
     return plan // PlannedSubFunction[] is structurally a SubFunctionSpec[]
   })
+  const plannerCosts = !opts.planner && !hasDecomposeTemplate(input.goal, input.entry)
   let plan: SubFunctionSpec[] | null = null
   try { plan = await planner({ goal: input.goal, entry: input.entry, cases: input.cases }, opts.signal) }
   catch (e: any) { emit({ type: 'thought', text: `subfn: planner error ${String(e?.message ?? e)}` }) }
+  // Charged on the THROW path too: an fmComplete that rejects (timeout, downed sidecar) still spent
+  // the decode, and a 0-call report there would hide precisely the failure it should surface.
+  if (plannerCosts) modelCalls += 1
   if (!plan || plan.length < 1) {
     return { status: 'declined', code: null, helpers: [], rungs, modelCalls, detail: 'planner proposed no checkable helpers' }
   }
@@ -784,7 +814,7 @@ async function runSubFunctionOnce(
   // PLAN-QUALITY GATE #2 — no helper consumes the entry's actual input types, so the carve has no
   // entry point and can never compose. Same fail-fast treatment: resample rather than certify four
   // helpers that cannot be wired to the input (see isNonComposingCarve for the live case).
-  if (isNonComposingCarve(!!opts.planner, helperPlan as any, input.cases as any, hasDecomposeTemplate(input.nl ?? input.goal, input.entry))) {
+  if (isNonComposingCarve(!!opts.planner, helperPlan, input.cases, hasDecomposeTemplate(input.nl ?? input.goal, input.entry))) {
     emit({ type: 'thought', text: 'subfn: no helper consumes the top-level input — carve cannot compose; resampling the plan' })
     return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls, detail: 'non-composing carve (no helper takes the entry input); resample plan' }
   }
@@ -1353,7 +1383,7 @@ export interface CodingRequestResult {
  * code: if no trustworthy spec forms, or the loop can't certify an implementation within
  * budget, `status` is a non-'solved' value and `code` is null. Abstain means abstain.
  */
-export type SolveCodingOpts = SearchOpts & {
+export type SolveCodingOpts = SearchOpts<string> & {
     specSamples?: number
     specComplete?: Completer
     differential?: DifferentialOpts | false

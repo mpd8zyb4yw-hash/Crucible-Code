@@ -3,7 +3,30 @@ import type { KnowledgeEntry } from "./types";
 // ── Tier 1 Knowledge Base ────────────────────────────────────────────────────
 // Expanded — 80+ entries across all major coding categories
 
-export const TIER_1_ENTRIES: KnowledgeEntry[] = [
+// Tier-1 entries below are hand-authored SEEDS: they carry only the curated
+// fields. `name`, `tags`, `qualitySignals` and `hitCount` are part of the
+// KnowledgeEntry contract that scoring-engine.ts reads unconditionally —
+// `entry.name` and `entry.hitCount++` on every match above 0.15 similarity, and
+// `for (const signal of bestEntry.qualitySignals)` above 0.60 similarity, which
+// throws "qualitySignals is not iterable" on a raw seed. hydrate() is the single
+// place that guarantees those four fields exist, so no seed can reach the scorer
+// half-built.
+
+type Tier1Seed =
+  Omit<KnowledgeEntry, "name" | "tags" | "qualitySignals" | "hitCount"> &
+  Partial<Pick<KnowledgeEntry, "name" | "tags" | "qualitySignals" | "hitCount">>;
+
+function hydrate(seeds: Tier1Seed[]): KnowledgeEntry[] {
+  return seeds.map((seed) => ({
+    ...seed,
+    name: seed.name ?? seed.id.replace(/-/g, " "),
+    tags: seed.tags ?? seed.id.split("-"),
+    qualitySignals: seed.qualitySignals ?? [],
+    hitCount: seed.hitCount ?? 0,
+  }));
+}
+
+export const TIER_1_ENTRIES: KnowledgeEntry[] = hydrate([
   // ── String Manipulation ──────────────────────────────────────────────────
   {
     id: 'string-split-join',
@@ -669,4 +692,4 @@ export const TIER_1_ENTRIES: KnowledgeEntry[] = [
     structuralTokens: ['builder', 'chain', 'build', 'fluent', 'step'],
     antipatterns: ['constructor-with-20-params', 'mutable-builder-shared'],
   },
-]
+])

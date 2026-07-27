@@ -274,9 +274,9 @@ function makeDefaultTools(projectPath?: string, noSearch?: boolean): FmReactTool
     params: 'query: what to look for',
     async execute({ query }) {
       if (!query) return 'Error: query required'
-      const hits = await queryLivingCorpus(query, { limit: 5 })
+      const hits = await queryLivingCorpus(query, { topK: 5 })
       if (!hits.length) return 'No relevant corpus entries found.'
-      return hits.map(h => `## ${h.title ?? h.url ?? 'chunk'}\n${h.text.slice(0, 600)}`).join('\n\n')
+      return hits.map(h => `## ${h.chunk.source || h.chunk.domain || 'chunk'}\n${h.chunk.content.slice(0, 600)}`).join('\n\n')
     },
   })
 
@@ -879,6 +879,15 @@ export async function fmCompleteBatch(
       return await bonsaiCompleteBatch(requests, {
         maxTokens: opts?.maxTokens, temperature: opts?.temperature,
         timeoutMs: opts?.timeoutMs ?? FM_TIMEOUT_MS, signal: opts?.signal, gbnf: opts?.gbnf,
+        // topP was DROPPED here. The caller (codeProposer.proposeCodeMany / proposeCodeBatch)
+        // computes the anti-anchor top-p and passes it in `opts`, but this literal rebuilt the
+        // options field-by-field and omitted it — so on the LOCAL HEAD every batched draw ran at
+        // the backend's default top-p while temperature escalated alone. That is precisely the
+        // failure topP exists to fix (a hotter distribution whose nucleus still holds only the one
+        // wrong program). The Apple-FM fallback below never had the bug: it forwards `opts` whole.
+        // `seed` is deliberately NOT forwarded: one opts feeds all K slots, so a shared seed would
+        // make the concurrent draws MORE alike — the opposite of the batch's purpose.
+        topP: opts?.topP,
       })
     } catch { /* sidecar down — fall through to the Apple FM path */ }
   }

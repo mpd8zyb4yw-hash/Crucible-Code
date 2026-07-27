@@ -315,7 +315,7 @@ export interface MultiFileResult {
  */
 export async function solveMultiFileRequest(
   nl: string,
-  opts: SearchOpts & { specSamples?: number; specComplete?: Completer; context?: string } = {},
+  opts: SearchOpts<CandidateFile[]> & { specSamples?: number; specComplete?: Completer; context?: string } = {},
   proposerOverride?: Proposer<CandidateFile[]>,
 ): Promise<MultiFileResult> {
   const requestedFiles = detectRequestedFiles(nl)

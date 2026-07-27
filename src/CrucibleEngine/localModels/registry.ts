@@ -21,6 +21,36 @@ import { createOnnxModel, type OnnxModelSpec } from './onnxAdapter'
 
 const LOCAL_INFERENCE_URL = process.env.LOCAL_INFERENCE_URL ?? 'http://127.0.0.1:11435'
 
+// ── Response guards ─────────────────────────────────────────────────────────────
+// `res.json()` is `unknown`: it is whatever process currently owns that port, not a trusted value.
+// Casting it to a shape would be oracle-trust — the same mistake the doctrine forbids for model
+// output — and it matters here because the port is deliberately allowed to be EITHER the Crucible
+// shim or a bare llama-server. These read exactly the fields the callers below read, check each
+// one, and fall back to the honest negative ("not healthy" / "no text") on any other body.
+
+/** True iff the daemon reported health in EITHER dialect: the Crucible shim's `{available:true}`
+ *  or a raw llama.cpp server's `{status:"ok"}`. Any other body ⇒ false. */
+function isHealthyBody(body: unknown): boolean {
+  if (typeof body !== 'object' || body === null) return false
+  const b = body as { available?: unknown; status?: unknown }
+  return b.available === true || b.status === 'ok'
+}
+
+/** The assistant text of an OpenAI-shaped chat completion, or '' when the body is not that shape
+ *  (an `{error:…}` envelope, an empty `choices`, a non-string `content`). '' is exactly what the
+ *  caller's `?? ''` already treated as "the local head produced nothing". */
+function firstChoiceContent(body: unknown): string {
+  if (typeof body !== 'object' || body === null) return ''
+  const choices = (body as { choices?: unknown }).choices
+  if (!Array.isArray(choices)) return ''
+  const first: unknown = choices[0]
+  if (typeof first !== 'object' || first === null) return ''
+  const message = (first as { message?: unknown }).message
+  if (typeof message !== 'object' || message === null) return ''
+  const content = (message as { content?: unknown }).content
+  return typeof content === 'string' ? content : ''
+}
+
 // ── Apple Foundation Models daemon ──────────────────────────────────────────────
 const appleFmInfo: LocalModelInfo = {
   id: 'apple-fm',
@@ -39,11 +69,10 @@ const appleFm: LocalModel = {
   async health() {
     try {
       const res = await fetch(`${LOCAL_INFERENCE_URL}/health`, { signal: AbortSignal.timeout(2000) })
-      const data = await res.json()
       // Accept both the Crucible shim's `{available:true}` AND a raw llama.cpp server's
       // `{status:"ok"}`, so a bare `llama-server` satisfies the local head with no shim in front
       // (removes the fm_health_shim.mjs dependency for strict-offline runs).
-      return data?.available === true || data?.status === 'ok'
+      return isHealthyBody(await res.json())
     } catch {
       return false
     }
@@ -67,8 +96,7 @@ const appleFm: LocalModel = {
           signal: opts?.signal ?? AbortSignal.timeout(30000),
         })
         if (!res.ok) return ''
-        const data = await res.json()
-        return data.choices?.[0]?.message?.content ?? ''
+        return firstChoiceContent(await res.json())
       } catch {
         return ''
       }

@@ -1,0 +1,104 @@
+{
+  // ─────────────────────────────────────────────────────────────────────────────
+  // THE ENGINE TYPECHECK GATE.  `npm run typecheck:engine`
+  //
+  // WHY THIS FILE EXISTS
+  //   `tsc -p tsconfig.json` typechecks NONE of src/CrucibleEngine — the root config
+  //   is a solution file referencing tsconfig.app.json (which EXCLUDES
+  //   "src/CrucibleEngine") and tsconfig.node.json (vite.config.ts only). So the
+  //   engine — the entire propose→verify→backtrack loop — had no typecheck at all.
+  //   A dropped 4th argument shipped through review and five benches because of it.
+  //
+  // WHY NOT tsconfig.server.json
+  //   That config is for the CJS `server-dist` BUILD: module:commonjs +
+  //   moduleResolution:node. package.json declares "type": "module" and every engine
+  //   entrypoint runs under `tsx`, which is ESM. Typechecking ESM source as CJS
+  //   manufactures 95 errors that CANNOT occur at runtime — measured 2026-07-27:
+  //       47 x TS1343  "import.meta only allowed when module is es2020/esnext/…"
+  //       48 x TS1378  "Top-level await only allowed when module is es2022/esnext/…"
+  //   …while its node10 resolver simultaneously HIDES 4 real diagnostics that the ESM
+  //   resolver catches — a response object infers as `unknown` under ESM but not CJS:
+  //       agent/driver.ts(121,22)          TS2339 'choices' does not exist on 'unknown'
+  //       localModels/registry.ts(46,20)   TS2339 'available'
+  //       localModels/registry.ts(46,48)   TS2339 'status'
+  //       localModels/registry.ts(71,21)   TS2339 'choices'
+  //   (10 x TS2339 under the CJS config vs 14 here.) A gate that is both noisy and
+  //   blind is worse than no gate. Do not use it to check the engine.
+  //
+  // THE OPTIONS BELOW MIRROR tsx, NOT A BUILD
+  //   module esnext + moduleResolution bundler is what esbuild (tsx's transpiler)
+  //   actually does: extensionless relative specifiers resolve ('./codeVerifier'),
+  //   '.js' specifiers map back to '.ts' ('../../corpus/db.js' -> corpus/db.ts), and
+  //   import.meta / top-level await are legal. Verified: under these settings every
+  //   relative and package import in the engine resolves except ONE genuinely broken
+  //   one (see specializationForcing.ts below), which is exactly what a gate should say.
+  // ─────────────────────────────────────────────────────────────────────────────
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "lib": ["ES2023"],
+    // Node globals only. Deliberately NO "DOM": tsx runs this on Node, and pulling in
+    // DOM would let browser-only globals typecheck here and then explode at runtime.
+    "types": ["node"],
+
+    // 2 engine files import with an explicit '.ts' extension; tsx accepts that.
+    "allowImportingTsExtensions": true,
+    // esbuild's CJS interop: `import path from 'path'` etc.
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+
+    // Gate the ENGINE, not node_modules' shipped .d.ts files.
+    "skipLibCheck": true,
+    // Matches how this codebase is written, and matches tsconfig.server.json, so counts
+    // from this gate are comparable with the CJS build's.
+    //
+    // MEASURED, not assumed (2026-07-27): strict:true costs only +7 diagnostics here
+    // (137 vs 130) — this engine is far closer to strict-clean than expected, and the
+    // 7 are real (TS18047 possibly-null, TS18046 unknown, TS7006 implicit-any). Verified
+    // the flag genuinely engages by probing a file that only fails under strictNullChecks.
+    // Flipping this to true is therefore a CHEAP future upgrade, not a big project.
+    // Left false for now only because strict also RESHAPES two existing diagnostics
+    // (2 x TS2740 disappear, TS2339 goes 14 -> 12), and this gate's first job is to be a
+    // stable baseline to drive to zero — not to change what "an error" means mid-flight.
+    "strict": false,
+
+    "noEmit": true
+  },
+
+  "include": ["src/CrucibleEngine/**/*.ts"],
+
+  "exclude": [
+    // ── ONLY exclusion in this file, and it is a FILENAME-SUFFIX glob, never a
+    // directory sweep — real engine code living in the same folders (synth/skills/*.ts,
+    // coding-bench/*.ts) IS still checked, and in fact this gate catches 8 real errors
+    // in synth/skills/*.ts that a directory-level exclude would have buried.
+    //
+    // WHY THESE ARE NOT REAL SOURCE (verified 2026-07-27, not assumed):
+    //   *.hidden.ts are BENCH FIXTURES. They are never imported by any engine module
+    //   (grep across src/ for `from '*.hidden'` -> zero hits; and all 1046 .ts files
+    //   under src/ are NUL-free, so that grep is trustworthy rather than binary-blinded).
+    //   They are treated as DATA: copied byte-for-byte with fs.copyFileSync into a
+    //   throwaway scratch project's __audit__/ directory and executed with `npx tsx`, by
+    //     src/CrucibleEngine/coding-benchmarks.ts:738
+    //     src/CrucibleEngine/synth/synth-prove.ts:53
+    //     src/CrucibleEngine/synth/prove-all.ts:240
+    //     src/CrucibleEngine/synth/ocb-runner.ts:572
+    //     src/CrucibleEngine/synth/universal-prove.ts:33
+    //     src/CrucibleEngine/synth/validate-batch.ts:118
+    //   Their `import { x } from '../src/<name>'` resolves, at bench time, to the module
+    //   the AGENT JUST WROTE at <scratch>/src/<name>.ts — the artifact under test. That
+    //   file deliberately does not exist in this repo (that is the point: the suite is
+    //   the hidden oracle, the implementation is what we are measuring). In-repo they
+    //   produce 280 x TS2307 that no code change could ever fix.
+    //
+    //   This one glob subsumes both fixture families — src/CrucibleEngine/synth/skills/
+    //   _suites/ was confirmed to contain ONLY .hidden.ts files (0 non-hidden files), so
+    //   no separate, broader _suites exclude is needed.
+    //
+    // If you ever add a NON-fixture file whose name ends in .hidden.ts, this gate will
+    // silently stop checking it. Don't.
+    "src/CrucibleEngine/**/*.hidden.ts"
+  ]
+}

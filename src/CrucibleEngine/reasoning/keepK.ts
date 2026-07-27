@@ -27,7 +27,7 @@ import { solveCodeTask, type SolveCodeInput } from './solve'
 import type { SearchOpts } from './search'
 import type { Attempt, Proposer, SearchResult } from './types'
 
-export interface KeepKOpts extends SearchOpts {
+export interface KeepKOpts extends SearchOpts<string> {
   /** Restart attempts (the K). Matches the live loop's CRUCIBLE_VGR_ATTEMPTS default. */
   attempts?: number
   /**

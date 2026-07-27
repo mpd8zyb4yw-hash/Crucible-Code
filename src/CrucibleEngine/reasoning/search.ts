@@ -21,7 +21,14 @@ import type {
   Attempt, Candidate, Proposer, ProposeContext, SearchResult, TaskSpec, Verdict, Verifier,
 } from './types'
 
-export interface SearchOpts<T = unknown> {
+/**
+ * The T-INDEPENDENT scalar knobs. Split out from SearchOpts deliberately: these are exactly the
+ * options search() reads UNCONDITIONALLY off the merged `o`, so every one of them MUST carry a
+ * default (see DEFAULTS below, whose `Required<SearchKnobs>` type makes the compiler prove it).
+ * Options that mention T — or that search() reads through an `opts.x ?` guard — belong in
+ * SearchOpts instead, where adding one can never silently leave a knob undefaulted.
+ */
+export interface SearchKnobs {
   /** How many candidate lines to keep alive between rounds. Width of exploration. */
   beamWidth?: number
   /** Hard ceiling on model calls — the scarce budget on serial-ANE hardware. */
@@ -30,6 +37,16 @@ export interface SearchOpts<T = unknown> {
   proposalsPerNode?: number
   /** Consecutive no-improvement rounds tolerated before abstaining. */
   patience?: number
+}
+
+/**
+ * `T` is the candidate value type (code string, file graph, …) and is DELIBERATELY NOT DEFAULTED.
+ * A default (`T = unknown`) let callers write a bare `SearchOpts`, which then collapsed search()'s
+ * own inference to `SearchResult<unknown>` — erasing every downstream check on `.solution.value`
+ * and silently accepting a `batchProposer`/`structuralKey` written for the WRONG value type.
+ * Name the type: `SearchOpts<string>`, `SearchOpts<CandidateFile[]>`.
+ */
+export interface SearchOpts<T> extends SearchKnobs {
   signal?: AbortSignal
   /** Optional progress sink for SSE streaming. */
   emit?: (e: Record<string, unknown>) => void
@@ -58,7 +75,7 @@ export interface SearchOpts<T = unknown> {
   structuralKey?: (value: T) => string
 }
 
-const DEFAULTS: Required<Omit<SearchOpts, 'signal' | 'emit' | 'batchProposer'>> = {
+const DEFAULTS: Required<SearchKnobs> = {
   beamWidth: 3,
   maxModelCalls: 12,
   proposalsPerNode: 1,

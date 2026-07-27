@@ -11,7 +11,10 @@ export type PatternCategory =
   | "async-pattern"
   | "architecture"
   | "performance"
-  | "security";
+  | "security"
+  | "api-pattern"
+  | "testing"
+  | "type-system";
 
 export type ComplexityClass = "O(1)" | "O(log n)" | "O(n)" | "O(n log n)" | "O(n²)" | "O(2^n)";
 

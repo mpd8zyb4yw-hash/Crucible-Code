@@ -63,7 +63,7 @@ export type ResearchFn<T = unknown> = (
   input: ResearchInput<T>,
 ) => Promise<ResearchOutput | null>
 
-export interface IterateOpts<T = unknown> extends Pick<SearchOpts, 'signal' | 'emit'> {
+export interface IterateOpts<T = unknown> extends Pick<SearchOpts<T>, 'signal' | 'emit'> {
   /** Hard cap on epochs regardless of progress (a runaway backstop). Default 8. */
   maxEpochs?: number
   /** Consecutive stalled epochs (research included) tolerated before abstaining. Default 2. */

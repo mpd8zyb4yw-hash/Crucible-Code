@@ -116,7 +116,11 @@ async function main() {
   check('2b every rung certified', dec.rungs.length === 4 && dec.rungs.every((r) => r.certified),
     dec.rungs.map((r) => `${r.index}:${r.certified}`).join(' '))
   check('3 composed solution actually satisfies the ORIGINAL verifier',
-    !!dec.solution && parentVerifier(dec.solution, parentSpec).pass, dec.solution?.value)
+    // `Verifier<T>` returns `Verdict | Promise<Verdict>`. This bench's verifier happens to be
+    // synchronous, so reading `.pass` off it worked — but only by luck of the implementation, and
+    // it would have read `undefined` (⇒ a silently PASSING check on a failing candidate) the moment
+    // anyone swapped in an async verifier. Awaiting is correct for both.
+    !!dec.solution && (await parentVerifier(dec.solution, parentSpec)).pass, dec.solution?.value)
   check('3b composed artifact contains all four tokens',
     !!dec.solution && GOAL_TOKENS.every((t) => dec.solution!.value.includes(t)), dec.solution?.value)
 
