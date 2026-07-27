@@ -1933,6 +1933,69 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-27 (cont.117 — THE SAMPLE-EFFICIENCY FORK IS RESOLVED: it was typecheck, and 42% of the budget goes to an ungraded file)
+
+cont.116 measured that candidates are judged far more often than executed and named the fork it
+could not resolve: gate-A **typecheck** dominance ⇒ constrained decoding; **`!testFile`** dominance
+⇒ better test derivation. It explicitly banned building either before the count existed (doctrine
+rule #4). The count now exists, from one instrumented offline-strict suite, and one branch is dead.
+
+**The distribution (281 async oracle verifications, whole suite):**
+
+| exit | count | share |
+|---|---|---|
+| gate-A typecheck | **175** | **62.3%** |
+| duplicate-export | 50 | 17.8% |
+| executed (`exec-pass` 26 + `exec-fail` 21) | 47 | 16.7% |
+| `!testFile` | 9 | **3.2%** |
+| lint | **0** | 0% |
+| contract | **0** | 0% |
+
+`!testFile` is a rounding error — **do not build test derivation for sample-efficiency reasons.**
+Two of the five gates never fire in a whole suite. Only 16.7% of judged candidates ever ran a line,
+matching cont.116's 4-of-34 on filterModule, now measured suite-wide.
+
+**The bigger finding, visible only in the per-FILE view:** `src/index.ts` — the **self-test** every
+task spec asks for and the audit scores `[SOFT]`, so it cannot move `passedHard/total` — consumed
+**66 of 158 FM rounds (41.8%)**, more than every graded deliverable combined. 65 of those ran under
+`gate: compile-only` (tsc as the only oracle) and 16 died on duplicate-export, because a self-test
+naturally re-declares symbols owned by the module it tests. The dup-export gate also burned 12 of 13
+rounds on `src/clamp.ts` and 12 of 15 on `src/leaderboard.ts` — tasks that still finished GREEN, so
+that is pure wasted budget in one mechanical shape.
+
+**Shipped:**
+- `synth/oracle.ts` `tagExit()` — every post-stage terminal return in BOTH oracle twins tagged with
+  a `verify.exit.<reason>` / `verify.sync.exit.<reason>` counter lane on `debug/phaseProfile.ts`.
+  Zero cost when `CRUCIBLE_PHASE_PROFILE` is unset.
+- Exhaustive tagging buys a parse-time self-check: `sum(verify.exit.*) === oracle.stage.calls`
+  (281===281) and `sum(verify.sync.exit.*) === oracle.stage.sync.calls` (6===6).
+  `scripts/aggregate-phase-profiles.mjs` exits 1 and REFUSES the distribution on a mismatch —
+  an unreconciled distribution is not data.
+- `oracle.stage.sync` lane: `synth.catalogL0L1` verifications were counted by no lane before.
+- **Real defect fixed while auditing:** `stage()` sat OUTSIDE the try in both twins. `spanSync`
+  records from a `finally`, so a throwing `stage()` incremented `oracle.stage.calls` with no exit
+  tag and no `cleanup()` — false-failing the invariant over one ENOSPC and leaking scratch dirs.
+- `scripts/fm-round-exits.mjs` — per-exit AND per-target-file classification of
+  `.crucible/fm-rounds.jsonl`. Partial coverage by design; the `src/index.ts` finding is invisible
+  to the (complete but per-task) phase profile.
+
+**Corrected before landing:** the lane docblock first claimed the sync/async split separates catalog
+from gen work. It does not — `server.ts:3871` omits `verify`, so the whole `synth.fastPath` cascade
+defaults to the async twin, as do L2 `structuralSynthBridge` probes. The async lane is exactly the
+population `oracle.stage` has always counted, which is what keeps it comparable to cont.116's "34
+verifications". Labels now say that; the code was deliberately NOT rerouted, since that would change
+the denominator.
+
+**THE NUMBER (offline-strict, qwen :8080, `CRUCIBLE_NO_LEARN=1`): 12/14 overall, gen-path 8/10,
+8/10 in-budget, 0 AMBER, 2 RED.** Wall clock gen path: median 192s, p90 304s, max 332s, 0/10 at cap
+(cont.116 had 1/10 at cap). **This is DOWN from cont.116's 9/10 and is recorded as measured, not
+explained away.** `tagSetModule` regressed to `compile=n`; `verify.exit.error` = 0 across the suite,
+so this session's one behavioural edit never executed its new path, and the harness independently
+classes `tagSetModule` as VARIANCE at 1/3 green — an explanation, not a proof. A re-run settles it.
+`multiFileLedger` stays RED but changed shape: it now compiles and fails ONE hidden check
+(`categoryTotals`, 4/5 passing) instead of never producing the file.
+
+
 ### 2026-07-26 (cont.116 — THROUGHPUT ROOT-CAUSED: the benchmark was measuring queue contention)
 
 cont.115's top item was "throughput is the binding constraint — profile where iteration time goes
