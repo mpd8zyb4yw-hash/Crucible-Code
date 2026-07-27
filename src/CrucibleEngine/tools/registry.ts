@@ -14,6 +14,11 @@ import { getUITree, clickElement, typeText, navigateBrowser } from '../macTools'
 import { runCapability, capabilityIntents } from '../agent/macCapabilities'
 import { read_image, read_pdf } from './visionTools'
 import { shimNodeAssert } from '../synth/assertShim'
+// cont.118 — provider→entity adapters. These are the ONLY place provider shapes are known; every
+// tool below returns `entities` alongside its prose so the UI and the model both get structure.
+import {
+  gmailMessages, calendarEvents, driveFiles, contacts as contactEntities, youtubeVideos,
+} from './adapters'
 
 const tools = new Map<string, ToolDef>()
 
@@ -1149,13 +1154,19 @@ registry.register({
       const list = await gFetch(uid, `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(q)}&maxResults=${max}`)
       const messages: any[] = list.messages ?? []
       if (!messages.length) return { ok: true, output: 'No emails found matching that query.' }
-      const details = await Promise.all(messages.slice(0, max).map(async (m: any) => {
-        const msg = await gFetch(uid, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`)
+      // Keep the RAW provider objects — cont.118. Mapping straight to strings here is what
+      // destroyed the structure the UI and the entity protocol need; the prose is now derived
+      // FROM the objects rather than replacing them.
+      const raw = await Promise.all(messages.slice(0, max).map((m: any) =>
+        gFetch(uid, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`)))
+      const details = raw.map((msg: any) => {
         const headers: any[] = msg.payload?.headers ?? []
         const h = (name: string) => headers.find((h: any) => h.name === name)?.value ?? ''
-        return `[${m.id}] From: ${h('From')}\nDate: ${h('Date')}\nSubject: ${h('Subject')}\nSnippet: ${msg.snippet ?? ''}`
-      }))
-      return { ok: true, output: details.join('\n\n---\n\n') }
+        return `[${msg.id}] From: ${h('From')}\nDate: ${h('Date')}\nSubject: ${h('Subject')}\nSnippet: ${msg.snippet ?? ''}`
+      })
+      // `output` is byte-identical to before so every existing reader (including cont.105b's
+      // renderPersonalData parsers) is unaffected; `entities` is purely additive.
+      return { ok: true, output: details.join('\n\n---\n\n'), entities: gmailMessages(raw) }
     } catch (e: any) { return { ok: false, output: e.message } }
   },
 })
@@ -1258,7 +1269,7 @@ registry.register({
         const start = e.start?.dateTime ?? e.start?.date ?? ''
         return `• ${e.summary ?? '(no title)'}\n  When: ${start}\n  Location: ${e.location ?? 'none'}\n  ${e.description?.slice(0, 200) ?? ''}`
       })
-      return { ok: true, output: lines.join('\n\n') }
+      return { ok: true, output: lines.join('\n\n'), entities: calendarEvents(items) }
     } catch (e: any) { return { ok: false, output: e.message } }
   },
 })
@@ -1321,7 +1332,7 @@ registry.register({
       const files: any[] = data.files ?? []
       if (!files.length) return { ok: true, output: 'No files found.' }
       const lines = files.map(f => `[${f.id}] ${f.name}\n  Type: ${f.mimeType}\n  Modified: ${f.modifiedTime ?? ''}\n  Link: ${f.webViewLink ?? 'n/a'}`)
-      return { ok: true, output: lines.join('\n\n') }
+      return { ok: true, output: lines.join('\n\n'), entities: driveFiles(files) }
     } catch (e: any) { return { ok: false, output: e.message } }
   },
 })
@@ -1381,7 +1392,7 @@ registry.register({
         const phone = p?.phoneNumbers?.map((e: any) => e.value).join(', ') ?? ''
         return `${name}${email ? `\n  Email: ${email}` : ''}${phone ? `\n  Phone: ${phone}` : ''}`
       })
-      return { ok: true, output: lines.join('\n\n') }
+      return { ok: true, output: lines.join('\n\n'), entities: contactEntities(results) }
     } catch (e: any) { return { ok: false, output: e.message } }
   },
 })
@@ -1410,7 +1421,7 @@ registry.register({
         const s = item.snippet
         return `${s.title}\n  Channel: ${s.channelTitle}\n  URL: https://www.youtube.com/watch?v=${item.id.videoId}`
       })
-      return { ok: true, output: lines.join('\n\n') }
+      return { ok: true, output: lines.join('\n\n'), entities: youtubeVideos(items) }
     } catch (e: any) { return { ok: false, output: e.message } }
   },
 })

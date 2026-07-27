@@ -35,6 +35,28 @@ export interface ToolResult {
   output: string
   truncated?: boolean
   meta?: Record<string, unknown>
+  /**
+   * Structured results, when this tool returns THINGS rather than prose (cont.118).
+   *
+   * ADDITIVE and OPTIONAL by design — `output` remains the contract every existing caller reads,
+   * so no tool is obliged to change and nothing downstream breaks. But a tool that fetches real
+   * objects should populate this, because `output` is a LOSSY rendering of data the tool already
+   * had in structured form, and everything that goes wrong downstream goes wrong because of that
+   * loss:
+   *
+   *   - the model re-reads prose and paraphrases it (cont.105b: an inbox collapsed to one address
+   *     and reported as "empty"),
+   *   - the UI has no id to attach an action to, so cont.103's rule that a surface must let you
+   *     OPEN and ACT on a result is unimplementable,
+   *   - a renderer can only be written per-provider, by re-parsing the prose it was just given.
+   *
+   * With entities present, `viewDerivation.deriveView()` produces a real interface for ANY tool
+   * without provider-specific UI, and affordances bind to `entity.id`.
+   *
+   * Typed as unknown[] to keep this module dependency-free — `tools/entities.ts` imports nothing,
+   * so the concrete type is applied at the use sites rather than creating a cycle here.
+   */
+  entities?: unknown[]
 }
 
 export interface ToolDef {
