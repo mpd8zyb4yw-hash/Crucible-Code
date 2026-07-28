@@ -1933,6 +1933,59 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-28 (gap-soundness — a duration that resets per sub-call is not a ceiling)
+
+Commit `87b68ab`. Four of five open items closed; item 3 (stale-reuse refutation) NOT started.
+
+**The 180s cap that permitted 955s — root-caused, and it was none of the suspects.**
+`wallClockMs` is measured from `start`, re-read at the top of every `iterate()` call, so it caps
+ONE convergence loop. A carve calls `iterate()` once per rung plus once to compose, then re-runs
+that up to `planAttempts` times. **955/180 = 5.3 is literally the number of `iterate()` calls
+`wordFrequencyTop` made** — the ratio was never mysterious. Two suspects ruled out by measurement:
+`GEN_SCORECARD_TASK_WALL_MS` **defaults to 0**, so unless it is set explicitly `ac` is null and no
+signal is passed at all; and `codeProposer` never forwards the signal to `fmComplete`, so each
+model call falls back to the 30s timeout at `localModels/registry.ts:96` — bounded, so a hung call
+cannot explain it either.
+
+Fix: `IterateOpts.deadline`, an ABSOLUTE instant computed once and shared by every rung and the
+compose step. Fixed **above** the `planAttempts` loop — computed inside it, it would reset
+`planAttempts` times over, which is the same multiplication it exists to stop. An inherited
+deadline always wins, so recursion can only tighten. `__iterate_bench` 5b carries a positive
+control: with the check disabled the three-call case runs to `clock=420` against a deadline of 100.
+
+**The ceiling claim, made true (item 4).** No tier decremented `maxModelCalls`: tier 1 received the
+caller's full budget again after tier 0 spent K, and tier 3's per-rung purses ignored it outright.
+`solveByLadder` now keeps one ledger (`left()`/`exhausted()`). Tier 2 is deliberately NOT gated —
+it is model-free, and free evidence is still evidence. **Still not exact inside a carve** (the
+clamp is per-rung, so an N-rung carve can spend N × the remainder) and the docstring now says so.
+Measurements before this date ran under the old semantics and are not comparable at equal budget.
+
+**17 typecheck errors → 5, and the gate is wired into `prove:all`.** The `registry.ts` ×2 and
+`integrations/tools.ts` ×2 were **NOT** the live user-visible break they were filed as: both are
+`if (!x.ok) return x`, where the runtime only ever takes the false branch. They are artifacts of
+the engine gate's `strict: false` — with strictNullChecks off TypeScript does not narrow a
+discriminated union. Minimal repro: clean under `--strict`, TS2322 without. Fixed by making the
+unions total, not by casting. Separately, 8 skills passed `suite: SUITE` to a `Skill` type with no
+such field; all 8 already have the canonical `_suites/*.hidden.ts`, and the inline copies were
+shorter, stale, and used a wrong import path (`./src` vs `../src`). Nothing read them.
+
+**The hygiene gate was blind where it mattered.** `__source_hygiene_bench` walked from
+`<root>/src`, so every root-level file was invisible to a check whose own headline claims "tracked
+TypeScript". `server.ts` — the largest file in the repo — was never scanned and had been carrying
+two raw NULs the whole time. Now asks `git ls-files`: 1080 files became **1178**, it caught
+`server.ts` immediately, and those bytes are now escapes.
+
+**Item 2 (partially answered, needs one more step).** `CRUCIBLE_NO_DISTILL` suppresses the **WRITE
+path ONLY** — it has exactly one functional site, `synth/pureCode.ts:297`, inside the distill
+function. The READ path, `synth/loadLibrary.ts:35-44`, loads `_learned/` **unconditionally**.
+`_learned/` currently holds 4 skills, and **`roman.ts` implements `toRoman`/`fromRoman` while the
+general scorecard measures `romanToInt` (:46) and `intToRoman` (:62)** — the same functions under
+different names. Whether that is actually SERVED depends on the L0 catalog match predicate, which
+was not read. Until it is, "NO_DISTILL" numbers on the roman tasks are not certified clean.
+
+Verified: typecheck:engine:core clean, hygiene 5/5, iterate 14/14, decompose 116/116, ladder 43/43,
+repair 22/22, contract 10/10, lintgate 12/12, prove:all 251/251.
+
 ### 2026-07-27c (gap-soundness — the compiler was never looking, and the carve probe finally A/B'd)
 
 **`npm run typecheck:engine` / `typecheck:engine:core` — the reasoning engine typechecks for the

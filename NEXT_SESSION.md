@@ -17,99 +17,73 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-27c (gap-soundness cont.) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-28 (gap-soundness cont.) (REPLACE THIS EVERY SESSION)
 
-> **The compiler is finally looking at the engine, and it found four live bugs on its first run —
-> one of which had silently killed the ReAct agent's only path to the corpus. The carve probe is
-> also measured at last: it helps, but NOT by the mechanism it was built for.**
+> **Two budgets that were never ceilings are now ceilings, and the hygiene gate that was supposed
+> to prevent the grep-blindness class was itself blind to the largest file in the repo.**
 
-### THE ENGINE NOW TYPECHECKS — `npm run typecheck:engine` (130 → 17), reasoning/ is GREEN
+Commit `87b68ab`. Items 1, 4, 5 CLOSED; item 2 PARTIALLY answered; **item 3 NOT STARTED**.
 
-`tsconfig.engine.json` + two scripts. **`npm run typecheck:engine:core` gates `reasoning/` alone
-and passes** — the doctrine's reference implementation compiles clean for the first time.
-**TRAP 1 IS NOW CLOSED**; the old workaround incantation is obsolete, use the script.
+### CLOSED — the wall-clock cap actually binds now
+`wallClockMs` was per-`iterate()`-call, not per-task: `iterate.ts` re-reads `start` at the top of
+every call, and a carve calls `iterate()` once per rung + once to compose + up to `planAttempts`
+times over. `955/180 = 5.3` was simply the invocation count. New `IterateOpts.deadline` is an
+absolute instant fixed ABOVE the `planAttempts` loop. Ruled out by measurement, do not re-suspect:
+`GEN_SCORECARD_TASK_WALL_MS` defaults to **0** (no signal passed at all unless set), and
+`codeProposer` never forwards the signal to `fmComplete` so calls fall back to the bounded 30s
+timeout at `localModels/registry.ts:96`.
 
-Measured, not assumed: `tsconfig.server.json` (module:commonjs, against a `"type":"module"` repo)
-yields **503** errors of which **95 are runtime-impossible** (47 TS1343 `import.meta`, 48 TS1378
-top-level await) *and it hides 4 real TS2339s*. The only exclusion is `**/*.hidden.ts` — bench
-fixtures importing `../src/<name>`, a module written at bench time by `fs.copyFileSync` (six call
-sites). Proven narrow: no-exclude 410, gated 130, and the 129 non-TS2307 diagnostics are
-byte-identical across the two, so the exclude swept **zero** real errors.
+### CLOSED — `solveByLadder` budget is subtractive
+One ledger (`left()`/`exhausted()`); each tier gets what its predecessors left. Tier 2 stays
+ungated on purpose (model-free). **Still not exact inside a carve** — the clamp is per-rung, so an
+N-rung carve can spend N × the remainder. Making it exact needs the same shared-ledger treatment
+one level down. Any pre-2026-07-28 call-count measurement is not comparable at equal budget.
 
-**Four LIVE bugs it exposed** (all fixed in 7c0cfd3; none were type nits):
+### CLOSED — typecheck 17 → 5, gate wired into `prove:all`
+`prove:all` now runs `typecheck:engine:core` and `hygiene:bench` FIRST. **The four "live bug"
+candidates were misfiled**: `registry.ts` ×2 and `integrations/tools.ts` ×2 are `if (!x.ok) return
+x` where the runtime only ever takes the false branch — artifacts of the gate's `strict: false`,
+under which TS does not narrow a discriminated union (repro: clean with `--strict`, TS2322
+without). Fixed by making the unions total.
 
-1. **`corpus_query` was 100% broken whenever the corpus had anything to say.** It read
-   `h.title/h.url/h.text` off a `CorpusHit`, whose real shape is `{chunk, similarity, superseded}`,
-   so `h.text.slice(0,600)` threw a `TypeError` on **every** hit — caught at `fmReact.ts:637` and
-   handed to the model as `"Tool error: ..."`. An EMPTY corpus returns early, which is exactly why
-   it survived. **The ReAct agent's only path to the living corpus was dead: the core was answering
-   from parametric memory on the very questions retrieval exists to ground.** Doctrine-critical —
-   this is the "facts are retrieved, not remembered" contract failing silently.
-2. **The proposer's anti-anchor `topP`/`seed` never left the process on the local-head BATCH path.**
-   `bonsaiCompleteBatch.oneDirect` accepted opts declaring both and put neither in the request body,
-   while the sibling branch (delegating to `bonsaiComplete`) honoured them. Two branches of one
-   function, two behaviours, same opts. **Every batch-path diversity claim predates this fix.**
-3. **All 65 tier-1 `knowledge-base.ts` entries omit `name/tags/qualitySignals/hitCount`.**
-   `scoring-engine.ts:243` iterates `bestEntry.qualitySignals` unguarded whenever `bestSim > 0.6`
-   ⇒ "not iterable" TypeError; `:230` `entry.hitCount++` ⇒ NaN. The DATA was wrong, not the type.
-4. **The decompose planner was billed ZERO model calls.** `modelCalls` starts at 0 and first
-   increments at the carve probe, so every draw dying at or before the plan reported `0 calls`
-   after spending a real draw — live in this session's own A/B, in BOTH arms:
-   `declined (0 calls, 28s)`, `decompose-failed (0 calls, 12s)` (12s = three plan attempts).
-   Same class as the tier-0 four-slots-billed-as-one bug. **Every decompose call count ever
-   recorded undercounts by one per plan attempt — the "tier 3 costs 27–43 calls" figure included.**
+**The 5 that remain** (each needs an individual decision, none are the same class):
+`answer/__wordproblem_iterate_bench.ts:18` TS2352 · `autonomousProvisioner.ts:101` TS2352 ·
+`index.ts:23` TS2305 (`PromptType` not exported by `./types`) · `scoring-engine.ts:506` TS2322 ·
+`specializationForcing.ts:7` TS2307 (`../types` does not resolve — a genuinely broken import).
 
-Also: `SearchOpts<T = unknown>`'s default collapsed T to `unknown` across five declarations and
-`DEFAULTS` itself, poisoning `search()`'s inference (the `search.ts:61` / `solve.ts:196` family).
-Two `as any` casts removed from the `isNonComposingCarve` call — the gate whose job is to reject
-wrong-shaped carves, where a cast is precisely how a wrong-shaped one walks past it. `res.json()`
-is now narrowed by real guards rather than cast (a cast there is oracle-trust in a remote provider).
+### TOP OPEN ITEM 1 — item 2 is half-answered and the unanswered half is the contaminating one
+`CRUCIBLE_NO_DISTILL` is **WRITE-ONLY**. One functional site, `synth/pureCode.ts:297`, inside the
+distill function. The READ path — `synth/loadLibrary.ts:35-44` — loads `_learned/`
+**unconditionally**. `_learned/` holds 4 skills, and **`roman.ts` implements `toRoman`/`fromRoman`
+while the general scorecard measures `romanToInt` (`__decompose_general_scorecard_live.ts:46`) and
+`intToRoman` (`:62`)** — same functions, different names. **NEXT STEP: read the L0 catalog match
+predicate.** If it matches on spec features rather than exact entry name, every "NO_DISTILL" roman
+number is contaminated and the template 15/15 needs re-running with `_learned/` moved aside.
 
-**Remaining 17**, none in `reasoning/`: `tools/registry.ts` ×2 (two handlers return `content` where
-`ToolResult` requires `output` — LIKELY A REAL BUG, unverified), `integrations/tools.ts` ×2
-(unnarrowed `.error`), `synth/skills/*` ×8 (`suite` not on `Skill`), plus `specializationForcing.ts`
-(imports `../types`, which does not exist — `import type` so it erases, but the type safety is gone),
-`scoring-engine.ts`, `index.ts`, `autonomousProvisioner.ts`, `__wordproblem_iterate_bench.ts`.
+### TOP OPEN ITEM 2 — item 3 was never started
+Unaddressed 2026-07-27b findings: `isNonComposingCarve`/`isRebakedHelper` are not re-run after the
+dead-rung prune (note `isDegenerateSubFnCarve` IS, so it is partly handled), and `rungSpecKey` does
+not capture sibling-helper context. The carry-site comment "a stale reuse can only cost a compose
+failure, never a false certification" is UNREFUTED — the specific thing to attack is whether a
+cached rung SOURCE is re-verified against the CURRENT rung's cases, or trusted.
 
-### THE CARVE PROBE IS MEASURED — and it does NOT work the way it was designed to
+### STANDING TRAP — the hygiene gate had a hole for weeks
+`__source_hygiene_bench` walked `<root>/src`, so no root-level file was ever scanned despite the
+headline "tracked TypeScript". `server.ts` carried two raw NULs the entire time and the bench
+reported all-clear. Now uses `git ls-files` (1080 → 1178 files). If you add a scanner, make its
+file-selection claim testable — the positive control it already had did not catch this, because
+the control tested the DETECTOR and not the FILE LIST.
 
-Isolated A/B, `GEN_SCORECARD_ARM=decompose`, n=3 × 5 tasks, 180s ceiling, `CRUCIBLE_NO_DISTILL=1`,
-head confirmed `qwen2.5-1.5b`. Both arms ran **identical code** (a mid-flight billing fix was
-reverted and re-applied after, precisely so they would).
-
-| task | `CARVE_PROBE=0` | `CARVE_PROBE=1` |
-|---|---|---|
-| `romanToInt`       | 1/3 (3 calls) | **2/3 (1 call)** |
-| `intToRoman`       | 0/3 | **2/3** |
-| `compressRuns`     | 1/3 | 0/3 |
-| `isBalanced`       | 0/3 | 0/3 |
-| `wordFrequencyTop` | 0/3 | 0/3 |
-| **total** | **2/15** | **4/15** |
-
-**Read this carefully — the aggregate is NOT the finding.** 2/15 vs 4/15 is Fisher p=0.65
-two-sided (0.33 one-sided): **not significant, and it must not be quoted as "the probe doubled the
-decompose arm."** What IS deterministic is the *attribution*: **3 of arm 1's 4 solves came through a
-`probe:<entry>` rung** — a mechanism that cannot exist in arm 0 — each in **1 model call**. Solves
-attributable to an actual carve went **2 → 1**.
-
-⇒ **The probe's measured value is entirely "sometimes drafting the whole thing in one call works."
-That is tier 0's thesis, arriving inside tier 3. The grounded-spec mechanism `traceCarve.ts` was
-actually built for — replacing the planner's invented helper outputs with trace-witnessed ones —
-earned ZERO solves here.** It remains sound and it still closes the seeds-its-own-oracle hole; it
-just has no measured solve-rate warrant. Keep the probe ON (a 1-call solve is the cheapest thing in
-the system); stop crediting it to carve synthesis.
-
-**And the carve is still the bottleneck**: `compressRuns`, `isBalanced` and `wordFrequencyTop` are
-0/3 in BOTH arms, burning 37–64 calls per draw. Nothing shipped so far moves them.
-
-### ⚠ NEW — THE 180s TASK CEILING DOES NOT BIND
-
-`wordFrequencyTop` ran **955s and 947s** against `GEN_SCORECARD_TASK_WALL_MS=180000` (5.3×), on
-draws that had already reached a rung sub-solve. Small overruns (193s, 197s) are the expected
-between-rung abort granularity; a 5× overrun is something ignoring the signal outright. **Until this
-is found, any "solves within N seconds" claim from a capped run is unsupported** — and it is direct
-evidence for the budget item below: *not even the AbortSignal reliably binds.*
-
+### NOT MINE, DO NOT REVERT — uncommitted cont.118 work in the MAIN checkout
+`/Users/justin/crucible-local/crucible-local` on `crucible-northstar-sessions` has uncommitted
+agentic-surface work belonging to another session, plus additive fixes made from this one before
+it was handed back (server.ts `ToolResult` typing + double-emit removal, `core.tsx` `ViewSpec`
+import, `panels.tsx` SurfaceRenderer mount, new `src/agentic/surfaceContract.ts`, `registry.ts`
+choke-point view emit, NUL hygiene, `package.json surface:bench`). Two findings that session should
+know: `registry.exec` emits `tool_call`+`tool_result` itself, so the named-tool branch in
+`server.ts` was **double-emitting** every event; and the derived `view` was attached ONLY in that
+branch, so **agent mode could never receive a surface** — it is now attached at the `registry.exec`
+choke point instead.
 ---
 
 ### ⚠ TRAP 2 — a live bench from a worktree silently measures `apple-fm`
