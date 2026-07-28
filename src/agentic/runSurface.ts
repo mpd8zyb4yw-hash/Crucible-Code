@@ -83,7 +83,14 @@ function changedFiles(diffs: AgentDiff[]): Entity[] {
 
 /** Checks the agent ran. A failed check is the single most important thing on the page. */
 function checks(verifies: AgentVerify[]): Entity[] {
-  return verifies.filter(Boolean).map((v, i) => entity({
+  return verifies
+    .filter(Boolean)
+    // A verify that found nothing to run is not a check — it rendered as
+    // "TASKS · none · Passed · No runnable check detected", which is a row that says nothing.
+    // Absence of a check is not a passing check, and pretending otherwise is the same
+    // false-reassurance as a green badge over an unverified answer.
+    .filter(v => v.signal && v.signal !== 'none' && !/no runnable check/i.test(v.report ?? ''))
+    .map((v, i) => entity({
     id: `check:${i}`,
     kind: 'task',
     source: 'agent',

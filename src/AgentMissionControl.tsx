@@ -450,7 +450,11 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
                     <div style={{ flex: 1 }} />
                     {a.done?.ms != null && (
                       <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums' }}>
-                        {(a.done.ms / 1000).toFixed(1)}s · {a.done.toolCallCount ?? a.tools.length} tools
+                        {/* The observed tool rows are the ground truth. `toolCallCount` comes
+                            from loop.ts, which the fmReact path bypasses — so it reports 0 while
+                            the panel below shows "TOOLS · 1". Take whichever is larger rather
+                            than letting a counter that never ran contradict what is on screen. */}
+                        {(a.done.ms / 1000).toFixed(1)}s · {Math.max(a.done.toolCallCount ?? 0, a.tools.length)} tools
                       </span>
                     )}
                   </div>
