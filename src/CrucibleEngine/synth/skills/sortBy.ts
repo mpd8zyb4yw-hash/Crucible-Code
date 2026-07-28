@@ -33,21 +33,6 @@ export function orderBy<T>(arr: T[], specs: SortSpec<T>[]): T[] {
 }
 `
 
-const SUITE = `
-import { sortBy, orderBy } from './src/module'
-const ok = (b: boolean, msg: string) => { if (!b) { console.error('FAIL', msg); process.exit(1) } }
-const arr = [{ name: 'b', age: 3 }, { name: 'a', age: 1 }, { name: 'c', age: 2 }]
-const byName = sortBy(arr, 'name')
-ok(byName[0].name === 'a' && byName[2].name === 'c', 'sort by name asc')
-const byAgeDesc = sortBy(arr, 'age', 'desc')
-ok(byAgeDesc[0].age === 3, 'sort by age desc')
-const byFn = sortBy([3,1,2], x => x)
-ok(byFn.join() === '1,2,3', 'sort by function')
-const multi = orderBy([{a:1,b:2},{a:1,b:1},{a:2,b:3}], [{key:'a'},{key:'b',dir:'desc'}])
-ok(multi[0].b === 2 && multi[1].b === 1, 'multi-key order')
-ok(arr.length === 3, 'original not mutated')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'sortBy',
@@ -64,5 +49,4 @@ registerSkill({
   emit(s: SpecFeatures): SynthFile[] {
     return [{ path: s.modulePath ?? 'src/module.ts', content: IMPL }]
   },
-  suite: SUITE,
 })

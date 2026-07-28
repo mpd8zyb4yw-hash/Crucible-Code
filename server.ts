@@ -5043,9 +5043,9 @@ app.post('/api/chat', async (req, res) => {
           // (the cont.95 live oddity: one fence certified while another shipped TS1005).
           const attempted = new Set<string>()
           for (let guard = 0; guard < 6; guard++) {
-            const p = verifyCodeBlocks(answer).find(pr => !attempted.has(pr.lang + ' ' + pr.code))
+            const p = verifyCodeBlocks(answer).find(pr => !attempted.has(pr.lang + '\u0000' + pr.code))
             if (!p) break
-            attempted.add(p.lang + ' ' + p.code)
+            attempted.add(p.lang + '\u0000' + p.code)
             // Deterministic first: a block that parses clean under ANOTHER grammar is a label
             // defect (python inside a ```ts fence → TS1005) — relabel, byte-identical code.
             const relang = crossGrammarRelabel(p.lang, p.code)

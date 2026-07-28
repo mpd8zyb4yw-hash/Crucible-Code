@@ -126,6 +126,39 @@ async function main() {
     check('5 wall-clock budget terminates the loop', r.status === 'budget', JSON.stringify(r.detail))
   }
 
+  // ── 5b. SHARED DEADLINE: the ceiling that survives being called N times. ────────
+  // `wallClockMs` is measured from each call's own start, so N iterate() calls grant N budgets —
+  // that is how a 180s per-rung budget let a decomposed task run 955s (955/180 = 5.3 = the number
+  // of iterate() calls it made). `deadline` is absolute, so it binds across all of them.
+  {
+    const spec: TaskSpec = { goal: 'reach 999', domain: 'test', acceptance: { target: 999 } }
+    const mkProposer = (): Proposer<number> => { let n = 0; return async () => cand(n++) }
+    const verifier: Verifier<number> = (c, s) => ({ pass: false, score: -Math.abs((s.acceptance.target as number) - c.value), signals: [] })
+
+    // A generous per-call budget, but a shared deadline that is already in the past.
+    const clock = fakeClock(10)
+    const r0 = await iterate(spec, mkProposer(), verifier, {
+      wallClockMs: 10_000_000, maxEpochs: 1000, now: clock, deadline: -1,
+    })
+    check('5b past deadline stops the loop despite a huge wallClockMs',
+      r0.status === 'budget' && /deadline/.test(r0.detail), JSON.stringify(r0.detail))
+
+    // THE REGRESSION THIS EXISTS TO CATCH: three sequential calls sharing one deadline must not
+    // each get a fresh budget. Without `deadline` these three would run to their own wall each time.
+    let t = 0
+    const shared = () => (t += 10)
+    const deadline = 100 // absolute, on the same shared clock
+    let totalEpochs = 0
+    for (let i = 0; i < 3; i++) {
+      const r = await iterate(spec, mkProposer(), verifier, {
+        wallClockMs: 10_000_000, maxEpochs: 1000, now: shared, deadline,
+      })
+      totalEpochs += r.epochs
+    }
+    check('5b one deadline binds across THREE separate iterate() calls',
+      t <= deadline + 200 && totalEpochs < 60, `clock=${t} epochs=${totalEpochs}`)
+  }
+
   // ── 6. SOUND-ACCEPTANCE: research both UNLOCKS the range (proposer can't reach it ──
   //     alone → forces a stall) and TIGHTENS the verifier with a parity constraint,
   //     so the odd candidate the loose spec WOULD accept is rejected in favour of an

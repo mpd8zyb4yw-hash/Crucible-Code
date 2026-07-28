@@ -38,12 +38,21 @@ function runBinary(command: string, args: string[], ctx: ToolCtx): Promise<ToolR
   })
 }
 
-function validateArgs(raw: unknown): { ok: true; args: string[] } | { ok: false; error: string } {
-  if (!Array.isArray(raw)) return { ok: false, error: 'args must be an array of strings (argv, not a shell string).' }
-  if (raw.length > MAX_ARGS) return { ok: false, error: `Too many arguments (max ${MAX_ARGS}).` }
+/**
+ * Both members carry `args` and `error`, so callers can read either field without narrowing.
+ * The engine gate (tsconfig.engine.json) runs `strict: false`, and with strictNullChecks off
+ * TypeScript does NOT narrow a discriminated union through `if (!v.ok)` — so the previous
+ * signature made every `v.error` a TS2339 even though the check immediately above guarantees it.
+ * Runtime behaviour is unchanged; this only makes the union total. Same fix as `readFileChecked`
+ * in tools/registry.ts, for the same reason.
+ */
+function validateArgs(raw: unknown): { ok: true; args: string[]; error: '' } | { ok: false; args: null; error: string } {
+  const bad = (error: string) => ({ ok: false as const, args: null, error })
+  if (!Array.isArray(raw)) return bad('args must be an array of strings (argv, not a shell string).')
+  if (raw.length > MAX_ARGS) return bad(`Too many arguments (max ${MAX_ARGS}).`)
   const args = raw.map(a => String(a))
-  if (args.some(a => a.includes('\0'))) return { ok: false, error: 'Null bytes are not allowed in arguments.' }
-  return { ok: true, args }
+  if (args.some(a => a.includes('\u0000'))) return bad('Null bytes are not allowed in arguments.')
+  return { ok: true, args, error: '' }
 }
 
 // ── GitHub (gh) — read-only allowlist + HITL for writes ──────────────────────

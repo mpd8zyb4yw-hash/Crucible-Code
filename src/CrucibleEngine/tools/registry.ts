@@ -176,10 +176,28 @@ function protectedFileReason(existingContent: string): string | null {
 const MAX_OUTPUT_CHARS = 24_000
 
 /** Read a file for mutation tools, returning a clean error (never throwing EISDIR/ENOENT). */
-function readFileChecked(abs: string): { ok: true; content: string } | { ok: false; output: string } {
-  if (!fs.existsSync(abs)) return { ok: false, output: `File not found: ${abs}. Create it with write_file first.` }
-  if (fs.statSync(abs).isDirectory()) return { ok: false, output: `${abs} is a directory, not a file. Pass a file path.` }
-  return { ok: true, content: fs.readFileSync(abs, 'utf-8') }
+/**
+ * Read a file, or describe why it could not be read.
+ *
+ * BOTH members carry `ok` and `output`, so the union as a whole is assignable to ToolResult and the
+ * callers' `if (!read.ok) return read` needs no narrowing to typecheck. That is not stylistic: this
+ * directory is gated by tsconfig.engine.json with `strict: false`, and with strictNullChecks off
+ * TypeScript does NOT narrow a discriminated union through `!read.ok` — the previous signature
+ * (success member lacking `output`) therefore reported TS2322 at both call sites. Measured on a
+ * minimal repro: clean under `--strict`, TS2322 under `--strict false`.
+ *
+ * The runtime behaviour was always correct — `return read` executes only when `ok` is false, so a
+ * `{ok:true}` shape never reached a consumer. This was a type-level gap, not a live break.
+ *
+ * The success member's `output` is deliberately empty: it exists to make the union total, and no
+ * caller reads it (they use `.content`).
+ */
+function readFileChecked(abs: string):
+  | { ok: true; content: string; output: string }
+  | { ok: false; content: null; output: string } {
+  if (!fs.existsSync(abs)) return { ok: false, content: null, output: `File not found: ${abs}. Create it with write_file first.` }
+  if (fs.statSync(abs).isDirectory()) return { ok: false, content: null, output: `${abs} is a directory, not a file. Pass a file path.` }
+  return { ok: true, content: fs.readFileSync(abs, 'utf-8'), output: '' }
 }
 
 export function capOutput(s: string, max = MAX_OUTPUT_CHARS): { output: string; truncated: boolean } {

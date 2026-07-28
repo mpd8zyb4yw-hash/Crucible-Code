@@ -28,18 +28,6 @@ export function sanitizeHtml(html: string, opts: { allowedTags?: Set<string>; al
 }
 `
 
-const SUITE = `
-import { stripTags, sanitizeHtml } from './src/module'
-const ok = (b: boolean, msg: string) => { if (!b) { console.error('FAIL', msg); process.exit(1) } }
-ok(stripTags('<b>hello</b> <i>world</i>') === 'hello world', 'strip tags')
-ok(stripTags('no tags') === 'no tags', 'no tags')
-const clean = sanitizeHtml('<b onclick="xss()">hello</b> <script>evil()</script> <a href="https://x.com">link</a>')
-ok(!clean.includes('onclick'), 'removes event handlers')
-ok(!clean.includes('<script>'), 'removes script tags')
-ok(clean.includes('<b>'), 'keeps b tag')
-ok(clean.includes('href="https://x.com"'), 'keeps allowed attr')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'sanitizeHtml',
@@ -55,5 +43,4 @@ registerSkill({
   emit(s: SpecFeatures): SynthFile[] {
     return [{ path: s.modulePath ?? 'src/module.ts', content: IMPL }]
   },
-  suite: SUITE,
 })

@@ -28,6 +28,7 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
 /** Bytes that are legal in a text source file: tab, LF, CR. Everything below 0x20 plus DEL is not. */
@@ -66,13 +67,34 @@ export function collectSources(dir: string, out: string[] = []): string[] {
   return out
 }
 
+/**
+ * Every TRACKED .ts/.tsx in the repo — asked of git rather than walked from `src/`.
+ *
+ * FOUND 2026-07-28: the walk started at `<root>/src`, so every root-level file was invisible to a
+ * gate whose own headline claims to cover "tracked TypeScript". `server.ts` — the largest file in
+ * the repo — was never scanned, and it was carrying a raw NUL at the time this was written. The
+ * bench reported "1080 file(s) scanned, zero raw control bytes" while the defect sat one directory
+ * above where it was looking. A gate that is blind to a whole directory level is worse than none,
+ * because its green tick is read as proof.
+ *
+ * `git ls-files` is also the correct authority on the word "tracked": a walk counts build output
+ * and untracked scratch files, which is how a scanner starts reporting failures nobody can fix.
+ */
+function trackedSources(root: string): string[] {
+  const out = execFileSync('git', ['-C', root, 'ls-files', '-z', '*.ts', '*.tsx'], { encoding: 'buffer' })
+  return String(out)
+    .split('\0')
+    .filter(Boolean)
+    .map(f => join(root, f))
+    .filter(p => { try { return statSync(p).isFile() } catch { return false } })
+}
+
 function main(): void {
   const root = new URL('../../..', import.meta.url).pathname
-  const srcDir = join(root, 'src')
 
   console.log('\n── source hygiene: no raw control bytes in tracked TypeScript ──\n')
 
-  const files = collectSources(srcDir)
+  const files = trackedSources(root)
   const hits: ControlByteHit[] = []
   for (const f of files) hits.push(...scanForControlBytes(f, readFileSync(f)))
 

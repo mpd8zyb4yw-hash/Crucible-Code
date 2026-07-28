@@ -68,8 +68,23 @@ export interface IterateOpts<T = unknown> extends Pick<SearchOpts<T>, 'signal' |
   maxEpochs?: number
   /** Consecutive stalled epochs (research included) tolerated before abstaining. Default 2. */
   stallLimit?: number
-  /** Wall-clock ceiling across the whole loop, ms. Reality budget. Default 120_000. */
+  /** Wall-clock ceiling across the whole loop, ms. Reality budget. Default 120_000.
+   *  PER CALL — a caller that invokes iterate() N times grants N of these. For a ceiling that
+   *  binds across a whole multi-rung solve, pass `deadline` instead (or as well). */
   wallClockMs?: number
+  /**
+   * ABSOLUTE wall-clock deadline (epoch ms from `now()`), shared across every iterate() call that
+   * receives it. Whichever of `deadline` and `wallClockMs` expires first ends the loop.
+   *
+   * WHY THIS EXISTS. `wallClockMs` is measured from `start`, which is re-read at the top of every
+   * iterate() call, so it caps ONE convergence loop and not the work as a whole. A decomposed solve
+   * calls iterate() once per rung and once more to compose, and re-runs that whole carve up to
+   * `planAttempts` times — so a "180s budget" licensed 180s × rungs × attempts of real time.
+   * Measured: wordFrequencyTop ran 955s under a 180s per-rung budget, and 955/180 = 5.3 is simply
+   * how many iterate() calls it made. A duration that resets per sub-call is not a ceiling; only an
+   * absolute instant, computed once and shared, is one.
+   */
+  deadline?: number
   /** Hard ceiling on total model calls across ALL epochs. Default 64. */
   globalModelCalls?: number
   /** Search budget for epoch 0. Escalates each epoch it keeps going. Default 8. */
@@ -167,9 +182,14 @@ export async function iterate<T>(
   for (let epoch = 0; epoch < o.maxEpochs; epoch++) {
     if (opts.signal?.aborted) return finish('aborted', null, 'aborted before epoch')
 
+    // The binding ceiling is whichever runs out first: this call's own duration budget, or the
+    // shared absolute deadline the caller computed once for the entire solve.
     const elapsed = now() - start
     if (elapsed >= o.wallClockMs) {
       return finish('budget', null, `wall-clock budget (${o.wallClockMs}ms) reached at epoch ${epoch}`)
+    }
+    if (opts.deadline !== undefined && now() >= opts.deadline) {
+      return finish('budget', null, `shared wall-clock deadline reached at epoch ${epoch}`)
     }
     if (totalCalls >= o.globalModelCalls) {
       return finish('budget', null, `global model-call budget (${o.globalModelCalls}) reached at epoch ${epoch}`)
@@ -181,7 +201,12 @@ export async function iterate<T>(
     const remainingCalls = o.globalModelCalls - totalCalls
     const epochCalls = Math.max(1, Math.min(o.baseModelCalls + epoch * 2, remainingCalls))
 
-    emit({ type: 'thought', text: `epoch ${epoch}: search (beam ${beamWidth}, ≤${epochCalls} calls, ${Math.round((o.wallClockMs - elapsed) / 1000)}s left)` })
+    // Report whichever ceiling actually binds, so the trace never claims more time than it has.
+    const msLeft = Math.min(
+      o.wallClockMs - elapsed,
+      opts.deadline !== undefined ? opts.deadline - now() : Infinity,
+    )
+    emit({ type: 'thought', text: `epoch ${epoch}: search (beam ${beamWidth}, ≤${epochCalls} calls, ${Math.round(msLeft / 1000)}s left)` })
 
     const result = await search<T>(workingSpec, proposer, verifier, {
       beamWidth,

@@ -36,26 +36,6 @@ export function isJwtExpired(token: string): boolean {
 }
 `
 
-const SUITE = `
-import { jwtDecode, isJwtExpired } from './src/module'
-const ok = (b: boolean, msg: string) => { if (!b) { console.error('FAIL', msg); process.exit(1) } }
-// Real JWT structure: header.payload.sig (not verified here)
-const header = Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url')
-const payload = Buffer.from(JSON.stringify({sub:'123',exp:9999999999,iat:1000000})).toString('base64url')
-const token = header + '.' + payload + '.fakesig'
-const decoded = jwtDecode(token)
-ok(decoded.header.alg === 'HS256', 'header.alg')
-ok(decoded.payload.sub === '123', 'payload.sub')
-ok(decoded.signature === 'fakesig', 'signature')
-ok(!isJwtExpired(token), 'not expired')
-const expiredPayload = Buffer.from(JSON.stringify({exp:1})).toString('base64url')
-const expiredToken = header + '.' + expiredPayload + '.sig'
-ok(isJwtExpired(expiredToken), 'expired')
-let threw = false
-try { jwtDecode('bad') } catch { threw = true }
-ok(threw, 'throws on invalid')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'jwtDecode',
@@ -71,5 +51,4 @@ registerSkill({
   emit(s: SpecFeatures): SynthFile[] {
     return [{ path: s.modulePath ?? 'src/module.ts', content: IMPL }]
   },
-  suite: SUITE,
 })

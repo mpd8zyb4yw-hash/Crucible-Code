@@ -525,10 +525,17 @@ export async function decomposeCodeBySubFunction(
   // not the easy ones it already got (the DP-fold scorecard showed a failed editDistance re-running
   // subCost/nextRow + a full editRow window every attempt → ~1200s). Reuse is exact-SPEC-gated.
   const carry = new Map<string, { source: string; spec: string }>(carrySeed ?? [])
+  // The shared wall-clock deadline is fixed HERE, above the retry loop, not inside the attempt.
+  // Computed per attempt it would reset `planAttempts` times over, which is the same multiplication
+  // it exists to stop — a 180s budget × 3 attempts × N rungs is how a capped task reached 955s.
+  // An inherited deadline always wins, so a nested level can only ever tighten the ceiling.
+  const attemptOpts = opts.iterate?.deadline !== undefined || opts.iterate?.wallClockMs === undefined
+    ? opts
+    : { ...opts, iterate: { ...opts.iterate, deadline: Date.now() + opts.iterate.wallClockMs } }
   for (let attempt = 0; attempt < planAttempts; attempt++) {
     if (opts.signal?.aborted) break
     if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
-    const r = await runSubFunctionOnce(input, opts, proposerOverride, carry)
+    const r = await runSubFunctionOnce(input, attemptOpts, proposerOverride, carry)
     spentCalls += r.modelCalls
     last = { ...r, modelCalls: spentCalls }
     if (r.status === 'solved' || r.status === 'declined' || r.status === 'aborted') return last
@@ -725,6 +732,16 @@ async function runSubFunctionOnce(
     : (_nl: string) => undefined
 
   if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers: [], rungs, modelCalls, detail: 'aborted before planning' }
+
+  // ONE deadline for this whole carve, computed once and handed to every iterate() call below.
+  // `opts.iterate.wallClockMs` is a PER-CALL duration, so without this each rung and the compose
+  // step restarts the clock and the "budget" multiplies by the number of rungs (see IterateOpts.
+  // deadline). A caller that already supplied a deadline keeps theirs — an inherited ceiling must
+  // never be widened by a nested level, which is what makes this sound under recursion.
+  const carveDeadline = opts.iterate?.deadline
+    ?? (opts.iterate?.wallClockMs !== undefined ? Date.now() + opts.iterate.wallClockMs : undefined)
+  const withDeadline = <T extends Record<string, unknown>>(b: T): T =>
+    (carveDeadline === undefined ? b : { ...b, deadline: carveDeadline })
 
   // 1) Untrusted helper plan.
   // ACCOUNTING (2026-07-27c). The DEFAULT planner is a MODEL CALL and was billed ZERO: `modelCalls`
@@ -924,7 +941,7 @@ async function runSubFunctionOnce(
     // suspect rung gets 1.5× and a rung the draft already got right gets 0.6× (see skewRungBudget).
     // A budget is not a truth claim — a mis-ranked rung costs draws, never certification.
     const rungBudget = probe?.status === 'grounded' ? skewRungBudget(opts.iterate, probe.suspects, h.name) : opts.iterate
-    const res = await iterate<string>(spec, rungProposer, verifyCode, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...rungBudget, signal: opts.signal, emit: opts.emit })
+    const res = await iterate<string>(spec, rungProposer, verifyCode, withDeadline({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...rungBudget, signal: opts.signal, emit: opts.emit }))
     modelCalls += res.modelCalls
     const certified = res.status === 'solved' && !!res.solution
     rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
@@ -1004,7 +1021,7 @@ async function runSubFunctionOnce(
     verifyCode({ value: `${helperBlock}\n\n${stripHelperRedefinitions(cand.value, helperNames)}`, fingerprint: cand.fingerprint }, spec)
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
-  const composed = await iterate<string>(composeSpec, composeProposer, composingVerifier, { mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })
+  const composed = await iterate<string>(composeSpec, composeProposer, composingVerifier, withDeadline({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit }))
   modelCalls += composed.modelCalls
   const composedCert = composed.status === 'solved' && !!composed.solution
   rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert })
@@ -1133,13 +1150,20 @@ export interface LadderOutcome {
  * draw still pays, and the llama-server slot count is 4. It is then clamped to HALF the caller's
  * flat budget, so tier 0 alone cannot exceed half of it. Pure — unit-tested in __ladder_bench.
  *
- * WHAT THIS DOES *NOT* DO, and do not re-read it as doing: the clamp is not SUBTRACTIVE. No tier
- * decrements `opts.maxModelCalls`, so tier 1 receives the caller's full budget again (solveCodeTask
- * is handed `opts` verbatim) and tier 3's per-rung `iterate` budgets are not bounded by it at all.
- * A caller passing `maxModelCalls: 6` can therefore see up to 6/2 + 6 = 9 flat calls plus tier 3 on
- * top; in practice only the AbortSignal binds. The 2026-07-27 scorecard was measured under exactly
- * these semantics, so per-task call counts there are real measurements, not budget-derived — but any
- * claim of the form "solved within the caller's N-call budget" is NOT supported by this code.
+ * SUBTRACTIVE AS OF 2026-07-28. This clamp still only bounds tier 0's own share; what changed is
+ * that `solveByLadder` now keeps a running ledger and hands each later tier only what its
+ * predecessors LEFT (see `left()` / `exhausted()` there). Previously no tier decremented anything,
+ * so tier 1 received the caller's full budget again and tier 3's per-rung purses ignored it
+ * outright — `maxModelCalls: 6` really licensed 6/2 + 6 flat calls plus an unbounded carve, and
+ * only the AbortSignal bound it.
+ *
+ * STILL NOT EXACT, and do not re-read it as exact: tier 3's clamp applies to a PER-RUNG
+ * `globalModelCalls`, so an N-rung carve can still spend up to N × the remainder. The ceiling is
+ * now real at tier granularity and approximate within a carve.
+ *
+ * Measurements taken BEFORE this date (including the 2026-07-27 scorecard) ran under the old
+ * non-subtractive semantics, so their per-task call counts are real measurements rather than
+ * budget-derived, and are not comparable to a post-change run at the same nominal budget.
  */
 export function tier0Draws(maxModelCalls?: number): number {
   const want = Math.max(1, Number(process.env.CRUCIBLE_LADDER_K || 4))
@@ -1254,6 +1278,21 @@ export async function solveByLadder(
   const willCarve = !!opts.decompose && cases.length >= 3 && !multi
   const templated = hasDecomposeTemplate(nl, entry) && willCarve
 
+  // ── SUBTRACTIVE BUDGET ────────────────────────────────────────────────────────
+  // `maxModelCalls` used to be read by tier 0 and then handed to tier 1 UNCHANGED, so each tier
+  // spent the caller's whole budget over again and tier 3's per-rung purses ignored it entirely:
+  // `maxModelCalls: 6` really licensed 6/2 + 6 flat calls plus an unbounded carve. Nothing capped
+  // it but the AbortSignal, and that is not a substitute — a wall-clock cap bounds TIME, and the
+  // thing this budget exists to bound is CALLS, which is what the doctrine's
+  // information-per-model-call discipline is actually measured in. (The wall-clock ceiling had the
+  // same defect on a different axis; see IterateOpts.deadline.)
+  //
+  // `modelCalls` is already the running total every tier adds to, so it is the ledger — `left()`
+  // just reads the remainder from it. Undefined budget stays unbounded, exactly as before.
+  const callCeiling = opts.maxModelCalls
+  const left = (): number => (callCeiling === undefined ? Infinity : Math.max(0, callCeiling - modelCalls))
+  const exhausted = (): boolean => left() <= 0
+
   // ── tier 0 ────────────────────────────────────────────────────────────────────
   // Kept in scope for tier 2: the K blind draws are the most INDEPENDENT implementations the system
   // produces, which is exactly the evidence poisoned-case recovery needs.
@@ -1276,7 +1315,9 @@ export async function solveByLadder(
   }
 
   // ── tier 1 — serial search with verifier feedback (+ mechanical & mutation repair) ──
-  if (!templated && !opts.signal?.aborted) {
+  // Tier 2 is deliberately NOT budget-gated below: it is model-free, so an exhausted budget is no
+  // reason to skip it — free evidence is still evidence.
+  if (!templated && !opts.signal?.aborted && !exhausted()) {
     if (opts.converge) {
       const t0 = Date.now()
       const it = await iterateCodeTask({ goal: nl, nl, entry, cases, webGround: opts.webGround }, {
@@ -1294,7 +1335,9 @@ export async function solveByLadder(
       }
     }
     const t0 = Date.now()
-    const result = await solveCodeTask({ goal: nl, entry, entries: multi, cases, buggyCode: opts.buggyCode }, opts)
+    // Tier 1 gets what tier 0 LEFT, not the caller's original budget.
+    const result = await solveCodeTask({ goal: nl, entry, entries: multi, cases, buggyCode: opts.buggyCode },
+      callCeiling === undefined ? opts : { ...opts, maxModelCalls: left() })
     search = result
     modelCalls += result.modelCalls
     const pass = result.status === 'solved' && await gate(result.solution?.value ?? null, entry)
@@ -1323,12 +1366,21 @@ export async function solveByLadder(
   // Single-entry only: this machinery carves and composes ONE function, so a multi-function gold
   // spec has nothing here to escalate to. Needs ≥3 cases to both carve helpers and re-verify the
   // composed whole meaningfully.
-  if (opts.decompose && cases.length >= 3 && !multi && !opts.signal?.aborted) {
+  if (opts.decompose && cases.length >= 3 && !multi && !opts.signal?.aborted && !exhausted()) {
     const t0 = Date.now()
+    // The carve's per-rung purse is clamped to what the ladder has left. `globalModelCalls` is a
+    // PER-RUNG cap, so this does not make the total exact — a carve with N rungs can still spend
+    // up to N × the clamp. It does mean the budget is no longer ignored outright, and a caller with
+    // 2 calls left can no longer trigger a 60-call decomposition. Making the carve's total exact
+    // needs the same shared-ledger treatment one level down, which is a separate change.
+    const rungBudget = opts.iterate ?? decomposePerRungBudget(nl, entry)
+    const clamped = callCeiling === undefined ? rungBudget : {
+      ...rungBudget,
+      globalModelCalls: Math.max(1, Math.min(rungBudget.globalModelCalls ?? Infinity, left())),
+    }
     const d = await decomposeCodeBySubFunction(
       { goal: nl, nl, entry, cases },
-      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit,
-        iterate: opts.iterate ?? decomposePerRungBudget(nl, entry) },
+      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: clamped },
     )
     modelCalls += d.modelCalls
     const pass = d.status === 'solved' && !!d.code && await gate(d.code, entry)

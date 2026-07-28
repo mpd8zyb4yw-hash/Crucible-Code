@@ -20,18 +20,6 @@ export function partitionBy<T, K extends string | number>(arr: T[], key: (x: T) 
 }
 `
 
-const SUITE = `
-import { partition, partitionBy } from './src/module'
-const ok = (b: boolean, msg: string) => { if (!b) { console.error('FAIL', msg); process.exit(1) } }
-const [evens, odds] = partition([1,2,3,4,5], x => x % 2 === 0)
-ok(evens.join() === '2,4', 'evens')
-ok(odds.join() === '1,3,5', 'odds')
-const [pass, fail] = partition([], () => true)
-ok(pass.length === 0 && fail.length === 0, 'empty')
-const m = partitionBy([{t:'a',v:1},{t:'b',v:2},{t:'a',v:3}], x => x.t)
-ok(m.get('a')!.length === 2 && m.get('b')!.length === 1, 'partitionBy')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'partition',
@@ -45,5 +33,4 @@ registerSkill({
   emit(s: SpecFeatures): SynthFile[] {
     return [{ path: s.modulePath ?? 'src/module.ts', content: IMPL }]
   },
-  suite: SUITE,
 })

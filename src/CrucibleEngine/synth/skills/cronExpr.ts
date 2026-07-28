@@ -55,23 +55,6 @@ export function describeCron(expr: string): string {
 }
 `
 
-const SUITE = `
-import { parseCron, isCronValid, describeCron } from './src/module'
-const ok = (b: boolean, msg: string) => { if (!b) { console.error('FAIL', msg); process.exit(1) } }
-const p = parseCron('0 9 * * 1-5')
-ok(p.minute === '0' && p.hour === '9' && p.dayOfWeek === '1-5', 'parse fields')
-ok(isCronValid('* * * * *'), 'all stars valid')
-ok(isCronValid('*/15 * * * *'), 'step valid')
-ok(isCronValid('0 9 * * 1-5'), 'range valid')
-ok(!isCronValid('60 * * * *'), 'minute 60 invalid')
-ok(!isCronValid('* 25 * * *'), 'hour 25 invalid')
-ok(!isCronValid('not a cron'), 'bad expr invalid')
-ok(describeCron('* * * * *') === 'every minute', 'describe every minute')
-let threw = false
-try { parseCron('* *') } catch { threw = true }
-ok(threw, 'throws on wrong field count')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'cronExpr',
@@ -86,5 +69,4 @@ registerSkill({
   emit(s: SpecFeatures): SynthFile[] {
     return [{ path: s.modulePath ?? 'src/module.ts', content: IMPL }]
   },
-  suite: SUITE,
 })

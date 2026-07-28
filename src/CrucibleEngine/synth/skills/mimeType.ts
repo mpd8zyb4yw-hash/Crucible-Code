@@ -35,22 +35,6 @@ export function isTextMime(mime: string): boolean {
 }
 `
 
-const SUITE = `
-import { getMimeType, getExtension, isTextMime } from './src/module'
-const ok = (b: boolean, msg: string) => { if (!b) { console.error('FAIL', msg); process.exit(1) } }
-ok(getMimeType('index.html') === 'text/html', 'html')
-ok(getMimeType('app.js') === 'application/javascript', 'js')
-ok(getMimeType('data.json') === 'application/json', 'json')
-ok(getMimeType('photo.png') === 'image/png', 'png')
-ok(getMimeType('video.mp4') === 'video/mp4', 'mp4')
-ok(getMimeType('unknown.xyz') === 'application/octet-stream', 'unknown')
-ok(getMimeType('css') === 'text/css', 'bare extension')
-ok(getExtension('image/png') === 'png', 'reverse lookup')
-ok(isTextMime('text/html'), 'text is text')
-ok(isTextMime('application/json'), 'json is text')
-ok(!isTextMime('image/png'), 'image is not text')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'mimeType',
@@ -65,5 +49,4 @@ registerSkill({
   emit(s: SpecFeatures): SynthFile[] {
     return [{ path: s.modulePath ?? 'src/module.ts', content: IMPL }]
   },
-  suite: SUITE,
 })

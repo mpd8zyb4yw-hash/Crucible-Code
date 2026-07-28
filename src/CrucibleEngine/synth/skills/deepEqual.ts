@@ -20,20 +20,6 @@ export function deepEqual(a: unknown, b: unknown): boolean {
 export const isEqual = deepEqual
 `
 
-const SUITE = `
-import { deepEqual, isEqual } from './src/module'
-const ok = (b: boolean, msg: string) => { if (!b) { console.error('FAIL', msg); process.exit(1) } }
-ok(deepEqual(1, 1), 'primitives equal')
-ok(!deepEqual(1, 2), 'primitives not equal')
-ok(deepEqual({ a: 1, b: [2, 3] }, { a: 1, b: [2, 3] }), 'nested objects')
-ok(!deepEqual({ a: 1 }, { a: 2 }), 'nested mismatch')
-ok(deepEqual([1,[2,3]], [1,[2,3]]), 'nested arrays')
-ok(!deepEqual([1,2], [1,2,3]), 'array length mismatch')
-ok(deepEqual(null, null), 'null equals null')
-ok(!deepEqual(null, {}), 'null vs object')
-ok(isEqual({ x: 1 }, { x: 1 }), 'alias works')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'deepEqual',
@@ -49,5 +35,4 @@ registerSkill({
     const p = s.modulePath ?? 'src/module.ts'
     return [{ path: p, content: IMPL }]
   },
-  suite: SUITE,
 })

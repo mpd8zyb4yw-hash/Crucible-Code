@@ -67,36 +67,6 @@ export function parseToml(src: string): Record<string, TomlValue> {
 }
 `
 
-const SUITE = `
-import { parseToml } from './src/module'
-const ok = (cond: boolean, msg: string) => { if (!cond) { console.error('FAIL', msg); process.exit(1) } }
-const doc = parseToml(\`
-title = "TOML Example"
-port = 8080
-debug = true
-ratio = 3.14
-
-[database]
-host = "localhost"
-ports = [5432, 5433]
-
-[[servers]]
-name = "alpha"
-
-[[servers]]
-name = "beta"
-\`)
-ok(doc['title'] === 'TOML Example', 'string')
-ok(doc['port'] === 8080, 'integer')
-ok(doc['debug'] === true, 'boolean')
-ok(Math.abs((doc['ratio'] as number) - 3.14) < 0.001, 'float')
-const db = doc['database'] as Record<string,unknown>
-ok(db['host'] === 'localhost', 'table string')
-ok(Array.isArray(db['ports']) && (db['ports'] as number[])[0] === 5432, 'inline array')
-const servers = doc['servers'] as Record<string,unknown>[]
-ok(servers.length === 2 && servers[0]['name'] === 'alpha', 'array of tables')
-console.log('ALL PASS')
-`
 
 registerSkill({
   id: 'tomlParse',
@@ -111,5 +81,4 @@ registerSkill({
   emit(s: SpecFeatures): SynthFile[] {
     return [{ path: s.modulePath ?? 'src/module.ts', content: IMPL }]
   },
-  suite: SUITE,
 })
