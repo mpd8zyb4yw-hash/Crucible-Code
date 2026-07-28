@@ -93,7 +93,8 @@
     "vgr:execverify": "tsx src/CrucibleEngine/reasoning/__execverify_bench.ts",
     "vgr:sandboxguard": "tsx src/CrucibleEngine/reasoning/__sandboxguard_bench.ts",
     "vgr:codeblock": "tsx src/CrucibleEngine/__codeblock_bench.ts",
-    "vgr:contract": "tsx src/CrucibleEngine/reasoning/__contract_bench.ts"
+    "vgr:contract": "tsx src/CrucibleEngine/reasoning/__contract_bench.ts",
+    "web:bench": "tsx src/CrucibleEngine/tools/__webact_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",

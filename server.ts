@@ -4081,8 +4081,11 @@ app.post('/api/chat', async (req, res) => {
           // `browser_sign_in` belongs here for the same reason the rest do: browse_page's own
           // needs-login answer TELLS the user to run it, and an executor that was never offered
           // the tool cannot follow its own advice.
-          : ['browse_page', 'read_url', 'web_search', 'save_pdf', 'save_page_image', 'screenshot',
-             'browser_sign_in', 'list_dir', 'read_file', 'write_file']
+          // web_open/web_act/web_close are what make multi-step site work expressible at all;
+          // without them the executor can only read a page and throw it away.
+          : ['browse_page', 'web_open', 'web_act', 'web_close', 'read_url', 'web_search',
+             'save_pdf', 'save_page_image', 'screenshot', 'browser_sign_in',
+             'list_dir', 'read_file', 'write_file']
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,

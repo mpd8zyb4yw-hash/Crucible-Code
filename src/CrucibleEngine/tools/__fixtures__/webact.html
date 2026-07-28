@@ -1,0 +1,42 @@
+<!doctype html>
+<!-- Fixture for the web_open/web_act bench. Deliberately offline and self-contained: a live
+     site cannot be a regression test (it changes, rate-limits, and — as duckduckgo.com/html did
+     during cont.119 — serves a CAPTCHA instead of content). Exercises every action the tool
+     supports, plus the two cases that must be reported honestly: a control that does nothing,
+     and an element that is present but invisible. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Act Fixture</title></head>
+<body>
+  <h1>Act Fixture</h1>
+
+  <label for="q">Search query</label>
+  <input id="q" name="q" type="text" placeholder="Type a query">
+
+  <select id="colour" aria-label="Colour">
+    <option value="red">Red</option>
+    <option value="green">Green</option>
+    <option value="blue">Blue</option>
+  </select>
+
+  <button id="go" onclick="document.getElementById('out').textContent =
+    'RESULT: ' + document.getElementById('q').value + ' / ' + document.getElementById('colour').value;
+    document.getElementById('extra').style.display = 'block';">Run search</button>
+
+  <button id="dead">Does nothing</button>
+
+  <a href="#section2" id="jump">Jump to section two</a>
+
+  <!-- Invisible: must NOT be offered as an affordance. -->
+  <button id="hidden-btn" style="display:none">Hidden button</button>
+
+  <p id="out">RESULT: (nothing yet)</p>
+
+  <!-- Appears only after the button runs, so element-count deltas are observable. -->
+  <div id="extra" style="display:none">
+    <button id="clear" onclick="document.getElementById('out').textContent='RESULT: (cleared)'">Clear</button>
+    <a href="#done" id="done-link">Done</a>
+  </div>
+
+  <h2 id="section2">Section two</h2>
+</body>
+</html>

@@ -22,7 +22,10 @@ import {
 } from './adapters'
 // The hardened fetcher (SSRF-guarded, redirect-capped, timeout-bounded) that `read_url` exposes.
 import { fetch as retrievalFetch, stripBoilerplate } from '../retrieval/retrievalLayer'
-import { findBrowser, readPage, pageToPdf, pageScreenshot, openSignInWindow } from './browser'
+import {
+  findBrowser, readPage, pageToPdf, pageScreenshot, openSignInWindow,
+  openWorkPage, actOnPage, closeWorkPage, listWorkPages, type PageAction,
+} from './browser'
 import { parkSignIn } from './signInSessions'
 import { deriveView } from './viewDerivation'
 import type { Entity } from './entities'
@@ -1064,6 +1067,146 @@ registry.register({
     } catch (e: any) {
       return { ok: false, output: `browser_sign_in failed: ${String(e?.message ?? e).slice(0, 300)}` }
     }
+  },
+})
+
+// ── Acting on live pages (cont.119) ──────────────────────────────────────────
+// browse_page reads a page and throws it away, which is why "log in, find the thing, save it"
+// was impossible: every step of that is an ACTION against a page whose state must survive to the
+// next step. web_open keeps a tab, web_act drives it and reports what actually changed.
+
+/** Render a page's controls compactly. This is the model's entire view of what it can do, so it
+ *  leads with the ref it must quote back and stays terse enough to survive observation
+ *  compression in the agent loop. */
+function renderPageState(s: { url: string; title: string; text: string; elements: Array<{ ref: string; role: string; name: string; value?: string; disabled?: boolean }> }, maxChars: number): string {
+  const controls = s.elements
+    .filter(e => e.name || e.role.startsWith('input'))
+    .slice(0, 60)
+    .map(e => `  ${e.ref}  [${e.role}]${e.disabled ? ' (disabled)' : ''} ${e.name}${e.value ? ` = "${e.value}"` : ''}`)
+    .join('\n')
+  return `# ${s.title}\n${s.url}\n\n` +
+    `CONTROLS (quote the ref, e.g. web_act target:"e12"):\n${controls || '  (no interactive controls found)'}\n\n` +
+    `PAGE TEXT:\n${s.text.slice(0, maxChars)}`
+}
+
+registry.register({
+  name: 'web_open',
+  description: 'Open a web page in a tab that STAYS OPEN so you can interact with it. Returns the page text plus every clickable/typeable control with a ref id. Use this instead of browse_page whenever the task needs more than one step on a site (logging in, searching, filling a form, navigating to a result). Reuses the user\'s signed-in browser profile.',
+  mutates: true,
+  params: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'Full URL to open' },
+      maxChars: { type: 'number', description: 'Max characters of page text (default 6000)' },
+    },
+    required: ['url'],
+  },
+  async run(args, ctx) {
+    const avail = findBrowser()
+    if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
+    const url = String(args.url ?? '').trim()
+    if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
+    try {
+      const s = await openWorkPage(ctx.projectPath, url)
+      if (s.needsLogin) {
+        await closeWorkPage(s.pageId)
+        return {
+          ok: false,
+          output: `That page requires a sign-in and this browser profile is not logged in.\n` +
+            `Call browser_sign_in with this URL — it opens a window, returns immediately, and the ` +
+            `task resumes on its own once the user signs in. Crucible never handles their password.`,
+          meta: { blocked: 'needs-login', url: s.url },
+        }
+      }
+      if (s.needsConsent) {
+        await closeWorkPage(s.pageId)
+        return {
+          ok: false,
+          output: `That page returned a cookie/consent screen instead of its content${s.title ? ` (title: "${s.title}")` : ''}.\n` +
+            `Call browser_sign_in with this URL so the user can make that choice themselves. ` +
+            `Accepting terms on their behalf is not something Crucible will do.`,
+          meta: { blocked: 'needs-consent', url: s.url },
+        }
+      }
+      if (s.needsChallenge) {
+        await closeWorkPage(s.pageId)
+        return {
+          ok: false,
+          output: `That site is showing an anti-bot challenge (CAPTCHA) rather than its content, so ` +
+            `nothing on it can be read or acted on${s.title ? ` (title: "${s.title}")` : ''}.\n` +
+            `Crucible does not solve CAPTCHAs. Either use a different source, or call ` +
+            `browser_sign_in with this URL so the user can complete the check themselves in a ` +
+            `visible window — the task then resumes automatically.`,
+          meta: { blocked: 'needs-challenge', url: s.url },
+        }
+      }
+      return {
+        ok: true,
+        output: `Opened as page "${s.pageId}" — it stays open; drive it with web_act, and close it with web_close when done.\n\n` +
+          renderPageState(s, Math.min(20_000, Number(args.maxChars ?? 6000))),
+        entities: webResults([{ title: s.title, url: s.url, snippet: s.text.slice(0, 300) }], 'web_open'),
+        meta: { pageId: s.pageId, controls: s.elements.length },
+      }
+    } catch (e: any) {
+      return { ok: false, output: `web_open failed: ${String(e?.message ?? e).slice(0, 300)}` }
+    }
+  },
+})
+
+registry.register({
+  name: 'web_act',
+  description: 'Do something on a page opened with web_open: click a button or link, type into a field, select an option, press a key, scroll, or go back. Then re-reads the page and tells you what changed. Target a control by the ref id from the last read (like "e12") or by its visible name.',
+  mutates: true,
+  params: {
+    type: 'object',
+    properties: {
+      pageId: { type: 'string', description: 'The page id returned by web_open' },
+      action: { type: 'string', description: 'click | type | fill | select | press | scroll | hover | back | wait' },
+      target: { type: 'string', description: 'Ref id from the last read ("e12"), or a substring of the control\'s visible name' },
+      value: { type: 'string', description: 'Text to type/fill, option to select, key to press, or pixels to scroll' },
+      maxChars: { type: 'number', description: 'Max characters of page text to return (default 6000)' },
+    },
+    required: ['pageId', 'action'],
+  },
+  async run(args, ctx) {
+    const pageId = String(args.pageId ?? '').trim()
+    const action = String(args.action ?? '').trim().toLowerCase() as PageAction
+    const VALID: PageAction[] = ['click', 'type', 'fill', 'select', 'press', 'scroll', 'hover', 'back', 'wait']
+    if (!VALID.includes(action)) return { ok: false, output: `Unknown action "${action}". Use one of: ${VALID.join(', ')}.` }
+    try {
+      const r = await actOnPage(pageId, action, args.target ? String(args.target) : undefined, args.value != null ? String(args.value) : undefined)
+      // Report the DELTA first. "I clicked it" is not evidence anything happened, and a model
+      // that cannot tell a no-op from a success will happily march on through a broken flow.
+      const delta = r.changed.url ? `navigated to a new URL`
+        : r.changed.title ? `the page title changed`
+        : r.changed.elementCount !== 0 ? `${r.changed.elementCount > 0 ? '+' : ''}${r.changed.elementCount} controls appeared/disappeared`
+        : `NOTHING measurably changed — the action may not have taken effect; try a different target`
+      if (r.needsLogin) {
+        return {
+          ok: false,
+          output: `That action landed on a sign-in wall. Call browser_sign_in for ${r.url} — it returns immediately and the task resumes once the user signs in.`,
+          meta: { blocked: 'needs-login', pageId, url: r.url },
+        }
+      }
+      return {
+        ok: true,
+        output: `${action}${args.target ? ` on "${args.target}"` : ''} — ${delta}.\n\n` + renderPageState(r, Math.min(20_000, Number(args.maxChars ?? 6000))),
+        meta: { pageId, navigated: r.navigated, changed: r.changed },
+      }
+    } catch (e: any) {
+      return { ok: false, output: `web_act failed: ${String(e?.message ?? e).slice(0, 400)}` }
+    }
+  },
+})
+
+registry.register({
+  name: 'web_close',
+  description: 'Close a page opened with web_open. Do this when finished with a site so the browser is not left holding tabs open.',
+  mutates: true,
+  params: { type: 'object', properties: { pageId: { type: 'string' } }, required: ['pageId'] },
+  async run(args) {
+    const closed = await closeWorkPage(String(args.pageId ?? ''))
+    return { ok: true, output: closed ? `Closed page ${args.pageId}.` : `Page ${args.pageId} was not open (open pages: ${listWorkPages().join(', ') || 'none'}).` }
   },
 })
 

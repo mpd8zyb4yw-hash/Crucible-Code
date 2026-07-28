@@ -546,3 +546,244 @@ export async function closeSignInWindow(host: string): Promise<void> {
 export function signInWindowOpen(host: string): boolean {
   return signInWindows.has(hostOf(host))
 }
+
+// ── Acting on pages, not just reading them (cont.119) ────────────────────────
+//
+// Everything above this line READS: fetch a page, extract text, close it. That is why Crucible
+// could not do agentic web work — a task like "open my subscriptions and save the newest video
+// as a PDF" is a sequence of ACTIONS against one page whose state carries between steps, and
+// there was no way to express even the first click.
+//
+// Three things make that possible, and each has a failure mode worth naming:
+//   · A WORKING TAB that survives between tool calls, so step 2 sees what step 1 did. Held open
+//     under a context lease, closed explicitly or on idle.
+//   · A ref-tagged ELEMENT MODEL rather than raw HTML. A model asked to invent CSS selectors
+//     guesses, and a wrong selector fails silently or clicks the wrong thing; naming a ref it
+//     was just shown cannot miss. Refs are stamped onto the DOM so they survive re-query.
+//   · Post-action CONFIRMATION. Every action re-reads the page and reports what changed, because
+//     "I clicked it" is not evidence that anything happened — the same don't-trust-the-exit-code
+//     discipline the screenshot tool already applies to its PNG.
+
+export interface UiElement {
+  ref: string
+  role: string
+  name: string
+  value?: string
+  disabled?: boolean
+}
+export interface PageState {
+  url: string
+  title: string
+  elements: UiElement[]
+  text: string
+  needsLogin: boolean
+  needsConsent: boolean
+  /** A bot/CAPTCHA challenge stands between us and the content. */
+  needsChallenge: boolean
+}
+
+/**
+ * Anti-bot interstitials — a THIRD kind of wall, and the most deceptive of the three.
+ *
+ * Found live while verifying this file: duckduckgo.com/html returned HTTP 200 with the title
+ * "DuckDuckGo" and a body reading "Select all squares containing a duck". Nothing errored,
+ * nothing looked like a login or a consent screen, and the page presented two perfectly ordinary
+ * controls — so an agent would have reported a search page with a Submit button and then wondered
+ * why every action did nothing.
+ *
+ * Detected and REPORTED, never solved. Defeating a bot check is not something Crucible does, on
+ * anyone's instruction: the site is entitled to its answer to "are you a human", and the honest
+ * move is to hand the window to the user.
+ */
+function looksLikeChallenge(url: string, title: string, text: string): boolean {
+  if (/\/(?:challenge|captcha|cdn-cgi\/challenge)/i.test(url)) return true
+  const head = `${title}\n${text.slice(0, 800)}`.toLowerCase()
+  return /(?:complete the following challenge|confirm this search was made by a human|are you a human|i'm not a robot|verify you are human|checking your browser|unusual traffic from your computer|enable javascript and cookies to continue)/.test(head)
+}
+
+/**
+ * Stamp a ref onto every VISIBLE interactive element and return the page's state.
+ *
+ * TWO serialization landmines, both of which return confident nonsense rather than erroring:
+ *
+ *  · Must be a real function, never a function-shaped string. `page.evaluate` treats a string as
+ *    an EXPRESSION, so `"() => {...}"` yields an unserializable function object and comes back as
+ *    the literal text "undefined" — which once affected every page read in the codebase.
+ *  · NO INNER FUNCTIONS ASSIGNED TO VARIABLES. Playwright ships `fn.toString()` to the browser,
+ *    and esbuild (via tsx) compiles `const nameOf = (el) => …` into `__name(…)` to preserve the
+ *    name for stack traces. That helper exists only in the Node module scope, so the browser
+ *    throws `ReferenceError: __name is not defined` at the first call. Anonymous callbacks passed
+ *    DIRECTLY as arguments are untouched, which is why the accessible-name logic below is inlined
+ *    into the loop instead of factored out. Keep it that way.
+ */
+function extractPageState(): { url: string; title: string; elements: UiElement[]; text: string; raw: string } {
+  const SELECTOR = [
+    'a[href]', 'button', 'input', 'select', 'textarea', 'summary', '[contenteditable="true"]',
+    '[role="button"]', '[role="link"]', '[role="textbox"]', '[role="checkbox"]', '[role="radio"]',
+    '[role="tab"]', '[role="menuitem"]', '[role="option"]', '[role="switch"]', '[role="combobox"]',
+  ].join(',')
+
+  const elements: UiElement[] = []
+  let i = 0
+  document.querySelectorAll(SELECTOR).forEach(el => {
+    const he = el as HTMLElement
+    const rect = he.getBoundingClientRect()
+    const style = window.getComputedStyle(he)
+    // Invisible controls are not affordances. A zero-box element cannot be clicked by a user,
+    // so offering it to the model only invites actions that silently do nothing.
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return
+    if (rect.width === 0 && rect.height === 0) return
+    const ref = `e${++i}`
+    he.setAttribute('data-crucible-ref', ref)
+    const tag = he.tagName.toLowerCase()
+    const role = he.getAttribute('role') || (tag === 'a' ? 'link' : tag === 'input' ? `input:${(he as HTMLInputElement).type || 'text'}` : tag)
+    const value = (he as HTMLInputElement).value
+    // Accessible name, inlined deliberately — see the __name warning above.
+    //
+    // Precedence follows the ARIA accname spec, which matters more than it looks: a
+    // `<label for="q">Search query</label>` on an input that also has
+    // `placeholder="Type a query"` must be named "Search query", because the label is what the
+    // user SEES next to the field and therefore what they and the model will call it. Ranking
+    // placeholder first named that field "Type a query" and every attempt to fill it by name
+    // missed (caught by the bench, cont.119).
+    let name = (he.getAttribute('aria-label') || '').trim()
+    if (!name) {
+      const lb = he.getAttribute('aria-labelledby')
+      if (lb) name = (document.getElementById(lb)?.textContent || '').trim()
+    }
+    if (!name && he.id) {
+      const lab = document.querySelector(`label[for="${CSS.escape(he.id)}"]`)
+      name = (lab?.textContent || '').trim()
+    }
+    if (!name) {
+      const wrapping = he.closest('label')          // <label>Text <input></label>
+      if (wrapping) name = (wrapping.textContent || '').trim()
+    }
+    if (!name) name = (he.getAttribute('alt') || he.getAttribute('title') || '').trim()
+    if (!name) name = (he.innerText || he.textContent || '').trim()
+    if (!name) name = (he.getAttribute('placeholder') || he.getAttribute('value') || he.getAttribute('name') || '').trim()
+    name = name.replace(/\s+/g, ' ').slice(0, 120)
+    elements.push({
+      ref, role, name,
+      value: typeof value === 'string' && value.length <= 200 ? value : undefined,
+      disabled: (he as HTMLButtonElement).disabled || he.getAttribute('aria-disabled') === 'true' || undefined,
+    })
+  })
+
+  // Text extraction reuses the rules the read path already proved out: strip never-rendered
+  // nodes FIRST (textContent otherwise returns minified CSS as "page text"), and read innerText
+  // from the LIVE document (it is layout-dependent and loses every line break on a clone).
+  const clone = document.body
+  const raw = ((clone && (clone.innerText || clone.textContent)) || '').replace(/\n{3,}/g, '\n\n').trim()
+  return { url: location.href, title: document.title, elements, text: raw.slice(0, 20_000), raw }
+}
+
+/** Working tabs, keyed by an id the agent passes back. */
+const workPages = new Map<string, { page: import('playwright-core').Page; release: () => void; projectPath: string }>()
+let workPageSeq = 0
+
+async function stateOf(page: import('playwright-core').Page): Promise<PageState> {
+  const s = await page.evaluate(extractPageState)
+  return {
+    url: s.url, title: s.title, elements: s.elements, text: s.text,
+    needsLogin: looksLikeLogin(s.url, s.title, s.raw),
+    needsConsent: looksLikeConsent(s.url, s.title, s.raw),
+    needsChallenge: looksLikeChallenge(s.url, s.title, s.raw),
+  }
+}
+
+export interface OpenedPage extends PageState { pageId: string }
+
+/** Open a URL in a tab that STAYS open for subsequent actions. */
+export async function openWorkPage(projectPath: string, url: string): Promise<OpenedPage> {
+  const context = await acquireContext(projectPath, false)
+  const page = await context.newPage()
+  page.setDefaultTimeout(30_000)
+  const pageId = `p${++workPageSeq}`
+  let released = false
+  const release = () => { if (!released) { released = true; workPages.delete(pageId); releaseContext() } }
+  page.on('close', release)
+  workPages.set(pageId, { page, release, projectPath })
+  // Preserve ANY explicit scheme — prefixing https:// onto "file:///…" produced the nonsense
+  // URL "https://file:///…". Only a bare host gets a default scheme.
+  await page.goto(/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`, { waitUntil: 'domcontentloaded' })
+  await page.waitForTimeout(1000)
+  return { pageId, ...(await stateOf(page)) }
+}
+
+export async function closeWorkPage(pageId: string): Promise<boolean> {
+  const w = workPages.get(pageId)
+  if (!w) return false
+  await w.page.close().catch(() => {})
+  w.release()
+  return true
+}
+
+export function listWorkPages(): string[] { return [...workPages.keys()] }
+
+export type PageAction = 'click' | 'type' | 'fill' | 'select' | 'press' | 'scroll' | 'hover' | 'back' | 'wait'
+
+export interface ActResult extends PageState {
+  pageId: string
+  /** What actually changed — the honest answer to "did that work?". */
+  changed: { url: boolean; title: boolean; elementCount: number }
+  navigated: boolean
+}
+
+/**
+ * Perform one action, then RE-READ and report what changed.
+ *
+ * `target` is a ref from the last read ("e12") or a substring of an element's accessible name.
+ * Refs are preferred and matched exactly; the name fallback exists because a model that has just
+ * read "Sign in" should not be forced to remember an opaque id.
+ */
+export async function actOnPage(
+  pageId: string, action: PageAction, target?: string, value?: string,
+): Promise<ActResult> {
+  const w = workPages.get(pageId)
+  if (!w) throw new Error(`No open page "${pageId}". Open one with web_open first (open pages: ${listWorkPages().join(', ') || 'none'}).`)
+  const { page } = w
+  const before = await stateOf(page)
+
+  const locate = async () => {
+    if (!target) throw new Error(`Action "${action}" needs a target.`)
+    if (/^e\d+$/.test(target)) {
+      const byRef = page.locator(`[data-crucible-ref="${target}"]`)
+      if (await byRef.count()) return byRef.first()
+      throw new Error(`Ref "${target}" is no longer on the page — re-read it and use a current ref.`)
+    }
+    // Name fallback: match the accessible names we just computed, so the lookup agrees with what
+    // the model was shown rather than with some independent notion of a selector.
+    const hit = before.elements.find(e => e.name.toLowerCase().includes(target.toLowerCase()))
+    if (!hit) throw new Error(`Nothing on the page matches "${target}". Visible controls: ${before.elements.slice(0, 25).map(e => `${e.ref}:${e.name}`).join(' | ') || '(none)'}`)
+    return page.locator(`[data-crucible-ref="${hit.ref}"]`).first()
+  }
+
+  const navigation = page.waitForNavigation({ timeout: 8000, waitUntil: 'domcontentloaded' }).catch(() => null)
+  switch (action) {
+    case 'click':  await (await locate()).click({ timeout: 15_000 }); break
+    case 'hover':  await (await locate()).hover({ timeout: 15_000 }); break
+    case 'fill':   await (await locate()).fill(value ?? '', { timeout: 15_000 }); break
+    case 'type':   await (await locate()).pressSequentially(value ?? '', { delay: 25, timeout: 20_000 }); break
+    case 'select': await (await locate()).selectOption(value ?? '', { timeout: 15_000 }); break
+    case 'press':  await page.keyboard.press(value || 'Enter'); break
+    case 'scroll': await page.mouse.wheel(0, Number(value) || 800); break
+    case 'back':   await page.goBack({ waitUntil: 'domcontentloaded' }); break
+    case 'wait':   await page.waitForTimeout(Math.min(10_000, Number(value) || 1500)); break
+  }
+  const nav = await navigation
+  // A settle beat: clicks on client-rendered apps mutate the DOM without navigating, and
+  // networkidle can hang forever on sites that long-poll.
+  await page.waitForTimeout(nav ? 1200 : 600)
+
+  const after = await stateOf(page)
+  return {
+    pageId, ...after,
+    navigated: !!nav || before.url !== after.url,
+    changed: {
+      url: before.url !== after.url,
+      title: before.title !== after.title,
+      elementCount: after.elements.length - before.elements.length,
+    },
+  }
+}
