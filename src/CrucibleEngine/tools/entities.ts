@@ -227,9 +227,14 @@ registerAffordance('file', {
 
 registerAffordance('file', {
   id: 'read_local', label: 'Read file', tool: 'read_file', effect: 'read',
+  // Binds on ANY entity carrying a local path — deliberately not on `source === 'list_dir'`,
+  // which is how it was first written. Keying an affordance to the tool that happened to produce
+  // the entity is the per-integration coupling this whole protocol exists to remove: a file is
+  // readable because it has a path, not because a particular tool found it. This is what lets
+  // the agent's own changed files (runSurface.ts) inherit the action for free.
   bind: e => {
     const p = fieldValue(e, 'path')
-    return e.source === 'list_dir' && p ? { path: p } : null
+    return p && !e.raw?.isDir ? { path: p } : null
   },
 })
 

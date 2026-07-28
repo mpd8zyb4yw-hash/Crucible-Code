@@ -325,6 +325,117 @@ export function resolveImplicitPersonalTools(message: string): NamedToolResoluti
   return calls.length ? { calls, skipped: [] } : null
 }
 
+// ── Local-machine facts (cont.118) ────────────────────────────────────────────
+//
+// MEASURED LIVE (2026-07-28, agent mode). Brief: "List the files in the directory
+// src/CrucibleEngine/answer and tell me what is there." Result: **0 tools**, and this answer,
+// stamped `✓ verified`:
+//
+//     1. `answer.py`  — the main script that runs the engine
+//     2. `answer.pyi` — the type stub for answer.py
+//     3. `answer.json`— the output of the engine
+//
+// The directory contains twenty-odd `.ts` files and none of those three. The model INVENTED a
+// plausible listing, and nothing caught it, because `detectAgentTask` is a list of BUILD and
+// MUTATE verbs — create, write, build, run, delete, move — and "list" is not one of them. So a
+// question about this machine went to the prose pipeline and was answered from parametric memory.
+//
+// This is cont.104 exactly ("personal-data asks fell past isAgenticIntent → 'inbox empty' with
+// ZERO tool calls, stamped clean"), one domain over. The fix there was
+// `resolveImplicitPersonalTools`; this is its local-filesystem twin, and the principle behind
+// both is sharper than either verb list:
+//
+//     A FACT ABOUT THIS MACHINE CANNOT COME FROM THE WEIGHTS.
+//
+// There is no possible way for a model to know what is in a directory it has never seen. Unlike
+// "what is a hash map", where parametric memory is a legitimate source, the correct behaviour
+// here is *always* to look or to abstain — never to recall. That is a knowledge-boundary
+// property, not a matter of which verb the user happened to type, which is why this gate keys on
+// the REFERENT (a path, a directory) rather than on the verb.
+
+/** A path-shaped token: a separator and no spaces — "src/CrucibleEngine/answer", "~/Desktop",
+ *  "./build", "/etc/hosts" — or a bare filename carrying an extension ("package.json"). */
+const PATH_TOKEN = /(?:~|\.{1,2})?\/[\w.\-/]+|[\w.\-]+\/[\w.\-/]+|\b[\w.\-]+\.[a-z0-9]{1,5}\b/gi
+
+/** A filesystem referent: a path token, or an explicit directory noun. */
+const FS_REFERENT = new RegExp(`(?:${PATH_TOKEN.source}|\\b(?:directory|directories|folder|folders)\\b)`, 'i')
+
+/** Read-only inspection intent. Deliberately NOT a build verb — that is the whole point. */
+const FS_READ_INTENT = new RegExp(
+  '\\b(?:list|ls|show|display|what(?:\'?s| is| are)\\s+(?:in|inside|under)|' +
+  'what\\s+files|which\\s+files|how\\s+many\\s+files|contents?\\s+of|look\\s+(?:in|at)|' +
+  'browse|inspect|check|find|search|explore|read|open|cat)\\b',
+  'i',
+)
+
+/** Intent that UNAMBIGUOUSLY wants a file's contents. "what's in X" is deliberately excluded:
+ *  it reads identically for a file and a directory, so it defers to the path shape below. */
+const FS_FILE_INTENT = /\b(?:read|contents?\s+of|open|cat|inspect)\b/i
+/** Intent that specifically wants a LISTING. Wins over FS_FILE_INTENT when both appear. */
+const FS_LIST_INTENT = /\b(?:list|ls|what\s+files|which\s+files|how\s+many\s+files|browse|directory|directories|folder|folders)\b/i
+
+/**
+ * Strip path tokens before testing for mutation verbs.
+ *
+ * Caught by `__localtools_bench`: "show me what is in ./build" did not route, because
+ * MUTATION_VERBS contains `build` and the PATH contains the word "build". A directory named
+ * `build`, `send`, `draft` or `design` is completely ordinary, and letting a filename veto the
+ * route would fail silently and look like the gate simply did not fire. Verbs are read from
+ * PROSE; a path is an opaque identifier.
+ */
+function prose(msg: string): string {
+  return msg.replace(PATH_TOKEN, ' ')
+}
+
+/** Extract the path the user named, if any. Longest path-shaped token wins. */
+function statedPath(msg: string): string | null {
+  const candidates = msg.match(PATH_TOKEN) ?? []
+  const best = candidates
+    .map(s => s.replace(/[.,;:)]+$/, ''))
+    // Require a separator OR a file extension; a bare word is not a path, and "3/4" is caught
+    // by the length floor plus the read-intent requirement.
+    .filter(s => (s.includes('/') || /\.[a-z0-9]{1,5}$/i.test(s)) && s.length > 1)
+    .sort((a, b) => b.length - a.length)[0]
+  return best ?? null
+}
+
+/**
+ * Resolve a read-only question about THIS MACHINE's filesystem into real tool calls.
+ *
+ * Returns null unless the message BOTH names a filesystem referent and expresses a read intent,
+ * and carries no mutation verb — so "build me a game" and "what is a hash map" are untouched and
+ * take exactly the path they take today. Like its personal-data twin this only ever ROUTES a
+ * question to a tool that can actually answer it; it never invents an intent.
+ */
+export function resolveImplicitLocalTools(message: string): NamedToolResolution | null {
+  const msg = (message ?? '').trim()
+  if (!msg || msg.length > 400) return null            // long briefs deserve real planning
+  // Verbs are read from PROSE, never from a path — a directory called `build` is ordinary.
+  const text = prose(msg)
+  if (MUTATION_VERBS.test(text)) return null           // creating/changing needs real planning
+  if (!FS_REFERENT.test(msg)) return null
+  if (!FS_READ_INTENT.test(text)) return null
+
+  const p = statedPath(msg)
+  // No explicit path but a directory noun ("what files are in this folder") → the project root,
+  // which is what `list_dir` defaults to.
+  const target = p ?? '.'
+
+  // FILE or DIRECTORY. The VERB is the better signal than the path shape: "/etc/hosts" carries
+  // no extension yet "what's in /etc/hosts" plainly wants the contents, while "list src/foo.ts"
+  // is a user who mistyped. An explicit listing verb wins; otherwise a file-contents verb or a
+  // file extension selects read_file. Both tools are read-only and both enforce their own path
+  // safety — this router picks which QUESTION is being asked, never what is permitted.
+  const wantsListing = FS_LIST_INTENT.test(text)
+  const wantsFile = !wantsListing && (FS_FILE_INTENT.test(text) || /\.[a-z0-9]{1,5}$/i.test(target))
+  return {
+    calls: [wantsFile
+      ? { id: 'local_0', name: 'read_file', args: { path: target } }
+      : { id: 'local_0', name: 'list_dir', args: { path: target } }],
+    skipped: [],
+  }
+}
+
 // ── Deterministic personal-data renderer ───────────────────────────────────────
 // gmail_search and calendar_list already return CLEAN, structured text. Handing that
 // to the weak on-device FM to "summarize" is pure downside for a retrieval ask: live

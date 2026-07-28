@@ -226,6 +226,9 @@ export function localFiles(
       { key: 'size', label: 'Size', value: e.isDir ? '' : humanSize(e.size), role: 'size' },
       { key: 'modified', label: 'Modified', value: e.mtime ?? '', role: 'timestamp' },
     ],
+    // `read_local` binds on any entity with a path, so a DIRECTORY must say so or it would
+    // offer "Read file" on a folder.
+    raw: { isDir: !!e.isDir },
   }))
 }
 

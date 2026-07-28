@@ -28,7 +28,8 @@ import type { Automation as AutomationRecord, AutomationRun as AutomationRunReco
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
-import { resolveNamedTools, resolveImplicitPersonalTools, renderPersonalData } from './src/CrucibleEngine/agent/namedToolRouter'
+import { resolveNamedTools, resolveImplicitPersonalTools, resolveImplicitLocalTools, renderPersonalData } from './src/CrucibleEngine/agent/namedToolRouter'
+import { specForGoal, briefFor, elicitation } from './src/CrucibleEngine/agent/goalSpec'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx, ToolResult } from './src/CrucibleEngine/tools/protocol'
@@ -3417,6 +3418,28 @@ app.post('/api/chat', async (req, res) => {
   // ever ROUTES a personal-data question to real tools — it never triggers on prose/code asks.
   const implicitPersonalData = !isCreativeProse(message ?? '') && resolveImplicitPersonalTools(message ?? '') !== null
 
+  // The same hole, one domain over (cont.118). MEASURED live: "List the files in the directory
+  // src/CrucibleEngine/answer" produced 0 tool calls and a FABRICATED listing (answer.py,
+  // answer.pyi, answer.json — none of which exist), stamped `✓ verified`. detectAgentTask is a
+  // list of BUILD and MUTATE verbs and "list" is not among them, so a question about this
+  // machine was answered from the weights. A fact about the local filesystem cannot come from
+  // parametric memory — the model has never seen this disk — so it must reach a tool or abstain.
+  const implicitLocalData = !isCreativeProse(message ?? '') && resolveImplicitLocalTools(message ?? '') !== null
+
+  // A CONTENT-CREATION goal ("make me a set of flash cards from <url>") — cont.118.
+  //
+  // MEASURED: that exact brief returned "I'm sorry, but I don't have access to the Wikipedia page
+  // you provided. Could you please provide me with the specific information or details you want
+  // to include on the flashcards?" — a false capability claim followed by handing the entire task
+  // back to the user. `detectAgentTask` never fired (no build/file verb matched "make me a set of
+  // flash cards"), so it went to the prose pipeline with no tools at all.
+  //
+  // `specForGoal` resolves the goal into slots, fills every one that can be derived or sensibly
+  // defaulted, and reports ONLY the slots that are genuinely blocking. Ready → the agent runs with
+  // an explicit brief. Not ready → one combined question, not a refusal.
+  const goalSpec = specForGoal(message ?? '', { hasAttachment: /ATTACHED FILE CONTENT/.test(message ?? '') })
+  const isCreationGoal = goalSpec !== null
+
   // A message that EXPLICITLY names a registry tool ("Read the full message first with
   // gmail_read") must enter the agent block so the named-tool executor runs it for REAL
   // data — otherwise it falls to the synthesis pipeline, which fabricated "I have drafted a
@@ -3428,7 +3451,7 @@ app.post('/api/chat', async (req, res) => {
   const explicitNamedTool = resolveNamedTools(message ?? '') !== null
 
   // ── Agent mode — sustained tool loop instead of the synthesis pipeline ─────
-  if (buildTurn.action === 'build' || slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || implicitPersonalData || explicitNamedTool || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
+  if (buildTurn.action === 'build' || slashAgentTool !== null || mode === 'agent' || mode === 'seeker' || (mode === 'code' && detectAgentTask(message ?? '')) || implicitPersonalData || implicitLocalData || explicitNamedTool || isCreationGoal || (req.body.agentMode !== false && (detectAgentTask(message ?? '') || agenticFollowup) && !isCreativeProse(message ?? ''))) {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -3436,6 +3459,39 @@ app.post('/api/chat', async (req, res) => {
       const line = `data: ${JSON.stringify(payload)}\n\n`
       res.write(line)
       if (chatSessionId) broadcastEvent(chatSessionId, line, res)
+    }
+
+    // ── Minimum-viable elicitation (cont.118) ───────────────────────────────
+    // An underspecified creation goal asks the ONE thing only the user can answer, and states
+    // what it is assuming for everything else — instead of refusing, interrogating, or handing
+    // the task back ("provide me the specific information to include on the flashcards"). When
+    // nothing is blocking this does not fire and the agent proceeds with a fully-resolved brief.
+    if (goalSpec && !goalSpec.ready) {
+      const ask = elicitation(goalSpec)!
+      send({ type: 'agent_start', driver: 'on-device (goal spec)', resumed: false })
+      send({ type: 'clarification_request', question: ask.question, options: ask.options, recommended: ask.recommended })
+      send({ type: 'final', text: ask.question })
+      send({ type: 'agent_done', ok: true, stopped: 'clarification', iters: 0, toolCallCount: 0, ms: 0 })
+      debugBus.emit('agent', 'goal_elicitation', {
+        deliverable: goalSpec.deliverable,
+        asked: goalSpec.ask.map(s => s.key),
+        assumed: goalSpec.assumed.map(s => s.key),
+      }, { severity: 'info' })
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
+
+    // A RESOLVED creation goal is handed to the agent as an explicit brief rather than as the
+    // user's raw sentence: every slot already decided, and — when a URL is involved — a direct
+    // instruction that `read_url` can reach it. The refusal this replaces was the model
+    // *believing* it had no access, so telling it plainly is the fix.
+    const agentGoal = goalSpec?.ready ? briefFor(goalSpec) : (message ?? '')
+    if (goalSpec?.ready) {
+      debugBus.emit('agent', 'goal_resolved', {
+        deliverable: goalSpec.deliverable,
+        assumed: goalSpec.assumed.map(s => `${s.key}=${s.value}`),
+      }, { severity: 'info' })
     }
 
     // ── Intent classification — fast heuristic, no LLM ──────────────────────
@@ -3677,7 +3733,11 @@ app.post('/api/chat', async (req, res) => {
       // EmailReader draft-reply prompt to the prose pipeline, which fabricated
       // "I have drafted a reply" with zero tool calls (debug report 2026-07-20).
       const explicit = resolveNamedTools(message ?? '')
-      const named = (explicit && explicit.calls.length) ? explicit : resolveImplicitPersonalTools(message ?? '')
+      const named = (explicit && explicit.calls.length) ? explicit
+        : resolveImplicitPersonalTools(message ?? '')
+        // Local-filesystem twin (cont.118). Last so an explicit tool name and a personal-data
+        // ask both keep priority; this only catches the case they leave on the floor.
+        ?? resolveImplicitLocalTools(message ?? '')
       if (named && named.calls.length) {
         const implicit = named !== explicit
         console.log(`[Agent] Named-tool executor${implicit ? ' (implicit personal-data)' : ''}: ${named.calls.map(c => c.name).join(', ')}${named.skipped.length ? ` (skipped: ${named.skipped.join(', ')})` : ''}`)
@@ -3832,10 +3892,33 @@ app.post('/api/chat', async (req, res) => {
     // complete, run the FM ReAct loop with the desktop tool set BEFORE falling back to
     // the online-pool LLM loop. Tool activity streams to the UI through the same
     // tool_call/tool_result events the main loop emits.
-    if (!resumable && !iterCheckpoint && localInferenceAvailable && isAgenticIntent &&
-        isDesktopActionGoal(message ?? '')) {
+    // ── THE GATE THAT BROKE EVERYTHING (cont.118) ────────────────────────────
+    //
+    // `fmReact` is the ONLY executor in this file that actually calls tools, and it works —
+    // probed directly it fetches a real page and returns `toolsUsed: ["fetch_page"]`. It was
+    // reachable ONLY when `isDesktopActionGoal` was true, i.e. for desktop automation ("open
+    // Finder", "click that button"). Every other agentic goal fell past it into the offline
+    // prose stack, which has NO TOOLS — and then a 1.5B model, asked to do a job it had no
+    // instruments for, did the only thing it could: it made something up.
+    //
+    // That single condition is the common cause of every failure observed this session:
+    //   · "make me flash cards from <url>"  → prose path → emitted pseudo-code, 0 tools
+    //   · "list the files in <dir>"          → prose path → invented answer.py/.pyi/.json
+    //   · "I don't have access to that page" → prose path → a false capability claim
+    // The plan was right every time. There was simply no path from the plan to a tool call.
+    //
+    // So the gate now also opens for a goal that NEEDS tools: a resolved creation goal, or any
+    // message naming a URL. And when the goal is not desktop automation it gets CONTENT tools
+    // (read a page, search, write the artifact) rather than the desktop set — cont.105 showed
+    // that handing GUI tools to a non-GUI brief makes the planner emit screen dumps.
+    const mentionsUrl = /https?:\/\/\S+/i.test(message ?? '')
+    const isDesktopGoal = isDesktopActionGoal(message ?? '')
+    const needsToolExecutor = isDesktopGoal || goalSpec?.ready === true || mentionsUrl
+    if (!resumable && !iterCheckpoint && localInferenceAvailable && isAgenticIntent && needsToolExecutor) {
       try {
-        const DESKTOP_TOOL_NAMES = ['open_app', 'control_mac', 'get_ui_tree', 'click_element', 'run', 'list_dir', 'move_file', 'search_youtube']
+        const DESKTOP_TOOL_NAMES = isDesktopGoal
+          ? ['open_app', 'control_mac', 'get_ui_tree', 'click_element', 'run', 'list_dir', 'move_file', 'search_youtube']
+          : ['read_url', 'web_search', 'list_dir', 'read_file', 'write_file', 'run']
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,
@@ -3861,7 +3944,7 @@ app.post('/api/chat', async (req, res) => {
         })
         send({ type: 'agent_start', driver: 'on-device FM (desktop)', projectPath, resumed: false })
         const { fmReact } = await import('./src/CrucibleEngine/agent/fmReact')
-        const fmRes = await fmReact({ goal: message ?? '', projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: true, maxRounds: 8 })
+        const fmRes = await fmReact({ goal: agentGoal, projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false, maxRounds: 8 })
         // Accept only a real attempt: a non-empty answer grounded in at least one tool call.
         if (!fmRes.abstained && fmRes.answer.trim() && fmRes.toolsUsed.length > 0) {
           send({ type: 'final', text: fmRes.answer })

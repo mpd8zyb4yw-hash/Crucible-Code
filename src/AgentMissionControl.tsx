@@ -16,7 +16,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, SectionLabel, GhostButton, StatusChip, tint } from './ui'
 import type { Round } from './chat/core'
-import { STEP_GLYPH, STEP_COLOR, ToolRow, DiffBlock } from './chat/panels'
+import { STEP_GLYPH, STEP_COLOR, ToolRow, DiffBlock, runSurfaceAction } from './chat/panels'
+import SurfaceRenderer from './agentic/SurfaceRenderer'
+import { deriveRunSurface } from './agentic/runSurface'
 import { ClarificationCard } from './chat/AgentPanel'
 import { ArtifactPreviewBar } from './chat/CodeRunner'
 import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
@@ -221,6 +223,9 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
   const a = selected?.agent ?? null
   const status = selected ? runStatus(selected) : null
   const latestThought = a?.thoughts[a.thoughts.length - 1]
+  // The whole run as derived surfaces. Recomputed as the run streams — deriveRunSurface is a
+  // pure function over AgentState, so this is cheap and always consistent with what is on screen.
+  const runSurface = useMemo(() => deriveRunSurface(a), [a])
   const anyLive = agentRounds.some(r => r.agent?.active)
   const hasRuns = agentRounds.length > 0
   // A live run pulls the page to Agents — never let work stream invisibly behind the board.
@@ -463,6 +468,29 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
                     }}>
                       {latestThought.replace(/^\[|\]$/g, '')}
                     </div>
+                  )}
+
+                  {/* ── The run, as derived surfaces (cont.118) ──────────────────────────
+                      Placed FIRST because it is the result; the plan and the tool log are how
+                      it was reached. Two panels from one mechanism: RESULTS are the real-world
+                      objects the run retrieved (mail, events, files, pages) and WORK is what it
+                      changed and checked. Every entity carries its own real actions, so this is
+                      a surface you can act on rather than a transcript you read.
+
+                      Not prompt-dependent: `work` is populated by the run's own files, checks
+                      and tool calls, so an agent that never touches a provider still gets a
+                      structured, actionable surface. */}
+                  {runSurface.found && (
+                    <Card style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <SectionLabel>Results</SectionLabel>
+                      <SurfaceRenderer view={runSurface.found} runAction={runSurfaceAction} compact />
+                    </Card>
+                  )}
+                  {runSurface.work && (
+                    <Card style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <SectionLabel>What it did</SectionLabel>
+                      <SurfaceRenderer view={runSurface.work} runAction={runSurfaceAction} compact />
+                    </Card>
                   )}
 
                   {/* Plan */}

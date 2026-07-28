@@ -8,7 +8,9 @@ import { apiFetch } from '../api'
 // the client already holds it and the route is deliberately stateless (server.ts /api/agentic/action).
 // `confirmed` is forwarded, never forced: the server re-derives the effect class from its own
 // registry and refuses anything above `read` that did not clear the confirm sheet.
-const runSurfaceAction: RunAction = async ({ entity, affordanceId, input, confirmed }) => {
+/** Shared by every surface in the app — the tool log here and the run surfaces in
+ *  AgentMissionControl. One action path means one confirmation path (cont.118). */
+export const runSurfaceAction: RunAction = async ({ entity, affordanceId, input, confirmed }) => {
   const res = await apiFetch('/api/agentic/action', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

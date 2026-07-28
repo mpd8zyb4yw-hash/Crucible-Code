@@ -20,6 +20,8 @@ import {
   gmailMessages, calendarEvents, driveFiles, contacts as contactEntities, youtubeVideos,
   localFiles, webResults,
 } from './adapters'
+// The hardened fetcher (SSRF-guarded, redirect-capped, timeout-bounded) that `read_url` exposes.
+import { fetch as retrievalFetch, stripBoilerplate } from '../retrieval/retrievalLayer'
 import { deriveView } from './viewDerivation'
 import type { Entity } from './entities'
 
@@ -604,6 +606,21 @@ registry.register({
   async run(args, ctx) {
     const abs = resolveSafe(String(args.path ?? '.'), ctx, { allowOutside: true })
     if (!fs.existsSync(abs)) return { ok: false, output: `Directory not found: ${abs}` }
+    // Pointed at a FILE rather than a directory. "what's in /etc/hosts" and "what's in ./build"
+    // are the same sentence, and nothing short of touching the disk can tell which target is
+    // which — so the router guesses and this handles the miss (cont.118). Returning the file as
+    // a one-entry listing means the surface renders it with its real "Read file" action instead
+    // of the ENOTDIR that readdirSync would otherwise throw.
+    if (!fs.statSync(abs).isDirectory()) {
+      const st = fs.statSync(abs)
+      return {
+        ok: true,
+        output: `${abs} is a file (${st.size} bytes, modified ${st.mtime.toISOString()}).`,
+        entities: localFiles([{
+          name: path.basename(abs), path: abs, isDir: false, size: st.size, mtime: st.mtime.toISOString(),
+        }]),
+      }
+    }
     const dirents = fs.readdirSync(abs, { withFileTypes: true })
       .filter(e => e.name !== 'node_modules' && e.name !== '.git')
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -786,6 +803,57 @@ registry.register({
       return { ok: true, output, entities }
     } catch (e: any) {
       return { ok: false, output: `Search failed: ${e?.message ?? e}` }
+    }
+  },
+})
+
+// ── read_url — the primitive the agent was missing entirely (cont.118) ────────
+//
+// MEASURED LIVE: "make me a set of flash cards to study from https://en.wikipedia.org/wiki/…"
+// returned "I'm sorry, but I don't have access to the Wikipedia page you provided." That refusal
+// was, embarrassingly, ACCURATE — of 44 registered tools, `web_search` searches, `download_file`
+// saves bytes to disk and `navigate_browser` opens a window, and NONE of them hands page text
+// back to the agent. The single most basic operation on the web was not a capability.
+//
+// `retrieval/retrievalLayer.ts` has had a hardened fetcher the whole time — SSRF-guarded via
+// `guardedLookup`, redirect-capped, timeout-bounded, with boilerplate stripping — and it was
+// only ever reachable from the answer path, never from the tool loop. This exposes it.
+//
+// Emitting a `webpage` entity means a fetched page also becomes an object on the agentic surface
+// with its real "Open" action, rather than a wall of text in a tool log.
+registry.register({
+  name: 'read_url',
+  description: 'Read the readable text of a web page. Use this whenever the user gives a URL, or after web_search returns a link you need the CONTENTS of. Returns the article text with navigation and boilerplate stripped. This is how you study, summarize, extract from, or build anything out of a web page.',
+  params: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'The full URL to read (https://…)' },
+      maxChars: { type: 'number', description: 'Max characters of text to return (default 20000)' },
+    },
+    required: ['url'],
+  },
+  async run(args) {
+    const raw = String(args.url ?? '').trim()
+    if (!raw) return { ok: false, output: 'A non-empty "url" is required.' }
+    const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+    const cap = Math.min(60_000, Math.max(500, Number(args.maxChars ?? 20_000)))
+    try {
+      const html = await retrievalFetch(url)
+      if (!html) return { ok: false, output: `Could not fetch ${url} — no content returned.` }
+      const text = stripBoilerplate(html).replace(/\n{3,}/g, '\n\n').trim()
+      if (!text) return { ok: false, output: `Fetched ${url} but found no readable text (it may be a JavaScript-rendered app).` }
+      const truncated = text.length > cap
+      // A title makes the entity legible on the surface; fall back to the host.
+      const title = (html.match(/<title[^>]*>([\s\S]{1,300}?)<\/title>/i)?.[1] ?? '')
+        .replace(/\s+/g, ' ').trim() || url
+      return {
+        ok: true,
+        output: truncated ? `${text.slice(0, cap)}\n\n…(truncated at ${cap} characters)` : text,
+        truncated,
+        entities: webResults([{ title, url, snippet: text.slice(0, 300) }], 'read_url'),
+      }
+    } catch (e: any) {
+      return { ok: false, output: `Could not read ${url}: ${e?.message ?? e}` }
     }
   },
 })
