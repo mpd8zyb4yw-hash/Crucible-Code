@@ -20,42 +20,42 @@ ref-counted context removes it and makes items 13–100 possible at all.
 2. `[x]` **`needsToolExecutor` gated on the complement.** Everything agentic that is not a code
    edit gets instruments. (`server.ts:3928`, `bdc3a47`)
 3. `[x]` **`browser_sign_in` in the content tool set.** (`server.ts:3941`, `bdc3a47`)
-4. **One shared persistent context.** `browser.ts` holds a module-level, ref-counted
+4. `[x]` **One shared persistent context.** `browser.ts` holds a module-level, ref-counted
    `BrowserContext` per profile dir. Every browser tool leases it instead of launching its own.
    Kills the "profile in use" failure and makes a headed sign-in window coexist with headless
    reads. *This is the keystone item.*
-5. **Headed/headless reconciliation.** A headed context serves headless callers (a headed browser
+5. `[x]` **Headed/headless reconciliation.** A headed context serves headless callers (a headed browser
    can do everything headless can); a headless context is upgraded by relaunch when a sign-in
    needs a window.
-6. **Idle teardown.** Close the shared context after N minutes idle so a long-lived server does
+6. `[x]` **Idle teardown.** Close the shared context after N minutes idle so a long-lived server does
    not hold a browser forever. Ref-count must reach zero first.
-7. **Crash recovery.** `context.on('close')` clears the singleton so the next lease relaunches
+7. `[x]` **Crash recovery.** `context.on('close')` clears the singleton so the next lease relaunches
    instead of handing out a dead handle.
-8. **`signInFlow` returns immediately.** Opens the window, registers a pending sign-in, returns.
+8. `[x]` **`signInFlow` returns immediately.** Opens the window, registers a pending sign-in, returns.
    The agent turn is never blocked on a human.
-9. **Sign-in completion is OBSERVED, not assumed.** Poll `context.cookies()` for the target host;
+9. `[x]` **Sign-in completion is OBSERVED, not assumed.** Poll `context.cookies()` for the target host;
    success is a real session cookie appearing, never "the window closed".
-10. **`browser_sign_in` stops returning `ok:true` unconditionally.** Today it reports success
+10. `[x]` **`browser_sign_in` stops returning `ok:true` unconditionally.** Today it reports success
     whether or not a session exists. It must report: window open / signed in / timed out.
-11. **Pending-sign-in store.** `{id, userId, host, goal, sessionId, createdAt, expiresAt}`
+11. `[x]` **Pending-sign-in store.** `{id, userId, host, goal, sessionId, createdAt, expiresAt}`
     persisted to `.crucible/pending-signin.json` so a server restart mid-sign-in resumes.
-12. **Background resume.** When the session appears, re-run the ORIGINAL goal through the same
+12. `[x]` **Background resume.** When the session appears, re-run the ORIGINAL goal through the same
     internal `/api/chat` path `runAutomationNow` uses, and deliver to the digest + push.
 
 ## Track B — Real page interaction (13–30)
 
 Today the browser can only READ. Agentic web work means acting.
 
-13. **`browser_act`** — click / type / select / scroll / press on a live page, by accessible name
+13. `[x]` **`browser_act`** — click / type / select / scroll / press on a live page, by accessible name
     or CSS, against the shared context.
-14. **Accessibility-tree page reader.** Return a ref-tagged interactive element list, not just
+14. `[x]` **Accessibility-tree page reader.** Return a ref-tagged interactive element list, not just
     text, so the model can name a target instead of guessing selectors.
-15. **Stable element refs** (`ref_N`) that survive a re-read within a session.
+15. `[x]` **Stable element refs** (`ref_N`) that survive a re-read within a session.
 16. **`browser_fill_form`** — fill many fields in one call, with per-field confirmation of what
     landed.
-17. **Wait-for-condition primitive** (selector / text / navigation / network-idle) with a bounded
+17. `[x]` **Wait-for-condition primitive** (selector / text / navigation / network-idle) with a bounded
     timeout, replacing the blanket `waitForTimeout(1200)`.
-18. **Multi-step page session.** A `browser_session` handle so a task can act across several
+18. `[x]` **Multi-step page session.** A `browser_session` handle so a task can act across several
     turns on one page without reloading.
 19. **Tabs.** Open, list, switch, close — many sites open flows in new tabs.
 20. **Download handling.** Capture `download` events to `.crucible/artifacts/` and emit a file
@@ -66,10 +66,10 @@ Today the browser can only READ. Agentic web work means acting.
 24. **Infinite-scroll harvesting** with a bounded page budget and dedupe.
 25. **Pagination following** — detect and walk "next" until a stated limit.
 26. **Table extraction** to structured rows, emitted as entities.
-27. **Screenshot of an ELEMENT**, not just the page, for visual confirmation of an action.
-28. **Action confirmation.** After every mutating action, re-read and assert the page actually
+27. `[x]` **Screenshot of an ELEMENT**, not just the page, for visual confirmation of an action.
+28. `[x]` **Action confirmation.** After every mutating action, re-read and assert the page actually
     changed; report honestly when it did not.
-29. **Never auto-accept.** Consent banners, terms, cookie walls are REPORTED and handed to the
+29. `[x]` **Never auto-accept.** Consent banners, terms, cookie walls are REPORTED and handed to the
     user — the existing `needsConsent` discipline extended to every action path.
 30. **Destructive-action gate.** Send / buy / delete / post require explicit user confirmation,
     surfaced in the UI, never inferred.
@@ -78,12 +78,12 @@ Today the browser can only READ. Agentic web work means acting.
 
 The automations subsystem is complete and the agent cannot reach it.
 
-31. **`schedule_task` tool** — create an automation from chat (`store.ts` + existing runner).
-32. **`list_scheduled_tasks` / `cancel_scheduled_task`** tools.
-33. **Natural-language trigger parsing** → the existing `Trigger` union ("every weekday at 8am",
+31. `[x]` **`schedule_task` tool** — create an automation from chat (`store.ts` + existing runner).
+32. `[x]` **`list_scheduled_tasks` / `cancel_scheduled_task`** tools.
+33. `[x]` **Natural-language trigger parsing** → the existing `Trigger` union ("every weekday at 8am",
     "in 2 hours", "every Monday").
-34. **Duplicate guard** — creating the same brief+trigger twice updates rather than duplicates.
-35. **Preview before create.** The agent states the parsed schedule and next run time.
+34. `[x]` **Duplicate guard** — creating the same brief+trigger twice updates rather than duplicates.
+35. `[x]` **Preview before create.** The agent states the parsed schedule and next run time.
 36. **One execution path.** Extract `runAutomationNow`'s SSE runner to `src/server/agentBrief.ts`
     so automations, sign-in resumes and one-off deferrals share it.
 37. **Condition triggers**, not just time — "when I'm signed into X", "when this page changes".
@@ -180,7 +180,55 @@ Per doctrine: the oracle must EXECUTE, and a green gate means nothing unread.
 
 ---
 
-## Landed this session
+## Landed this session (cont.119)
 
-- `bdc3a47` — items 1, 2, 3. Measured before/after: non-code goals blocked 9/14 → 0/17;
-  vague code goals still clarify 4/4; `ambiguity-bench` 14 → 35 cases, 35/35.
+| commit | what |
+|---|---|
+| `bdc3a47` | items 1-3 — the three gates that made every non-code request unreachable |
+| `4e6e84c` | items 4-12 — one shared browser context; sign-in returns immediately; background resume |
+| `aa85010` | items 13-15, 17, 18, 27-29 — web_open / web_act / web_close |
+| `c52c355` | items 31-35 — schedule_task / list_scheduled_tasks / cancel_scheduled_task |
+| `b5e4324` | **the profile relocation** — the actual reason none of this worked before |
+
+Measured, end-to-end on the live server:
+
+- `take a screenshot of my screen` — was *"as an AI, I don't have the capability to take
+  screenshots"* (and, in agent mode, instructions to press **Win+Space on a Mac**). Now calls the
+  tool and produces a real 2816x1762 PNG. **macOS Screen Recording permission is already
+  granted** — the 2 MB artifact proves it, so overhaul item "grant permission" was a non-issue.
+- `every weekday at 8am send me a summary of my inbox` — was *"Which file or symbol should this
+  change target?"*. Now creates a real automation, `weekdays 08:00`, first run tomorrow 08:00.
+- Sign-in no longer blocks: returns in ~3s, and headless reads + PDF export succeed **while** the
+  window is open. Previously impossible — the profile lock made them mutually exclusive.
+
+Benches: `npm run ambiguity:bench` 35/35 · `npm run web:bench` 19/19 ·
+`npm run schedule:bench` 56/56.
+
+### Found while verifying, all by running it for real
+
+1. **The profile was per-conversation.** 363 scratch projects, no browser profile in any of them.
+   Sessions could never persist. Fixed by making it user-level; existing session migrated.
+2. **The app and the repo keep separate state.** The Electron server's cwd is
+   `~/Library/Application Support/crucible-local`. A schedule the server confirmed was absent
+   from the repo's `automations.json` because they are different files. `/api/diag` now reports
+   real paths.
+3. **`schedule_task` claimed success for a write that never landed.** Now verified by read-back.
+4. **Anti-bot CAPTCHA pages were read as content** (duckduckgo.com/html served one mid-run).
+   Detected and reported as a third wall class. Never solved.
+5. **`ReferenceError: __name`** — esbuild's keepNames helper does not exist in the browser, so
+   every `page.evaluate` with a variable-assigned inner function threw.
+6. **Accessible-name precedence** ranked `placeholder` above `<label for>`, so fill-by-name missed.
+7. **A stranded orphan server** (PID 2109, reparented to init) — cont.70's failure mode, recurred.
+
+### Next, in priority order
+
+1. **Item 46 — semantic tool retrieval.** Three enumerative gates were fixed this session by
+   hand; `detectAgentTask`'s ~25 regexes are the fourth and should be replaced by embedding the
+   registry's own tool descriptions, not extended.
+2. **Items 57-65 — the surface.** None of the UI work is started. The live browser view (57) and
+   the pending-sign-in card (64) are what make this *feel* agentic rather than merely be it.
+3. **Item 36** — extract the SSE runner; `runBriefUnattended` currently duplicates
+   `runAutomationNow`.
+4. **Items 19-26** — tabs, downloads, iframes, pagination, table extraction.
+5. **Duplicate tool calls**: the agent emitted `schedule_task` three times for one request. The
+   dedupe guard caught it, but the loop should not be issuing them.
