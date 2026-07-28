@@ -3935,7 +3935,11 @@ app.post('/api/chat', async (req, res) => {
           // No `run` here on purpose: a content-creation goal has no business shelling out.
           // Live, it emitted `run { command: "open -a Safari <url>" }` — launching a browser on
           // the user's machine instead of reading the page. Scope the tools to the job.
-          : ['read_url', 'web_search', 'list_dir', 'read_file', 'write_file']
+          // cont.118 — the content tool set. browse_page/save_pdf/save_page_image are what make
+          // "log into my YouTube, find X, save it as a PDF" reachable at all; registering a tool
+          // the executor is never offered is the same dead end as not having it.
+          : ['browse_page', 'read_url', 'web_search', 'save_pdf', 'save_page_image', 'screenshot',
+             'list_dir', 'read_file', 'write_file']
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,

@@ -22,6 +22,7 @@ import {
 } from './adapters'
 // The hardened fetcher (SSRF-guarded, redirect-capped, timeout-bounded) that `read_url` exposes.
 import { fetch as retrievalFetch, stripBoilerplate } from '../retrieval/retrievalLayer'
+import { findBrowser, readPage, pageToPdf, pageScreenshot, signInFlow } from './browser'
 import { deriveView } from './viewDerivation'
 import type { Entity } from './entities'
 
@@ -854,6 +855,218 @@ registry.register({
       }
     } catch (e: any) {
       return { ok: false, output: `Could not read ${url}: ${e?.message ?? e}` }
+    }
+  },
+})
+
+// ── screenshot — the capability that existed but was never a tool (cont.118) ──
+//
+// `macTools.takeScreenshot` has been in the codebase the whole time, driving the Remote Brain
+// MJPEG stream, and its own comment says "optionally by the agent" — but it was never registered,
+// so the agent could not take a screenshot. Asked to "screenshot it", the only thing it could do
+// was talk about screenshotting.
+//
+// This writes a real FILE rather than returning bytes, because an artifact you cannot open is not
+// an artifact, and emits a `file` entity so the result lands on the agentic surface with its real
+// actions attached.
+// ── Real browser tools (cont.118) ────────────────────────────────────────────
+// Backed by `tools/browser.ts`. These are what make "log into my YouTube and find X, save it as a
+// PDF" possible at all: a persistent profile the USER signs into once, reused headlessly
+// thereafter. No password ever reaches Crucible.
+//
+// Every one degrades HONESTLY: with no Chromium installed they return the exact command to fix
+// it rather than a stack trace or, worse, a confident answer about a page they never loaded.
+
+function artifactPath(ctx: ToolCtx, base: string, ext: string): string {
+  const dir = path.join(ctx.projectPath, '.crucible', 'artifacts')
+  fs.mkdirSync(dir, { recursive: true })
+  const safe = base.replace(/[^\w.-]+/g, '_').slice(0, 60) || 'artifact'
+  return path.join(dir, `${safe}-${new Date().toISOString().replace(/[:.]/g, '-')}.${ext}`)
+}
+
+registry.register({
+  name: 'browse_page',
+  description: 'Open a URL in the user\'s signed-in browser profile and return the page text. Use this INSTEAD of read_url whenever the page may require a login (YouTube, Instagram, any account page) or is rendered by JavaScript. Reuses sessions the user has already signed into.',
+  params: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'Full URL to open' },
+      maxChars: { type: 'number', description: 'Max characters of text (default 20000)' },
+    },
+    required: ['url'],
+  },
+  async run(args, ctx) {
+    const avail = findBrowser()
+    if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
+    const url = String(args.url ?? '').trim()
+    if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
+    try {
+      const r = await readPage(ctx.projectPath, /^https?:\/\//i.test(url) ? url : `https://${url}`,
+        Math.min(60_000, Number(args.maxChars ?? 20_000)))
+      if (r.needsLogin) {
+        // Reporting the wall is the honest move — summarising a sign-in form as though it were
+        // the article is precisely the fabrication class this session has been closing.
+        return {
+          ok: false,
+          output: `That page requires a sign-in and this browser profile is not logged in.\n` +
+            `Run browser_sign_in with this URL, sign in yourself in the window that opens, close it, ` +
+            `then retry. Crucible never handles your password — the session lives in the browser profile.`,
+          meta: { blocked: 'needs-login', url: r.url },
+        }
+      }
+      return {
+        ok: true,
+        output: `# ${r.title}\n${r.url}\n\n${r.text}`,
+        truncated: r.text.length >= Math.min(60_000, Number(args.maxChars ?? 20_000)),
+        entities: webResults([{ title: r.title, url: r.url, snippet: r.text.slice(0, 300) }], 'browse_page'),
+      }
+    } catch (e: any) {
+      return { ok: false, output: `browse_page failed: ${String(e?.message ?? e).slice(0, 300)}` }
+    }
+  },
+})
+
+registry.register({
+  name: 'save_pdf',
+  description: 'Save a web page as a PDF file. Use whenever the user asks to save, export, archive or "get a PDF of" something on the web. Works on pages requiring a login if the profile is signed in. Returns the saved file path.',
+  params: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'The page to save' },
+      name: { type: 'string', description: 'Optional base filename (no extension)' },
+    },
+    required: ['url'],
+  },
+  async run(args, ctx) {
+    const avail = findBrowser()
+    if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
+    const url = String(args.url ?? '').trim()
+    if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
+    const out = artifactPath(ctx, String(args.name ?? 'page'), 'pdf')
+    try {
+      const { bytes } = await pageToPdf(ctx.projectPath, /^https?:\/\//i.test(url) ? url : `https://${url}`, out)
+      if (bytes < 1000) return { ok: false, output: `Wrote ${out} but it is only ${bytes} bytes — the page probably did not render.` }
+      return {
+        ok: true,
+        output: `Saved PDF: ${out} (${Math.round(bytes / 1024)} KB)`,
+        entities: localFiles([{ name: path.basename(out), path: out, isDir: false, size: bytes, mtime: new Date().toISOString() }]),
+      }
+    } catch (e: any) {
+      return { ok: false, output: `save_pdf failed: ${String(e?.message ?? e).slice(0, 300)}` }
+    }
+  },
+})
+
+registry.register({
+  name: 'save_page_image',
+  description: 'Screenshot a WEB PAGE to a PNG file (full page, not just the visible part). Use for capturing a website. For capturing the user\'s own screen instead, use the screenshot tool.',
+  params: {
+    type: 'object',
+    properties: {
+      url: { type: 'string', description: 'The page to capture' },
+      name: { type: 'string', description: 'Optional base filename (no extension)' },
+      fullPage: { type: 'boolean', description: 'Capture the entire scrollable page (default true)' },
+    },
+    required: ['url'],
+  },
+  async run(args, ctx) {
+    const avail = findBrowser()
+    if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
+    const url = String(args.url ?? '').trim()
+    if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
+    const out = artifactPath(ctx, String(args.name ?? 'page'), 'png')
+    try {
+      const { bytes } = await pageScreenshot(ctx.projectPath, /^https?:\/\//i.test(url) ? url : `https://${url}`, out, args.fullPage !== false)
+      if (bytes < 1000) return { ok: false, output: `Wrote ${out} but it is only ${bytes} bytes — the page probably did not render.` }
+      return {
+        ok: true,
+        output: `Saved page image: ${out} (${Math.round(bytes / 1024)} KB)`,
+        entities: localFiles([{ name: path.basename(out), path: out, isDir: false, size: bytes, mtime: new Date().toISOString() }]),
+      }
+    } catch (e: any) {
+      return { ok: false, output: `save_page_image failed: ${String(e?.message ?? e).slice(0, 300)}` }
+    }
+  },
+})
+
+registry.register({
+  name: 'browser_sign_in',
+  description: 'Open a visible browser window so the USER can sign in to a site themselves. The session is remembered for later automated visits. Use when browse_page reports that a page needs a login. Never ask the user for their password — this tool is how signing in happens.',
+  // Opens a window and waits for the user; that is a state change worth gating.
+  mutates: true,
+  params: {
+    type: 'object',
+    properties: { url: { type: 'string', description: 'The site\'s login or home URL' } },
+    required: ['url'],
+  },
+  async run(args, ctx) {
+    const avail = findBrowser()
+    if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
+    const url = String(args.url ?? '').trim()
+    if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
+    try {
+      await signInFlow(ctx.projectPath, /^https?:\/\//i.test(url) ? url : `https://${url}`)
+      return { ok: true, output: `Sign-in window closed. Any session established is saved in the Crucible browser profile and will be reused automatically.` }
+    } catch (e: any) {
+      return { ok: false, output: `browser_sign_in failed: ${String(e?.message ?? e).slice(0, 300)}` }
+    }
+  },
+})
+
+registry.register({
+  name: 'screenshot',
+  description: 'Capture the screen (or a region of it) to a PNG file. Use whenever the user asks to screenshot, capture, or grab an image of what is on screen. Returns the saved file path.',
+  params: {
+    type: 'object',
+    properties: {
+      region: { type: 'string', description: 'Optional region as "x,y,width,height". Omit for the whole screen.' },
+      name: { type: 'string', description: 'Optional base filename (no extension).' },
+    },
+  },
+  async run(args, ctx) {
+    const dir = path.join(ctx.projectPath, '.crucible', 'artifacts')
+    try { fs.mkdirSync(dir, { recursive: true }) } catch { /* exists */ }
+    const safeName = String(args.name ?? 'screenshot').replace(/[^\w.-]+/g, '_').slice(0, 60) || 'screenshot'
+    const out = path.join(dir, `${safeName}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`)
+    const region = String(args.region ?? '').trim()
+    const regionArgs = /^\d+,\d+,\d+,\d+$/.test(region) ? ['-R', region] : []
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile('screencapture', ['-x', '-t', 'png', ...regionArgs, out], err => err ? reject(err) : resolve())
+      })
+      if (!fs.existsSync(out)) return { ok: false, output: 'screencapture produced no file.' }
+      const size = fs.statSync(out).size
+      // A capture without macOS Screen Recording permission yields a tiny, empty PNG. Checking
+      // the artifact rather than the exit code is the difference between "saved" and "saved
+      // something you can actually look at".
+      if (size < 5_000) {
+        return {
+          ok: false,
+          output: `Captured to ${out} but the image is only ${size} bytes — almost certainly blank. ` +
+            `macOS Screen Recording permission is probably not granted to this app ` +
+            `(System Settings → Privacy & Security → Screen Recording).`,
+        }
+      }
+      return {
+        ok: true,
+        output: `Saved screenshot: ${out} (${Math.round(size / 1024)} KB)`,
+        entities: localFiles([{ name: path.basename(out), path: out, isDir: false, size, mtime: new Date().toISOString() }]),
+      }
+    } catch (e: any) {
+      const msg = String(e?.message ?? e)
+      // The TCC gate. `screencapture` exits non-zero with "could not create image from display"
+      // when Screen Recording permission is missing, which is a PERMISSION problem the user can
+      // fix in ten seconds — surfacing the raw shell error instead would read as a broken tool.
+      if (/could not create image|not authorized|permission/i.test(msg)) {
+        return {
+          ok: false,
+          output: 'Screen Recording permission is not granted, so macOS refused the capture. ' +
+            'Grant it in System Settings → Privacy & Security → Screen Recording (add Crucible, ' +
+            'or your terminal if running in dev), then try again. Nothing else is wrong.',
+          meta: { blocked: 'tcc-screen-recording' },
+        }
+      }
+      return { ok: false, output: `screencapture failed: ${msg.slice(0, 200)}` }
     }
   },
 })
