@@ -27,6 +27,8 @@ import {
   openWorkPage, actOnPage, closeWorkPage, listWorkPages, type PageAction,
 } from './browser'
 import { parkSignIn } from './signInSessions'
+import { loadAutomations, saveAutomations, computeNextRun, describeTrigger } from '../automations/store'
+import { parseTrigger } from '../automations/parseTrigger'
 import { deriveView } from './viewDerivation'
 import type { Entity } from './entities'
 
@@ -1209,6 +1211,144 @@ registry.register({
     return { ok: true, output: closed ? `Closed page ${args.pageId}.` : `Page ${args.pageId} was not open (open pages: ${listWorkPages().join(', ') || 'none'}).` }
   },
 })
+
+// ── Scheduling (cont.119) ────────────────────────────────────────────────────
+// The automations subsystem was complete and unreachable: no tool touched it, so "every morning
+// summarise my inbox" got a promise and no schedule. These three close that. Execution is
+// unchanged — the existing 30s tick and runner own it; these only read and write the store.
+
+registry.register({
+  name: 'schedule_task',
+  description: 'Schedule a task to run automatically on a recurring or future basis ("every weekday at 8am", "every 2 hours", "tomorrow at 9am", "in 30 minutes"). Use whenever the user asks for something to happen repeatedly, later, on a schedule, or as a reminder/digest. The scheduled run executes autonomously with full tool access and the result is delivered to them.',
+  mutates: true,
+  params: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'Short name, e.g. "Morning inbox digest"' },
+      brief: { type: 'string', description: 'What to do on each run, written as a standalone instruction (the run has no conversation context)' },
+      schedule: { type: 'string', description: 'When, in the user\'s own words: "every weekday at 8am", "every 2 hours", "tomorrow at 9am"' },
+      notify: { type: 'boolean', description: 'true to push a notification on completion; otherwise it lands in the digest' },
+    },
+    required: ['name', 'brief', 'schedule'],
+  },
+  async run(args, ctx) {
+    if (!ctx.userId) return { ok: false, output: 'Scheduling needs a signed-in user, and this run has none.' }
+    const name = String(args.name ?? '').trim().slice(0, 80)
+    const brief = String(args.brief ?? '').trim()
+    const schedule = String(args.schedule ?? '').trim()
+    if (!name) return { ok: false, output: 'A "name" is required.' }
+    if (brief.length < 8) return { ok: false, output: 'A "brief" of at least 8 characters is required — it is the whole instruction the unattended run receives.' }
+
+    const parsed = parseTrigger(schedule, Date.now())
+    if (!parsed) {
+      // Never invent a cadence. A schedule the user did not intend runs forever without being
+      // noticed, which is worse than asking one question now.
+      return {
+        ok: false,
+        output: `Could not read "${schedule}" as a schedule, and guessing one would be worse than asking. ` +
+          `Ask the user for it in a form like: "every weekday at 8am", "every 2 hours", "every Monday at 9", ` +
+          `"daily at 18:30", "tomorrow at 9am", or "in 30 minutes".`,
+      }
+    }
+
+    const now = Date.now()
+    const list = loadAutomations()
+    // Same brief + same cadence = the user restating, not asking for a second copy. Two identical
+    // automations both firing is a bug the user experiences as duplicate notifications forever.
+    const dupe = list.find(a => a.userId === ctx.userId && a.brief.trim().toLowerCase() === brief.toLowerCase()
+      && JSON.stringify(a.trigger) === JSON.stringify(parsed.trigger))
+    if (dupe) {
+      return {
+        ok: true,
+        output: `That is already scheduled — "${dupe.name}", ${describeTrigger(dupe.trigger)}, next run ${dupe.nextRun ? new Date(dupe.nextRun).toLocaleString() : 'never'}. Nothing new was created.`,
+        meta: { automationId: dupe.id, duplicate: true },
+      }
+    }
+
+    const automation = {
+      id: `auto-${now}-${Math.abs(hashString(name + brief))}`,
+      userId: ctx.userId,
+      name,
+      brief,
+      trigger: parsed.trigger,
+      delivery: (args.notify ? 'push' : 'digest') as 'push' | 'digest',
+      enabled: true,
+      createdAt: now,
+      lastRuns: [],
+      consecutiveFailures: 0,
+      nextRun: computeNextRun(parsed.trigger, now),
+    }
+    list.push(automation)
+    saveAutomations(list)
+    return {
+      ok: true,
+      output: `Scheduled "${name}" — ${parsed.description}. First run ${automation.nextRun ? new Date(automation.nextRun).toLocaleString() : 'never'}.\n` +
+        `It will run on its own with full tool access and ${args.notify ? 'notify the user' : 'appear in their digest'} when done. ` +
+        `Tell the user what was scheduled and when it first runs, so they can correct it now if it is not what they meant.`,
+      meta: { automationId: automation.id, trigger: parsed.trigger, nextRun: automation.nextRun },
+    }
+  },
+})
+
+registry.register({
+  name: 'list_scheduled_tasks',
+  description: 'List the user\'s scheduled/recurring tasks, when each next runs, and how the last run went. Use when they ask what is scheduled, what is running automatically, or to check on a reminder.',
+  params: { type: 'object', properties: {} },
+  async run(_args, ctx) {
+    if (!ctx.userId) return { ok: false, output: 'Listing scheduled tasks needs a signed-in user, and this run has none.' }
+    const mine = loadAutomations().filter(a => a.userId === ctx.userId)
+    if (mine.length === 0) return { ok: true, output: 'Nothing is scheduled right now.' }
+    const rows = mine.map(a => {
+      const last = a.lastRuns[0]
+      return `- ${a.name} [${a.id}] — ${describeTrigger(a.trigger)}${a.enabled ? '' : ' (PAUSED)'}\n` +
+        `  next: ${a.nextRun ? new Date(a.nextRun).toLocaleString() : 'never'}\n` +
+        `  brief: ${a.brief.slice(0, 160)}\n` +
+        (last ? `  last run: ${new Date(last.ts).toLocaleString()} — ${last.status}${last.status === 'failed' ? ` (${last.summary.slice(0, 120)})` : ''}\n` : '  last run: never\n')
+    })
+    return { ok: true, output: `${mine.length} scheduled task${mine.length === 1 ? '' : 's'}:\n\n${rows.join('\n')}` }
+  },
+})
+
+registry.register({
+  name: 'cancel_scheduled_task',
+  description: 'Cancel or pause a scheduled task. Identify it by its id from list_scheduled_tasks, or by its name. Use when the user asks to stop, cancel, pause or delete a recurring task or reminder.',
+  mutates: true,
+  params: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', description: 'Automation id, or the task\'s name' },
+      pause: { type: 'boolean', description: 'true to pause (keeps it, stops running); omit to delete outright' },
+    },
+    required: ['id'],
+  },
+  async run(args, ctx) {
+    if (!ctx.userId) return { ok: false, output: 'Cancelling a scheduled task needs a signed-in user, and this run has none.' }
+    const key = String(args.id ?? '').trim().toLowerCase()
+    const list = loadAutomations()
+    const idx = list.findIndex(a => a.userId === ctx.userId && (a.id.toLowerCase() === key || a.name.toLowerCase() === key))
+    if (idx === -1) {
+      const names = list.filter(a => a.userId === ctx.userId).map(a => `"${a.name}"`).join(', ')
+      return { ok: false, output: `No scheduled task matches "${args.id}".${names ? ` Existing tasks: ${names}.` : ' Nothing is scheduled.'}` }
+    }
+    const a = list[idx]
+    if (args.pause) {
+      a.enabled = false
+      a.nextRun = null
+      saveAutomations(list)
+      return { ok: true, output: `Paused "${a.name}". It keeps its history and can be re-enabled.`, meta: { automationId: a.id } }
+    }
+    list.splice(idx, 1)
+    saveAutomations(list)
+    return { ok: true, output: `Deleted the scheduled task "${a.name}".`, meta: { automationId: a.id } }
+  },
+})
+
+/** Deterministic id suffix — Math.random would make automation ids untestable. */
+function hashString(s: string): number {
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (Math.imul(31, h) + s.charCodeAt(i)) | 0
+  return h
+}
 
 registry.register({
   name: 'screenshot',

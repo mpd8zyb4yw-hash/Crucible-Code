@@ -12,6 +12,7 @@ export type Trigger =
   | { kind: 'interval'; minutes: number }
   | { kind: 'daily'; time: string }                 // 'HH:MM', server-local time
   | { kind: 'weekly'; day: number; time: string }   // day: 0=Sunday … 6=Saturday
+  | { kind: 'weekdays'; time: string }              // Mon-Fri at 'HH:MM'
   | { kind: 'once'; at: number }                    // epoch ms
 
 export interface AutomationRun {
@@ -78,6 +79,18 @@ export function computeNextRun(trigger: Trigger, from: number): number | null {
     case 'interval': return from + Math.max(1, trigger.minutes) * 60_000
     case 'daily':    return nextAtTime(from, trigger.time)
     case 'weekly':   return nextAtTime(from, trigger.time, ((trigger.day % 7) + 7) % 7)
+    // "Every weekday at 8am" is the single most common standing brief and was not expressible:
+    // 'daily' fires on Sunday too, and 'weekly' fires once. Walk forward to the next Mon-Fri
+    // occurrence rather than approximating it with something that quietly does the wrong thing.
+    case 'weekdays': {
+      let next = nextAtTime(from, trigger.time)
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(next).getDay()
+        if (d >= 1 && d <= 5) return next
+        next = nextAtTime(next, trigger.time)
+      }
+      return next
+    }
     case 'once':     return trigger.at > from ? trigger.at : null
   }
 }
@@ -89,6 +102,7 @@ export function describeTrigger(t: Trigger): string {
     case 'interval': return t.minutes % 60 === 0 ? `every ${t.minutes / 60}h` : `every ${t.minutes}m`
     case 'daily':    return `daily at ${t.time}`
     case 'weekly':   return `${DAYS[((t.day % 7) + 7) % 7]}s at ${t.time}`
+    case 'weekdays': return `every weekday at ${t.time}`
     case 'once':     return `once, ${new Date(t.at).toLocaleString()}`
   }
 }
@@ -164,6 +178,7 @@ export function validateTrigger(t: unknown): t is Trigger {
     case 'interval': return typeof o.minutes === 'number' && o.minutes >= 1 && o.minutes <= 7 * 24 * 60
     case 'daily':    return validTime(o.time)
     case 'weekly':   return typeof o.day === 'number' && o.day >= 0 && o.day <= 6 && validTime(o.time)
+    case 'weekdays': return validTime(o.time)
     case 'once':     return typeof o.at === 'number' && Number.isFinite(o.at)
     default:         return false
   }

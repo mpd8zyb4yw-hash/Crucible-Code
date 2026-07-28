@@ -4085,6 +4085,7 @@ app.post('/api/chat', async (req, res) => {
           // without them the executor can only read a page and throw it away.
           : ['browse_page', 'web_open', 'web_act', 'web_close', 'read_url', 'web_search',
              'save_pdf', 'save_page_image', 'screenshot', 'browser_sign_in',
+             'schedule_task', 'list_scheduled_tasks', 'cancel_scheduled_task',
              'list_dir', 'read_file', 'write_file']
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
