@@ -31,7 +31,9 @@ import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanne
 import { resolveNamedTools, resolveImplicitPersonalTools, renderPersonalData } from './src/CrucibleEngine/agent/namedToolRouter'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
-import type { ToolCtx } from './src/CrucibleEngine/tools/protocol'
+import type { ToolCtx, ToolResult } from './src/CrucibleEngine/tools/protocol'
+import { deriveView } from './src/CrucibleEngine/tools/viewDerivation'
+import { resolveAction, type Entity } from './src/CrucibleEngine/tools/entities'
 import { runAgentLoop, isAllToolResidue } from './src/CrucibleEngine/agent/loop'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
 import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages, clearAllSessions } from './src/CrucibleEngine/agent/taskSession'
@@ -1389,6 +1391,62 @@ app.post('/api/connections/google/disconnect', (req: express.Request, res: expre
   try { fs.unlinkSync(googleTokenFile(user.id)) } catch { /* already gone */ }
   debugBus.emit('system', 'google_disconnected', { userId: user.id }, { severity: 'info' })
   res.json({ ok: true })
+})
+
+// ── Agentic surface: execute an affordance ────────────────────────────────────
+// cont.118. The UI renders entities with their bound actions; this is where an action actually
+// runs. The entity travels with the request rather than being held in server session state —
+// the client already has it, and a stateless endpoint has no expiry, no eviction and no
+// cross-tab confusion.
+//
+// THE CONFIRMATION GATE IS ENFORCED HERE, NOT ONLY IN THE UI. A confirmation that lives purely
+// in React is a confirmation that vanishes the moment anything else calls this route. Any effect
+// above `read` requires `confirmed: true` on the wire, and the effect class is read from the
+// SERVER's affordance registry rather than from the request — a client cannot downgrade
+// `send` to `read` to skip the check.
+app.post('/api/agentic/action', async (req: express.Request, res: express.Response) => {
+  const user = getAuthUser(req)
+  const { entity, affordanceId, input, confirmed } = (req.body ?? {}) as {
+    entity?: Entity; affordanceId?: string; input?: Record<string, string>; confirmed?: boolean
+  }
+  if (!entity?.id || !entity?.kind || !affordanceId) {
+    return res.status(400).json({ ok: false, error: 'entity and affordanceId are required' })
+  }
+
+  const resolved = resolveAction(entity, affordanceId, input)
+  if (!resolved) {
+    return res.status(400).json({ ok: false, error: `Action "${affordanceId}" is not available on this ${entity.kind}.` })
+  }
+  if (resolved.effect !== 'read' && confirmed !== true) {
+    return res.status(403).json({
+      ok: false,
+      error: `"${affordanceId}" ${resolved.effect === 'send' ? 'leaves this machine' : 'changes data'} and needs explicit confirmation.`,
+    })
+  }
+
+  const def = registry.get(resolved.tool)
+  if (!def) return res.status(400).json({ ok: false, error: `Unknown tool: ${resolved.tool}` })
+
+  try {
+    const result = await def.run(resolved.args, {
+      projectPath: process.cwd(),
+      userId: user?.id,
+      // Mutation is permitted only for an effect that declared itself as mutating AND was
+      // confirmed above — the two gates are independent on purpose.
+      allowMutation: resolved.effect !== 'read',
+      allowDestructive: resolved.effect === 'destructive',
+    } as ToolCtx)
+    debugBus.emit('agent', 'surface_action', {
+      tool: resolved.tool, effect: resolved.effect, kind: entity.kind, ok: result.ok,
+    }, { severity: result.ok ? 'info' : 'warn' })
+    if (!result.ok) return res.status(422).json({ ok: false, error: result.output })
+    // A read action that returns entities re-renders as a surface in place.
+    const view = result.entities?.length ? deriveView(result.entities as Entity[]) : undefined
+    res.json({ ok: true, output: result.output, view })
+  } catch (e: any) {
+    debugBus.emit('agent', 'surface_action_threw', { tool: resolved.tool, error: String(e?.message ?? e) }, { severity: 'error' })
+    res.status(500).json({ ok: false, error: String(e?.message ?? e) })
+  }
 })
 
 // ── OAuth helpers ─────────────────────────────────────────────────────────────
@@ -3632,11 +3690,19 @@ app.post('/api/chat', async (req, res) => {
         const outputs: Array<{ tool: string; ok: boolean; output: string }> = []
         for (const call of named.calls) {
           if (ac.signal.aborted) break
-          send({ type: 'tool_call', id: call.id, tool: call.name, args: call.args })
-          let r: { ok: boolean; output: string }
+          // `toolCtx.emit` IS `send`, and registry.exec() already emits both `tool_call` and
+          // `tool_result` (with the derived view attached at that choke point). Emitting them again
+          // here sent every event to the client TWICE — the reducer appends on `tool_call`, so the
+          // agent panel grew a duplicate row per tool, and only the first was ever marked done,
+          // leaving a permanently-spinning twin. Verified by probing registry.exec with a stub emit:
+          // one call in, two events out, before this branch sent anything of its own.
+          let r: ToolResult
           try { r = await registry.exec(call, toolCtx) }
-          catch (e: any) { r = { ok: false, output: String(e?.message ?? e).slice(0, 300) } }
-          send({ type: 'tool_result', id: call.id, tool: call.name, ok: r.ok, output: r.output.slice(0, 800), truncated: r.output.length > 800 })
+          catch (e: any) {
+            r = { ok: false, output: String(e?.message ?? e).slice(0, 300) }
+            // exec() throwing means it never emitted a result of its own, so this branch must.
+            send({ type: 'tool_result', id: call.id, tool: call.name, ok: false, output: r.output, truncated: false })
+          }
           outputs.push({ tool: call.name, ok: r.ok, output: r.output })
           debugBus.emit('agent', 'named_tool_exec', { tool: call.name, ok: r.ok }, { severity: r.ok ? 'info' : 'warn' })
         }
@@ -5094,9 +5160,9 @@ app.post('/api/chat', async (req, res) => {
           // (the cont.95 live oddity: one fence certified while another shipped TS1005).
           const attempted = new Set<string>()
           for (let guard = 0; guard < 6; guard++) {
-            const p = verifyCodeBlocks(answer).find(pr => !attempted.has(pr.lang + ' ' + pr.code))
+            const p = verifyCodeBlocks(answer).find(pr => !attempted.has(pr.lang + '\u0000' + pr.code))
             if (!p) break
-            attempted.add(p.lang + ' ' + p.code)
+            attempted.add(p.lang + '\u0000' + p.code)
             // Deterministic first: a block that parses clean under ANOTHER grammar is a label
             // defect (python inside a ```ts fence → TS1005) — relabel, byte-identical code.
             const relang = crossGrammarRelabel(p.lang, p.code)
@@ -9416,6 +9482,29 @@ function startListening(port: number, attempt = 0) {
     // so any other orphaned (reparented-to-init) server.ts process is by definition stale.
     // Conservative match: node + server.ts, NOT a `tsx watch` supervisor, not us/our parent.
     try {
+      // A LINGERING server, per the paragraph above, is one that "lost (or never won) the port" —
+      // so it holds NO listening socket. That is the discriminator this sweep must use.
+      //
+      // FOUND 2026-07-27 (cont.118), after it destroyed two consecutive benchmark runs: the sweep
+      // matched on "node + server.ts + ppid===1" and never looked at ports, so it SIGKILLed a
+      // second server that was deliberately listening on a DIFFERENT port. The offline coding
+      // benchmark is run exactly that way (PORT=3011 + CRUCIBLE_OFFLINE=strict, so the desktop
+      // app can keep :3001), and a detached measurement server is reparented to init — i.e. it is
+      // "orphaned" by this test's definition while being the most important process on the box.
+      // Symptom: mid-suite the harness reported error="terminated" then "fetch failed" for every
+      // remaining task, and the server log simply stopped with no stack trace (SIGKILL leaves
+      // none), which reads exactly like a capability collapse. It is not one. ~50 minutes of
+      // measurement was spent twice before the `[OrphanSweep]` line was traced to here.
+      //
+      // Skipping listeners keeps the original intent intact: a server that never won a port still
+      // has no listener and is still swept, so the FM-bridge starvation this guards against
+      // (2026-07-11, five lingering instances) is still guarded against.
+      const listeningPids = new Set<number>()
+      try {
+        for (const l of execSync(`lsof -nP -iTCP -sTCP:LISTEN -Fp 2>/dev/null || true`, { encoding: 'utf8' }).split('\n')) {
+          if (l.startsWith('p')) listeningPids.add(Number(l.slice(1)))
+        }
+      } catch { /* if lsof is unavailable, fall through to the conservative checks below */ }
       const rows = execSync(`ps -eo pid=,ppid=,command= | grep 'server\\.ts' | grep node | grep -v grep`, { encoding: 'utf8' })
         .split('\n').map(l => l.trim()).filter(Boolean)
       for (const row of rows) {
@@ -9424,6 +9513,10 @@ function startListening(port: number, attempt = 0) {
         const [pid, ppid, cmd] = [Number(m[1]), Number(m[2]), m[3] as unknown as string] as [number, number, string]
         if (pid === process.pid || pid === process.ppid || /\bwatch\b/.test(cmd)) continue
         if (ppid !== 1) continue // only clearly-orphaned processes; live supervised trees are left alone
+        if (listeningPids.has(pid)) {
+          console.warn(`[OrphanSweep] Left server.ts ${pid} alone — it is LISTENING, so it is a live instance on another port, not a lingering orphan`)
+          continue
+        }
         try { process.kill(pid, 'SIGKILL'); console.warn(`[OrphanSweep] Killed lingering server.ts orphan ${pid}`) } catch { /* already gone */ }
       }
     } catch { /* sweep is best-effort */ }

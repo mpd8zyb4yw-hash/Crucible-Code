@@ -1,6 +1,23 @@
 // ── chat/panels — pipeline theater, critique grid, agent tool/diff rows, narration ──
 import { useState, useRef, useEffect } from 'react'
 import { CopyButton, type DynamicModel, type Round, type AgentDiff, type AgentTool } from './core'
+import SurfaceRenderer, { type RunAction } from '../agentic/SurfaceRenderer'
+import { apiFetch } from '../api'
+
+// Executing an affordance from a rendered surface. The entity travels with the request because
+// the client already holds it and the route is deliberately stateless (server.ts /api/agentic/action).
+// `confirmed` is forwarded, never forced: the server re-derives the effect class from its own
+// registry and refuses anything above `read` that did not clear the confirm sheet.
+const runSurfaceAction: RunAction = async ({ entity, affordanceId, input, confirmed }) => {
+  const res = await apiFetch('/api/agentic/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entity, affordanceId, input, confirmed }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || !body?.ok) throw new Error(body?.error || `Action failed (${res.status})`)
+  return String(body.output ?? '')
+}
 
 export function ShimmerBg({ thinking, mode }: { thinking: boolean; mode: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -326,6 +343,14 @@ export function ToolRow({ t }: { t: AgentTool }) {
         <span style={{ color: '#777', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, flex: 1 }}>{String(label)}</span>
         {t.output && <span style={{ color: '#555', fontSize: 9 }}>{open ? '▾' : '▸'}</span>}
       </div>
+      {/* cont.118 — when the tool returned THINGS, the derived surface IS the result, so it renders
+          inline rather than behind the expander. The prose stays available underneath for tools
+          that emit no entities, and for reading exactly what the model was handed. */}
+      {t.view && t.view.entities.length > 0 && (
+        <div style={{ margin: '4px 0 6px' }}>
+          <SurfaceRenderer view={t.view} runAction={runSurfaceAction} compact />
+        </div>
+      )}
       {open && t.output && (
         <pre style={{
           margin: '3px 0 0', padding: 6, background: 'rgba(0,0,0,0.4)', borderRadius: 4,

@@ -448,10 +448,29 @@ function extractGoalPaths(goal: string): string[] {
     goal.matchAll(/\b((?:src\/|test\/|tests\/)?[\w./\-]+\.(?:ts|tsx|js|mjs|html))\b/g),
     m => m[1],
   )
+  // A BARE `x.ts` is the same deliverable as a directory-qualified `dir/x.ts` mentioned in the
+  // same goal — prose back-references drop the directory ("…- report.ts MUST import Ledger from
+  // './ledger'"), and exact-string dedupe cannot see that.
+  //
+  // FOUND 2026-07-27 (cont.118) as the root of multiFileLedger, the suite's only true capability
+  // RED. Its spec declares `src/ledger.ts` and `src/report.ts`, then its Rules section says bare
+  // "report.ts MUST import Ledger from './ledger'", so goalPaths came out as
+  //   ['src/ledger.ts', 'src/report.ts', 'report.ts', 'src/index.ts']
+  // and the state machine dutifully synthesized a FOURTH file at the repo root. That file is not
+  // the graded artifact (the audit imports src/report.js), its './ledger' cannot resolve from the
+  // root — 5 rounds died on the identical TS2307 "Cannot find module './ledger'" — and because it
+  // also exports `categoryTotals` it collided with the real src/report.ts in the dup-export gate
+  // ("declared in report.ts and src/report.ts and src/index.ts"). It also inflated the retry
+  // budget, which is keyed off goalPaths.length.
+  // Only the BARE form is dropped, never the qualified one, so this cannot retarget a real file.
+  const qualifiedBasenames = new Set(
+    all.filter(p => p.includes('/')).map(p => p.slice(p.lastIndexOf('/') + 1)),
+  )
   // Dedupe preserving order, skip obvious doc references like tsconfig.json, skip protected.
   const seen = new Set<string>()
   return all.filter(p => {
     if (protectedPaths.has(p)) return false
+    if (!p.includes('/') && qualifiedBasenames.has(p)) return false
     if (seen.has(p)) return false
     seen.add(p)
     return true
@@ -2142,6 +2161,151 @@ function scopeNumberedFileSections(goal: string, targetPath: string): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n')
 }
 
+/** Top-level `export …` declaration lines of a file, as written. Signature lines only — enough to
+ *  call the API, cheap enough to paste into a small model's prompt. */
+function exportedSignatureLines(abs: string): string[] {
+  try {
+    return fs.readFileSync(abs, 'utf8').split('\n')
+      .filter(l => /^export\s+(?:async\s+)?(?:function|class|interface|type|const|enum)\s/.test(l))
+      .map(l => l.replace(/\s*\{\s*$/, '').trimEnd())
+      .slice(0, 24)
+  } catch { return [] }
+}
+
+/**
+ * The prompt for a SECONDARY goal file — in this suite always the `src/index.ts` self-test.
+ *
+ * WHY THIS IS NOT JUST A ONE-LINE NOTE (cont.118, measured). The previous version said only
+ * "the implementation file X has already been written", naming the path but never showing the API.
+ * So the model wrote the self-test from the ORIGINAL SPEC PROSE instead of from the real module,
+ * and its most common failure was to re-emit a COPY of the module into src/index.ts and then also
+ * import the same names from it. That single shape accounted for 37 of the 52 gate-A typecheck
+ * rejections in the cont.117 run, in three flavours:
+ *   TS2440 x11  import declaration conflicts with local declaration of 'X'   (copied AND imported)
+ *   TS2304 x13  cannot find name 'X'          (copied a signature, never imported its type)
+ *   TS2459 x14  module 'M' declares 'X' locally but does not export it       (guessed the owner)
+ * and it is why `src/index.ts` consumed 41.8% of the whole suite's model budget while being scored
+ * [SOFT] — it cannot move passedHard/total. It DID move it downward, though: tagSetModule went RED
+ * on the [HARD] "compiles clean" check purely because of `src/index.ts(4,17): TS2304: Cannot find
+ * name 'Article'`, while its own hidden suite passed 10/10. The audit's compile check is a
+ * whole-project tsc, so a broken self-test fails a HARD gate for a module that is correct.
+ *
+ * Note that a decoding constraint could not have prevented any of the three: every one of those
+ * candidates was syntactically valid TypeScript. The missing information was the real symbol table,
+ * which is on disk. So put it in the prompt, and state the artifact's shape imperatively — the
+ * house rule for this head (errorHints.ts): a small model needs code-shaped instructions, not
+ * descriptions.
+ */
+function buildSelfTestNote(targetPath: string, state: CurrentState, projectPath: string): string {
+  const siblings = state.goalPaths.filter(p => p !== targetPath && state.writtenPaths.includes(p))
+  const apiBlocks: string[] = []
+  for (const rel of siblings) {
+    const lines = exportedSignatureLines(path.join(projectPath, rel))
+    if (!lines.length) continue
+    // The specifier the target file must import BY: relative, extensionless.
+    const spec = './' + path.relative(path.dirname(targetPath), rel).replace(/\.(ts|tsx)$/, '')
+    apiBlocks.push(`  // from '${spec}'  (file ${rel})\n${lines.map(l => `  ${l}`).join('\n')}`)
+  }
+  const apiSection = apiBlocks.length
+    ? `\n\nThese modules are ALREADY WRITTEN and CORRECT. This is their EXACT exported API — import from these specifiers verbatim:\n${apiBlocks.join('\n')}`
+    : `\n\nNote: the implementation file ${state.goalPaths[0]} has already been written.`
+  return `${apiSection}
+
+${targetPath} is a SELF-TEST SCRIPT, not a module. Obey all four:
+1. IMPORT every symbol you use from the specifiers listed above, exactly as written.
+2. Do NOT re-declare, re-implement or copy any function, class, type or interface those modules already own.
+3. Do NOT put the word "export" anywhere in this file. It is a script that runs and exits, not a module with an API.
+4. Print one line per check, and call process.exit(1) if any check fails, so a non-zero exit means failure.`
+}
+
+/**
+ * The goal path that is the SOFT self-test, or null. Read off `selfTestCmd` ("npx tsx src/index.ts")
+ * rather than guessed by filename, because that string is what the audit actually runs.
+ *
+ * Everything in goalPaths that is NOT this is a HARD deliverable: for multiFileLedger BOTH
+ * src/ledger.ts and src/report.ts are graded (the hidden suite imports Ledger and categoryTotals),
+ * so "HARD" cannot be simplified to goalPaths[0].
+ */
+function softSelfTestPath(state: CurrentState): string | null {
+  const m = state.selfTestCmd?.match(/([\w./\-]+\.(?:ts|tsx|js|mjs))\b/)
+  const p = m?.[1]
+  return p && state.goalPaths.includes(p) && state.goalPaths[0] !== p ? p : null
+}
+
+/** Which of the tsc error lines in `out` are located in `rel`. */
+function tscErrorsIn(out: string, rel: string): string[] {
+  const norm = rel.replace(/\\/g, '/')
+  return out.split('\n').filter(l => /error TS/.test(l) && l.replace(/\\/g, '/').includes(norm))
+}
+
+const VALUE_EXPORT_RE = /^export\s+(?:async\s+)?(?:function|class|const|enum)\s+([A-Za-z_$][\w$]*)/
+
+/** First line of a generated self-test. Load-bearing: it is how the state machine recognises that
+ *  the fallback has ALREADY been written, so the unbounded "tsc errors confined to the self-test"
+ *  branch cannot rewrite it every turn forever. */
+const GENERATED_SELFTEST_MARKER = '// Reduced smoke self-test, generated deterministically'
+
+/** True when `rel` on disk is already the generated fallback. */
+function isGeneratedSelfTest(projectPath: string, rel: string): boolean {
+  try { return fs.readFileSync(path.join(projectPath, rel), 'utf8').startsWith(GENERATED_SELFTEST_MARKER) } catch { return false }
+}
+
+/**
+ * A self-test the model did not write: generated from the REAL exported names of the
+ * already-written modules, so it cannot re-declare, cannot reference an unimported type, and
+ * cannot name a symbol its owner does not export. Guaranteed tsc-clean by construction, costs
+ * ZERO model calls, and exits non-zero on failure so `npx tsx src/index.ts` is a real check.
+ *
+ * WHY a reduced fallback is the right outcome (cont.118). The self-test is [SOFT] — it cannot move
+ * passedHard/total — but it consumed 41.8% of the suite's model budget, and when the model failed
+ * to produce a compiling one the run either escalated (`no oracle-passing code for src/index.ts`,
+ * which under CRUCIBLE_OFFLINE=strict is a hard error: filterModule burned 420s and errored this
+ * way while its hidden suite passed 15/15) or left a broken file on disk that then failed the
+ * audit's whole-project [HARD] compile check for a module that was correct (tagSetModule).
+ * Shipping a smaller self-test that runs beats shipping one that does not compile.
+ *
+ * It is deliberately HONEST about its own reach: it asserts each exported value loads and has the
+ * expected typeof, and says so in its header. It does NOT assert behaviour, and the turn's summary
+ * must not claim it does — behaviour is certified by the synthesis oracle, not by this file.
+ */
+function deterministicSelfTest(targetPath: string, state: CurrentState, projectPath: string): string | null {
+  const siblings = state.goalPaths.filter(p => p !== targetPath && state.writtenPaths.includes(p))
+  const imports: string[] = []
+  const checks: string[] = []
+  for (const rel of siblings) {
+    let names: string[] = []
+    try {
+      names = fs.readFileSync(path.join(projectPath, rel), 'utf8').split('\n')
+        .map(l => l.match(VALUE_EXPORT_RE)?.[1]).filter((n): n is string => !!n)
+    } catch { continue }
+    names = Array.from(new Set(names)).slice(0, 12)
+    if (!names.length) continue
+    const spec = './' + path.relative(path.dirname(targetPath), rel).replace(/\.(ts|tsx)$/, '')
+    imports.push(`import { ${names.join(', ')} } from '${spec}'`)
+    for (const n of names) checks.push(`check('${rel} exports ${n}', ${n} !== undefined && ${n} !== null)`)
+  }
+  if (!checks.length) return null
+  return `${GENERATED_SELFTEST_MARKER} (no model call) because the model did
+// not produce a compiling one. It verifies that every exported value of the modules below loads
+// and is defined. It does NOT verify their behaviour — that is the synthesis oracle's job.
+${imports.join('\n')}
+
+let failures = 0
+function check(desc: string, ok: boolean): void {
+  console.log(\`  \${ok ? 'PASS' : 'FAIL'} — \${desc}\`)
+  if (!ok) failures++
+}
+
+${checks.join('\n')}
+
+if (failures > 0) {
+  console.log(\`\${failures} FAILURE(S)\`)
+  process.exit(1)
+}
+console.log('ALL PASS')
+`
+}
+
 async function solveCodeWrite(
   targetPath: string,
   state: CurrentState,
@@ -2156,7 +2320,7 @@ async function solveCodeWrite(
   // primary file so the FM knows what API it's writing against.
   const isSecondary = state.goalPaths.indexOf(targetPath) > 0
   const primaryNote = isSecondary && state.goalPaths[0]
-    ? `\n\nNote: the implementation file ${state.goalPaths[0]} has already been written. Write ${targetPath} to test/exercise it per the original goal.`
+    ? buildSelfTestNote(targetPath, state, projectPath)
     : ''
 
   // Narrow the oracle's export contract to targetPath's own API. stripForeignApiBlocks handles
@@ -2190,6 +2354,11 @@ async function solveCodeWrite(
       maxFmRounds: MAX_FM_ROUNDS,
       modulePath: targetPath,
       acceptGateAOnly: true,
+      // The SOFT self-test is an executable script, not a library module: gate it by RUNNING it
+      // (tsx <path>, exit 0) instead of by a derived module contract that would require it to
+      // re-export the graded module's API. Keyed off the same softSelfTestPath the audit uses,
+      // never a filename guess. See the selfTestScript doc comment in synth/universal.ts.
+      selfTestScript: targetPath === softSelfTestPath(state),
       retrievalBlock: retrievalBlock || undefined,
       // Change-set scope (cont.99): the goal's OTHER declared files are pending edits, so a
       // type error located in one of them is a consequence of this edit being incomplete, not
@@ -2481,6 +2650,24 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
           ? await solveHtmlWrite(nextPath, state)
           : await solveCodeWrite(nextPath, state, projectPath, signal)
       } catch (e) {
+        // HARD-FIRST (cont.118): a SOFT self-test the model cannot write must not take the run
+        // down with it. The graded artifacts are already on disk and already oracle-certified at
+        // this point; escalating here threw all of that away over an ungraded file, and under
+        // CRUCIBLE_OFFLINE=strict there is no online driver to escalate TO (server.ts:4400 uses
+        // the offline turn bare), so the throw surfaced as the run's terminal error.
+        const soft = softSelfTestPath(state)
+        if (nextPath === soft) {
+          const fallback = deterministicSelfTest(nextPath, state, projectPath)
+          if (fallback) {
+            debugBus.emit('agent', 'offline_selftest_fallback', {
+              path: nextPath, reason: String((e as any)?.message ?? e).slice(0, 160),
+            }, { severity: 'info' })
+            return {
+              text: '',
+              toolCalls: [{ id: `offline_selftest_fallback_${Date.now()}`, name: 'write_file', args: { path: nextPath, content: fallback } }],
+            }
+          }
+        }
         if (e instanceof OfflineEscalateError) throw e
         throw new OfflineEscalateError(`solveCodeWrite threw: ${String((e as any)?.message ?? e).slice(0, 120)}`)
       }
@@ -2526,26 +2713,59 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     const hasTscErrors = /error TS/.test(lastOut)
     const hasTestFailures = /FAIL\s*—|FAILURE|\d+\s+FAILURE|AssertionError/i.test(lastOut)
 
-    // ── S3: tsc errors + retry budget → re-synthesize primary ────────────────
+    // ── S3: tsc errors + retry budget → re-synthesize THE FILE THE ERROR IS IN ───
+    //
+    // It used to always re-synthesize primaryPath (goalPaths[0]). When the broken file was the
+    // self-test, that rewrote a MODULE that tsc had no complaint about — and, worse, re-verified
+    // it with the broken self-test now sitting in its context, so the dup-export gate rejected the
+    // graded module for colliding with a symbol the self-test should never have declared. Measured
+    // in the cont.117 run: 12 consecutive dup-export rejections on src/clamp.ts naming
+    // src/index.ts as the other owner, and 12 more on src/leaderboard.ts. Both tasks were already
+    // GREEN off their first write, so all 24 rounds were spent re-breaking work that was done.
+    const softPath = softSelfTestPath(state)
+    const erroringGoalPath = goalPaths.find(p => tscErrorsIn(lastOut, p).length) ?? primaryPath
     if (hasTscErrors && state.writeCycles < goalPaths.length + MAX_WRITE_CYCLES) {
       let content: string
       try {
-        content = await solveCodeWrite(primaryPath, state, projectPath, signal)
+        content = await solveCodeWrite(erroringGoalPath, state, projectPath, signal)
       } catch (e) {
-        if (e instanceof OfflineEscalateError) throw e
-        throw new OfflineEscalateError(`retry threw: ${String((e as any)?.message ?? e).slice(0, 120)}`)
+        // Same HARD-first rule as S1: fall back to a generated self-test rather than lose the run.
+        const fallback = erroringGoalPath === softPath ? deterministicSelfTest(erroringGoalPath, state, projectPath) : null
+        if (!fallback) {
+          if (e instanceof OfflineEscalateError) throw e
+          throw new OfflineEscalateError(`retry threw: ${String((e as any)?.message ?? e).slice(0, 120)}`)
+        }
+        debugBus.emit('agent', 'offline_selftest_fallback', { path: erroringGoalPath, reason: 'tsc-retry exhausted' }, { severity: 'info' })
+        content = fallback
       }
       return {
         text: '',
         toolCalls: [{
           id: `offline_retry_${Date.now()}`,
           name: 'write_file',
-          args: { path: primaryPath, content },
+          args: { path: erroringGoalPath, content },
         }],
       }
     }
 
     if (hasTscErrors) {
+      // If EVERY remaining tsc error is inside the SOFT self-test, the graded artifacts compile.
+      // Replace the self-test with the generated one instead of escalating: a broken ungraded file
+      // left on disk fails the audit's whole-project [HARD] compile check for a module that is
+      // correct, which is exactly how tagSetModule went RED with its hidden suite at 10/10.
+      // …and only once: if the generated self-test is ALREADY on disk and tsc still objects to it,
+      // rewriting it would loop this (deliberately unbounded) branch forever.
+      const softOnly = !!softPath
+        && !isGeneratedSelfTest(projectPath, softPath)
+        && tscErrorsIn(lastOut, softPath).length === lastOut.split('\n').filter(l => /error TS/.test(l)).length
+      const fallback = softOnly ? deterministicSelfTest(softPath!, state, projectPath) : null
+      if (fallback) {
+        debugBus.emit('agent', 'offline_selftest_fallback', { path: softPath, reason: 'tsc errors confined to the soft self-test' }, { severity: 'info' })
+        return {
+          text: '',
+          toolCalls: [{ id: `offline_selftest_fallback_${Date.now()}`, name: 'write_file', args: { path: softPath!, content: fallback } }],
+        }
+      }
       throw new OfflineEscalateError(
         `tsc errors after ${state.writeCycles} cycle(s) — escalating`
       )
@@ -2583,7 +2803,14 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
       }
     }
 
-    if (state.selfTestRan && hasTestFailures) {
+    // HARD-FIRST TERMINAL RULE (cont.118). A failing SOFT self-test used to escalate, which under
+    // CRUCIBLE_OFFLINE=strict is the run's terminal error — discarding a graded artifact that the
+    // synthesis oracle had already certified and that tsc had just declared clean. Escalate only
+    // when a HARD deliverable is implicated; otherwise finish and report the self-test honestly as
+    // failing. The audit scores the self-test [SOFT], so this cannot launder a bad module: module
+    // existence, whole-project compile and the hidden suite are all still HARD and all still run.
+    const softFailOnly = state.selfTestRan && hasTestFailures && !hasTscErrors
+    if (state.selfTestRan && hasTestFailures && !softFailOnly) {
       throw new OfflineEscalateError(
         `self-test failures after ${state.writeCycles} cycle(s) — escalating`
       )
@@ -2595,7 +2822,17 @@ export function makeOfflineDriveTurn(projectPath: string, explicitGoal?: string)
     // to timeout. Files-written + self-test are backed by tool evidence; keep the claim to
     // exactly what was verified.
     const compileNote = hasLocalTsc ? ` — tsc clean` : ''
-    const testNote = selfTestCmd ? ` — self-test passed` : ''
+    // Never claim the self-test passed when it did not, and never claim a GENERATED fallback
+    // verified behaviour — the grounding critic rejects an unsupported success claim, and it would
+    // be a false report either way.
+    const softPathForNote = softSelfTestPath(state)
+    const testNote = !selfTestCmd
+      ? ''
+      : softFailOnly
+      ? ` — self-test FAILED (module compiles and is oracle-certified; self-test is [SOFT] and not graded)`
+      : softPathForNote && isGeneratedSelfTest(projectPath, softPathForNote)
+      ? ` — self-test is a generated smoke check (exports load; behaviour certified by the synthesis oracle, not by it)`
+      : ` — self-test passed`
     debugBus.emit('agent', 'offline_turn_hit', { cycles: state.writeCycles, files: writtenPaths.length }, { severity: 'info' })
     const htmlDone = writtenPaths.filter(p => p.endsWith('.html'))
     if (htmlDone.length && !hasTsTargets) {

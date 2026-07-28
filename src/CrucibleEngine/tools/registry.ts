@@ -18,9 +18,27 @@ import { shimNodeAssert } from '../synth/assertShim'
 // tool below returns `entities` alongside its prose so the UI and the model both get structure.
 import {
   gmailMessages, calendarEvents, driveFiles, contacts as contactEntities, youtubeVideos,
+  localFiles, webResults,
 } from './adapters'
+import { deriveView } from './viewDerivation'
+import type { Entity } from './entities'
 
 const tools = new Map<string, ToolDef>()
+
+/**
+ * The derived surface for a tool result, or undefined when the tool returned only prose.
+ *
+ * Kept to a single helper so there is exactly ONE answer to "when does a result get an interface",
+ * and it is the same answer on every transport. A tool that emits no entities is untouched and
+ * still renders as text, which is why this is safe to run on every call.
+ */
+function viewFor(result: ToolResult, args?: Record<string, unknown>) {
+  if (!result.entities?.length) return undefined
+  // `query` only ever feeds the empty-state copy, but it is threaded anyway so a future empty view
+  // built here reads identically to one built at a call site that had the args in hand.
+  const query = typeof args?.query === 'string' ? args.query : undefined
+  return deriveView(result.entities as Entity[], query ? { query } : {})
+}
 
 // Checkpoint before file mutations, at most once per minute per project.
 const FILE_MUTATORS = new Set(['write_file', 'edit_file', 'apply_patch'])
@@ -59,17 +77,38 @@ export const registry = {
     return tools.get(name)
   },
   async exec(call: ToolCall, ctx: ToolCtx): Promise<ToolResult> {
-    const def = tools.get(call.name)
-    if (!def) return { ok: false, output: `Unknown tool: ${call.name}. Available: ${[...tools.keys()].join(', ')}` }
-    if (def.mutates && ctx.allowMutation === false) {
-      return { ok: false, output: `Tool ${call.name} mutates state and is not permitted in this context.` }
-    }
-    if (ctx.signal?.aborted) return { ok: false, output: 'Cancelled.' }
-    checkpointBeforeMutation(call.name, ctx, call.args as Record<string, unknown> | undefined)
+    // INVARIANT: exactly one `tool_call` and exactly one `tool_result` per exec(), on every path.
+    // The three rejection paths below used to return BEFORE any emit, so a call the registry
+    // refused (unknown tool, blocked mutation, already aborted) produced no UI event at all and
+    // simply vanished from the agent panel — the run looked like it had stalled rather than
+    // declined. Callers are entitled to assume the event stream accounts for every call they make,
+    // so the `tool_call` is emitted first and each rejection reports itself through `refuse`.
     ctx.emit?.({ type: 'tool_call', id: call.id, tool: call.name, args: call.args })
+    const refuse = (output: string): ToolResult => {
+      ctx.emit?.({ type: 'tool_result', id: call.id, tool: call.name, ok: false, output })
+      return { ok: false, output }
+    }
+    const def = tools.get(call.name)
+    if (!def) return refuse(`Unknown tool: ${call.name}. Available: ${[...tools.keys()].join(', ')}`)
+    if (def.mutates && ctx.allowMutation === false) {
+      return refuse(`Tool ${call.name} mutates state and is not permitted in this context.`)
+    }
+    if (ctx.signal?.aborted) return refuse('Cancelled.')
+    checkpointBeforeMutation(call.name, ctx, call.args as Record<string, unknown> | undefined)
     try {
       const result = await def.run(call.args, ctx)
-      ctx.emit?.({ type: 'tool_result', id: call.id, tool: call.name, ok: result.ok, output: result.output.slice(0, 2000), truncated: result.truncated ?? false })
+      // cont.118 — the derived surface is attached HERE, at the one choke point every caller goes
+      // through, rather than at any individual send() site. It was previously attached only in the
+      // named-tool branch of /api/chat, which meant AGENT MODE — the mode whose whole UI is this
+      // tool stream — could never receive a view at all: the agent loop's only tool_result is the
+      // one emitted on this line. Deriving it here gives every current and future emit path the
+      // surface for free, which is the same "universal, not per-integration" rule the entity
+      // protocol itself is built on. `deriveView` is pure, so this costs no model call.
+      ctx.emit?.({
+        type: 'tool_result', id: call.id, tool: call.name, ok: result.ok,
+        output: result.output.slice(0, 2000), truncated: result.truncated ?? false,
+        view: viewFor(result, call.args),
+      })
       return result
     } catch (e: any) {
       const result = { ok: false, output: `Tool ${call.name} threw: ${e?.message ?? e}` }
@@ -565,12 +604,27 @@ registry.register({
   async run(args, ctx) {
     const abs = resolveSafe(String(args.path ?? '.'), ctx, { allowOutside: true })
     if (!fs.existsSync(abs)) return { ok: false, output: `Directory not found: ${abs}` }
-    const entries = fs.readdirSync(abs, { withFileTypes: true })
+    const dirents = fs.readdirSync(abs, { withFileTypes: true })
       .filter(e => e.name !== 'node_modules' && e.name !== '.git')
-      .map(e => e.isDirectory() ? `${e.name}/` : e.name)
-      .sort()
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const entries = dirents.map(e => e.isDirectory() ? `${e.name}/` : e.name)
     const { output, truncated } = capOutput(entries.join('\n'))
-    return { ok: true, output, truncated }
+    // cont.118 — the FIRST zero-auth entity source. Every other entity-emitting tool needs a
+    // Google session, which meant that on a machine with no account connected there was no
+    // possible way to see the agentic surface at all. Listing a directory needs nothing.
+    // stat() is best-effort per entry: a broken symlink or a permission-denied file must degrade
+    // to an entity without size/mtime, never take the whole listing down.
+    const detailed = dirents.map(e => {
+      const full = path.join(abs, e.name)
+      let size: number | undefined, mtime: string | undefined
+      try {
+        const st = fs.statSync(full)
+        size = st.size
+        mtime = st.mtime.toISOString()
+      } catch { /* unreadable entry — still worth listing */ }
+      return { name: e.name, path: full, isDir: e.isDirectory(), size, mtime }
+    })
+    return { ok: true, output, truncated, entities: localFiles(detailed) }
   },
 })
 
@@ -682,12 +736,26 @@ registry.register({
       const strip = (s: string) => s.replace(/<[^>]+>/g, '').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#x27;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').trim()
       const titles: string[] = []
       const snippets: string[] = []
+      // cont.118 — the href was parsed and thrown away. Without it a search result cannot become
+      // a `webpage` entity (webResults drops anything with no url), so the second zero-auth
+      // entity source did not exist. DDG wraps targets in /l/?uddg=<encoded>; unwrap it.
+      const urls: string[] = []
+      const unwrapDdg = (href: string): string => {
+        try {
+          const u = new URL(href, 'https://duckduckgo.com')
+          const target = u.searchParams.get('uddg')
+          return target ? decodeURIComponent(target) : (u.protocol === 'https:' || u.protocol === 'http:' ? u.toString() : '')
+        } catch { return '' }
+      }
 
       // Strategy 1: standard DDG classes
-      const titleRe1 = /<a class="result__a"[^>]*>([\s\S]*?)<\/a>/g
+      const titleRe1 = /<a class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>|<a[^>]+href="([^"]+)"[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/g
       const snippetRe1 = /<a class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
       let m
-      while ((m = titleRe1.exec(html)) !== null && titles.length < 5) titles.push(strip(m[1]))
+      while ((m = titleRe1.exec(html)) !== null && titles.length < 5) {
+        titles.push(strip(m[2] ?? m[4] ?? ''))
+        urls.push(unwrapDdg(m[1] ?? m[3] ?? ''))
+      }
       while ((m = snippetRe1.exec(html)) !== null && snippets.length < 5) snippets.push(strip(m[1]))
 
       // Strategy 2: data-result blocks
@@ -708,7 +776,14 @@ registry.register({
 
       if (titles.length === 0) return { ok: false, output: 'No results found. DDG may have changed their markup or blocked the request.' }
       const output = titles.map((t, i) => `${i + 1}. ${t}${snippets[i] ? '\n   ' + snippets[i] : ''}`).join('\n\n')
-      return { ok: true, output }
+      // Only strategy 1 recovers hrefs; strategies 2 and 3 are markup-change fallbacks that
+      // yield titles alone. Entities are emitted for whatever DID get a url, and the prose
+      // output is unchanged either way — a partial surface beats no surface, and beats a
+      // surface with dead links.
+      const entities = webResults(
+        titles.map((t, i) => ({ title: t, url: urls[i], snippet: snippets[i] })).filter(r => r.url),
+      )
+      return { ok: true, output, entities }
     } catch (e: any) {
       return { ok: false, output: `Search failed: ${e?.message ?? e}` }
     }

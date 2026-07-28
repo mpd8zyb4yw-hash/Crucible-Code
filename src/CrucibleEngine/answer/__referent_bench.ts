@@ -14,6 +14,7 @@
 
 import { resolveReferent, isAboutSelf, isAboutUser } from './referent'
 import { SELF_REF_RX } from './answerEngine'
+import { composeSelfAnswer, selfModel } from './selfModel'
 
 let pass = 0, fail = 0
 const failures: string[] = []
@@ -198,6 +199,63 @@ for (const q of [
 // that merely mentions a day is not a scheduling question.
 check('"are you open source" stays self', isAboutSelf('are you open source'))
 check('"were you trained today" stays self', isAboutSelf('were you trained today'))
+
+// ── 4b. THE SELF-MODEL ANSWERS DETERMINISTICALLY ─────────────────────────────
+// MEASURED (2026-07-28, live on :3011): referent resolution correctly kept "are you made in
+// china" off the web — and the FM, handed the six ranked facts, answered "Yes, I am made in
+// China." False, and false by collapsing structure it was given, exactly as in cont.105b.
+// Facts about Crucible are fixed; a 1.5B paraphrase of ground truth is a lossy channel.
+console.log('\n== self-questions are answered from derived facts, not paraphrased ==')
+
+const china = composeSelfAnswer('are you made in china')
+check('"are you made in china" composes an answer', !!china)
+// The nuance the model destroyed: the weights and the system have DIFFERENT provenance, and
+// saying only one of them is what makes "yes" wrong.
+check('…names who actually trained the weights', /alibaba/i.test(china?.text ?? ''))
+check('…and that they were trained in China', /china/i.test(china?.text ?? ''))
+check('…AND that the system itself was built independently',
+  /independent project|my developer/i.test(china?.text ?? ''),
+  'stating only the weights origin is what makes a bare "yes" wrong')
+check('…and denies corporate operation', /no company operates me/i.test(china?.text ?? ''))
+check('…is not a bare yes/no collapse', (china?.text.length ?? 0) > 200,
+  'a one-line answer to a provenance question has dropped the distinction that matters')
+
+// Derived, not typed: the claim must name the model actually resolved on disk.
+check('the model fact names the real resolved GGUF',
+  /qwen/i.test(composeSelfAnswer('what model are you')?.text ?? ''))
+
+// A world question must not be answered from the self-model at all.
+for (const q of ['what is the capital of france', 'who won the world cup in 1998', 'how do you make bread']) {
+  check(`"${q}" → no self-answer`, composeSelfAnswer(q) === null,
+    'reciting identity boilerplate at an unrelated question is not an answer')
+}
+
+// FIRST PERSON, everywhere. An earlier draft converted third-person claims with a pile of
+// regexes and produced "no company operates I", "running I", "I backtracks", "how smart I is".
+// Pin the property so the string-surgery approach cannot come back.
+//
+// The test is for UNGRAMMATICAL output — "I" in object position, or a third-person verb on a
+// first-person subject — NOT for the word "it". A bare "it" is legitimate when it refers to
+// something other than Crucible: the model fact says "The language model I run is qwen…​ It is
+// deliberately small", where "it" is the model. An earlier version of this guard flagged exactly
+// that line, which would have pushed the fix in the wrong direction.
+const THIRD_PERSON = new RegExp(
+  '\\b(?:' +
+    // "I" in object position — only ever produced by a botched pronoun swap.
+    '(?:operates|running|running\\s+of|about|for|with|to|beats)\\s+I\\b' +
+    // Third-person agreement on a first-person subject.
+    '|I\\s+(?:has|backtracks|runs|prefers|is)\\b' +
+    // "how smart I is"
+    '|\\bI\\s+is\\b' +
+  ')',
+  'i',
+)
+for (const f of selfModel()) {
+  check(`fact "${f.id}" is clean first person`, !THIRD_PERSON.test(f.claim),
+    `mangled pronoun in: ${f.claim.slice(0, 90)}`)
+  check(`fact "${f.id}" carries provenance`, f.provenance.length > 3)
+  check(`fact "${f.id}" has topics to rank on`, f.topics.length > 0)
+}
 
 // ── 5. TOTALITY ──────────────────────────────────────────────────────────────
 // The resolver is called on every turn. It must never throw and never return undefined.

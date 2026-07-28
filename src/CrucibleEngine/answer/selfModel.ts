@@ -135,23 +135,30 @@ export function selfModel(): SelfFact[] {
   const add = (id: string, topics: string[], claim: string, provenance: string) =>
     facts.push({ id, topics, claim, provenance })
 
+  // Claims are written in FIRST PERSON, deliberately. `composeSelfAnswer` joins them verbatim
+  // into a direct answer, and an earlier draft converted third-person prose with a pile of
+  // regexes — which produced "no company operates I" and "I backtracks". String surgery on
+  // English is the same mistake as the enumeration this session started by deleting. Write the
+  // sentence you actually want once. The system-prompt block reads fine in first person because
+  // its header already addresses the model as Crucible.
+
   // ── Identity ──
   add('identity', ['identity', 'name', 'what', 'who'],
-    'Crucible is a private AI assistant that runs on the user\'s own device.',
+    'I am Crucible, a private AI assistant that runs on your own device.',
     'application identity')
 
   // ── Where it runs ──
   const totalGb = Math.round(os.totalmem() / 1024 ** 3)
   add('host', ['device', 'where', 'run', 'running', 'local', 'machine', 'hardware', 'cloud', 'server'],
-    `It runs locally on this machine — ${os.type()} ${os.release()} on ${os.arch()}, ` +
+    `I run locally on this machine — ${os.type()} ${os.release()} on ${os.arch()}, ` +
     `${totalGb} GB of memory. There is no cloud backend doing the thinking.`,
     `runtime probe: os.type()/os.arch()/os.totalmem() at ${new Date().toISOString().slice(0, 10)}`)
 
   // ── Network posture — the live flag, not a promise ──
   const net = networkPosture()
   add('network', ['data', 'privacy', 'private', 'network', 'internet', 'offline', 'cloud', 'send', 'upload', 'spying', 'recording', 'tracking'],
-    `Network posture is ${net.label}. Conversations are not uploaded to a provider, and there ` +
-    `is no account or telemetry service receiving them.`,
+    `My network posture is ${net.label}. Your conversations are not uploaded to a provider, and ` +
+    `there is no account or telemetry service receiving them.`,
     `live environment flag CRUCIBLE_OFFLINE=${process.env.CRUCIBLE_OFFLINE ?? '1'}`)
 
   // ── The model, and crucially WHERE ITS WEIGHTS CAME FROM ──
@@ -160,7 +167,7 @@ export function selfModel(): SelfFact[] {
     const params = paramsFromFilename(modelFile)
     const quant = quantFromFilename(modelFile)
     add('model', ['model', 'llm', 'ai', 'parameters', 'size', 'small', 'big', 'architecture', 'weights'],
-      `The language model is ${modelFile.replace(/\.gguf$/i, '')}` +
+      `The language model I run is ${modelFile.replace(/\.gguf$/i, '')}` +
       `${params ? `, about ${params} parameters` : ''}${quant ? `, ${quant} quantized` : ''}. ` +
       `It is deliberately small — far smaller than a frontier cloud model — and runs on-device.`,
       `resolved GGUF on disk: .crucible/models/${modelFile}`)
@@ -171,10 +178,14 @@ export function selfModel(): SelfFact[] {
       // in a way no hosted assistant can match. Note the deliberate separation of the two
       // provenances: whoever trained the weights is NOT whoever built the system.
       add('weights-origin', ['china', 'chinese', 'made', 'origin', 'country', 'trained', 'training', 'who', 'where', 'from', 'built', 'created', 'owned', 'company', 'alibaba', 'google', 'openai', 'microsoft', 'meta'],
-        `The model weights it runs (${origin.family}) were trained and released by ` +
-        `${origin.trainer} in ${origin.country}, under the ${origin.license} licence. ` +
-        `Those are open weights downloaded and run locally — the model's authors are not ` +
-        `involved in running it and receive nothing from this machine.`,
+        // Deliberately SELF-CONTAINED and neutral about the question. An earlier draft opened
+        // "Partly, in one specific sense:" — which reads perfectly for "are you made in china"
+        // and confusingly for "who made you". A fact that presupposes its question is a template
+        // wearing a fact's clothes; facts get composed in whatever order the ranking picks.
+        `The model weights I run (${origin.family}) were trained and released by ` +
+        `${origin.trainer} in ${origin.country}, under the ${origin.license} licence. They are ` +
+        `open weights, downloaded and run on this machine — their authors have no involvement ` +
+        `in running me and receive nothing from this device.`,
         `weight-origin registry keyed on the resolved model file "${modelFile}"`)
     }
   }
@@ -182,31 +193,30 @@ export function selfModel(): SelfFact[] {
   // ── Who built the SYSTEM (distinct from who trained the weights) ──
   const git = gitProvenance()
   add('authorship', ['made', 'built', 'created', 'developer', 'author', 'who', 'company', 'owned', 'behind', 'maker'],
-    `The system around the model — the reasoning loop, verifiers, tools and interface — was ` +
-    `written by its developer as an independent project. It is not a product of any large ` +
-    `cloud provider, and no company operates it.` +
-    (git.commit ? ` This build is commit ${git.commit}.` : ''),
+    `I was built by my developer as an independent project — the reasoning loop, the verifiers, ` +
+    `the tools and this interface are all their work, wrapped around an open-weights model they ` +
+    `did not train. I am not a product of any large cloud provider, and no company operates me.`,
     git.commit ? `git HEAD at .git/HEAD → ${git.commit}` : 'project authorship')
 
   // ── How it is reliable — the actual differentiator ──
   add('method', ['reliable', 'accurate', 'smart', 'intelligent', 'good', 'work', 'works', 'how', 'verify', 'checking', 'trust', 'wrong', 'mistakes'],
-    `Its reliability does not come from model size. The small model only PROPOSES; deterministic ` +
+    `My reliability does not come from model size. The small model only PROPOSES; deterministic ` +
     `checkers then certify or reject — code is executed, arithmetic recomputed, quotes checked ` +
-    `against their sources — and it backtracks when a check fails. A verified answer from a small ` +
+    `against their sources — and I backtrack when a check fails. A verified answer from a small ` +
     `model beats an unverified one from a large model.`,
     'architecture: reasoning/search.ts propose→verify→backtrack loop')
 
   // ── Honest limits ──
   add('limits', ['limitations', 'weakness', 'bad', 'cannot', "can't", 'wrong', 'fail', 'slow', 'dumb', 'stupid', 'reliable'],
-    `It is strongest on things that can be checked — arithmetic, code it can run, reasoning it ` +
-    `can re-derive, and recall of what you told it. It is weaker on obscure or very recent facts, ` +
-    `and on those it prefers to say it cannot verify something rather than guess. It is also ` +
-    `slower than a cloud model, because it is doing the work on this machine.`,
+    `I am strongest on things that can be checked — arithmetic, code I can run, reasoning I can ` +
+    `re-derive, and recall of what you told me. I am weaker on obscure or very recent facts, and ` +
+    `on those I would rather say I cannot verify something than guess. I am also slower than a ` +
+    `cloud model, because the work is happening on this machine.`,
     'measured behaviour: verifier-gated answer path, abstain-on-uncertain')
 
   add('no-self-assessment', ['iq', 'score', 'rating', 'benchmark', 'smart', 'intelligent', 'conscious', 'sentient', 'feelings', 'alive', 'human'],
-    `It has no IQ score, no consciousness and no feelings, and will not invent a number for how ` +
-    `smart it is. What it can and cannot reliably do is the honest form of that question.`,
+    `I have no IQ score, no consciousness and no feelings, and I will not invent a number for how ` +
+    `smart I am. What I can and cannot reliably do is the honest form of that question.`,
     'design constraint: no unverifiable self-claims')
 
   cached = facts
@@ -275,4 +285,56 @@ export function selfProvenance(question: string): string[] {
 export function selfFactsBlock(question?: string): string {
   const facts = question ? selectSelfFacts(question, 8) : selfModel()
   return facts.map(f => `- ${f.claim}`).join('\n')
+}
+
+// ── Deterministic composition ─────────────────────────────────────────────────
+
+/**
+ * Answer a question about Crucible DETERMINISTICALLY, from the derived facts.
+ *
+ * WHY THIS IS NOT OPTIONAL (measured 2026-07-28, live on :3011). Referent resolution correctly
+ * stopped `"are you made in china"` from reaching the web — no retrieval fired, the AC/DC bug
+ * class is closed. But the weak head, handed the six ranked facts, replied:
+ *
+ *     "Yes, I am made in China."
+ *
+ * which is false, and false in the specific way this whole session is about: it COLLAPSED
+ * structure it was handed. Identical in shape to cont.105b, where the FM was given an inbox and
+ * reported it empty. A 1.5B model paraphrasing ground truth is a lossy channel, and the honest
+ * conclusion is that it should not be in this path at all.
+ *
+ * `conversational.ts` already reached this conclusion for five phrasings — "Crucible's own
+ * identity ... are FIXED FACTS, so there is nothing for a model to reason about." This is that
+ * rule made general: the facts are DERIVED, the ranking is deterministic, and the composition is
+ * a join. No model, no template, and no per-question branching — every self-question is answered
+ * by the same three lines of code, which is exactly why it covers the phrasings nobody enumerated.
+ *
+ * Returns null when no fact scores against the question, so a genuinely novel self-question still
+ * falls through to the grounded model path with its "say you are not sure" instruction rather
+ * than being answered with irrelevant boilerplate.
+ */
+export function composeSelfAnswer(question: string): { text: string; factIds: string[] } | null {
+  const words = new Set(
+    (question ?? '').toLowerCase().split(/[^a-z']+/).filter(w => w.length > 1 && !STOP.has(w)),
+  )
+  const scored = selfModel()
+    .map(f => ({ fact: f, score: f.topics.reduce((n, t) => n + (words.has(t) ? 1 : 0), 0) }))
+    .filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+
+  // No topical hit means the self-model has nothing to say about this. Falling through is the
+  // honest move; reciting identity boilerplate at an unrelated question is not an answer.
+  if (!scored.length) return null
+
+  // Identity leads when it is not already the top hit — every other fact is read against it.
+  const picked = scored.slice(0, 3).map(s => s.fact)
+  if (!picked.some(f => f.id === 'identity')) {
+    const identity = selfModel().find(f => f.id === 'identity')
+    if (identity) picked.unshift(identity)
+  }
+
+  return {
+    text: picked.map(f => f.claim).join(' '),
+    factIds: picked.map(f => f.id),
+  }
 }

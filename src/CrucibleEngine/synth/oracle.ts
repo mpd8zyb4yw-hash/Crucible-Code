@@ -35,7 +35,30 @@ const CODE_DIR = path.resolve(HERE, '../../..')   // repo root (has tsx/tsc + @t
 
 export interface Verdict {
   accepted: boolean
-  gateA: boolean          // static typecheck
+  gateA: boolean          // static typecheck ONLY — see staticOk before gating on this
+  /**
+   * EVERY static gate passed: typecheck AND lint AND dup-export AND contract.
+   *
+   * WHY THIS EXISTS, and why `gateA` is not a substitute (cont.118, measured false-certify).
+   * `gateA` means "tsc was clean". A candidate that compiles and is then rejected by Gate A2
+   * (lint), A3 (dup-export) or the contract gate still returns `gateA: true` with
+   * `accepted: false` — the typecheck genuinely did pass, so the field is not lying. But the L3
+   * compile-gate caller (`universal.ts` acceptGateAOnly) had no other "static gates were happy"
+   * signal and gated on `gateA`, which silently turned three rejections into ACCEPTS.
+   *
+   * Measured in the cont.117 offline-strict run, from `.crucible/fm-rounds.jsonl`: 25 rounds were
+   * logged `accepted=true` on a verdict that says a gate rejected, e.g. `src/index.ts` accepted
+   * carrying `duplicate exported symbol 'clampVolume' declared in src/index.ts and src/clamp.ts`.
+   * That accepted artifact then landed on disk and, as a context file, made the GRADED module
+   * `src/clamp.ts` unverifiable — 12 consecutive dup-export rejections on a task that had already
+   * written a correct module (same shape on `src/leaderboard.ts`: 12 more). So the dead gate did
+   * not merely fail to block: it laundered a bad artifact into the next verification's inputs.
+   * Lint and contract were dead on that path for the same reason (they fired 0 times all suite).
+   *
+   * Gate this, not `gateA`, whenever "no behavioral test but nothing objected" is the accept
+   * condition. cont.84 rule: an unreachable gate is a dead feature.
+   */
+  staticOk: boolean
   gateB: boolean          // behavioral test
   detail: string          // first error / PASS-FAIL tail
   ranAssertions: boolean  // whether a behavioral test actually executed
@@ -86,6 +109,35 @@ const ORACLE_SANDBOX_PROFILE =
 function wrapSandbox(cmd: string, args: string[]): [string, string[]] {
   if (!ORACLE_NET_SANDBOX) return [cmd, args]
   return ['sandbox-exec', ['-p', ORACLE_SANDBOX_PROFILE, cmd, ...args]]
+}
+
+/**
+ * Resolve the TypeScript compiler ONCE, at module load, and spawn `node <tsc>` directly.
+ *
+ * WHY (cont.118, measured). Gate A is where candidates die: 175 of 281 verifications in the
+ * cont.117 offline-strict suite exited at `tsc --noEmit`, and every one of them paid for
+ * `npx tsc`. `npx` is not free per call — it is a Node program that boots its own V8 isolate,
+ * re-resolves the `tsc` bin through the package tree on every invocation, and only then spawns
+ * the compiler. That is two Node startups per verification where one will do, times 175.
+ *
+ * `node_modules/typescript/bin/tsc` is a two-line shim (`require('../lib/tsc.js')`), and
+ * `lib/tsc.js` enables Node's compile cache before loading `_tsc.js`. Spawn the SHIM, not
+ * `_tsc.js` — going straight to `_tsc.js` would skip `enableCompileCache()` and hand back the
+ * startup win we came for. Node strips the shebang, so `node bin/tsc` is correct.
+ *
+ * Falls back to `npx tsc` when the local compiler is absent, so a checkout without the dep
+ * degrades instead of failing every verification. Deliberately NOT applied to `tsx` (gate B):
+ * tsx's CLI re-spawns Node with loader flags of its own, so "resolve it once" is not the same
+ * transformation there, and gate B runs on only the ~17% of candidates that get that far.
+ */
+const TSC_SHIM = path.join(CODE_DIR, 'node_modules', 'typescript', 'bin', 'tsc')
+const TSC_CMD: { cmd: string; pre: string[] } = fs.existsSync(TSC_SHIM)
+  ? { cmd: process.execPath, pre: [TSC_SHIM] }
+  : { cmd: 'npx', pre: ['tsc'] }
+
+/** `tsc --noEmit -p <cfg>` as a (cmd, args) pair, resolved once. */
+function tscArgs(cfgPath: string): [string, string[]] {
+  return [TSC_CMD.cmd, [...TSC_CMD.pre, '--noEmit', '-p', cfgPath]]
 }
 
 function run(cmd: string, args: string[], cwd: string, timeoutMs: number): RunOut {
@@ -313,32 +365,34 @@ export function verifyCandidate(
   opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string; changeSetScope?: string[] } = {},
 ): Verdict {
   const X = 'verify.sync.exit'
-  if (!files.length) return tagExit('verify.sync.skip', 'nofiles', { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false })
+  if (!files.length) return tagExit('verify.sync.skip', 'nofiles', { accepted: false, gateA: false, staticOk: false, gateB: false, detail: 'no files', ranAssertions: false })
   // `stage()` inside the try — see the twin above for why (a throwing stage() would otherwise
   // count a staged verification with no exit tag and leak its scratch dirs).
   let staged: ReturnType<typeof stage> | null = null
   try {
     staged = spanSync('oracle.stage.sync', () => stage(files, testFile, opts.contextFiles, opts.projectPath))
     const { scratch, cfgPath, testAbs } = staged
-    const tc = run('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000)
+    const tc = run(...tscArgs(cfgPath), CODE_DIR, opts.compileTimeoutMs ?? 60_000)
     const scoped = scopeTsErrors(tc.out, opts.changeSetScope, scratch)
-    if (!tc.ok && scoped.fatal.length) return tagExit(X, 'typecheck', { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false })
+    if (!tc.ok && scoped.fatal.length) return tagExit(X, 'typecheck', { accepted: false, gateA: false, staticOk: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false })
     if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
-    if (!lv.ok) return tagExit(X, 'lint', { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false })
+    if (!lv.ok) return tagExit(X, 'lint', { accepted: false, gateA: true, staticOk: false, gateB: false, detail: lv.detail, ranAssertions: false })
     const dv = checkDuplicateExports(files, opts.contextFiles)
-    if (!dv.ok) return tagExit(X, 'dupexport', { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false })
+    if (!dv.ok) return tagExit(X, 'dupexport', { accepted: false, gateA: true, staticOk: false, gateB: false, detail: dv.detail, ranAssertions: false })
     const cv = checkContract(opts.spec ?? '', files)
-    if (!cv.ok) return tagExit(X, 'contract', { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false })
-    if (!testFile || !testAbs) return tagExit(X, 'no-test', { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false })
+    if (!cv.ok) return tagExit(X, 'contract', { accepted: false, gateA: true, staticOk: false, gateB: false, detail: cv.detail, ranAssertions: false })
+    // `staticOk: true` — every static gate above passed and there is simply nothing to execute.
+    // This is the ACCEPT for the L3 compile-gate caller, and the only exit for which that is true.
+    if (!testFile || !testAbs) return tagExit(X, 'no-test', { accepted: false, gateA: true, staticOk: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false })
     const tb = run('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000)
     return tagExit(X, tb.ok ? 'exec-pass' : 'exec-fail', {
-      accepted: tb.ok, gateA: true, gateB: tb.ok,
+      accepted: tb.ok, gateA: true, staticOk: true, gateB: tb.ok,
       detail: tb.timedOut ? 'behavioral test TIMED OUT (candidate reaped)' : (testTail(tb.out) || tb.out.slice(0, 200)),
       ranAssertions: true,
     })
   } catch (e: any) {
-    return tagExit(X, 'error', { accepted: false, gateA: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false })
+    return tagExit(X, 'error', { accepted: false, gateA: false, staticOk: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false })
   } finally {
     if (staged) cleanup(staged.scratch, staged.cfgDir)
   }
@@ -355,7 +409,7 @@ export async function verifyCandidateAsync(
   opts: { compileTimeoutMs?: number; runTimeoutMs?: number; contextFiles?: Array<{ src: string; rel: string }>; projectPath?: string; spec?: string; changeSetScope?: string[] } = {},
 ): Promise<Verdict> {
   const X = 'verify.exit'
-  if (!files.length) return tagExit('verify.skip', 'nofiles', { accepted: false, gateA: false, gateB: false, detail: 'no files', ranAssertions: false })
+  if (!files.length) return tagExit('verify.skip', 'nofiles', { accepted: false, gateA: false, staticOk: false, gateB: false, detail: 'no files', ranAssertions: false })
   // `stage()` is INSIDE the try (cont.117). It used to sit outside it, which broke the exit
   // invariant in a way that only shows up under filesystem pressure: `spanSync` records its call
   // from a `finally`, so a throwing `stage()` still increments `oracle.stage.calls` — but the
@@ -368,25 +422,27 @@ export async function verifyCandidateAsync(
   try {
     staged = spanSync('oracle.stage', () => stage(files, testFile, opts.contextFiles, opts.projectPath))
     const { scratch, cfgPath, testAbs } = staged
-    const tc = await span('oracle.gateA.tsc', () => runAsync('npx', ['tsc', '--noEmit', '-p', cfgPath], CODE_DIR, opts.compileTimeoutMs ?? 60_000))
+    const tc = await span('oracle.gateA.tsc', () => runAsync(...tscArgs(cfgPath), CODE_DIR, opts.compileTimeoutMs ?? 60_000))
     const scoped = scopeTsErrors(tc.out, opts.changeSetScope, scratch)
-    if (!tc.ok && scoped.fatal.length) return tagExit(X, 'typecheck', { accepted: false, gateA: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false })
+    if (!tc.ok && scoped.fatal.length) return tagExit(X, 'typecheck', { accepted: false, gateA: false, staticOk: false, gateB: false, detail: `typecheck: ${scoped.fatal[0]}`, ranAssertions: false })
     if (!tc.ok && scoped.deferred.length) logDeferred(scoped.deferred)
     const lv = lintCandidates(files)
-    if (!lv.ok) return tagExit(X, 'lint', { accepted: false, gateA: true, gateB: false, detail: lv.detail, ranAssertions: false })
+    if (!lv.ok) return tagExit(X, 'lint', { accepted: false, gateA: true, staticOk: false, gateB: false, detail: lv.detail, ranAssertions: false })
     const dv = checkDuplicateExports(files, opts.contextFiles)
-    if (!dv.ok) return tagExit(X, 'dupexport', { accepted: false, gateA: true, gateB: false, detail: dv.detail, ranAssertions: false })
+    if (!dv.ok) return tagExit(X, 'dupexport', { accepted: false, gateA: true, staticOk: false, gateB: false, detail: dv.detail, ranAssertions: false })
     const cv = checkContract(opts.spec ?? '', files)
-    if (!cv.ok) return tagExit(X, 'contract', { accepted: false, gateA: true, gateB: false, detail: cv.detail, ranAssertions: false })
-    if (!testFile || !testAbs) return tagExit(X, 'no-test', { accepted: false, gateA: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false })
+    if (!cv.ok) return tagExit(X, 'contract', { accepted: false, gateA: true, staticOk: false, gateB: false, detail: cv.detail, ranAssertions: false })
+    // `staticOk: true` — every static gate above passed and there is simply nothing to execute.
+    // This is the ACCEPT for the L3 compile-gate caller, and the only exit for which that is true.
+    if (!testFile || !testAbs) return tagExit(X, 'no-test', { accepted: false, gateA: true, staticOk: true, gateB: false, detail: 'compiles, but no behavioral test to confirm correctness', ranAssertions: false })
     const tb = await span('oracle.gateB.exec', () => runAsync('npx', ['tsx', testAbs], scratch, opts.runTimeoutMs ?? 30_000))
     return tagExit(X, tb.ok ? 'exec-pass' : 'exec-fail', {
-      accepted: tb.ok, gateA: true, gateB: tb.ok,
+      accepted: tb.ok, gateA: true, staticOk: true, gateB: tb.ok,
       detail: tb.timedOut ? 'behavioral test TIMED OUT (candidate reaped)' : (testTail(tb.out) || tb.out.slice(0, 200)),
       ranAssertions: true,
     })
   } catch (e: any) {
-    return tagExit(X, 'error', { accepted: false, gateA: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false })
+    return tagExit(X, 'error', { accepted: false, gateA: false, staticOk: false, gateB: false, detail: `oracle error: ${String(e?.message ?? e).slice(0, 160)}`, ranAssertions: false })
   } finally {
     if (staged) cleanup(staged.scratch, staged.cfgDir)
   }

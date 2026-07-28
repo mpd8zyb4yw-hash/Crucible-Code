@@ -257,11 +257,28 @@ export async function synthesizeUniversal(
     /** The originating request's abort signal. Threaded to the proposer so a cancelled
      *  run stops consuming the single serialized inference lane (see defaultLocalSynth). */
     signal?: AbortSignal
+    /** The target is an executable SELF-TEST SCRIPT (the agent loop's ungraded src/index.ts),
+     *  not a library module. Changes the oracle from "does it satisfy a derived module contract"
+     *  to "does it RUN and exit 0" — the candidate is staged as its own gate-B test.
+     *
+     *  Without this, the invariant/property deriver treats the self-test as the module under
+     *  test and emits a spec test that does `import { doThing } from '../src/index'`. That
+     *  import only resolves if the self-test RE-EXPORTS the module's API — i.e. the deriver was
+     *  paying the model to copy the graded module into the ungraded file. Measured in cont.118:
+     *  once the synth prompt correctly told the model to export nothing, the derived test could
+     *  no longer resolve its import and TS2459 ("declares X locally, but it is not exported")
+     *  went 14 → 30 rounds and became the single dominant failure, pushing src/index.ts from
+     *  41.8% to 60.3% of all FM rounds. A self-test has no export contract to satisfy; the only
+     *  meaningful check is that it executes cleanly. Also skips L0/L1 catalog lookup — a
+     *  throwaway smoke script is never a library primitive. */
+    selfTestScript?: boolean
   } = {},
 ): Promise<UniversalResult> {
   const feats = extractFeatures(spec)
   const modulePath = opts.modulePath ?? feats.modulePath ?? 'src/module.ts'
-  const derived = deriveTests(spec, modulePath)
+  // A self-test script has no module contract to derive against — see opts.selfTestScript.
+  // Suppressing derivation here is what routes it to the L3 loop, where it is gated by execution.
+  const derived = opts.selfTestScript ? null : deriveTests(spec, modulePath)
   const testsDerived = derived?.count ?? 0
 
   // ── Build repo context (cheap — one cached readFileSync) when projectPath is set. ────────
@@ -300,7 +317,12 @@ export async function synthesizeUniversal(
   }
 
   // ── L0 + L1: the pure-code cascade (zero model). Ships oracle-verified code or escalates. ──
-  const pc = await span('synth.catalogL0L1', () => synthesizePureCode(spec, { minConfidence: opts.minConfidence, distill: opts.distill, verify: 'sync', projectPath: opts.projectPath }))
+  // Skipped for a self-test script: the catalog ships library primitives, so a match would
+  // overwrite the ungraded smoke file with an unrelated exported implementation — the same
+  // "self-test becomes a second copy of a module" failure this option exists to end.
+  const pc = opts.selfTestScript
+    ? { verified: false, files: [] as SynthFile[], source: null as any, testsDerived: 0, detail: '' }
+    : await span('synth.catalogL0L1', () => synthesizePureCode(spec, { minConfidence: opts.minConfidence, distill: opts.distill, verify: 'sync', projectPath: opts.projectPath }))
   if (pc.verified && pc.files.length && pc.source) {
     return { files: pc.files, source: pc.source, verified: true, testsDerived: pc.testsDerived, fmCalls: 0, detail: pc.detail }
   }
@@ -334,18 +356,23 @@ export async function synthesizeUniversal(
   // derivePropertyTests recognises structural families (codec, filter-opts, sort, validator…)
   // and generates inline assertions from the function signature. These are better than compile-
   // gate-only: they catch logic bugs like `opts.active && !user.active` for active=false.
-  const propertyDerived = derived ? null : derivePropertyTests(spec, modulePath)
+  // `selfTest` short-circuits EVERY deriver below, not just deriveTests: each one builds a test
+  // that imports the target's API from the target, which is exactly the contract a self-test
+  // must not be held to. Suppressing them at the source also skips deriveInvariantTests' repo
+  // scan (65.6s over 2 calls in cont.118's sortModule profile), so the saving is wall clock too.
+  const selfTest = !!opts.selfTestScript
+  const propertyDerived = (derived || selfTest) ? null : derivePropertyTests(spec, modulePath)
   // ── Context-invariant tests: repo-getter-fed runtime checks for grouped-aggregation specs
   // property/behavioral derivation can't reach (e.g. "balance = credits - debits" summarized
   // by account). Needs contextFiles, so only tried when a project context is present.
-  const invariantDerived = (derived || propertyDerived || !contextFiles.length)
+  const invariantDerived = (derived || propertyDerived || selfTest || !contextFiles.length)
     ? null
     : deriveInvariantTests(spec, modulePath, contextFiles)
   // ── Opts-transform smoke test: repo-getter-fed "does it even run" check for fn(items, opts)
   // shapes the arity-gated 'sort' family had to stop covering (see derive.ts). Weaker than a
   // behavioral test (no correctness assertion) but still catches compile-clean-but-throws bugs
   // that a gate-A-only path can't.
-  const smokeDerived = (derived || propertyDerived || invariantDerived || !contextFiles.length)
+  const smokeDerived = (derived || propertyDerived || invariantDerived || selfTest || !contextFiles.length)
     ? null
     : deriveOptsTransformSmokeTest(spec, modulePath, contextFiles)
   // ── Goal-example oracle: LOWEST-priority fallback. Mines literal `fn(<literals>) → <literal>`
@@ -353,7 +380,7 @@ export async function synthesizeUniversal(
   // anything not in clean literal-call form). Catches the stable-WRONG subclass whose goal states
   // a concrete call example but whose FM-visible test.ts is too weak to enforce it (cont.101
   // add-titlecase clobber). Only tried when no stronger derived test exists, so it never displaces.
-  const goalExampleDerived = (derived || propertyDerived || invariantDerived || smokeDerived)
+  const goalExampleDerived = (derived || propertyDerived || invariantDerived || smokeDerived || selfTest)
     ? null
     : deriveGoalExampleTests(spec, modulePath)
   const effectiveDerived = derived ?? propertyDerived ?? invariantDerived ?? smokeDerived ?? goalExampleDerived
@@ -414,7 +441,12 @@ export async function synthesizeUniversal(
       // ── Deterministic repair proposers: pure-code mutations of the rejected candidate,
       // keyed off the closed-world failure shapes our own derivers emit, re-gated by the SAME
       // oracle. A wrong transform is rejected like any wrong candidate — WRONG=0 untouched.
-      for (const repaired of proposeRepairs(candidate, v.detail, spec)) {
+      // Pass the SAME RepairContext the compile-gate path passes (cont.118). Without it the two
+      // context-aware repairs — relative-import resolution and dup-export re-homing — abstain by
+      // design rather than guess, so on this path they were unreachable: the cont.117 run lost 34
+      // rounds to dup-export rejections here with no repair even attempted. The context is already
+      // computed above for the oracle; not threading it was an omission, not a safety measure.
+      for (const repaired of proposeRepairs(candidate, v.detail, spec, { modulePath, files: contextFiles.map(c => c.rel) })) {
         const rv = await span('oracle.verify', () => verifyCandidateAsync([{ path: modulePath, content: repaired }], effectiveDerived.testFile, oracleOpts))
         logFmRound({
           modulePath, gate: kindLabel, round: r + 1, of: rounds, repair: true,
@@ -459,10 +491,22 @@ export async function synthesizeUniversal(
   // code earns a place in the primitive library.
   // System prompt for the compile-gate FM path. Keep it short — the enriched spec (repoContext)
   // already injects type definitions and concrete data so the FM sees exact field names.
-  const compileGateSystem =
-    'You are a precise TypeScript engineer. Output ONLY the complete file contents — no fences, no prose. ' +
-    'For optional filter fields, check each one independently with !== undefined so undefined means "no filter". ' +
-    'When a query string filter must search multiple fields (e.g. name and email), check ALL of them.'
+  const compileGateSystem = opts.selfTestScript
+    ? 'You are a precise TypeScript engineer. Output ONLY the complete file contents — no fences, no prose. ' +
+      'This file is an EXECUTABLE SCRIPT, not a library module: it is run directly and must exit 0. ' +
+      'Import what you need from the existing modules; do NOT re-declare or re-export their symbols.'
+    : 'You are a precise TypeScript engineer. Output ONLY the complete file contents — no fences, no prose. ' +
+      'For optional filter fields, check each one independently with !== undefined so undefined means "no filter". ' +
+      'When a query string filter must search multiple fields (e.g. name and email), check ALL of them.'
+  // For a self-test the candidate IS the test: staging it as its own gate-B testFile makes the
+  // oracle run `tsx src/index.ts` and accept iff it exits 0 (the static gates read `files` only,
+  // so the duplicate path costs nothing and cannot self-collide in checkDuplicateExports).
+  // `accepted` — not `staticOk` — is therefore the right acceptance signal on this path: a
+  // self-test that compiles but throws is a failed self-test.
+  const selfTestFile = (c: string): SynthFile | undefined =>
+    opts.selfTestScript ? { path: modulePath, content: c } : undefined
+  const gatePassed = (v: { accepted: boolean; staticOk: boolean }) =>
+    opts.selfTestScript ? v.accepted : v.staticOk
   for (let r = 0; r < rounds; r++) {
     const system = compileGateSystem
     const user = priorError
@@ -479,16 +523,29 @@ export async function synthesizeUniversal(
     // correctness is the responsibility of the downstream agent loop verify step.
     const files: SynthFile[] = [{ path: modulePath, content: candidate }]
     // Gate A only (no testFile). Pass contextFiles so tsc finds project imports.
-    const v = await span('oracle.verify', () => verifyCandidateAsync(files, undefined, oracleOpts))
+    const v = await span('oracle.verify', () => verifyCandidateAsync(files, selfTestFile(candidate), oracleOpts))
     logFmRound({
-      modulePath, gate: 'compile-only', round: r + 1, of: rounds,
+      modulePath, gate: opts.selfTestScript ? 'self-test-exec' : 'compile-only', round: r + 1, of: rounds,
       priorError: priorError.slice(0, 400) || null,
       candidate: candidate.slice(0, 1200),
       candidateChars: candidate.length, candidateLines: candidate.split('\n').length,
-      accepted: v.gateA, verdict: v.detail.slice(0, 400),
+      accepted: gatePassed(v), verdict: v.detail.slice(0, 400),
     })
-    if (v.gateA) {
-      return { files, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → tsc-clean (no behavioral test derivable; downstream verify required)` }
+    // `staticOk`, NOT `gateA` (cont.118). `gateA` means only "tsc was clean": the oracle returns
+    // gateA=true when it went on to reject the candidate at the lint, dup-export or contract gate,
+    // so gating here accepted all three classes of rejection. Measured in the cont.117 run: 25
+    // rounds logged accepted=true on a verdict that names the gate that rejected them, and the
+    // resulting artifacts (a src/index.ts re-exporting src/clamp.ts's API, a root report.ts
+    // duplicating src/report.ts) then became CONTEXT FILES that made the graded module itself
+    // unverifiable — 12 straight dup-export rejections on clampModule, 12 more on
+    // leaderboardModule. See the staticOk doc comment in synth/oracle.ts.
+    if (gatePassed(v)) {
+      return {
+        files, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls,
+        detail: opts.selfTestScript
+          ? `FM proposed → self-test ran clean (tsx ${modulePath} exited 0)`
+          : `FM proposed → tsc-clean (no behavioral test derivable; downstream verify required)`,
+      }
     }
     // ── Deterministic repair proposers, same contract as the behavioral loop above: pure-code
     // mutations of the rejected candidate, re-gated by the SAME tsc oracle. The compile-gate
@@ -496,13 +553,18 @@ export async function synthesizeUniversal(
     // the dominant tier-2 residual) burned a full FM round the model could not self-correct.
     for (const repaired of proposeRepairs(candidate, v.detail, sigBlock, { modulePath, files: contextFiles.map(c => c.rel) })) {
       const rf: SynthFile[] = [{ path: modulePath, content: repaired }]
-      const rv = await span('oracle.verify', () => verifyCandidateAsync(rf, undefined, oracleOpts))
+      const rv = await span('oracle.verify', () => verifyCandidateAsync(rf, selfTestFile(repaired), oracleOpts))
       logFmRound({
-        modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true,
-        accepted: rv.gateA, verdict: rv.detail.slice(0, 400),
+        modulePath, gate: opts.selfTestScript ? 'self-test-exec' : 'compile-only', round: r + 1, of: rounds, repair: true,
+        accepted: gatePassed(rv), verdict: rv.detail.slice(0, 400),
       })
-      if (rv.gateA) {
-        return { files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → deterministic repair → tsc-clean (no behavioral test derivable; downstream verify required)` }
+      if (gatePassed(rv)) {
+        return {
+          files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls,
+          detail: opts.selfTestScript
+            ? `FM proposed → deterministic repair → self-test ran clean (tsx ${modulePath} exited 0)`
+            : `FM proposed → deterministic repair → tsc-clean (no behavioral test derivable; downstream verify required)`,
+        }
       }
     }
     // ── Multi-file repair: the fatal error may be in an already-written change-set sibling
@@ -510,13 +572,13 @@ export async function synthesizeUniversal(
     // change-set, re-gated by the same oracle.
     for (const sib of proposeSiblingRepairs(v.detail, modulePath, contextFiles, sigBlock)) {
       const rf: SynthFile[] = [...files, sib]
-      const rv = await span('oracle.verify', () => verifyCandidateAsync(rf, undefined, oracleOpts))
+      const rv = await span('oracle.verify', () => verifyCandidateAsync(rf, selfTestFile(candidate), oracleOpts))
       logFmRound({
-        modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true, siblingRepair: sib.path,
-        accepted: rv.gateA, verdict: rv.detail.slice(0, 400),
+        modulePath, gate: opts.selfTestScript ? 'self-test-exec' : 'compile-only', round: r + 1, of: rounds, repair: true, siblingRepair: sib.path,
+        accepted: gatePassed(rv), verdict: rv.detail.slice(0, 400),
       })
-      if (rv.gateA) {
-        return { files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → deterministic repair of sibling ${sib.path} → tsc-clean (no behavioral test derivable; downstream verify required)` }
+      if (gatePassed(rv)) {
+        return { files: rf, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → deterministic repair of sibling ${sib.path} → ${opts.selfTestScript ? `self-test ran clean (tsx ${modulePath} exited 0)` : 'tsc-clean (no behavioral test derivable; downstream verify required)'}` }
       }
       // ── Item 2 (cont.101 handoff): a coupled refactor can need BOTH ends repaired in one
       // step. Repairing the sibling (e.g. deleting the now-extracted symbol from checkout.ts)
@@ -534,14 +596,14 @@ export async function synthesizeUniversal(
         for (const repairedCand of proposeRepairs(candidate, rv.detail, sigBlock, { modulePath, files: contextFiles.map(c => c.rel) })) {
           if (repairedCand === candidate) continue
           const both: SynthFile[] = [{ path: modulePath, content: repairedCand }, sib]
-          const bv = await span('oracle.verify', () => verifyCandidateAsync(both, undefined, oracleOpts))
+          const bv = await span('oracle.verify', () => verifyCandidateAsync(both, selfTestFile(repairedCand), oracleOpts))
           logFmRound({
-            modulePath, gate: 'compile-only', round: r + 1, of: rounds, repair: true,
+            modulePath, gate: opts.selfTestScript ? 'self-test-exec' : 'compile-only', round: r + 1, of: rounds, repair: true,
             siblingRepair: sib.path, combinedRepair: true,
-            accepted: bv.gateA, verdict: bv.detail.slice(0, 400),
+            accepted: gatePassed(bv), verdict: bv.detail.slice(0, 400),
           })
-          if (bv.gateA) {
-            return { files: both, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → combined deterministic repair of ${modulePath} + sibling ${sib.path} → tsc-clean (no behavioral test derivable; downstream verify required)` }
+          if (gatePassed(bv)) {
+            return { files: both, source: 'fm-compile-gated' as any, verified: true, testsDerived: 0, fmCalls, detail: `FM proposed → combined deterministic repair of ${modulePath} + sibling ${sib.path} → ${opts.selfTestScript ? `self-test ran clean (tsx ${modulePath} exited 0)` : 'tsc-clean (no behavioral test derivable; downstream verify required)'}` }
           }
         }
       }

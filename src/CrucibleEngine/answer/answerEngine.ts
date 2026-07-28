@@ -30,7 +30,7 @@ import { answerWithWebGrounding } from './groundedAnswer'
 import { isCodingQuery, namesExternalLibrary } from '../retrieval/retrievalLayer'
 import { buildRecallContextAsync } from './conversationMemory'
 import { isAboutSelf } from './referent'
-import { selfFactsBlock } from './selfModel'
+import { selfFactsBlock, composeSelfAnswer } from './selfModel'
 import { detectTruncation, buildContinuationMessages, stitchContinuation } from './longOutput'
 
 export type AnswerIntent = 'lookup' | 'definition' | 'explain' | 'reason' | 'converse' | 'code'
@@ -553,6 +553,30 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   // FIXED FACTS about Crucible, not something to reason over. Answering them here (before the
   // FM is even consulted) is fast, un-poisonable, and correct even when the model is offline.
   // This is the root fix for the "test → invented studying task → poisoned persona" failure.
+  // A question about Crucible, answered deterministically from the DERIVED self-model.
+  //
+  // MEASURED (2026-07-28, live on :3011): referent resolution correctly kept "are you made in
+  // china" off the web — and the FM, handed the six ranked facts, replied "Yes, I am made in
+  // China." False, and false by collapsing structure it was given, exactly as in cont.105b.
+  // Facts about Crucible are FIXED; there is nothing here for a model to reason about, and a
+  // 1.5B paraphrase of ground truth is a lossy channel with no upside.
+  //
+  // ORDERED BEFORE `matchMeta` ON PURPOSE. matchMeta's five frozen strings were written by hand
+  // and have already drifted: CREATOR_TEXT still calls Apple's Foundation Model the primary
+  // engine, which stopped being true at cont.90 when qwen2.5-1.5b took the seat. A derived
+  // answer reads the GGUF actually on disk and cannot drift. matchMeta stays as the fallback for
+  // the cases with nothing to derive — a bare greeting, "who are you", "what can you do" — where
+  // `composeSelfAnswer` returns null because no fact scores against the question.
+  if (isAboutSelf(message)) {
+    const composed = composeSelfAnswer(message)
+    if (composed) {
+      debugBus.emit('pipeline', 'self_model_response', {
+        facts: composed.factIds, message: message.slice(0, 60),
+      }, { severity: 'info' })
+      return { text: composed.text, verified: true, abstained: false, ...base, facets: { ...facets, intent: 'converse' } }
+    }
+  }
+
   const meta = matchMeta(message)
   if (meta) {
     debugBus.emit('pipeline', 'meta_response', { kind: meta.kind, message: message.slice(0, 60) }, { severity: 'info' })

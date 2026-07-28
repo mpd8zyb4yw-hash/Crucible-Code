@@ -443,6 +443,98 @@ export function repairImportLocalConflict(candidate: string, detail: string): st
   return changed ? out.join('\n') : null
 }
 
+/**
+ * Gate A3 dup-export: "duplicate exported symbol 'X' declared in A and B" — the candidate carries
+ * its own copy of a symbol another module owns. Drop the re-declaration, import X from the owner.
+ *
+ * WHY (cont.118, measured). This was the second-largest oracle exit in the cont.117 offline-strict
+ * run — 50 of 281 verifications — and 34 of those were true rejections with no repair available, so
+ * the round was simply lost. The dominant producer is a self-test that re-emits the module it is
+ * supposed to exercise (`src/index.ts` re-declaring `parseCsv`, 9 rounds on one task).
+ *
+ * THE FALSE-CERTIFY TRAP, and why the spec guard below is load-bearing. On 24 of those rounds the
+ * REJECTED candidate was the GRADED module (`src/clamp.ts` colliding with `src/index.ts`, 12 rounds;
+ * `src/leaderboard.ts`, 12 more) — the collision was the self-test's fault, not the module's.
+ * Applied blindly, this repair would "fix" those by deleting `clampVolume` from the graded artifact
+ * and importing it from the self-test. tsc would be clean, the derived property tests import from
+ * src/clamp.ts and would still pass through the re-export, and the oracle would ACCEPT a module
+ * whose implementation now lives in an ungraded file. Oracle re-gating does not save us here,
+ * because the gutted artifact genuinely passes — which is the definition of a false certify
+ * (cont.85: a verifier fails in two directions).
+ *
+ * So: strip a symbol ONLY when the spec does not assign it to this file. The spec handed to a
+ * secondary self-test has the module's "Exact public API" block stripped (stripForeignApiBlocks),
+ * so `export … X` appears in the spec exactly when X is THIS file's declared contract — which is
+ * precisely when the re-declaration is legitimate and the other party is the one at fault.
+ */
+export function repairDuplicateExport(
+  candidate: string,
+  detail: string,
+  spec: string,
+  ctx?: RepairContext,
+): string | null {
+  const m = /^duplicate exported symbol '([^']+)' declared in (.+?) —/.exec(detail.trim())
+  if (!m || !ctx) return null
+  const [, name, whereRaw] = m
+  const owners = whereRaw.split(/\s+and\s+/).map(s => s.trim()).filter(Boolean)
+  const self = ctx.modulePath.replace(/\\/g, '/')
+  if (!owners.some(o => o === self)) return null            // not our collision to repair
+
+  // The spec assigns this symbol to this file ⇒ we are the owner; deleting it would gut the
+  // deliverable. Abstain and let the other party be repaired (or the round be lost honestly).
+  if (new RegExp(`export\\s+(?:async\\s+)?(?:function|class|interface|type|const|enum)\\s+${name}\\b`).test(spec)) return null
+
+  // Pick the owner to import FROM: another party, preferring one the oracle actually staged, and
+  // never an index.ts (a self-test is never the home of a module's API).
+  const others = owners.filter(o => o !== self && !/(?:^|\/)index\.tsx?$/.test(o))
+  const owner = others.find(o => ctx.files.includes(o)) ?? others[0]
+  if (!owner) return null
+
+  const lines = candidate.split('\n')
+  const declRe = new RegExp(`^export\\s+(?:async\\s+)?(?:function|class|interface|type|const|enum)\\s+${name}\\b`)
+  const start = lines.findIndex(l => declRe.test(l))
+  if (start < 0) return null
+
+  // Extent of the declaration: balance brackets from the first one we see. A declaration with no
+  // bracket at all (a one-line `export type X = Y` / `export const X = 1`) ends at its own line.
+  let depth = 0
+  let opened = false
+  let end = start
+  for (let i = start; i < lines.length && i < start + 400; i++) {
+    for (const ch of lines[i]) {
+      if (ch === '{' || ch === '(' || ch === '[') { depth++; opened = true }
+      else if (ch === '}' || ch === ')' || ch === ']') depth--
+    }
+    end = i
+    if (opened && depth <= 0) break
+    if (!opened) break
+  }
+
+  const kept = [...lines.slice(0, start), ...lines.slice(end + 1)]
+  // Import from the owner, as a path relative to us, extensionless.
+  const dir = self.includes('/') ? self.slice(0, self.lastIndexOf('/')) : ''
+  const ownerNoExt = owner.replace(/\.(ts|tsx)$/, '')
+  let rel = dir && ownerNoExt.startsWith(`${dir}/`) ? `./${ownerNoExt.slice(dir.length + 1)}` : null
+  if (!rel) {
+    const up = dir ? dir.split('/').map(() => '..').join('/') : ''
+    rel = up ? `${up}/${ownerNoExt}` : `./${ownerNoExt}`
+  }
+  // Reuse an existing import from the same specifier rather than emitting a duplicate statement.
+  const existing = kept.findIndex(l => new RegExp(`^import\\s*\\{[^}]*\\}\\s*from\\s*['"]${rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`).test(l))
+  if (existing >= 0) {
+    kept[existing] = kept[existing].replace(/^(import\s*\{)([^}]*)(\})/, (_w, a, inner, b) => {
+      const specs = inner.split(',').map((s: string) => s.trim()).filter(Boolean)
+      if (!specs.includes(name)) specs.push(name)
+      return `${a} ${specs.join(', ')} ${b}`
+    })
+  } else {
+    const lastImport = kept.reduce((acc, l, i) => (/^import\s/.test(l) ? i : acc), -1)
+    kept.splice(lastImport + 1, 0, `import { ${name} } from '${rel}'`)
+  }
+  const repaired = kept.join('\n').replace(/\n{3,}/g, '\n\n')
+  return repaired !== candidate ? repaired : null
+}
+
 // Detail-driven single-bug fixes. More than one can legitimately apply to the SAME candidate
 // (confirmed live 2026-07-04: one sortModule fire had both the dynamic-key-index bug and the
 // default-direction-check bug at once) — `proposeRepairs` below tries each alone AND all of
@@ -827,6 +919,7 @@ export function proposeRepairs(
     ...DETAIL_DRIVEN_REPAIRS,
     (c, d) => repairUnresolvableImport(c, d, ctx),
     (c, d) => repairGroupedLedger(c, d, spec),
+    (c, d) => repairDuplicateExport(c, d, spec, ctx),
   ]
   const stage1 = [candidate]   // seed so spec-driven repairs below can apply standalone too
   for (const repair of repairs) {

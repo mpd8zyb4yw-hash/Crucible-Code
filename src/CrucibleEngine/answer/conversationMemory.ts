@@ -231,7 +231,7 @@ function embedTextFor(t: ConvTurn): string {
 }
 
 async function embedTurnCached(t: ConvTurn): Promise<Float32Array> {
-  const key = `${t.user ?? ''} ${t.assistant ?? ''}`
+  const key = `${t.user ?? ''}\u0000${t.assistant ?? ''}`
   const hit = _turnEmb.get(key)
   if (hit) return hit
   const v = await embed(embedTextFor(t))

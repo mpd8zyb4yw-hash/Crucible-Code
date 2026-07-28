@@ -59,11 +59,20 @@ const IDENTITY_TEXT =
   'explain things, reason through problems step by step and check my own work, and write, ' +
   'build, and run code. What can I help you with?'
 
+// STALENESS WARNING (cont.118). This string named Apple's Foundation Model as the primary engine,
+// which stopped being true at cont.90 when qwen2.5-1.5b took the seat and the FM was demoted to a
+// fallback. Nothing caught it, because a hand-typed paragraph has no verifier — which is the whole
+// argument for `answer/selfModel.ts`, where the model name is read from the GGUF actually on disk.
+//
+// `answerEngine` now tries `composeSelfAnswer` BEFORE this file, so any origin question with a
+// rankable word is answered from derived facts. This text survives only for phrasings that score
+// nothing ("where do you come from"), and is kept deliberately vague about the engine so it cannot
+// drift again — specifics belong in the derived model, not here.
 const CREATOR_TEXT =
-  "I'm Crucible — a private AI assistant that runs entirely on your own device. I'm built " +
-  'around on-device language models (Apple\'s on-device Foundation model plus a small local ' +
-  'model) coordinated by a verification-first reasoning system that checks its own work before ' +
-  "answering. I'm not made by any big cloud provider, and nothing you say leaves your machine. " +
+  "I'm Crucible — a private AI assistant that runs entirely on your own device. I'm built by my " +
+  'developer as an independent project: a small open-weights language model running locally, ' +
+  'wrapped in a verification-first reasoning system that checks its own work before answering. ' +
+  "I'm not made by any big cloud provider, and nothing you say leaves your machine. " +
   'What can I help you with?'
 
 const SELF_ASSESSMENT_TEXT =

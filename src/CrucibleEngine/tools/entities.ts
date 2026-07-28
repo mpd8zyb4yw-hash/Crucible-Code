@@ -300,7 +300,7 @@ export function bindAffordances(e: Entity): BoundAffordance[] {
     // whether the entity carries the data the action needs at all.
     if (!needsInput && args === null) continue
     if (needsInput) {
-      const probe = Object.fromEntries((a.inputs ?? []).map(i => [i.key, ' probe']))
+      const probe = Object.fromEntries((a.inputs ?? []).map(i => [i.key, '\u0000probe']))
       if (a.bind(e, probe) === null) continue
     }
     out.push({

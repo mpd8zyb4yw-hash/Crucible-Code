@@ -2,6 +2,7 @@
 // Extracted verbatim from App.tsx in the componentization pass (2026-07-07).
 import { useState } from 'react'
 import { apiFetch } from '../api'
+import type { ViewSpec } from '../agentic/SurfaceRenderer'
 
 // ── Colour palette — assigned dynamically to whatever models the server picks ─
 export const PALETTE = [
@@ -277,7 +278,12 @@ export interface LocalDebateSummary {
 
 // ── Agent state (Section 7) — one reducer over the agent SSE event stream ─────
 export interface AgentStep { id: number; intent: string; status: string; doneCheck?: string }
-export interface AgentTool { id: string; tool: string; args?: any; ok?: boolean; output?: string; truncated?: boolean; done: boolean }
+export interface AgentTool {
+  id: string; tool: string; args?: any; ok?: boolean; output?: string; truncated?: boolean; done: boolean
+  /** cont.118 — the derived interface for tools that return THINGS. Absent for prose tools,
+   *  which keeps every existing tool rendering exactly as before. See agentic/SurfaceRenderer. */
+  view?: ViewSpec
+}
 export interface AgentDiff { ts: number; path: string; old?: string; new?: string; patch?: string }
 export interface AgentVerify { ts: number; passed: boolean; signal: string; report: string; escalate?: boolean }
 export interface AgentState {
@@ -328,7 +334,7 @@ export function agentReducer(state: AgentState | null | undefined, ev: any): Age
     case 'tool_call':
       return { ...s, tools: [...s.tools, { id: ev.id, tool: ev.tool, args: ev.args, done: false }] }
     case 'tool_result': {
-      const tools = s.tools.map(t => t.id === ev.id && !t.done ? { ...t, ok: ev.ok, output: ev.output, truncated: ev.truncated, done: true } : t)
+      const tools = s.tools.map(t => t.id === ev.id && !t.done ? { ...t, ok: ev.ok, output: ev.output, truncated: ev.truncated, view: ev.view, done: true } : t)
       // Surface run output in a terminal pane.
       const terminal = ev.tool === 'run' && ev.output ? [...s.terminal, ev.output] : s.terminal
       return { ...s, tools, terminal }

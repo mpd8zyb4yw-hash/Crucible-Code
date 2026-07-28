@@ -291,6 +291,38 @@ export function sortProducts(products: Product[], opts: SortOpts): Product[] {
     expect: 'sentinel-unused',
     expectExcludes: '__out[__g]',
   },
+  {
+    // repairDuplicateExport, true positive: the SELF-TEST re-declared the module's API. Drop the
+    // re-declaration, import it from the owner. This is the shape that produced 50 of the 281
+    // oracle exits in the cont.117 run.
+    name: 'repairDuplicateExport: self-test re-declaration dropped, imported from the owner',
+    candidate: `import type { AudioSettings } from './types'\n\nexport function clampVolume(value: number, min: number, max: number): number {\n  return Math.min(max, Math.max(min, value))\n}\n\nconst r = clampVolume(5, 0, 10)\nconsole.log(r)`,
+    detail: `duplicate exported symbol 'clampVolume' declared in src/index.ts and src/clamp.ts — each symbol must live in exactly one module; import it from its owner instead of re-declaring it`,
+    ctx: { modulePath: 'src/index.ts', files: ['src/types.ts', 'src/clamp.ts'] },
+    expect: `import type { AudioSettings } from './types'\nimport { clampVolume } from './clamp'\n\nconst r = clampVolume(5, 0, 10)\nconsole.log(r)`,
+  },
+  {
+    // THE FALSE-CERTIFY GUARD, and the reason this repair takes `spec` at all. Here the candidate
+    // IS the owner: the spec assigns clampVolume to src/clamp.ts. Stripping it would delete the
+    // GRADED deliverable's implementation and import it from elsewhere — tsc-clean, property-tests
+    // green through the re-export, and silently certified. It must abstain. (The other party is a
+    // non-index file on purpose, so `others` is non-empty and only the spec guard can stop it.)
+    name: 'repairDuplicateExport: ABSTAINS when the spec assigns the symbol to THIS file',
+    candidate: `import type { AudioSettings } from './types'\n\nexport function clampVolume(value: number, min: number, max: number): number {\n  return Math.min(max, Math.max(min, value))\n}`,
+    detail: `duplicate exported symbol 'clampVolume' declared in src/clamp.ts and src/legacy.ts — each symbol must live in exactly one module; import it from its owner instead of re-declaring it`,
+    spec: `Exact public API (src/clamp.ts):\n  export function clampVolume(value: number, min: number, max: number): number`,
+    ctx: { modulePath: 'src/clamp.ts', files: ['src/types.ts', 'src/legacy.ts'] },
+    expect: 'sentinel-unused',
+    expectExcludes: `from './legacy'`,
+  },
+  {
+    // Without a file list the owner cannot be resolved by lookup, only guessed — abstain.
+    name: 'repairDuplicateExport: ABSTAINS with no RepairContext',
+    candidate: `export function clampVolume(v: number): number {\n  return v\n}`,
+    detail: `duplicate exported symbol 'clampVolume' declared in src/index.ts and src/clamp.ts — each symbol must live in exactly one module; import it from its owner instead of re-declaring it`,
+    expect: 'sentinel-unused',
+    expectExcludes: `from './clamp'`,
+  },
 ]
 
 function main() {
