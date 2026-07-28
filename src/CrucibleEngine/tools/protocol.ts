@@ -28,6 +28,16 @@ export interface ToolCtx {
    *  consult_specialist tool can ask another archetype a focused question and
    *  return its answer. Absent in non-orchestrated contexts (tool then no-ops). */
   consultSpecialist?: (archetype: 'researcher' | 'coder' | 'critic' | 'strategist', question: string) => Promise<string>
+  /**
+   * The user's ORIGINAL request for this run, and the conversation it belongs to (cont.119).
+   *
+   * A tool that has to DEFER — `browser_sign_in` is the first, waiting on a human to log in —
+   * needs to record what should happen once the blocker clears. Without the goal it can only
+   * park "something wanted youtube.com", which is not resumable. Optional because most tools
+   * have no business knowing why they were called.
+   */
+  goal?: string
+  sessionId?: string
 }
 
 export interface ToolResult {

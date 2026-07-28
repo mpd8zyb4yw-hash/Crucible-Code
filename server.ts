@@ -88,6 +88,8 @@ import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundAc
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { isDesktopActionGoal, isCodeEditGoal } from './src/CrucibleEngine/ambiguity'
+import { loadPendingSignIns, waitingSignIns, settleSignIn, expireStale } from './src/CrucibleEngine/tools/signInSessions'
+import { hasSessionFor, closeSignInWindow } from './src/CrucibleEngine/tools/browser'
 import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
 import { defaultSystemPreamble } from './src/CrucibleEngine/agent/loop'
 import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
@@ -1095,6 +1097,127 @@ setInterval(() => {
     if (due && !automationInFlight) void fireAutomation(due.id)
   } catch (e) { console.warn('[Automations] tick failed:', e) }
 }, 30_000)
+
+// ── Work that was waiting on a human sign-in (cont.119) ───────────────────────
+//
+// `browser_sign_in` opens the window and returns immediately, parking the original request. The
+// user then signs in on their own time — in a minute, or tomorrow, possibly after a restart —
+// and this is what notices and finishes the job for them. Detection is a real session cookie
+// appearing for the watched host, read from the shared browser context, so it is a fact about
+// the profile rather than an inference from a window event: it works if they close the window
+// first, or sign in through a route we never opened.
+
+/** Run a brief unattended through the SAME /api/chat agent loop everything else uses, with a
+ *  minted session for the owning user. One execution path — journaled, replayable, visible. */
+async function runBriefUnattended(
+  userId: string, brief: string, sessionId: string, preamble: string,
+): Promise<{ ok: boolean; answer: string }> {
+  const token = signJwt({ id: userId, email: 'resume@local', exp: Math.floor(Date.now() / 1000) + 2 * 3600 }, JWT_SECRET)
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), AUTOMATION_RUN_TIMEOUT_MS)
+  try {
+    const res = await fetch(`http://127.0.0.1:${Number(process.env.PORT) || 3001}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: `crucible_session=${token}` },
+      body: JSON.stringify({
+        message: `${preamble}\n\n${brief}`,
+        mode: 'agent', device: 'desktop',
+        sessionId, conversationId: sessionId, roundId: `${Date.now()}`, history: [],
+      }),
+      signal: ctrl.signal,
+    })
+    if (!res.ok || !res.body) return { ok: false, answer: `HTTP ${res.status} from agent loop` }
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''; let finalText = ''; let synthesis = ''; let errText = ''
+    outer: while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const chunks = buf.split('\n\n'); buf = chunks.pop() ?? ''
+      for (const chunk of chunks) {
+        const line = chunk.split('\n').find(l => l.startsWith('data: ')); if (!line) continue
+        const p = line.slice(6).trim(); if (p === '[DONE]') break outer
+        try {
+          const ev = JSON.parse(p)
+          if (ev.type === 'final' && typeof ev.text === 'string') finalText = ev.text
+          if (ev.type === 'synthesis' && typeof ev.text === 'string') synthesis = ev.replace ? ev.text : synthesis + ev.text
+          if (ev.type === 'error' && typeof ev.message === 'string') errText = ev.message
+        } catch { /* keepalive / partial frame */ }
+      }
+    }
+    const answer = (finalText || synthesis).trim()
+    return answer ? { ok: true, answer } : { ok: false, answer: errText || 'the resumed run produced no answer' }
+  } catch (e: any) {
+    return { ok: false, answer: e?.name === 'AbortError' ? 'resumed run timed out' : String(e?.message ?? e).slice(0, 300) }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+let signInResumeInFlight = false
+
+async function tickSignInResumes(): Promise<void> {
+  if (signInResumeInFlight) return
+  const now = Date.now()
+  for (const id of expireStale(now)) {
+    debugBus.emit('agent', 'signin_expired', { id }, { severity: 'warn' })
+  }
+  const waiting = waitingSignIns(loadPendingSignIns(), now)
+  if (waiting.length === 0) return
+  for (const p of waiting) {
+    let signedIn = false
+    try { signedIn = await hasSessionFor(p.projectPath, p.host) } catch { continue }
+    if (!signedIn) continue
+
+    signInResumeInFlight = true
+    try {
+      settleSignIn(p.id, 'resumed', Date.now())
+      // The window has done its job; leaving it up would read as "still waiting for me".
+      await closeSignInWindow(p.host).catch(() => {})
+      debugBus.emit('agent', 'signin_resume_start', { id: p.id, host: p.host }, { severity: 'info' })
+      const preamble =
+        `[Resuming automatically: the user has now signed in to ${p.host}, and asked for this ` +
+        `before the sign-in was needed. They are not watching — carry it out on your own and end ` +
+        `with the finished result. The browser profile holds the session, so use browse_page. ` +
+        `Now: ${new Date().toLocaleString()}.]`
+      const { ok, answer } = await runBriefUnattended(p.userId, p.goal, p.sessionId || `signin-${p.id}`, preamble)
+      debugBus.emit('agent', 'signin_resume_done', { id: p.id, host: p.host, ok }, { severity: ok ? 'info' : 'warn' })
+
+      // Land the answer in the conversation the user asked from, so it is waiting for them
+      // where they left it rather than in a side channel.
+      try {
+        const convId = p.sessionId || `signin-${p.id}`
+        const priorRounds = getConversationById(p.userId, convId)?.rounds ?? []
+        saveConversationEntry(p.userId, {
+          id: convId,
+          mode: 'agent',
+          rounds: [...priorRounds, {
+            id: `${Date.now()}`,
+            convId,
+            userMessage: p.goal,
+            synthesis: ok ? answer : `Could not finish after you signed in to ${p.host}: ${answer}`,
+            synthesisDone: true,
+            synthStreaming: false,
+          }],
+        })
+      } catch (e: any) {
+        debugBus.emit('agent', 'signin_resume_save_failed', { id: p.id, error: String(e?.message ?? e) }, { severity: 'warn' })
+      }
+      await notifyUser(p.userId, {
+        title: ok ? `Finished after you signed in to ${p.host}` : `Couldn't finish after ${p.host} sign-in`,
+        body: answer.slice(0, 180),
+      }).catch(() => {})
+    } finally {
+      signInResumeInFlight = false
+    }
+    return   // one resume per tick — same one-at-a-time discipline as automations
+  }
+}
+
+setInterval(() => {
+  tickSignInResumes().catch(e => console.warn('[SignIn] resume tick failed:', e))
+}, 15_000)
 
 // List + digest strip the full `answer` from run records (the 15s polls stay light);
 // the run-detail endpoint below serves the full text on demand.
@@ -3680,6 +3803,7 @@ app.post('/api/chat', async (req, res) => {
         const toolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,
+          goal: agentGoal, sessionId: chatSessionId,
         }
         try {
           const { ok, summary, corrections } = await runLocalPlan(
@@ -3747,6 +3871,7 @@ app.post('/api/chat', async (req, res) => {
         const toolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: false, allowDestructive: false, onFileMutated,
+          goal: agentGoal, sessionId: chatSessionId,
         }
         const outputs: Array<{ tool: string; ok: boolean; output: string }> = []
         for (const call of named.calls) {
@@ -3851,6 +3976,7 @@ app.post('/api/chat', async (req, res) => {
           const toolCtx: ToolCtx = {
             projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
             allowMutation: true, allowDestructive: false, onFileMutated,
+            goal: agentGoal, sessionId: chatSessionId,
           }
           let fmStepIdx = 0
           const { ok, summary } = await runFmPlan(fmPlan, (call) => registry.exec(fmStepToToolCall(call, fmStepIdx++), toolCtx))
@@ -3960,6 +4086,7 @@ app.post('/api/chat', async (req, res) => {
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,
+          goal: agentGoal, sessionId: chatSessionId,
         }
         let fmrIdx = 0
         const desktopTools = DESKTOP_TOOL_NAMES.flatMap(n => {

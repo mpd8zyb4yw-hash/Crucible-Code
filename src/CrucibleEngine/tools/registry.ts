@@ -22,7 +22,8 @@ import {
 } from './adapters'
 // The hardened fetcher (SSRF-guarded, redirect-capped, timeout-bounded) that `read_url` exposes.
 import { fetch as retrievalFetch, stripBoilerplate } from '../retrieval/retrievalLayer'
-import { findBrowser, readPage, pageToPdf, pageScreenshot, signInFlow } from './browser'
+import { findBrowser, readPage, pageToPdf, pageScreenshot, openSignInWindow } from './browser'
+import { parkSignIn } from './signInSessions'
 import { deriveView } from './viewDerivation'
 import type { Entity } from './entities'
 
@@ -1003,12 +1004,15 @@ registry.register({
 
 registry.register({
   name: 'browser_sign_in',
-  description: 'Open a visible browser window so the USER can sign in to a site themselves. The session is remembered for later automated visits. Use when browse_page reports that a page needs a login. Never ask the user for their password — this tool is how signing in happens.',
-  // Opens a window and waits for the user; that is a state change worth gating.
+  description: 'Open a visible browser window so the USER can sign in to a site themselves, then STOP and report. Returns immediately — it does not wait for them. The work that needed the login is resumed automatically in the background once the session appears, so do not retry or poll. Use when browse_page reports that a page needs a login. Never ask the user for their password — this tool is how signing in happens.',
+  // Opens a window and parks a deferred continuation; both are state changes worth gating.
   mutates: true,
   params: {
     type: 'object',
-    properties: { url: { type: 'string', description: 'The site\'s login or home URL' } },
+    properties: {
+      url: { type: 'string', description: 'The site\'s login or home URL' },
+      site: { type: 'string', description: 'Optional host whose session matters, when it differs from the login URL (e.g. url=accounts.google.com, site=youtube.com)' },
+    },
     required: ['url'],
   },
   async run(args, ctx) {
@@ -1017,8 +1021,46 @@ registry.register({
     const url = String(args.url ?? '').trim()
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     try {
-      await signInFlow(ctx.projectPath, /^https?:\/\//i.test(url) ? url : `https://${url}`)
-      return { ok: true, output: `Sign-in window closed. Any session established is saved in the Crucible browser profile and will be reused automatically.` }
+      const r = await openSignInWindow(ctx.projectPath, url, args.site ? String(args.site) : undefined)
+      // Already signed in — say so and let the caller carry straight on. Opening a window to
+      // ask for a login the profile already holds is the kind of busywork that reads as broken.
+      if (r.alreadySignedIn) {
+        return {
+          ok: true,
+          output: `Already signed in to ${r.host} — that session is live in the Crucible browser profile, so just retry the page you wanted.`,
+          meta: { signIn: 'already', host: r.host },
+        }
+      }
+      // Park the continuation BEFORE reporting, so a user who signs in instantly is never
+      // racing an unwritten record.
+      const goal = (ctx.goal ?? '').trim()
+      let parked: { id: string } | null = null
+      if (goal && ctx.userId) {
+        parked = parkSignIn({
+          userId: ctx.userId,
+          host: r.host,
+          url,
+          goal,
+          projectPath: ctx.projectPath,
+          sessionId: ctx.sessionId ?? '',
+        }, Date.now())
+      }
+      return {
+        ok: true,
+        // This text is what the model sees, so it says plainly that the turn is over: the
+        // failure mode otherwise is a loop that keeps calling browse_page hoping the human
+        // hurried up.
+        output:
+          `A sign-in window for ${r.host} is now open on the user's screen. Do not wait, retry or poll — ` +
+          `this turn is finished.\n` +
+          (parked
+            ? `Their original request has been saved and will run automatically in the background the ` +
+              `moment the session appears, with the result delivered to them. `
+            : `Ask them to retry once they are signed in. `) +
+          `Tell the user: the window is open, they can sign in whenever suits them${parked ? ` and carry on with something else — you will pick it up and finish the job on your own` : ''}. ` +
+          `Crucible never sees their password.`,
+        meta: { signIn: 'window-open', host: r.host, parked: parked?.id ?? null },
+      }
     } catch (e: any) {
       return { ok: false, output: `browser_sign_in failed: ${String(e?.message ?? e).slice(0, 300)}` }
     }

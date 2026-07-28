@@ -137,22 +137,53 @@ export interface PageSession {
   close: () => Promise<void>
 }
 
-/**
- * Open a page in the persistent profile — carrying whatever the user is already logged into.
- *
- * `headless` defaults to true for agent work. It must be FALSE when the user is signing in, which
- * is the only time a window should appear: they need to see and drive the login themselves.
- */
-export async function openPage(
-  projectPath: string,
-  opts: { headless?: boolean; timeoutMs?: number } = {},
-): Promise<PageSession> {
+type BrowserContextT = import('playwright-core').BrowserContext
+
+// ── One shared context per profile (cont.119) ─────────────────────────────────
+//
+// Chromium takes an EXCLUSIVE lock on a user-data-dir, so two `launchPersistentContext`
+// calls against `.crucible/browser-profile` cannot coexist — the second fails. Every
+// function here used to launch its own, which was survivable only because each one also
+// tore its context down in a `finally` before the next began. The moment anything needs to
+// stay open — a sign-in window the user takes their time over — that model collapses: the
+// window holds the lock and every other browser tool fails for as long as it is up.
+//
+// So there is now exactly ONE context per profile dir, reference-counted and leased. A headed
+// context serves headless callers too (a headed browser can do everything a headless one can),
+// which is what lets the agent keep reading pages while a sign-in window sits open in front of
+// the user. Leases are per-PAGE: each operation gets its own tab and closes it, so concurrent
+// work never clobbers someone else's navigation — and never closes the sign-in window.
+interface SharedContext {
+  context: BrowserContextT
+  dir: string
+  headed: boolean
+  refs: number
+  idle: ReturnType<typeof setTimeout> | null
+}
+let shared: SharedContext | null = null
+
+/** Close the shared context when nothing holds a lease. A long-lived server has no business
+ *  keeping a browser resident forever, but tearing one down mid-read would be worse. */
+const IDLE_TEARDOWN_MS = 5 * 60_000
+function scheduleIdleTeardown() {
+  if (!shared) return
+  if (shared.idle) clearTimeout(shared.idle)
+  shared.idle = setTimeout(() => {
+    if (shared && shared.refs === 0) {
+      const c = shared.context
+      shared = null
+      c.close().catch(() => { /* already gone */ })
+    }
+  }, IDLE_TEARDOWN_MS)
+  // Never hold the process open just to run a teardown timer.
+  shared.idle.unref?.()
+}
+
+async function launchContext(dir: string, headed: boolean): Promise<BrowserContextT> {
   const avail = findBrowser()
   if (!avail.ok) throw new Error(avail.reason)
   const { chromium } = await playwright()
-  const dir = profileDir(projectPath)
   fs.mkdirSync(dir, { recursive: true })
-
   // For Playwright's own build, prefer the path its registry reports — it accounts for layout
   // changes between releases that a filesystem scan can only approximate.
   let executablePath = avail.executablePath
@@ -162,18 +193,107 @@ export async function openPage(
       if (p && fs.existsSync(p)) executablePath = p
     } catch { /* registry unsure; the scanned binary is still a real executable */ }
   }
-
   const context = await chromium.launchPersistentContext(dir, {
-    headless: opts.headless !== false,
+    headless: !headed,
     executablePath,
     viewport: { width: 1440, height: 900 },
     // A real UA: some sites serve a degraded or blocking page to obvious automation, and the
     // point of this path is to see what the USER would see.
     args: ['--disable-blink-features=AutomationControlled'],
   })
-  const page = context.pages()[0] ?? await context.newPage()
+  // A browser that dies (user quits the window, crash) must not leave a dead handle behind for
+  // the next caller to trip over — drop the singleton so the next lease relaunches.
+  context.on('close', () => { if (shared?.context === context) shared = null })
+  return context
+}
+
+/**
+ * Take a lease on the shared context, launching or upgrading it as needed.
+ *
+ * `headed` upgrades: a headless context cannot grow a visible window, so it is replaced. That
+ * can only happen once outstanding leases finish, hence the bounded wait — reads are short and
+ * a sign-in is rare, so in practice this returns immediately.
+ */
+async function acquireContext(projectPath: string, headed = false): Promise<BrowserContextT> {
+  const dir = profileDir(projectPath)
+  if (shared && shared.dir === dir) {
+    if (!headed || shared.headed) {
+      shared.refs++
+      if (shared.idle) { clearTimeout(shared.idle); shared.idle = null }
+      return shared.context
+    }
+    // Need a window and the resident context is headless — wait for it to go quiet, then swap.
+    const deadline = Date.now() + 15_000
+    while (shared && shared.refs > 0 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 200))
+    }
+    if (shared && shared.dir === dir) {
+      const old = shared.context
+      shared = null
+      await old.close().catch(() => { /* already gone */ })
+    }
+  } else if (shared) {
+    // Different profile dir entirely — one resident browser at a time is enough.
+    const old = shared.context
+    shared = null
+    if (old) await old.close().catch(() => { /* already gone */ })
+  }
+  const context = await launchContext(dir, headed)
+  shared = { context, dir, headed, refs: 1, idle: null }
+  return context
+}
+
+function releaseContext() {
+  if (!shared) return
+  shared.refs = Math.max(0, shared.refs - 1)
+  if (shared.refs === 0) scheduleIdleTeardown()
+}
+
+/**
+ * Run `fn` against a fresh tab in the shared context, closing the tab (never the browser).
+ *
+ * This is the shape every read/export operation wants: its own page so nothing it does is
+ * visible to a concurrent operation, and no teardown of a context somebody else is using.
+ */
+export async function withPage<T>(
+  projectPath: string,
+  fn: (page: import('playwright-core').Page) => Promise<T>,
+  opts: { headed?: boolean; timeoutMs?: number } = {},
+): Promise<T> {
+  const context = await acquireContext(projectPath, opts.headed)
+  const page = await context.newPage()
   page.setDefaultTimeout(opts.timeoutMs ?? 30_000)
-  return { page, close: () => context.close() }
+  try {
+    return await fn(page)
+  } finally {
+    await page.close().catch(() => { /* already closed */ })
+    releaseContext()
+  }
+}
+
+/**
+ * Open a page in the persistent profile — carrying whatever the user is already logged into.
+ *
+ * Retained for callers that manage their own lifetime; `close()` releases the LEASE and shuts
+ * this tab, leaving the shared browser up for everyone else.
+ */
+export async function openPage(
+  projectPath: string,
+  opts: { headless?: boolean; timeoutMs?: number } = {},
+): Promise<PageSession> {
+  const context = await acquireContext(projectPath, opts.headless === false)
+  const page = await context.newPage()
+  page.setDefaultTimeout(opts.timeoutMs ?? 30_000)
+  let released = false
+  return {
+    page,
+    close: async () => {
+      if (released) return
+      released = true
+      await page.close().catch(() => { /* already closed */ })
+      releaseContext()
+    },
+  }
 }
 
 /**
@@ -314,36 +434,115 @@ export async function pageScreenshot(
   }
 }
 
-/**
- * Open a visible window at a URL so the USER can sign in themselves.
- *
- * The whole credential story: the agent opens the door and steps back. Whatever session is
- * established here persists in the profile and every later headless run inherits it. Resolves
- * when the window closes, so "I have finished logging in" is the user closing the window.
- */
-export async function signInFlow(projectPath: string, url: string): Promise<void> {
-  const s = await openPage(projectPath, { headless: false, timeoutMs: 0 })
-  await s.page.goto(url, { waitUntil: 'domcontentloaded' })
-  await new Promise<void>(resolve => {
-    s.page.on('close', () => resolve())
-    s.page.context().on('close', () => resolve())
-  })
+// ── Sign-in: open the door, step back, and WATCH (cont.119) ──────────────────
+//
+// The credential story is unchanged and absolute: the agent never asks for, stores or types a
+// password. What changed is who waits. `signInFlow` used to block on `page.on('close')`, which
+// made the human a blocking dependency of an agent turn — the user had to sit there, finish the
+// login and close the window before anything could continue, and the tool then reported success
+// whether or not a session existed, because "the window closed" was all it knew.
+//
+// Both halves were wrong. Opening the window returns immediately, and completion is OBSERVED:
+// a real session cookie appearing for the target host. That is a fact about the profile, not an
+// inference from a window event, so it stays true if the user signs in an hour later, closes the
+// window first, or signs in through some route we never saw.
+
+/** Cookie names that indicate a session rather than a preference/analytics cookie. */
+const SESSION_COOKIE = /sess|auth|login|sid|token|secure-1psid|__host/i
+
+export function hostOf(url: string): string {
+  try { return new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, '') }
+  catch { return url.replace(/^https?:\/\//i, '').split('/')[0].replace(/^www\./, '') }
+}
+
+/** Does `cookieDomain` cover `host`? Cookie domains are stored with a leading dot for
+ *  subdomain-wide cookies (".youtube.com"), which must match "youtube.com" and "m.youtube.com". */
+function domainCovers(cookieDomain: string, host: string): boolean {
+  const d = cookieDomain.replace(/^\./, '').toLowerCase()
+  const h = host.toLowerCase()
+  return h === d || h.endsWith(`.${d}`) || d.endsWith(`.${h}`)
+}
+
+/** Read the profile's cookies without disturbing any open page. Safe while a sign-in window is
+ *  up, which is the entire point of the shared context. */
+async function profileCookies(projectPath: string) {
+  if (!fs.existsSync(profileDir(projectPath))) return []
+  const context = await acquireContext(projectPath, false)
+  try { return await context.cookies() } finally { releaseContext() }
+}
+
+/** True when the profile holds something that looks like a live session for `host`. */
+export async function hasSessionFor(projectPath: string, host: string): Promise<boolean> {
+  try {
+    const cookies = await profileCookies(projectPath)
+    return cookies.some(c => SESSION_COOKIE.test(c.name) && domainCovers(c.domain, host) && c.value.length > 8)
+  } catch { return false }
 }
 
 /** Which sites this profile already holds a session for — derived from stored cookies. */
 export async function authenticatedSites(projectPath: string): Promise<string[]> {
-  const dir = profileDir(projectPath)
-  if (!fs.existsSync(dir)) return []
   try {
-    const s = await openPage(projectPath)
-    try {
-      const cookies = await s.page.context().cookies()
-      const hosts = new Set<string>()
-      for (const c of cookies) {
-        // A session cookie on a domain is the honest signal that a login exists there.
-        if (/sess|auth|login|sid|token/i.test(c.name)) hosts.add(c.domain.replace(/^\./, ''))
-      }
-      return [...hosts].sort()
-    } finally { await s.close() }
+    const hosts = new Set<string>()
+    for (const c of await profileCookies(projectPath)) {
+      if (SESSION_COOKIE.test(c.name) && c.value.length > 8) hosts.add(c.domain.replace(/^\./, ''))
+    }
+    return [...hosts].sort()
   } catch { return [] }
+}
+
+/** Sign-in windows currently open, by watched host, so a second request for the same site
+ *  focuses the existing window instead of opening a rival one. */
+const signInWindows = new Map<string, { close: () => Promise<void> }>()
+
+export interface SignInWindowResult {
+  /** Host whose session we will watch for. */
+  host: string
+  /** True when the profile ALREADY had a session — no window was opened. */
+  alreadySignedIn: boolean
+  /** True when a visible window is now up, waiting for the user. */
+  opened: boolean
+}
+
+/**
+ * Open a visible window at `url` so the user can sign in, and RETURN — the caller is never
+ * blocked on a human. The window holds a context lease so idle teardown cannot close it out
+ * from under the user; the lease is released when the window closes.
+ */
+export async function openSignInWindow(
+  projectPath: string, url: string, watchHost?: string,
+): Promise<SignInWindowResult> {
+  const full = /^https?:\/\//i.test(url) ? url : `https://${url}`
+  // The host to WATCH can differ from the host to VISIT: Google's sign-in lives on
+  // accounts.google.com but the session the caller cares about lands on youtube.com.
+  const host = watchHost ? hostOf(watchHost) : hostOf(full)
+  if (await hasSessionFor(projectPath, host)) return { host, alreadySignedIn: true, opened: false }
+  if (signInWindows.has(host)) return { host, alreadySignedIn: false, opened: true }
+
+  const context = await acquireContext(projectPath, true)
+  const page = await context.newPage()
+  page.setDefaultTimeout(0)          // the user sets the pace here, not a timeout
+  let released = false
+  const release = () => {
+    if (released) return
+    released = true
+    signInWindows.delete(host)
+    releaseContext()
+  }
+  page.on('close', release)
+  signInWindows.set(host, { close: async () => { await page.close().catch(() => {}); release() } })
+  try {
+    // Bounded so a dead URL cannot hang the caller; the WINDOW stays open regardless, because a
+    // slow-loading login page is still a login page the user can drive.
+    await page.goto(full, { waitUntil: 'domcontentloaded', timeout: 45_000 })
+  } catch { /* leave the window up — the user can navigate it themselves */ }
+  return { host, alreadySignedIn: false, opened: true }
+}
+
+/** Close a sign-in window we opened, if it is still up. */
+export async function closeSignInWindow(host: string): Promise<void> {
+  await signInWindows.get(hostOf(host))?.close()
+}
+
+export function signInWindowOpen(host: string): boolean {
+  return signInWindows.has(hostOf(host))
 }
