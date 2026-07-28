@@ -138,10 +138,105 @@ export function isDesktopActionGoal(goal: string): boolean {
   return DESKTOP_ACTION.test(goal.trim()) && !CODE_NOUN.test(goal) && !FILE_TOKEN.test(goal)
 }
 
+// ── The presupposition (2026-07-28) ────────────────────────────────────────────
+// The paragraph above states the rule correctly — "gate on code-edit shape, not on every
+// fresh goal" — but `isDesktopActionGoal` implemented it as an ANCHORED VERB ENUMERATION,
+// so the rule only held for goals that happened to START with one of ~30 listed verbs.
+// Measured on 14 ordinary non-code requests: 9 were interrogated for a file to change.
+//
+//   "take a screenshot of my screen"                 → "Which file or symbol…?"  (conf 0.42)
+//   "sign me in to youtube"                          → "Which file or symbol…?"  (conf 0.42)
+//   "every weekday at 8am summarise my inbox"        → "Which file or symbol…?"  (conf 0.42)
+//   "check my email" / "what meetings do I have…"    → same
+//
+// Each returned that question with ZERO tool calls, which is what made `screenshot`,
+// `browser_sign_in` and scheduling unreachable from chat: a registered, working tool behind
+// an unanswerable question (the [[unreachable gate = dead feature]] rule). The five that did
+// pass passed by ACCIDENT, not comprehension — "save example.com as a pdf" only cleared it
+// because FILE_TOKEN matched the domain name.
+//
+// Widening the verb list is the banned move: it is an open semantic class, and this file's
+// own history (three rounds of noun stoplist patches, then FUNCTION_WORDS) is the record of
+// that losing game. So invert it. The signals below all answer ONE question — "which code
+// should change?" — and a gate may only ask a question that HAS an answer. Fire on POSITIVE
+// evidence that the goal edits this codebase; stay silent otherwise. Non-code goals are an
+// unbounded class and are never enumerated; code-edit evidence is small and closed.
+//
+// Evidence, any one of which is sufficient:
+//   1. it names a SOURCE FILE — a path with a real code/config extension. Deliberately
+//      stricter than FILE_TOKEN, which counts "example.com" and "youtube.com" as files.
+//   2. it names a code noun (CODE_NOUN — function, class, parser, endpoint, bug, …).
+//   3. it resolves against the semantic index — the goal names a real symbol in THIS repo.
+//   4. an edit verb acting on a bare demonstrative ("clean THIS up", "make IT faster"):
+//      no target, but the thing being edited is anaphoric, so asking which file is exactly
+//      the right question. This is the case that keeps vague CODE goals clarifying.
+
+/** Source-file path, as opposed to FILE_TOKEN's "anything with a dot" (which matches domains). */
+const SOURCE_FILE = /[\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts|json|md|css|scss|less|html|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|php|sh|bash|zsh|yml|yaml|toml|ini|sql|vue|svelte|graphql|proto|lock)\b/i
+/**
+ * Verbs denoting maintenance of code that already exists — the positive definition of this
+ * analyzer's domain, not a list of exceptions.
+ *
+ * Deliberately EXCLUDES the generic CRUD verbs (add/remove/delete/change/update/modify).
+ * They are the ones ordinary life shares with programming — "delete the downloads folder",
+ * "update the calendar", "change the wallpaper" — and a code use of them almost always also
+ * carries a CODE_NOUN ("remove the unused import", "update the parser"), which is caught above.
+ * Including them bought nothing for code and misclassified real device requests.
+ */
+const EDIT_VERB = /\b(fix|debug|refactor|rewrite|reimplement|optimi[sz]e|clean|tidy|simplify|rename|extract|inline|migrate|port|patch|revert|improve|speed|make)\b/i
+/** A bare anaphor — the edit target named only by pointing at it. */
+const ANAPHOR = /\b(it|this|that|these|those)\b/i
+
+/** Definite references ("the parser") with the prose false-positive classes stripped. Shared
+ *  by the jurisdiction test and the resolution loop so the two can never drift apart. */
+function definiteReferences(goal: string): string[] {
+  const refs: string[] = []
+  let m: RegExpExecArray | null
+  DEF_REF.lastIndex = 0
+  while ((m = DEF_REF.exec(goal)) !== null) {
+    const noun = m[1]
+    const low = noun.toLowerCase()
+    // Registered tool names ("prefer the control_mac tool") are always-resolvable
+    // references — they name a live capability, not a codebase symbol to hunt for.
+    if (!STOP_REFS.has(low) && !VERB_STOPLIST.has(low) && !FUNCTION_WORDS.has(low) && !registry.get(noun)) refs.push(noun)
+  }
+  return refs
+}
+
+/**
+ * Does this goal actually propose editing THIS codebase?
+ *
+ * The precondition for every signal `resolveAmbiguity` raises. False for the whole open class
+ * of non-code requests (device actions, personal data, web reads, scheduling, questions),
+ * which is why it is defined by positive code evidence rather than by listing them.
+ */
+export function isCodeEditGoal(goal: string, index?: SemanticIndex): boolean {
+  if (SOURCE_FILE.test(goal) || CODE_NOUN.test(goal)) return true
+  // VAGUE_TERMS is already, by construction, the vocabulary of vague code maintenance
+  // ("improve", "optimise", "clean up", "handle the edge cases"). A goal built out of it is a
+  // code goal that has not said what to change — precisely what this gate exists to catch.
+  if (VAGUE_TERMS.test(goal)) return true
+  // A symbol that genuinely exists in this repo is unambiguous evidence of a code goal.
+  if (index?.files.length) {
+    const named = new Set((goal.match(/\b[A-Za-z_][A-Za-z0-9_]{2,}\b/g) ?? []).map(w => w.toLowerCase()))
+    for (const f of index.files) {
+      for (const s of f.symbols) if (named.has(s.name.toLowerCase())) return true
+    }
+  }
+  // An edit verb whose target is named only by pointing — "clean THIS up", "fix THE tokenizer".
+  // No concrete target, but the thing being edited is anaphoric, so "which file or symbol?" is
+  // exactly the right question. This is the branch that keeps vague CODE goals clarifying.
+  return EDIT_VERB.test(goal) && (ANAPHOR.test(goal) || definiteReferences(goal).length > 0)
+}
+
 export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } = {}): ResolutionResult {
   const signals: AmbiguitySignal[] = []
   const resolvedReferences: ResolvedReference[] = []
-  if (isDesktopActionGoal(goal)) {
+  // A goal this analyzer has no jurisdiction over leaves with a clean bill of health, so the
+  // agent loop proceeds to its tools instead of stopping at 0 iterations to ask which file a
+  // screenshot should target. `isDesktopActionGoal` is subsumed by this (a desktop action has
+  // no code evidence) but stays exported — server.ts uses it for driver/GUI-tool routing.
+  if (!isCodeEditGoal(goal, opts.index)) {
     return { ambiguous: false, confidence: 1, signals, resolvedReferences }
   }
   let rewritten = goal
@@ -183,16 +278,7 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   // only the false-"ambiguous" SIGNALS are skipped.
   const creationShaped = CREATION_GOAL.test(goal)
   const emptyIndex = !opts.index || opts.index.files.length === 0
-  const refs: string[] = []
-  let m: RegExpExecArray | null
-  DEF_REF.lastIndex = 0
-  while ((m = DEF_REF.exec(goal)) !== null) {
-    const noun = m[1]
-    const low = noun.toLowerCase()
-    // Registered tool names ("prefer the control_mac tool") are always-resolvable
-    // references — they name a live capability, not a codebase symbol to hunt for.
-    if (!STOP_REFS.has(low) && !VERB_STOPLIST.has(low) && !FUNCTION_WORDS.has(low) && !registry.get(noun)) refs.push(noun)
-  }
+  const refs = definiteReferences(goal)
 
   for (const ref of [...new Set(refs)]) {
     if (!opts.index) continue

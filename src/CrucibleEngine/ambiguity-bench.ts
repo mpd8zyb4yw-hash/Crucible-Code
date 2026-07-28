@@ -179,6 +179,45 @@ const CASES: Case[] = [
   },
 ]
 
+// ── Jurisdiction (2026-07-28) ──────────────────────────────────────────────────
+// This gate answers exactly one question — "which code should change?" — so it must stay
+// silent on goals that are not about changing code. It did not: an anchored verb list meant
+// 9 of these 14 ordinary requests were answered with "Which file or symbol should this change
+// target?" and ZERO tool calls, which is what made `screenshot`, `browser_sign_in` and
+// scheduling unreachable from chat. Non-code goals are an UNBOUNDED class, so the fix was to
+// require positive code evidence rather than to enumerate them — and the second list below is
+// what stops that from over-correcting into never clarifying a genuinely vague code request.
+const MUST_PASS = [
+  'take a screenshot of my screen',
+  'screenshot my screen',
+  'sign me in to youtube',
+  'log into my youtube account',
+  'save example.com as a pdf',
+  'open youtube and tell me what is on my homepage',
+  'what is in my downloads folder',
+  'check my email',
+  'what meetings do I have tomorrow',
+  'summarise the wikipedia page on otters',
+  'every weekday at 8am send me a summary of my inbox',
+  'remind me to check the deploy at 5pm',
+  'find me a good pasta recipe',
+  'what is the weather in Berlin',
+  // Device/CRUD phrasings that share their verb with programming — the reason EDIT_VERB
+  // deliberately omits the generic CRUD verbs.
+  'delete the downloads folder',
+  'update the calendar',
+  'change the wallpaper',
+]
+
+// Genuinely vague CODE requests. Clarifying is the CORRECT behaviour here, and the
+// jurisdiction test must not swallow them.
+const MUST_CLARIFY = [
+  'fix the bug',
+  'clean this up',
+  'make it faster',
+  'improve performance',
+]
+
 function main() {
   let ok = 0
   for (const c of CASES) {
@@ -188,7 +227,27 @@ function main() {
     if (pass) ok++
     console.log(`  ${pass ? 'OK ' : 'XX '} ${c.name}${pass ? '' : ` — ${failure}`}`)
   }
-  console.log(`\nTOTAL: ${ok}/${CASES.length}`)
-  if (ok !== CASES.length) process.exit(1)
+  let total = CASES.length
+
+  console.log('\n  — jurisdiction: non-code goals must reach their tools —')
+  for (const goal of MUST_PASS) {
+    total++
+    const r = resolveAmbiguity(goal, {})
+    const pass = !r.ambiguous
+    if (pass) ok++
+    console.log(`  ${pass ? 'OK ' : 'XX '} passes: ${JSON.stringify(goal)}${pass ? '' : ` — BLOCKED (${r.confidence}) "${r.clarification}"`}`)
+  }
+
+  console.log('\n  — jurisdiction: vague CODE goals must still clarify —')
+  for (const goal of MUST_CLARIFY) {
+    total++
+    const r = resolveAmbiguity(goal, {})
+    const pass = r.ambiguous && !!r.clarification
+    if (pass) ok++
+    console.log(`  ${pass ? 'OK ' : 'XX '} clarifies: ${JSON.stringify(goal)}${pass ? '' : ` — passed through with confidence ${r.confidence}`}`)
+  }
+
+  console.log(`\nTOTAL: ${ok}/${total}`)
+  if (ok !== total) process.exit(1)
 }
 main()

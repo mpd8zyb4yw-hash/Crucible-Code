@@ -87,7 +87,7 @@ import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mer
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
-import { isDesktopActionGoal } from './src/CrucibleEngine/ambiguity'
+import { isDesktopActionGoal, isCodeEditGoal } from './src/CrucibleEngine/ambiguity'
 import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
 import { defaultSystemPreamble } from './src/CrucibleEngine/agent/loop'
 import { extractSubtasks, decompose } from './src/CrucibleEngine/goalDecomposer'
@@ -3927,7 +3927,21 @@ app.post('/api/chat', async (req, res) => {
     // that handing GUI tools to a non-GUI brief makes the planner emit screen dumps.
     const mentionsUrl = /https?:\/\/\S+/i.test(message ?? '')
     const isDesktopGoal = isDesktopActionGoal(message ?? '')
+    // cont.119 — the gate above was widened, but only by TWO special cases (a resolved creation
+    // goal, a literal URL), so it still described a short list of goals that deserve tools rather
+    // than the boundary of the ones that don't. Measured live: "take a screenshot of my screen"
+    // matched none of the three, skipped fmReact — the only executor here that calls tools — and
+    // the toolless prose stack answered with instructions for pressing Win+Space on a MAC. Same
+    // shape for "sign me in to youtube" and for scheduling: a registered, working tool, and no
+    // path from the request to it.
+    //
+    // The honest boundary is the complement, not another special case. Everything agentic that is
+    // NOT an edit to this codebase needs instruments — the code goals are the ones with another
+    // home (the VGR/synth stack below). `isCodeEditGoal` is the same jurisdiction test the
+    // ambiguity gate uses, so the two routing decisions can no longer disagree about what counts
+    // as code work.
     const needsToolExecutor = isDesktopGoal || goalSpec?.ready === true || mentionsUrl
+      || !isCodeEditGoal(message ?? '')
     if (!resumable && !iterCheckpoint && localInferenceAvailable && isAgenticIntent && needsToolExecutor) {
       try {
         const DESKTOP_TOOL_NAMES = isDesktopGoal
@@ -3938,8 +3952,11 @@ app.post('/api/chat', async (req, res) => {
           // cont.118 — the content tool set. browse_page/save_pdf/save_page_image are what make
           // "log into my YouTube, find X, save it as a PDF" reachable at all; registering a tool
           // the executor is never offered is the same dead end as not having it.
+          // `browser_sign_in` belongs here for the same reason the rest do: browse_page's own
+          // needs-login answer TELLS the user to run it, and an executor that was never offered
+          // the tool cannot follow its own advice.
           : ['browse_page', 'read_url', 'web_search', 'save_pdf', 'save_page_image', 'screenshot',
-             'list_dir', 'read_file', 'write_file']
+             'browser_sign_in', 'list_dir', 'read_file', 'write_file']
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,
