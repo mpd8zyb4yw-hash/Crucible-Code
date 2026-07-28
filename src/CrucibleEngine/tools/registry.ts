@@ -914,6 +914,18 @@ registry.register({
           meta: { blocked: 'needs-login', url: r.url },
         }
       }
+      if (r.needsConsent) {
+        // Same honesty rule as the login wall. The agent must NOT click "accept" — agreeing to a
+        // site's terms is the user's call — so it says what it hit and hands them the window.
+        return {
+          ok: false,
+          output: `That page returned a cookie/consent screen instead of its content, so nothing ` +
+            `useful was read${r.title ? ` (page title: "${r.title}")` : ''}.\n` +
+            `Run browser_sign_in with this URL and make the choice yourself in the window that opens, ` +
+            `then close it and retry. Accepting terms on your behalf is not something Crucible will do.`,
+          meta: { blocked: 'needs-consent', url: r.url },
+        }
+      }
       return {
         ok: true,
         output: `# ${r.title}\n${r.url}\n\n${r.text}`,

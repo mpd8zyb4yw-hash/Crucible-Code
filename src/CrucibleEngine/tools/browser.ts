@@ -33,15 +33,30 @@ type PwModule = typeof import('playwright-core')
 
 let pw: PwModule | null = null
 async function playwright(): Promise<PwModule> {
-  if (!pw) pw = await import('playwright-core')
+  if (!pw) {
+    try {
+      pw = await import('playwright-core')
+    } catch {
+      // A missing package must read like the install instruction it is, not ERR_MODULE_NOT_FOUND.
+      throw new Error(PLAYWRIGHT_MISSING)
+    }
+  }
   return pw
 }
+
+const PLAYWRIGHT_MISSING =
+  'The `playwright-core` package is not installed, so no browser can be driven. ' +
+  'Run `npm install playwright-core` and then `npx playwright install chromium`.'
 
 export interface BrowserAvailability {
   ok: boolean
   /** Executable that will be driven, when one was found. */
   executablePath?: string
   channel?: string
+  /** True when this is Playwright's own downloaded build rather than a browser the user installed.
+   *  Playwright is authoritative about where its managed build lives, so that path gets confirmed
+   *  against its registry before launch. */
+  managed?: boolean
   /** Human-readable, actionable reason when unavailable. */
   reason?: string
 }
@@ -64,14 +79,16 @@ export function findBrowser(): BrowserAvailability {
   for (const c of candidates) {
     if (fs.existsSync(c.p)) return { ok: true, executablePath: c.p, channel: c.channel }
   }
-  // Playwright's own download cache.
-  const cache = `${process.env.HOME}/Library/Caches/ms-playwright`
+  // Playwright's own managed build. SEARCH for the binary rather than assuming a path: the extracted
+  // directory is platform- and arch-specific (`chrome-mac-arm64`, `chrome-linux`, `chrome-win`) and
+  // the executable is named `Google Chrome for Testing` on current mac builds, not `Chromium`. A
+  // hardcoded relative path here reported "no browser installed" with a freshly downloaded browser
+  // sitting on disk — a dead feature that looked like a missing dependency.
+  const cache = process.env.PLAYWRIGHT_BROWSERS_PATH || `${process.env.HOME}/Library/Caches/ms-playwright`
   if (fs.existsSync(cache)) {
     for (const dir of fs.readdirSync(cache).filter(d => d.startsWith('chromium'))) {
-      const exe = path.join(cache, dir, 'chrome-mac', 'Chromium.app', 'Contents', 'MacOS', 'Chromium')
-      if (fs.existsSync(exe)) return { ok: true, executablePath: exe, channel: 'chromium' }
-      const headless = path.join(cache, dir, 'chrome-mac', 'headless_shell')
-      if (fs.existsSync(headless)) return { ok: true, executablePath: headless, channel: 'chromium' }
+      const exe = findChromiumBinary(path.join(cache, dir))
+      if (exe) return { ok: true, executablePath: exe, channel: 'chromium', managed: true }
     }
   }
   return {
@@ -81,6 +98,33 @@ export function findBrowser(): BrowserAvailability {
       'Install Google Chrome, or run `npx playwright install chromium` (about 150 MB) once. ' +
       'Firefox and Safari cannot be driven by playwright-core without their own Playwright builds.',
   }
+}
+
+/** Executable names Playwright's chromium builds use across platforms. `Google Chrome for Testing`
+ *  is what a current mac build actually ships — the plain `Chromium` name is older releases. */
+const CHROMIUM_BINARIES = new Set([
+  'Google Chrome for Testing', 'Chromium', 'chrome', 'chrome.exe', 'headless_shell', 'headless_shell.exe',
+])
+
+/** Bounded search for a chromium executable under a downloaded build directory. Depth-limited so a
+ *  surprising layout costs a few stat calls rather than a walk of the whole cache. */
+function findChromiumBinary(root: string, depth = 0): string | null {
+  if (depth > 6) return null
+  let entries: fs.Dirent[]
+  try { entries = fs.readdirSync(root, { withFileTypes: true }) } catch { return null }
+  for (const e of entries) {
+    const full = path.join(root, e.name)
+    if (e.isFile() && CHROMIUM_BINARIES.has(e.name)) {
+      try { fs.accessSync(full, fs.constants.X_OK); return full } catch { /* not executable */ }
+    }
+  }
+  for (const e of entries) {
+    if (e.isDirectory()) {
+      const found = findChromiumBinary(path.join(root, e.name), depth + 1)
+      if (found) return found
+    }
+  }
+  return null
 }
 
 /** Where the persistent, user-authenticated profile lives. */
@@ -109,9 +153,19 @@ export async function openPage(
   const dir = profileDir(projectPath)
   fs.mkdirSync(dir, { recursive: true })
 
+  // For Playwright's own build, prefer the path its registry reports — it accounts for layout
+  // changes between releases that a filesystem scan can only approximate.
+  let executablePath = avail.executablePath
+  if (avail.managed) {
+    try {
+      const p = chromium.executablePath()
+      if (p && fs.existsSync(p)) executablePath = p
+    } catch { /* registry unsure; the scanned binary is still a real executable */ }
+  }
+
   const context = await chromium.launchPersistentContext(dir, {
     headless: opts.headless !== false,
-    executablePath: avail.executablePath,
+    executablePath,
     viewport: { width: 1440, height: 900 },
     // A real UA: some sites serve a degraded or blocking page to obvious automation, and the
     // point of this path is to see what the USER would see.
@@ -122,15 +176,42 @@ export async function openPage(
   return { page, close: () => context.close() }
 }
 
-/** Strip scripts/styles/nav and return readable text — the same job `stripBoilerplate` does for
- *  raw HTML, but done in the live DOM where client-rendered content actually exists. */
-const EXTRACT = `() => {
-  const drop = ['script','style','noscript','svg','nav','header','footer','aside','form'];
-  const clone = document.body.cloneNode(true);
-  drop.forEach(sel => clone.querySelectorAll(sel).forEach(n => n.remove()));
-  const main = clone.querySelector('main,article,[role=main]') || clone;
-  return (main.innerText || '').replace(/\\n{3,}/g, '\\n\\n').trim();
-}`
+/**
+ * Strip scripts/styles/nav and return readable text — the same job `stripBoilerplate` does for raw
+ * HTML, but done in the live DOM where client-rendered content actually exists.
+ *
+ * Three things here are load-bearing, and each was a bug that returned a confidently wrong result:
+ *
+ *  · This must be a real FUNCTION, not a function-shaped string. `page.evaluate` treats a string as
+ *    an EXPRESSION, so `"() => {...}"` evaluates to an unserializable function object and comes back
+ *    as `undefined` — every single page read returned the literal text "undefined".
+ *  · `innerText` must be read from the LIVE, RENDERED document. It is layout-dependent, so on a
+ *    detached `cloneNode` it silently drops every line break and fuses words across block boundaries
+ *    ("Example DomainThis domain is for use..."). Pruning the real DOM is free here because the page
+ *    is closed immediately afterwards.
+ *  · The login signal must be sampled BEFORE pruning. Sign-in walls live in exactly the `<form>` and
+ *    `<header>` elements this prunes, so reading it afterwards would hide the one thing the caller
+ *    most needs to know.
+ */
+function extractReadable(): { text: string; raw: string } {
+  // Never-rendered nodes go FIRST, before anything samples the page. `textContent` is the fallback
+  // whenever `innerText` comes back empty, and it happily returns minified CSS and inline JSON —
+  // Instagram's login wall yielded 20,000 characters of `{"require":[[...` presented as page text.
+  for (const sel of ['script', 'style', 'noscript', 'template']) {
+    document.querySelectorAll(sel).forEach(n => n.remove())
+  }
+  const body = document.body
+  const raw = ((body && (body.innerText || body.textContent)) || '').replace(/\n{3,}/g, '\n\n').trim()
+
+  // Then the page chrome, which is what separates an article from its surroundings.
+  for (const sel of ['svg', 'nav', 'header', 'footer', 'aside', 'form']) {
+    document.querySelectorAll(sel).forEach(n => n.remove())
+  }
+
+  const main = (document.querySelector('main,article,[role=main]') as HTMLElement | null) || document.body
+  const pruned = ((main && (main.innerText || main.textContent)) || '').replace(/\n{3,}/g, '\n\n').trim()
+  return { text: pruned, raw }
+}
 
 export interface ReadResult {
   url: string
@@ -138,6 +219,9 @@ export interface ReadResult {
   text: string
   /** True when the page looks like a sign-in wall rather than the content asked for. */
   needsLogin: boolean
+  /** True when a cookie/consent interstitial stands between us and the content. Reported, never
+   *  clicked: agreeing to terms on someone's behalf is the user's decision, not the agent's. */
+  needsConsent: boolean
 }
 
 /** Signals that what came back is a login wall, not the content. Checked so the agent reports
@@ -149,6 +233,20 @@ function looksLikeLogin(url: string, title: string, text: string): boolean {
   return /(?:sign in to continue|log in to continue|please log in|you must be logged in|create an account to continue)/.test(head)
 }
 
+/**
+ * Signals a cookie/consent interstitial — a different failure from a login wall and, untreated, a
+ * more deceptive one. `youtube.com/feed/history` returns HTTP 200 with the title "Before you
+ * continue to YouTube" and a body that is just a language picker: nothing errors, nothing looks
+ * like a login, and an agent that trusted it would confidently summarise a list of languages as
+ * the user's watch history.
+ */
+function looksLikeConsent(url: string, title: string, text: string): boolean {
+  const u = url.toLowerCase()
+  if (/\/(?:consent|cookie(?:s|-consent)?|gdpr)\b/.test(u) || /^https?:\/\/consent\./.test(u)) return true
+  const head = `${title}\n${text.slice(0, 600)}`.toLowerCase()
+  return /(?:before you continue|we use cookies|accept (?:all )?cookies|cookie preferences|manage your privacy|your privacy choices)/.test(head)
+}
+
 export async function readPage(projectPath: string, url: string, maxChars = 20_000): Promise<ReadResult> {
   const s = await openPage(projectPath)
   try {
@@ -157,13 +255,18 @@ export async function readPage(projectPath: string, url: string, maxChars = 20_0
     // sites with long-polling, so this is a bounded wait rather than a condition.
     await s.page.waitForTimeout(1200)
     const title = await s.page.title()
-    const text = String(await s.page.evaluate(EXTRACT as any))
+    const { text: pruned, raw } = await s.page.evaluate(extractReadable)
     const finalUrl = s.page.url()
+    // A page that is ALL nav and form prunes down to nothing — which is precisely what a login wall
+    // is. Reporting that as an empty page would be the confident-and-wrong answer; keep the raw text
+    // so the caller sees the wall it actually hit.
+    const text = pruned.length >= 200 || raw.length <= pruned.length ? pruned : raw
     return {
       url: finalUrl,
       title,
       text: text.slice(0, maxChars),
-      needsLogin: looksLikeLogin(finalUrl, title, text),
+      needsLogin: looksLikeLogin(finalUrl, title, raw),
+      needsConsent: looksLikeConsent(finalUrl, title, raw),
     }
   } finally {
     await s.close()
