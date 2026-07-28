@@ -30,6 +30,7 @@ import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
 import { resolveNamedTools, resolveImplicitPersonalTools, resolveImplicitLocalTools, renderPersonalData } from './src/CrucibleEngine/agent/namedToolRouter'
 import { specForGoal, briefFor, elicitation } from './src/CrucibleEngine/agent/goalSpec'
+import { verifyArtifact } from './src/CrucibleEngine/agent/artifactVerify'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx, ToolResult } from './src/CrucibleEngine/tools/protocol'
@@ -3863,7 +3864,20 @@ app.post('/api/chat', async (req, res) => {
           // A residue summary means the fast path did not actually ANSWER, so treat it exactly
           // like the `!ok` case below: fall through to the fuller agent loop rather than shipping
           // tool scaffolding as the answer.
-          if (ok && isAllToolResidue(summary)) {
+          // The artifact contract applies to the FAST PATH too (cont.118). Layer 2 ships
+          // `summary` — the raw joined tool output — as the answer and returns, which is how
+          // "make me flash cards" came back as a list of search results while the verification
+          // added to Layer 2.5 never ran. A fast path is allowed to be fast; it is not allowed
+          // to ship something that fails the contract. Same escalate-instead-of-ship shape as
+          // the tool-residue guard directly above.
+          const layer2Artifact = goalSpec?.ready ? verifyArtifact(summary, goalSpec.expectation) : null
+          if (ok && layer2Artifact && !layer2Artifact.ok) {
+            debugBus.emit('agent', 'layer2_artifact_mismatch', {
+              found: layer2Artifact.found, expected: layer2Artifact.expected,
+              problems: layer2Artifact.problems.map(p => p.code),
+            }, { severity: 'warn' })
+            console.warn(`[Agent] Layer 2 output is not ${goalSpec!.expectation.deliverable} (found ${layer2Artifact.found}/${layer2Artifact.expected}) — escalating`)
+          } else if (ok && isAllToolResidue(summary)) {
             debugBus.emit('agent', 'layer2_fm_residue', { intent: fmPlan.intent, summary: summary.slice(0, 80) }, { severity: 'warn' })
             console.warn(`[Agent] Layer 2 FM plan returned tool residue ("${summary.slice(0, 40)}") — escalating to full agent loop`)
           } else if (ok) {
@@ -3918,7 +3932,10 @@ app.post('/api/chat', async (req, res) => {
       try {
         const DESKTOP_TOOL_NAMES = isDesktopGoal
           ? ['open_app', 'control_mac', 'get_ui_tree', 'click_element', 'run', 'list_dir', 'move_file', 'search_youtube']
-          : ['read_url', 'web_search', 'list_dir', 'read_file', 'write_file', 'run']
+          // No `run` here on purpose: a content-creation goal has no business shelling out.
+          // Live, it emitted `run { command: "open -a Safari <url>" }` — launching a browser on
+          // the user's machine instead of reading the page. Scope the tools to the job.
+          : ['read_url', 'web_search', 'list_dir', 'read_file', 'write_file']
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,
@@ -3944,7 +3961,63 @@ app.post('/api/chat', async (req, res) => {
         })
         send({ type: 'agent_start', driver: 'on-device FM (desktop)', projectPath, resumed: false })
         const { fmReact } = await import('./src/CrucibleEngine/agent/fmReact')
-        const fmRes = await fmReact({ goal: agentGoal, projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false, maxRounds: 8, emit: send, requireTool: true })
+        let fmRes = await fmReact({ goal: agentGoal, projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false, maxRounds: 8, emit: send, requireTool: true })
+
+        // ── ARTIFACT VERIFICATION (cont.118) ──────────────────────────────
+        // Asked for "a set of flash cards", the agent returned a well-written ESSAY and it was
+        // stamped `✓ verified`. Every check in the system asked whether the run crashed; none
+        // asked whether the deliverable was the deliverable. `goalSpec` already resolved the
+        // contract — 20 items, question/answer pairs — before the agent started; it was simply
+        // never consulted.
+        //
+        // On a mismatch the model gets ONE retry carrying the specific, structural failure
+        // ("that is prose, not flash cards — produce exactly 20 items shaped Q:/A:"), never the
+        // rejected artifact itself (`crucible-repair-is-a-search`: showing a model its own bad
+        // output makes it reproduce that output). If the retry still misses, the answer ships
+        // with an HONEST warning attached rather than a green badge over the wrong thing.
+        if (goalSpec?.ready && fmRes.answer.trim()) {
+          let verdict = verifyArtifact(fmRes.answer, goalSpec.expectation)
+          if (!verdict.ok) {
+            send({ type: 'verify', passed: false, signal: `artifact:${goalSpec.expectation.deliverable}`, report: verdict.problems.map(p => p.detail).join(' ') })
+            send({ type: 'thought', text: `That is not ${goalSpec.expectation.deliverable} — ${verdict.problems.map(p => p.detail).join(' ')} Retrying with the exact shape required.` })
+            debugBus.emit('agent', 'artifact_reject', { found: verdict.found, expected: verdict.expected, problems: verdict.problems.map(p => p.code) }, { severity: 'warn' })
+            const retry = await fmReact({
+              // The FORMAT DEMAND LEADS. Appending it after the original brief left the model
+              // re-reading "summarize the page" first and summarizing again; the constraint has
+              // to be the first thing it sees.
+              goal: `${verdict.feedback}\n\nSubject matter: ${goalSpec.deliverable} drawn from the source in this task.\n\n${agentGoal}`,
+              projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false,
+              maxRounds: 6, emit: send, requireTool: false,
+            })
+            const retryVerdict = verifyArtifact(retry.answer, goalSpec.expectation)
+            // Keep the retry only if it is genuinely better — a worse second attempt must not
+            // overwrite a closer first one.
+            if (retryVerdict.found > verdict.found || (retryVerdict.ok && !verdict.ok)) {
+              fmRes = { ...retry, toolsUsed: [...fmRes.toolsUsed, ...retry.toolsUsed] }
+              verdict = retryVerdict
+            }
+          }
+          send({
+            type: 'verify', passed: verdict.ok,
+            signal: `artifact:${goalSpec.expectation.deliverable}`,
+            report: verdict.ok
+              ? `${verdict.found} ${verdict.shape === 'prose' ? 'document' : 'items'} matching the requested shape.`
+              : `Expected ${verdict.expected} ${goalSpec.expectation.deliverable}, found ${verdict.found}. ${verdict.problems.map(p => p.detail).join(' ')}`,
+          })
+          if (!verdict.ok) {
+            // Loud, in the answer itself — the user must not have to read a badge to learn that
+            // what they asked for is not what they got.
+            fmRes = {
+              ...fmRes,
+              answer:
+                `**This does not match what you asked for.** You asked for ${goalSpec.expectation.count} ` +
+                `${goalSpec.expectation.deliverable}; I produced ${verdict.found}. ` +
+                `${verdict.problems.map(p => p.detail).join(' ')}\n\n---\n\n${fmRes.answer}`,
+            }
+            debugBus.emit('agent', 'artifact_reject_final', { found: verdict.found, expected: verdict.expected }, { severity: 'error' })
+          }
+        }
+
         // Accept only a real attempt: a non-empty answer grounded in at least one tool call.
         if (!fmRes.abstained && fmRes.answer.trim() && fmRes.toolsUsed.length > 0) {
           send({ type: 'final', text: fmRes.answer })

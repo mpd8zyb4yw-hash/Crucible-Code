@@ -38,6 +38,8 @@
 // "make it forty". Depth is not. Applying that rule honestly leaves one or two questions on a
 // typical goal, which is the difference between an assistant and an interrogation.
 
+import type { ItemShape, ArtifactExpectation } from './artifactVerify'
+
 export type SlotKey = 'subject' | 'source' | 'quantity' | 'depth' | 'format' | 'access'
 
 export interface Slot {
@@ -67,6 +69,8 @@ export interface GoalSpec {
   /** Everything filled in without asking, for the "here's what I assumed" line. */
   assumed: Slot[]
   ready: boolean
+  /** What `artifactVerify` will hold the finished artifact to. Derived, never asked about. */
+  expectation: ArtifactExpectation
 }
 
 // ── Deliverable detection ─────────────────────────────────────────────────────
@@ -146,15 +150,18 @@ function statedSubject(msg: string): string | null {
 // Keyed on the deliverable NOUN, and only ever supplying a value the user did not state. This is
 // the one place a deliverable's shape matters, and getting it wrong costs a regeneration, not a
 // wasted build — which is precisely why these are defaults and not questions.
-function defaultsFor(deliverable: string): { quantity: string; depth: string; format: string } {
+function defaultsFor(deliverable: string): { quantity: string; depth: string; format: string; shape: ItemShape } {
   const d = deliverable.toLowerCase()
-  if (/card|flashcard/.test(d)) return { quantity: '20', depth: 'intermediate', format: 'a two-sided question/answer deck, saved as a file you can import' }
-  if (/quiz|test|exam/.test(d)) return { quantity: '10', depth: 'intermediate', format: 'multiple choice with an answer key' }
-  if (/summar|brief|digest/.test(d)) return { quantity: '1', depth: 'intermediate', format: 'a structured summary with headings' }
-  if (/slide|deck|presentation/.test(d)) return { quantity: '10', depth: 'intermediate', format: 'title + bullets per slide' }
-  if (/outline|plan|syllabus|curriculum/.test(d)) return { quantity: '1', depth: 'intermediate', format: 'a nested outline' }
-  if (/note|cheat\s*sheet|study\s+guide/.test(d)) return { quantity: '1', depth: 'intermediate', format: 'a single reference document' }
-  return { quantity: '10', depth: 'intermediate', format: 'a file you can open and use' }
+  // `shape` is what `artifactVerify` checks against. Naming a structural shape is all a NEW
+  // deliverable needs to inherit verification — there is no per-deliverable checker.
+  if (/card|flashcard/.test(d)) return { quantity: '20', depth: 'intermediate', format: 'a two-sided Q:/A: deck, one pair per item', shape: 'pair' }
+  if (/quiz|test|exam/.test(d)) return { quantity: '10', depth: 'intermediate', format: 'question and answer pairs', shape: 'pair' }
+  if (/glossary|vocab|definition/.test(d)) return { quantity: '20', depth: 'intermediate', format: 'term and definition pairs', shape: 'pair' }
+  if (/summar|brief|digest|essay|report/.test(d)) return { quantity: '1', depth: 'intermediate', format: 'a structured summary with headings', shape: 'prose' }
+  if (/slide|deck|presentation/.test(d)) return { quantity: '10', depth: 'intermediate', format: 'a title and body per slide', shape: 'block' }
+  if (/outline|plan|syllabus|curriculum|checklist|list/.test(d)) return { quantity: '10', depth: 'intermediate', format: 'one item per line', shape: 'bullet' }
+  if (/note|cheat\s*sheet|study\s+guide/.test(d)) return { quantity: '1', depth: 'intermediate', format: 'a single reference document', shape: 'prose' }
+  return { quantity: '10', depth: 'intermediate', format: 'a titled section per item', shape: 'block' }
 }
 
 /** Deliverables whose whole purpose is to be ABOUT something — subject is load-bearing.
@@ -238,12 +245,16 @@ export function specForGoal(message: string, ctx: { hasAttachment?: boolean } = 
   slots.push({ key: 'format', value: def.format, source: 'default', blocking: false })
 
   const ask = slots.filter(s => s.blocking && s.source === 'missing')
+  const resolvedCount = Number(slots.find(s => s.key === 'quantity')?.value ?? def.quantity) || 1
   return {
     deliverable,
     slots,
     ask,
     assumed: slots.filter(s => s.source === 'default'),
     ready: ask.length === 0,
+    // The contract the artifact will be held to. Built from the SAME resolved slots the brief
+    // is built from, so the thing verified is exactly the thing requested.
+    expectation: { shape: def.shape, count: resolvedCount, deliverable },
   }
 }
 
