@@ -3944,7 +3944,7 @@ app.post('/api/chat', async (req, res) => {
         })
         send({ type: 'agent_start', driver: 'on-device FM (desktop)', projectPath, resumed: false })
         const { fmReact } = await import('./src/CrucibleEngine/agent/fmReact')
-        const fmRes = await fmReact({ goal: agentGoal, projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false, maxRounds: 8 })
+        const fmRes = await fmReact({ goal: agentGoal, projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false, maxRounds: 8, emit: send, requireTool: true })
         // Accept only a real attempt: a non-empty answer grounded in at least one tool call.
         if (!fmRes.abstained && fmRes.answer.trim() && fmRes.toolsUsed.length > 0) {
           send({ type: 'final', text: fmRes.answer })

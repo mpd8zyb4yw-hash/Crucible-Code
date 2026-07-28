@@ -51,6 +51,10 @@ export function headModelName(): string {
   return useLocalHead() ? repairModelName() : 'apple-fm'
 }
 const DEFAULT_MAX_ROUNDS = 8
+/** How many times strict mode may reject a memory-only answer before taking what it gets.
+ *  Two is enough for the weak head to comply when it CAN, and low enough that a goal no tool
+ *  can serve still finishes rather than burning the whole round budget arguing. */
+const STRICT_NUDGE_LIMIT = 2
 // Healthy generation measured at 21-28s, already against the old 30s ceiling —
 // under load this crossed it, fired AbortSignal.timeout, and got misreported as
 // "daemon unreachable" (see server.ts's offline_conversational_escalate catch).
@@ -194,6 +198,34 @@ export interface FmReactOpts {
   noSearch?: boolean
   /** Prior conversation turns for multi-turn context. */
   history?: ConvTurn[]
+  /**
+   * Stream agent events to the client (cont.118).
+   *
+   * WHY: fmReact is the executor that actually calls tools, and until now NONE of its calls were
+   * visible. `extraTools` passed in from server.ts carried their own hand-rolled emit wrapper, but
+   * the DEFAULT tools — search, fetch_page, corpus_query — emitted nothing at all. So a run could
+   * fetch a real page, ground a real answer, and report `0 tools` to the UI, which then had
+   * nothing to render. Every agent surface downstream was structurally blind.
+   *
+   * Emitting HERE rather than per-tool means it cannot be forgotten by the next tool added: the
+   * wrapper sits at the single point where any tool is executed, whatever its origin.
+   */
+  emit?: (event: Record<string, unknown>) => void
+  /**
+   * STRICT AGENT MODE (cont.118) — refuse a final answer produced without ever looking.
+   *
+   * WHY: measured live, the flash-card brief planned "fetch the page, then build the deck" and
+   * then answered straight from parametric memory — `0 tools`. The plan was right; the model
+   * simply skipped it, because nothing made looking mandatory. That is a FALSE MISS: the tool
+   * existed, the plan named it, the executor had it, and it was never called. It is also the
+   * exact shape of every fabrication this session — an answer about the world produced without
+   * consulting the world.
+   *
+   * When set, a FINAL_ANSWER with zero tool calls is rejected and the model is told, in the
+   * loop, that it must use a tool first. Bounded by `STRICT_NUDGE_LIMIT` so a model that
+   * genuinely cannot proceed abstains honestly rather than spinning.
+   */
+  requireTool?: boolean
 }
 
 export interface FmReactResult {
@@ -531,6 +563,8 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     extraTools = [],
     noSearch = false,
     history,
+    emit,
+    requireTool = false,
   } = opts
 
   const tools = [...makeDefaultTools(projectPath, noSearch), ...extraTools]
@@ -547,6 +581,8 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
   /** Tool calls actually executed this turn, keyed by tool + exact args → first result. */
   const attempted = new Map<string, string>()
   let rounds = 0
+  /** Strict-mode refusals so far. Bounded so a tool-less goal degrades instead of spinning. */
+  let strictNudges = 0
 
   while (rounds < maxRounds) {
     if (signal?.aborted) throw new Error('Aborted')
@@ -566,6 +602,28 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     const parsed = parseResponse(rawResponse, primaryParam)
 
     if (parsed.type === 'final') {
+      // STRICT MODE — an answer produced without ever looking is a false miss, not an answer.
+      // Send it back into the loop with an explicit instruction rather than accepting it.
+      // Bounded: after STRICT_NUDGE_LIMIT refusals we stop nudging and take what we get, so a
+      // goal the tools genuinely cannot serve degrades to an honest answer instead of hanging.
+      if (requireTool && toolsUsed.length === 0 && strictNudges < STRICT_NUDGE_LIMIT && rounds < maxRounds) {
+        strictNudges++
+        debugBus.emit('agent', 'strict_tool_required', {
+          nudge: strictNudges, goal: goal.slice(0, 80),
+        }, { severity: 'warn' })
+        emit?.({ type: 'thought', text: 'That answer came from memory, not from looking — retrying with a real lookup.' })
+        messages.push({ role: 'assistant', content: rawResponse })
+        messages.push({
+          role: 'user',
+          content:
+            'You have not used a single tool yet, so that answer came from memory rather than from ' +
+            'the actual source. That is not acceptable for this task.\n\n' +
+            `Available tools: ${[...toolMap.keys()].join(', ')}.\n\n` +
+            'Call ONE tool now, using the exact call format. Do not give FINAL_ANSWER until you ' +
+            'have a real tool result to base it on.',
+        })
+        continue
+      }
       return {
         answer: stripAgentScaffold(parsed.answer ?? ''),
         rounds,
@@ -600,12 +658,24 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     } else if (!tool) {
       toolResult = `Error: Unknown tool "${toolName}". Available: ${[...toolMap.keys()].join(', ')}`
     } else {
+      // Single emit point for EVERY tool this executor runs — default set and extras alike.
+      // `extraTools` from server.ts also wrap themselves, so those emit twice; the client
+      // reducer keys on `id` and folds the second result into the same row, and the ids differ
+      // per source, so a duplicate row is preferable to the alternative that shipped for
+      // months: real tool calls that the UI could not see at all.
+      const evId = `fmr_${toolsUsed.length}_${toolName}`
       try {
         toolsUsed.push(toolName)
         debugBus.emit('agent', 'fm_react_tool', { tool: toolName, args: JSON.stringify(args).slice(0, 100) }, { severity: 'info' })
+        emit?.({ type: 'tool_call', id: evId, tool: toolName, args })
         toolResult = await tool.execute(args, signal ?? undefined)
+        emit?.({
+          type: 'tool_result', id: evId, tool: toolName, ok: true,
+          output: String(toolResult).slice(0, 800), truncated: String(toolResult).length > 800,
+        })
       } catch (e: any) {
         toolResult = `Tool error: ${e?.message ?? e}`
+        emit?.({ type: 'tool_result', id: evId, tool: toolName, ok: false, output: toolResult })
       }
     }
     // Record only REAL executions, so the replay text above is always a genuine tool result.
