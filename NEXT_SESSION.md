@@ -17,235 +17,67 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-27 (cont.117 — the sample-efficiency fork is resolved: it was typecheck, and 42% of the model budget goes to a file the harness does not grade) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-28 (cont.119 — agentic web work was blocked by four stacked defects, three of them routing and one of them the profile location) (REPLACE THIS EVERY SESSION)
 
-> **READ FIRST (cont.117) — cont.116's fork now has a number, and one branch of it is dead.**
-> cont.116 established that candidates are judged far more often than they are executed, and named
-> the fork: if gate-A **typecheck** dominates the pre-execution exits, the fix is constrained
-> decoding; if **`!testFile`** dominates, the fix is better test derivation. It explicitly banned
-> building either before the count existed. The count now exists, from one instrumented
-> offline-strict suite, and it is not close:
+> **The brief:** "it cant do agentic work on websites or anything in depth yet which it needs to
+> be able to breeze through". Plan: `AGENTIC_WEB_OVERHAUL.md` (100 items, ordered by unblocking
+> power). 27 landed and verified this session; that file is the live checklist and records what
+> is `[x]`, `[~]` and untouched.
 >
-> | oracle exit | count | share | |
-> |---|---|---|---|
-> | **gate-A typecheck** | **175** | **62.3%** | the answer |
-> | duplicate-export | 50 | 17.8% | the surprise — see below |
-> | executed (`exec-pass` 26 + `exec-fail` 21) | 47 | 16.7% | |
-> | `!testFile` ("no behavioral test") | 9 | **3.2%** | **the dead branch** |
-> | lint | **0** | 0% | never fired in a whole suite |
-> | contract | **0** | 0% | never fired in a whole suite |
+> **The finding, measured not inferred.** Four independent defects, each sufficient on its own to
+> make the whole class fail, and each reporting success while failing:
 >
-> **Do not build "better test derivation" for sample-efficiency reasons.** `!testFile` is 3.2%.
-> The cont.116 handoff called it "easy to miss" and worth suspecting; it was worth measuring, and
-> the measurement killed it. Two of the five gates (lint, contract) never fire at all — they are
-> sound and cheap, but they are not where candidates die.
+> 1. **The ambiguity gate had no jurisdiction.** `loop.ts:316` ran a CODE-CHANGE analyzer on every
+>    fresh goal. 9 of 14 ordinary requests were answered "Which file or symbol should this change
+>    target?" with ZERO tool calls. Its own header said to gate on code-edit shape; the classifier
+>    doing it was an anchored verb list. Fixed with `isCodeEditGoal` — positive code evidence,
+>    silence otherwise. Non-code goals are unbounded and are never enumerated.
+> 2. **`needsToolExecutor` narrowed to three special cases.** `fmReact` is the only executor that
+>    calls tools; "take a screenshot of my screen" matched none of its disjuncts, fell to the
+>    toolless prose stack, and a 1.5B model said to press **Win+Space on a Mac**. Now gated on the
+>    complement: everything agentic that is not a code edit gets instruments.
+> 3. **There was no way to ACT on a page.** browse_page read and discarded. Added
+>    `web_open`/`web_act`/`web_close`: a tab that stays open, a ref-tagged element model, and
+>    post-action confirmation that says "NOTHING measurably changed" when nothing did.
+> 4. **THE BIG ONE — the browser profile was per-conversation.** It lived at
+>    `<projectPath>/.crucible/browser-profile`, and projectPath for a chat is a FRESH scratch dir.
+>    363 of them on this machine, no profile in any. Sessions could never persist, so "sign in
+>    once and every later run inherits it" was structurally impossible. Now user-level at
+>    `~/.crucible/browser-profile`; the existing profile was migrated with its live session.
 >
-> **Only 47 of 281 verifications (16.7%) ever ran a line of code.** Consistent with cont.116's
-> 4-of-34 on filterModule, now measured across the whole suite instead of one task.
-
-### HOW THAT NUMBER IS KEPT HONEST (read before quoting it)
-
-`synth/oracle.ts` tags EVERY post-stage terminal return in both oracle twins with a
-`verify.exit.<reason>` / `verify.sync.exit.<reason>` counter lane riding `debug/phaseProfile.ts`
-(zero cost when `CRUCIBLE_PHASE_PROFILE` is unset). Tagging is exhaustive on purpose, which buys a
-parse-time self-check:
-
-    sum(verify.exit.*) === oracle.stage.calls          → 281 === 281  OK
-    sum(verify.sync.exit.*) === oracle.stage.sync.calls →   6 ===   6  OK
-
-`scripts/aggregate-phase-profiles.mjs` **exits 1 and refuses the distribution** if either side
-disagrees, rather than printing a plausible split. An unreconciled distribution is not data.
-
-**The lane names split by WHICH FUNCTION was called, NOT by provenance — this was gotten wrong
-once already and corrected before landing.** `verify.exit.*` is not "the gen path": `server.ts:3871`
-omits `verify`, so the whole `synth.fastPath` L0/L1/L2 cascade defaults to the async twin, as do L2
-`structuralSynthBridge` probes. What it IS, exactly, is the population `oracle.stage` has always
-counted — which is what keeps it comparable to cont.116's "34 verifications, 4 executed". Do NOT
-reroute those callers to the sync twin to tidy the labels; that changes the denominator. If
-provenance is wanted, thread an explicit `oracleLane: 'gen' | 'catalog'` through `opts`.
-
-### THE BIGGER FINDING — 42% of the model budget goes to an artifact that cannot score
-
-Per-artifact attribution (`scripts/fm-round-exits.mjs`, over `.crucible/fm-rounds.jsonl`, same run):
-
-| target file | FM rounds | share | exit mix |
-|---|---|---|---|
-| **`src/index.ts`** | **66** | **41.8%** | typecheck=42 dupexport=16 no-test=8 |
-| `src/leaderboard.ts` | 15 | 9.5% | **dupexport=12** typecheck=1 executed=2 |
-| `src/filter.ts` | 14 | 8.9% | executed=13 dupexport=1 |
-| `src/clamp.ts` | 13 | 8.2% | **dupexport=12** executed=1 |
-| `report.ts` + `src/report.ts` | 17 | 10.7% | typecheck=7 dupexport=9 no-test=1 |
-| everything else (6 files) | 33 | 20.9% | mostly executed |
-
-`src/index.ts` is the **self-test** every one of the 14 task specs asks for
-(`coding-benchmarks.ts:109,134,153,…`). The audit scores it **`[SOFT] self-test`** — it cannot move
-`passedHard/total`. It consumes more model budget than every graded deliverable in the suite
-combined. This is cont.116's open item 3 ("stop spending budget on ungraded artifacts") with a
-measured magnitude attached, and it is now the highest-leverage item in the file.
-
-Two distinct mechanisms feed it, do not conflate them:
-1. **65 of its rounds run under `gate: compile-only`** — the L3 `acceptGateAOnly` path
-   (`synth/universal.ts:466+`), where tsc is the ONLY oracle. 40 typecheck + 9 no-test exits there.
-   The `no-test` exit in that path is the ACCEPT (`universal.ts:490` returns `verified: true` on
-   `v.gateA`), not a rejection — which is exactly why the raw `no-test` count must not be read as
-   "test derivation failed".
-2. **duplicate-export rejections (16 on `src/index.ts`)** — a self-test naturally re-declares
-   symbols owned by the module it tests, and `checkDuplicateExports` correctly kills it.
-   `stripForeignApiBlocks` (`synth/synthDriver.ts:2104`) already mitigates the *spec-contract* half
-   of this; the remaining half is the FM genuinely writing re-declarations. A self-test should be
-   verified by "does `npx tsx src/index.ts` exit 0", not by a module-shaped export contract.
-
-**The dup-export gate is also strangling two graded tasks:** `src/clamp.ts` 12 of 13 rounds and
-`src/leaderboard.ts` 12 of 15 rounds ended in `dupexport`. Both still finished GREEN, so this is
-pure wasted budget, not a correctness failure — but it is 24 rounds spent on one mechanical shape.
-
-### THE NUMBER (2026-07-27, cont.117, offline-strict + qwen :8080 + `CRUCIBLE_NO_LEARN=1` + `CRUCIBLE_PHASE_PROFILE=1` + `CRUCIBLE_DISCONNECT_GRACE_MS=0`)
-
-**12/14 overall · gen-path 8/10 · 8/10 in-budget · 0 AMBER · 2 RED (tagSetModule, multiFileLedger).**
-Wall clock, gen path: median 192s, p90 304s, max 332s, **0/10 at cap** (cont.116 had 1/10 at cap).
-
-**This is 8/10, DOWN from cont.116's 9/10, and it is reported as measured rather than explained
-away.** `tagSetModule` regressed on compile (`compile=n`, 34s, only 1 oracle verification before it
-gave up). Evidence that this session's change is not the cause: `verify.exit.error` = **0** across
-the entire suite, so the one behavioural edit made this session (`stage()` moved inside the try)
-never executed its new path even once; everything else added is a counter around an empty thunk.
-The harness independently classifies `tagSetModule` as a **VARIANCE** task at 1/3 green over gen
-runs. That is an explanation, not a proof — a clean re-run is the cheapest way to settle it.
-
-`multiFileLedger` remains RED but changed shape: it no longer dies with the module file missing
-(cont.116's out-of-depth tripwire at `src/report.ts`). It now compiles and fails ONE hidden check,
-`categoryTotals` — 4 of 5 checks pass. That is a real move from "never produced the file" to "produced
-the wrong aggregate", and it is the only multi-file task in the suite.
-
-Ignore the `⚠ SLOWER` flag on `summaryModule 194s→304s` at your peril but not at face value —
-cont.116's open item 5 (skip the comparator when `synthPath` differs) is still unimplemented.
-
-### SHIPPED THIS SESSION (cont.117)
-
-- **`verify.exit.<reason>` / `verify.sync.exit.<reason>` lanes** (`synth/oracle.ts`, `tagExit()`) —
-  every post-stage terminal return in BOTH twins, tagged in gate order: typecheck, lint, dupexport,
-  contract, no-test, exec-pass, exec-fail, error. Zero cost when profiling is off.
-- **`oracle.stage.sync` lane** — `synth.catalogL0L1` (`universal.ts:303`) runs `verify: 'sync'` and
-  its verifications were counted by NO lane at all before this.
-- **Real defect fixed while auditing the above:** `stage()` sat OUTSIDE the try in both twins.
-  `spanSync` records from a `finally`, so a throwing `stage()` incremented `oracle.stage.calls` with
-  no matching exit tag and no `cleanup()` — false-failing the invariant over a single ENOSPC and
-  leaking scratch dirs. `stage()` is now inside the try: caught, tagged `error`, cleaned up.
-- **`scripts/aggregate-phase-profiles.mjs`** — aggregates `[PHASE_PROFILE]` blocks out of a server
-  log, enforces both invariants, exits 1 on mismatch. `--per-task` for the per-task split.
-- **`scripts/fm-round-exits.mjs`** — classifies `.crucible/fm-rounds.jsonl` verdicts by exit reason
-  AND by target file. Deliberately a SECOND, partial-coverage view: the phase profile is complete
-  but per-task and cannot name a file; this one is incomplete but carries `modulePath`. The
-  `src/index.ts` finding is only visible in the second view. Cross-check, don't substitute.
-
-### OPEN — highest leverage first
-
-1. **Stop spending 42% of the budget on `src/index.ts`.** Two independent sub-fixes, both cheap:
-   (a) certify the graded deliverable FIRST and never let a SOFT self-test failure abort a run whose
-   HARD artifact already passed (cont.116 saw 3 tasks escalate this way; this run saw
-   `filterModule`, `summaryModule`, `bugfixCsv` finish with `self=-`); (b) verify a self-test by
-   RUNNING it (`npx tsx src/index.ts` exit 0), not by holding it to a module export contract —
-   which is what generates its 16 dupexport rejections.
-2. **Constrained decoding for gate-A — this is now the measured answer, 62.3%.** 175 of 281
-   verifications died at `tsc --noEmit` before anything ran. The cont.116 handoff's own suggestion
-   stands and is now justified by data rather than intuition. Pair it with the cheap mechanical win
-   already logged as cont.116 item 2: `oracle.gateA.tsc` spawns `npx` per verification
-   (`synth/oracle.ts`, `runAsync('npx', ['tsc', …])`) and re-resolves the binary every time —
-   resolve `typescript/bin/tsc` once and spawn `node` directly.
-3. **Kill the duplicate-export rejection loop on `clamp`/`leaderboard`.** 12-of-13 and 12-of-15
-   rounds respectively ended in `dupexport` on tasks that nonetheless finished GREEN — pure wasted
-   budget in one mechanical shape. A deterministic repair proposer (drop the re-declaration, import
-   from the owner) in `synth/repairProposers.ts` is the same move that fixed `repairSetOp` and
-   `repairNaiveDelimiterSplit`, and it is oracle-re-gated so a misfire is rejected like any candidate.
-4. **Settle `tagSetModule`.** It regressed compile→`n` this run at 1/3 green over gen runs, with a
-   single oracle verification before giving up (34s). Either it is variance — cheapest possible
-   check, one re-run — or something real regressed. Do not carry 8/10 vs 9/10 forward unexplained.
-5. **`multiFileLedger`'s `categoryTotals`, the only true capability RED.** It now compiles and fails
-   exactly one hidden check instead of failing to produce a file at all. It is the only multi-file
-   task in the suite, and the failure has moved from "never got there" to "got the aggregate wrong",
-   which is a far more tractable target.
-6. **Measurement hygiene still unshipped (cont.116 item 5, unchanged):** stamp each ledger entry in
-   `coding-benchmarks.ts` with the server config (grace ms, keepalive, `noLearn`, phase-profile) so a
-   contaminated run stays identifiable, and skip the `⚠ SLOWER` comparator when `synthPath` differs
-   between runs.
-7. **`vgr.specExtract` at ~27s/call producing UNTRUSTED input** (cont.116 item 1, unchanged):
-   `reasoning/multiFile.ts` has the model invent example I/O, then verifies candidates against those
-   invented cases. Second-most-expensive lane, and the one whose output doctrine trusts least.
-
-### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.108 — DOCTRINE-CORRECT qwen head measurement):
-- **All prior numbers were on Apple FM (:11435), NOT the qwen-1.5b head (:8080)** — the offline
-  synth default (`synth/universal.ts:39`) points at Apple FM. Measure with
-  `LOCAL_INFERENCE_URL=http://localhost:8080` on the strict server. **qwen baseline: 11/14, 7/10
-  gen-path** (Apple FM was 9/10 — qwen is weaker; doctrine says close the gap with verifier+repair,
-  not by promoting Apple FM). bugfixCsv stays GREEN on qwen.
-- **tagSetModule variance-RED → 3/3 reliably GREEN on qwen.** Oracle gap: set-op property family
-  (`synth/derive.ts`) tested only `setOps[0]` → intersect never checked → wrong intersect shipped.
-  Fixed: iterate every set-op export + `repairSetOp` (canonical impls, oracle-gated). repair:bench 30/30.
-- **usernameModule validator oracle HARDENED (not a measured flip — read carefully).** The
-  validator family (`synth/derive.ts`) only checked the return TYPE, so a wrong length bound shipped
-  oracle-GREEN/hidden-RED on an unlucky run. Added spec-prose length-boundary REJECTION tests
-  (`name('a'.repeat(min-1))===false`, `…max+1…===false`) — isolation-proven to reject a wrong-bounds
-  validator, and provably NEVER false-rejects a correct one (out-of-range length is invalid on
-  length alone). BUT: across 5 qwen measurement runs qwen wrote CORRECT bounds every time (round-log:
-  22 accepted, 0 boundary-rejections), so the hardening never fired and the 3/3 GREEN is qwen
-  variance, NOT a demonstrated fix. Kept as sound hardening; a clean e2e flip still needs a run where
-  qwen emits wrong bounds. A bounds-repair (canonicalize the length comparison) would make it
-  reliable like repairSetOp — build it once an e2e wrong-bounds candidate is captured.
-- **summaryModule DIAGNOSED (not yet fixed — the last qwen RED, variance).** Root cause is the
-  SAME weak-oracle class: `synth/deriveInvariant.ts` (grouped-ledger-aggregate family) only asserts
-  `entry.balance === entry.credits - entry.debits` (INTERNAL consistency) + non-empty — it NEVER
-  verifies credits/debits are the correct SUMS. So qwen's occasionally-wrong sums that stay
-  internally consistent pass oracle-GREEN / hidden-RED (baseline 8/14 fail on acct-C credit-only &
-  debit-only accounts). FIX (careful — false-rejection risk in a core deriver, so gate on clean
-  parse and validate the KNOWN-CORRECT candidate still passes BEFORE trusting it): in
-  deriveInvariant.ts, when the spec's aggregation semantics parse cleanly — group key ("Group … by
-  X"→accountId), each summed field's `field = sum of <amt> for … '<typeVal>' transactions`
-  (sumField=amount, typeVal=credit/debit), and the type discriminator field from the context data —
-  emit a test that RECOMPUTES expected[g][field] from the real getter data and asserts equality.
-  Abstain to the current weak check when any part doesn't parse (a misparse would false-reject
-  correct code — cont.85 "a verifier fails in two directions"). Likely needs a follow-on repair
-  only if qwen can't write correct sums once the oracle forces it (it wrote them correctly in the
-  capture run, so oracle-strengthening alone may suffice — measure 3×).
-- **`repairGroupedLedger` shipped 2026-07-25 (cont.111, `7cf9b4a`)** — the strengthened invariant
-  rejects the FM's wrong sums but the FM can't reliably self-fix, so the repair replaces the body
-  with the canonical group-by, parameterized by semantics parsed from the spec (group key, summed
-  fields, type values) + the discriminator field from the candidate's own type check. Oracle-re-gated.
-  `repair:bench` 32/32. NOT yet re-measured end-to-end on a qwen summaryModule run — do that next.
-- **OPEN (this track):** (a) [see summaryModule above — implement the invariant sum-verification];
-  (b) decide if `LOCAL_INFERENCE_URL` default should be `:8080` (needs before/after suite + coordination,
-  the dev server reads it too); (c) full qwen suite is the real scorecard — re-run after each repair.
-
-### CODING-BENCH TRACK — Shipped 2026-07-24 (cont.107 — MEASURED, gen-path 9/10 → 10/10 on Apple FM):
-- **bugfixCsv RED→GREEN** (the sole gen-path RED). `repairNaiveDelimiterSplit` in
-  `synth/repairProposers.ts`: a naive `fn(input:string):string[][]` splitter → single-pass
-  quote-aware RFC-4180 scanner, delimiter read from the candidate, oracle-re-gated. Measured
-  `GREEN bugfixCsv compile=Y hidden=Y path=gen 186s`, hidden 9/9 ALL PASS. `repair:bench` 28/28.
-- **Offline drive-turn tsc/self-test un-broke** (`agent/synthDriver.ts`): emitted-tool name was
-  `run_command` but the registry tool is `run` → tsc/self-test were "Unknown tool" no-ops; self-test
-  never ran, grounding critic churned to timeout. Now emits `run` (+timeoutMs), runs tsc only via
-  the project's own `./node_modules/.bin/tsc` (bare `npx tsc` fetches a squatter in projects w/o
-  local TS), skips when absent, and only claims "tsc clean" when tsc ran. filterModule
-  timeout→139s + self-test n/a→PASS; usernameModule self-test n/a→PASS; no HARD regression.
-
-**Coding-bench open next, highest-leverage first:**
-1. **Novice-intent downstream gap** (`agent/synthDriver.ts` ~L2287–2410, unchanged this session):
-   a pathless code goal gets `primaryPath = null` → falls to `solveNonCodeTurn` (prose). Add
-   `defaultCodePath(goal)` inference mirroring the `isWebArtifactGoal`/`defaultWebArtifactPath`
-   block (~L2291), gated so it only fires on server-approved-as-code turns (else it regresses the
-   conversational-confabulation fix). BLOCKED ON TWO THINGS: (a) coordinate with the concurrent
-   `server.ts` routing session; (b) it CANNOT be measured yet — add a novice-phrased benchmark task
-   (sanctioned 14→30) to `coding-benchmarks.ts` FIRST, or the change is unmeasurable = unshippable
-   per doctrine rule #4. Do not implement blind.
-2. **bugfixCsv SOFT residuals** (HARD is green, low priority): the FM's generated self-test
-   `src/index.ts` FAILs (it asserts the FM's own wrong behavior against the now-correct repaired
-   module) and LLM rubric is 40. Neither affects passedHard. Only worth touching if a self-test
-   SOFT metric becomes a gate.
-3. **Full-suite wall-clock**: gen tasks run 200–1000s+ server-side; the harness's 480s PER_TASK
-   timeout aborts only the harness's WAIT, not the server-side agent, so a full 14-task offline
-   suite takes 40–90 min. Consider wiring an abort signal from harness→server, or accept the cost.
-4. **S-7 net-sandbox** (`synth/oracle.ts`): confirmed still holding this session (no all-RED, no
-   `listen EPERM` across ~a dozen strict runs). If it ever recurs on a future oracle.ts edit, it's
-   the net sandbox re-blocking the local unix pipe — escape hatch `CRUCIBLE_ORACLE_NO_SANDBOX=1`.
+> **Sign-in no longer blocks.** `signInFlow` awaited `page.on('close')`, making a human a blocking
+> dependency of an agent turn, and returned ok:true whether or not a session existed. Now: one
+> shared ref-counted browser context (a headed window and headless reads COEXIST — previously
+> impossible), the window opens and returns in ~3s, the goal is parked in
+> `.crucible/pending-signin.json` (24h TTL, survives restart), and a 15s tick notices a real
+> session cookie, resumes the original request unattended, threads the answer into the user's
+> conversation and pushes a notification.
+>
+> **Scheduling reachable.** `schedule_task`/`list_scheduled_tasks`/`cancel_scheduled_task`. The
+> automations subsystem had been complete for weeks with no tool touching it. Cadence is parsed
+> deterministically from the user's words; an unreadable schedule is REFUSED, never guessed.
+> `Trigger` gained a `weekdays` kind ("every weekday at 8am" was not expressible).
+>
+> **State is split between the app and the repo.** The Electron server's cwd is
+> `~/Library/Application Support/crucible-local`, so its automations/sessions are NOT the repo's.
+> A schedule the server confirmed was missing from the repo's `automations.json` because they are
+> different files. `/api/diag` now reports `paths` — check it before believing any state claim.
+>
+> **Live, on the running server:** `take a screenshot of my screen` → real 2816x1762 PNG (so macOS
+> Screen Recording permission is ALREADY granted — that item was a non-issue).
+> `every weekday at 8am send me a summary of my inbox` → real automation, first run 08:00.
+> Benches: `ambiguity:bench` 35/35, `web:bench` 19/19, `schedule:bench` 56/56.
+>
+> **Next, in order:** (1) item 46, semantic tool retrieval — three enumerative gates were fixed by
+> hand this session and `detectAgentTask`'s ~25 regexes are the fourth; replace them with
+> embeddings over the registry's own descriptions rather than extending them. (2) items 57-65, the
+> UI — none started; the live browser view and the pending-sign-in card are what make this FEEL
+> agentic. (3) item 36, extract the SSE runner (`runBriefUnattended` duplicates
+> `runAutomationNow`). (4) items 19-26: tabs, downloads, iframes, pagination, tables.
+>
+> **Open, unresolved:** the agent emits duplicate tool calls (schedule_task fired 3x for one
+> request; the dedupe guard caught it, but the loop should not do that). A stranded orphan server
+> was found again (PID 2109, reparented to init) — cont.70's failure mode.
 
 ---
 

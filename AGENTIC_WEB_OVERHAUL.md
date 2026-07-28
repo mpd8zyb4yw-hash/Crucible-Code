@@ -50,11 +50,15 @@ Today the browser can only READ. Agentic web work means acting.
     or CSS, against the shared context.
 14. `[x]` **Accessibility-tree page reader.** Return a ref-tagged interactive element list, not just
     text, so the model can name a target instead of guessing selectors.
-15. `[x]` **Stable element refs** (`ref_N`) that survive a re-read within a session.
+15. `[~]` **Stable element refs** (`ref_N`). Stamped onto the DOM and resolvable by
+    `[data-crucible-ref]`, so a ref survives re-query on an unchanged page. NOT yet stable across
+    a DOM change: re-reading renumbers from `e1`, so a stale ref can resolve to a different
+    element. Needs identity-based numbering before this is honestly done.
 16. **`browser_fill_form`** — fill many fields in one call, with per-field confirmation of what
     landed.
-17. `[x]` **Wait-for-condition primitive** (selector / text / navigation / network-idle) with a bounded
-    timeout, replacing the blanket `waitForTimeout(1200)`.
+17. **Wait-for-condition primitive** (selector / text / network-idle) with a bounded timeout.
+    NOT done — `web_act` waits on navigation and then a fixed settle beat, and the `wait` action
+    is a plain sleep. The blanket `waitForTimeout` is still there.
 18. `[x]` **Multi-step page session.** A `browser_session` handle so a task can act across several
     turns on one page without reloading.
 19. **Tabs.** Open, list, switch, close — many sites open flows in new tabs.
@@ -66,7 +70,8 @@ Today the browser can only READ. Agentic web work means acting.
 24. **Infinite-scroll harvesting** with a bounded page budget and dedupe.
 25. **Pagination following** — detect and walk "next" until a stated limit.
 26. **Table extraction** to structured rows, emitted as entities.
-27. `[x]` **Screenshot of an ELEMENT**, not just the page, for visual confirmation of an action.
+27. **Screenshot of an ELEMENT**, not just the page, for visual confirmation of an action.
+    NOT done — page-level capture only.
 28. `[x]` **Action confirmation.** After every mutating action, re-read and assert the page actually
     changed; report honestly when it did not.
 29. `[x]` **Never auto-accept.** Consent banners, terms, cookie walls are REPORTED and handed to the
@@ -186,7 +191,7 @@ Per doctrine: the oracle must EXECUTE, and a green gate means nothing unread.
 |---|---|
 | `bdc3a47` | items 1-3 — the three gates that made every non-code request unreachable |
 | `4e6e84c` | items 4-12 — one shared browser context; sign-in returns immediately; background resume |
-| `aa85010` | items 13-15, 17, 18, 27-29 — web_open / web_act / web_close |
+| `aa85010` | items 13, 14, 18, 28, 29 (and 15 partially) — web_open / web_act / web_close |
 | `c52c355` | items 31-35 — schedule_task / list_scheduled_tasks / cancel_scheduled_task |
 | `b5e4324` | **the profile relocation** — the actual reason none of this worked before |
 
