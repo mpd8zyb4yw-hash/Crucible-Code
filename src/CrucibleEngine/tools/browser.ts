@@ -16,7 +16,8 @@
 // chat box lands in a transcript, a debug log and a session file, and Crucible's whole premise is
 // that your data stays yours.
 //
-// Instead there is ONE persistent browser profile at `.crucible/browser-profile`. You open it,
+// Instead there is ONE persistent browser profile at `~/.crucible/browser-profile` — one per
+// MACHINE, not per project (see profileDir). You open it,
 // log into YouTube/Instagram/whatever YOURSELF, once, in a normal browser window. The session
 // cookies persist in that profile exactly as in any browser, and every later agent run reuses
 // them. The agent inherits your logged-in state without ever handling the secret that created it.
@@ -26,6 +27,7 @@
 // would duplicate every cookie you own onto disk for no reason.
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 
 /** Loaded lazily so the module graph stays clean when the browser is never used. */
@@ -127,9 +129,27 @@ function findChromiumBinary(root: string, depth = 0): string | null {
   return null
 }
 
-/** Where the persistent, user-authenticated profile lives. */
-export function profileDir(projectPath: string): string {
-  return path.join(projectPath, '.crucible', 'browser-profile')
+/**
+ * Where the persistent, user-authenticated profile lives.
+ *
+ * ONE location for the whole machine, deliberately independent of the project (cont.119).
+ *
+ * It used to be `<projectPath>/.crucible/browser-profile`, and projectPath for an ordinary chat
+ * is `newDesktopProjectPath()` — a FRESH scratch directory per conversation. There are 363 of
+ * them on this machine and not one contains a browser profile. So every conversation began
+ * logged out of everything, and "sign in once, every later run inherits it" — the entire premise
+ * of the credential design — could never happen: the profile the user signed into was thrown
+ * away with the scratch project, and the next conversation built a new empty one.
+ *
+ * A signed-in browser profile is USER state, like a keychain. It is not project data and must not
+ * be scoped to one. `projectPath` is still accepted so call sites read naturally, and ignored.
+ */
+export function profileDir(_projectPath?: string): string {
+  if (process.env.CRUCIBLE_BROWSER_PROFILE) return process.env.CRUCIBLE_BROWSER_PROFILE
+  // Home, not cwd: the Electron-launched server runs from
+  // ~/Library/Application Support/crucible-local while a CLI run uses the repo, and a profile
+  // that moved with the launcher would strand the user's sessions half the time.
+  return path.join(os.homedir(), '.crucible', 'browser-profile')
 }
 
 export interface PageSession {

@@ -27,7 +27,7 @@ import {
   openWorkPage, actOnPage, closeWorkPage, listWorkPages, type PageAction,
 } from './browser'
 import { parkSignIn } from './signInSessions'
-import { loadAutomations, saveAutomations, computeNextRun, describeTrigger } from '../automations/store'
+import { loadAutomations, saveAutomations, computeNextRun, describeTrigger, AUTOMATIONS_FILE } from '../automations/store'
 import { parseTrigger } from '../automations/parseTrigger'
 import { deriveView } from './viewDerivation'
 import type { Entity } from './entities'
@@ -1279,7 +1279,21 @@ registry.register({
       nextRun: computeNextRun(parsed.trigger, now),
     }
     list.push(automation)
-    saveAutomations(list)
+    // Verify the WRITE, then verify the READ. A scheduling tool that reports success for a
+    // schedule that does not exist is worse than one that fails: the user stops thinking about
+    // it, and nothing ever runs. Caught live — the first version said "first run 8:00 AM" for a
+    // record that never reached disk.
+    const wrote = saveAutomations(list)
+    const readBack = wrote && loadAutomations().some(a => a.id === automation.id)
+    if (!readBack) {
+      return {
+        ok: false,
+        output: `Could not save the schedule — nothing was created, so do NOT tell the user it was.\n` +
+          `The automations store at ${AUTOMATIONS_FILE} could not be written (check the server's ` +
+          `working directory and permissions, or set CRUCIBLE_DIR).`,
+        meta: { blocked: 'store-unwritable', file: AUTOMATIONS_FILE },
+      }
+    }
     return {
       ok: true,
       output: `Scheduled "${name}" — ${parsed.description}. First run ${automation.nextRun ? new Date(automation.nextRun).toLocaleString() : 'never'}.\n` +

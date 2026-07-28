@@ -23,7 +23,7 @@ import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-
 import { createCheckpoint, rollbackToCheckpoint, getCheckpoints, checkpointScopeFor } from './src/CrucibleEngine/checkpoint'
 import { registry } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
-import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun, offBriefReason } from './src/CrucibleEngine/automations/store'
+import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun, offBriefReason, AUTOMATIONS_FILE } from './src/CrucibleEngine/automations/store'
 import type { Automation as AutomationRecord, AutomationRun as AutomationRunRecord } from './src/CrucibleEngine/automations/store'
 import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
@@ -8785,6 +8785,19 @@ app.get('/api/diag', (_req, res) => {
     try { return fn() } catch (e: any) { return { error: e?.message ?? String(e) } }
   }
 
+  // Where this process actually keeps state. Every store path in the codebase is derived from
+  // process.cwd() at module load, so a server launched from a different directory silently keeps
+  // a SEPARATE set of automations, sessions and profiles from the one in the repo — which looks,
+  // from the outside, exactly like writes being lost (cont.119: a schedule confirmed by the
+  // running server was absent from the repo's automations.json, because they are not the same
+  // file). Unguessable from outside the process, so the process reports it.
+  const paths = block(() => ({
+    cwd: process.cwd(),
+    crucibleDir: process.env.CRUCIBLE_DIR ?? path.resolve(process.cwd(), '.crucible'),
+    automationsFile: AUTOMATIONS_FILE,
+    browserProfile: path.join(process.cwd(), '.crucible', 'browser-profile'),
+  }))
+
   const pipeline = block(() => ({
     requestsThisSession: diag.requestsThisSession,
     avgQualityScore: avg(diag.qualityScores),
@@ -8886,6 +8899,7 @@ app.get('/api/diag', (_req, res) => {
     timestamp: new Date().toISOString(),
     uptime: Math.round(process.uptime()),
     version: BUILD_INFO,
+    paths,
     pipeline, fmQueue, models, substrate, masterpiece, anima, corpus, errors,
   })
 })

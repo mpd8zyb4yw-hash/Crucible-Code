@@ -52,11 +52,28 @@ export function loadAutomations(): Automation[] {
   } catch { return [] }
 }
 
-export function saveAutomations(list: Automation[]): void {
+/** Where automations actually live. Exposed so a caller can report it when a write fails —
+ *  "scheduling didn't work" is unactionable without the path it tried. */
+export const AUTOMATIONS_FILE = FILE
+
+/**
+ * Persist, and SAY whether it worked.
+ *
+ * This used to swallow every error on the theory that "the next save retries". For the
+ * server-owned run bookkeeping that was defensible; the moment a TOOL writes here on the user's
+ * behalf it stopped being — cont.119 shipped schedule_task reporting `Scheduled "Morning inbox
+ * digest" — first run 8:00 AM` for a write that never landed, which is precisely the
+ * confident-wrong class this codebase keeps closing. Callers that can report failure must.
+ */
+export function saveAutomations(list: Automation[]): boolean {
   try {
     fs.mkdirSync(path.dirname(FILE), { recursive: true })
     fs.writeFileSync(FILE, JSON.stringify(list, null, 2))
-  } catch { /* disk-full etc: next save retries; runs are also in the session arc */ }
+    return true
+  } catch (e) {
+    console.warn(`[Automations] could not write ${FILE}:`, (e as Error)?.message)
+    return false
+  }
 }
 
 function nextAtTime(from: number, time: string, dayOfWeek?: number): number {
