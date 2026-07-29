@@ -38,6 +38,7 @@ import { deriveView } from './src/CrucibleEngine/tools/viewDerivation'
 import { resolveAction, type Entity } from './src/CrucibleEngine/tools/entities'
 import { runAgentLoop, isAllToolResidue } from './src/CrucibleEngine/agent/loop'
 import { looksLikeProtocol } from './src/CrucibleEngine/agent/fmReact'
+import { suggestReadOnlyTools } from './src/CrucibleEngine/agent/toolRetrieval'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
 import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages, clearAllSessions } from './src/CrucibleEngine/agent/taskSession'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
@@ -4226,6 +4227,20 @@ app.post('/api/chat', async (req, res) => {
              'save_pdf', 'save_page_image', 'screenshot', 'browser_sign_in',
              'schedule_task', 'list_scheduled_tasks', 'cancel_scheduled_task',
              'list_dir', 'read_file', 'write_file']
+        // Retrieval ADDS to the curated list, never replaces it (see suggestReadOnlyTools for the
+        // measured reason: 89% top-3, 39% top-1). This is what lets a request reach a tool nobody
+        // thought to put in the list — "summarise my inbox" needs gmail_search, which the content
+        // set does not carry — without any regex learning about inboxes. Read-only only, and the
+        // GUI tools stay gated on desktop intent regardless.
+        if (!isDesktopGoal) {
+          try {
+            const extra = await suggestReadOnlyTools(agentGoal, new Set(DESKTOP_TOOL_NAMES), 3)
+            if (extra.length) {
+              DESKTOP_TOOL_NAMES.push(...extra)
+              debugBus.emit('agent', 'tool_retrieval_added', { tools: extra }, { severity: 'info' })
+            }
+          } catch { /* retrieval is advisory; never block the run on it */ }
+        }
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
           allowMutation: true, allowDestructive: false, onFileMutated,
@@ -4241,11 +4256,12 @@ app.post('/api/chat', async (req, res) => {
             name: def.name,
             description: def.description,
             params: paramDesc,
+            // registry.exec emits exactly one tool_call and one tool_result (with the derived
+            // view attached) through fmToolCtx.emit, which IS `send`. Emitting here as well —
+            // and letting fmReact emit a third time — is why every call appeared three times.
+            emitsOwnEvents: true,
             execute: async (args: Record<string, string>) => {
-              const id = `fmr_${fmrIdx++}`
-              send({ type: 'tool_call', id, tool: def.name, args })
-              const r = await registry.exec({ id, name: def.name, args }, fmToolCtx)
-              send({ type: 'tool_result', id, tool: def.name, ok: r.ok, output: r.output.slice(0, 800), truncated: r.output.length > 800 })
+              const r = await registry.exec({ id: `fmr_${fmrIdx++}`, name: def.name, args }, fmToolCtx)
               return `(${r.ok ? 'ok' : 'error'}) ${r.output}`
             },
           }]

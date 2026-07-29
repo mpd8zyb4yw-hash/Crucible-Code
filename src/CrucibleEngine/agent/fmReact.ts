@@ -185,6 +185,10 @@ export interface FmReactTool {
   description: string
   params: string   // human-readable param description for the FM
   execute: (args: Record<string, string>, signal?: AbortSignal) => Promise<string>
+  /** True when `execute` already emits its own tool_call/tool_result (e.g. it goes through
+   *  registry.exec, which guarantees exactly one of each). This executor then stays quiet
+   *  rather than emitting a duplicate pair — see the note at the emit site. */
+  emitsOwnEvents?: boolean
 }
 
 export interface FmReactOpts {
@@ -703,24 +707,30 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     } else if (!tool) {
       toolResult = `Error: Unknown tool "${toolName}". Available: ${[...toolMap.keys()].join(', ')}`
     } else {
-      // Single emit point for EVERY tool this executor runs — default set and extras alike.
-      // `extraTools` from server.ts also wrap themselves, so those emit twice; the client
-      // reducer keys on `id` and folds the second result into the same row, and the ids differ
-      // per source, so a duplicate row is preferable to the alternative that shipped for
-      // months: real tool calls that the UI could not see at all.
+      // Emit for tools that do NOT emit for themselves.
+      //
+      // This used to emit unconditionally, and the note here rationalised the result: server.ts's
+      // extraTools wrap registry.exec, which emits its own pair, so every registry-backed call
+      // produced THREE tool_call events — one here, one from the wrapper, one from registry.exec.
+      // Live that read as the agent calling `schedule_task` three times, and it is why the
+      // duplicate guard there was load-bearing rather than belt-and-braces.
+      //
+      // registry.exec is the canonical emitter (one tool_call and one tool_result per exec, with
+      // the derived view attached), so a tool routed through it says so and this stays quiet.
       const evId = `fmr_${toolsUsed.length}_${toolName}`
+      const selfEmits = tool.emitsOwnEvents === true
       try {
         toolsUsed.push(toolName)
         debugBus.emit('agent', 'fm_react_tool', { tool: toolName, args: JSON.stringify(args).slice(0, 100) }, { severity: 'info' })
-        emit?.({ type: 'tool_call', id: evId, tool: toolName, args })
+        if (!selfEmits) emit?.({ type: 'tool_call', id: evId, tool: toolName, args })
         toolResult = await tool.execute(args, signal ?? undefined)
-        emit?.({
+        if (!selfEmits) emit?.({
           type: 'tool_result', id: evId, tool: toolName, ok: true,
           output: String(toolResult).slice(0, 800), truncated: String(toolResult).length > 800,
         })
       } catch (e: any) {
         toolResult = `Tool error: ${e?.message ?? e}`
-        emit?.({ type: 'tool_result', id: evId, tool: toolName, ok: false, output: toolResult })
+        if (!selfEmits) emit?.({ type: 'tool_result', id: evId, tool: toolName, ok: false, output: toolResult })
       }
     }
     // Record only REAL executions, so the replay text above is always a genuine tool result.
