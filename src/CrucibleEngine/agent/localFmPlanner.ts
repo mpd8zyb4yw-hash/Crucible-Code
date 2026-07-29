@@ -96,9 +96,14 @@ const TOOL_SPECS: Record<string, string> = {
   type_text: '- type_text: {"text":"text to type"}',
   search_web: '- search_web: {"query":"search query"}',
   search_youtube: '- search_youtube: {"query":"search query"}',
+  // Every value here must be a LITERAL EXAMPLE, never a description of what to put there. A weak
+  // planner copies the spec verbatim: written as {"action":"click|fill|select|press","target":"e12
+  // or the control's visible name"} it emitted exactly that, action "read" and all, and the call
+  // failed with `Unknown action "read"` (cont.119). Describe the options in the PROSE after the
+  // dash, where they cannot be mistaken for values.
   browse_page: '- browse_page: {"url":"https://example.com"} — returns the page TEXT, using the user\'s signed-in browser profile',
-  web_open: '- web_open: {"url":"https://example.com"} — opens a page that STAYS open and lists its clickable/typeable controls with ref ids; use this when the task needs more than reading',
-  web_act: '- web_act: {"pageId":"p1","action":"click|fill|select|press","target":"e12 or the control\'s visible name","value":"text to type"} — acts on a page opened by web_open',
+  web_open: '- web_open: {"url":"https://example.com"} — opens a page that STAYS open and lists its clickable controls with ref ids; use when the task needs more than reading',
+  web_act: '- web_act: {"pageId":"p1","action":"click","target":"e12","value":""} — acts on a page opened by web_open. action is one of click, type, fill, select, press, scroll, hover, back, wait. target is a ref id from the last read, or a control\'s visible name. value is the text to type or the option to select.',
 }
 
 // Built per-request so the tool menu reflects exactly what this goal is allowed to use —

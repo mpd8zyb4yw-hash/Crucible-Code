@@ -883,6 +883,21 @@ registry.register({
 // Every one degrades HONESTLY: with no Chromium installed they return the exact command to fix
 // it rather than a stack trace or, worse, a confident answer about a page they never loaded.
 
+/**
+ * A string argument as the model meant it, not as it typed it.
+ *
+ * Models routinely wrap a value in its own quotes, and the quotes survive into the arg: live
+ * (cont.119) `web_open` received `"\"https://example.com\""` and navigated to
+ * `https://"https//example.com%22`, failing with ERR_NAME_NOT_RESOLVED. Stripping a MATCHED
+ * surrounding pair is safe — no URL or path legitimately begins and ends with the same quote —
+ * and it is done once, here, rather than at each call site that will otherwise forget.
+ */
+function argStr(v: unknown): string {
+  const s = String(v ?? '').trim()
+  const unquoted = /^(["'`])([\s\S]*)\1$/.exec(s)
+  return (unquoted ? unquoted[2] : s).trim()
+}
+
 function artifactPath(ctx: ToolCtx, base: string, ext: string): string {
   const dir = path.join(ctx.projectPath, '.crucible', 'artifacts')
   fs.mkdirSync(dir, { recursive: true })
@@ -904,7 +919,7 @@ registry.register({
   async run(args, ctx) {
     const avail = findBrowser()
     if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
-    const url = String(args.url ?? '').trim()
+    const url = argStr(args.url)
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     try {
       const r = await readPage(ctx.projectPath, /^https?:\/\//i.test(url) ? url : `https://${url}`,
@@ -958,7 +973,7 @@ registry.register({
   async run(args, ctx) {
     const avail = findBrowser()
     if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
-    const url = String(args.url ?? '').trim()
+    const url = argStr(args.url)
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     const out = artifactPath(ctx, String(args.name ?? 'page'), 'pdf')
     try {
@@ -990,7 +1005,7 @@ registry.register({
   async run(args, ctx) {
     const avail = findBrowser()
     if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
-    const url = String(args.url ?? '').trim()
+    const url = argStr(args.url)
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     const out = artifactPath(ctx, String(args.name ?? 'page'), 'png')
     try {
@@ -1023,10 +1038,10 @@ registry.register({
   async run(args, ctx) {
     const avail = findBrowser()
     if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
-    const url = String(args.url ?? '').trim()
+    const url = argStr(args.url)
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     try {
-      const r = await openSignInWindow(ctx.projectPath, url, args.site ? String(args.site) : undefined)
+      const r = await openSignInWindow(ctx.projectPath, url, args.site ? argStr(args.site) : undefined)
       // Already signed in — say so and let the caller carry straight on. Opening a window to
       // ask for a login the profile already holds is the kind of busywork that reads as broken.
       if (r.alreadySignedIn) {
@@ -1106,7 +1121,7 @@ registry.register({
   async run(args, ctx) {
     const avail = findBrowser()
     if (!avail.ok) return { ok: false, output: avail.reason!, meta: { blocked: 'no-browser' } }
-    const url = String(args.url ?? '').trim()
+    const url = argStr(args.url)
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     try {
       const s = await openWorkPage(ctx.projectPath, url)
@@ -1171,12 +1186,12 @@ registry.register({
     required: ['pageId', 'action'],
   },
   async run(args, ctx) {
-    const pageId = String(args.pageId ?? '').trim()
-    const action = String(args.action ?? '').trim().toLowerCase() as PageAction
+    const pageId = argStr(args.pageId)
+    const action = argStr(args.action).toLowerCase() as PageAction
     const VALID: PageAction[] = ['click', 'type', 'fill', 'select', 'press', 'scroll', 'hover', 'back', 'wait']
     if (!VALID.includes(action)) return { ok: false, output: `Unknown action "${action}". Use one of: ${VALID.join(', ')}.` }
     try {
-      const r = await actOnPage(pageId, action, args.target ? String(args.target) : undefined, args.value != null ? String(args.value) : undefined)
+      const r = await actOnPage(pageId, action, args.target ? argStr(args.target) : undefined, args.value != null ? argStr(args.value) : undefined)
       // Report the DELTA first. "I clicked it" is not evidence anything happened, and a model
       // that cannot tell a no-op from a success will happily march on through a broken flow.
       const delta = r.changed.url ? `navigated to a new URL`
@@ -1511,7 +1526,7 @@ registry.register({
     const rawDest = String(args.dest ?? '').replace(/^~/, process.env.HOME ?? '')
     if (!rawDest) return { ok: false, output: 'A non-empty "dest" is required.' }
     try { resolveSafe(rawDest, ctx, { allowOutside: true }) } catch (e: any) { return { ok: false, output: e.message } }
-    const url = String(args.url ?? '').trim()
+    const url = argStr(args.url)
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     return new Promise(resolve => {
       const dir = path.dirname(rawDest)

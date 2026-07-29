@@ -81,6 +81,19 @@ async function main() {
   check('acting on a closed page fails loudly', afterClose.ok === false && /No open page/.test(String(afterClose.output)),
     String(afterClose.output).slice(0, 160))
 
+  // ── Quoted arguments (cont.119) ────────────────────────────────────────────
+  // Models wrap values in their own quotes and the quotes survive into the arg: live, web_open
+  // received "\"https://example.com\"" and navigated to https://"https//example.com%22,
+  // failing with ERR_NAME_NOT_RESOLVED. A matched surrounding pair is stripped centrally.
+  const quoted = await exec('web_open', { url: `"${FIXTURE}"`, maxChars: 400 })
+  check('a double-quoted url still opens', quoted.ok === true, String(quoted.output).slice(0, 160))
+  const qId = (quoted.meta as any)?.pageId
+  if (qId) {
+    const qAct = await exec('web_act', { pageId: `"${qId}"`, action: '"click"', target: '"Run search"', maxChars: 400 })
+    check('quoted pageId/action/target still act', qAct.ok === true, String(qAct.output).slice(0, 160))
+    await exec('web_close', { pageId: qId })
+  } else check('quoted pageId/action/target still act', false, 'no pageId from the quoted open')
+
   console.log(`\nTOTAL: ${pass}/${pass + fail}`)
   process.exit(fail ? 1 : 0)
 }
