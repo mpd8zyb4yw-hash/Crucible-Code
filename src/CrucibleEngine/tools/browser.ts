@@ -217,6 +217,10 @@ async function launchContext(dir: string, headed: boolean): Promise<BrowserConte
     headless: !headed,
     executablePath,
     viewport: { width: 1440, height: 900 },
+    // A flow that ends in a file is a normal thing to ask an agent for, and without this the file
+    // is simply lost — the click "works", nothing changes on the page, and there is nothing to
+    // show for it. Stated explicitly rather than trusted to a library default.
+    acceptDownloads: true,
     // A real UA: some sites serve a degraded or blocking page to obvious automation, and the
     // point of this path is to see what the USER would see.
     args: ['--disable-blink-features=AutomationControlled'],
@@ -715,7 +719,14 @@ function extractPageState(): { url: string; title: string; elements: UiElement[]
 }
 
 /** Working tabs, keyed by an id the agent passes back. */
-const workPages = new Map<string, { page: import('playwright-core').Page; release: () => void; projectPath: string }>()
+const workPages = new Map<string, {
+  page: import('playwright-core').Page
+  release: () => void
+  projectPath: string
+  /** Files this page has downloaded, in order. Drained by each act so a caller is told about a
+   *  file exactly once, at the step that produced it. */
+  downloads: string[]
+}>()
 let workPageSeq = 0
 
 async function stateOf(page: import('playwright-core').Page, status?: number): Promise<PageState> {
@@ -742,7 +753,21 @@ export async function openWorkPage(projectPath: string, url: string): Promise<Op
   let released = false
   const release = () => { if (!released) { released = true; workPages.delete(pageId); releaseContext() } }
   page.on('close', release)
-  workPages.set(pageId, { page, release, projectPath })
+  const entry = { page, release, projectPath, downloads: [] as string[] }
+  workPages.set(pageId, entry)
+  // Downloads arrive asynchronously, long after the click that caused them returns. Saving them
+  // as they land — into the same artifacts directory every other tool writes to — is what makes
+  // "download the report" a thing the agent can actually finish.
+  page.on('download', async d => {
+    try {
+      const dir = path.join(projectPath, '.crucible', 'artifacts')
+      fs.mkdirSync(dir, { recursive: true })
+      const safe = (d.suggestedFilename() || 'download').replace(/[^\w.-]+/g, '_').slice(0, 80)
+      const out = path.join(dir, `${Date.now()}-${safe}`)
+      await d.saveAs(out)
+      entry.downloads.push(out)
+    } catch { /* a failed download must not take the page down with it */ }
+  })
   // Preserve ANY explicit scheme — prefixing https:// onto "file:///…" produced the nonsense
   // URL "https://file:///…". Only a bare host gets a default scheme.
   const resp = await page.goto(/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`, { waitUntil: 'domcontentloaded' })
@@ -760,10 +785,15 @@ export async function closeWorkPage(pageId: string): Promise<boolean> {
 
 export function listWorkPages(): string[] { return [...workPages.keys()] }
 
-export type PageAction = 'click' | 'type' | 'fill' | 'select' | 'press' | 'scroll' | 'hover' | 'back' | 'wait'
+// `read` earns its place from a live run: the planner emitted `web_act {action:"read"}` and was
+// refused with "Unknown action". It was right to want it — after acting, or after a page settles,
+// re-reading is the obvious next step and the alternative was a no-op scroll to force a re-read.
+export type PageAction = 'click' | 'type' | 'fill' | 'select' | 'press' | 'scroll' | 'hover' | 'back' | 'wait' | 'read'
 
 export interface ActResult extends PageState {
   pageId: string
+  /** Files downloaded as a result of THIS action, saved to .crucible/artifacts. */
+  downloads: string[]
   /** What actually changed — the honest answer to "did that work?". */
   changed: { url: boolean; title: boolean; elementCount: number }
   navigated: boolean
@@ -809,6 +839,7 @@ export async function actOnPage(
     case 'scroll': await page.mouse.wheel(0, Number(value) || 800); break
     case 'back':   await page.goBack({ waitUntil: 'domcontentloaded' }); break
     case 'wait':   await page.waitForTimeout(Math.min(10_000, Number(value) || 1500)); break
+    case 'read':   break   // re-read only; the state snapshot below IS the result
   }
   const nav = await navigation
   // A settle beat: clicks on client-rendered apps mutate the DOM without navigating, and
@@ -816,8 +847,12 @@ export async function actOnPage(
   await page.waitForTimeout(nav ? 1200 : 600)
 
   const after = await stateOf(page)
+  // Give a download a moment to start before reporting; `saveAs` then completes in the background
+  // and the file is reported by the act that follows if it was slow.
+  if (action === 'click' || action === 'press') await page.waitForTimeout(400)
+  const downloads = w.downloads.splice(0)
   return {
-    pageId, ...after,
+    pageId, ...after, downloads,
     navigated: !!nav || before.url !== after.url,
     changed: {
       url: before.url !== after.url,

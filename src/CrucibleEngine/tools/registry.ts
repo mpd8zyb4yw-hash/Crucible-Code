@@ -1189,13 +1189,13 @@ registry.register({
 
 registry.register({
   name: 'web_act',
-  description: 'Do something on a page opened with web_open: click a button or link, type into a field, select an option, press a key, scroll, or go back. Then re-reads the page and tells you what changed. Target a control by the ref id from the last read (like "e12") or by its visible name.',
+  description: 'Do something on a page opened with web_open: click a button or link, type into a field, select an option, press a key, scroll, go back, or just re-read it. Then re-reads the page and tells you what changed. Target a control by the ref id from the last read (like "e12") or by its visible name.',
   mutates: true,
   params: {
     type: 'object',
     properties: {
       pageId: { type: 'string', description: 'The page id returned by web_open' },
-      action: { type: 'string', description: 'click | type | fill | select | press | scroll | hover | back | wait' },
+      action: { type: 'string', description: 'click | type | fill | select | press | scroll | hover | back | wait | read (re-read the page without acting)' },
       target: { type: 'string', description: 'Ref id from the last read ("e12"), or a substring of the control\'s visible name' },
       value: { type: 'string', description: 'Text to type/fill, option to select, key to press, or pixels to scroll' },
       maxChars: { type: 'number', description: 'Max characters of page text to return (default 6000)' },
@@ -1205,13 +1205,16 @@ registry.register({
   async run(args, ctx) {
     const pageId = argStr(args.pageId)
     const action = argStr(args.action).toLowerCase() as PageAction
-    const VALID: PageAction[] = ['click', 'type', 'fill', 'select', 'press', 'scroll', 'hover', 'back', 'wait']
+    const VALID: PageAction[] = ['click', 'type', 'fill', 'select', 'press', 'scroll', 'hover', 'back', 'wait', 'read']
     if (!VALID.includes(action)) return { ok: false, output: `Unknown action "${action}". Use one of: ${VALID.join(', ')}.` }
     try {
       const r = await actOnPage(pageId, action, args.target ? argStr(args.target) : undefined, args.value != null ? argStr(args.value) : undefined)
       // Report the DELTA first. "I clicked it" is not evidence anything happened, and a model
       // that cannot tell a no-op from a success will happily march on through a broken flow.
-      const delta = r.changed.url ? `navigated to a new URL`
+      // A re-read that changes nothing is a SUCCESS, not a suspected no-op — the "nothing
+      // changed, try a different target" warning is for actions that were meant to do something.
+      const delta = action === 'read' ? `re-read the page`
+        : r.changed.url ? `navigated to a new URL`
         : r.changed.title ? `the page title changed`
         : r.changed.elementCount !== 0 ? `${r.changed.elementCount > 0 ? '+' : ''}${r.changed.elementCount} controls appeared/disappeared`
         : `NOTHING measurably changed — the action may not have taken effect; try a different target`
@@ -1222,10 +1225,23 @@ registry.register({
           meta: { blocked: 'needs-login', pageId, url: r.url },
         }
       }
+      // A file that arrived must be NAMED, and emitted as an entity so it can be opened and acted
+      // on — a download the user cannot find is the same as no download.
+      const dl = r.downloads.length
+        ? `\n\nDownloaded ${r.downloads.length} file${r.downloads.length === 1 ? '' : 's'}:\n` +
+          r.downloads.map(f => `  ${f}`).join('\n')
+        : ''
       return {
         ok: true,
-        output: `${action}${args.target ? ` on "${args.target}"` : ''} — ${delta}.\n\n` + renderPageState(r, Math.min(20_000, Number(args.maxChars ?? 6000))),
-        meta: { pageId, navigated: r.navigated, changed: r.changed },
+        output: `${action}${args.target ? ` on "${args.target}"` : ''} — ${delta}.${dl}\n\n` + renderPageState(r, Math.min(20_000, Number(args.maxChars ?? 6000))),
+        entities: r.downloads.length
+          ? localFiles(r.downloads.map(f => ({
+              name: path.basename(f), path: f, isDir: false,
+              size: (() => { try { return fs.statSync(f).size } catch { return 0 } })(),
+              mtime: new Date().toISOString(),
+            })))
+          : undefined,
+        meta: { pageId, navigated: r.navigated, changed: r.changed, downloads: r.downloads },
       }
     } catch (e: any) {
       return { ok: false, output: `web_act failed: ${String(e?.message ?? e).slice(0, 400)}` }

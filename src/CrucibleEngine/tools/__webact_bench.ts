@@ -2,6 +2,7 @@
 // Drives the REAL registry against an offline fixture, so it asserts the whole path — tool
 // definition, ref stamping, action dispatch, change detection — without depending on a live
 // site. Run: npx tsx src/CrucibleEngine/tools/__webact_bench.ts
+import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
@@ -91,6 +92,47 @@ async function main() {
   const afterClose = await exec('web_act', { pageId, action: 'click', target: 'Run search' })
   check('acting on a closed page fails loudly', afterClose.ok === false && /No open page/.test(String(afterClose.output)),
     String(afterClose.output).slice(0, 160))
+
+  // ── Downloads (cont.119, overhaul item 20) ─────────────────────────────────
+  // A flow that ends in a file is an ordinary thing to ask for, and without capture the file is
+  // simply lost: the click "works", nothing on the page changes, and there is nothing to show.
+  const dlOpen = await exec('web_open', { url: FIXTURE, maxChars: 600 })
+  const dId = (dlOpen.meta as any)?.pageId
+  if (dId) {
+    const dl = await exec('web_act', { pageId: dId, action: 'click', target: 'Download the note', maxChars: 600 })
+    const files: string[] = ((dl.meta as any)?.downloads ?? []) as string[]
+    check('a download is captured', files.length === 1, JSON.stringify((dl.meta as any)?.downloads))
+    check('the file exists on disk', files.length > 0 && fs.existsSync(files[0]), files[0] ?? '(none)')
+    check('the file has the real content', files.length > 0 && fs.readFileSync(files[0], 'utf8').includes('hello from the fixture'),
+      files[0] ? fs.readFileSync(files[0], 'utf8').slice(0, 40) : '(none)')
+    check('the download is named in the output', /Downloaded 1 file/.test(String(dl.output)), String(dl.output).slice(0, 160))
+    // Emitted as an entity so it can be opened and acted on — a file the user cannot find is the
+    // same as no file (crucible-usefulness-overhaul).
+    check('the download is emitted as a file entity', Array.isArray(dl.entities) && dl.entities.length === 1,
+      JSON.stringify(dl.entities))
+    // Drained per action: the next act must not re-report the same file.
+    const after = await exec('web_act', { pageId: dId, action: 'read', maxChars: 400 })
+    check('a download is reported once, not on every later act', (((after.meta as any)?.downloads ?? []) as string[]).length === 0,
+      JSON.stringify((after.meta as any)?.downloads))
+    for (const f of files) { try { fs.unlinkSync(f) } catch { /* best effort */ } }
+    await exec('web_close', { pageId: dId })
+  } else check('a download is captured', false, 'could not open the fixture')
+
+  // ── `read`: re-read without acting (cont.119) ──────────────────────────────
+  // The planner asked for this itself — it emitted web_act {action:"read"} and was refused with
+  // "Unknown action". It was right to want it; the alternative was a no-op scroll to force a
+  // re-read, which then reported "NOTHING measurably changed" as if something had gone wrong.
+  const reopened = await exec('web_open', { url: FIXTURE, maxChars: 800 })
+  const rId = (reopened.meta as any)?.pageId
+  if (rId) {
+    const read = await exec('web_act', { pageId: rId, action: 'read', maxChars: 800 })
+    check('read re-reads the page', read.ok === true, String(read.output).slice(0, 160))
+    check('read reports itself as a re-read, not a failed action',
+      /re-read the page/.test(String(read.output)) && !/NOTHING measurably changed/.test(String(read.output)),
+      String(read.output).split('\n')[0])
+    check('read still returns the controls', /\be\d+\s+\[/.test(String(read.output)), String(read.output).slice(0, 200))
+    await exec('web_close', { pageId: rId })
+  } else check('read re-reads the page', false, 'could not reopen the fixture')
 
   // ── Quoted arguments (cont.119) ────────────────────────────────────────────
   // Models wrap values in their own quotes and the quotes survive into the arg: live, web_open
