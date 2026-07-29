@@ -1933,6 +1933,37 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-29b (gap-soundness cont. — the carve's stale-reuse claim, discharged by its exits)
+
+**The comment that stood unrefuted for three sessions is TRUE, and weaker than the code deserves.**
+The carry-forward site in `solve.ts` claimed "a stale reuse can only cost a compose failure, never a
+false certification," justified by the composed whole being "re-verified downstream." Attacking it
+from the carry site was the wrong end. From the exits it is immediate: `runSubFunctionOnce` has
+exactly **three** `status: 'solved'` returns, and every one runs `verifyCode` against `input.cases`
+*before* returning — the carve probe (`~:868`, whose `certified` is set only where `traceCarve.ts
+~:274` passed the draft on the original gold cases), normal composition (`~:1082`, guarded again by
+the explicit plain-verifier re-check at `~:1078`), and glue re-decomposition (`~:1068`, inductively
+one of the three, called with the same cases). A carried helper only ever enters the verdict as text
+inside `helperBlock`. Nothing downstream has to be trusted for the invariant to hold. Near-misses
+checked and cleared: a carried helper whose dependency is missing from the new plan fails at compose
+only; `carry` is allocated per `decomposeCodeBySubFunction` call (`~:527`), so a key cannot cross
+tasks. The proof now lives at the carry site instead of the assertion.
+
+**The one real candidate hole, checked and cleared — `entries` is a PROMPT field, not a verification
+obligation.** `probeSpec` omits `entries` where the compose spec forwards it, which looks exactly
+like the probe certifying a module against fewer obligations than compose would impose. It is not:
+`codeVerifier` declares `entries` (`:40`) and never consults it — `RUNNER`/`MULTI_RUNNER` route each
+case to `c.entry ?? DEFAULT_ENTRY`, so a multi-entry task's cases hit their own targets either way.
+`entries` is read only by `codeProposer.ts:144/212` and `multiFile.ts:153`. The omission costs the
+probe draft a prompt line about secondary functions (multi-entry probes fail more often and fall
+through to the trace) and can never let one pass that compose would fail. Documented at `probeSpec`
+so it is not re-filed as a soundness bug.
+
+**Consequence for the ladder's open items:** the two remaining carve-gate findings — the dead-rung
+prune not re-running `isNonComposingCarve`/`isRebakedHelper`, and `rungSpecKey` not capturing
+sibling-helper context — are reclassified as **cost/plan-quality**, not soundness. Typecheck
+unchanged at the same 5 pre-existing errors.
+
 ### 2026-07-29 (gap-soundness — the roman contamination did not exist, and the identity gate is why)
 
 **The suspected `_learned/roman.ts` leak is REFUTED — measured, not argued.** The open question was

@@ -230,6 +230,17 @@ export function probeSpec(
   }
 }
 
+// WHY NO `entries` HERE (checked 2026-07-29). solve.ts's compose spec forwards `input.entries` for
+// multi-function tasks and this probe spec does not, which looks like a hole that would let the
+// probe certify a module against fewer obligations than compose. It is not one: `entries` never
+// reaches the verifier's judgement at all. codeVerifier declares the field (codeVerifier.ts:40) and
+// then routes each case to `c.entry ?? DEFAULT_ENTRY` (RUNNER/MULTI_RUNNER) — the per-CASE entry is
+// what decides which function is called, so every case a multi-entry task carries is executed
+// against its own target either way. `entries` is a PROPOSER hint ("define all of these"), read
+// only by codeProposer.ts:144/212 and multiFile.ts:153. Omitting it therefore costs the probe draft
+// a prompt line about the secondary functions — so a multi-entry probe is likelier to fail
+// verification and fall through to the trace — and can never let one pass that compose would fail.
+
 /**
  * Draw ONE composed module for the carve, verify it against the ORIGINAL gold cases, and trace it.
  *

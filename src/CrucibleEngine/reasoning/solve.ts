@@ -896,8 +896,26 @@ async function runSubFunctionOnce(
     // CARRY-FORWARD: this exact rung (name + identical goal) already certified on a prior
     // planAttempt — reuse its source at zero model cost instead of re-grinding it. Sound: the
     // stored source certified against this same spec last attempt, and the composed whole is
-    // re-verified downstream against the ORIGINAL cases regardless, so a stale reuse can only
-    // cost a compose failure, never a false certification.
+    // re-verified against the ORIGINAL cases regardless, so a stale reuse can only cost a compose
+    // failure, never a false certification.
+    //
+    // DISCHARGED 2026-07-29 (this comment had stood unrefuted for three sessions, which is not the
+    // same as checked). "Re-verified downstream" understates it: this function has exactly THREE
+    // `status: 'solved'` exits, and every one of them runs verifyCode against `input.cases` BEFORE
+    // returning — nothing downstream has to be trusted to hold the invariant.
+    //   • probe solve (~:868)   — `probe.certified` is set only where verifyCode passed the draft
+    //                             against the original gold cases (traceCarve.ts ~:274).
+    //   • normal compose (~:1082) — composingVerifier prepends `helperBlock` (which is where a
+    //                             carried source physically lands) and the explicit guard at ~:1078
+    //                             re-runs the plain verifier on the same full module.
+    //   • glue re-decompose (~:1068) — returns a recursive result, inductively one of these three,
+    //                             invoked with the SAME `input.cases`.
+    // A carried helper only ever reaches the verdict as text inside `helperBlock`, so the worst a
+    // stale one can do is make that module fail. Two near-misses that would have broken it and
+    // don't: a carried helper whose own dependency is absent from the new plan still fails only at
+    // compose (the module doesn't run), and `carry` is allocated per decomposeCodeBySubFunction
+    // call (~:527), so a key can never cross tasks. The reuse-time `certified: true` below is
+    // honest for the same reason rungSpecKey exists — it is the identical goal AND cases.
     const carried = carry?.get(h.name)
     if (carried && carried.spec === rungSpecKey(h)) {
       helpers.push({ name: h.name, source: carried.source })

@@ -19,11 +19,12 @@
 
 ## CURRENT STATE — last updated 2026-07-29 (gap-soundness cont.) (REPLACE THIS EVERY SESSION)
 
-> **The contamination we feared was not there — and the reason it was not there is a gate we
-> had never seen fire on a real case. The stale-reuse refutation is still untouched.**
+> **The stale-reuse claim is now discharged by construction: every `solved` exit of the carve
+> verifies against the original cases before returning. What remains on the carve is cost, not
+> soundness.**
 
-Items 1 and 2 CLOSED (see the two blocks immediately below). **Item 3 — the carry-site
-stale-reuse claim — remains NOT STARTED for the third session running; it is now the top item.**
+Items 1 and 2 CLOSED earlier; item 3 (the carry-site stale-reuse claim) CLOSED 2026-07-29 — see
+its block below, including the `probeSpec`/`entries` near-miss that must not be re-filed as a bug.
 
 ### CLOSED — `_learned/roman.ts` does NOT contaminate the roman scorecard tasks
 Distilled-skill `match()` is a single **case-sensitive** `\b<exportName>\b` test on the raw spec,
@@ -68,12 +69,32 @@ without). Fixed by making the unions total.
 `index.ts:23` TS2305 (`PromptType` not exported by `./types`) · `scoring-engine.ts:506` TS2322 ·
 `specializationForcing.ts:7` TS2307 (`../types` does not resolve — a genuinely broken import).
 
-### TOP OPEN ITEM 1 — item 3 was never started
-Unaddressed 2026-07-27b findings: `isNonComposingCarve`/`isRebakedHelper` are not re-run after the
-dead-rung prune (note `isDegenerateSubFnCarve` IS, so it is partly handled), and `rungSpecKey` does
-not capture sibling-helper context. The carry-site comment "a stale reuse can only cost a compose
-failure, never a false certification" is UNREFUTED — the specific thing to attack is whether a
-cached rung SOURCE is re-verified against the CURRENT rung's cases, or trusted.
+### CLOSED — the stale-reuse claim is DISCHARGED, and it was understated
+Three sessions of "unrefuted" ended by reading the exits rather than the carry site. The comment
+said the composed whole is "re-verified downstream"; in fact `runSubFunctionOnce` has exactly THREE
+`status: 'solved'` exits and **each one runs `verifyCode` against `input.cases` before returning** —
+probe (`solve.ts` ~:868, certified only where `traceCarve.ts` ~:274 passed the draft on gold cases),
+normal compose (~:1082, plus the explicit plain-verifier guard at ~:1078), and glue re-decomposition
+(~:1068, inductively one of the three, invoked with the SAME cases). A carried helper reaches the
+verdict only as text inside `helperBlock`, so the worst a stale one does is fail that module.
+Nothing downstream is trusted. Two near-misses that do NOT break it: a carried helper whose
+dependency is absent from the new plan fails at compose only, and `carry` is per-`decompose
+CodeBySubFunction` call (~:527) so a key cannot cross tasks. Proof written at the carry site.
+
+**The one thing that could have broken it, checked and cleared:** `probeSpec` omits `entries` while
+the compose spec forwards it, which reads like the probe certifying against fewer obligations.
+`entries` is **prompt-only** — `codeVerifier` declares the field (`:40`) and then routes every case
+to `c.entry ?? DEFAULT_ENTRY`, so per-case targeting does the work; `entries` is read only by
+`codeProposer.ts:144/212` and `multiFile.ts:153`. Omitting it costs the probe draft a prompt line
+(multi-entry probes fail more often, fall through to the trace) and can never pass what compose
+would fail. Recorded in `traceCarve.ts` at `probeSpec`. **Do not "fix" this as a soundness bug.**
+
+### TOP OPEN ITEM 1 — the two 2026-07-27b carve-gate findings, still untouched
+`isNonComposingCarve`/`isRebakedHelper` are not re-run after the dead-rung prune (`solve.ts` ~:815/
+~:823; `isDegenerateSubFnCarve` IS re-run at ~:878, so this is partial coverage, not a missing
+mechanism), and `rungSpecKey` does not capture sibling-helper context. Note these are now
+COST/PLAN-QUALITY items, not soundness ones — the exit-verification proof above bounds what either
+can do to a verdict.
 
 ### STANDING TRAP — the hygiene gate had a hole for weeks
 `__source_hygiene_bench` walked `<root>/src`, so no root-level file was ever scanned despite the
