@@ -329,6 +329,46 @@ function defaultFor(i: AffordanceInput, e: Entity): string | undefined {
   return undefined
 }
 
+/**
+ * Given an entity and a piece of text the assistant just DRAFTED, find the mutating action that
+ * text is a draft OF (cont.120).
+ *
+ * This is what turns "here is a reply I wrote" into "here is a send I can perform once you say
+ * so", and it is deliberately expressed against the affordance protocol rather than against Gmail:
+ * an entity affords a mutating action, that action needs exactly one free-text input, and the
+ * draft is that input. Everything else — recipient, subject, message id — the affordance already
+ * binds from the entity itself.
+ *
+ * Any future provider that emits an entity of a kind with a `longtext` mutating affordance
+ * inherits draft-then-confirm from this function without changing it. A `read` affordance is never
+ * eligible: there is nothing to approve about a read, and nothing to draft for one.
+ */
+export function draftableAction(
+  e: Entity, draft: string,
+): { affordanceId: string; label: string; tool: string; args: Record<string, unknown>; effect: Effect; verb: string } | null {
+  const text = (draft ?? '').trim()
+  if (!text) return null
+  for (const a of affordancesFor(e.kind)) {
+    if (a.effect === 'read') continue
+    const longtext = (a.inputs ?? []).filter(i => i.type === 'longtext')
+    // Exactly one free-text field, or we would be guessing which one the draft belongs in — and
+    // guessing wrong here puts the body of an email into its subject line.
+    if (longtext.length !== 1) continue
+    // Every OTHER required input must be one the affordance can derive from the entity, or the
+    // action is not complete and there is nothing honest to propose.
+    const supplied: Record<string, string> = { [longtext[0].key]: text }
+    const args = a.bind(e, supplied)
+    if (!args) continue
+    return {
+      affordanceId: a.id, label: a.label, tool: a.tool, args, effect: a.effect,
+      // The word the user would use to approve it. `send` is the effect itself; anything else
+      // takes the affordance's own id ("create", "archive"), which is already a verb.
+      verb: a.effect === 'send' ? 'send' : a.id,
+    }
+  }
+  return null
+}
+
 /** Look up a bound affordance for execution — the server-side entry point for a UI action. */
 export function resolveAction(
   e: Entity, affordanceId: string, input?: Record<string, string>,

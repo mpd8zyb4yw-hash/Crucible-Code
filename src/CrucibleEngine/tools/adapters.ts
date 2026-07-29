@@ -40,7 +40,18 @@ function toIso(raw: string | undefined): string | undefined {
   return Number.isNaN(t) ? undefined : new Date(t).toISOString()
 }
 
-export function gmailMessages(messages: any[]): Entity[] {
+/**
+ * @param opts.source  Which tool produced these. `gmail_read` returns the SAME provider object as
+ *   `gmail_search`, just with the full payload, so it shares this adapter rather than growing a
+ *   second one — but affordances that bind on `source.startsWith('gmail')` need the truth about
+ *   which tool it came from.
+ * @param opts.body  The message body, when the caller has the full one. `snippet` is a preview and
+ *   is all a search result carries; a read message has the real thing.
+ */
+export function gmailMessages(
+  messages: any[],
+  opts: { source?: string; body?: (msg: any) => string } = {},
+): Entity[] {
   return (messages ?? []).filter(Boolean).map(msg => {
     const from = parseAddress(header(msg, 'From'))
     const id = String(msg?.id ?? '')
@@ -48,10 +59,10 @@ export function gmailMessages(messages: any[]): Entity[] {
     return entity({
       id,
       kind: 'message',
-      source: 'gmail_search',
+      source: opts.source ?? 'gmail_search',
       title: header(msg, 'Subject') || '(no subject)',
       subtitle: from.name,
-      body: msg?.snippet ?? '',
+      body: opts.body?.(msg) ?? msg?.snippet ?? '',
       at: toIso(header(msg, 'Date')),
       url: id ? `https://mail.google.com/mail/u/0/#inbox/${id}` : null,
       fields: [

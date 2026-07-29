@@ -1950,9 +1950,17 @@ registry.register({
         return ''
       }
       const body = extractBody(msg.payload)
+      // Entities, not just prose (cont.120). gmail_read was the ONE mail tool returning a bare
+      // string, and the consequence was not cosmetic: reading a message produced nothing the
+      // affordance registry could bind to, so a message you had just read offered no Reply — the
+      // action was only reachable from a search result. It also left the draft-and-confirm flow
+      // with no entity to derive a send from, which is why "send it" had nothing to send.
+      // The `to` header is carried as a field because a reply needs to know who else was on it.
       return {
         ok: true,
         output: `From: ${h('From')}\nTo: ${h('To')}\nDate: ${h('Date')}\nSubject: ${h('Subject')}\n\n${body.slice(0, 4000)}`,
+        entities: gmailMessages([msg], { source: 'gmail_read', body: () => body.slice(0, 4000) })
+          .map(e => ({ ...e, fields: [...e.fields, { key: 'to', label: 'To', value: h('To'), role: 'person' as const }] })),
       }
     } catch (e: any) { return { ok: false, output: e.message } }
   },

@@ -101,6 +101,42 @@ export function googleServicesStatus(userId: string): Record<string, boolean> {
   }
 }
 
+// ── The signed-in user's own display name (cont.120) ──────────────────────────
+//
+// Needed so a drafted message can be SIGNED. The live report was a reply ending "[Your Name]",
+// which the user had to edit before it could be sent — the assistant knew the account and still
+// shipped a form to fill in.
+//
+// `userinfo.profile` is already in GOOGLE_SCOPES below, so this costs no new consent. Cached for
+// the process lifetime because a display name does not change during a session and this sits on
+// the path of every drafted reply.
+//
+// Returns null rather than throwing or guessing. A wrong name on outgoing mail is worse than no
+// name, so every failure here — not connected, network down, profile without a name — must
+// degrade to "unknown" and let the caller drop the placeholder instead.
+const displayNameCache = new Map<string, string | null>()
+
+export async function googleDisplayName(userId: string): Promise<string | null> {
+  if (!userId) return null
+  if (displayNameCache.has(userId)) return displayNameCache.get(userId) ?? null
+  let name: string | null = null
+  try {
+    const info = await gFetch(userId, 'https://www.googleapis.com/oauth2/v2/userinfo')
+    const raw = typeof info?.name === 'string' ? info.name.trim() : ''
+    // An email address is not a name. Some profiles return the local part or the address itself,
+    // and signing a letter "Best regards, justinfitz21@gmail.com" is its own kind of wrong.
+    name = raw && !raw.includes('@') ? raw : null
+  } catch { name = null }
+  displayNameCache.set(userId, name)
+  return name
+}
+
+/** Test/logout hook — a different account must not inherit the previous one's name. */
+export function clearDisplayNameCache(userId?: string): void {
+  if (userId) displayNameCache.delete(userId)
+  else displayNameCache.clear()
+}
+
 // All scopes requested during Google OAuth sign-in
 export const GOOGLE_SCOPES = [
   'openid', 'email', 'profile',

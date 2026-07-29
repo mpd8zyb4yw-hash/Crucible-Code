@@ -35,7 +35,12 @@ import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
 import type { ToolCtx, ToolResult } from './src/CrucibleEngine/tools/protocol'
 import { deriveView } from './src/CrucibleEngine/tools/viewDerivation'
-import { resolveAction, type Entity } from './src/CrucibleEngine/tools/entities'
+import { resolveAction, draftableAction, type Entity } from './src/CrucibleEngine/tools/entities'
+import {
+  proposeAction, peekProposal, takeProposal, clearProposal,
+  isConfirmationOf, isCancellationOf, renderProposal,
+} from './src/CrucibleEngine/agent/proposedAction'
+import { applySignature } from './src/CrucibleEngine/agent/draftSignature'
 import { runAgentLoop, isAllToolResidue } from './src/CrucibleEngine/agent/loop'
 import { looksLikeProtocol } from './src/CrucibleEngine/agent/fmReact'
 import { suggestReadOnlyTools } from './src/CrucibleEngine/agent/toolRetrieval'
@@ -119,7 +124,7 @@ import { buildArchetypeTools, selectArchetype, type ArchetypeId } from './src/Cr
 import { detectConversational, buildConversationalFallback, applyVoiceLayer } from './src/CrucibleEngine/conversationalMode'
 import { readScratch } from './src/CrucibleEngine/agent/taskScratchpad'
 import { approveGlobalGraduation } from './src/CrucibleEngine/tools/dynamicTools'
-import { saveTokens, googleServicesStatus, GOOGLE_SCOPES, gFetch, tokenFile as googleTokenFile } from './src/CrucibleEngine/tools/googleApis'
+import { saveTokens, googleServicesStatus, GOOGLE_SCOPES, gFetch, googleDisplayName, tokenFile as googleTokenFile } from './src/CrucibleEngine/tools/googleApis'
 import { listConnections } from './src/CrucibleEngine/connections/registry'
 import { latestResumable, saveSession, newSessionId, readMemoryDigest, appendMemory, readGlobalMemoryDigest, globalMemoryFile } from './src/CrucibleEngine/state/session'
 import { buildCodebaseContext, indexStats, ensureIndex, reindexFiles, searchIndex } from './src/CrucibleEngine/state/codebaseIndex'
@@ -3583,6 +3588,88 @@ app.post('/api/chat', async (req, res) => {
     clearClarification(clarifyConvId)
   }
 
+  // ── "send it" — the turn that performs a reviewed action (cont.120) ────────
+  //
+  // MEASURED: after a drafted reply, "send it" ran ZERO tools and re-printed the draft. It
+  // matched no routing predicate — `detectAgentTask`'s confirmation list has yes/ok/do it but not
+  // "send it", and `isContinuationPhrase`'s verb list has run/fix/build but not "send" — so it
+  // fell to the tool-less prose pipeline, which could only repeat itself.
+  //
+  // This runs FIRST, above every other route, because a confirmation is not a question to be
+  // classified: there is a specific action pending, the user approved it, and the only correct
+  // behaviour is to perform that exact action. Routing it through intent classification is what
+  // let a weak model answer instead of act.
+  //
+  // The gate is `proposedAction.ts` — read its safety notes before touching this. In short: the
+  // args were bound by the system from real tool output, the proposal is consumed before the tool
+  // runs so a repeated "yes" cannot send twice, and anything ambiguous is not a confirmation.
+  const pendingProposal = peekProposal(clarifyConvId, Date.now())
+  if (pendingProposal && message) {
+    if (isCancellationOf(message, pendingProposal)) {
+      clearProposal(clarifyConvId)
+      debugBus.emit('agent', 'action_cancelled', { tool: pendingProposal.tool }, { severity: 'info' })
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      const text = `Cancelled — I didn't ${pendingProposal.verb} it. The draft is still above if you'd like to change something.`
+      const line = `data: ${JSON.stringify({ type: 'final', text })}\n\n`
+      res.write(line)
+      if (chatSessionId) broadcastEvent(chatSessionId, line, res)
+      patchActiveSessionRound(chatUser, chatRoundId, { synthesis: text, synthesisDone: true, synthStreaming: false })
+      res.write('data: [DONE]\n\n'); res.end()
+      return
+    }
+    if (isConfirmationOf(message, pendingProposal)) {
+      res.setHeader('Content-Type', 'text/event-stream')
+      res.setHeader('Cache-Control', 'no-cache')
+      res.setHeader('Connection', 'keep-alive')
+      const emit = (payload: object) => {
+        const line = `data: ${JSON.stringify(payload)}\n\n`
+        res.write(line)
+        if (chatSessionId) broadcastEvent(chatSessionId, line, res)
+      }
+      // Consumed BEFORE the tool runs. If the send half-succeeds or the process dies, the user is
+      // told the outcome is uncertain rather than having a retry deliver a second copy.
+      const action = takeProposal(clarifyConvId, Date.now())!
+      emit({ type: 'agent_start', driver: 'on-device (confirmed action)', resumed: false })
+      debugBus.emit('agent', 'action_confirmed', { tool: action.tool, effect: action.effect }, { severity: 'info' })
+      // This block runs ABOVE the agent branch, so the agent's own AbortController and
+      // projectPath do not exist yet. A confirmed action is a single bounded tool call and needs
+      // neither a project nor a cancel path of its own.
+      const confirmAbort = new AbortController()
+      req.on('close', () => confirmAbort.abort())
+      let text: string
+      try {
+        // allowMutation is TRUE here and nowhere else on this path. That is the whole point of
+        // the proposal: the drafting turn cannot send, and this turn can only send the exact
+        // arguments that drafting turn showed the user.
+        const r = await registry.exec(
+          { id: `confirm-${Date.now()}`, name: action.tool, args: action.args },
+          {
+            userId: chatUser?.id, emit, signal: confirmAbort.signal,
+            allowMutation: true, allowDestructive: false, sessionId: chatSessionId,
+          } as ToolCtx,
+        )
+        text = r.ok
+          ? `Done — ${action.summary}.\n\n${r.output}`
+          : `That didn't go through: ${r.output}\n\nI didn't ${action.verb} it. Say the word and I'll try again.`
+        debugBus.emit('agent', 'action_executed', { tool: action.tool, ok: r.ok }, { severity: r.ok ? 'success' : 'error' })
+      } catch (e: any) {
+        // The uncertain case, stated as uncertain. Claiming failure here could be a lie if the
+        // request reached the provider before the throw.
+        text = `I couldn't confirm whether that completed — the call failed with: ${String(e?.message ?? e)}. `
+          + `Please check before retrying, so you don't ${action.verb} it twice.`
+        debugBus.emit('agent', 'action_threw', { tool: action.tool, error: String(e?.message ?? e) }, { severity: 'error' })
+      }
+      emit({ type: 'final', text })
+      emit({ type: 'agent_done', ok: true, stopped: 'confirmed-action', iters: 1, toolCallCount: 1, ms: 0 })
+      patchActiveSessionRound(chatUser, chatRoundId, { synthesis: text, synthesisDone: true, synthStreaming: false })
+      historyPush(chatUser?.id ?? null, { ts: Date.now(), query: message, promptType: 'confirmed-action', models: ['crucible-confirmed-action'], synthesis: text })
+      res.write('data: [DONE]\n\n'); res.end()
+      return
+    }
+  }
+
   const goalSpec = specForGoal(message ?? '', { hasAttachment: /ATTACHED FILE CONTENT/.test(message ?? '') })
   const isCreationGoal = goalSpec !== null
 
@@ -3944,6 +4031,10 @@ app.post('/api/chat', async (req, res) => {
           goal: agentGoal, sessionId: chatSessionId,
         }
         const outputs: Array<{ tool: string; ok: boolean; output: string }> = []
+        // Entities are kept alongside the prose so a drafted reply has something to bind a real
+        // send to (cont.120). Before this, the draft was prose in a transcript with no recipient
+        // and no message id attached, which is why "send it" had nothing to send.
+        const seenEntities: Entity[] = []
         for (const call of named.calls) {
           if (ac.signal.aborted) break
           // `toolCtx.emit` IS `send`, and registry.exec() already emits both `tool_call` and
@@ -3960,6 +4051,7 @@ app.post('/api/chat', async (req, res) => {
             send({ type: 'tool_result', id: call.id, tool: call.name, ok: false, output: r.output, truncated: false })
           }
           outputs.push({ tool: call.name, ok: r.ok, output: r.output })
+          if (r.ok && r.entities?.length) seenEntities.push(...(r.entities as Entity[]))
           debugBus.emit('agent', 'named_tool_exec', { tool: call.name, ok: r.ok }, { severity: r.ok ? 'info' : 'warn' })
         }
         const anyOk = outputs.some(o => o.ok)
@@ -3971,6 +4063,9 @@ app.post('/api/chat', async (req, res) => {
           // 0-char answer). When the user asked to SEE their data, the data IS the answer.
           const rendered = renderPersonalData(outputs)
           let summary = ''
+          // Hoisted (cont.120): both the deliverable check below and the proposal block after it
+          // need to know this turn was asked for a DRAFT rather than a retrieval.
+          const wantsDraft = /\b(draft|compose|write)\b[\s\S]{0,40}\b(reply|response|email|message|answer)\b/i.test(message ?? '')
           if (implicit && rendered) {
             // Pure retrieval ("show me my emails", "what's on my calendar") — ship the
             // lossless render and skip the FM entirely. Empty/fabricated finals become
@@ -3989,7 +4084,6 @@ app.post('/api/chat', async (req, res) => {
             // request with "I have read the full message and drafted a reply." — a claim with
             // no deliverable. Deterministic rejection + one retry: a drafting request whose
             // answer is short and content-free is not an answer.
-            const wantsDraft = /\b(draft|compose|write)\b[\s\S]{0,40}\b(reply|response|email|message|answer)\b/i.test(message ?? '')
             const claimsWithoutContent = (s: string) =>
               wantsDraft && (s.length < 120 || /\b(I have|I've)\s+(read|drafted|written|composed|prepared)\b[\s\S]{0,80}$/i.test(s.trim()))
             for (let attempt = 0; attempt < 2 && !summary.trim(); attempt++) {
@@ -4003,6 +4097,47 @@ app.post('/api/chat', async (req, res) => {
             }
             if (!summary.trim()) {
               summary = rendered ?? outputs.map(o => `${o.tool}:\n${o.output}`).join('\n\n')
+            }
+          }
+
+          // ── A draft the user can approve, not prose they must retype (cont.120) ──
+          //
+          // MEASURED: "Draft a reply … do NOT send it until I say so" produced a correct reply;
+          // "send it" then ran ZERO tools and re-printed the same text. The draft had no
+          // recipient, no subject and no link to the message it answered — there was nothing to
+          // send even if the turn had routed correctly.
+          //
+          // `draftableAction` binds the draft to a real, executable action through the affordance
+          // registry: an entity of a kind that affords a mutating action needing exactly one
+          // free-text input. Nothing here is Gmail-specific, and nothing is model-authored — the
+          // recipient and subject come from the message that was actually read.
+          if (wantsDraft && summary.trim() && chatUser?.id) {
+            // Sign it FIRST, so the body the user reviews is byte-for-byte the body that would be
+            // sent. Signing after the proposal was built would propose one message and show
+            // another — the exact gap a review step exists to close.
+            const who = await googleDisplayName(chatUser.id).catch(() => null)
+            const signed = applySignature(summary, who)
+            if (signed.hadPlaceholder) {
+              summary = signed.text
+              debugBus.emit('agent', 'draft_signature', { signed: signed.signed }, { severity: 'info' })
+            }
+            for (const ent of seenEntities) {
+              const action = draftableAction(ent, summary)
+              if (!action) continue
+              const proposal = {
+                tool: action.tool, args: action.args, effect: action.effect, verb: action.verb,
+                summary: `${action.label} to ${String(action.args.to ?? ent.title)}`,
+                preview: [
+                  { label: 'To', value: String(action.args.to ?? '') },
+                  { label: 'Subject', value: String(action.args.subject ?? '') },
+                ],
+              }
+              proposeAction(clarifyConvId, proposal, Date.now())
+              summary = `${summary}\n\n---\n\n${renderProposal({ ...proposal, ts: Date.now() })}`
+              debugBus.emit('agent', 'action_proposed', {
+                tool: action.tool, effect: action.effect, entity: ent.id,
+              }, { severity: 'info' })
+              break
             }
           }
           send({ type: 'final', text: summary })
