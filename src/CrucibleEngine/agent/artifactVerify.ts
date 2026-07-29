@@ -50,9 +50,33 @@ export interface ArtifactVerdict {
 // ── Item parsing ──────────────────────────────────────────────────────────────
 
 /** Split a document into candidate items: numbered entries, or blank-line-separated blocks. */
-function splitItems(text: string): string[] {
-  const t = text.replace(/\r\n/g, '\n').trim()
+/** Back-half labels — the second side of a pair. Shared with `isPair` via PAIR_LABELS below. */
+const BACK_LABEL = /^\s*(?:\d{1,3}[.)]\s*)?\**\s*(?:a|answer|back|definition|meaning|response)\s*\**\s*[:\-–]\s*\S/i
+
+function splitItems(text: string, shape?: ItemShape): string[] {
+  let t = text.replace(/\r\n/g, '\n').trim()
   if (!t) return []
+
+  // ── A blank line between the two halves does not make them two items (cont.119) ──
+  //
+  // Models routinely space a deck out:
+  //
+  //     Q: What is the plural of "persona"?
+  //
+  //     A: Persone
+  //
+  // The blank-line block split below then made each HALF its own item, neither of which has both
+  // labels, so `isPair` rejected every one and a perfectly good 20-card deck verified as ZERO.
+  // That false reject was not cosmetic: it sent the request on to the tool loop, which answered a
+  // flashcard brief with `fs.createWriteStream` examples. A false reject is worse than a false
+  // accept here (crucible-verifier-two-failure-directions) — this one discarded correct work and
+  // replaced it with garbage.
+  //
+  // So for a pair deliverable, a back-half label that follows a blank line is rejoined to the
+  // front half it belongs to. Only for `pair`: for `block` the blank line is a real boundary.
+  if (shape === 'pair') {
+    t = t.replace(/\n\s*\n+(?=\s*(?:\d{1,3}[.)]\s*)?\**\s*(?:a|answer|back|definition|meaning|response)\s*\**\s*[:\-–]\s*\S)/gi, '\n')
+  }
 
   // Prefer an explicit enumeration when one is present — "1." / "1)" / "Card 1:" at line start.
   // Two or more markers means the author genuinely enumerated; one is a false positive.
@@ -166,7 +190,7 @@ export function verifyArtifact(text: string, exp: ArtifactExpectation): Artifact
   }
 
   // ── pair / block: parse items and check each one's shape ──
-  const items = splitItems(body)
+  const items = splitItems(body, exp.shape)
   const predicate = exp.shape === 'pair' ? isPair : isBlock
   const valid = items.filter(predicate)
   const found = valid.length

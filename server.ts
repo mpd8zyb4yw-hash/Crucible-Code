@@ -1938,7 +1938,7 @@ const LOCAL_FM_TIMEOUT_MS = Number(
 // Fail-silent local call: returns '' on any error (used where the pipeline must
 // never throw, e.g. emergency fallback synthesis). For normal routing that should
 // surface failures, use callModel({ provider: 'local', ... }) instead.
-async function callLocalModel(systemPrompt: string, userMessage: string, timeoutMs = LOCAL_FM_TIMEOUT_MS): Promise<string> {
+async function callLocalModel(systemPrompt: string, userMessage: string, timeoutMs = LOCAL_FM_TIMEOUT_MS, maxTokens = 1024): Promise<string> {
   try {
     const res = await enqueueFm(() => fetch(`${LOCAL_INFERENCE_URL}/v1/chat/completions`, {
       method: 'POST',
@@ -1949,7 +1949,7 @@ async function callLocalModel(systemPrompt: string, userMessage: string, timeout
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
-        max_tokens: 1024,
+        max_tokens: maxTokens,
         temperature: 0.7,
       }),
       signal: AbortSignal.timeout(timeoutMs),
@@ -4022,6 +4022,67 @@ app.post('/api/chat', async (req, res) => {
         debugBus.emit('agent', 'named_tools_all_failed', { tools: named.calls.map(c => c.name) }, { severity: 'warn' })
         endAgent()
         return
+      }
+    }
+
+    // ── Content deliverables are WRITTEN, not tool-looped (cont.119) ──────────
+    //
+    // MEASURED. Handed `contentBriefFor` and nothing else, the on-device model produces the deck
+    // cleanly on the first try — twenty well-formed Q:/A: Italian grammar pairs. Handed the SAME
+    // request through the ReAct tool loop it returned, across successive attempts, LevelDB
+    // typings, `fs.writeFile` wrappers, and `web_open("https://quizlet.com/...")` as source code.
+    // The model was never the limitation; giving a writing job to a tool loop was. Tool names in
+    // the prompt are the strongest cue a small model has, and it answers them with code.
+    //
+    // So a resolved creation goal whose SOURCE is the model's own knowledge is written directly,
+    // verified against the same artifact contract, and only falls through to the tool loop if
+    // that fails. Nothing here can reach the network, which is the point: no search to come back
+    // empty, no URL to invent, no page to fail to load.
+    const contentSlot = goalSpec?.slots.find(sl => sl.key === 'source')
+    if (!resumable && !iterCheckpoint && localInferenceAvailable
+        && goalSpec?.ready && contentSlot?.source === 'default') {
+      try {
+        send({ type: 'agent_start', driver: 'on-device (content)', projectPath, resumed: false })
+        const CONTENT_SYSTEM =
+          'You are a helpful assistant. Produce exactly what is asked, as plain text. '
+          + 'Never write code, and never describe how you would do it — just produce the thing itself.'
+        // Room for the whole artifact: a 20-item deck does not fit in the 1024-token default,
+        // and a truncated deck failed the count contract and was thrown away in favour of the
+        // tool loop's code — a worse answer, discarded for being incomplete.
+        let text = (await callLocalModel(CONTENT_SYSTEM, contentBriefFor(goalSpec), 180_000, 4096) ?? '').trim()
+        let verdict = verifyArtifact(text, goalSpec.expectation)
+        // One retry, naming the SHORTFALL only — never showing the model its own rejected output
+        // (crucible-repair-is-a-search).
+        if (!verdict.ok && text) {
+          send({ type: 'thought', text: `That came back as ${verdict.found} of ${verdict.expected} — asking again for the full set.` })
+          const retryText = (await callLocalModel(
+            CONTENT_SYSTEM,
+            `${verdict.feedback}\n\n${contentBriefFor(goalSpec)}`, 180_000, 4096) ?? '').trim()
+          const retryVerdict = verifyArtifact(retryText, goalSpec.expectation)
+          if (retryVerdict.found > verdict.found) { text = retryText; verdict = retryVerdict }
+        }
+        // Ship a SHORT-BUT-CORRECTLY-SHAPED artifact rather than falling through. Fifteen real
+        // flashcards with an honest count beats the tool loop's `fs.createWriteStream` example,
+        // and the alternative was discarding good work for being incomplete.
+        if (text && (verdict.ok || verdict.found > 0)) {
+          // A named destination was NOT written to by this path. Say so plainly rather than
+          // letting the user assume it landed there.
+          const destSlot = goalSpec.slots.find(sl => sl.key === 'destination')
+          const notes: string[] = []
+          if (!verdict.ok) notes.push(`*This has ${verdict.found} items, not the ${verdict.expected} asked for. Say "more" and I'll extend it.*`)
+          if (destSlot?.source === 'stated') notes.push(`*This was not added to ${destSlot.value} — it is ready to paste in.*`)
+          const answer = notes.length ? `${text}\n\n---\n\n${notes.join('\n')}` : text
+          send({ type: 'verify', passed: verdict.ok, signal: `artifact:${goalSpec.expectation.deliverable}`, report: `${verdict.found} of ${verdict.expected} items matching the requested shape.` })
+          send({ type: 'final', text: answer })
+          patchActiveSessionRound(chatUser, chatRoundId, { synthesis: answer, synthesisDone: true, synthStreaming: false })
+          debugBus.emit('agent', 'content_direct_done', { deliverable: goalSpec.expectation.deliverable, items: verdict.found }, { severity: 'info' })
+          console.log(`[Agent] Content path produced ${verdict.found} ${goalSpec.expectation.deliverable} in ${((Date.now() - t0) / 1000).toFixed(2)}s`)
+          endAgent()
+          return
+        }
+        debugBus.emit('agent', 'content_direct_fallthrough', { found: verdict.found, expected: verdict.expected }, { severity: 'warn' })
+      } catch (e: any) {
+        console.warn('[Agent] Content path threw — falling through:', e?.message ?? e)
       }
     }
 
