@@ -259,6 +259,38 @@ format (`**Subject:** / **Definition:**` instead of `Q:/A:`). That is the capabi
 `CAPABILITY_CEILING.md`, not a routing bug — every gate above it now reports the shortfall
 instead of hiding it.
 
+### Round 3 — verified end to end, and five more defects found by doing it
+
+**The sign-in resume loop is PROVEN**, not just assembled. Items 8-12 were built in round 1 and
+only ever tested in pieces. Full chain, on the live server:
+
+| step | evidence |
+|---|---|
+| goal parked while waiting | `status: waiting` in `.crucible/pending-signin.json` |
+| a real session cookie appears | `_gh_sess`, set by an ordinary github.com visit — no login, no credentials |
+| the 15s tick observes it | `status: resumed` within 8 seconds |
+| the parked goal runs unattended | `signin_resume_done {ok: true}` |
+| the answer is threaded back | round written to the user's own conversation store |
+
+Recipe for re-testing without signing into anything: park a record for a host that sets a
+session-shaped cookie on a plain visit (`github.com` → `_gh_sess`), then have the agent browse it.
+
+Found while doing that, each by running it:
+
+| defect | commit |
+|---|---|
+| **Every tool call was reported THREE times** — fmReact, the server wrapper, and registry.exec all emitted. Why schedule_task's duplicate guard was load-bearing. | `1d1e8fc` |
+| A website was read off the local disk: `read example.com` → `read_file({path:"example.com"})`. Three layers: TLD-vs-extension, the fallback to `.`, and scheme-stripped URLs. | `b462442` |
+| The planner copied my **spec placeholders in as values** — `action:"read"`, `target:"e12 or the control's visible name"`. Specs must carry literal examples. | `2c5e4f8` |
+| Quoted args survived into calls: `web_open` navigated to `https://"https//example.com%22`. | `2c5e4f8` |
+| **A 503 was diagnosed as a consent screen** and the user told to sign in to a site that was down. Nothing captured the HTTP status; `/cookies/set` matched the consent path regex. | `5940f02` |
+
+**Tool retrieval by meaning** (item 46) was built, MEASURED, and wired only where the numbers
+justify it: per-clause max-scoring gives top-3 89% but top-1 39%, so it is a candidate generator,
+not a picker. It ADDS up to 3 read-only tools to the curated set and never chooses, never gates,
+never suggests anything that mutates. That is what lets "summarise my inbox" reach `gmail_search`,
+which no regex knows about.
+
 ### Next, in priority order
 
 1. **Item 46 — semantic tool retrieval.** Three enumerative gates were fixed this session by
