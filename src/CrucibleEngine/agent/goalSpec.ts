@@ -40,7 +40,7 @@
 
 import type { ItemShape, ArtifactExpectation } from './artifactVerify'
 
-export type SlotKey = 'subject' | 'source' | 'quantity' | 'depth' | 'format' | 'access'
+export type SlotKey = 'subject' | 'source' | 'quantity' | 'depth' | 'format' | 'access' | 'destination'
 
 export interface Slot {
   key: SlotKey
@@ -124,6 +124,25 @@ const URL_RE = /https?:\/\/[^\s<>"')]+/i
 /** Sites that will not serve useful text without an authenticated session. */
 const AUTH_WALLED =
   /\b(?:mail\.google|drive\.google|docs\.google|outlook|linkedin|facebook|instagram|x\.com|twitter\.com|notion\.so|slack\.com|canvas|blackboard|moodle|coursera|udemy|chegg|quizlet)\b/i
+
+/**
+ * A SERVICE the user wants the deliverable to live IN, not merely a topic.
+ *
+ * "build me a QUIZLET flashcard set" names a destination, and the live failure report was blunt
+ * about the cost of ignoring it: "it never signed into quizlet or attempted to make the flashcards
+ * at all". The word was read as an adjective and dropped, so the run produced text in chat and
+ * called that done.
+ *
+ * Reuses AUTH_WALLED — the list of sites that need a session already exists for precisely this
+ * family of destinations, and a second list would be one more thing to keep in sync. A match here
+ * is never blocking: producing the content and saying plainly where it did NOT go beats refusing.
+ */
+function statedDestination(msg: string): string | null {
+  const m = msg.match(AUTH_WALLED)
+  if (!m) return null
+  const host = m[0].toLowerCase()
+  return host.includes('.') ? host : `${host}.com`
+}
 
 /** A stated count anywhere in the message: "20 cards", "30 hard flash cards", "five slides". */
 function statedQuantity(msg: string): string | null {
@@ -299,6 +318,13 @@ export function specForGoal(message: string, ctx: { hasAttachment?: boolean } = 
 
   // ── QUANTITY / DEPTH / FORMAT. Never blocking. A wrong guess costs a regeneration, not a
   //    wasted build, and that is exactly the test for whether something deserves a question.
+  // ── DESTINATION. Where the artifact must LAND. Never blocking: if the service cannot be
+  //    driven, the content is still worth having, and saying where it did not go is honest.
+  const destination = statedDestination(msg)
+  slots.push(destination
+    ? { key: 'destination', value: destination, source: 'stated', blocking: false }
+    : { key: 'destination', value: 'here in the chat', source: 'default', blocking: false })
+
   slots.push(quantity
     ? { key: 'quantity', value: quantity, source: 'stated', blocking: false }
     : { key: 'quantity', value: def.quantity, source: 'default', blocking: false })
@@ -339,6 +365,20 @@ export function briefFor(spec: GoalSpec): string {
     `Level: ${v('depth')}.`,
     `Format: ${v('format')}.`,
   ]
+  const dest = v('destination')
+  if (dest && dest !== 'here in the chat') {
+    // Naming the ACTION and the tool aliases, for the same reason the URL branch below does:
+    // an executor handed a tool name it does not have emits pseudo-code instead of a call.
+    lines.push(
+      `Deliver INTO ${dest} — the user asked for it there, not just as text in the chat. ` +
+      `Open it with web_open, then drive the page with web_act (click/fill/select) to create the ` +
+      `${spec.deliverable} for real. If it needs a login, call browser_sign_in for ${dest}: that ` +
+      `opens a window, returns immediately, and this task resumes automatically once they sign in ` +
+      `— do not wait, and never ask for a password. ` +
+      `If you genuinely cannot create it there, produce the full content here AND say plainly that ` +
+      `it was not added to ${dest}. Do not imply it was.`,
+    )
+  }
   if (URL_RE.test(src)) {
     // Name the ACTION, not a tool. There are two executors with different vocabularies for the
     // same operation — the registry calls it `read_url`, `fmReact` calls it `fetch_page` — and

@@ -3599,7 +3599,51 @@ app.post('/api/chat', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
-    const send = (payload: object) => {
+
+    // ── The artifact contract, at the one place every answer passes through ──
+    //
+    // `verifyArtifact` was already applied on the Layer 2 fast path and on Layer 2.5/fmReact.
+    // The request that exposed the hole — "build me a quizlet flashcard set with simple
+    // grammatical italian terms" — fell past BOTH into the main loop, which shipped TypeScript
+    // declarations for the `abstract-level` npm package as the answer, with agent_done ok=true.
+    //
+    // There are eight `type:'final'` exits in this block (VGR, multi-file VGR, best-effort VGR,
+    // pure-code synth, meta-pipeline, planned task, loop, elicitation). Guarding them one at a
+    // time is precisely how the ninth ships the wrong thing, so the contract lives in `send`
+    // itself — the single point every answer must pass through. Same reasoning as registry.exec's
+    // one-tool_call-one-tool_result invariant.
+    //
+    // Only fires for a RESOLVED creation goal, so ordinary chat is untouched and the elicitation
+    // below (goalSpec not ready) still sends its question freely.
+    const ARTIFACT_MISMATCH_MARK = '**This does not match what you asked for.**'
+    let artifactChecked = false
+    const send = (payload: any) => {
+      if (payload?.type === 'final' && goalSpec?.ready && !artifactChecked
+          && typeof payload.text === 'string' && payload.text.trim()
+          // fmReact prepends this itself before its own send; don't warn twice.
+          && !payload.text.startsWith(ARTIFACT_MISMATCH_MARK)) {
+        artifactChecked = true
+        try {
+          const verdict = verifyArtifact(payload.text, goalSpec.expectation)
+          if (!verdict.ok) {
+            debugBus.emit('agent', 'artifact_contract_violation', {
+              deliverable: goalSpec.expectation.deliverable,
+              found: verdict.found, expected: verdict.expected,
+              problems: verdict.problems.map(p => p.code),
+            }, { severity: 'error' })
+            const line0 = `data: ${JSON.stringify({ type: 'verify', passed: false, signal: `artifact:${goalSpec.expectation.deliverable}`, report: `Expected ${verdict.expected} ${goalSpec.expectation.deliverable}, found ${verdict.found}.` })}\n\n`
+            res.write(line0)
+            if (chatSessionId) broadcastEvent(chatSessionId, line0, res)
+            // Loud, and IN the answer. A badge the user has to notice is not a warning.
+            payload = {
+              ...payload,
+              text: `${ARTIFACT_MISMATCH_MARK} You asked for ${goalSpec.expectation.count} `
+                + `${goalSpec.expectation.deliverable}; what follows is not that `
+                + `(${verdict.problems.map(p => p.detail).join(' ')}).\n\n---\n\n${payload.text}`,
+            }
+          }
+        } catch { /* a verifier fault must never swallow the answer */ }
+      }
       const line = `data: ${JSON.stringify(payload)}\n\n`
       res.write(line)
       if (chatSessionId) broadcastEvent(chatSessionId, line, res)

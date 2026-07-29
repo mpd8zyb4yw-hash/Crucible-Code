@@ -11,7 +11,7 @@
 // between working and broken is ONE PREPOSITION. The rule these cases enforce is that a subject
 // stated in ANY grammatical form must be read, while a goal with no subject anywhere must still
 // ask — because over-correcting into never asking is the same bug pointed the other way.
-import { specForGoal, elicitation } from './goalSpec'
+import { specForGoal, elicitation, briefFor } from './goalSpec'
 
 let pass = 0, fail = 0
 function check(name: string, ok: boolean, detail = '') {
@@ -72,6 +72,39 @@ for (const goal of [
   check(JSON.stringify(goal), spec.ready === true && subject?.source === 'derived',
     `ready=${spec.ready} subject=${JSON.stringify(subject)}`)
 }
+
+// ── Destination (cont.119) ────────────────────────────────────────────────────
+// "it never signed into quizlet or attempted to make the flashcards at all" — the service name
+// was read as an adjective and dropped, so the run produced text in chat and called that done.
+console.log('  — a named service is a DESTINATION, and the brief must say so —')
+for (const [goal, host] of [
+  ['build me a quizlet flashcard set with simple grammatical italian terms', 'quizlet.com'],
+  // Only hosts the reused AUTH_WALLED list matches BARE become destinations. "notion page"
+  // does not (the list carries `notion.so`), and "page" is excluded as an app build anyway —
+  // both correct, and worth stating so the next reader does not "fix" it.
+  ['put together a chegg study guide covering photosynthesis', 'chegg.com'],
+] as Array<[string, string]>) {
+  const spec = specForGoal(goal)
+  if (!spec) { check(JSON.stringify(goal), false, 'specForGoal returned null'); continue }
+  const dest = spec.slots.find(s => s.key === 'destination')
+  const brief = briefFor(spec)
+  check(`destination ${host} for ${JSON.stringify(goal.slice(0, 40))}`,
+    dest?.value === host && dest.source === 'stated' && dest.blocking === false,
+    JSON.stringify(dest))
+  // Naming the destination is not enough — the brief must name the ACTION and the tools, or the
+  // executor emits pseudo-code instead of a call (the same failure the URL branch already fixed).
+  check(`brief directs the agent INTO ${host}`,
+    brief.includes(`Deliver INTO ${host}`) && brief.includes('web_open') && brief.includes('web_act')
+      && brief.includes('browser_sign_in') && brief.includes('say plainly'),
+    brief.slice(-260))
+  // Never blocking: content in chat beats a refusal.
+  check(`a destination never blocks the build`, spec.ready === true, `ready=${spec.ready}`)
+}
+
+// No service named -> no destination instruction cluttering the brief.
+const plain = specForGoal('make me flashcards about the krebs cycle')!
+check('no destination instruction when none was named',
+  !briefFor(plain).includes('Deliver INTO'), briefFor(plain))
 
 console.log(`\nTOTAL: ${pass}/${pass + fail}`)
 if (fail) process.exit(1)
