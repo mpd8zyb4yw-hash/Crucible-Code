@@ -357,6 +357,8 @@ export interface ReadResult {
   url: string
   title: string
   text: string
+  /** HTTP status of the main document, when one was observed. */
+  status?: number
   /** True when the page looks like a sign-in wall rather than the content asked for. */
   needsLogin: boolean
   /** True when a cookie/consent interstitial stands between us and the content. Reported, never
@@ -382,7 +384,12 @@ function looksLikeLogin(url: string, title: string, text: string): boolean {
  */
 function looksLikeConsent(url: string, title: string, text: string): boolean {
   const u = url.toLowerCase()
-  if (/\/(?:consent|cookie(?:s|-consent)?|gdpr)\b/.test(u) || /^https?:\/\/consent\./.test(u)) return true
+  // A consent INTERSTITIAL announces itself in the host or as a dedicated path — not merely by
+  // having the word "cookies" somewhere in a URL. `httpbin.org/cookies/set?...` is an ordinary
+  // API endpoint and was reported as a consent screen (cont.119); so would any site's
+  // "/cookies-policy" page. Require the path to BE the consent page, not to mention cookies.
+  if (/^https?:\/\/(?:consent|cmp|privacy)\./.test(u)) return true
+  if (/\/(?:consent|cookie-consent|cookie-notice|gdpr)(?:\/|\?|$)/.test(u)) return true
   const head = `${title}\n${text.slice(0, 600)}`.toLowerCase()
   return /(?:before you continue|we use cookies|accept (?:all )?cookies|cookie preferences|manage your privacy|your privacy choices)/.test(head)
 }
@@ -390,7 +397,8 @@ function looksLikeConsent(url: string, title: string, text: string): boolean {
 export async function readPage(projectPath: string, url: string, maxChars = 20_000): Promise<ReadResult> {
   const s = await openPage(projectPath)
   try {
-    await s.page.goto(url, { waitUntil: 'domcontentloaded' })
+    const resp = await s.page.goto(url, { waitUntil: 'domcontentloaded' })
+    const status = resp?.status()
     // Client-rendered pages need a beat after DOMContentLoaded; networkidle can hang forever on
     // sites with long-polling, so this is a bounded wait rather than a condition.
     await s.page.waitForTimeout(1200)
@@ -401,12 +409,18 @@ export async function readPage(projectPath: string, url: string, maxChars = 20_0
     // is. Reporting that as an empty page would be the confident-and-wrong answer; keep the raw text
     // so the caller sees the wall it actually hit.
     const text = pruned.length >= 200 || raw.length <= pruned.length ? pruned : raw
+    // An HTTP error page is an ERROR, not a wall. Classifying "503 Service Temporarily
+    // Unavailable" as a consent screen sent the user off to sign in to a site that was simply
+    // down (cont.119) — a confidently wrong diagnosis of a perfectly clear failure. A 4xx/5xx
+    // therefore suppresses both wall verdicts and is reported on its own terms.
+    const errored = typeof status === 'number' && status >= 400
     return {
       url: finalUrl,
       title,
       text: text.slice(0, maxChars),
-      needsLogin: looksLikeLogin(finalUrl, title, raw),
-      needsConsent: looksLikeConsent(finalUrl, title, raw),
+      status,
+      needsLogin: !errored && looksLikeLogin(finalUrl, title, raw),
+      needsConsent: !errored && looksLikeConsent(finalUrl, title, raw),
     }
   } finally {
     await s.close()
@@ -596,6 +610,8 @@ export interface PageState {
   title: string
   elements: UiElement[]
   text: string
+  /** HTTP status of the main document, when one was observed. */
+  status?: number
   needsLogin: boolean
   needsConsent: boolean
   /** A bot/CAPTCHA challenge stands between us and the content. */
@@ -702,13 +718,16 @@ function extractPageState(): { url: string; title: string; elements: UiElement[]
 const workPages = new Map<string, { page: import('playwright-core').Page; release: () => void; projectPath: string }>()
 let workPageSeq = 0
 
-async function stateOf(page: import('playwright-core').Page): Promise<PageState> {
+async function stateOf(page: import('playwright-core').Page, status?: number): Promise<PageState> {
   const s = await page.evaluate(extractPageState)
+  // A 4xx/5xx is an ERROR, not a wall — see readPage. Guessing "consent screen" at a 503 sent the
+  // user to sign in to a site that was merely down.
+  const errored = typeof status === 'number' && status >= 400
   return {
-    url: s.url, title: s.title, elements: s.elements, text: s.text,
-    needsLogin: looksLikeLogin(s.url, s.title, s.raw),
-    needsConsent: looksLikeConsent(s.url, s.title, s.raw),
-    needsChallenge: looksLikeChallenge(s.url, s.title, s.raw),
+    url: s.url, title: s.title, elements: s.elements, text: s.text, status,
+    needsLogin: !errored && looksLikeLogin(s.url, s.title, s.raw),
+    needsConsent: !errored && looksLikeConsent(s.url, s.title, s.raw),
+    needsChallenge: !errored && looksLikeChallenge(s.url, s.title, s.raw),
   }
 }
 
@@ -726,9 +745,9 @@ export async function openWorkPage(projectPath: string, url: string): Promise<Op
   workPages.set(pageId, { page, release, projectPath })
   // Preserve ANY explicit scheme — prefixing https:// onto "file:///…" produced the nonsense
   // URL "https://file:///…". Only a bare host gets a default scheme.
-  await page.goto(/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`, { waitUntil: 'domcontentloaded' })
+  const resp = await page.goto(/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`, { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(1000)
-  return { pageId, ...(await stateOf(page)) }
+  return { pageId, ...(await stateOf(page, resp?.status())) }
 }
 
 export async function closeWorkPage(pageId: string): Promise<boolean> {

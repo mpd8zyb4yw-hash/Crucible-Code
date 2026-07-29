@@ -924,6 +924,14 @@ registry.register({
     try {
       const r = await readPage(ctx.projectPath, /^https?:\/\//i.test(url) ? url : `https://${url}`,
         Math.min(60_000, Number(args.maxChars ?? 20_000)))
+      if (typeof r.status === 'number' && r.status >= 400) {
+        return {
+          ok: false,
+          output: `That page returned HTTP ${r.status}${r.title ? ` ("${r.title}")` : ''} — the site is failing or the URL is wrong. ` +
+            `This is not a login or consent wall; signing in will not help.`,
+          meta: { blocked: 'http-error', status: r.status, url: r.url },
+        }
+      }
       if (r.needsLogin) {
         // Reporting the wall is the honest move — summarising a sign-in form as though it were
         // the article is precisely the fabrication class this session has been closing.
@@ -1125,6 +1133,15 @@ registry.register({
     if (!url) return { ok: false, output: 'A non-empty "url" is required.' }
     try {
       const s = await openWorkPage(ctx.projectPath, url)
+      if (typeof s.status === 'number' && s.status >= 400) {
+        await closeWorkPage(s.pageId)
+        return {
+          ok: false,
+          output: `That page returned HTTP ${s.status}${s.title ? ` ("${s.title}")` : ''} — the site is failing or the URL is wrong. ` +
+            `This is not a login or consent wall; signing in will not help. Check the URL, or try again later.`,
+          meta: { blocked: 'http-error', status: s.status, url: s.url },
+        }
+      }
       if (s.needsLogin) {
         await closeWorkPage(s.pageId)
         return {
