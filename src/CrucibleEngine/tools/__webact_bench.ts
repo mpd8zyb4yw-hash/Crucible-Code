@@ -2,7 +2,18 @@
 // Drives the REAL registry against an offline fixture, so it asserts the whole path — tool
 // definition, ref stamping, action dispatch, change detection — without depending on a live
 // site. Run: npx tsx src/CrucibleEngine/tools/__webact_bench.ts
+import os from 'os'
 import path from 'path'
+
+// A DEDICATED profile, set before anything imports the browser (profileDir reads this at call
+// time). Two reasons, both found the hard way:
+//   · chromium takes an exclusive lock on a user-data-dir, so this bench could not run at all
+//     while the app was running — it failed with "profile is already in use", which looks exactly
+//     like a code regression and is not one;
+//   · without it the bench drives the USER'S REAL signed-in profile. A test has no business
+//     touching the thing that holds someone's live sessions.
+process.env.CRUCIBLE_BROWSER_PROFILE ??= path.join(os.tmpdir(), 'crucible-webact-bench-profile')
+
 import { registry } from './registry'
 import type { ToolCtx } from './protocol'
 

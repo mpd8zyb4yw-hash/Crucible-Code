@@ -279,10 +279,10 @@ Found while doing that, each by running it:
 
 | defect | commit |
 |---|---|
-| **Every tool call was reported THREE times** — fmReact, the server wrapper, and registry.exec all emitted. Why schedule_task's duplicate guard was load-bearing. | `1d1e8fc` |
+| **Every tool call was reported THREE times** — fmReact, the server wrapper, and registry.exec all emitted. Why schedule_task's duplicate guard was load-bearing. | `3d4ef77` |
 | A website was read off the local disk: `read example.com` → `read_file({path:"example.com"})`. Three layers: TLD-vs-extension, the fallback to `.`, and scheme-stripped URLs. | `b462442` |
-| The planner copied my **spec placeholders in as values** — `action:"read"`, `target:"e12 or the control's visible name"`. Specs must carry literal examples. | `2c5e4f8` |
-| Quoted args survived into calls: `web_open` navigated to `https://"https//example.com%22`. | `2c5e4f8` |
+| The planner copied my **spec placeholders in as values** — `action:"read"`, `target:"e12 or the control's visible name"`. Specs must carry literal examples. | `051ef43` |
+| Quoted args survived into calls: `web_open` navigated to `https://"https//example.com%22`. | `051ef43` |
 | **A 503 was diagnosed as a consent screen** and the user told to sign in to a site that was down. Nothing captured the HTTP status; `/cookies/set` matched the consent path regex. | `5940f02` |
 
 **Tool retrieval by meaning** (item 46) was built, MEASURED, and wired only where the numbers
