@@ -388,6 +388,19 @@ function prose(msg: string): string {
 }
 
 /** Extract the path the user named, if any. Longest path-shaped token wins. */
+/**
+ * Hostnames, which look exactly like extensioned filenames and are not paths.
+ *
+ * LIVE (cont.119): "read example.com and tell me what it says" resolved to
+ * `read_file({ path: "example.com" })` and failed with "File not found:
+ * /Users/justin/Desktop/Crucible/branch-tune-mesa-grain/example.com". The `.com` satisfied the
+ * "has a file extension" test, so a web page became a local file. A TLD is a closed, factual
+ * class — unlike the open class of things a filename can be — so listing the common ones is sound
+ * where guessing at filenames would not be. Anything with a slash is still a path, so
+ * "example.com/index.html" and "./notes.com" are unaffected.
+ */
+const HOSTNAME_LIKE = /^[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|co|edu|gov|uk|de|fr|jp|dev|app|ai|so|me|tv|info|biz|xyz)$/i
+
 function statedPath(msg: string): string | null {
   const candidates = msg.match(PATH_TOKEN) ?? []
   const best = candidates
@@ -395,6 +408,8 @@ function statedPath(msg: string): string | null {
     // Require a separator OR a file extension; a bare word is not a path, and "3/4" is caught
     // by the length floor plus the read-intent requirement.
     .filter(s => (s.includes('/') || /\.[a-z0-9]{1,5}$/i.test(s)) && s.length > 1)
+    // ...but a bare hostname is a SITE, not a file on this disk.
+    .filter(s => s.includes('/') || !HOSTNAME_LIKE.test(s))
     .sort((a, b) => b.length - a.length)[0]
   return best ?? null
 }
@@ -417,6 +432,22 @@ export function resolveImplicitLocalTools(message: string): NamedToolResolution 
   if (!FS_READ_INTENT.test(text)) return null
 
   const p = statedPath(msg)
+  // A request that names a SITE and no local path is a web request, and must not fall back to
+  // the project root. Without this, "read example.com and tell me what it says" declined to use
+  // the domain as a path (above) and then read `.` instead — a different wrong answer to a
+  // question that was never about this disk.
+  // A slash does not make a URL a path: "https://example.com/page" and "example.com/page" both
+  // survive statedPath's separator test, so the web target has to be rejected explicitly.
+  // PATH_TOKEN drops the scheme, so a URL arrives here as "//example.com/page" — strip any
+  // leading scheme and slashes before asking whether the first segment is a host.
+  const looksWeb = (t: string) => {
+    const bare = t.replace(/^https?:/i, '').replace(/^\/{2,}/, '')
+    return /^https?:\/\//i.test(t) || HOSTNAME_LIKE.test(bare.split('/')[0].replace(/[.,;:)]+$/, ''))
+  }
+  if (p && looksWeb(p)) return null
+  if (!p && (/https?:\/\//i.test(msg) || (msg.match(PATH_TOKEN) ?? []).some(t => looksWeb(t.replace(/[.,;:)]+$/, ''))))) {
+    return null
+  }
   // No explicit path but a directory noun ("what files are in this folder") → the project root,
   // which is what `list_dir` defaults to.
   const target = p ?? '.'

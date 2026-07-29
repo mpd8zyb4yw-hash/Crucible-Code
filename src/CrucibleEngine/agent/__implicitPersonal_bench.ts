@@ -6,7 +6,7 @@
 // fire here hijacks an ordinary chat turn, which is the verifier-two-directions rule.
 // Run: npx tsx src/CrucibleEngine/agent/__implicitPersonal_bench.ts
 
-import { resolveImplicitPersonalTools } from './namedToolRouter'
+import { resolveImplicitPersonalTools, resolveImplicitLocalTools } from './namedToolRouter'
 
 let pass = 0, fail = 0
 function check(name: string, ok: boolean, detail?: string) {
@@ -81,6 +81,26 @@ check('generic knowledge: "what is a calendar year"', tools('what is a calendar 
 check('no deixis: "emails can contain attachments"', tools('emails can contain attachments').length === 0)
 check('build ask: "build me a calendar app"', tools('build me a calendar app').length === 0)
 check('empty message abstains', tools('').length === 0)
+
+// ── A SITE is not a file on this disk (cont.119) ─────────────────────────────
+// Live: "read example.com and tell me what it says" resolved to
+// read_file({ path: "example.com" }) and failed with
+// "File not found: /Users/justin/Desktop/Crucible/branch-tune-mesa-grain/example.com".
+// The `.com` satisfied the has-an-extension test, so a web page became a local file. Declining the
+// domain alone was not enough — it then fell back to reading `.`, a different wrong answer to a
+// question that was never about this disk.
+{
+  const local = (m: string) => resolveImplicitLocalTools(m)?.calls?.[0]
+  check('a bare domain is not read as a local file', !local('read example.com and tell me what it says'))
+  check('a www host is not read as a local file', !local('read www.bbc.co.uk and summarise it'))
+  check('a URL is not read as a local file', !local('read https://example.com/page and tell me about it'))
+  // ...and the filesystem cases it exists for still work.
+  const f = local('read the contents of server.ts')
+  check('a real source file still resolves', f?.name === 'read_file' && f?.args?.path === 'server.ts')
+  check('a real directory still resolves', !!local('what files are in src/CrucibleEngine'))
+  // A slash means a path, whatever it ends in.
+  check('a relative path ending in a TLD is still a path', local('read ./notes.com')?.args?.path === './notes.com')
+}
 
 console.log(`\n${pass}/${pass + fail} passed`)
 process.exit(fail === 0 ? 0 : 1)
