@@ -98,7 +98,8 @@
     "schedule:bench": "tsx src/CrucibleEngine/automations/__schedule_bench.ts",
     "goalspec:bench": "tsx src/CrucibleEngine/agent/__goalspec_bench.ts",
     "libdetect:bench": "tsx src/CrucibleEngine/retrieval/__libdetect_bench.ts",
-    "barecall:bench": "tsx src/CrucibleEngine/agent/__barecall_bench.ts"
+    "barecall:bench": "tsx src/CrucibleEngine/agent/__barecall_bench.ts",
+    "clarify:bench": "tsx src/CrucibleEngine/agent/__clarify_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",

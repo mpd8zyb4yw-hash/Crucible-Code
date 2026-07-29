@@ -63,13 +63,25 @@ export function clearClarification(convId: string): void {
  * fixed extractor now reads correctly. A protest and a genuine answer take the same path, and
  * neither can lose the request.
  */
-export function mergeClarificationReply(goal: string, reply: string): string {
+export function mergeClarificationReply(goal: string, reply: string, asked: string[] = []): string {
   const r = (reply ?? '').trim()
   if (!r) return goal
   // A reply that merely asserts the answer was already given carries no new content — folding it
   // in as though it were the subject is how "Question: i already told you" ends up on a flashcard.
   if (/^(?:i\s+)?(?:already\s+(?:told|said|gave|answered)|told you|said(?: it)?|as (?:i|we) said)\b/i.test(r)) {
     return goal
+  }
+  // The merge must produce a goal the SPEC PARSER can still read, not a note stapled to one.
+  // Appending "(clarification from the user: italian grammar)" left specForGoal unable to parse
+  // the result at all, so the user answered the question and the request STILL could not be
+  // built — the loop asked, was answered, and went nowhere.
+  //
+  // Folding the reply in as the slot that was actually asked about keeps the goal a goal. Only
+  // `subject` has a natural grammatical join today; anything else falls back to appending, which
+  // is at least non-destructive.
+  const answered = r.replace(/^(?:it'?s|its|about|on|the topic is|make it)\s+/i, '').trim()
+  if (asked.includes('subject') && answered && !/\babout\b/i.test(goal)) {
+    return `${goal} about ${answered}`
   }
   return `${goal}\n\n(clarification from the user: ${r})`
 }
