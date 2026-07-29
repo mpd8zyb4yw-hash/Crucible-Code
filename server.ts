@@ -3571,7 +3571,7 @@ app.post('/api/chat', async (req, res) => {
   const clarifyConvId = (typeof reqConversationId === 'string' && reqConversationId) || chatSessionId
   const answered = takeClarification(clarifyConvId, Date.now())
   if (answered && message) {
-    const merged = mergeClarificationReply(answered.goal, message)
+    const merged = mergeClarificationReply(answered.goal, message, answered.asked)
     if (merged !== message) {
       debugBus.emit('agent', 'clarification_answered', {
         asked: answered.asked, original: answered.goal.slice(0, 120), reply: String(message).slice(0, 120),

@@ -225,6 +225,40 @@ Benches: `npm run ambiguity:bench` 35/35 · `npm run web:bench` 19/19 ·
 6. **Accessible-name precedence** ranked `placeholder` above `<label for>`, so fill-by-name missed.
 7. **A stranded orphan server** (PID 2109, reparented to init) — cont.70's failure mode, recurred.
 
+### Round 2 — the flashcard debug report (2026-07-29)
+
+One user report, `"build me a quizlet flashcard set with simple grammatical italian terms"`,
+turned out to be **eight** independent defects stacked end to end. Each was found by running it,
+and every one of them alone was enough to ruin the answer.
+
+| # | defect | commit |
+|---|---|---|
+| 1 | `statedSubject` only accepted `about\|on\|covering\|for` — the request said **"with"**, so a stated subject was asked about. Fixed structurally: the subject is the residue after the deliverable, joined by the same closed connector class `deliverableOf` already terminates on. | `99e8891` |
+| 2 | The reply to our own question became the goal — the debug event reads `{"goal":"i already told you"}`. | `99e8891` |
+| 3 | ...and folding it back in produced text the spec parser could no longer read, so an *answered* question still could not be built. Now folded in as the slot that was asked about. | `23bf05c` |
+| 4 | `namesExternalLibrary` treated every sentence-initial capital in multi-line text as a library name. | `cab43a0` |
+| 5 | The artifact contract ran on 2 of 9 answer paths. Moved to the `send` choke point. | `80a4024` |
+| 6 | **The brief was a `Key: value` block**, which a small model transcribes as a config object — `Level:` is what summoned `abstract-level`. Now prose. | `7d17e5e` |
+| 7 | A tool call written as source (`web_open("https://...")`) executed nothing. | `df4dafc` |
+| 8 | **The verifier could not see a correct deck**: `Q:\n\nA:` split into two half-items, so 20 good cards verified as 0 — which is what pushed the request into the tool loop that answered with LevelDB typings. | `71ddd18` |
+
+Plus: a **content path** — a resolved creation goal sourced from the model's own knowledge is now
+WRITTEN directly and verified before any tool loop sees it. Measured: handed `contentBriefFor`
+alone the model produces the deck cleanly; handed the same request through the ReAct loop it
+returned LevelDB typings, `fs` wrappers, and `web_open(...)` as source. The model was never the
+limitation — giving a writing job to a tool loop was.
+
+**Deliberately NOT shipped:** a token-overlap duplicate detector for padding-by-restatement. It
+works on the live case (15 items → 8) and it rejects valid formulaic decks — three of the
+artifact bench's own fixtures included. Recorded in `__artifact_bench.ts` with the evidence.
+
+**Still open after round 2:** the on-device model's output QUALITY. It now reliably reaches the
+right path and is honestly graded, but it under-delivers (15 of 20), pads the tail with restated
+cards, invents facts ("lo" described as a neuter article; Italian has no neuter), and drifts
+format (`**Subject:** / **Definition:**` instead of `Q:/A:`). That is the capability ceiling from
+`CAPABILITY_CEILING.md`, not a routing bug — every gate above it now reports the shortfall
+instead of hiding it.
+
 ### Next, in priority order
 
 1. **Item 46 — semantic tool retrieval.** Three enumerative gates were fixed this session by
