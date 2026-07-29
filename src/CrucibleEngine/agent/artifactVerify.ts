@@ -148,6 +148,16 @@ export interface ArtifactExpectation {
   count: number
   /** What the user called it, for the feedback line. */
   deliverable: string
+  /**
+   * The thinness floor for a `prose` deliverable, in words. Default 40.
+   *
+   * Zero means WE DO NOT KNOW how long this should be, and the check is skipped. That is the
+   * honest setting for a deliverable whose length the user never stated and whose kind we do not
+   * recognise: a summary under forty words is a defect, but "Thanks — confirmed, see you at two."
+   * is a complete and correct REPLY. Asserting a floor there is the same invention as asserting a
+   * count of ten, one field over.
+   */
+  minWords?: number
 }
 
 /**
@@ -172,7 +182,8 @@ export function verifyArtifact(text: string, exp: ArtifactExpectation): Artifact
   // ── prose: one document, judged on substance rather than count ──
   if (exp.shape === 'prose') {
     const words = body.split(/\s+/).length
-    if (words < 40) {
+    const floor = exp.minWords ?? 40
+    if (floor > 0 && words < floor) {
       problems.push({ code: 'count-short', detail: `Only ${words} words.` })
     }
     const ok = problems.length === 0

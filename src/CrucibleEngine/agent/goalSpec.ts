@@ -232,7 +232,7 @@ function statedSubject(msg: string, deliverable?: string | null): string | null 
 // Keyed on the deliverable NOUN, and only ever supplying a value the user did not state. This is
 // the one place a deliverable's shape matters, and getting it wrong costs a regeneration, not a
 // wasted build — which is precisely why these are defaults and not questions.
-function defaultsFor(deliverable: string): { quantity: string; depth: string; format: string; shape: ItemShape } {
+function defaultsFor(deliverable: string): { quantity: string; depth: string; format: string; shape: ItemShape; minWords?: number } {
   const d = deliverable.toLowerCase()
   // `shape` is what `artifactVerify` checks against. Naming a structural shape is all a NEW
   // deliverable needs to inherit verification — there is no per-deliverable checker.
@@ -243,7 +243,26 @@ function defaultsFor(deliverable: string): { quantity: string; depth: string; fo
   if (/slide|deck|presentation/.test(d)) return { quantity: '10', depth: 'intermediate', format: 'a title and body per slide', shape: 'block' }
   if (/outline|plan|syllabus|curriculum|checklist|list/.test(d)) return { quantity: '10', depth: 'intermediate', format: 'one item per line', shape: 'bullet' }
   if (/note|cheat\s*sheet|study\s+guide/.test(d)) return { quantity: '1', depth: 'intermediate', format: 'a single reference document', shape: 'prose' }
-  return { quantity: '10', depth: 'intermediate', format: 'a titled section per item', shape: 'block' }
+  // ── The fallback must not INVENT a contract (cont.120) ──────────────────────
+  //
+  // This used to return `quantity: '10', shape: 'block'` — ten titled sections — for every
+  // deliverable not named above. MEASURED: "Draft a reply to the email from Google …" resolves
+  // its deliverable to "reply", fell here, and the answer — a perfectly good four-line email —
+  // shipped under `**This does not match what you asked for.** You asked for 10 reply; what
+  // follows is not that (No titled sections found.)`. The user never asked for ten of anything.
+  //
+  // A default is legitimate when it encodes something we KNOW ("a flashcard deck is pairs, and
+  // twenty is a normal deck"). Here we know only that the deliverable is unrecognised, and the
+  // honest expression of that is ONE document with no internal count — not a number pulled from
+  // the air. `verifyArtifact` then still checks the things that are true for any artifact (it is
+  // non-empty, it is not degenerate) and stops asserting a shape nobody requested.
+  //
+  // This is the false-reject direction, which is the expensive one
+  // (crucible-verifier-two-failure-directions): a fabricated contract does not merely mislabel a
+  // good answer, it drives the repair loop to regenerate work that was already correct. And it
+  // fires on a whole open class — reply, response, message, letter, email, cover letter, bio,
+  // caption, poem, toast, apology — every written thing that is one piece rather than a set.
+  return { quantity: '1', depth: 'intermediate', format: 'a single well-formed piece of writing', shape: 'prose', minWords: 0 }
 }
 
 /** Deliverables whose whole purpose is to be ABOUT something — subject is load-bearing.
@@ -343,7 +362,7 @@ export function specForGoal(message: string, ctx: { hasAttachment?: boolean } = 
     ready: ask.length === 0,
     // The contract the artifact will be held to. Built from the SAME resolved slots the brief
     // is built from, so the thing verified is exactly the thing requested.
-    expectation: { shape: def.shape, count: resolvedCount, deliverable },
+    expectation: { shape: def.shape, count: resolvedCount, deliverable, minWords: def.minWords },
   }
 }
 

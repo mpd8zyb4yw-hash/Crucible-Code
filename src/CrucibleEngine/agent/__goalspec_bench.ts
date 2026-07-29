@@ -123,5 +123,39 @@ const plain = specForGoal('make me flashcards about the krebs cycle')!
 check('no destination instruction when none was named',
   !briefFor(plain).includes('Deliver INTO'), briefFor(plain))
 
+// ── The fallback must not invent a contract (cont.120) ──────────────────────
+//
+// LIVE REPRO: "Draft a reply to the email from Google …" resolved its deliverable to "reply",
+// fell through every named branch of `defaultsFor`, and inherited the old catch-all default of
+// ten titled sections. The answer — a correct four-line email — shipped under "**This does not
+// match what you asked for.** You asked for 10 reply". Nobody asked for ten of anything.
+//
+// The rule: a deliverable we do not recognise is ONE piece of writing with no asserted count and
+// no asserted length. The floor stays in place for deliverables whose kind we DO know, because
+// over-correcting into never checking is the same bug pointed the other way.
+console.log('  — an unrecognised deliverable gets no invented count —')
+for (const goal of [
+  'Draft a reply to the email from Google with subject "Security alert for fjord414@gmail.com"',
+  'write a response to sarah about the meeting',
+  'draft a message to my landlord about the leak',
+  'write a cover letter for the analyst role',
+]) {
+  const spec = specForGoal(goal)
+  if (!spec) { check(JSON.stringify(goal.slice(0, 44)), false, 'specForGoal returned null'); continue }
+  const e = spec.expectation
+  check(JSON.stringify(goal.slice(0, 44)),
+    e.count === 1 && e.shape === 'prose' && e.minWords === 0,
+    `count=${e.count} shape=${e.shape} minWords=${e.minWords}`)
+}
+// The other direction: a deliverable we DO recognise keeps its real contract.
+const knownSummary = specForGoal('make me a summary of the krebs cycle')!
+check('a known prose deliverable keeps its thinness floor',
+  knownSummary.expectation.shape === 'prose' && (knownSummary.expectation.minWords ?? 40) === 40,
+  `minWords=${knownSummary.expectation.minWords}`)
+const knownDeck = specForGoal('make me flashcards about the krebs cycle')!
+check('a known set deliverable keeps its count',
+  knownDeck.expectation.shape === 'pair' && knownDeck.expectation.count === 20,
+  `shape=${knownDeck.expectation.shape} count=${knownDeck.expectation.count}`)
+
 console.log(`\nTOTAL: ${pass}/${pass + fail}`)
 if (fail) process.exit(1)

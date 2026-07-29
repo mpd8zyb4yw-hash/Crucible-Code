@@ -27,6 +27,10 @@ import { ShimmerBg, urlBase64ToUint8Array, applyFixedCode } from './chat/panels'
 import { TasksBinder, HistoryBinder } from './chat/binders'
 import { AuthScreen } from './chat/AuthScreen'
 import { MessageList } from './chat/MessageList'
+import {
+  initialFollowState, onScroll, onReadBackGesture, onResumeFollow, followTarget,
+  type FollowState,
+} from './chat/followState'
 
 // Only real, runnable code should ever reach /api/verify. A prose answer (e.g. "how smart
 // are you") has NO fenced code block; posting the prose made the server's detectLanguage
@@ -567,6 +571,10 @@ export default function App() {
   }, [])
   // Ref holds the lock synchronously — never stale inside effects or rAF callbacks.
   // State is only for showing/hiding the scroll-to-bottom button (UI only).
+  // The DECISION logic lives in src/chat/followState.ts and is unit-tested there; this ref is
+  // just where the machine's current state sits. `scrollLockedRef` remains as the inverse view
+  // of `following` because send() and the streaming effects already read it by that name.
+  const followRef = useRef<FollowState>(initialFollowState())
   const scrollLockedRef = useRef(false)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const synthesisRef = useRef<Record<string, string>>({})
@@ -596,65 +604,92 @@ export default function App() {
   }, [])
 
   const touchStartYRef = useRef(0)
-  // Distinguishes our own scrollTop writes from user scrolling inside onScroll —
-  // without this, every programmatic follow re-enters the handler and the two fight
-  // (the root cause of the old jitter/yank bugs).
-  const programmaticScrollRef = useRef(false)
 
-  // ONE rule replaces the old lock/pin heuristics: follow the bottom while `follow`
-  // is on; any user intent to read back (wheel up, finger drag down, or simply being
-  // >80px from the bottom) turns it off; returning to the bottom or sending a new
-  // message turns it back on. scrollLockedRef is the inverse flag, kept because
-  // send() and streaming effects elsewhere still read it.
-  const setFollow = useCallback((v: boolean) => {
-    scrollLockedRef.current = !v
-    setShowScrollBtn(!v)
+  /** Commit a state produced by the machine, mirroring it onto the flag/UI the rest of App reads. */
+  const commitFollow = useCallback((next: FollowState) => {
+    followRef.current = next
+    scrollLockedRef.current = !next.following
+    setShowScrollBtn(!next.following)
   }, [])
+
+  // Kept for the call sites that speak in terms of "lock the scroll" (send(), the
+  // scroll-to-bottom button). Everything else goes through the state machine.
+  const setFollow = useCallback((v: boolean) => {
+    commitFollow({ ...followRef.current, following: v })
+  }, [commitFollow])
+
+  const geometryOf = (el: HTMLDivElement) =>
+    ({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight })
 
   // Item 5: handed down to the memoized MessageList — must be stable references.
   const handleScroll = useCallback(() => {
-    if (programmaticScrollRef.current) { programmaticScrollRef.current = false; return }
     const el = scrollRef.current
     if (!el) return
-    const dist = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (dist <= 80) {
-      if (scrollLockedRef.current) setFollow(true)
-    } else if (!scrollLockedRef.current) {
-      setFollow(false)
-    }
-  }, [setFollow])
+    commitFollow(onScroll(followRef.current, geometryOf(el)))
+  }, [commitFollow])
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     // Instant intent: one upward tick frees the view even right at the bottom.
-    if (e.deltaY < 0) setFollow(false)
-  }, [setFollow])
+    if (e.deltaY < 0) commitFollow(onReadBackGesture(followRef.current))
+  }, [commitFollow])
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
     touchStartYRef.current = e.touches[0]?.clientY ?? 0
   }, [])
   const handleTouchMove = useCallback((e: React.TouchEvent) => {
     // Finger moving DOWN the screen scrolls content UP → user wants to read back.
-    if ((e.touches[0]?.clientY ?? 0) - touchStartYRef.current > 6) setFollow(false)
-  }, [setFollow])
+    if ((e.touches[0]?.clientY ?? 0) - touchStartYRef.current > 6) commitFollow(onReadBackGesture(followRef.current))
+  }, [commitFollow])
 
   const followBottom = useCallback(() => {
     const el = scrollRef.current
-    if (!el || scrollLockedRef.current) return
-    programmaticScrollRef.current = true
-    el.scrollTop = el.scrollHeight - el.clientHeight
+    if (!el) return
+    const t = followTarget(followRef.current, geometryOf(el))
+    if (!t) return
+    // The state is committed even when the write below is a no-op: `lastWrittenTop` describes
+    // where we INTEND the view to sit, and a stale reference is what let the old latch misread
+    // the user's next scroll as our own.
+    followRef.current = t.state
+    if (Math.abs(el.scrollTop - t.top) > 1) el.scrollTop = t.top
   }, [])
 
   const scrollToBottom = () => {
-    setFollow(true)
     const el = scrollRef.current
-    if (!el) return
-    programmaticScrollRef.current = true
-    el.scrollTop = el.scrollHeight
+    if (!el) { setFollow(true); return }
+    const resumed = onResumeFollow(followRef.current)
+    const t = followTarget(resumed, geometryOf(el))!
+    commitFollow(t.state)
+    el.scrollTop = t.top
   }
 
   useEffect(() => {
-    // rAF so the scroll lands after the browser paints the newly committed content.
+    // ── Follow DIRECTLY, then again after paint (cont.120) ────────────────────
+    //
+    // This was `requestAnimationFrame(followBottom)` alone, which makes the entire auto-follow
+    // conditional on the page painting. MEASURED: with `document.hidden` true, this effect ran 28
+    // times in one turn and `followBottom` ran ZERO times — every rAF was queued and none was
+    // ever delivered. Content grew from 672px to 1119px in a 672px viewport with scrollTop stuck
+    // at 0. Nothing recovers from that: once the stream ends `rounds` stops changing, so there is
+    // no later commit to schedule another frame, and the newest answer stays off-screen.
+    //
+    // The direct call needs no frame — reading scrollHeight flushes layout, so the value is
+    // already correct at commit time. The rAF is kept as a second pass for content that reflows
+    // after paint (syntax highlighting, images, async mounts), which is what it was really for.
+    followBottom()
     requestAnimationFrame(followBottom)
   }, [rounds, inputBarHeight, followBottom])
+
+  // Coming back to a window that streamed while it was hidden. rAF, ResizeObserver delivery and
+  // React commits are all throttled or suspended for a background page, so the view can be left
+  // anywhere; re-sync once on return rather than trusting that any of them fired.
+  useEffect(() => {
+    const onVisible = () => { if (!document.hidden) followBottom() }
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+    }
+  }, [followBottom])
 
   // Streamed content keeps reflowing AFTER the React commit (syntax highlight, images,
   // async mounts) with no matching state change. A ResizeObserver on the message cards
@@ -1205,7 +1240,11 @@ export default function App() {
     const convId = conversationIdRef.current
     setConvLiveRound(convId, roundId)
     localStorage.setItem('crucible_has_sent', '1')
-    setInput(''); setAttachments([]); setConvThinking(convId, true); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
+    // Sending a message is an unambiguous "show me the new answer" — follow resumes, and the
+    // reference offset resets so the first commit of the new round is not measured against a
+    // position from the previous one.
+    setInput(''); setAttachments([]); setConvThinking(convId, true)
+    followRef.current = initialFollowState(); scrollLockedRef.current = false; setShowScrollBtn(false); haptic('medium')
     setConvAgentStart(convId, Date.now()); setAgentElapsed(0); setConvAgentProgress(convId, null)
     prewarmTokenRef.current = null
     if (textareaRef.current) textareaRef.current.style.height = 'auto'
