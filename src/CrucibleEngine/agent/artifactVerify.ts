@@ -102,20 +102,25 @@ function bulletLines(text: string): string[] {
 // Two labelled halves. Deliberately broad on the LABELS (Q/A, Front/Back, Term/Definition) but
 // strict on the STRUCTURE — both halves must be present and non-empty. A card with a question and
 // no answer is not a card, and that is exactly the degenerate output worth catching.
-const PAIR_LABELS = '(?:q|question|front|term|prompt|word|a|answer|back|definition|meaning|response)'
+const PAIR_LABELS = '(?:q|question|front|term|prompt|word|subject|topic|concept|a|answer|back|definition|meaning|response)'
 // An optional list marker may precede the label — "1. Question: …" is the single most common
 // notation a model produces, and omitting it made the verifier FALSE-REJECT a correct deck.
 // A false reject is worse than a false accept here: it burns the retry budget arguing with
 // output that was already right (`crucible-verifier-two-failure-directions`).
+// The list marker may be a BULLET as readily as a number. The note above was written after
+// numbered markers false-rejected a correct deck; bullets were left out and did exactly the same
+// thing. Measured (cont.119): "- Q: …\n- A: …" — one of the most common shapes a model emits —
+// scored 0 items, and so did a numbered card with its answer on a nested "- Definition:" line.
+// Both are correct decks. A marker is a marker.
 const PAIR_RE = new RegExp(
-  `(?:^|\\n)\\s*(?:\\d{1,3}[.)]\\s*)?\\**\\s*(${PAIR_LABELS})\\s*\\**\\s*[:\\-–]\\s*\\S`,
+  `(?:^|\\n)\\s*(?:(?:\\d{1,3}[.)]|[-*+•·—])\\s*)*\\**\\s*(${PAIR_LABELS})\\s*\\**\\s*[:\\-–]\\s*\\S`,
   'gi',
 )
 
 function isPair(item: string): boolean {
   const labels = [...item.matchAll(PAIR_RE)].map(m => m[1].toLowerCase())
   if (labels.length < 2) return false
-  const front = new Set(['q', 'question', 'front', 'term', 'prompt', 'word'])
+  const front = new Set(['q', 'question', 'front', 'term', 'prompt', 'word', 'subject', 'topic', 'concept'])
   const back = new Set(['a', 'answer', 'back', 'definition', 'meaning', 'response'])
   // One of each side — two "Question:" lines in a row is not a pair.
   return labels.some(l => front.has(l)) && labels.some(l => back.has(l))
