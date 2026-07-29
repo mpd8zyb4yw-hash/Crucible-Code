@@ -97,24 +97,46 @@ const CONNECTOR_WORDS =
  * The trailing lookahead includes `of` so "write a summary of <url>" terminates correctly.
  */
 function deliverableOf(msg: string): string | null {
-  const m = msg.match(
-    new RegExp(
-      CREATE_VERB.source +
-      // determiners
-      '\\s+(?:me\\s+|us\\s+|a\\s+|an\\s+|some\\s+|the\\s+)*' +
-      // an optional count and up to two adjectives ("30 hard", "ten short")
-      '(?:\\d{1,4}\\s+)?(?:(?:hard|easy|simple|basic|advanced|short|long|quick|detailed|difficult|beginner|intermediate|expert)\\s+){0,2}' +
-      '([a-z][\\w-]*(?:\\s+(?:of\\s+)?[a-z][\\w-]*){0,3}?)' +
-      // `of` terminates ONLY before a source ("summary of https://…"); inside a noun phrase it
-      // belongs to the deliverable and is absorbed above ("set OF flash cards" must stay whole).
-      '(?=\\s+(?:' + CONNECTOR_WORDS + ')\\b|\\s+of\\s+https?:|[.,!?]|$)',
-      'i',
-    ),
-  )
-  const raw = m?.[1]?.trim()
-  if (!raw) return null
-  // Trim a trailing filler word the lazy capture may have taken.
-  return raw.replace(new RegExp(`\\s+(?:${CONNECTOR_WORDS}|of)$`, 'i'), '').trim() || null
+  const attempt = (terminators: string) => {
+    const m = msg.match(
+      new RegExp(
+        CREATE_VERB.source +
+        // determiners
+        '\\s+(?:me\\s+|us\\s+|a\\s+|an\\s+|some\\s+|the\\s+)*' +
+        // an optional count and up to two adjectives ("30 hard", "ten short")
+        '(?:\\d{1,4}\\s+)?(?:(?:hard|easy|simple|basic|advanced|short|long|quick|detailed|difficult|beginner|intermediate|expert)\\s+){0,2}' +
+        '([a-z][\\w-]*(?:\\s+(?:of\\s+)?[a-z][\\w-]*){0,3}?)' +
+        terminators,
+        'i',
+      ),
+    )
+    const raw = m?.[1]?.trim()
+    if (!raw) return null
+    // Trim a trailing filler word the lazy capture may have taken.
+    return raw.replace(new RegExp(`\\s+(?:${CONNECTOR_WORDS}|of)$`, 'i'), '').trim() || null
+  }
+
+  // PASS 1, unchanged. `of` terminates ONLY before a source ("summary of https://…"); inside a
+  // noun phrase it belongs to the deliverable and is absorbed above ("set OF flash cards" must
+  // stay whole, or `defaultsFor` never sees the word "cards").
+  const strict = attempt('(?=\\s+(?:' + CONNECTOR_WORDS + ')\\b|\\s+of\\s+https?:|[.,!?]|$)')
+  if (strict) return strict
+
+  // ── PASS 2: `of` as a terminator, but ONLY when pass 1 found nothing (cont.120) ──
+  //
+  // MEASURED: "build me a quizlet study guide of simple italian terms" parsed to NOTHING. The
+  // capture allows four tokens, and "quizlet study guide of simple" exhausts them before any
+  // terminator matches, so the whole request stopped being a creation goal — no brief, no
+  // subject, no destination. It fell to the general pipeline, where a small model handed a
+  // transcript containing the previous turn's email draft answered with that draft, five times
+  // over. The garbage was downstream; this is where the request was lost.
+  //
+  // Same shape as cont.118 and cont.119, for the third time: a correct gate fed by a closed word
+  // list, where the gap between working and broken is ONE PREPOSITION. Rather than add `of` to
+  // that list — which would break "set of flash cards" by terminating the deliverable at "set" —
+  // this runs only when the strict pass has already declined. It can therefore ADD parses and
+  // never change an existing one, which is what makes it safe to widen here at all.
+  return attempt('(?=\\s+of\\s+|\\s+(?:' + CONNECTOR_WORDS + ')\\b|[.,!?]|$)')
 }
 
 // ── Derivation helpers ────────────────────────────────────────────────────────

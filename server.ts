@@ -41,6 +41,7 @@ import {
   isConfirmationOf, isCancellationOf, renderProposal,
 } from './src/CrucibleEngine/agent/proposedAction'
 import { applySignature } from './src/CrucibleEngine/agent/draftSignature'
+import { deloopProse } from './src/CrucibleEngine/answer/deloopProse'
 import { runAgentLoop, isAllToolResidue } from './src/CrucibleEngine/agent/loop'
 import { looksLikeProtocol } from './src/CrucibleEngine/agent/fmReact'
 import { suggestReadOnlyTools } from './src/CrucibleEngine/agent/toolRetrieval'
@@ -5650,6 +5651,23 @@ app.post('/api/chat', async (req, res) => {
           if (corrections.length) {
             answer = fixed
             debugBus.emit('pipeline', 'offline_arithmetic_corrected', { query: message.slice(0, 60), corrections }, { severity: 'info', requestId })
+          }
+        } catch { /* non-blocking: ship the original answer */ }
+      }
+      // Degenerate-repetition backstop for PROSE (cont.120). Live: a request for an Italian
+      // study guide was answered with the previous turn's email draft repeated five times,
+      // 4,179 characters of it. `stripDegenerateRepetition` already covers this shape for code
+      // and structurally cannot see it here — it anchors on top-level declaration lines, and a
+      // repeated email body has none. Cuts a periodic answer to its first period; an answer that
+      // never looped is returned byte-identical.
+      if (answer && answer.trim()) {
+        try {
+          const d = deloopProse(answer)
+          if (d.removed > 0) {
+            debugBus.emit('pipeline', 'prose_repetition_stripped', {
+              query: message.slice(0, 80), removedBlocks: d.removed, before: answer.length, after: d.text.length,
+            }, { severity: 'warn', requestId })
+            answer = d.text
           }
         } catch { /* non-blocking: ship the original answer */ }
       }
