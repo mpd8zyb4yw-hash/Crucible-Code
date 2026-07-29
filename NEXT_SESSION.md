@@ -75,6 +75,42 @@
 > agentic. (3) item 36, extract the SSE runner (`runBriefUnattended` duplicates
 > `runAutomationNow`). (4) items 19-26: tabs, downloads, iframes, pagination, tables.
 >
+> **ROUND 2 (2026-07-29) — one flashcard report, EIGHT stacked defects.**
+> `"build me a quizlet flashcard set with simple grammatical italian terms"` was answered with a
+> question it had already answered, then with npm typings. Each defect below was alone enough to
+> ruin it; all were found by RUNNING it, not reading it. Full table in `AGENTIC_WEB_OVERHAUL.md`.
+>
+> The two that matter most:
+> · **The brief was a `Key: value` block**, and a small model transcribes that shape as a CONFIG
+>   OBJECT — `Level: simple` → `level:'simple'` → `require('level')` → **`abstract-level`**. That
+>   is the entire mystery-output story, chased across three innocent suspects first. Briefs are
+>   prose now. Ordering must be prose too ("STEP 1/STEP 2" was read as PLAN STEPS and executed),
+>   and ALL-CAPS emphasis is classification poison ("CONTENT" is too long for the acronym skip).
+> · **The verifier could not see a correct deck.** `Q:\n\nA:` split into two half-items, so 20
+>   good cards verified as ZERO — and that false reject is what pushed the request into the tool
+>   loop that answered with LevelDB typings. Correct work discarded, garbage shipped in its place.
+>
+> **A writing job must never go to a tool loop.** Handed `contentBriefFor` alone, the on-device
+> model produces the deck cleanly first try; through the ReAct loop it returns typings and `fs`
+> wrappers. Tool names are the strongest cue in a small model's prompt and it answers them with
+> code. There is now a CONTENT PATH that writes and verifies before any tool loop sees the goal.
+>
+> Also: a clarify reply became the goal (`{"goal":"i already told you"}`), and folding it back in
+> produced text the spec parser could not read — so an ANSWERED question still could not be built.
+> Both closed; `clarify:bench` guards it.
+>
+> **Deliberately NOT shipped:** token-overlap dedupe for padding-by-restatement. Works on the live
+> case (15→8) and rejects valid formulaic decks, flagging 3 of the artifact bench's own fixtures.
+> Evidence left in `__artifact_bench.ts`. Needs a semantic signal, not a lexical one.
+>
+> **Benches:** ambiguity 35, goalspec 31, clarify 12, libdetect 17, schedule 56, web 19,
+> barecall 8, artifact 39, fmReact 12.
+>
+> **The remaining ceiling is OUTPUT QUALITY, not routing.** The on-device model now reliably
+> reaches the right path and is honestly graded, but under-delivers (15 of 20), pads the tail with
+> restated cards, invents facts ("lo" as a neuter article — Italian has no neuter) and drifts
+> format. That is `CAPABILITY_CEILING.md`. Every gate above it now REPORTS the shortfall.
+>
 > **Open, unresolved:** the agent emits duplicate tool calls (schedule_task fired 3x for one
 > request; the dedupe guard caught it, but the loop should not do that). A stranded orphan server
 > was found again (PID 2109, reparented to init) — cont.70's failure mode.
