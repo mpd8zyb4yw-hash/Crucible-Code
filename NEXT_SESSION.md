@@ -17,103 +17,89 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-28 (cont.119 — agentic web work was blocked by four stacked defects, three of them routing and one of them the profile location) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-29 (cont.120 — three reported bugs, six defects; the drafting flow had no concept of an action) (REPLACE THIS EVERY SESSION)
 
-> **The brief:** "it cant do agentic work on websites or anything in depth yet which it needs to
-> be able to breeze through". Plan: `AGENTIC_WEB_OVERHAUL.md` (100 items, ordered by unblocking
-> power). 27 landed and verified this session; that file is the live checklist and records what
-> is `[x]`, `[~]` and untouched.
+> **The brief:** a debug report with three complaints — (1) a drafted email was never sent when
+> confirmed, needed a follow-up before it could be sent, and had no name at the bottom; (2) an
+> unrelated query was answered with a hallucinated email response; (3) "scrolling is and has been
+> broken for a very long time please dig in and fix it decisively".
 >
-> **The finding, measured not inferred.** Four independent defects, each sufficient on its own to
-> make the whole class fail, and each reporting success while failing:
+> Six defects behind those three. Commits `b9aba46`, `a3fedec`, `5ba9ff4`, `3e902db`.
 >
-> 1. **The ambiguity gate had no jurisdiction.** `loop.ts:316` ran a CODE-CHANGE analyzer on every
->    fresh goal. 9 of 14 ordinary requests were answered "Which file or symbol should this change
->    target?" with ZERO tool calls. Its own header said to gate on code-edit shape; the classifier
->    doing it was an anchored verb list. Fixed with `isCodeEditGoal` — positive code evidence,
->    silence otherwise. Non-code goals are unbounded and are never enumerated.
-> 2. **`needsToolExecutor` narrowed to three special cases.** `fmReact` is the only executor that
->    calls tools; "take a screenshot of my screen" matched none of its disjuncts, fell to the
->    toolless prose stack, and a 1.5B model said to press **Win+Space on a Mac**. Now gated on the
->    complement: everything agentic that is not a code edit gets instruments.
-> 3. **There was no way to ACT on a page.** browse_page read and discarded. Added
->    `web_open`/`web_act`/`web_close`: a tab that stays open, a ref-tagged element model, and
->    post-action confirmation that says "NOTHING measurably changed" when nothing did.
-> 4. **THE BIG ONE — the browser profile was per-conversation.** It lived at
->    `<projectPath>/.crucible/browser-profile`, and projectPath for a chat is a FRESH scratch dir.
->    363 of them on this machine, no profile in any. Sessions could never persist, so "sign in
->    once and every later run inherits it" was structurally impossible. Now user-level at
->    `~/.crucible/browser-profile`; the existing profile was migrated with its live session.
+> **1. SCROLLING — two independent bugs, both closed.**
+>  - Auto-follow was scheduled ONLY as `requestAnimationFrame(followBottom)`, making it
+>    conditional on the page painting. MEASURED with `document.hidden`: the effect ran 28 times in
+>    one turn, `followBottom` ran ZERO times, content grew 672px → 1119px in a 672px viewport with
+>    scrollTop stuck at 0. Nothing recovers — once the stream ends `rounds` stops changing, so no
+>    later commit schedules another frame. Now called directly (reading scrollHeight flushes
+>    layout, so no frame is needed) with the rAF kept as a second pass, plus a
+>    visibilitychange/focus re-sync. Verified live: dist-from-bottom 447 → 1.
+>  - The programmatic-scroll latch leaked. A boolean armed before every scrollTop write and
+>    cleared by the next scroll event — but **a write that does not move the element fires no
+>    event**, and with the view pinned to the bottom nearly every write is that no-op. The latch
+>    stayed armed and ate the user's next real scroll. That is "I can't scroll up while it's
+>    answering". Replaced by comparing POSITIONS (`src/chat/followState.ts`, 11/11, mutation-tested
+>    — reintroducing the bug drops it to 8/11). Also now catches scrollbar drags and PageUp, which
+>    emit no wheel or touch event.
 >
-> **Sign-in no longer blocks.** `signInFlow` awaited `page.on('close')`, making a human a blocking
-> dependency of an agent turn, and returned ok:true whether or not a session existed. Now: one
-> shared ref-counted browser context (a headed window and headless reads COEXIST — previously
-> impossible), the window opens and returns in ~3s, the goal is parked in
-> `.crucible/pending-signin.json` (24h TTL, survives restart), and a 15s tick notices a real
-> session cookie, resumes the original request unattended, threads the answer into the user's
-> conversation and pushes a notification.
+> **2. THE DRAFT→SEND FLOW DID NOT EXIST.** "send it" ran ZERO tools and re-printed the draft.
+>    Three things were missing and they are one omission: "send it" matched no routing predicate;
+>    the draft was prose with no recipient, subject or link to the message it answered; and
+>    `gmail_read` returned a bare string (the one mail tool emitting no entities, so a message you
+>    had just read afforded nothing — no Reply button, nothing to bind a send to).
+>    New concept: a **proposal** (`src/CrucibleEngine/agent/proposedAction.ts`) — a mutating
+>    action, fully bound, held pending the user's word. NOT an email feature: `draftableAction`
+>    finds the mutating affordance whose single free-text input the draft fills, so any tool
+>    emitting an entity of such a kind inherits draft-then-confirm.
+>    Safety is in code, not a prompt: args bound by the system from real tool output and never
+>    model-authored; drafting keeps `allowMutation: false` and only the confirmed turn sets it
+>    true; consumed BEFORE the tool runs so a repeated "yes" cannot double-send; 15-minute expiry;
+>    anything ambiguous is not a confirmation.
+>    **Verified live end to end** (`:3011`, with the user's explicit approval for one real send to
+>    a dev inbox): draft → 0 sends + proposal parked; "who is that from?" → 0 sends, proposal
+>    survives; "no, dont send it" → cancelled; "send it" → `Email sent. Message ID:
+>    19faeb16e1dad4fd`; "send it" again → 0 sends.
 >
-> **Scheduling reachable.** `schedule_task`/`list_scheduled_tasks`/`cancel_scheduled_task`. The
-> automations subsystem had been complete for weeks with no tool touching it. Cadence is parsed
-> deterministically from the user's words; an unreadable schedule is REFUSED, never guessed.
-> `Trigger` gained a `weekdays` kind ("every weekday at 8am" was not expressible).
+> **3. `[Your Name]` MADE THE DRAFT UNSENDABLE.** Now filled from the Google profile
+>    (`userinfo.profile` was already a granted scope) or removed when genuinely unknown, since a
+>    sign-off with nothing after it can at least be sent. A name is never guessed.
 >
-> **State is split between the app and the repo.** The Electron server's cwd is
-> `~/Library/Application Support/crucible-local`, so its automations/sessions are NOT the repo's.
-> A schedule the server confirmed was missing from the repo's `automations.json` because they are
-> different files. `/api/diag` now reports `paths` — check it before believing any state claim.
+> **4. THE ARTIFACT CONTRACT WAS INVENTED.** `goalSpec`'s fallback returned quantity 10 / shape
+>    `block` for every unrecognised deliverable, so a correct four-line email shipped under
+>    "**This does not match what you asked for.** You asked for 10 reply". Unknown deliverable now
+>    means one piece of prose, no asserted count, no asserted length (`minWords: 0`). Fires on an
+>    open class: reply, response, message, letter, cover letter, bio, caption.
 >
-> **Live, on the running server:** `take a screenshot of my screen` → real 2816x1762 PNG (so macOS
-> Screen Recording permission is ALREADY granted — that item was a non-issue).
-> `every weekday at 8am send me a summary of my inbox` → real automation, first run 08:00.
-> Benches: `ambiguity:bench` 35/35, `web:bench` 19/19, `schedule:bench` 56/56.
+> **5. ONE PREPOSITION LOST THE REQUEST.** "build me a quizlet study guide **of** simple italian
+>    terms" parsed to NOTHING — `deliverableOf`'s four-token capture is exhausted by "quizlet
+>    study guide of simple" before any terminator matches, and `of` cannot be a terminator or
+>    "set of flash cards" breaks. So the whole class "<two-word deliverable> of <topic>" was lost
+>    and fell to the general pipeline holding a transcript. Third instance of the cont.118/119
+>    shape. Fixed with a second pass that admits `of` and runs only when the strict pass declined
+>    — adds parses, never changes an existing one.
 >
-> **Next, in order:** (1) item 46, semantic tool retrieval — three enumerative gates were fixed by
-> hand this session and `detectAgentTask`'s ~25 regexes are the fourth; replace them with
-> embeddings over the registry's own descriptions rather than extending them. (2) items 57-65, the
-> UI — none started; the live browser view and the pending-sign-in card are what make this FEEL
-> agentic. (3) item 36, extract the SSE runner (`runBriefUnattended` duplicates
-> `runAutomationNow`). (4) items 19-26: tabs, downloads, iframes, pagination, tables.
+> **6. NOTHING SAW A PROSE LOOP.** The answer was one email draft repeated five times.
+>    `stripDegenerateRepetition` handles this for code and structurally cannot see prose (it
+>    anchors on declaration lines). `src/CrucibleEngine/answer/deloopProse.ts` matches
+>    PERIODICITY, not duplicate blocks — the first version deduplicated blocks and the bench
+>    caught it mangling the very answer it was written for.
 >
-> **ROUND 2 (2026-07-29) — one flashcard report, EIGHT stacked defects.**
-> `"build me a quizlet flashcard set with simple grammatical italian terms"` was answered with a
-> question it had already answered, then with npm typings. Each defect below was alone enough to
-> ruin it; all were found by RUNNING it, not reading it. Full table in `AGENTIC_WEB_OVERHAUL.md`.
+> **Benches:** goalspec 37/37, clarify 12/12, libdetect 17/17, surface 165/165, ambiguity 35/35,
+> artifact 48/48, proposal 60/60, signature 45/45, draft-flow 22/22, prose-deloop 20/20,
+> followstate 11/11, code-deloop 6/6. No new `server.ts` type errors (baseline 3, still 3).
 >
-> The two that matter most:
-> · **The brief was a `Key: value` block**, and a small model transcribes that shape as a CONFIG
->   OBJECT — `Level: simple` → `level:'simple'` → `require('level')` → **`abstract-level`**. That
->   is the entire mystery-output story, chased across three innocent suspects first. Briefs are
->   prose now. Ordering must be prose too ("STEP 1/STEP 2" was read as PLAN STEPS and executed),
->   and ALL-CAPS emphasis is classification poison ("CONTENT" is too long for the acronym skip).
-> · **The verifier could not see a correct deck.** `Q:\n\nA:` split into two half-items, so 20
->   good cards verified as ZERO — and that false reject is what pushed the request into the tool
->   loop that answered with LevelDB typings. Correct work discarded, garbage shipped in its place.
->
-> **A writing job must never go to a tool loop.** Handed `contentBriefFor` alone, the on-device
-> model produces the deck cleanly first try; through the ReAct loop it returns typings and `fs`
-> wrappers. Tool names are the strongest cue in a small model's prompt and it answers them with
-> code. There is now a CONTENT PATH that writes and verifies before any tool loop sees the goal.
->
-> Also: a clarify reply became the goal (`{"goal":"i already told you"}`), and folding it back in
-> produced text the spec parser could not read — so an ANSWERED question still could not be built.
-> Both closed; `clarify:bench` guards it.
->
-> **Deliberately NOT shipped:** token-overlap dedupe for padding-by-restatement. Works on the live
-> case (15→8) and rejects valid formulaic decks, flagging 3 of the artifact bench's own fixtures.
-> Evidence left in `__artifact_bench.ts`. Needs a semantic signal, not a lexical one.
->
-> **Benches:** ambiguity 35, goalspec 31, clarify 12, libdetect 17, schedule 56, web 19,
-> barecall 8, artifact 39, fmReact 12.
->
-> **The remaining ceiling is OUTPUT QUALITY, not routing.** The on-device model now reliably
-> reaches the right path and is honestly graded, but under-delivers (15 of 20), pads the tail with
-> restated cards, invents facts ("lo" as a neuter article — Italian has no neuter) and drifts
-> format. That is `CAPABILITY_CEILING.md`. Every gate above it now REPORTS the shortfall.
->
-> **Open, unresolved:** the agent emits duplicate tool calls (schedule_task fired 3x for one
-> request; the dedupe guard caught it, but the loop should not do that). A stranded orphan server
-> was found again (PID 2109, reparented to init) — cont.70's failure mode.
+> **Open, unresolved:**
+>  - **On-device content quality is the ceiling now, not routing.** The quizlet request routes
+>    correctly and delivers honestly, but the 1.5B model wrote "What is an Italian vegetable?
+>    Pasta." Same finding as `CAPABILITY_CEILING.md` — every gate above it reports the shortfall
+>    and none can fix it.
+>  - The proposal flow is wired into the NAMED-TOOL executor only. A draft produced by `fmReact`
+>    or the content path does not yet park one; `draftableAction` is executor-agnostic, so this is
+>    a wiring job, not a design one.
+>  - Proposals are in-memory (deliberately, like `pendingClarify`) — a server restart between
+>    draft and confirmation loses the draft. Correct for safety, worth a note in the UI.
+>  - Carried from cont.119, still open: the agent emits duplicate tool calls (schedule_task fired
+>    3x for one request; the dedupe guard caught it, but the loop should not do that).
 
 ---
 
