@@ -56,14 +56,16 @@ Today the browser can only READ. Agentic web work means acting.
     element. Needs identity-based numbering before this is honestly done.
 16. **`browser_fill_form`** — fill many fields in one call, with per-field confirmation of what
     landed.
-17. **Wait-for-condition primitive** (selector / text / network-idle) with a bounded timeout.
-    NOT done — `web_act` waits on navigation and then a fixed settle beat, and the `wait` action
-    is a plain sleep. The blanket `waitForTimeout` is still there.
+17. `[~]` **Wait-for-condition primitive.** Partial: `web_act` waits on navigation, then a fixed
+    settle beat, and gained a `read` action so a re-read no longer needs a no-op scroll. A real
+    wait-for-selector/text/network-idle is still not there.
 18. `[x]` **Multi-step page session.** A `browser_session` handle so a task can act across several
     turns on one page without reloading.
-19. **Tabs.** Open, list, switch, close — many sites open flows in new tabs.
-20. **Download handling.** Capture `download` events to `.crucible/artifacts/` and emit a file
-    entity.
+19. `[x]` **Tabs.** A tab opened by an action is ADOPTED under the same pageId — sign-in popups
+    and OAuth hops are where the flow went, and without this every later act targeted the
+    abandoned page. web_close closes the whole flow.
+20. `[x]` **Download handling.** Saved to `.crucible/artifacts/`, named in the output, emitted as
+    a file entity, and drained per action so a file is reported exactly once.
 21. **Upload handling** via `setInputFiles`.
 22. **Frame/iframe traversal** — checkout and embedded auth flows live in iframes.
 23. **Shadow-DOM piercing** for the reader and for `browser_act`.
@@ -106,8 +108,11 @@ The cont.118 capability ceiling. Every "why did it do that" bug lives here.
 44. **Derived self-model corpus** — model id, tools, network posture computed at boot, never typed.
 45. **Wire the world model into the answer path** — `entityGraph`/`episodicMemory` exist and the
     conversation path never reads them.
-46. **Semantic tool retrieval.** Tool selection from registry descriptions via the on-device
-    embedder, replacing `detectAgentTask`'s ~25 regexes. *The universal fix for Track A items 1–3.*
+46. `[~]` **Semantic tool retrieval.** Built and MEASURED (`toolretrieval:bench`): per-clause
+    max-scoring gives top-3 89%, top-1 39%, and a no-tool request can score 0.32. So it is a
+    candidate GENERATOR, not a picker — wired to ADD up to 3 read-only tools to the curated set,
+    never to choose or to gate. Replacing `detectAgentTask` outright is NOT justified by these
+    numbers and remains open.
 47. **Tool-choice explanation** — why this tool, surfaced in the run panel.
 48. **Capability honesty.** "I can't take screenshots" must be impossible to say when the tool is
     registered; assert the claim against the live registry before it ships.
@@ -290,6 +295,19 @@ justify it: per-clause max-scoring gives top-3 89% but top-1 39%, so it is a can
 not a picker. It ADDS up to 3 read-only tools to the curated set and never chooses, never gates,
 never suggests anything that mutates. That is what lets "summarise my inbox" reach `gmail_search`,
 which no regex knows about.
+
+### Round 4 — capability, and the tests that were lying
+
+| landed | commit |
+|---|---|
+| `web_act` gains **`read`** — the planner asked for it by emitting `action:"read"` and being refused; the alternative was a no-op scroll that then reported "NOTHING measurably changed" | `66c794c` |
+| **Downloads** captured to artifacts, named, emitted as entities, drained per action | `66c794c` |
+| **New tabs adopted** under the same pageId — the shape a sign-in popup takes, and the one shape the tools could not follow | `7c8dd08` |
+| The **web bench was driving the user's real signed-in profile**, and could not run at all while the app was up (profile lock). Now hermetic, in a temp profile. | `81878a3` |
+
+Two fixture lessons worth keeping: a live site cannot be a regression test (duckduckgo served a
+CAPTCHA mid-run), and Chromium blocks top-level `data:` navigation — the first tab test adopted
+nothing and looked like a bug in the code rather than a bad fixture.
 
 ### Next, in priority order
 
