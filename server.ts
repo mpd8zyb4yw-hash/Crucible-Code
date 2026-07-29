@@ -29,7 +29,7 @@ import { answerCountingQuery } from './src/CrucibleEngine/countingVerifier'
 import { verifyAndRepair } from './src/CrucibleEngine/baselineVerify'
 import { localFmPlan, runFmPlan } from './src/CrucibleEngine/agent/localFmPlanner'
 import { resolveNamedTools, resolveImplicitPersonalTools, resolveImplicitLocalTools, renderPersonalData } from './src/CrucibleEngine/agent/namedToolRouter'
-import { specForGoal, briefFor, elicitation } from './src/CrucibleEngine/agent/goalSpec'
+import { specForGoal, briefFor, contentBriefFor, elicitation } from './src/CrucibleEngine/agent/goalSpec'
 import { verifyArtifact } from './src/CrucibleEngine/agent/artifactVerify'
 import { corpusFirstAnswer } from './src/CrucibleEngine/corpus/corpusFirst'
 import { fenceProtocolPrompt, parseFenceToolCall } from './src/CrucibleEngine/tools/protocol'
@@ -4181,7 +4181,15 @@ app.post('/api/chat', async (req, res) => {
         })
         send({ type: 'agent_start', driver: 'on-device FM (desktop)', projectPath, resumed: false })
         const { fmReact } = await import('./src/CrucibleEngine/agent/fmReact')
-        let fmRes = await fmReact({ goal: agentGoal, projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false, maxRounds: 8, emit: send, requireTool: true })
+        // `requireTool` forces at least one tool call before an answer is accepted — right for a
+        // goal whose facts must come from somewhere, wrong for one whose source is the model's own
+        // knowledge. Live: a 20-card Italian grammar deck was forced to search, found nothing, and
+        // handed the task back ("could you provide a different search query?"). A knowledge-sourced
+        // deliverable with no destination to drive needs no instrument, and demanding one converts
+        // a writable answer into a failed lookup.
+        const selfSourced = goalSpec?.ready === true
+          && goalSpec.slots.find(s => s.key === 'source')?.source === 'default'
+        let fmRes = await fmReact({ goal: agentGoal, projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false, maxRounds: 8, emit: send, requireTool: !selfSourced })
 
         // ── ARTIFACT VERIFICATION (cont.118) ──────────────────────────────
         // Asked for "a set of flash cards", the agent returned a well-written ESSAY and it was
@@ -4205,7 +4213,11 @@ app.post('/api/chat', async (req, res) => {
               // The FORMAT DEMAND LEADS. Appending it after the original brief left the model
               // re-reading "summarize the page" first and summarizing again; the constraint has
               // to be the first thing it sees.
-              goal: `${verdict.feedback}\n\nSubject matter: ${goalSpec.deliverable} drawn from the source in this task.\n\n${agentGoal}`,
+              // The repair prompt drops every instrument (contentBriefFor). Re-sending the full
+              // brief re-sent the tool names, which are exactly what cued the model to answer a
+              // flashcard request with TypeScript declarations. The rejected artifact itself is
+              // still never included — see crucible-repair-is-a-search.
+              goal: `${verdict.feedback}\n\n${contentBriefFor(goalSpec)}`,
               projectPath, signal: ac.signal, extraTools: desktopTools, noSearch: false,
               maxRounds: 6, emit: send, requireTool: false,
             })

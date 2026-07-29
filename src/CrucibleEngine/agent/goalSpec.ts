@@ -357,26 +357,78 @@ export function specForGoal(message: string, ctx: { hasAttachment?: boolean } = 
 export function briefFor(spec: GoalSpec): string {
   const v = (k: SlotKey) => spec.slots.find(s => s.key === k)?.value ?? ''
   const src = v('source')
+  // ── Why this is PROSE and not `Key: value` (cont.119) ──────────────────────
+  //
+  // It used to be a labelled block:
+  //
+  //     Build: quizlet flashcard set.
+  //     Subject: simple grammatical italian terms.
+  //     Amount: 20.
+  //     Level: simple.
+  //     Format: a two-sided Q:/A: deck, one pair per item.
+  //
+  // A small on-device model reads that shape as a CONFIG OBJECT TO TRANSCRIBE, and returned:
+  //
+  //     const flashcardSet = new AbstractLevel({ location: 'path/to/flashcards',
+  //       options: { level: 'simple', amount: 20, subject: 'simple grammatical italian terms',
+  //                  format: 'two-sided' } })
+  //
+  // The keys are this brief's own labels, one for one. `Level:` is what pulled in the `level` npm
+  // package and its `abstract-level` sibling — the mystery output that made a request for Italian
+  // flashcards come back as LevelDB bindings, chased for hours across three other suspects.
+  //
+  // The instruction never needed that shape. A brief is a sentence telling someone what to make;
+  // written as a form, it invites the model to fill the form in instead of doing the work.
+  const amount = v('quantity')
+  const depth = v('depth')
+  // Deliverables are named as the USER named them ("flashcards", "flashcard set", "study guide"),
+  // so the count cannot be glued on as a quantifier without producing "20 flashcard set". Stating
+  // it as its own sentence is grammatical for every deliverable AND puts the number where a model
+  // is most likely to honour it — under-delivery (17 of 20) was the other half of this failure.
   const lines = [
-    `Build: ${spec.deliverable}.`,
-    `Subject: ${v('subject')}.`,
-    `Source: ${src}.`,
-    `Amount: ${v('quantity')}.`,
-    `Level: ${v('depth')}.`,
-    `Format: ${v('format')}.`,
+    `Produce ${spec.deliverable} about ${v('subject')}${depth ? `, pitched at a ${depth} level` : ''}.`,
   ]
+  if (amount && amount !== '1') lines.push(`It must contain exactly ${amount} items — count them before you finish.`)
+  lines.push(`Present it as ${v('format')}.`)
+  // When the SOURCE is the system's own knowledge, say so as an INSTRUCTION, not a label.
+  // Live (cont.119): the brief said "Source: what I already know about the topic", and the model
+  // searched anyway, got nothing, and answered "I couldn't find any information on simple
+  // grammatical Italian terms. Could you provide a different search query?" — handing the task
+  // back over a lookup it never needed. Twenty Italian grammar cards require no research.
+  // The ordering is stated in PROSE, never as "STEP 1 / STEP 2": the multi-step planner reads
+  // enumerated markers as plan steps and tried to execute a step literally named "WRITE IT FIRST"
+  // as though it were a tool action (cont.119). A brief describes the job; it must not look like
+  // a plan, or something downstream will run it as one.
+  //
+  // WRITING and DELIVERING are separate steps, and the brief must SEQUENCE them rather than
+  // merely state both. Live (cont.119): with "no lookup is needed" and "deliver into quizlet.com"
+  // sitting side by side, the model reconciled them by hunting the web for content — inventing
+  // https://www.italian-grammar.com/grammar-terms/, failing on ERR_CONNECTION_REFUSED, and
+  // abandoning the task. The content was never the part that needed a network.
+  const selfSourced = !URL_RE.test(src) && !/file you attached/i.test(src)
   const dest = v('destination')
-  if (dest && dest !== 'here in the chat') {
-    // Naming the ACTION and the tool aliases, for the same reason the URL branch below does:
-    // an executor handed a tool name it does not have emits pseudo-code instead of a call.
+  const hasDest = !!dest && dest !== 'here in the chat'
+
+  if (selfSourced) {
     lines.push(
-      `Deliver INTO ${dest} — the user asked for it there, not just as text in the chat. ` +
-      `Open it with web_open, then drive the page with web_act (click/fill/select) to create the ` +
-      `${spec.deliverable} for real. If it needs a login, call browser_sign_in for ${dest}: that ` +
-      `opens a window, returns immediately, and this task resumes automatically once they sign in ` +
-      `— do not wait, and never ask for a password. ` +
-      `If you genuinely cannot create it there, produce the full content here AND say plainly that ` +
-      `it was not added to ${dest}. Do not imply it was.`,
+      `${hasDest ? 'Write the content first. ' : ''}No lookup is needed: write the ` +
+      `${spec.deliverable} from your own knowledge. Do not search the web and do not fetch any ` +
+      `page for the content itself — if you know the subject well enough to teach it, you know enough to ` +
+      `write it. Never invent a URL to read.`,
+    )
+  }
+  if (hasDest) {
+    // Naming the ACTION and the tools, for the same reason the URL branch below does: an executor
+    // handed a tool name it does not have emits pseudo-code instead of a call.
+    lines.push(
+      `${selfSourced ? 'Once the content is written, deliver it. ' : ''}The user asked for this in ${dest}, not ` +
+      `just as text in the chat. Open ${dest} with web_open and drive the page with web_act ` +
+      `(click/fill/select) to create the ${spec.deliverable} there. If it needs a login, call ` +
+      `browser_sign_in for ${dest}: that opens a window, returns immediately, and this task ` +
+      `resumes on its own once they sign in — do not wait, and never ask for a password.`,
+      `If delivery to ${dest} fails for any reason, that does not fail the task: output the ` +
+      `complete ${spec.deliverable} anyway and say plainly that it was not added to ${dest}. ` +
+      `Never imply it was, and never let a failed page load stop you from producing the content.`,
     )
   }
   if (URL_RE.test(src)) {
@@ -392,6 +444,32 @@ export function briefFor(spec: GoalSpec): string {
     )
   }
   lines.push('Fill in every remaining detail yourself with sensible choices. Do not ask the user for anything else; produce the finished artifact.')
+  return lines.join('\n')
+}
+
+/**
+ * The brief with every instrument stripped — content only.
+ *
+ * Naming tools in a brief is what lets an executor actually deliver somewhere, but for a small
+ * on-device model the tool names are also the strongest cue in the prompt, and it answers them
+ * with CODE: a request for 20 Italian flashcards came back as TypeScript declarations, twice,
+ * while the only tool call made was a web search returning an unrelated Wikipedia page. Nothing
+ * had FETCHED that code — the model wrote it, because the brief read like a programming task.
+ *
+ * So the REPAIR pass gets this version. By then delivery has already failed or is moot; the only
+ * remaining job is to produce the artifact, and the shortest prompt asking for exactly that is the
+ * one most likely to get it.
+ */
+export function contentBriefFor(spec: GoalSpec): string {
+  const v = (k: SlotKey) => spec.slots.find(s => s.key === k)?.value ?? ''
+  const amount = v('quantity')
+  const depth = v('depth')
+  const lines = [
+    `Produce ${spec.deliverable} about ${v('subject')}${depth ? `, pitched at a ${depth} level` : ''}.`,
+  ]
+  if (amount && amount !== '1') lines.push(`It must contain exactly ${amount} items — count them before you finish.`)
+  lines.push(`Present it as ${v('format')}.`)
+  lines.push('Write it from your own knowledge. Do not search, do not fetch anything, and do not write any code — just write the content itself.')
   return lines.join('\n')
 }
 

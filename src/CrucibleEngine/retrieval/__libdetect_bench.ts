@@ -20,6 +20,7 @@
 // Both directions are asserted, per crucible-verifier-two-failure-directions: releasing prose
 // must not cost the real library detections the function exists for.
 import { namesExternalLibrary } from './retrievalLayer'
+import { specForGoal, briefFor, contentBriefFor } from '../agent/goalSpec'
 
 let pass = 0, fail = 0
 function check(name: string, ok: boolean, detail = '') {
@@ -51,6 +52,23 @@ for (const q of NOT_LIBRARY) check(JSON.stringify(q.slice(0, 52)), namesExternal
 
 console.log('  — real library asks still detected —')
 for (const q of IS_LIBRARY) check(JSON.stringify(q.slice(0, 52)), namesExternalLibrary(q) === true)
+
+// ── The generated BRIEF must never look like a library ask ────────────────────
+// The brief is written by us and then fed to heuristics designed for USER QUESTIONS, so every
+// word put in it becomes classification signal. Both regressions here were self-inflicted: the
+// labelled `Level:`/`Format:` block, and later an all-caps `CONTENT` used for emphasis (7 chars —
+// too long for the acronym skip, so it read as a package name).
+console.log('  — generated briefs are not library asks —')
+for (const goal of [
+  'build me a quizlet flashcard set with simple grammatical italian terms',
+  'make me 20 flash cards on spanish verbs',
+  'put together a chegg study guide covering photosynthesis',
+]) {
+  const spec = specForGoal(goal)
+  if (!spec?.ready) { check(`spec for ${JSON.stringify(goal.slice(0, 40))}`, false, 'not ready'); continue }
+  check(`briefFor ${JSON.stringify(goal.slice(0, 40))}`, namesExternalLibrary(briefFor(spec)) === false, briefFor(spec).slice(0, 200))
+  check(`contentBriefFor ${JSON.stringify(goal.slice(0, 40))}`, namesExternalLibrary(contentBriefFor(spec)) === false, contentBriefFor(spec).slice(0, 200))
+}
 
 // ── Known, PRE-EXISTING limitation, deliberately reported rather than asserted ──
 // Any capitalized proper noun mid-sentence reads as a library ("...capital of France"). That is

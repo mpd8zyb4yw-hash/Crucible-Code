@@ -93,10 +93,27 @@ for (const [goal, host] of [
     JSON.stringify(dest))
   // Naming the destination is not enough — the brief must name the ACTION and the tools, or the
   // executor emits pseudo-code instead of a call (the same failure the URL branch already fixed).
-  check(`brief directs the agent INTO ${host}`,
-    brief.includes(`Deliver INTO ${host}`) && brief.includes('web_open') && brief.includes('web_act')
+  check(`brief directs the agent INTO ${host} and names the tools`,
+    brief.includes(host) && brief.includes('web_open') && brief.includes('web_act')
       && brief.includes('browser_sign_in') && brief.includes('say plainly'),
-    brief.slice(-260))
+    brief.slice(-320))
+  // ORDER matters, not just presence. With "no lookup needed" and "deliver into <site>" merely
+  // co-present, the model reconciled them by hunting the web for CONTENT — inventing
+  // italian-grammar.com, failing on ERR_CONNECTION_REFUSED, and abandoning the task.
+  check(`brief SEQUENCES write-then-deliver for ${host}`,
+    brief.indexOf('Write the content first') !== -1
+      && brief.indexOf('Write the content first') < brief.indexOf('deliver it'),
+    brief.slice(-320))
+  // ...and states that order in PROSE. Enumerated markers get read as plan steps: the planner
+  // built a step literally named "WRITE IT FIRST" and tried to execute it as a tool action.
+  check(`brief does not look like a numbered plan`, !/\bSTEP \d/.test(brief), brief.slice(-320))
+  // A failed delivery must not be allowed to eat the content.
+  check(`a failed delivery to ${host} still yields the content`,
+    /does not fail the task/.test(brief) && /Never imply it was/.test(brief), brief.slice(-200))
+  // Emphasis in CAPS is classification poison: "CONTENT" is 7 chars, too long for the acronym
+  // skip, so it reads as a library name to the very heuristics a brief gets fed to.
+  check(`brief carries no all-caps emphasis for ${host}`,
+    !/\b[A-Z]{6,}\b/.test(brief), (brief.match(/\b[A-Z]{6,}\b/g) || []).join(','))
   // Never blocking: content in chat beats a refusal.
   check(`a destination never blocks the build`, spec.ready === true, `ready=${spec.ready}`)
 }
