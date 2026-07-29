@@ -444,6 +444,8 @@ export function parseResponse(
   raw: string,
   /** Maps a tool name to its primary param, so a BARE positional arg can be rescued. */
   primaryParam?: (toolName: string) => string | undefined,
+  /** Names the model is allowed to invoke. Enables the bare-call rescue below. */
+  isKnownTool?: (toolName: string) => boolean,
 ): ParsedResponse {
   const text = undecorate(raw)
   // A weak model routinely emits the tool call in function-call form on the TOOL: line
@@ -457,7 +459,42 @@ export function parseResponse(
     /^(\s*TOOL:\s*\w+)\s*\(([^)\n]*)\)\s*$/im,
     (_m, head: string, inner: string) => `${head}\n${splitCallArgs(inner).join('\n')}`,
   )
-  const toolMatch = normalized.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
+  let toolMatch = normalized.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
+
+  // ── Bare call form: the model writes CODE instead of the protocol ──────────
+  //
+  // LIVE (cont.119): asked to create a set on quizlet.com, the model answered with
+  //
+  //     ```typescript
+  //     web_open("https://quizlet.com/create-flashcard-set");
+  //     ```
+  //
+  // It had picked the right tool and the right argument and simply expressed the call in the
+  // notation it knows best. Nothing ran, and the code block shipped as the answer.
+  //
+  // This is the same principle `undecorate` above was written for — a protocol the model gets
+  // 95% right must not fail closed on the other 5% — one step further out: not decoration around
+  // the protocol, but the protocol expressed as source. Only fires when NO `TOOL:` line parsed
+  // and there is no FINAL_ANSWER, and only for a name the caller says is a real tool, so prose
+  // that merely mentions a tool cannot be hijacked into executing one.
+  if (!toolMatch && isKnownTool && !/FINAL_ANSWER:/i.test(normalized)) {
+    const CALL = /(?:^|[^\w.])([a-z_][\w]*)\s*\(([^)]*)\)/gim
+    let m: RegExpExecArray | null
+    while ((m = CALL.exec(normalized)) !== null) {
+      const [, name, inner] = m
+      if (!isKnownTool(name)) continue
+      // A BARE positional arg must be labelled with the tool's primary param before the
+      // `key: value` line parser sees it — otherwise `web_open("https://quizlet.com/x")` is
+      // split on the URL's OWN colon and the tool receives {https: "//quizlet.com/x"}.
+      const pp = primaryParam?.(name)
+      const argLines = splitCallArgs(inner).map(a =>
+        (/^[a-z][\w+.-]*:\/\//i.test(a) || !/^\w+\s*:\s/.test(a)) && pp ? `${pp}: ${a}` : a,
+      )
+      const rebuilt = `TOOL: ${name}\n${argLines.join('\n')}`
+      toolMatch = rebuilt.match(/^TOOL:\s*(\w+)\s*\n([\s\S]*)/im)
+      if (toolMatch) return parseNormalized(rebuilt, toolMatch, primaryParam)
+    }
+  }
   return parseNormalized(normalized, toolMatch, primaryParam)
 }
 
@@ -571,6 +608,8 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
   const toolMap = new Map(tools.map(t => [t.name, t]))
   const system = buildSystemPrompt(tools)
   const primaryParam = primaryParamLookup(tools)
+  const toolNames = new Set(tools.map(t => t.name))
+  const knownTool = (n: string) => toolNames.has(n)
 
   const messages: FmMessage[] = [
     ...historyToMessages(history),
@@ -599,7 +638,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
       throw new Error('FM returned empty response')
     }
 
-    const parsed = parseResponse(rawResponse, primaryParam)
+    const parsed = parseResponse(rawResponse, primaryParam, knownTool)
 
     if (parsed.type === 'final') {
       // STRICT MODE — an answer produced without ever looking is a false miss, not an answer.
@@ -697,7 +736,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
 
   try {
     const lastResponse = await callFm(system, messages, FM_TIMEOUT_MS)
-    const parsed = parseResponse(lastResponse, primaryParam)
+    const parsed = parseResponse(lastResponse, primaryParam, knownTool)
     return {
       answer: stripAgentScaffold(parsed.answer ?? lastResponse),
       rounds,
