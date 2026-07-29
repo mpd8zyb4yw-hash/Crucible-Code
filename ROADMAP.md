@@ -1933,6 +1933,37 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-07-29 (gap-soundness — the roman contamination did not exist, and the identity gate is why)
+
+**The suspected `_learned/roman.ts` leak is REFUTED — measured, not argued.** The open question was
+whether the L0 catalog matches on spec *features* (contaminating every `romanToInt`/`intToRoman`
+number, and invalidating the template 15/15) or on exact entry name. It is neither, quite: every
+distilled skill's `match()` is a single **case-sensitive** `\b<exportName>\b` test against the raw
+spec text, scored `hits/1` against a 0.5 floor (`skills/_learned/roman.ts:13`). Neither `romanToInt`
+nor `intToRoman` contains lowercase `toRoman` at a word boundary, so `learned/roman` scores **0**.
+Probe output, both scorecard specs: `learned/roman` absent from the top-3 ranking entirely.
+**The template 15/15 does not need re-running.**
+
+**But the probe found a bigger fish, and then found it already caught.** `_learned/roman.ts`'s IMPL
+is **byte-identical** to a *shipped hand-authored* catalog skill, `number-format-utils`
+(`skills/numberFormatUtils.ts`) — so purging `_learned/` would have proven nothing anyway. That
+skill matches `romanToInt`/`intToRoman` at **0.6, above the 0.5 floor**, on the prose regex
+`\broman.*numeral`. It is a live catalog hit on both scorecard tasks. It is *not* a contamination,
+because it emits `toRoman`/`fromRoman`/`ordinal` and the request declares `romanToInt` — and
+`satisfiesRequestedIdentity` (`pureCode.ts:229-234`, the 2026-07-22 certification-scope gate) requires
+a declared-export **superset** at the declared module path before any L0 ship. The match falls
+through to L1/L2 honestly. **This is the first time that gate has been shown catching a real
+same-domain wrong-API hit rather than a constructed one** — the near-miss it was written for
+(`deepEqual` vs `deepEqualCyc`) has a genuine sibling in the shipped catalog.
+
+**`CRUCIBLE_NO_DISTILL` now means what every caller assumed it meant: neither read nor write.**
+It gated only `distillToSkill` (`pureCode.ts:297`); the read path `loadLibrary.ts` imported
+`_learned/` **unconditionally**, so a cold-measurement run still inherited every skill a prior warm
+run had persisted. Guard added at the read site. Verified: warm run registers 5 learned skills, cold
+run registers **0**. Any "NO_DISTILL" number taken before this commit was only write-cold.
+
+`prove:all` 251/251. `typecheck:engine` unchanged at the same 5 pre-existing errors.
+
 ### 2026-07-28 (gap-soundness — a duration that resets per sub-call is not a ceiling)
 
 Commit `87b68ab`. Four of five open items closed; item 3 (stale-reuse refutation) NOT started.

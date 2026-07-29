@@ -32,7 +32,15 @@ export async function ensureLibraryLoaded(): Promise<void> {
       ),
     ))
 
-    // Phase A: load durable distilled skills from _learned/ (oracle-verified at distillation time)
+    // Phase A: load durable distilled skills from _learned/ (oracle-verified at distillation time).
+    //
+    // READ-SIDE HALF OF THE COLD-MEASUREMENT GUARD (2026-07-29). `CRUCIBLE_NO_DISTILL` used to gate
+    // only the WRITE (pureCode.distillToSkill) — so a cold run still READ every skill an earlier warm
+    // run had persisted, and could serve a corpus task from the L0 catalog at zero inference. The env
+    // var now means what its users assume it means: neither read nor write. A cold-measurement run
+    // therefore sees only the hand-authored catalog, never this process's or a prior run's residue.
+    if (process.env.CRUCIBLE_NO_DISTILL) { libraryReady = true; return }
+
     try {
       const learnedFiles = fs.readdirSync(LEARNED_DIR)
         .filter(f => f.endsWith('.ts') || f.endsWith('.js'))

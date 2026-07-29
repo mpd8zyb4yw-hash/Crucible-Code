@@ -17,12 +17,29 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-28 (gap-soundness cont.) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-07-29 (gap-soundness cont.) (REPLACE THIS EVERY SESSION)
 
-> **Two budgets that were never ceilings are now ceilings, and the hygiene gate that was supposed
-> to prevent the grep-blindness class was itself blind to the largest file in the repo.**
+> **The contamination we feared was not there — and the reason it was not there is a gate we
+> had never seen fire on a real case. The stale-reuse refutation is still untouched.**
 
-Commit `87b68ab`. Items 1, 4, 5 CLOSED; item 2 PARTIALLY answered; **item 3 NOT STARTED**.
+Items 1 and 2 CLOSED (see the two blocks immediately below). **Item 3 — the carry-site
+stale-reuse claim — remains NOT STARTED for the third session running; it is now the top item.**
+
+### CLOSED — `_learned/roman.ts` does NOT contaminate the roman scorecard tasks
+Distilled-skill `match()` is a single **case-sensitive** `\b<exportName>\b` test on the raw spec,
+`hits/1` vs a 0.5 floor. `romanToInt`/`intToRoman` do not contain lowercase `toRoman` at a word
+boundary → score **0**. **The template 15/15 stands; do not re-run it for this reason.**
+Two things worth carrying forward: (a) purging `_learned/` would have proven nothing — its roman
+IMPL is byte-identical to the *shipped* catalog skill `number-format-utils`; (b) that shipped skill
+DOES match both tasks at 0.6 on the prose regex `\broman.*numeral`, and is stopped only by
+`satisfiesRequestedIdentity` (`pureCode.ts:229`) demanding a declared-export superset. **The
+identity gate is load-bearing on live scorecard tasks — treat any change to it as a soundness
+change, not a tidy-up.**
+
+### CLOSED — `CRUCIBLE_NO_DISTILL` is now read-side too
+The read path (`loadLibrary.ts`) imported `_learned/` unconditionally; the env var gated only the
+write. Guard added. Measured: warm 5 learned skills → cold **0**. Pre-2026-07-29 "NO_DISTILL"
+numbers were write-cold only, and are not comparable to post-guard cold runs.
 
 ### CLOSED — the wall-clock cap actually binds now
 `wallClockMs` was per-`iterate()`-call, not per-task: `iterate.ts` re-reads `start` at the top of
@@ -51,16 +68,7 @@ without). Fixed by making the unions total.
 `index.ts:23` TS2305 (`PromptType` not exported by `./types`) · `scoring-engine.ts:506` TS2322 ·
 `specializationForcing.ts:7` TS2307 (`../types` does not resolve — a genuinely broken import).
 
-### TOP OPEN ITEM 1 — item 2 is half-answered and the unanswered half is the contaminating one
-`CRUCIBLE_NO_DISTILL` is **WRITE-ONLY**. One functional site, `synth/pureCode.ts:297`, inside the
-distill function. The READ path — `synth/loadLibrary.ts:35-44` — loads `_learned/`
-**unconditionally**. `_learned/` holds 4 skills, and **`roman.ts` implements `toRoman`/`fromRoman`
-while the general scorecard measures `romanToInt` (`__decompose_general_scorecard_live.ts:46`) and
-`intToRoman` (`:62`)** — same functions, different names. **NEXT STEP: read the L0 catalog match
-predicate.** If it matches on spec features rather than exact entry name, every "NO_DISTILL" roman
-number is contaminated and the template 15/15 needs re-running with `_learned/` moved aside.
-
-### TOP OPEN ITEM 2 — item 3 was never started
+### TOP OPEN ITEM 1 — item 3 was never started
 Unaddressed 2026-07-27b findings: `isNonComposingCarve`/`isRebakedHelper` are not re-run after the
 dead-rung prune (note `isDegenerateSubFnCarve` IS, so it is partly handled), and `rungSpecKey` does
 not capture sibling-helper context. The carry-site comment "a stale reuse can only cost a compose
