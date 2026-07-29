@@ -46,6 +46,10 @@ export interface FmPlan {
 const ALLOWED_TOOLS = new Set([
   'open_app', 'shell_exec', 'get_ui_tree', 'click_element', 'type_text',
   'search_web', 'search_youtube',
+  // cont.119 — real web tools. Without these the only way this layer could touch a site was
+  // `open_app`, which shells out to the default browser and returns "Opened URL" — the agent
+  // never sees the page, which is the dead end cont.118 was opened to close. Gated below.
+  'browse_page', 'web_open', 'web_act',
 ])
 
 // GUI-control tools read/drive the LIVE macOS desktop (the frontmost window's
@@ -58,8 +62,20 @@ const ALLOWED_TOOLS = new Set([
 // Without desktop intent these tools are removed from BOTH the prompt and the validation
 // allowlist, so the planner can neither see nor smuggle them in.
 const GUI_CONTROL_TOOLS = new Set(['get_ui_tree', 'click_element', 'type_text'])
-const allowedFor = (desktopIntent: boolean): Set<string> =>
-  desktopIntent ? ALLOWED_TOOLS : new Set([...ALLOWED_TOOLS].filter(t => !GUI_CONTROL_TOOLS.has(t)))
+
+// Web tools get the SAME discipline as the GUI tools above, and for the same reason: a tool this
+// planner can see is a tool it will reach for. A brief with no site in it has no business opening
+// a browser, and offering one indiscriminately is how "what is 17x4" ended up calling get_ui_tree.
+// Presence of a URL or a bare domain is the evidence, read from the goal itself.
+const WEB_TOOLS = new Set(['browse_page', 'web_open', 'web_act'])
+const WEB_TARGET = /https?:\/\/\S+|\b[\w-]+\.(?:com|org|net|io|co|edu|gov|so|dev|app|ai)\b/i
+
+const allowedFor = (desktopIntent: boolean, webIntent = false): Set<string> => {
+  let out = [...ALLOWED_TOOLS]
+  if (!desktopIntent) out = out.filter(t => !GUI_CONTROL_TOOLS.has(t))
+  if (!webIntent) out = out.filter(t => !WEB_TOOLS.has(t))
+  return new Set(out)
+}
 
 // Max characters we send to FM. 280 was tuned for <500ms on A18 but rejected legitimate
 // single-step requests that merely carried context ("open the spreadsheet I was just looking
@@ -80,6 +96,9 @@ const TOOL_SPECS: Record<string, string> = {
   type_text: '- type_text: {"text":"text to type"}',
   search_web: '- search_web: {"query":"search query"}',
   search_youtube: '- search_youtube: {"query":"search query"}',
+  browse_page: '- browse_page: {"url":"https://example.com"} — returns the page TEXT, using the user\'s signed-in browser profile',
+  web_open: '- web_open: {"url":"https://example.com"} — opens a page that STAYS open and lists its clickable/typeable controls with ref ids; use this when the task needs more than reading',
+  web_act: '- web_act: {"pageId":"p1","action":"click|fill|select|press","target":"e12 or the control\'s visible name","value":"text to type"} — acts on a page opened by web_open',
 }
 
 // Built per-request so the tool menu reflects exactly what this goal is allowed to use —
@@ -156,7 +175,8 @@ export async function localFmPlan(
   if (MULTI_STEP.test(q) || (q.match(ACTION_VERB)?.length ?? 0) >= 3) return null
 
   // GUI-control tools are offered only when the caller confirms desktop-interaction intent.
-  const allowed = allowedFor(opts.desktopIntent ?? false)
+  // Web tools likewise, on evidence read from the goal: a site named in the request IS the intent.
+  const allowed = allowedFor(opts.desktopIntent ?? false, WEB_TARGET.test(q))
 
   let raw: string
   try {
