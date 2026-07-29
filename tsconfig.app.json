@@ -22,5 +22,9 @@
     "noFallthroughCasesInSwitch": true
   },
   "include": ["src"],
-  "exclude": ["src/CrucibleEngine", "src/server"]
+  // Benches are Node programs (they use `process.exit` to signal failure) and are never bundled
+  // into the browser build. The engine and server trees were already excluded wholesale; the
+  // `__*_bench.ts` pattern covers the ones that live beside the UI code they test, which is where
+  // src/chat/__followstate_bench.ts belongs — next to the scroller logic it pins.
+  "exclude": ["src/CrucibleEngine", "src/server", "src/**/__*_bench.ts"]
 }
