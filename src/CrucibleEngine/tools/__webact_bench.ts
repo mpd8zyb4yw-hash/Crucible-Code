@@ -93,6 +93,24 @@ async function main() {
   check('acting on a closed page fails loudly', afterClose.ok === false && /No open page/.test(String(afterClose.output)),
     String(afterClose.output).slice(0, 160))
 
+  // ── New tabs (cont.119, overhaul item 19) ──────────────────────────────────
+  // A new tab is where the flow WENT — sign-in popups, "open in new tab" links and OAuth hops all
+  // continue in a page the original handle never pointed at. Without adopting it, every later
+  // action targets the abandoned tab and truthfully reports that nothing changed.
+  const tabOpen = await exec('web_open', { url: FIXTURE, maxChars: 600 })
+  const tId = (tabOpen.meta as any)?.pageId
+  if (tId) {
+    const popped = await exec('web_act', { pageId: tId, action: 'click', target: 'Open in a new tab', maxChars: 800 })
+    check('a new tab is adopted under the same pageId', (popped.meta as any)?.navigated === true && /new tab/.test(String(popped.output)),
+      String(popped.output).split('\n')[0])
+    check('the new tab is what is now read', /Second Tab/.test(String(popped.output)), String(popped.output).slice(0, 200))
+    // ...and the handle keeps working, now against the adopted tab.
+    const inNew = await exec('web_act', { pageId: tId, action: 'read', maxChars: 600 })
+    check('later acts target the adopted tab', /Second Tab/.test(String(inNew.output)), String(inNew.output).slice(0, 160))
+    const closed = await exec('web_close', { pageId: tId })
+    check('closing the flow closes both tabs', closed.ok === true, String(closed.output))
+  } else check('a new tab is adopted under the same pageId', false, 'could not open the fixture')
+
   // ── Downloads (cont.119, overhaul item 20) ─────────────────────────────────
   // A flow that ends in a file is an ordinary thing to ask for, and without capture the file is
   // simply lost: the click "works", nothing on the page changes, and there is nothing to show.

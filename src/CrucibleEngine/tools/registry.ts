@@ -1213,7 +1213,8 @@ registry.register({
       // that cannot tell a no-op from a success will happily march on through a broken flow.
       // A re-read that changes nothing is a SUCCESS, not a suspected no-op — the "nothing
       // changed, try a different target" warning is for actions that were meant to do something.
-      const delta = action === 'read' ? `re-read the page`
+      const delta = r.openedNewTab ? `opened a new tab, which is now the active page for ${pageId}`
+        : action === 'read' ? `re-read the page`
         : r.changed.url ? `navigated to a new URL`
         : r.changed.title ? `the page title changed`
         : r.changed.elementCount !== 0 ? `${r.changed.elementCount > 0 ? '+' : ''}${r.changed.elementCount} controls appeared/disappeared`

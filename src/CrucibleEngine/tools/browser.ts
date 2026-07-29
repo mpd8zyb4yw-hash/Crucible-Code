@@ -726,6 +726,10 @@ const workPages = new Map<string, {
   /** Files this page has downloaded, in order. Drained by each act so a caller is told about a
    *  file exactly once, at the step that produced it. */
   downloads: string[]
+  /** A tab the last action opened, waiting to be adopted. */
+  popup?: import('playwright-core').Page
+  /** Tabs superseded by a popup, kept so web_close can close the whole flow. */
+  previous: Array<import('playwright-core').Page>
 }>()
 let workPageSeq = 0
 
@@ -753,8 +757,18 @@ export async function openWorkPage(projectPath: string, url: string): Promise<Op
   let released = false
   const release = () => { if (!released) { released = true; workPages.delete(pageId); releaseContext() } }
   page.on('close', release)
-  const entry = { page, release, projectPath, downloads: [] as string[] }
+  const entry = {
+    page, release, projectPath,
+    downloads: [] as string[],
+    popup: undefined as import('playwright-core').Page | undefined,
+    previous: [] as Array<import('playwright-core').Page>,
+  }
   workPages.set(pageId, entry)
+  // A new tab is where the flow WENT. Sign-in popups, "open in new tab" links and OAuth hops all
+  // continue in a page this handle never pointed at, so without adopting it every later action
+  // targets the abandoned original and reports that nothing changed.
+  const adopt = (p: import('playwright-core').Page) => { entry.popup = p }
+  page.on('popup', adopt)
   // Downloads arrive asynchronously, long after the click that caused them returns. Saving them
   // as they land — into the same artifacts directory every other tool writes to — is what makes
   // "download the report" a thing the agent can actually finish.
@@ -778,7 +792,9 @@ export async function openWorkPage(projectPath: string, url: string): Promise<Op
 export async function closeWorkPage(pageId: string): Promise<boolean> {
   const w = workPages.get(pageId)
   if (!w) return false
-  await w.page.close().catch(() => {})
+  // Close the whole flow, not just the tab currently in front: a popup-based sign-in leaves the
+  // original behind, and leaking it would hold a context lease open until idle teardown.
+  for (const p of [...w.previous, w.page]) await p.close().catch(() => {})
   w.release()
   return true
 }
@@ -794,6 +810,8 @@ export interface ActResult extends PageState {
   pageId: string
   /** Files downloaded as a result of THIS action, saved to .crucible/artifacts. */
   downloads: string[]
+  /** True when the action opened a new tab, which is now what this pageId points at. */
+  openedNewTab: boolean
   /** What actually changed — the honest answer to "did that work?". */
   changed: { url: boolean; title: boolean; elementCount: number }
   navigated: boolean
@@ -846,14 +864,33 @@ export async function actOnPage(
   // networkidle can hang forever on sites that long-poll.
   await page.waitForTimeout(nav ? 1200 : 600)
 
-  const after = await stateOf(page)
   // Give a download a moment to start before reporting; `saveAs` then completes in the background
-  // and the file is reported by the act that follows if it was slow.
+  // and the file is reported by the act that follows if it was slow. The same beat lets a popup
+  // register.
   if (action === 'click' || action === 'press') await page.waitForTimeout(400)
+
+  // If the action opened a tab, that tab IS the flow now — adopt it under the same pageId so the
+  // caller keeps using the handle it already has.
+  let adopted = false
+  if (w.popup) {
+    const popup = w.popup
+    w.popup = undefined
+    try {
+      await popup.waitForLoadState('domcontentloaded', { timeout: 10_000 }).catch(() => {})
+      popup.setDefaultTimeout(30_000)
+      popup.on('popup', (p: import('playwright-core').Page) => { w.popup = p })
+      w.previous.push(w.page)
+      w.page = popup
+      adopted = true
+    } catch { /* keep the original page if the popup never became usable */ }
+  }
+
+  const active = w.page
+  const after = await stateOf(active)
   const downloads = w.downloads.splice(0)
   return {
-    pageId, ...after, downloads,
-    navigated: !!nav || before.url !== after.url,
+    pageId, ...after, downloads, openedNewTab: adopted,
+    navigated: adopted || !!nav || before.url !== after.url,
     changed: {
       url: before.url !== after.url,
       title: before.title !== after.title,

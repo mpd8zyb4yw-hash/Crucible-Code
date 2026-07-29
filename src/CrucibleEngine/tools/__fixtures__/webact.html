@@ -41,6 +41,11 @@
   <a id="dl" download="note.txt"
      href="data:text/plain;charset=utf-8,hello%20from%20the%20fixture">Download the note</a>
 
+  <!-- Opens a new tab, as a sign-in popup or an "open in new tab" link does. A real sibling FILE,
+       not a data: URL — Chromium blocks top-level data: navigation, so that opened nothing and
+       looked like a bug in tab adoption rather than a bad fixture. -->
+  <a id="newtab" target="_blank" href="webact-tab2.html">Open in a new tab</a>
+
   <h2 id="section2">Section two</h2>
 </body>
 </html>
