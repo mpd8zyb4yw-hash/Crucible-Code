@@ -96,7 +96,8 @@
     "vgr:contract": "tsx src/CrucibleEngine/reasoning/__contract_bench.ts",
     "web:bench": "tsx src/CrucibleEngine/tools/__webact_bench.ts",
     "schedule:bench": "tsx src/CrucibleEngine/automations/__schedule_bench.ts",
-    "goalspec:bench": "tsx src/CrucibleEngine/agent/__goalspec_bench.ts"
+    "goalspec:bench": "tsx src/CrucibleEngine/agent/__goalspec_bench.ts",
+    "libdetect:bench": "tsx src/CrucibleEngine/retrieval/__libdetect_bench.ts"
   },
   "build": {
     "appId": "com.crucible.local",

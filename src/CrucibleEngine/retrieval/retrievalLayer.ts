@@ -242,8 +242,25 @@ export function namesExternalLibrary(q: string): boolean {
   // 3. namespaced call — a dotted lowercase identifier invoked as a function
   if (/\b[a-z][\w$]*\.[a-z][\w$]*\s*\(/i.test(msg)) return true
   // 4. capitalized proper noun that isn't a language or sentence-initial
-  const tokens = msg.match(/\S+/g) ?? []
-  for (let i = 1; i < tokens.length; i++) {           // skip index 0 — sentence-initial
+  //
+  // "Sentence-initial" means the start of ANY sentence or line, not just token 0 of the string.
+  // Tracking only index 0 held for one-line questions and collapsed on everything else: in
+  // multi-sentence text every sentence's first word is capitalized by grammar, and each one read
+  // as a library name. Live cost (cont.119) — the flashcard brief
+  //
+  //     Build: quizlet flashcard set.
+  //     Subject: simple grammatical italian terms.
+  //     ...
+  //     Fill in every remaining detail yourself. Do not ask the user for anything else.
+  //
+  // tripped on "Subject", "Format", "Level" and "Do", so a request for Italian flashcards was
+  // routed to the library-grounding path and answered with TypeScript declarations for the
+  // `abstract-level` npm package. Iterating per LINE makes index 0 line-initial, and a preceding
+  // token ending in sentence punctuation marks the rest.
+  for (const line of msg.split('\n')) {
+  const tokens = line.match(/\S+/g) ?? []
+  for (let i = 1; i < tokens.length; i++) {           // skip index 0 — line-initial
+    if (/[.!?:;]$/.test(tokens[i - 1])) continue      // previous token ended a sentence
     const bare = tokens[i].replace(/[^\w+#.-]/g, '')
     if (!bare || bare.length < 2) continue
     if (!/^[A-Z]/.test(bare)) continue
@@ -260,6 +277,7 @@ export function namesExternalLibrary(q: string): boolean {
     // A capitalized, non-language, non-acronym token in a coding request is a library name
     // far more often than not ("Zod", "React", "Pandas", "Express").
     return true
+  }
   }
   return false
 }
