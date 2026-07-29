@@ -37,6 +37,7 @@ import type { ToolCtx, ToolResult } from './src/CrucibleEngine/tools/protocol'
 import { deriveView } from './src/CrucibleEngine/tools/viewDerivation'
 import { resolveAction, type Entity } from './src/CrucibleEngine/tools/entities'
 import { runAgentLoop, isAllToolResidue } from './src/CrucibleEngine/agent/loop'
+import { looksLikeProtocol } from './src/CrucibleEngine/agent/fmReact'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
 import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages, clearAllSessions } from './src/CrucibleEngine/agent/taskSession'
 import { makeVerifier, detectCheck } from './src/CrucibleEngine/agent/verify'
@@ -4050,14 +4051,23 @@ app.post('/api/chat', async (req, res) => {
         // and a truncated deck failed the count contract and was thrown away in favour of the
         // tool loop's code — a worse answer, discarded for being incomplete.
         let text = (await callLocalModel(CONTENT_SYSTEM, contentBriefFor(goalSpec), 180_000, 4096) ?? '').trim()
+        // Scaffolding is a PARSE FAILURE, not an answer (cont.97c). This path once returned
+        // `TOOL: web_act\nclick: Save` followed by an echo of its own brief; shipping that as a
+        // deck would be the raw-transcript failure all over again, so treat it as no answer.
+        if (looksLikeProtocol(text)) {
+          debugBus.emit('agent', 'content_direct_protocol_echo', { head: text.slice(0, 80) }, { severity: 'warn' })
+          text = ''
+        }
         let verdict = verifyArtifact(text, goalSpec.expectation)
         // One retry, naming the SHORTFALL only — never showing the model its own rejected output
         // (crucible-repair-is-a-search).
         if (!verdict.ok && text) {
           send({ type: 'thought', text: `That came back as ${verdict.found} of ${verdict.expected} — asking again for the full set.` })
-          const retryText = (await callLocalModel(
+          const raw = (await callLocalModel(
             CONTENT_SYSTEM,
             `${verdict.feedback}\n\n${contentBriefFor(goalSpec)}`, 180_000, 4096) ?? '').trim()
+          // Same rule as the first attempt: scaffolding is a parse failure, not a shorter answer.
+          const retryText = looksLikeProtocol(raw) ? '' : raw
           const retryVerdict = verifyArtifact(retryText, goalSpec.expectation)
           if (retryVerdict.found > verdict.found) { text = retryText; verdict = retryVerdict }
         }

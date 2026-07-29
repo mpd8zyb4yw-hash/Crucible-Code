@@ -417,8 +417,14 @@ function undecorate(text: string): string {
   ).join('\n')
 }
 
-/** Does this text still carry raw agent-protocol scaffolding? Then it is not an answer. */
-function looksLikeProtocol(text: string): boolean {
+/**
+ * Does this text still carry raw agent-protocol scaffolding? Then it is not an answer.
+ *
+ * Exported (cont.119) because the content path needs the same test: asked for a flashcard deck it
+ * once returned `TOOL: web_act\nclick: Save` followed by an echo of its own brief. Any path that
+ * can ship a final answer needs this check, not just this file's loop.
+ */
+export function looksLikeProtocol(text: string): boolean {
   return /^\s*(?:\*{0,3}|#{1,6}\s*)?TOOL:\s*\w+/im.test(text) || /FINAL_ANSWER:/i.test(text)
 }
 
