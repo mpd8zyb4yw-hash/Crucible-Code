@@ -80,6 +80,16 @@ const CREATE_VERB =
   /\b(?:make|build|create|generate|write|design|produce|put\s+together|whip\s+up|draft|prepare|compile|assemble)\b/i
 
 /**
+ * The one closed class of words that can join a deliverable to its topic or its source.
+ *
+ * Shared by `deliverableOf`'s terminator and `statedSubject`, deliberately: when they disagreed,
+ * "build me a quiz CONTAINING world war 2 dates" parsed as no deliverable at all, and
+ * "...flashcard set WITH italian terms" parsed as having no subject. One list, two readers.
+ */
+const CONNECTOR_WORDS =
+  'to|for|from|about|on|using|with|that|which|in|based|containing|covering|comprising|including|featuring|regarding|concerning|around'
+
+/**
  * "make me a set of flash cards to study from X" → "set of flash cards".
  *
  * Skips determiners AND a leading count/adjective run, because the count and difficulty are
@@ -97,14 +107,14 @@ function deliverableOf(msg: string): string | null {
       '([a-z][\\w-]*(?:\\s+(?:of\\s+)?[a-z][\\w-]*){0,3}?)' +
       // `of` terminates ONLY before a source ("summary of https://…"); inside a noun phrase it
       // belongs to the deliverable and is absorbed above ("set OF flash cards" must stay whole).
-      '(?=\\s+(?:to|for|from|about|on|using|with|that|which|in|based)\\b|\\s+of\\s+https?:|[.,!?]|$)',
+      '(?=\\s+(?:' + CONNECTOR_WORDS + ')\\b|\\s+of\\s+https?:|[.,!?]|$)',
       'i',
     ),
   )
   const raw = m?.[1]?.trim()
   if (!raw) return null
   // Trim a trailing filler word the lazy capture may have taken.
-  return raw.replace(/\s+(?:to|for|from|about|on|of|using|with|based)$/i, '').trim() || null
+  return raw.replace(new RegExp(`\\s+(?:${CONNECTOR_WORDS}|of)$`, 'i'), '').trim() || null
 }
 
 // ── Derivation helpers ────────────────────────────────────────────────────────
@@ -132,18 +142,71 @@ const STATED_DEPTH =
   /\b(beginner|introductory|basic|simple|easy|intermediate|advanced|expert|hard|difficult|challenging|graduate|undergrad(?:uate)?|gcse|a-?level|high\s+school)\b/i
 
 /**
- * The SUBJECT, when the user stated it in prose ("flash cards about the Krebs cycle").
+ * Connectors that can join a deliverable to what it is ABOUT.
+ *
+ * A CLOSED grammatical class — prepositions plus a few complementiser phrases. That is what makes
+ * listing them sound, where listing SUBJECTS never could be: the things a flashcard set can cover
+ * are unbounded, but the ways English attaches a topic to a noun are not.
+ */
+const SUBJECT_CONNECTOR =
+  /^\s*(?:with|of|about|on|for|from|covering|containing|comprising|including|featuring|using|around|based\s+on|regarding|concerning|to\s+(?:learn|study|revise|practi[cs]e|memori[sz]e)|that\s+(?:covers?|contains?|has|have|includes?|teach(?:es)?))\b/i
+
+/** An occasion, not a subject: "for my exam", "for tomorrow". */
+const OCCASION =
+  /^(?:(?:my|the|an?)\s+)?(?:exam|test|quiz|midterm|final|revision|study|class|homework|interview|tomorrow|monday)\s*$/i
+
+/** Nouns that HOLD things — their `of` complement is the contents, not a topic. */
+const CONTAINER_NOUN = /\b(?:set|deck|pack|bunch|pile|collection|series|batch|stack|group|list)\b/i
+
+/**
+ * The SUBJECT, when the user stated it in prose.
+ *
  * Returns null when the only subject signal is a source — a URL is a SOURCE, and the subject is
  * then derivable by reading it, which is work the system should do rather than ask about.
+ *
+ * TWO ways of stating it, because relying on the first alone shipped a live failure (cont.119):
+ * "build me a quizlet flashcard set WITH simple grammatical italian terms" was answered with
+ * "What should the flashcard set cover?" — the subject was right there, joined by a preposition
+ * that happened not to be in the list. Exactly the cont.118 shape, where the gap between working
+ * and broken was one preposition, and exactly the place NOT to add another word to a list.
+ *
+ * So the second way is structural: `deliverableOf` already knows where the deliverable phrase
+ * ENDS (its terminator lookahead is this same closed connector class), and whatever follows it
+ * across a connector IS the subject. No topic vocabulary is enumerated anywhere.
  */
-function statedSubject(msg: string): string | null {
-  const m = msg.match(/\b(?:about|on the topic of|covering|for(?: my)?(?: upcoming)?)\s+([^.,!?]{3,80})/i)
-  const s = m?.[1]?.trim()
-  if (!s) return null
-  if (URL_RE.test(s)) return null
-  // "for my exam" / "for tomorrow" names an occasion, not a subject.
-  if (/^(?:my|the|an?)\s+(?:exam|test|quiz|midterm|final|revision|study|class|homework|interview|tomorrow|monday)\b/i.test(s)) return null
-  return s
+function statedSubject(msg: string, deliverable?: string | null): string | null {
+  // 1. An explicit topic preposition, wherever it appears ("flash cards about the Krebs cycle").
+  const m = msg.match(/\b(?:about|on the topic of|covering|regarding|concerning|for(?: my)?(?: upcoming)?)\s+([^.,!?]{3,80})/i)
+  const explicit = m?.[1]?.trim()
+  if (explicit && !URL_RE.test(explicit) && !OCCASION.test(explicit)) return explicit
+
+  // 2. "<deliverable> OF <topic>" — the `of` complement, when it names a topic rather than the
+  //    deliverable's own contents. "set of flash cards" is a container naming what it holds and
+  //    must stay whole; "flashcards of italian grammar" is a deliverable naming its subject.
+  //    The head noun decides, which is a structural test rather than a topic vocabulary.
+  if (deliverable) {
+    const ofSplit = deliverable.match(/^(.*?)\s+of\s+(.+)$/i)
+    if (ofSplit && SUBJECT_CRITICAL.test(ofSplit[1]) && !CONTAINER_NOUN.test(ofSplit[1])) {
+      const s = ofSplit[2].trim()
+      if (s.length >= 3 && !URL_RE.test(s) && !OCCASION.test(s)) return s
+    }
+  }
+
+  // 3. The residue after the deliverable, joined by any connector.
+  if (deliverable) {
+    const idx = msg.toLowerCase().indexOf(deliverable.toLowerCase())
+    if (idx !== -1) {
+      const after = msg.slice(idx + deliverable.length)
+      // A connector is REQUIRED. Without one, trailing words are not a topic — they are a
+      // separate clause, and grabbing them would invent a subject the user never gave.
+      if (SUBJECT_CONNECTOR.test(after)) {
+        const s = after.replace(SUBJECT_CONNECTOR, '').split(/[.,!?;]/)[0]
+          .replace(/\s+/g, ' ').trim().replace(/^(?:a|an|the|some)\s+/i, '')
+        if (s.length >= 3 && s.length <= 80 && !URL_RE.test(s) && !OCCASION.test(s)) return s
+      }
+    }
+  }
+  return null
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -187,7 +250,7 @@ export function specForGoal(message: string, ctx: { hasAttachment?: boolean } = 
 
   const def = defaultsFor(deliverable)
   const url = msg.match(URL_RE)?.[0] ?? null
-  const subject = statedSubject(msg)
+  const subject = statedSubject(msg, deliverable)
   const quantity = statedQuantity(msg)
   const depth = msg.match(STATED_DEPTH)?.[1] ?? null
 

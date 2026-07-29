@@ -88,6 +88,7 @@ import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundAc
 import { detectConversationalClarify } from './src/CrucibleEngine/conversationalClarify'
 import { fmComplete, checkFmAvailable as fmAvailable } from './src/CrucibleEngine/agent/fmReact'
 import { isDesktopActionGoal, isCodeEditGoal } from './src/CrucibleEngine/ambiguity'
+import { rememberClarification, takeClarification, clearClarification, mergeClarificationReply } from './src/CrucibleEngine/agent/pendingClarify'
 import { loadPendingSignIns, waitingSignIns, settleSignIn, expireStale } from './src/CrucibleEngine/tools/signInSessions'
 import { hasSessionFor, closeSignInWindow } from './src/CrucibleEngine/tools/browser'
 import { needsPlan, runPlannedTask } from './src/CrucibleEngine/agent/planner'
@@ -3561,6 +3562,25 @@ app.post('/api/chat', async (req, res) => {
   // `specForGoal` resolves the goal into slots, fills every one that can be derived or sensibly
   // defaulted, and reports ONLY the slots that are genuinely blocking. Ready → the agent runs with
   // an explicit brief. Not ready → one combined question, not a refusal.
+  // ── A reply to our own question is not a new goal (cont.119) ──────────────
+  // Live: we asked "What should the flashcard set cover?", the user answered "i already told
+  // you", and that answer became the goal — the flashcard request ceased to exist and the run
+  // produced cards titled "Question: i already told you". Whoever asks a question owes the next
+  // turn the context to read the answer, so the reply is folded back into the goal it answers
+  // before anything else looks at it. A reply that adds nothing simply yields the original goal.
+  const clarifyConvId = (typeof reqConversationId === 'string' && reqConversationId) || chatSessionId
+  const answered = takeClarification(clarifyConvId, Date.now())
+  if (answered && message) {
+    const merged = mergeClarificationReply(answered.goal, message)
+    if (merged !== message) {
+      debugBus.emit('agent', 'clarification_answered', {
+        asked: answered.asked, original: answered.goal.slice(0, 120), reply: String(message).slice(0, 120),
+      }, { severity: 'info' })
+      message = merged
+    }
+    clearClarification(clarifyConvId)
+  }
+
   const goalSpec = specForGoal(message ?? '', { hasAttachment: /ATTACHED FILE CONTENT/.test(message ?? '') })
   const isCreationGoal = goalSpec !== null
 
@@ -3592,6 +3612,10 @@ app.post('/api/chat', async (req, res) => {
     // nothing is blocking this does not fire and the agent proceeds with a fully-resolved brief.
     if (goalSpec && !goalSpec.ready) {
       const ask = elicitation(goalSpec)!
+      // Remember what we asked and what we asked it ABOUT, so the answer has somewhere to land.
+      rememberClarification(clarifyConvId, {
+        goal: message ?? '', question: ask.question, asked: goalSpec.ask.map(a => a.key),
+      }, Date.now())
       send({ type: 'agent_start', driver: 'on-device (goal spec)', resumed: false })
       send({ type: 'clarification_request', question: ask.question, options: ask.options, recommended: ask.recommended })
       send({ type: 'final', text: ask.question })
