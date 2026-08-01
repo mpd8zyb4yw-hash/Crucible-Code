@@ -1369,6 +1369,22 @@ export interface LadderOutcome {
  * non-subtractive semantics, so their per-task call counts are real measurements rather than
  * budget-derived, and are not comparable to a post-change run at the same nominal budget.
  */
+/**
+ * How much of a ceiling the ladder WITHHOLDS from tiers 0-2 so the carve is not handed crumbs.
+ *
+ * Same rule on both axes (calls and milliseconds), which is why it is one function: reserve the
+ * smaller of what the carve could actually use (`carveWants`) and half the ceiling — never starve
+ * the cheap tiers that solve most tasks, never hold back budget tier 3 has no use for. Zero when
+ * the carve is unreachable or the ceiling is unbounded, so both are strict no-ops on those paths.
+ *
+ * Exported and pure so the allocation can be checked WITHOUT inference (`__ladder_budget_selfcheck`)
+ * — the starvation this fixes was found in a live run, and a live run is a bad regression test.
+ */
+export function ladderReserve(willCarve: boolean, ceiling: number | undefined, carveWants: number | undefined): number {
+  if (!willCarve || ceiling === undefined || !Number.isFinite(ceiling) || ceiling <= 0) return 0
+  return Math.min(carveWants ?? Infinity, Math.floor(ceiling / 2))
+}
+
 export function tier0Draws(maxModelCalls?: number): number {
   const want = Math.max(1, Number(process.env.CRUCIBLE_LADDER_K || 4))
   return Math.max(1, Math.min(want, Math.floor((maxModelCalls ?? 12) / 2)))
@@ -1497,6 +1513,33 @@ export async function solveByLadder(
   const left = (): number => (callCeiling === undefined ? Infinity : Math.max(0, callCeiling - modelCalls))
   const exhausted = (): boolean => left() <= 0
 
+  // ── TIER-3 RESERVE ────────────────────────────────────────────────────────────
+  // Subtractive budgeting alone starves the LAST tier: tiers spend in order, so whatever tier 1's
+  // flat search wants it takes, and the carve inherits the crumbs. Measured on `numberToWords`
+  // (2026-08-01): tiers 0-1 burned ~200s and handed tier 3 THREE calls, which is not a test of the
+  // carve — a carve needs a plan call plus at least one iterate per rung before it can certify
+  // anything, so a 3-call tier 3 fails for lack of budget and is then read as a weak carve. That
+  // misattribution is the reason this reserve exists.
+  //
+  // The reserve is the SMALLER of the carve's own per-rung purse and half the ceiling: never more
+  // than the carve could actually use, and never more than half the ladder — the cheap tiers solve
+  // most tasks and must keep a real share. It is withheld from tier 1 only when the carve is
+  // actually reachable (`willCarve`), so a task with no tier 3 still gets the whole ledger.
+  const carveRungBudget = opts.iterate ?? decomposePerRungBudget(nl, entry)
+  const tier3Reserve = ladderReserve(willCarve, callCeiling, carveRungBudget.globalModelCalls)
+
+  // The same reserve on the WALL-CLOCK axis, which is the axis that actually starved tier 3 in the
+  // measured run (the harness bounded the ladder with an AbortController and no call ceiling at
+  // all, so a call-only reserve would have been 0 there and fixed nothing). Symmetric rule: never
+  // hold back more than the carve's own wall budget, never more than half the ladder's clock.
+  const ladderStart = Date.now()
+  const wallCeiling = opts.wallClockMs
+  const tier3WallReserve = ladderReserve(willCarve, wallCeiling, carveRungBudget.wallClockMs)
+  /** ms tiers 0-2 may still burn before they must hand the clock to the carve. */
+  const cheapTierMsLeft = (): number =>
+    wallCeiling === undefined ? Infinity
+      : Math.max(0, (ladderStart + wallCeiling - tier3WallReserve) - Date.now())
+
   // ── tier 0 ────────────────────────────────────────────────────────────────────
   // Kept in scope for tier 2: the K blind draws are the most INDEPENDENT implementations the system
   // produces, which is exactly the evidence poisoned-case recovery needs.
@@ -1521,11 +1564,32 @@ export async function solveByLadder(
   // ── tier 1 — serial search with verifier feedback (+ mechanical & mutation repair) ──
   // Tier 2 is deliberately NOT budget-gated below: it is model-free, so an exhausted budget is no
   // reason to skip it — free evidence is still evidence.
-  if (!templated && !opts.signal?.aborted && !exhausted()) {
+  // `leftForCheapTiers()` is what tiers 0-2 may still spend: the remainder MINUS tier 3's reserve.
+  const leftForCheapTiers = (): number => Math.max(0, left() - tier3Reserve)
+  // The clock reserve has to be ENFORCED, not merely computed: search() takes no deadline, so the
+  // only lever that stops tier 1 mid-flight is a signal. This one is tier-1-private — it fires at
+  // the cheap-tier deadline and leaves the caller's own signal (and therefore tiers 2 and 3)
+  // untouched. An aborted search returns its partial attempts, which tier 2 still consumes as
+  // evidence, so cutting tier 1 short costs information but never soundness.
+  const cheapTierSignal = (): AbortSignal | undefined => {
+    if (tier3WallReserve <= 0) return opts.signal
+    const cap = AbortSignal.timeout(Math.max(1, cheapTierMsLeft()))
+    return opts.signal ? AbortSignal.any([opts.signal, cap]) : cap
+  }
+  if (!templated && !opts.signal?.aborted && leftForCheapTiers() > 0 && cheapTierMsLeft() > 0) {
     if (opts.converge) {
       const t0 = Date.now()
       const it = await iterateCodeTask({ goal: nl, nl, entry, cases, webGround: opts.webGround }, {
-        signal: opts.signal, emit: opts.emit, ...opts.iterate,
+        signal: cheapTierSignal(), emit: opts.emit, ...opts.iterate,
+        // Converge honours the clock reserve on its own axis too — iterate() DOES take a deadline.
+        ...(tier3WallReserve <= 0 ? {} : {
+          deadline: Math.min(opts.iterate?.deadline ?? Infinity, Date.now() + cheapTierMsLeft()),
+        }),
+        // Converge is a tier-1 mechanism and must respect the same reserve the flat search does,
+        // or it walks off with the carve's share before the flat search has even started.
+        ...(callCeiling === undefined ? {} : {
+          globalModelCalls: Math.max(1, Math.min(opts.iterate?.globalModelCalls ?? Infinity, leftForCheapTiers())),
+        }),
       })
       modelCalls += it.modelCalls
       const pass = it.status === 'solved' && !!it.solution && await gate(it.solution.value, entry)
@@ -1539,9 +1603,9 @@ export async function solveByLadder(
       }
     }
     const t0 = Date.now()
-    // Tier 1 gets what tier 0 LEFT, not the caller's original budget.
+    // Tier 1 gets what tier 0 LEFT MINUS tier 3's reserve, not the caller's original budget.
     const result = await solveCodeTask({ goal: nl, entry, entries: multi, cases, buggyCode: opts.buggyCode },
-      callCeiling === undefined ? opts : { ...opts, maxModelCalls: left() })
+      { ...opts, signal: cheapTierSignal(), ...(callCeiling === undefined ? {} : { maxModelCalls: leftForCheapTiers() }) })
     search = result
     modelCalls += result.modelCalls
     const pass = result.status === 'solved' && await gate(result.solution?.value ?? null, entry)
@@ -1578,10 +1642,18 @@ export async function solveByLadder(
     // clamp — the clamp bounded each rung, nothing bounded their sum. `left()` reads the ladder's
     // running `modelCalls`, which the carve's own spend is added to only on return, so the carve
     // subtracts its in-flight spend from this remainder internally (see `budget` there).
-    const rungBudget = opts.iterate ?? decomposePerRungBudget(nl, entry)
-    const clamped = callCeiling === undefined ? rungBudget : {
+    // Same object the reserve above was sized from, so the two can never disagree.
+    const rungBudget = carveRungBudget
+    const clamped = {
       ...rungBudget,
-      globalModelCalls: Math.max(1, Math.min(rungBudget.globalModelCalls ?? Infinity, left())),
+      ...(callCeiling === undefined ? {} : {
+        globalModelCalls: Math.max(1, Math.min(rungBudget.globalModelCalls ?? Infinity, left())),
+      }),
+      // Hand the carve the ladder's own clock ceiling, so its internal deadline is the real one
+      // rather than a fresh 180s window it was never going to be allowed to finish.
+      ...(wallCeiling === undefined ? {} : {
+        deadline: Math.min(opts.iterate?.deadline ?? Infinity, ladderStart + wallCeiling),
+      }),
     }
     const d = await decomposeCodeBySubFunction(
       { goal: nl, nl, entry, cases },
@@ -1590,7 +1662,12 @@ export async function solveByLadder(
     )
     modelCalls += d.modelCalls
     const pass = d.status === 'solved' && !!d.code && await gate(d.code, entry)
-    record(3, 'sub-function decomposition', t0, d.modelCalls, pass, d.detail)
+    // Report the purse tier 3 actually opened with. Without it a tier-3 failure is unattributable
+    // between "the carve is weak" and "the carve got 3 calls" — the exact ambiguity the reserve
+    // was added to remove, so the number has to appear in the step record, not just the code.
+    record(3, 'sub-function decomposition', t0, d.modelCalls, pass,
+      `${d.detail} [purse ${clamped.globalModelCalls}c, reserve ${tier3Reserve}c/${Math.round(tier3WallReserve / 1000)}s,` +
+      ` clock left ${wallCeiling === undefined ? 'inf' : Math.round(Math.max(0, ladderStart + wallCeiling - Date.now()) / 1000) + 's'}]`)
     if (pass) {
       const how = d.helpers.length ? `via ${d.helpers.length} certified helper(s)` : 'via a single probe draft'
       return won(3, d.code!, cases, `tier 3 decomposition certified ${how} (${d.modelCalls} model call(s))`)
@@ -1689,6 +1766,18 @@ export type SolveCodingOpts = SearchOpts<string> & {
      * answer on a large fraction of tasks.
      */
     tier0?: boolean
+    /**
+     * WALL-CLOCK CEILING for the whole ladder, in ms from the moment `solveByLadder` is entered.
+     *
+     * Exists because an AbortSignal is OPAQUE: a caller that bounds the ladder with
+     * `setTimeout(() => ac.abort(), ceilingMs)` gives the ladder no way to see how much time is
+     * left, so the cheap tiers spend until the axe falls and tier 3 inherits whatever remains. That
+     * is exactly what happened on `numberToWords` (2026-08-01): tiers 0-1 took ~200s of the ceiling
+     * and tier 3 got 3 calls, which measures the budget, not the carve. Passing the SAME number
+     * here as the abort timer lets the ladder reserve the carve's share of the clock instead of
+     * discovering the deadline by being killed at it. Absent → time is unreserved, as before.
+     */
+    wallClockMs?: number
   }
 
 export async function solveCodingRequest(

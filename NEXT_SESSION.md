@@ -17,7 +17,22 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-01b (rung post-mortem + n=3 re-measure) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-01c (tier-3 budget reserve) (REPLACE THIS EVERY SESSION)
+
+> **The starvation fix landed but is UNMEASURED.** `solveByLadder` now reserves the carve's share of
+> both the call ledger and the wall clock (`ladderReserve`, `SolveCodingOpts.wallClockMs`); the
+> general harness passes its abort ceiling in so the ladder can see its own deadline. Verified by
+> `npm run ladderbudget:selfcheck` (9 checks, 0 model calls) and `typecheck:engine`. NOT verified
+> live: no local head was up this session (`:8080` down), so the hard set has not been re-scored.
+>
+> **THE FIRST THING THE NEXT SESSION SHOULD DO** is re-run the hard set under the reserve and read
+> the new `[purse Nc, reserve Nc/Ns, clock left Ns]` field on the tier-3 step. If tier 3 now opens
+> with a real purse and still converts 0/12, the 0/12 is finally a statement about the carve.
+> `GEN_SCORECARD_SET=hard GEN_SCORECARD_RUNS=3 GEN_SCORECARD_TASK_WALL_MS=300000 npm run gen:scorecard`
+> (export the TRAP-2 env vars and `CRUCIBLE_NO_DISTILL=1` first).
+>
+> Everything below this block is the 2026-08-01b state, still accurate except TOP OPEN ITEM 1,
+> whose mechanism is now fixed and whose verdict is now pending a live re-run.
 
 > **Every item on the 2026-08-01 list is closed. The headline moved: the ladder is 14/15 (not 5/5),
 > the carve alone is 2/15 (not 0/5), and tier 3 is reached on 12/12 hard draws and solved none.**

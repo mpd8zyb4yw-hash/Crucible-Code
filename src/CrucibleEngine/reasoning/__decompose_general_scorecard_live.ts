@@ -278,7 +278,10 @@ async function runLadderArm(p: GeneralProbe, runs: number, budget: ReturnType<ty
     const ac = ceilingMs > 0 ? new AbortController() : null
     const timer = ac ? setTimeout(() => ac.abort(), ceilingMs) : null
     const lad = await solveByLadder(p.goal, p.entry, p.cases,
-      { decompose: true, iterate: budget, ...(ac ? { signal: ac.signal } : {}) },
+      // `wallClockMs` is the SAME number the abort timer above uses. Without it the ladder cannot
+      // see its own deadline (an AbortSignal is opaque) and the cheap tiers spend until the axe
+      // falls — which is how numberToWords handed tier 3 three calls and made the carve look weak.
+      { decompose: true, iterate: budget, ...(ceilingMs > 0 ? { wallClockMs: ceilingMs } : {}), ...(ac ? { signal: ac.signal } : {}) },
       async () => true)
     if (timer) clearTimeout(timer)
     const wallS = Math.round((Date.now() - t0) / 1000)

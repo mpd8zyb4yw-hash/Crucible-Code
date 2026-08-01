@@ -1933,6 +1933,37 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-01c (tier 3 is no longer starved: the ladder reserves the carve's share of BOTH budgets)
+
+**TOP OPEN ITEM 1 is closed on the mechanism side.** `numberToWords` handed tier 3 three calls
+after tiers 0-1 stalled for ~200s, and a tier given three calls has not been tested — the 0/12 hard
+number was partly measuring the budget. `solveByLadder` now withholds a reserve from the cheap
+tiers instead of letting them spend in arrival order.
+
+- **`ladderReserve(willCarve, ceiling, carveWants)`** (`solve.ts`, exported and pure): reserve the
+  smaller of what the carve could actually use and HALF the ceiling. Same rule on both axes. Zero
+  when the carve is unreachable or the ceiling is unbounded, so every existing path is untouched.
+- **Call axis:** tiers 0-2 now see `left() - reserve`; the flat search and the converge loop both
+  get the reduced purse (converge previously took `opts.iterate` unclamped and could walk off with
+  the carve's share before the flat search even started).
+- **Wall-clock axis — this is the axis that actually starved it.** The general harness bounds the
+  ladder with an AbortController and NO call ceiling, so a call-only reserve would have been 0 there
+  and fixed nothing. An `AbortSignal` is opaque, so the ladder was added a `wallClockMs` opt: the
+  caller passes the SAME number its abort timer uses, and the ladder cuts tiers 0-2 off at
+  `start + ceiling - reserve` with a tier-1-PRIVATE signal (the caller's own signal, and therefore
+  tiers 2 and 3, are untouched; an aborted search still returns its partials, which tier 2 consumes,
+  so cutting tier 1 short costs information and never soundness). Tier 3 also now inherits the
+  ladder's real deadline instead of opening a fresh 180s window it was never going to be allowed to
+  finish. At the measured settings (300s cap, 180s carve budget) the carve is guaranteed 150s.
+- **The tier-3 step record now prints its purse** (`[purse Nc, reserve Nc/Ns, clock left Ns]`), so a
+  future tier-3 failure is attributable between "weak carve" and "three calls" without a re-run.
+- **`npm run ladderbudget:selfcheck`** (0 model calls, 0 network, wired into `prove:all`): 9 checks
+  over the allocation arithmetic, including the measured 600s/180s case and both clamp directions.
+  The starvation was found in a live run; a live run is a bad regression test.
+
+NOT measured live this session — no local head was running (`:8080` down), so the hard set has not
+been re-scored under the reserve. The 0/12 still stands as the last measurement; it is now testable.
+
 ### 2026-08-01b (the grinding row dissected: the carve's problem is the PLAN, not the search)
 
 **TOP OPEN ITEM 1 is answered, and the answer is the opposite of what the row looked like.** The
