@@ -1933,6 +1933,109 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-01b (the grinding row dissected: the carve's problem is the PLAN, not the search)
+
+**TOP OPEN ITEM 1 is answered, and the answer is the opposite of what the row looked like.** The
+2026-08-01 control printed `intToRoman` as 43 calls / 300s and `romanToInt` as 3 calls / 10s, and
+that was read as two diseases: one plan-level death, one rung grinding to the ceiling. With rung
+granularity (`SubFunctionRung.wallMs`/`phase`, `SubFunctionResult.attempts`) the grinding row turns
+out to be *mostly the same disease as the cheap one*.
+
+`rung:postmortem` on `intToRoman`, 4 draws × up to 3 plan attempts, 30-call ledger, 300s ceiling:
+
+```
+  12 plan attempts total
+  10  PLAN-DEATH      — no rung was ever ground (8× "degenerate single-helper carve (re-bake)",
+                        1× "every helper restated the entry", 1× probe pruned it below viability)
+   1  RUNG-FAILURE    — one helper (`subtractiveFormHelper`) stalled: 15 calls / 83s of a 21-call,
+                        129s attempt. The other helper certified in 1 call / 5.4s.
+   1  SOLVED at the carve probe — 2 calls / 27s, no rung ground
+```
+
+- **The dominant failure is the planner, by 10 to 1.** Eight of twelve attempts died on a single
+  gate — the FM proposes a one-helper carve that is the entry under another name. Cheap (2-5s each)
+  and honest, but it means the carve mostly never gets to demonstrate anything.
+- **When a plan does survive, the cost concentrates in ONE rung.** 15 of that attempt's 21 calls and
+  83 of its 129 seconds went to one helper; its sibling cost 1 call. "The carve grinds" is really
+  "one cornered helper grinds", which is the shape recursion and web-retrieval were built for.
+- **Draw-to-draw variance dwarfs the row.** Same task, same head: 2 calls/27s (probe solve),
+  3 calls/9s (plan death), 23 calls/137s, 4 calls/21s. Any single-draw reading of this row —
+  including the 43c/300s one that motivated the investigation — is noise-dominated.
+
+**ITEM 4 — the shared ledger holds on the REAL path, not just the injected-proposer bench.**
+`wordFrequencyTop` under a 40-call ledger: draw 1 exercised planAttempts + recursion + glue and
+spent **exactly 40**; draw 3 exercised planAttempts + recursion and spent **exactly 40**. Never
+above, at the boundary twice — which is the bound the design claims (the last call stops at its own
+cap). The post-mortem prints which nested paths actually ran, because a PASS on a path that never
+executed is not coverage, and the first version of this check reported `recursion NO` on a draw
+whose recursion had just failed — a recursion level whose own plan dies leaves no rung, so its
+calls and seconds were unattributed. Both recursion and glue now record themselves in that case.
+
+**ITEM 5 — carry-forward's live payoff is ZERO on this traffic, and the reason is not the key.**
+Across 7 draws on two rows: 4 carry lookups, **0 hits, 0 stale keys, 4 never-certified**. The
+sibling-aware `rungSpecKey` is unit-proven and never got the chance to matter, because the binding
+constraint is upstream of it: a rung only enters the carry map by CERTIFYING, and on the general
+path a re-plan invents different helper NAMES (`splitTextIntoWords` → `countWordOccurrences`), so
+the lookup misses on the name before the spec key is ever compared. Carry-forward pays on template
+classes, where the carve is fixed; on the general path it is currently inert. Do not spend more on
+the key until re-plans produce stable names.
+
+**ITEM 3 — the 5/5 was a single draw; at n=3 the ladder is 14/15 and the control is NOT 0.**
+Same conditions as 2026-08-01 (`CRUCIBLE_NO_DISTILL=1`, cold `_learned/`, 300s per-task ceiling,
+head `qwen2.5-1.5b`), 5 core tasks × 3 draws, both arms:
+
+```
+  LADDER (the system)   DECOMPOSE (one tier, control)   task
+  3/3   4c   19s        1/3   3c   21s    romanToInt        (subtractive-pair scan)
+  3/3   4c   29s        0/3  26c  205s    intToRoman        (greedy value-table emit)
+  3/3   4c   16s        1/3  52c  226s    compressRuns      (run-length encode, digit guard)
+  3/3   4c   15s        0/3  35c  213s    isBalanced        (bracket matching over mixed text)
+  2/3   4c   22s        0/3  51c  264s    wordFrequencyTop  (tokenize + count + tie-broken sort)
+  14/15 (93%) LADDER — the product's general-path number.  2/15 (13%) control
+  solves by tier — tier 0: 13, tier 1: 1
+```
+
+Two corrections to the previous entry, both in the direction of "the single draw flattered us into
+a cleaner story than the data supports": the ladder is **93%, not 100%** (`wordFrequencyTop` draw 2
+went all the way to tier 3 and died at 66 calls / 305s), and the carve alone is **13%, not 0%** —
+`romanToInt` and `compressRuns` each landed one probe solve. Both of the control's solves came from
+the carve PROBE's one-call whole-task draft, not from a ground carve, which is consistent with the
+2026-07-30 finding that the probe is a tier-0 in disguise.
+
+**THE TIER-3 VERDICT — it is reached on every hard draw and has never once converted.**
+Hard set, ladder arm, 4 tasks × 3 draws, same ceiling:
+
+```
+  0/3  19c  263s   numberToWords    t3 reached on 3/3 draws
+  0/3  57c  300s   formatDuration   t3 reached on 3/3
+  0/3  56c  281s   wordWrap         t3 reached on 3/3
+  0/3  72c  237s   csvSelect        t3 reached on 3/3
+  0/12 (0%) — HARD-set solves by tier: none solved
+```
+
+So the 2026-08-01 reading ("tier 3 is dead weight — the ladder never gets there") was an artifact of
+the corpus, not a property of the system: give the ladder a task tiers 0-2 cannot hold and it
+escalates to the carve **every single time**. What the carve then does with it is the finding —
+0 for 12, while consuming most of the budget (typically 40-90 of the draw's calls and 150-230 of its
+seconds). Across all 27 draws measured today, tier 3 contributed **zero solves**.
+
+Do NOT read that as "tier 3 is useless" yet: no tier solved these rows, so the run cannot separate
+"the carve is weak" from "the task is beyond this head under a 300s cap". The next measurement has
+to break that tie — the cleanest is a task the carve solves *by hand* (a human carve certifies) but
+tiers 0-2 cannot, which turns tier 3's 0 into a statement about the planner rather than the corpus.
+One suggestive detail already in the log: on `numberToWords` draws 1-2, tier 3 got only **3 calls**
+before the shared ledger ran out (tiers 0-1 had spent 14-16 of it on 200s of stalling), so on those
+draws tier 3 was not tested at all — it was starved. That is a ladder-budget-allocation bug, and it
+is the first thing to fix before drawing any conclusion about carve capability.
+
+**The tier-3 question now has rows that can answer it** — four hard no-template tasks
+(`numberToWords`, `formatDuration`, `wordWrap`, `csvSelect`) behind `GEN_SCORECARD_SET=hard|all`,
+each multi-stage assembly or stateful parsing rather than a one-idiom function. Their rate prints on
+its own line and is never pooled with core. `hardset:selfcheck` (offline, in `prove:all`) asserts
+every hard gold case is satisfied by a reference implementation written to the goal text, and that
+no scorecard row has quietly acquired a decompose template — a wrong expected value would otherwise
+read as "tier 3 still can't do it" and get written down as a capability finding.
+
 ### 2026-08-01 (the four open carve/typecheck items closed, and the first honest general re-measure)
 
 **All five items on the 2026-07-29 open list are closed.** Four were code; the fifth was the

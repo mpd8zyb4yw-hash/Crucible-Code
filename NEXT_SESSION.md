@@ -17,64 +17,54 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-01 (carve cost items + typecheck + general re-measure) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-01b (rung post-mortem + n=3 re-measure) (REPLACE THIS EVERY SESSION)
 
-> **Every item on the 2026-07-29 list is now closed. The general path measures 5/5 on the LADDER
-> and 0/5 on decomposition ALONE — under a budget that finally binds and a cold learned cache.**
+> **Every item on the 2026-08-01 list is closed. The headline moved: the ladder is 14/15 (not 5/5),
+> the carve alone is 2/15 (not 0/5), and tier 3 is reached on 12/12 hard draws and solved none.**
 
-### THE NUMBER, and how to read it (measured 2026-08-01, head confirmed `qwen2.5-1.5b`)
-5 no-template tasks × 1 draw, 300s per-task ceiling, `CRUCIBLE_NO_DISTILL=1`, both arms:
-ladder **5/5** (3 at tier 0, 2 at tier 1; 4-5 calls, 17-23s each) · decompose control **0/5**
-(3-52 calls, 10-300s). Full table in the ROADMAP 2026-08-01 entry. Three things this does NOT say:
-it is **n=1 per task** (direction, not a rate); the **carve changes below cannot appear in the
-ladder column** because the ladder never reached tier 3; and the 0/5 control is not a regression —
-every pre-2026-07-29 decompose number was taken under a non-binding budget and a WARM `_learned/`
-cache. Evidence the ceiling now binds: `intToRoman` stopped at exactly 300s where the same class of
-run previously reached 955s.
+### THE NUMBERS (measured 2026-08-01b, head confirmed `qwen2.5-1.5b`, cold `_learned/`, 300s cap)
+- **CORE, 5 tasks x 3 draws, both arms:** ladder **14/15 (93%)** — 13 solves at tier 0, 1 at tier 1;
+  control (decomposition alone) **2/15 (13%)**, and BOTH control solves came from the carve probe's
+  one-call draft, not a ground carve. The only ladder loss is `wordFrequencyTop` draw 2, which
+  escalated to tier 3 and died at 66 calls / 305s.
+- **HARD (new no-template set), 4 tasks x 3 draws, ladder arm:** **0/12**. Tier 3 was reached on
+  every single draw and converted none of them.
+- Re-run: `GEN_SCORECARD_SET=core|hard|all GEN_SCORECARD_RUNS=3 GEN_SCORECARD_TASK_WALL_MS=300000
+  npm run gen:scorecard` (export the TRAP-2 env vars first, and `CRUCIBLE_NO_DISTILL=1`).
 
-### CLOSED — the plan-quality gates re-run on the GROUNDED plan
-`isRebakedHelper` and `isNonComposingCarve` now re-run after the carve probe rewrites/prunes the
-plan (`solve.ts`, in the `probe.status === 'grounded'` branch), where both read observed I/O instead
-of planner inventions. Soundness unchanged — resample or grind, never certify.
+### CLOSED — the grinding row is a PLANNER failure, not a search failure
+`npm run rung:postmortem` (`PM_ENTRY=`) dissects one row per rung and per plan attempt. On
+`intToRoman`, 4 draws / 12 attempts: **10 plan-deaths** (8 of them the single gate "degenerate
+single-helper carve (re-bake)"), 1 rung-failure, 1 probe solve. When a plan does survive, the cost
+concentrates in ONE helper (15 of 21 calls, 83 of 129s). "The carve grinds" is really "the planner
+keeps proposing the entry under another name, and occasionally one cornered helper grinds".
 
-### CLOSED — `rungSpecKey` captures sibling context
-The key folds in the siblings the rung's goal NAMES (not the whole set — that would throw away every
-carry on any unrelated re-plan). A carried source whose dependency is gone is now a MISS instead of a
-poisoned `helperBlock` that costs a compose rung. Omitting the argument = the old key byte-for-byte.
+### CLOSED — the shared ledger holds on the real path
+`wordFrequencyTop` under a 40-call ledger spent **exactly 40**, twice, on draws that exercised
+planAttempts + recursion (+ glue on one). The post-mortem prints which nested paths actually ran,
+because a PASS on an unexercised path is not coverage.
 
-### CLOSED — the carve's call budget is EXACT
-`solveByLadder` hands its ledger down via `budget` on `decomposeCodeBySubFunction`; the carve
-subtracts its own in-flight spend before every `iterate()` and derives a tighter ledger for nested
-levels. What remains inexact is only single-call granularity: the last call is stopped at its own
-cap, so a run may end ON the ceiling, never above it. Bench 9i2/9i3/9i4 (with a no-ledger control).
+### CLOSED — carry-forward pays NOTHING on the general path (0 hits in 7 draws)
+4 lookups, 0 hits, 0 stale keys, 4 never-certified. The sibling-aware `rungSpecKey` is not the
+binding constraint: a re-plan invents different helper NAMES, so the lookup misses on the name
+before the spec key is compared. Do not invest further in the key until re-plans produce stable
+names.
 
-### CLOSED — `typecheck:engine` 5 → 0
-Two were broken references silently `any`-typed since they were written (`specializationForcing`'s
-`DynamicModel` from a nonexistent `'../types'` — now structural + generic; `index.ts`'s `PromptType`
-from `./types` instead of `stageWeightLearner`). `'coverage'` joined the `Critique` category union.
-**A live bug fell out of that**: `scoring-engine.ts`'s low-composite summary critique was pushed to
-an array the returned one had already spread-copied, under a guard requiring that copy be empty — so
-it reached the caller exactly never. `autonomousProvisioner`'s payload cast is now a narrowing check.
+### TOP OPEN ITEM 1 — tier 3 is STARVED on some draws, so its 0/12 is not yet a verdict
+On `numberToWords` draws 1-2, tiers 0-1 burned 14-16 calls and ~200s stalling, and tier 3 then got
+**3 calls** before the shared ledger ran out. A tier that is handed 3 calls has not been tested.
+Fix the ladder's budget allocation (reserve for the last tier, or stop pouring into a stalling
+cheap tier) BEFORE concluding anything about carve capability.
 
-### TOP OPEN ITEM 1 — the carve is 0/5 on the general path and nothing yet explains WHY
-The four fixes above were all *cost/plan-quality*. The open question is capability: of the 5 control
-rows, `romanToInt` died in 10s/3c (plan-level), while `intToRoman`/`compressRuns`/`wordFrequencyTop`
-each burned 43-52 calls and 190-300s before failing. Those are two different diseases and the
-scorecard does not distinguish them. Next move is a per-rung post-mortem on one grinding row, not
-another gate.
+### TOP OPEN ITEM 2 — nothing separates "the carve is weak" from "the task is out of reach"
+No tier solved any hard row, so the 0/12 cannot be attributed. The tie-breaker is a task whose
+HAND-WRITTEN carve certifies (so the decomposition is known-reachable) but which tiers 0-2 cannot
+one-shot — then tier 3's failure is a statement about the planner, not the corpus.
 
-### TOP OPEN ITEM 2 — the ladder never reaches tier 3 on these tasks
-Tier 0/1 solved all five in 4-5 calls. Either the general corpus is too easy for the tier it was
-written to exercise, or tier 3 is dead weight on this distribution. Both readings are actionable and
-they point opposite ways — decide it with harder no-template rows before investing further in the
-carve.
-
-### STANDING TRAP — the hygiene gate had a hole for weeks
-`__source_hygiene_bench` walked `<root>/src`, so no root-level file was ever scanned despite the
-headline "tracked TypeScript". `server.ts` carried two raw NULs the entire time and the bench
-reported all-clear. Now uses `git ls-files` (1080 → 1178 files). If you add a scanner, make its
-file-selection claim testable — the positive control it already had did not catch this, because
-the control tested the DETECTOR and not the FILE LIST.
+### TOP OPEN ITEM 3 — the degenerate-carve gate fires on 2/3 of all plan attempts
+It is the single most common outcome of the FM planner on the general path. It is a correct gate
+firing on a genuinely bad plan; the open question is why the planner produces that plan so often,
+and whether the prompt (not the gate) is what needs the work.
 
 ### DO NOT RE-FILE — three claims already checked and cleared
 (1) `_learned/roman.ts` does not contaminate the roman scorecard tasks (distilled `match()` is a
