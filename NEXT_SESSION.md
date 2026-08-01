@@ -17,84 +17,57 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-29 (gap-soundness cont.) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-01 (carve cost items + typecheck + general re-measure) (REPLACE THIS EVERY SESSION)
 
-> **The stale-reuse claim is now discharged by construction: every `solved` exit of the carve
-> verifies against the original cases before returning. What remains on the carve is cost, not
-> soundness.**
+> **Every item on the 2026-07-29 list is now closed. The general path measures 5/5 on the LADDER
+> and 0/5 on decomposition ALONE — under a budget that finally binds and a cold learned cache.**
 
-Items 1 and 2 CLOSED earlier; item 3 (the carry-site stale-reuse claim) CLOSED 2026-07-29 — see
-its block below, including the `probeSpec`/`entries` near-miss that must not be re-filed as a bug.
+### THE NUMBER, and how to read it (measured 2026-08-01, head confirmed `qwen2.5-1.5b`)
+5 no-template tasks × 1 draw, 300s per-task ceiling, `CRUCIBLE_NO_DISTILL=1`, both arms:
+ladder **5/5** (3 at tier 0, 2 at tier 1; 4-5 calls, 17-23s each) · decompose control **0/5**
+(3-52 calls, 10-300s). Full table in the ROADMAP 2026-08-01 entry. Three things this does NOT say:
+it is **n=1 per task** (direction, not a rate); the **carve changes below cannot appear in the
+ladder column** because the ladder never reached tier 3; and the 0/5 control is not a regression —
+every pre-2026-07-29 decompose number was taken under a non-binding budget and a WARM `_learned/`
+cache. Evidence the ceiling now binds: `intToRoman` stopped at exactly 300s where the same class of
+run previously reached 955s.
 
-### CLOSED — `_learned/roman.ts` does NOT contaminate the roman scorecard tasks
-Distilled-skill `match()` is a single **case-sensitive** `\b<exportName>\b` test on the raw spec,
-`hits/1` vs a 0.5 floor. `romanToInt`/`intToRoman` do not contain lowercase `toRoman` at a word
-boundary → score **0**. **The template 15/15 stands; do not re-run it for this reason.**
-Two things worth carrying forward: (a) purging `_learned/` would have proven nothing — its roman
-IMPL is byte-identical to the *shipped* catalog skill `number-format-utils`; (b) that shipped skill
-DOES match both tasks at 0.6 on the prose regex `\broman.*numeral`, and is stopped only by
-`satisfiesRequestedIdentity` (`pureCode.ts:229`) demanding a declared-export superset. **The
-identity gate is load-bearing on live scorecard tasks — treat any change to it as a soundness
-change, not a tidy-up.**
+### CLOSED — the plan-quality gates re-run on the GROUNDED plan
+`isRebakedHelper` and `isNonComposingCarve` now re-run after the carve probe rewrites/prunes the
+plan (`solve.ts`, in the `probe.status === 'grounded'` branch), where both read observed I/O instead
+of planner inventions. Soundness unchanged — resample or grind, never certify.
 
-### CLOSED — `CRUCIBLE_NO_DISTILL` is now read-side too
-The read path (`loadLibrary.ts`) imported `_learned/` unconditionally; the env var gated only the
-write. Guard added. Measured: warm 5 learned skills → cold **0**. Pre-2026-07-29 "NO_DISTILL"
-numbers were write-cold only, and are not comparable to post-guard cold runs.
+### CLOSED — `rungSpecKey` captures sibling context
+The key folds in the siblings the rung's goal NAMES (not the whole set — that would throw away every
+carry on any unrelated re-plan). A carried source whose dependency is gone is now a MISS instead of a
+poisoned `helperBlock` that costs a compose rung. Omitting the argument = the old key byte-for-byte.
 
-### CLOSED — the wall-clock cap actually binds now
-`wallClockMs` was per-`iterate()`-call, not per-task: `iterate.ts` re-reads `start` at the top of
-every call, and a carve calls `iterate()` once per rung + once to compose + up to `planAttempts`
-times over. `955/180 = 5.3` was simply the invocation count. New `IterateOpts.deadline` is an
-absolute instant fixed ABOVE the `planAttempts` loop. Ruled out by measurement, do not re-suspect:
-`GEN_SCORECARD_TASK_WALL_MS` defaults to **0** (no signal passed at all unless set), and
-`codeProposer` never forwards the signal to `fmComplete` so calls fall back to the bounded 30s
-timeout at `localModels/registry.ts:96`.
+### CLOSED — the carve's call budget is EXACT
+`solveByLadder` hands its ledger down via `budget` on `decomposeCodeBySubFunction`; the carve
+subtracts its own in-flight spend before every `iterate()` and derives a tighter ledger for nested
+levels. What remains inexact is only single-call granularity: the last call is stopped at its own
+cap, so a run may end ON the ceiling, never above it. Bench 9i2/9i3/9i4 (with a no-ledger control).
 
-### CLOSED — `solveByLadder` budget is subtractive
-One ledger (`left()`/`exhausted()`); each tier gets what its predecessors left. Tier 2 stays
-ungated on purpose (model-free). **Still not exact inside a carve** — the clamp is per-rung, so an
-N-rung carve can spend N × the remainder. Making it exact needs the same shared-ledger treatment
-one level down. Any pre-2026-07-28 call-count measurement is not comparable at equal budget.
+### CLOSED — `typecheck:engine` 5 → 0
+Two were broken references silently `any`-typed since they were written (`specializationForcing`'s
+`DynamicModel` from a nonexistent `'../types'` — now structural + generic; `index.ts`'s `PromptType`
+from `./types` instead of `stageWeightLearner`). `'coverage'` joined the `Critique` category union.
+**A live bug fell out of that**: `scoring-engine.ts`'s low-composite summary critique was pushed to
+an array the returned one had already spread-copied, under a guard requiring that copy be empty — so
+it reached the caller exactly never. `autonomousProvisioner`'s payload cast is now a narrowing check.
 
-### CLOSED — typecheck 17 → 5, gate wired into `prove:all`
-`prove:all` now runs `typecheck:engine:core` and `hygiene:bench` FIRST. **The four "live bug"
-candidates were misfiled**: `registry.ts` ×2 and `integrations/tools.ts` ×2 are `if (!x.ok) return
-x` where the runtime only ever takes the false branch — artifacts of the gate's `strict: false`,
-under which TS does not narrow a discriminated union (repro: clean with `--strict`, TS2322
-without). Fixed by making the unions total.
+### TOP OPEN ITEM 1 — the carve is 0/5 on the general path and nothing yet explains WHY
+The four fixes above were all *cost/plan-quality*. The open question is capability: of the 5 control
+rows, `romanToInt` died in 10s/3c (plan-level), while `intToRoman`/`compressRuns`/`wordFrequencyTop`
+each burned 43-52 calls and 190-300s before failing. Those are two different diseases and the
+scorecard does not distinguish them. Next move is a per-rung post-mortem on one grinding row, not
+another gate.
 
-**The 5 that remain** (each needs an individual decision, none are the same class):
-`answer/__wordproblem_iterate_bench.ts:18` TS2352 · `autonomousProvisioner.ts:101` TS2352 ·
-`index.ts:23` TS2305 (`PromptType` not exported by `./types`) · `scoring-engine.ts:506` TS2322 ·
-`specializationForcing.ts:7` TS2307 (`../types` does not resolve — a genuinely broken import).
-
-### CLOSED — the stale-reuse claim is DISCHARGED, and it was understated
-Three sessions of "unrefuted" ended by reading the exits rather than the carry site. The comment
-said the composed whole is "re-verified downstream"; in fact `runSubFunctionOnce` has exactly THREE
-`status: 'solved'` exits and **each one runs `verifyCode` against `input.cases` before returning** —
-probe (`solve.ts` ~:868, certified only where `traceCarve.ts` ~:274 passed the draft on gold cases),
-normal compose (~:1082, plus the explicit plain-verifier guard at ~:1078), and glue re-decomposition
-(~:1068, inductively one of the three, invoked with the SAME cases). A carried helper reaches the
-verdict only as text inside `helperBlock`, so the worst a stale one does is fail that module.
-Nothing downstream is trusted. Two near-misses that do NOT break it: a carried helper whose
-dependency is absent from the new plan fails at compose only, and `carry` is per-`decompose
-CodeBySubFunction` call (~:527) so a key cannot cross tasks. Proof written at the carry site.
-
-**The one thing that could have broken it, checked and cleared:** `probeSpec` omits `entries` while
-the compose spec forwards it, which reads like the probe certifying against fewer obligations.
-`entries` is **prompt-only** — `codeVerifier` declares the field (`:40`) and then routes every case
-to `c.entry ?? DEFAULT_ENTRY`, so per-case targeting does the work; `entries` is read only by
-`codeProposer.ts:144/212` and `multiFile.ts:153`. Omitting it costs the probe draft a prompt line
-(multi-entry probes fail more often, fall through to the trace) and can never pass what compose
-would fail. Recorded in `traceCarve.ts` at `probeSpec`. **Do not "fix" this as a soundness bug.**
-
-### TOP OPEN ITEM 1 — the two 2026-07-27b carve-gate findings, still untouched
-`isNonComposingCarve`/`isRebakedHelper` are not re-run after the dead-rung prune (`solve.ts` ~:815/
-~:823; `isDegenerateSubFnCarve` IS re-run at ~:878, so this is partial coverage, not a missing
-mechanism), and `rungSpecKey` does not capture sibling-helper context. Note these are now
-COST/PLAN-QUALITY items, not soundness ones — the exit-verification proof above bounds what either
-can do to a verdict.
+### TOP OPEN ITEM 2 — the ladder never reaches tier 3 on these tasks
+Tier 0/1 solved all five in 4-5 calls. Either the general corpus is too easy for the tier it was
+written to exercise, or tier 3 is dead weight on this distribution. Both readings are actionable and
+they point opposite ways — decide it with harder no-template rows before investing further in the
+carve.
 
 ### STANDING TRAP — the hygiene gate had a hole for weeks
 `__source_hygiene_bench` walked `<root>/src`, so no root-level file was ever scanned despite the
@@ -103,16 +76,24 @@ reported all-clear. Now uses `git ls-files` (1080 → 1178 files). If you add a 
 file-selection claim testable — the positive control it already had did not catch this, because
 the control tested the DETECTOR and not the FILE LIST.
 
+### DO NOT RE-FILE — three claims already checked and cleared
+(1) `_learned/roman.ts` does not contaminate the roman scorecard tasks (distilled `match()` is a
+case-sensitive `\b<exportName>\b` test; `romanToInt`/`intToRoman` score 0). The shipped catalog
+skill `number-format-utils` DOES match at 0.6 and is stopped only by `satisfiesRequestedIdentity`
+(`pureCode.ts:229`) — that identity gate is **load-bearing on live scorecard tasks**; treat any
+change to it as a soundness change. (2) `probeSpec` omitting `entries` is not a soundness hole —
+`entries` is prompt-only (`codeVerifier` routes every case to `c.entry ?? DEFAULT_ENTRY`). (3) The
+carve's stale-reuse claim is discharged by construction: all three `solved` exits of
+`runSubFunctionOnce` run `verifyCode` against `input.cases` before returning.
+
 ### NOT MINE, DO NOT REVERT — uncommitted cont.118 work in the MAIN checkout
 `/Users/justin/crucible-local/crucible-local` on `crucible-northstar-sessions` has uncommitted
-agentic-surface work belonging to another session, plus additive fixes made from this one before
-it was handed back (server.ts `ToolResult` typing + double-emit removal, `core.tsx` `ViewSpec`
-import, `panels.tsx` SurfaceRenderer mount, new `src/agentic/surfaceContract.ts`, `registry.ts`
-choke-point view emit, NUL hygiene, `package.json surface:bench`). Two findings that session should
-know: `registry.exec` emits `tool_call`+`tool_result` itself, so the named-tool branch in
-`server.ts` was **double-emitting** every event; and the derived `view` was attached ONLY in that
-branch, so **agent mode could never receive a surface** — it is now attached at the `registry.exec`
-choke point instead.
+agentic-surface work belonging to another session (server.ts `ToolResult` typing + double-emit
+removal, `core.tsx` `ViewSpec` import, `panels.tsx` SurfaceRenderer mount, new
+`src/agentic/surfaceContract.ts`, `registry.ts` choke-point view emit, NUL hygiene, `package.json
+surface:bench`). `registry.exec` emits `tool_call`+`tool_result` itself, so the named-tool branch in
+`server.ts` was double-emitting; and the derived `view` was attached ONLY in that branch, so agent
+mode could never receive a surface — now attached at the `registry.exec` choke point.
 ---
 
 ### ⚠ TRAP 2 — a live bench from a worktree silently measures `apple-fm`

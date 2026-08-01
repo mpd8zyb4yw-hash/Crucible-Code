@@ -1933,6 +1933,75 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-01 (the four open carve/typecheck items closed, and the first honest general re-measure)
+
+**All five items on the 2026-07-29 open list are closed.** Four were code; the fifth was the
+measurement everything else was waiting on.
+
+- **The plan-quality gates now re-run on the plan we actually grind.** The carve probe REWRITES the
+  plan (trace-witnessed cases replace the planner's invented ones) and PRUNES dead rungs, but only
+  `isDegenerateSubFnCarve` re-ran afterwards. `isRebakedHelper` and `isNonComposingCarve` now re-run
+  on the grounded plan too, where both are *strictly better informed* — the entry-case collision and
+  the argument shapes they read are observed I/O rather than model inventions. Cost item, not
+  soundness: every outcome on this path is still "grind this plan" or "resample".
+- **`rungSpecKey` folds in the siblings the rung's goal NAMES.** A certified helper's source calls
+  its siblings (context hygiene grounds it on exactly those); carried into an attempt that no longer
+  defines one, it cannot fail certification — nothing re-runs a rung in isolation — but it makes
+  `helperBlock` non-compiling, so the compose rung eats the whole plan attempt discovering it. Only
+  the NAMED deps, never the whole sibling set: keying on everything would invalidate every carry on
+  any unrelated re-plan, which is the re-grinding the cache exists to prevent. Omitting the new
+  argument reproduces the old key byte-for-byte.
+- **The carve's call budget is now exact.** `globalModelCalls` is a PER-CALL cap and a carve issues
+  one `iterate()` per rung, one to compose, up to `planAttempts` times over, plus nested levels — so
+  the ladder's clamp bounded each rung and *nothing bounded their sum*. `solveByLadder` now hands its
+  ledger down (`budget` on `decomposeCodeBySubFunction`); the carve subtracts its own in-flight spend
+  before every call and derives a tighter ledger for children, so a nested level can only narrow the
+  ceiling it inherited. Exactly the defect the wall-clock had before `IterateOpts.deadline`, on the
+  call axis. Bench 9i2/9i3/9i4 asserts it with a control arm (no ledger → the purse is spent many
+  times over) and as a BOUND, never an equality: the last iterate stops at its own cap.
+- **`typecheck:engine` 5 → 0.** Two were genuinely broken references that had been silently `any`-
+  typed since they were written: `specializationForcing.ts` imported `DynamicModel` from `'../types'`
+  (no such module — the interface lives in `src/chat/core.tsx`, and this file only ever reads `.id`,
+  so it is now structural + generic rather than importing UI into the engine), and `index.ts`
+  imported `PromptType` from `./types` instead of `stageWeightLearner`. `scoring-engine.ts`'s
+  coverage critiques declared an inline `category: string`, so they were structurally NOT `Critique`
+  — `'coverage'` joined the union. **Fixing that surfaced a live bug**: the low-composite summary
+  critique was pushed to `allCritiques`, which `allCritiquesWithContract` had already spread-copied,
+  under a guard requiring that copy be *empty* — so the critique that branch exists to produce
+  reached the caller exactly never. `autonomousProvisioner`'s `as ProvisioningPayload` on a payload
+  read off disk became a real narrowing check.
+
+**LIVE GENERAL SCORECARD, re-measured 2026-08-01** — first run under the binding wall-clock deadline
+AND the read-side `CRUCIBLE_NO_DISTILL` guard (so: cold learned-skill cache, no free catalog hits),
+head confirmed `qwen2.5-1.5b`, 5 no-template tasks × 1 draw, 300s per-task ceiling, both arms:
+
+```
+  LADDER (the system)   DECOMPOSE (one tier, control)   task
+  1/1   4c   18s        0/1   3c   10s    romanToInt        (subtractive-pair scan)
+  1/1   4c   22s        0/1  43c  300s    intToRoman        (greedy value-table emit)
+  1/1   4c   17s        0/1  45c  227s    compressRuns      (run-length encode, digit guard)
+  1/1   5c   22s        0/1   4c   47s    isBalanced        (bracket matching over mixed text)
+  1/1   4c   23s        0/1  52c  193s    wordFrequencyTop  (tokenize + count + tie-broken sort)
+  5/5 (100%) LADDER — the product's general-path number.  0/5 control (decomposition ALONE)
+  solves by tier — tier 0: 3, tier 1: 2
+```
+
+Read it carefully, because it is easy to over-claim:
+
+- **The product solves 5/5 in 4-5 calls and under 25s, and never reaches the carve.** Every solve
+  landed at tier 0 or tier 1. The doctrine's cheap tiers are doing the work on these tasks.
+- **The carve alone is 0/5 here** — and this is the honest number, not a regression: pre-2026-07-29
+  decompose figures were taken with a budget that did not bind and a WARM `_learned/` cache. The
+  ceiling now visibly binds: `intToRoman` stopped at exactly 300s where the same class of run
+  previously reached 955s.
+- **The carve changes above cannot show up in the ladder column**, since the ladder never got there.
+  They are cost/plan-quality work on the tier the ladder falls back to, and this run says that
+  fallback is not what these five tasks need.
+- **n = 1 draw per task.** This is a scorecard, not a pass@k estimate; treat single-draw rows as
+  direction, not as a rate.
+
+`prove:all` 251/251, ladder bench 49/49, decompose bench 119/119, `typecheck:engine` clean.
+
 ### 2026-07-29b (gap-soundness cont. — the carve's stale-reuse claim, discharged by its exits)
 
 **The comment that stood unrefuted for three sessions is TRUE, and weaker than the code deserves.**
