@@ -30,6 +30,7 @@
 // and reporting it as a general-path win. Read a `TEMPLATED` row as "this task no longer belongs
 // in this file", not as a result.
 
+import { fmComplete, headModelName } from '../agent/fmReact'
 import { decomposeCodeBySubFunction, solveByLadder } from './solve'
 import { decomposePerRungBudget, hasDecomposeTemplate } from './fmPlanner'
 import type { CodeAcceptance } from './codeVerifier'
@@ -290,6 +291,14 @@ async function runLadderArm(p: GeneralProbe, runs: number, budget: ReturnType<ty
     walls.push(wallS)
     console.log(`${lad.status}${lad.status === 'solved' ? ` @tier ${lad.tier}` : ''} (${lad.modelCalls} calls, ${wallS}s) — ` +
       lad.steps.map(s => `t${s.tier}:${s.solved ? 'OK' : 'no'}/${s.modelCalls}c/${Math.round(s.wallMs / 1000)}s`).join(' '))
+    // WHY the detail is printed separately (2026-08-02). The tier line above summarises each step as
+    // calls+seconds, which cannot distinguish "tier 3 was starved" from "tier 3 self-terminated on a
+    // planner gate" — both read as a small number. The `[purse Nc, reserve Nc/Ns, clock left Ns]`
+    // field the ladder appends to `detail` is the ONLY place the reserve is observable, and dropping
+    // it here is why the 2026-08-01 reserve fix shipped unmeasurable. One line per step, ladder only.
+    for (const s of lad.steps) {
+      if (s.detail) console.log(`      t${s.tier}: ${s.detail}`)
+    }
   }
   return { solved, attempts: runs, callsMed: median(calls), wallMedS: median(walls), tiers }
 }
@@ -347,7 +356,49 @@ async function runTask(p: GeneralProbe, runs: number): Promise<TaskResult> {
     solved: head.solved, attempts: head.attempts, callsMed: head.callsMed, wallMedS: head.wallMedS }
 }
 
+/**
+ * HEAD PREFLIGHT (2026-08-02). A misconfigured head does not fail loudly — it returns EMPTY
+ * completions, `search()` reports `on-device model unavailable — N empty responses`, and the
+ * scorecard scores that as an ordinary tier failure. The run then looks like a capability result
+ * and is not one.
+ *
+ * This cost two full hard-set runs on 2026-08-02. The launch was `-c 4096 --parallel 4`, i.e. 1024
+ * tokens PER SLOT — the exact split `bonsaiSidecar.argsFor` warns against (total -c must be
+ * PER_SLOT_CTX x N) — plus a missing `--jinja`. Tier 3 read as `3c/8s` and looked starved; with a
+ * correct head the same row spends 42c/127s. Every conclusion drawn from the bad runs was wrong.
+ *
+ * One generation, before any task starts. Non-empty output is the whole bar: this catches a dead
+ * daemon, a truncating context, and a missing chat template alike, which are the three ways the
+ * head has actually been misconfigured. It cannot catch a head serving the WRONG MODEL — that is
+ * what the `headModelName()` check below is for (TRAP 2: a worktree silently falls back to
+ * apple-fm, which also ignores GBNF).
+ */
+async function preflightHead(): Promise<void> {
+  const name = headModelName()
+  console.log(`# head: ${name}`)
+  if (/apple/i.test(name)) {
+    console.error(`ABORT: head is '${name}', not the local GGUF — a worktree run fell back to apple-fm, which ignores GBNF.\n` +
+      `Export CRUCIBLE_BONSAI_BIN and CRUCIBLE_BONSAI_MODEL at the MAIN repo's copies (see NEXT_SESSION.md TRAP 2).`)
+    process.exit(1)
+  }
+  // `fmComplete` swallows its own errors and returns '' — which is precisely the symptom being
+  // tested for, so an empty string here covers both "threw" and "returned nothing".
+  const t0 = Date.now()
+  const text = await fmComplete(
+    [{ role: 'user', content: 'Write a JS function add(a,b) that returns a+b. Code only.' }],
+    { maxTokens: 64 },
+  )
+  if (!text.trim()) {
+    console.error(`ABORT: head returned an EMPTY completion (${Date.now() - t0}ms). The scorecard would score this as\n` +
+      `capability failure. Usual cause: context split across slots (total -c must be PER_SLOT_CTX x SLOTS,\n` +
+      `NOT 4096 split N ways) or a missing --jinja. See bonsaiSidecar.argsFor.`)
+    process.exit(1)
+  }
+  console.log(`# head preflight ok (${text.trim().length} chars in ${Date.now() - t0}ms)\n`)
+}
+
 async function main(): Promise<void> {
+  await preflightHead()
   const runs = Math.max(1, Number(process.env.GEN_SCORECARD_RUNS || 1))
   const only = process.env.GEN_SCORECARD_ONLY
   // Default `core` so every pre-existing baseline keeps measuring the same five rows. The hard set
