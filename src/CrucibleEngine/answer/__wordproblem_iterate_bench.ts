@@ -15,9 +15,11 @@ const json = (expr: string, unit = '') => JSON.stringify({ expression: expr, uni
 // A completer driven by a fixed script of expressions, cycling. Counts calls.
 function scripted(seq: string[]): Completer & { calls: () => number } {
   let i = 0
-  const fn = (async () => json(seq[i++ % seq.length])) as Completer & { calls: () => number }
-  fn.calls = () => i
-  return fn
+  // Object.assign rather than a cast: a Completer is declared with two parameters, so a 0-arg
+  // arrow intersected with `{ calls }` has no overlap TS will accept, and the `as` that papered
+  // over it is exactly the kind of assertion this bench exists to not need.
+  const impl: Completer = async () => json(seq[i++ % seq.length])
+  return Object.assign(impl, { calls: () => i })
 }
 // A completer that returns `wrong` for the first `nBad` calls, then `right` forever. Models a
 // distribution where the correct setup dominates but the first draw was unlucky.

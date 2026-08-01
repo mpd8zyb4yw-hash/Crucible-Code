@@ -368,6 +368,32 @@ async function main() {
   check('9i carry-forward: the already-certified helper was reused (0 calls), not re-ground',
     carryEvents.some((t) => /gg` reused from a prior attempt/.test(t)) && ggCalls === 1, `ggCalls=${ggCalls} events=${carryEvents.filter(t => /reused/.test(t)).length}`)
 
+  // 9i2/9i3 SHARED CALL LEDGER (2026-08-01). `iterate.globalModelCalls` is a PER-CALL cap and a
+  //   carve issues one iterate per rung, one to compose, and up to planAttempts times over — so the
+  //   nominal budget used to multiply by the number of calls, not bound their sum. A never-solving
+  //   proposer makes that visible: the control arm (no ledger) spends strictly more than any single
+  //   rung's purse, while the ledgered arm stops AT the cap. Same shape as the deadline fix, on the
+  //   call axis. Asserted as a bound, never as an exact equality — the last iterate is stopped at
+  //   its own cap, so a run may finish under the ceiling but never over it.
+  const burnPlan: SubFunctionPlanner = async () => [
+    { name: 'aa', goal: 'double x', cases: [{ args: [2], expected: 4 }] },
+    { name: 'bb', goal: 'triple x', cases: [{ args: [2], expected: 6 }] },
+  ]
+  const burnProposer: Proposer<string> = async () => ({ value: 'export function aa(x){return x}', fingerprint: `burn${Math.random()}` })
+  const burnInput = { goal: 'compute cc(x)', entry: 'cc', cases: [{ args: [1], expected: 5 }, { args: [2], expected: 10 }] }
+  const burnOpts = { planner: burnPlan, planAttempts: 3, maxDepth: 0,
+    iterate: { maxEpochs: 3, baseModelCalls: 3, globalModelCalls: 4 } }
+  const unbounded = await decomposeCodeBySubFunction(burnInput, burnOpts, burnProposer)
+  check('9i2 CONTROL: with no ledger a per-rung purse of 4 is spent many times over',
+    unbounded.modelCalls > 4, `modelCalls=${unbounded.modelCalls}`)
+  const CAP = 5
+  const ledgered = await decomposeCodeBySubFunction(
+    burnInput, { ...burnOpts, budget: { left: () => CAP } }, burnProposer)
+  check('9i3 the shared ledger makes the carve TOTAL exact — rungs, compose and plan attempts all bill it',
+    ledgered.modelCalls <= CAP && ledgered.modelCalls > 0, `modelCalls=${ledgered.modelCalls} cap=${CAP}`)
+  check('9i4 an exhausted ledger collapses honestly — never a solve, never a crash',
+    ledgered.status === 'decompose-failed' && ledgered.code === null, ledgered.detail)
+
   // 9j/9k/9l RECURSIVE DECOMPOSITION. The top plan carves ONE helper `hard(x) = sq(x)+1` that the
   //   proposer CANNOT one-shot (with no `sq` in context it returns the identity → flat iterate stalls).
   //   Instead of collapsing, the loop re-decomposes `hard` itself: a sub-plan carves `sq`, the proposer

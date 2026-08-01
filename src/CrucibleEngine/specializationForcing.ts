@@ -4,7 +4,12 @@
 // selectModels rotation. This ensures our strongest specialist always fires.
 
 import type { PromptType } from './stageWeightLearner'
-import type { DynamicModel } from '../types'
+// The only property this module reads off a model is `id`, so it is stated STRUCTURALLY rather
+// than imported. The old `import type { DynamicModel } from '../types'` never resolved (there is no
+// `src/types` — the interface lives in `src/chat/core.tsx`), so this file has been silently
+// `any`-typed since it was written; and importing a UI module into the engine would invert the
+// layering to buy nothing. Generic in the caller's model type so `applyForcedSlots` returns
+// exactly what it was handed instead of widening it.
 
 // getSpecializationWeights is injected at call time to avoid circular dep with modelRegistry
 type WeightsFn = (pt: PromptType) => Record<string, number>
@@ -30,7 +35,7 @@ export interface ForcedSlot {
 // MAX_FORCED model IDs that should be guaranteed a Stage 1 slot.
 export function getForcedModels(
   promptType: PromptType,
-  registry: DynamicModel[],
+  registry: readonly { id: string }[],
   getSpecializationWeights?: WeightsFn
 ): ForcedSlot[] {
   if (!getSpecializationWeights) return []
@@ -59,11 +64,11 @@ export function getForcedModels(
 
 // Merge forced models into a selected model list — add any forced IDs that
 // aren't already present, displacing the lowest-priority tail if needed.
-export function applyForcedSlots(
-  selected: DynamicModel[],
+export function applyForcedSlots<T extends { id: string }>(
+  selected: readonly T[],
   forced: ForcedSlot[],
-  registry: DynamicModel[]
-): DynamicModel[] {
+  registry: readonly T[]
+): T[] {
   const out = [...selected]
   const presentIds = new Set(out.map(m => m.id))
 

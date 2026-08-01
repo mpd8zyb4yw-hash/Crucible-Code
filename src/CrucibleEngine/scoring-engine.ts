@@ -90,11 +90,11 @@ function detectStubPatterns(source: string): Array<{ severity: 'blocking' | 'maj
 function computeCoverageScore(
   source: string,
   promptRequirements: string[]
-): { score: number; critiques: Array<{ severity: 'major'; category: string; message: string }> } {
+): { score: number; critiques: Critique[] } {
   if (promptRequirements.length === 0) return { score: 1.0, critiques: [] }
 
   const lower = source.toLowerCase()
-  const critiques: Array<{ severity: 'major'; category: string; message: string }> = []
+  const critiques: Critique[] = []
   let covered = 0
 
   for (const req of promptRequirements) {
@@ -391,11 +391,11 @@ function computeContractScore(
 function computeEvaluationCriteriaScore(
   source: string,
   criteria: Array<{ concept: string; keywords: string[]; required: boolean }>,
-): { score: number; critiques: Array<{ severity: 'blocking' | 'major'; category: string; message: string }> } {
+): { score: number; critiques: Critique[] } {
   if (criteria.length === 0) return { score: 1.0, critiques: [] }
 
   const lower = source.toLowerCase()
-  const critiques: Array<{ severity: 'blocking' | 'major'; category: string; message: string }> = []
+  const critiques: Critique[] = []
   let covered = 0
 
   for (const criterion of criteria) {
@@ -489,8 +489,12 @@ export function score(
   const allCritiquesWithContract = [...allCritiques, ...contractResult.critiques, ...coverageResult.critiques, ...evalResult.critiques];
 
   // If composite is low, add a top-level summary critique for the models to act on
+  // Pushed to the array that is actually RETURNED. It used to push to `allCritiques`, which
+  // `allCritiquesWithContract` had already spread-copied — and since the guard only fires when
+  // that copy is EMPTY, the summary critique this branch exists to produce was returned to the
+  // caller exactly never.
   if (compositeScore < config.thresholds.pass && allCritiquesWithContract.length === 0) {
-    allCritiques.push({
+    allCritiquesWithContract.push({
       severity: "major",
       category: "correctness",
       message: `Overall quality score is ${(compositeScore * 100).toFixed(0)}/100. The implementation needs improvement across multiple dimensions. Focus on: establishing clear structural patterns, handling error cases explicitly, and ensuring edge cases are considered.`,

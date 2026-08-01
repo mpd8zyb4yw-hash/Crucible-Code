@@ -20,7 +20,10 @@ export type {
 } from "./types";
 export { DEFAULT_SCORING_CONFIG } from "./types";
 
-import type { PromptType } from "./types";
+// `PromptType` is declared in `stageWeightLearner.ts` (the module that owns the six-way prompt
+// taxonomy), NOT in `./types` — this import has never resolved, which under the pre-2026-07-28
+// no-typecheck regime left every `PromptType` annotation below as an implicit `any`.
+import type { PromptType } from "./stageWeightLearner";
 
 // getAspectContext — defined inline (rag-context does not export it).
 // `fit` is a Record<PromptType, number> (from ModelEntry) or the string 'deterministic'.

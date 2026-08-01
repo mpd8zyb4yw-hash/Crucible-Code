@@ -9,6 +9,30 @@ import { debugBus } from './debug/bus'
 
 export type ProviderTarget = 'cloudflare_workers' | 'supabase' | 'railway' | 'render'
 
+/** The four providers, as a runtime value so a stored payload can be CHECKED rather than cast. */
+export const PROVIDER_TARGETS = ['cloudflare_workers', 'supabase', 'railway', 'render'] as const
+
+/**
+ * Narrow a governance request's stored payload (`Record<string, unknown>` — it came off disk, so it
+ * is untrusted input) to a ProvisioningPayload. This used to be a bare `as` cast, which asserts a
+ * provider union over an arbitrary string and would have handed a bad `provider` straight to
+ * `dispatchProvisioning`. Returns undefined when the payload is not one, which is exactly what the
+ * existing missing-fields guard at the call site already handles.
+ */
+export function asProvisioningPayload(p: unknown): ProvisioningPayload | undefined {
+  if (!p || typeof p !== 'object') return undefined
+  const r = p as Record<string, unknown>
+  if (typeof r.resourceName !== 'string' || !r.resourceName) return undefined
+  if (typeof r.provider !== 'string' || !(PROVIDER_TARGETS as readonly string[]).includes(r.provider)) return undefined
+  return {
+    provider: r.provider as ProviderTarget,
+    resourceName: r.resourceName,
+    region: typeof r.region === 'string' ? r.region : undefined,
+    envVars: r.envVars && typeof r.envVars === 'object' ? (r.envVars as Record<string, string>) : undefined,
+    plan: typeof r.plan === 'string' ? r.plan : undefined,
+  }
+}
+
 export interface ProvisioningPayload {
   provider: ProviderTarget
   resourceName: string
@@ -98,7 +122,7 @@ export async function runApprovedProvisioningRequests(dir: string): Promise<Prov
 
   const results: ProvisioningResult[] = []
   for (const req of pending) {
-    const payload = req.payload as ProvisioningPayload | undefined
+    const payload = asProvisioningPayload(req.payload)
     if (!payload?.provider || !payload?.resourceName) {
       results.push({ requestId: req.id, provider: payload?.provider ?? 'render', resourceName: payload?.resourceName ?? 'unknown', status: 'skipped', error: 'missing payload fields', provisionedAt: Date.now() })
       continue

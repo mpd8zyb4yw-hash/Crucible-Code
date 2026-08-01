@@ -100,7 +100,11 @@ export interface CompositeScore {
 
 export interface Critique {
   severity: "blocking" | "major" | "minor" | "suggestion";
-  category: "correctness" | "pattern" | "antipattern" | "edge-case" | "complexity" | "novelty";
+  // "coverage" added 2026-08-01: `computeCoverageScore`/`computeEvaluationCriteriaScore` in
+  // scoring-engine.ts have always emitted it, but declared their return type as an inline
+  // `category: string` literal — so their critiques were structurally NOT `Critique`, and the
+  // aggregate array widened to a union that could not be returned as `Critique[]`.
+  category: "correctness" | "pattern" | "antipattern" | "edge-case" | "complexity" | "novelty" | "coverage";
   message: string; // Plain English, fed directly to models
   // If this matches a known antipattern, which one
   antipatternRef?: string;

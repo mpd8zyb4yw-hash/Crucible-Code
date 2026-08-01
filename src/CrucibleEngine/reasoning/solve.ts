@@ -504,6 +504,21 @@ export async function decomposeCodeBySubFunction(
      * general scorecard needs in order to keep reporting carve quality rather than probe luck.
      */
     traceProbe?: boolean
+    /**
+     * SHARED CALL LEDGER (2026-08-01) — makes the carve's TOTAL budget exact.
+     *
+     * `iterate.globalModelCalls` is a PER-CALL cap, and a carve issues one `iterate()` per rung,
+     * one to compose, and up to `planAttempts` times over — so an N-rung carve clamped to the
+     * ladder's remainder could still spend N × that remainder. Same defect the wall-clock had
+     * before `IterateOpts.deadline`, on the call axis: a per-invocation quantity used as a
+     * whole-task ceiling. `left()` is read fresh before every iterate call and the per-call cap is
+     * clamped to the amount the carve has NOT yet spent (its own running `modelCalls`, which
+     * already bills the planner draw and the probe). Undefined → unbounded, exactly as before.
+     *
+     * Only ever TIGHTENS: a nested level (helper recursion, glue re-decomposition) is handed a
+     * ledger derived from this one, so a child can never widen the ceiling it inherited.
+     */
+    budget?: { left: () => number }
   } = {},
   proposerOverride?: Proposer<string>,
   /**
@@ -529,11 +544,23 @@ export async function decomposeCodeBySubFunction(
   // Computed per attempt it would reset `planAttempts` times over, which is the same multiplication
   // it exists to stop — a 180s budget × 3 attempts × N rungs is how a capped task reached 955s.
   // An inherited deadline always wins, so a nested level can only ever tighten the ceiling.
-  const attemptOpts = opts.iterate?.deadline !== undefined || opts.iterate?.wallClockMs === undefined
+  const deadlineOpts = opts.iterate?.deadline !== undefined || opts.iterate?.wallClockMs === undefined
     ? opts
     : { ...opts, iterate: { ...opts.iterate, deadline: Date.now() + opts.iterate.wallClockMs } }
+  // The call ledger spans the RETRY LOOP too, for the same reason the deadline does: three plan
+  // attempts each clamped to the caller's remainder is three times the caller's remainder. Each
+  // attempt sees the ledger minus what earlier attempts already spent.
+  const outerBudget = opts.budget
+  const attemptOpts = outerBudget === undefined
+    ? deadlineOpts
+    : { ...deadlineOpts, budget: { left: () => Math.max(0, outerBudget.left() - spentCalls) } }
   for (let attempt = 0; attempt < planAttempts; attempt++) {
     if (opts.signal?.aborted) break
+    // Out of calls mid-retry: stop rather than start an attempt that can only abstain.
+    if (outerBudget !== undefined && outerBudget.left() - spentCalls <= 0) {
+      emit({ type: 'thought', text: 'subfn: model-call budget exhausted — no further plan attempts' })
+      break
+    }
     if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
     const r = await runSubFunctionOnce(input, attemptOpts, proposerOverride, carry)
     spentCalls += r.modelCalls
@@ -563,11 +590,30 @@ export function isDegenerateSubFnCarve(hasCustomPlanner: boolean, helperCount: n
  * change its examples) and the carve probe makes it wrong outright: the probe rewrites a rung's
  * cases from trace evidence while preserving its goal, so a goal-only key would report a rung
  * `certified` under a spec nothing ever checked it against. Pure — unit-tested in __decompose_bench.
+ *
+ * SIBLING CONTEXT (2026-08-01). Goal+cases is still not the whole spec of a rung: a certified
+ * helper's SOURCE may call its siblings (context hygiene grounds each rung on the prior helpers its
+ * goal names, and the head duly calls them). Carried into a plan attempt that no longer contains
+ * one of those siblings, the source is a dangling reference — it cannot fail certification (nothing
+ * re-runs it in isolation) but it makes `helperBlock` non-compiling, so the COMPOSE rung fails and
+ * the whole plan attempt is spent discovering it. Fold the rung's declared dependencies into the
+ * key so that carve is a MISS (re-grind the rung) instead of a poisoned hit.
+ *
+ * Only the siblings the goal actually NAMES are folded in, not the whole plan: keying on the entire
+ * sibling set would invalidate every carry-forward whenever any unrelated helper changed, which
+ * costs exactly the re-grinding the carry cache exists to avoid. Missing/omitted `siblings` keeps
+ * the pre-2026-08-01 key byte-for-byte, so a caller that has no plan in hand loses nothing.
  */
-export function rungSpecKey(rung: { goal: string; cases: CodeAcceptance['cases'] }): string {
+export function rungSpecKey(
+  rung: { goal: string; cases: CodeAcceptance['cases'] },
+  siblings?: readonly string[],
+): string {
   let cases: string
   try { cases = JSON.stringify(rung.cases) } catch { cases = String(rung.cases) }
-  return `${rung.goal}\x00${cases}`
+  const base = `${rung.goal}\x00${cases}`
+  if (!siblings?.length) return base
+  const deps = siblings.filter((n) => n && rung.goal.includes(n)).sort()
+  return deps.length ? `${base}\x00${deps.join(',')}` : base
 }
 
 /** Coarse runtime type-shape of a case value, used only to compare a helper's declared inputs
@@ -700,7 +746,7 @@ export function subLevelIterateBudget(
 
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[]; traceProbe?: boolean },
+  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[]; traceProbe?: boolean; budget?: { left: () => number } },
   proposerOverride?: Proposer<string>,
   // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by
   // name→{source, spec}. A rung whose plan is IDENTICAL reuses the stored source instead of
@@ -742,6 +788,21 @@ async function runSubFunctionOnce(
     ?? (opts.iterate?.wallClockMs !== undefined ? Date.now() + opts.iterate.wallClockMs : undefined)
   const withDeadline = <T extends Record<string, unknown>>(b: T): T =>
     (carveDeadline === undefined ? b : { ...b, deadline: carveDeadline })
+
+  // ONE call ledger for this whole carve — the deadline's counterpart on the call axis (see
+  // `budget` on decomposeCodeBySubFunction). `modelCalls` below is this carve's running spend, so
+  // the remainder is what the shared ledger has left MINUS what we have already taken from it.
+  // Read fresh at each iterate call site, never snapshotted, so rung k sees rungs 0..k-1's spend.
+  const callsLeft = (): number => (opts.budget === undefined ? Infinity : Math.max(0, opts.budget.left() - modelCalls))
+  // Clamp a per-call `globalModelCalls` to the ledger remainder. Floor of 1: a 0-call purse can
+  // only abstain, and the callers below check `callsLeft() <= 0` before spending at all.
+  const withCallBudget = <T extends Partial<IterateOpts<string>>>(b: T): T => {
+    const rem = callsLeft()
+    if (!Number.isFinite(rem)) return b
+    return { ...b, globalModelCalls: Math.max(1, Math.min(b.globalModelCalls ?? Infinity, rem)) }
+  }
+  /** A ledger for a NESTED level: whatever this carve has left at the moment the child asks. */
+  const childBudget = opts.budget === undefined ? undefined : { left: () => callsLeft() }
 
   // 1) Untrusted helper plan.
   // ACCOUNTING (2026-07-27c). The DEFAULT planner is a MODEL CALL and was billed ZERO: `modelCalls`
@@ -882,6 +943,33 @@ async function runSubFunctionOnce(
         }
         rungPlan = live
       }
+      // RE-RUN THE STATIC GATES ON THE GROUNDED PLAN (2026-08-01). Both remaining plan-quality
+      // gates were evaluated ABOVE against the planner's INVENTED cases, and `probe.plan` replaces
+      // those with trace-witnessed I/O (and the prune drops rungs entirely) — so the carve they
+      // passed is not the carve we are about to grind. `isDegenerateSubFnCarve` already re-runs
+      // inside the prune branch; these two did not, which is partial coverage rather than a missing
+      // mechanism, and it costs a full per-rung budget per surviving junk helper.
+      //   • isRebakedHelper is STRICTLY better informed here: the entry-case collision it looks for
+      //     is now real observed I/O rather than a value the planner made up. Filter (not fail), as
+      //     at the first call site — sibling rungs may be fine — then let degeneracy catch a carve
+      //     that lost too many.
+      //   • isNonComposingCarve likewise reads REAL argument shapes instead of invented ones.
+      // Soundness is unchanged: like every gate on this path, the only outcomes are "grind this
+      // plan" and "resample" — neither can certify anything.
+      const groundRebaked: string[] = []
+      const survivors = rungPlan.filter((h) => {
+        if (isRebakedHelper((h as any).cases, input.cases as any)) { groundRebaked.push(h.name); return false }
+        return true
+      })
+      if (groundRebaked.length) {
+        emit({ type: 'thought', text: `subfn: trace grounding exposed ${groundRebaked.join(', ')} as the entry under another name — dropped` })
+      }
+      if (isDegenerateSubFnCarve(false, survivors.length, false) ||
+          isNonComposingCarve(false, survivors, input.cases, false)) {
+        return { status: 'decompose-failed', code: null, helpers: [], rungs, modelCalls,
+          detail: `grounded carve fails the plan-quality gates (${survivors.length} rung(s) after grounding) — resample plan` }
+      }
+      rungPlan = survivors
     }
     emit({ type: 'thought', text: `subfn: ${probe.detail}` })
   }
@@ -891,6 +979,10 @@ async function runSubFunctionOnce(
   // already verifier-certified and must be part of THIS level's module, or the sub-solve would be
   // asked to compose against functions that exist only as prompt text and could never certify.
   const helpers: { name: string; source: string }[] = (opts.preHelpers ?? []).map((h) => ({ ...h }))
+  // The names that will exist in THIS attempt's module — the carry key's sibling context (see
+  // rungSpecKey). Computed once, after the probe has finished rewriting/pruning `rungPlan`, so the
+  // key a rung is stored under and the key it is looked up by describe the same module.
+  const siblingNames = [...helpers.map((x) => x.name), ...rungPlan.map((x) => x.name)]
   for (const h of rungPlan) {
     if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers, rungs, modelCalls, detail: `aborted at helper ${h.name}` }
     // CARRY-FORWARD: this exact rung (name + identical goal) already certified on a prior
@@ -917,7 +1009,7 @@ async function runSubFunctionOnce(
     // call (~:527), so a key can never cross tasks. The reuse-time `certified: true` below is
     // honest for the same reason rungSpecKey exists — it is the identical goal AND cases.
     const carried = carry?.get(h.name)
-    if (carried && carried.spec === rungSpecKey(h)) {
+    if (carried && carried.spec === rungSpecKey(h, siblingNames)) {
       helpers.push({ name: h.name, source: carried.source })
       rungs.push({ name: h.name, status: 'solved', bestScore: 1, modelCalls: 0, certified: true })
       emit({ type: 'thought', text: `subfn: helper \`${h.name}\` reused from a prior attempt (0 calls)` })
@@ -959,7 +1051,13 @@ async function runSubFunctionOnce(
     // suspect rung gets 1.5× and a rung the draft already got right gets 0.6× (see skewRungBudget).
     // A budget is not a truth claim — a mis-ranked rung costs draws, never certification.
     const rungBudget = probe?.status === 'grounded' ? skewRungBudget(opts.iterate, probe.suspects, h.name) : opts.iterate
-    const res = await iterate<string>(spec, rungProposer, verifyCode, withDeadline({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...rungBudget, signal: opts.signal, emit: opts.emit }))
+    // Ledger check BEFORE the rung, not after: a rung started with nothing left can only abstain,
+    // and abstaining costs the plan attempt anyway. Report it as an honest budget stop.
+    if (callsLeft() <= 0) {
+      return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls,
+        detail: `model-call budget exhausted before helper \`${h.name}\`` }
+    }
+    const res = await iterate<string>(spec, rungProposer, verifyCode, withDeadline(withCallBudget({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...rungBudget, signal: opts.signal, emit: opts.emit })))
     modelCalls += res.modelCalls
     const certified = res.status === 'solved' && !!res.solution
     rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
@@ -985,7 +1083,7 @@ async function runSubFunctionOnce(
         emit({ type: 'thought', text: `subfn: helper \`${h.name}\` won't one-shot — recursing (depth ${depth + 1}/${maxDepth})` })
         const sub = await decomposeCodeBySubFunction(
           { goal: h.goal, entry: h.name, cases: h.cases, context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined, timeoutMs: input.timeoutMs, nl: h.goal },
-          { ...opts, depth: depth + 1, emit: opts.emit, iterate: subLevelIterateBudget(opts.iterate) },
+          { ...opts, depth: depth + 1, emit: opts.emit, iterate: subLevelIterateBudget(opts.iterate), budget: childBudget },
           proposerOverride,
         )
         modelCalls += sub.modelCalls
@@ -995,7 +1093,7 @@ async function runSubFunctionOnce(
           // helper it redefined — extractOwnFunction would wrongly drop the sub-helpers it needs.
           const recSource = stripHelperRedefinitions(sub.code, helpers.map((x) => x.name))
           helpers.push({ name: h.name, source: recSource })
-          carry?.set(h.name, { source: recSource, spec: rungSpecKey(h) })
+          carry?.set(h.name, { source: recSource, spec: rungSpecKey(h, siblingNames) })
           emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified via recursion (${modelCalls} calls so far)` })
           continue
         }
@@ -1009,7 +1107,7 @@ async function runSubFunctionOnce(
     const ownSource = extractOwnFunction(res.solution!.value, h.name)
     helpers.push({ name: h.name, source: ownSource })
     // Record for carry-forward: a later planAttempt with this identical rung reuses it at 0 cost.
-    carry?.set(h.name, { source: ownSource, spec: rungSpecKey(h) })
+    carry?.set(h.name, { source: ownSource, spec: rungSpecKey(h, siblingNames) })
     emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified (${modelCalls} calls so far)` })
   }
 
@@ -1039,7 +1137,7 @@ async function runSubFunctionOnce(
     verifyCode({ value: `${helperBlock}\n\n${stripHelperRedefinitions(cand.value, helperNames)}`, fingerprint: cand.fingerprint }, spec)
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
-  const composed = await iterate<string>(composeSpec, composeProposer, composingVerifier, withDeadline({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit }))
+  const composed = await iterate<string>(composeSpec, composeProposer, composingVerifier, withDeadline(withCallBudget({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })))
   modelCalls += composed.modelCalls
   const composedCert = composed.status === 'solved' && !!composed.solution
   rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert })
@@ -1069,11 +1167,11 @@ async function runSubFunctionOnce(
       const glueCarry = new Map(carry ?? [])
       for (const h of helpers) {
         const planned = rungPlan.find((p) => p.name === h.name)
-        if (planned) glueCarry.set(h.name, { source: h.source, spec: rungSpecKey(planned) })
+        if (planned) glueCarry.set(h.name, { source: h.source, spec: rungSpecKey(planned, siblingNames) })
       }
       const sub = await decomposeCodeBySubFunction(
         { ...input, goal: `${input.goal}\n\n${glueNote}`, context: [input.context, `${WEB_GROUND_MARK}\n${helperBlock}`].filter(Boolean).join('\n\n') || undefined },
-        { ...opts, depth: cDepth + 1, emit: opts.emit, preHelpers: helpers, iterate: subLevelIterateBudget(opts.iterate) },
+        { ...opts, depth: cDepth + 1, emit: opts.emit, preHelpers: helpers, iterate: subLevelIterateBudget(opts.iterate), budget: childBudget },
         proposerOverride,
         glueCarry,
       )
@@ -1175,9 +1273,12 @@ export interface LadderOutcome {
  * outright — `maxModelCalls: 6` really licensed 6/2 + 6 flat calls plus an unbounded carve, and
  * only the AbortSignal bound it.
  *
- * STILL NOT EXACT, and do not re-read it as exact: tier 3's clamp applies to a PER-RUNG
- * `globalModelCalls`, so an N-rung carve can still spend up to N × the remainder. The ceiling is
- * now real at tier granularity and approximate within a carve.
+ * EXACT WITHIN THE CARVE AS OF 2026-08-01. Tier 3's clamp used to apply to a PER-RUNG
+ * `globalModelCalls`, so an N-rung carve could still spend up to N × the remainder. The ladder now
+ * also hands the carve the ledger itself (`budget` on decomposeCodeBySubFunction), and the carve
+ * subtracts its own in-flight spend before every iterate call, across rungs, compose, plan
+ * attempts and nested levels. What remains inexact is only the granularity of a single iterate
+ * call: it is stopped at its own cap, so the last call may end ON the ceiling, never above it.
  *
  * Measurements taken BEFORE this date (including the 2026-07-27 scorecard) ran under the old
  * non-subtractive semantics, so their per-task call counts are real measurements rather than
@@ -1386,11 +1487,12 @@ export async function solveByLadder(
   // composed whole meaningfully.
   if (opts.decompose && cases.length >= 3 && !multi && !opts.signal?.aborted && !exhausted()) {
     const t0 = Date.now()
-    // The carve's per-rung purse is clamped to what the ladder has left. `globalModelCalls` is a
-    // PER-RUNG cap, so this does not make the total exact — a carve with N rungs can still spend
-    // up to N × the clamp. It does mean the budget is no longer ignored outright, and a caller with
-    // 2 calls left can no longer trigger a 60-call decomposition. Making the carve's total exact
-    // needs the same shared-ledger treatment one level down, which is a separate change.
+    // The carve's per-rung purse is clamped to what the ladder has left, AND the ladder's ledger
+    // itself is handed down (2026-08-01) so the carve's TOTAL is exact rather than per-rung. Before
+    // that, `globalModelCalls` being a PER-CALL cap meant an N-rung carve could spend up to N × the
+    // clamp — the clamp bounded each rung, nothing bounded their sum. `left()` reads the ladder's
+    // running `modelCalls`, which the carve's own spend is added to only on return, so the carve
+    // subtracts its in-flight spend from this remainder internally (see `budget` there).
     const rungBudget = opts.iterate ?? decomposePerRungBudget(nl, entry)
     const clamped = callCeiling === undefined ? rungBudget : {
       ...rungBudget,
@@ -1398,7 +1500,8 @@ export async function solveByLadder(
     }
     const d = await decomposeCodeBySubFunction(
       { goal: nl, nl, entry, cases },
-      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: clamped },
+      { webGround: opts.webGround, signal: opts.signal, emit: opts.emit, iterate: clamped,
+        budget: callCeiling === undefined ? undefined : { left } },
     )
     modelCalls += d.modelCalls
     const pass = d.status === 'solved' && !!d.code && await gate(d.code, entry)

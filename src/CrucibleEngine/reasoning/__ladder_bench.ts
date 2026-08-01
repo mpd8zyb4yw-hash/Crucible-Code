@@ -144,6 +144,25 @@ async function main(): Promise<void> {
     rungSpecKey(rung) !== rungSpecKey({ ...rung, cases: [{ args: ['('], expected: true }, { args: [')'], expected: false }] }))
   check('7c different goal ⇒ different key', rungSpecKey(rung) !== rungSpecKey({ ...rung, goal: 'other' }))
 
+  // SIBLING CONTEXT (2026-08-01). A carried source may CALL its siblings; reused into a plan that
+  // no longer defines one, it cannot fail certification (nothing re-runs the rung in isolation) but
+  // it makes the compose module non-compiling. So the key folds in the siblings the goal NAMES —
+  // and only those, or every unrelated re-plan would throw away reuse the cache exists to give.
+  const depRung = { goal: 'fold the row using nextRow', cases: [{ args: [1], expected: 2 }] }
+  check('7d omitting siblings keeps the pre-2026-08-01 key byte-for-byte',
+    rungSpecKey(depRung) === rungSpecKey(depRung, []) && rungSpecKey(depRung) === rungSpecKey(depRung, undefined))
+  check('7e a NAMED sibling changes the key — the rung is only reusable where its dependency exists',
+    rungSpecKey(depRung, ['nextRow']) !== rungSpecKey(depRung))
+  check('7f losing that sibling is a MISS (re-grind), not a poisoned hit',
+    rungSpecKey(depRung, ['nextRow']) !== rungSpecKey(depRung, ['subCost']))
+  check('7g an UNNAMED sibling does not change the key — unrelated re-planning keeps carry-forward',
+    rungSpecKey(depRung, ['nextRow', 'unrelated']) === rungSpecKey(depRung, ['nextRow']))
+  check('7h sibling order is irrelevant (the key is a set, not a list)',
+    rungSpecKey({ ...depRung, goal: 'uses nextRow and subCost' }, ['nextRow', 'subCost']) ===
+    rungSpecKey({ ...depRung, goal: 'uses nextRow and subCost' }, ['subCost', 'nextRow']))
+  check('7i the rung\'s OWN name in the sibling list is harmless (goal need not mention it)',
+    rungSpecKey(rung, ['whatever']) === rungSpecKey(rung))
+
   console.log('\n── probeCarve: end-to-end with an injected proposer (still no model) ──')
 
   const CASES = [{ args: ['()'], expected: true }, { args: ['('], expected: false }, { args: [''], expected: true }]
