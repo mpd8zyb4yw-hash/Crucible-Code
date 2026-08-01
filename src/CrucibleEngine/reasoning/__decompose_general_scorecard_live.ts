@@ -6,6 +6,9 @@
 //   GEN_SCORECARD_TASK_WALL_MS=600000  abort each task at N ms (default 0 = no ceiling).
 //     A capped run measures "solves within N seconds", which is STRICTER than the uncapped
 //     baselines — the header line records the cap so the two are never confused.
+//   GEN_SCORECARD_SET=core|hard|all  which task set (default CORE — the five original rows, so
+//     every prior baseline stays comparable). `hard` is the tier-3 probe set added 2026-08-01b;
+//     its rate is reported on its OWN line and must never be pooled with core.
 //   GEN_SCORECARD_ARM=both|ladder|decompose   which arm(s) to run (default BOTH).
 //     `ladder`    — the real escalation ladder, i.e. what the product does. THE headline number.
 //     `decompose` — decomposition alone, the pre-2026-07-27 harness. A CONTROL, not a result.
@@ -31,7 +34,7 @@ import { decomposeCodeBySubFunction, solveByLadder } from './solve'
 import { decomposePerRungBudget, hasDecomposeTemplate } from './fmPlanner'
 import type { CodeAcceptance } from './codeVerifier'
 
-interface GeneralProbe {
+export interface GeneralProbe {
   entry: string
   label: string
   goal: string
@@ -41,7 +44,7 @@ interface GeneralProbe {
 // One row per no-template task. Each is decomposable in principle (a human would carve it into
 // 2-3 helpers) but matches no detector, so the carve has to be invented. Cases are small and
 // adversarial — enough to reject the shapes the 1.5B actually gets wrong, not an exhaustive suite.
-const TASKS: GeneralProbe[] = [
+export const TASKS: GeneralProbe[] = [
   {
     entry: 'romanToInt',
     label: 'romanToInt (subtractive-pair scan)',
@@ -122,6 +125,101 @@ const TASKS: GeneralProbe[] = [
       { args: ['a b c', 2], expected: ['a', 'b'] },
       { args: ['Hello, hello! world.', 5], expected: ['hello', 'world'] },
       { args: ['x y x y z', 3], expected: ['x', 'y', 'z'] },
+    ],
+  },
+]
+
+/**
+ * THE HARD SET (2026-08-01b) — rows that exist to answer ONE question: does tier 3 earn its place?
+ *
+ * The 2026-08-01 ladder run cleared all five CORE rows at tiers 0/1 in 4-5 calls, which makes the
+ * headline 5/5 real but says nothing about the tier four sessions of work went into: the ladder
+ * never reached tier 3, so tier 3 could be dead weight or could be untested, and the CORE set
+ * cannot tell those apart. A row belongs here only if a competent single draw plausibly cannot
+ * hold the whole thing — multi-stage output assembly, or parsing with a stateful escape rule —
+ * while still being decomposable by hand into 2-3 helpers with checkable I/O.
+ *
+ * These are NOT a harder re-measurement of the same thing; the two sets answer different questions
+ * and their numbers must never be pooled. Read a hard-set solve at tier 0/1 as "still too easy —
+ * this row failed to do its job", not as a win.
+ *
+ * Every case below was worked out by hand from the goal text as written. Where a convention could
+ * be read two ways (hyphens in number words, the serial comma, what an empty input maps to) the
+ * goal states it explicitly, because an ambiguous spec measures the model's guess at our intent
+ * rather than its ability to implement a stated one.
+ */
+export const HARD_TASKS: GeneralProbe[] = [
+  {
+    entry: 'numberToWords',
+    label: 'numberToWords (thousands/hundreds/teens/tens assembly)',
+    goal:
+      'Write numberToWords(n: number): string spelling an integer from 0 to 9999 in lowercase ' +
+      'English words separated by single spaces. Use no hyphens and no the word "and". ' +
+      'Examples of the required style: 0 is "zero", 13 is "thirteen", 42 is "forty two", ' +
+      '100 is "one hundred", 1994 is "one thousand nine hundred ninety four".',
+    cases: [
+      { args: [0], expected: 'zero' },
+      { args: [7], expected: 'seven' },
+      { args: [13], expected: 'thirteen' },
+      { args: [42], expected: 'forty two' },
+      { args: [100], expected: 'one hundred' },
+      { args: [118], expected: 'one hundred eighteen' },
+      { args: [1994], expected: 'one thousand nine hundred ninety four' },
+      { args: [9999], expected: 'nine thousand nine hundred ninety nine' },
+    ],
+  },
+  {
+    entry: 'formatDuration',
+    label: 'formatDuration (component split + pluralise + serial join)',
+    goal:
+      'Write formatDuration(seconds: number): string turning a non-negative whole number of ' +
+      'seconds into English. Break it into days, hours, minutes and seconds; omit any component ' +
+      'that is zero; pluralise each unit ("1 hour", "2 hours"). Join the components with ", " ' +
+      'except the last two, which are joined with " and " (no comma before "and"). ' +
+      'Zero seconds is the string "now".',
+    cases: [
+      { args: [0], expected: 'now' },
+      { args: [1], expected: '1 second' },
+      { args: [62], expected: '1 minute and 2 seconds' },
+      { args: [120], expected: '2 minutes' },
+      { args: [3600], expected: '1 hour' },
+      { args: [3662], expected: '1 hour, 1 minute and 2 seconds' },
+      { args: [90061], expected: '1 day, 1 hour, 1 minute and 1 second' },
+    ],
+  },
+  {
+    entry: 'wordWrap',
+    label: 'wordWrap (greedy line packing with an overlong-word rule)',
+    goal:
+      'Write wordWrap(text: string, width: number): string[] greedily packing words into lines no ' +
+      'longer than width. Words are separated by single spaces and are never split: a word longer ' +
+      'than width occupies a line by itself. Each returned line is the words joined by single ' +
+      'spaces, with no leading or trailing space. Empty text returns an empty array.',
+    cases: [
+      { args: ['', 5], expected: [] },
+      { args: ['abc', 5], expected: ['abc'] },
+      { args: ['a b c', 3], expected: ['a b', 'c'] },
+      { args: ['hello world', 5], expected: ['hello', 'world'] },
+      { args: ['the quick brown fox', 10], expected: ['the quick', 'brown fox'] },
+      { args: ['extraordinary a', 5], expected: ['extraordinary', 'a'] },
+    ],
+  },
+  {
+    entry: 'csvSelect',
+    label: 'csvSelect (quoted-field CSV parse + column projection)',
+    goal:
+      'Write csvSelect(csv: string, index: number): string[] returning the value at column ' +
+      '`index` (0-based) of every line. Lines are separated by newlines and fields by commas. ' +
+      'A field may be wrapped in double quotes, in which case commas inside it are literal text ' +
+      'and a doubled double-quote is one literal double-quote character; the wrapping quotes are ' +
+      'not part of the value. No field contains a newline. A line with too few fields yields the ' +
+      'empty string.',
+    cases: [
+      { args: ['a,b\nc,d', 0], expected: ['a', 'c'] },
+      { args: ['a,b\nc,d', 1], expected: ['b', 'd'] },
+      { args: ['"x,y",z', 0], expected: ['x,y'] },
+      { args: ['"he said ""hi""",z', 0], expected: ['he said "hi"'] },
+      { args: ['a\nb,c', 1], expected: ['', 'c'] },
     ],
   },
 ]
@@ -249,10 +347,16 @@ async function runTask(p: GeneralProbe, runs: number): Promise<TaskResult> {
 async function main(): Promise<void> {
   const runs = Math.max(1, Number(process.env.GEN_SCORECARD_RUNS || 1))
   const only = process.env.GEN_SCORECARD_ONLY
-  const probes = only ? TASKS.filter(t => t.entry === only) : TASKS
+  // Default `core` so every pre-existing baseline keeps measuring the same five rows. The hard set
+  // is a DIFFERENT question (does the ladder ever need tier 3?) and `all` prints both sets in one
+  // table — which is fine to look at and wrong to average, hence the set column below.
+  const set = process.env.GEN_SCORECARD_SET ?? 'core'
+  const pool = set === 'hard' ? HARD_TASKS : set === 'all' ? [...TASKS, ...HARD_TASKS] : TASKS
+  const hardNames = new Set(HARD_TASKS.map(t => t.entry))
+  const probes = only ? [...TASKS, ...HARD_TASKS].filter(t => t.entry === only) : pool
   if (!probes.length) { console.error(`no task named ${only}`); process.exit(1) }
   const capMs = Number(process.env.GEN_SCORECARD_TASK_WALL_MS || 0)
-  console.log(`# LIVE decompose GENERAL (no-template) scorecard — ${probes.length} task(s), ${runs} draw(s) each` +
+  console.log(`# LIVE decompose GENERAL (no-template) scorecard — set=${set}, ${probes.length} task(s), ${runs} draw(s) each` +
     (capMs > 0 ? `, per-task wall ceiling ${Math.round(capMs / 1000)}s (STRICTER than an uncapped run — do not compare directly)` : '') + '\n')
 
   const results: TaskResult[] = []
@@ -262,15 +366,22 @@ async function main(): Promise<void> {
     a ? `${a.solved}/${a.attempts} ${String(a.callsMed).padStart(3)}c ${String(a.wallMedS).padStart(4)}s` : '     —      '
 
   console.log('\n# ── GENERAL SCORECARD ─────────────────────────────────────────────────')
-  console.log('  ' + 'LADDER (the system)'.padEnd(22) + 'DECOMPOSE (one tier, control)'.padEnd(32) + 'task')
+  console.log('  ' + 'LADDER (the system)'.padEnd(22) + 'DECOMPOSE (one tier, control)'.padEnd(32) + 'set   task')
   let totSolved = 0, totAttempts = 0, ctlSolved = 0, ctlAttempts = 0
+  let hardSolved = 0, hardAttempts = 0
   const tierHist = new Map<number, number>()
+  const hardTierHist = new Map<number, number>()
   for (const r of results) {
     if (r.templated) { console.log(`  ---- SKIPPED (templated)  ${r.label}`); continue }
+    const hard = hardNames.has(r.entry)
     totSolved += r.solved; totAttempts += r.attempts
+    if (hard) { hardSolved += r.solved; hardAttempts += r.attempts }
     if (r.decompose) { ctlSolved += r.decompose.solved; ctlAttempts += r.decompose.attempts }
-    for (const t of r.ladder?.tiers ?? []) tierHist.set(t, (tierHist.get(t) ?? 0) + 1)
-    console.log('  ' + cell(r.ladder).padEnd(22) + cell(r.decompose).padEnd(32) + r.label)
+    for (const t of r.ladder?.tiers ?? []) {
+      tierHist.set(t, (tierHist.get(t) ?? 0) + 1)
+      if (hard) hardTierHist.set(t, (hardTierHist.get(t) ?? 0) + 1)
+    }
+    console.log('  ' + cell(r.ladder).padEnd(22) + cell(r.decompose).padEnd(32) + (hard ? 'hard  ' : 'core  ') + r.label)
   }
   console.log(`  ───────────────────────────────────────────────────────────────────`)
   const aggRate = totAttempts ? ((totSolved / totAttempts) * 100).toFixed(0) : '  0'
@@ -278,12 +389,30 @@ async function main(): Promise<void> {
   if (ctlAttempts) {
     console.log(`  ${ctlSolved}/${ctlAttempts} (${((ctlSolved / ctlAttempts) * 100).toFixed(0)}%)  control: decomposition ALONE (this is NOT the product's number)`)
   }
+  if (hardAttempts && hardAttempts !== totAttempts) {
+    console.log(`  ${hardSolved}/${hardAttempts} (${((hardSolved / hardAttempts) * 100).toFixed(0)}%)  of which the HARD set — do NOT pool this with the core rows`)
+  }
   if (tierHist.size) {
     // WHICH TIER EARNED IT. Four sessions were spent improving tier 3 without this line existing.
     const hist = [...tierHist.entries()].sort((a, b) => a[0] - b[0]).map(([t, n]) => `tier ${t}: ${n}`).join(', ')
     console.log(`  solves by tier — ${hist}`)
   }
-  console.log('\n' + JSON.stringify({ decompose_general_scorecard: true, arm: process.env.GEN_SCORECARD_ARM ?? 'both', solved: totSolved, attempts: totAttempts, controlSolved: ctlSolved, controlAttempts: ctlAttempts, byTask: results }))
+  if (hardAttempts) {
+    // THE TIER-3 VERDICT LINE. A hard row solved at tier 0/1 did not do its job (it is not hard for
+    // this head); a hard row that reaches tier 3 and solves is the first evidence the carve earns
+    // its place; one that reaches tier 3 and fails is evidence against it. Printed even when empty.
+    const hist = hardTierHist.size
+      ? [...hardTierHist.entries()].sort((a, b) => a[0] - b[0]).map(([t, n]) => `tier ${t}: ${n}`).join(', ')
+      : 'none solved'
+    console.log(`  HARD-set solves by tier — ${hist}`)
+  }
+  console.log('\n' + JSON.stringify({ decompose_general_scorecard: true, set, arm: process.env.GEN_SCORECARD_ARM ?? 'both', solved: totSolved, attempts: totAttempts, hardSolved, hardAttempts, controlSolved: ctlSolved, controlAttempts: ctlAttempts, byTask: results }))
 }
 
-main().catch(e => { console.error('decompose general scorecard failed:', e); process.exit(1) })
+// ENTRYPOINT GUARD. The task rows are exported so other probes (the hard-set self-check, the rung
+// post-mortem) can reuse the exact acceptance sets the scorecard scores on rather than keeping a
+// second copy that drifts. Without this guard, importing that data would LAUNCH a live half-hour
+// scorecard run as a side effect of the import.
+if (process.argv[1]?.includes('__decompose_general_scorecard_live')) {
+  main().catch(e => { console.error('decompose general scorecard failed:', e); process.exit(1) })
+}

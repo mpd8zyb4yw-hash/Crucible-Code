@@ -15,7 +15,7 @@
     "synth:taxonomy": "tsx src/CrucibleEngine/synth/synth-taxonomy.ts",
     "census": "tsx src/CrucibleEngine/synth/coverage-census.ts",
     "validate:batch": "tsx src/CrucibleEngine/synth/validate-batch.ts",
-    "prove:all": "npm run typecheck:engine:core && npm run hygiene:bench && npm run harden:bench && npm run fuzz:bench && npm run stakes:bench && npm run contract:bench && npm run lintgate:bench && npm run repair:bench && tsx src/CrucibleEngine/synth/prove-all.ts",
+    "prove:all": "npm run typecheck:engine:core && npm run hygiene:bench && npm run hardset:selfcheck && npm run harden:bench && npm run fuzz:bench && npm run stakes:bench && npm run contract:bench && npm run lintgate:bench && npm run repair:bench && tsx src/CrucibleEngine/synth/prove-all.ts",
     "fuzz:bench": "tsx src/CrucibleEngine/agent/__fuzz_bench.ts",
     "toolargs:bench": "tsx src/CrucibleEngine/agent/__toolargs_bench.ts",
     "plananswer:bench": "tsx src/CrucibleEngine/agent/__plananswer_bench.ts",
@@ -100,7 +100,10 @@
     "ladder:bench": "tsx src/CrucibleEngine/reasoning/__ladder_bench.ts",
     "hygiene:bench": "tsx src/CrucibleEngine/reasoning/__source_hygiene_bench.ts",
     "direct:arm": "tsx src/CrucibleEngine/reasoning/__direct_vs_decompose_live.ts",
-    "draw:anatomy": "tsx src/CrucibleEngine/reasoning/__draw_anatomy_live.ts"
+    "draw:anatomy": "tsx src/CrucibleEngine/reasoning/__draw_anatomy_live.ts",
+    "hardset:selfcheck": "tsx src/CrucibleEngine/reasoning/__general_hardset_selfcheck.ts",
+    "gen:scorecard": "tsx src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts",
+    "rung:postmortem": "tsx src/CrucibleEngine/reasoning/__decompose_postmortem_live.ts"
   },
   "build": {
     "appId": "com.crucible.local",

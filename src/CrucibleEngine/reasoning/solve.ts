@@ -367,6 +367,37 @@ export interface SubFunctionRung {
   bestScore: number
   modelCalls: number
   certified: boolean
+  /**
+   * POST-MORTEM FIELDS (2026-08-01b). Calls alone cannot tell a plan-level death apart from a rung
+   * that grinds to the ceiling: `romanToInt` died in 10s/3 calls while `intToRoman` burned 43 calls
+   * and the full 300s, and the scorecard printed both as one word (`decompose-failed`). `wallMs`
+   * says where the seconds went and `phase` says which kind of rung spent them. Reporting only —
+   * nothing reads these to make a decision, so they cannot affect what gets certified.
+   */
+  wallMs?: number
+  phase?: 'probe' | 'carry' | 'helper' | 'recursion' | 'compose' | 'glue'
+}
+
+/** One plan attempt's outcome, kept even when a LATER attempt overwrites the returned rung list. */
+export interface SubFunctionAttempt {
+  attempt: number
+  status: SubFunctionResult['status']
+  detail: string
+  modelCalls: number
+  wallMs: number
+  rungs: SubFunctionRung[]
+}
+
+/** How much the cross-attempt carry-forward (`rungSpecKey`) actually saved on this task. */
+export interface CarryStats {
+  /** Rung found in the carry map under an IDENTICAL spec key — reused for 0 calls. */
+  hits: number
+  /** Rung present by NAME but under a different spec key — re-ground (this is the sibling-aware miss). */
+  stale: number
+  /** Rung never certified on a prior attempt. */
+  misses: number
+  /** Model calls the hits cost when they were first certified — the calls carry-forward avoided. */
+  callsAvoided: number
 }
 
 export interface SubFunctionResult {
@@ -377,6 +408,14 @@ export interface SubFunctionResult {
   rungs: SubFunctionRung[]
   modelCalls: number
   detail: string
+  /**
+   * EVERY plan attempt, in order — set only by `decomposeCodeBySubFunction` (the retry loop owns
+   * it; a nested/once call leaves it undefined). `rungs` above is the LAST attempt's, so without
+   * this a 3-attempt grind reports the rungs of whichever plan happened to die last.
+   */
+  attempts?: SubFunctionAttempt[]
+  /** Carry-forward accounting for this carve, summed across attempts. Reporting only. */
+  carryStats?: CarryStats
 }
 
 /**
@@ -528,7 +567,7 @@ export async function decomposeCodeBySubFunction(
    * invisible because no build typechecks this directory (tsconfig.json is `files: []` referencing
    * only app+node; tsconfig.server.json is referenced by nothing).
    */
-  carrySeed?: Map<string, { source: string; spec: string }>,
+  carrySeed?: Map<string, { source: string; spec: string; cost: number }>,
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})
   const planAttempts = Math.max(1, opts.planAttempts ?? 3)
@@ -536,10 +575,17 @@ export async function decomposeCodeBySubFunction(
   // Stop early on solve, decline (planner has nothing), or abort (reality budget/cancel).
   let last: SubFunctionResult | null = null
   let spentCalls = 0
+  // POST-MORTEM (2026-08-01b). `last` is overwritten every attempt, so a 3-attempt grind used to
+  // report only the rungs of whichever plan died LAST — the two diseases (a plan that dies before
+  // any rung is ground vs. a rung that grinds to the ceiling) were indistinguishable downstream.
+  // These accumulate across the whole retry loop and are attached to the returned result.
+  const attempts: SubFunctionAttempt[] = []
+  const carryStats: CarryStats = { hits: 0, stale: 0, misses: 0, callsAvoided: 0 }
+  const withTrace = (r: SubFunctionResult): SubFunctionResult => ({ ...r, attempts, carryStats })
   // Persists certified helpers across attempts so a retry re-grinds only the rung that failed,
   // not the easy ones it already got (the DP-fold scorecard showed a failed editDistance re-running
   // subCost/nextRow + a full editRow window every attempt → ~1200s). Reuse is exact-SPEC-gated.
-  const carry = new Map<string, { source: string; spec: string }>(carrySeed ?? [])
+  const carry = new Map<string, { source: string; spec: string; cost: number }>(carrySeed ?? [])
   // The shared wall-clock deadline is fixed HERE, above the retry loop, not inside the attempt.
   // Computed per attempt it would reset `planAttempts` times over, which is the same multiplication
   // it exists to stop — a 180s budget × 3 attempts × N rungs is how a capped task reached 955s.
@@ -562,13 +608,15 @@ export async function decomposeCodeBySubFunction(
       break
     }
     if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
-    const r = await runSubFunctionOnce(input, attemptOpts, proposerOverride, carry)
+    const attemptT0 = Date.now()
+    const r = await runSubFunctionOnce(input, attemptOpts, proposerOverride, carry, carryStats)
+    attempts.push({ attempt: attempt + 1, status: r.status, detail: r.detail, modelCalls: r.modelCalls, wallMs: Date.now() - attemptT0, rungs: r.rungs })
     spentCalls += r.modelCalls
     last = { ...r, modelCalls: spentCalls }
-    if (r.status === 'solved' || r.status === 'declined' || r.status === 'aborted') return last
+    if (r.status === 'solved' || r.status === 'declined' || r.status === 'aborted') return withTrace(last)
     // else decompose-failed → resample the plan and try again
   }
-  return last ?? { status: 'declined', code: null, helpers: [], rungs: [], modelCalls: spentCalls, detail: 'no plan attempts run' }
+  return withTrace(last ?? { status: 'declined', code: null, helpers: [], rungs: [], modelCalls: spentCalls, detail: 'no plan attempts run' })
 }
 
 /**
@@ -760,7 +808,14 @@ async function runSubFunctionOnce(
   // `certified: true` for a rung nothing ever checked against the spec it is being reused under.
   // Composition re-verify would still catch a wrong whole, so this is a reporting-honesty fix
   // rather than a soundness one — which is exactly the class of bug this repo refuses to keep.
-  carry?: Map<string, { source: string; spec: string }>,
+  carry?: Map<string, { source: string; spec: string; cost: number }>,
+  /**
+   * Carry-forward tally, OWNED BY THE CALLER so it survives across plan attempts and does not have
+   * to be threaded through this function's dozen-odd early returns (every one of which is a real
+   * failure path — adding a field to each is exactly the kind of edit that silently misses one).
+   * Mutated in place; defaulted so existing callers and tests are unaffected.
+   */
+  carryStats: CarryStats = { hits: 0, stale: 0, misses: 0, callsAvoided: 0 },
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})
   const proposer = proposerOverride ?? proposeCode
@@ -916,16 +971,25 @@ async function runSubFunctionOnce(
   if (probeOn && !opts.planner && !opts.preHelpers?.length && (opts.depth ?? 0) === 0 &&
       !hasDecomposeTemplate(input.nl ?? input.goal, input.entry) &&
       input.cases.length >= 2 && !opts.signal?.aborted) {
+    const probeT0 = Date.now()
     probe = await probeCarve(
       { goal: input.goal, entry: input.entry, cases: input.cases, context: input.context, timeoutMs: input.timeoutMs },
       helperPlan, proposer, { signal: opts.signal, emit: opts.emit },
     )
+    const probeWallMs = Date.now() - probeT0
     modelCalls += probe.modelCalls
+    // A probe that did NOT solve still spent calls and seconds, and pushed no rung — so a
+    // post-mortem summing the rungs used to come up short of the reported total with no line to
+    // blame. Record it as a non-certified rung; nothing branches on `rungs`, so this is pure
+    // accounting (the solved case pushes its own rung below and returns).
+    if (!(probe.status === 'solved' && probe.certified)) {
+      rungs.push({ name: `probe:${input.entry}`, status: 'stalled', bestScore: 0, modelCalls: probe.modelCalls, certified: false, wallMs: probeWallMs, phase: 'probe' })
+    }
     if (probe.status === 'solved' && probe.certified) {
       // Certified by verifyCode against the ORIGINAL gold cases — the same judge the composition
       // rung answers to. Reported as its own rung so a scorecard can tell a probe solve apart from
       // a carve solve rather than banking one as evidence for the other.
-      rungs.push({ name: `probe:${input.entry}`, status: 'solved', bestScore: 1, modelCalls: probe.modelCalls, certified: true })
+      rungs.push({ name: `probe:${input.entry}`, status: 'solved', bestScore: 1, modelCalls: probe.modelCalls, certified: true, wallMs: probeWallMs, phase: 'probe' })
       return { status: 'solved', code: probe.certified, helpers: [], rungs, modelCalls,
         detail: `carve probe drafted a composed module certified against all ${input.cases.length} original case(s) in ${modelCalls} model call(s) — no rung was ground` }
     }
@@ -1011,10 +1075,14 @@ async function runSubFunctionOnce(
     const carried = carry?.get(h.name)
     if (carried && carried.spec === rungSpecKey(h, siblingNames)) {
       helpers.push({ name: h.name, source: carried.source })
-      rungs.push({ name: h.name, status: 'solved', bestScore: 1, modelCalls: 0, certified: true })
-      emit({ type: 'thought', text: `subfn: helper \`${h.name}\` reused from a prior attempt (0 calls)` })
+      rungs.push({ name: h.name, status: 'solved', bestScore: 1, modelCalls: 0, certified: true, wallMs: 0, phase: 'carry' })
+      // `cost` is what this rung cost the FIRST time it certified — the calls the reuse just avoided.
+      // Counted rather than estimated, so the carry-forward payoff is a measurement and not a claim.
+      carryStats.hits++; carryStats.callsAvoided += carried.cost
+      emit({ type: 'thought', text: `subfn: helper \`${h.name}\` reused from a prior attempt (0 calls, saved ${carried.cost})` })
       continue
     }
+    if (carried) carryStats.stale++; else carryStats.misses++
     // CONTEXT HYGIENE (2026-07-22l): only ground a rung with the prior helpers it ACTUALLY calls
     // (its goal names them), not every certified helper. Live probe: foldMulDiv solves in 2 calls
     // in isolation but ANCHORED inside decomposition, because the unconditional prior-helper dump
@@ -1057,10 +1125,12 @@ async function runSubFunctionOnce(
       return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls,
         detail: `model-call budget exhausted before helper \`${h.name}\`` }
     }
+    const rungT0 = Date.now()
     const res = await iterate<string>(spec, rungProposer, verifyCode, withDeadline(withCallBudget({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(h.goal), ...rungBudget, signal: opts.signal, emit: opts.emit })))
+    const rungWallMs = Date.now() - rungT0
     modelCalls += res.modelCalls
     const certified = res.status === 'solved' && !!res.solution
-    rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified })
+    rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified, wallMs: rungWallMs, phase: 'helper' })
     if (!certified) {
       // RECURSIVE DECOMPOSITION. Flat iterate couldn't certify this helper — before collapsing the
       // whole plan, re-apply decomposition to the helper itself (its own goal + a fresh FM sub-plan).
@@ -1087,13 +1157,20 @@ async function runSubFunctionOnce(
           proposerOverride,
         )
         modelCalls += sub.modelCalls
-        rungs.push(...sub.rungs.map((r) => ({ ...r, name: `${h.name}/${r.name}` })))
+        rungs.push(...sub.rungs.map((r) => ({ ...r, name: `${h.name}/${r.name}`, phase: 'recursion' as const })))
+        // A recursion whose OWN plan died before grinding anything returns zero rungs, so the calls
+        // and seconds it spent used to vanish from the rung list entirely — and any reader asking
+        // "did the recursive path run?" got NO for a path that had just run and failed (observed
+        // live 2026-08-01b on intToRoman draw 1). Record the level itself when it left no trace.
+        if (!sub.rungs.length) {
+          rungs.push({ name: `${h.name}/recursion`, status: 'stalled', bestScore: 0, modelCalls: sub.modelCalls, certified: false, wallMs: 0, phase: 'recursion' })
+        }
         if (sub.status === 'solved' && sub.code) {
           // Keep the WHOLE recursive module (its sub-helpers + `h.name`), only stripping any prior
           // helper it redefined — extractOwnFunction would wrongly drop the sub-helpers it needs.
           const recSource = stripHelperRedefinitions(sub.code, helpers.map((x) => x.name))
           helpers.push({ name: h.name, source: recSource })
-          carry?.set(h.name, { source: recSource, spec: rungSpecKey(h, siblingNames) })
+          carry?.set(h.name, { source: recSource, spec: rungSpecKey(h, siblingNames), cost: res.modelCalls + sub.modelCalls })
           emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified via recursion (${modelCalls} calls so far)` })
           continue
         }
@@ -1107,7 +1184,7 @@ async function runSubFunctionOnce(
     const ownSource = extractOwnFunction(res.solution!.value, h.name)
     helpers.push({ name: h.name, source: ownSource })
     // Record for carry-forward: a later planAttempt with this identical rung reuses it at 0 cost.
-    carry?.set(h.name, { source: ownSource, spec: rungSpecKey(h, siblingNames) })
+    carry?.set(h.name, { source: ownSource, spec: rungSpecKey(h, siblingNames), cost: res.modelCalls })
     emit({ type: 'thought', text: `subfn: helper \`${h.name}\` certified (${modelCalls} calls so far)` })
   }
 
@@ -1137,10 +1214,12 @@ async function runSubFunctionOnce(
     verifyCode({ value: `${helperBlock}\n\n${stripHelperRedefinitions(cand.value, helperNames)}`, fingerprint: cand.fingerprint }, spec)
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
+  const composeT0 = Date.now()
   const composed = await iterate<string>(composeSpec, composeProposer, composingVerifier, withDeadline(withCallBudget({ mergeAcceptance: mergeCodeAcceptance, research: researchFor(input.nl ?? input.goal), ...opts.iterate, signal: opts.signal, emit: opts.emit })))
+  const composeWallMs = Date.now() - composeT0
   modelCalls += composed.modelCalls
   const composedCert = composed.status === 'solved' && !!composed.solution
-  rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert })
+  rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert, wallMs: composeWallMs, phase: 'compose' })
   if (!composedCert) {
     // COMPOSE-RUNG RECOVERY (2026-07-25, from the first live FM-general run). Recursion covered only
     // a stuck HELPER rung — but live, the weak planner's more common miss is the opposite shape: it
@@ -1167,7 +1246,8 @@ async function runSubFunctionOnce(
       const glueCarry = new Map(carry ?? [])
       for (const h of helpers) {
         const planned = rungPlan.find((p) => p.name === h.name)
-        if (planned) glueCarry.set(h.name, { source: h.source, spec: rungSpecKey(planned, siblingNames) })
+        // `cost` here is what the rung cost at THIS level; the glue level reuses it for free.
+        if (planned) glueCarry.set(h.name, { source: h.source, spec: rungSpecKey(planned, siblingNames), cost: rungs.find((r) => r.name === h.name)?.modelCalls ?? 0 })
       }
       const sub = await decomposeCodeBySubFunction(
         { ...input, goal: `${input.goal}\n\n${glueNote}`, context: [input.context, `${WEB_GROUND_MARK}\n${helperBlock}`].filter(Boolean).join('\n\n') || undefined },
@@ -1176,7 +1256,12 @@ async function runSubFunctionOnce(
         glueCarry,
       )
       modelCalls += sub.modelCalls
-      rungs.push(...sub.rungs.map((r) => ({ ...r, name: `glue/${r.name}` })))
+      rungs.push(...sub.rungs.map((r) => ({ ...r, name: `glue/${r.name}`, phase: 'glue' as const })))
+      // Same blind spot as the recursion level above: a glue re-decomposition whose sub-plan dies
+      // at planning leaves no rung, and its spend would go unattributed.
+      if (!sub.rungs.length) {
+        rungs.push({ name: 'glue/re-decompose', status: 'stalled', bestScore: 0, modelCalls: sub.modelCalls, certified: false, wallMs: 0, phase: 'glue' })
+      }
       if (sub.status === 'solved' && sub.code) {
         emit({ type: 'thought', text: `subfn: \`${input.entry}\` certified via glue re-decomposition (${modelCalls} calls so far)` })
         // The sub-solve's module is self-contained (its own helpers + the top fn) and was verified
