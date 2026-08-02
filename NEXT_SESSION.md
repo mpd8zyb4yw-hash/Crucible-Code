@@ -77,6 +77,11 @@ its own line and is NEVER pooled with a no-retrieval number. **It has not been r
   strips the wrapping quotes its goal says to keep (`#3 got ["x,y","z"]`, `#4 got ["he said
   hi","z"]`). That is a systematic model PRIOR, not stochastic failure, which is why the `mask`
   variant (prior-friendly goals, same two concerns) is the deciding experiment.
+- **`mask` variant: 0/6** — WORSE than `raw`. Prior-friendly goal TEXT does not help, because the
+  output is still unnatural: `protectQuotedCommas` must emit a control-character sentinel, and the
+  head returns the line untouched (or strips the quotes it was told to copy through) on every draw.
+  So the blocker is not how the goal is WORDED — it is what the helper is asked to RETURN. Hence
+  the `index` variant, where every helper returns a natural value (a number).
 - Stalled rungs park at `bestScore -2.00` — the score is the NEGATIVE FAILING-CASE COUNT, so that
   is "passes 3 of 5, fails 2", not broken code. `-1000` is a compile/load failure.
 
