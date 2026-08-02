@@ -28,6 +28,24 @@
 //     carve has and the failing one lacks, stated as a keyword test over the planner's own words.
 //     It is a HEURISTIC and is reported as one; the plans are printed in full underneath so the
 //     reader can overrule it.
+//
+// ⚠ READ THE PLANS, NOT THE SUMMARY LINE. Measured 2026-08-02: this probe's separation number is
+// NOT trustworthy as "can the planner carve this", and it moved from 0/10 to 8/10 on a one-word
+// change to the structure regex (`field` in it made "Remove double quotes from a field" match both
+// concerns; out of it, plans counted as separated). Both runs sampled the same kind of plan:
+//   splitCsvField      "Split a CSV field into its components."
+//   removeDoubleQuotes "Remove double quotes from a CSV field."
+// That is nominally two concerns and semantically vague — a FIELD does not split into components,
+// and whether `splitCsvField` inherits the quoting difficulty depends on the example I/O the
+// planner also invented, not on its wording. A keyword test cannot see that, so neither number
+// should be quoted as a planner capability figure.
+//
+// The trustworthy evidence about planner quality is BEHAVIOURAL and already exists: run the
+// hand-carve probe with HC_SUB_PLANNER=fm, which lets the real planner carve the sub-goals and
+// then GRINDS the result. On splitCsvLine that gave glue plans rejected as degenerate on the
+// failing draws, one helper-recursion plan that was genuinely reasonable (isDoubleQuote certified
+// in 1 call, skipQuotes stalled), and 1/6 whole-task. Use this probe to LOOK at plans cheaply;
+// use that one to decide anything.
 
 import { fmComplete, headModelName } from '../agent/fmReact'
 import { makeFmSubFunctionPlanner } from './fmPlanner'
@@ -62,7 +80,13 @@ const GOALS: PlanGoal[] = [
       { args: ['"x,y",z'], expected: ['x,y', 'z'] },
       { args: ['"he said ""hi""",z'], expected: ['he said "hi"', 'z'] },
     ],
-    structure: /split|separat|comma|field|token|part/i,
+    // `field` and `part` are DELIBERATELY ABSENT. They read like structure words and appear in
+    // both concerns — "Remove double quotes from a field" is the ESCAPING helper and nothing else,
+    // but a structure regex containing `field` matches it too, so it counts as neither and the
+    // separation metric reports 0/10 for a plan that did separate. Caught 2026-08-02 by reading the
+    // sampled plans under a summary line that disagreed with them. The structure marker has to be
+    // about SPLITTING specifically.
+    structure: /split|separat|comma|token|delimit|scan|boundar/i,
     escaping: /quote|escap|unescap|strip|doubl/i,
   },
 ]
@@ -88,7 +112,7 @@ async function main(): Promise<void> {
   // `template: false` — this rung matches no template and the point is what the PLANNER invents.
   const planner = makeFmSubFunctionPlanner({ template: false })
 
-  let declined = 0, rebaked = 0, degenerate = 0, nonComposing = 0, separated = 0, usable = 0
+  let declined = 0, rebaked = 0, degenerate = 0, nonComposing = 0, separated = 0, usable = 0, relieved = 0
   for (let i = 0; i < samples; i++) {
     const plan = await planner(g.goal, g.entry, g.cases.map(c => ({ args: c.args, expected: c.expected })))
     if (!plan || !plan.length) { declined++; console.log(`── sample ${i + 1}: DECLINED (no checkable helpers)\n`); continue }
@@ -109,6 +133,16 @@ async function main(): Promise<void> {
     const isSeparated = structOnly.length > 0 && escapeOnly.length > 0 &&
       structOnly[0].name !== escapeOnly[0].name
 
+    // SEPARATION IS NOT ENOUGH, and this is the distinction the first run of this probe missed.
+    // A plan can name a splitting helper and an unescaping helper — nominally separated, passing
+    // every production gate — while the splitting helper's goal is just the ORIGINAL TASK rewritten
+    // ("Split a CSV line into fields"). That helper inherits the entire difficulty, which is the
+    // thing measured at 0 certifications in 290 calls. A carve only helps if the split helper is
+    // strictly SIMPLER than the entry, and the cheapest observable proxy is whether its goal still
+    // mentions the quoting rule it is supposed to have been relieved of.
+    const splitOwnsQuoting = structOnly.some(h => g.escaping.test(h.goal))
+    const splitRestatesEntry = structOnly.some(h => /csv line|line of csv|into fields|into its fields/i.test(h.goal))
+
     if (isRebake) rebaked++
     if (isDegen) degenerate++
     if (isNonComp) nonComposing++
@@ -121,7 +155,10 @@ async function main(): Promise<void> {
       isNonComp ? 'NON-COMPOSING' : null,
       ok ? 'passes the gates' : null,
       isSeparated ? 'SEPARATES structure from escaping' : 'does NOT separate the two concerns',
+      splitRestatesEntry ? 'but the SPLIT helper restates the entry' : null,
+      splitOwnsQuoting ? 'but the SPLIT helper still owns the quoting rule' : null,
     ].filter(Boolean).join(' · ')}\n`)
+    if (isSeparated && !splitRestatesEntry && !splitOwnsQuoting) relieved++
   }
 
   console.log('── summary ─────────────────────────────────────')
@@ -130,13 +167,14 @@ async function main(): Promise<void> {
   console.log(`   degenerate (single helper)     ${degenerate}/${samples}`)
   console.log(`   non-composing                  ${nonComposing}/${samples}`)
   console.log(`   PASSES ALL PRODUCTION GATES    ${usable}/${samples}`)
-  console.log(`   separates structure/escaping   ${separated}/${samples}   <- the shape that certifies`)
-  console.log(`\n   ${separated === 0
+  console.log(`   separates structure/escaping   ${separated}/${samples}`)
+  console.log(`   ...AND the split helper is actually RELIEVED of the hard part   ${relieved}/${samples}   <- the shape that certifies`)
+  console.log(`\n   ${relieved === 0
     ? 'The planner never proposes the carve that works. Recursion cannot rescue this rung by resampling — ' +
       'the concern-separation has to come from somewhere other than an unaided planner draw.'
     : `The planner CAN propose the working shape (${separated}/${samples}). Recursion + enough attempts is a ` +
       'live path, and raising this rate is a prompt problem rather than a capability one.'}`)
-  console.log(JSON.stringify({ plan_quality_probe: true, entry: g.entry, samples, declined, rebaked, degenerate, nonComposing, usable, separated }))
+  console.log(JSON.stringify({ plan_quality_probe: true, entry: g.entry, samples, declined, rebaked, degenerate, nonComposing, usable, separated, relieved }))
 }
 
 main().catch(e => { console.error('plan-quality probe failed:', e); process.exit(1) })
