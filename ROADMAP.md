@@ -1956,6 +1956,36 @@ verifier-gated, so a hand plan can make the search easier but cannot make it lie
   prior-friendly goals; that A/B decides whether the fix is "smaller rungs" or "rungs the model
   already wants to write".
 
+### THE RESULT: CARVE WHERE EACH HELPER RETURNS A NATURAL VALUE
+
+Three hand carves of the IDENTICAL rung (`splitCsvLine`), identical 6-draw budget, identical two
+concerns separated the same way. The ONLY thing that varies is what the hard helper must RETURN:
+
+| carve   | the hard helper must return          | hard rung certified |
+|---------|--------------------------------------|---------------------|
+| `raw`   | fields with the wrapping quotes kept | **1/9**             |
+| `mask`  | a control-character sentinel         | **0/6**             |
+| `index` | a number (index of next comma)       | **6/6**             |
+
+`index` certified its hard rung on EVERY draw (1-15 calls, median ~8) and `unquoteCsvField` in 1
+call every time. So the "proposer ceiling" is not about task difficulty, rung size, or goal wording
+— all three carves separate the same concerns and two of them state the goal naturally. It is about
+whether the helper's RETURN VALUE is a representation people actually write down. A 1.5B will not
+emit a marked-up intermediate no matter what the goal says: `raw` fails by stripping the quotes it
+was told to keep (7 of 8 failures identical), `mask` by returning the line untouched.
+
+**This is a plan-quality property that is checkable BEFORE any grinding**, which makes it worth far
+more than this row: a carve whose helpers return numbers, plain fields or booleans is fillable; one
+that invents an intermediate is not. It belongs in the planner prompt and in a plan gate next to
+the degenerate/non-composing gates.
+
+**The blocker moved to COMPOSE (0/6, parked at `best -1.00`, i.e. 4 of 5 cases).** Two mechanisms,
+both visible in the signals: the composition RE-IMPLEMENTS `unquoteCsvField` instead of calling the
+certified one (`got ["he said hi","z"]` — the certified helper handles that case), and it mishandles
+the empty field (`"a,,b"` → `["a,","b"]`). NOTE: compose 0/6 here is a LOWER BOUND — the probe's
+planner returns null for sub-goals by design, so the glue re-decomposition fires and does nothing
+(`glue/re-decompose stalled 0c`). Production would hand that stage to the FM planner.
+
 **Failure-directed decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion re-planned a stuck
 rung on its ORIGINAL goal text — the text that produced the un-carvable plan — so it resampled the
 same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these checks
