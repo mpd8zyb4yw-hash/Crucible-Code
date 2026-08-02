@@ -1463,10 +1463,19 @@ async function runSubFunctionOnce(
   if (mechHelpers.length) {
     const mechT0 = Date.now()
     const candidates = composeCandidates(input.entry, mechHelpers)
+    // Keep the closest miss so a decline can EXPLAIN itself. "No mechanical composition fits" is
+    // uninterpretable on its own: it covers "the shapes are wrong for this task" (expected) and
+    // "the shapes are right but the helpers misbehave" (a much more serious finding about what
+    // certification means), and those need opposite responses.
+    let closest: { body: string; signals: string[] } | null = null
     for (const body of candidates) {
       if (opts.signal?.aborted) break
       const verdict = await composingVerifier({ value: body, fingerprint: `mech:${body.length}:${body.slice(0, 40)}` }, composeSpec)
-      if (!verdict.pass) continue
+      if (!verdict.pass) {
+        const sig = verdict.signals ?? []
+        if (!closest || sig.length < closest.signals.length) closest = { body, signals: sig }
+        continue
+      }
       const code = `${helperBlock}\n\n${body}`
       rungs.push({ name: `compose:${input.entry}`, status: 'solved', bestScore: 0, modelCalls: 0,
         certified: true, wallMs: Date.now() - mechT0, phase: 'compose' })
@@ -1474,7 +1483,10 @@ async function runSubFunctionOnce(
       return { status: 'solved', code, helpers, rungs, modelCalls, detail:
         `mechanical composition over ${mechHelpers.map(h => h.name).join(' + ')} (0 model calls); helpers certified by search` }
     }
-    emit({ type: 'thought', text: `subfn: no mechanical composition fits (${candidates.length} shape(s) tried, 0 calls) — asking the model` })
+    emit({ type: 'thought', text: `subfn: no mechanical composition fits (${candidates.length} shape(s) tried over ${mechHelpers.map(h => `${h.name}/${h.cases?.length ?? 0}c`).join(' + ')}, 0 calls) — asking the model` })
+    for (const sig of (closest?.signals ?? []).slice(0, 3)) {
+      emit({ type: 'thought', text: `subfn: mechanical closest-miss — ${sig.slice(0, 180)}` })
+    }
   }
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)

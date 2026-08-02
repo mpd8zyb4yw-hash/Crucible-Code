@@ -322,6 +322,18 @@ const CARVES: HandCarve[] = [
         { args: ['"ab",c', 0], expected: 4 },
         { args: ['a,"b,c",d', 2], expected: 7 },
         { args: ['a,b,c', 2], expected: 3 },
+        // THE ONES THAT MATTER, added 2026-08-02c after the first witness set said "GENERALISES"
+        // for a helper that was demonstrably wrong. The rule is not "think of edge cases" — it is
+        // **witness every call the COMPOSITION actually makes**: the scan starts at 0 on each gold
+        // line and then resumes just past each hit. The shown cases test `'a,,b'` only from=2, so a
+        // helper that skips consecutive commas passed all 6 shown cases AND the 6 witnesses above,
+        // and then produced `["a,","b"]` in composition — `nextUnquotedComma('a,,b', 0)` returned 2
+        // instead of 1. A held-out set that misses the inputs the caller will use is not a
+        // generalisation test, it is a second opinion from the same blind spot.
+        { args: ['a,,b', 0], expected: 1 },
+        { args: ['a,,b', 3], expected: -1 },
+        { args: ['"x,y",z', 6], expected: -1 },
+        { args: ['"he said ""hi""",z', 0], expected: 16 },
       ] },
       { name: 'unquoteCsvField', witnesses: [
         { args: ['"a"'], expected: 'a' },
