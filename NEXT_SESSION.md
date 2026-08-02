@@ -81,6 +81,27 @@ the empty field (`"a,,b"` → `["a,","b"]`). NOTE: compose 0/6 here is a LOWER B
 planner returns null for sub-goals by design, so the glue re-decomposition fires and does nothing
 (`glue/re-decompose stalled 0c`). Production would hand that stage to the FM planner.
 
+### THE FIRST INTERVENTION THAT CONVERTS: signal ORDER, not signal content (2/6 vs 0/6)
+
+| `index` carve, 6 draws, same budget/head/cases        | whole task | hard rung | compose |
+|--------------------------------------------------------|-----------|-----------|---------|
+| baseline                                                | 0/6       | 6/6       | 0/6     |
+| + ignored-helper feedback (signal appended LAST)        | 0/6       | 6/6       | 0/6     |
+| + the same signal moved FIRST                           | **2/6**   | 6/6       | **2/6** |
+
+The feedback TEXT was already there and changed nothing. What changed is that `codeProposer.ts`
+detects anchoring by comparing `signals[0]` across attempts and escalates diversity when the
+IDENTICAL signal repeats (temperature steps, structural rotation, then a clean-slate reframe that
+stops echoing the anchored code back). Appended last, "you ignored the helpers" was invisible to
+that detector, which was comparing case-failure text that varies between attempts — so a model
+re-implementing the same helper the same wrong way in 6 of 6 draws never registered as anchored.
+Moving the stable signal to position 0 routes an existing, well-evidenced mechanism onto the
+failure that is actually repeating. It costs no extra model calls.
+
+**Caveat, stated because it matters: 2/6 vs 0/6 is suggestive, not significant.** It is 12 draws
+total. The claim worth carrying forward is the mechanism (a repeating failure must be the FIRST
+signal or the anti-anchor escalation cannot see it), not the rate. Re-measure before quoting it.
+
 ### COMPOSE IS WHERE IT DIES NOW — and telling the model does not help (0/6, twice)
 
 With the `index` carve the helpers certify 6/6 and the composition certifies 0/6. Two things are

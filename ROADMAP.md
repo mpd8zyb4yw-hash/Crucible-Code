@@ -2076,6 +2076,27 @@ Two efficiency defects were found and fixed by watching it run: the corpus was r
 rung of every attempt (3.2-5.2s each, a dozen-plus times per draw, identical result — now memoised
 per query), and the ranking preferred 500kB bundles until density-over-volume was added.
 
+### THE FIRST INTERVENTION THAT CONVERTS: signal ORDER, not signal content (2/6 vs 0/6)
+
+| `index` carve, 6 draws, same budget/head/cases        | whole task | hard rung | compose |
+|--------------------------------------------------------|-----------|-----------|---------|
+| baseline                                                | 0/6       | 6/6       | 0/6     |
+| + ignored-helper feedback (signal appended LAST)        | 0/6       | 6/6       | 0/6     |
+| + the same signal moved FIRST                           | **2/6**   | 6/6       | **2/6** |
+
+The feedback TEXT was already there and changed nothing. What changed is that `codeProposer.ts`
+detects anchoring by comparing `signals[0]` across attempts and escalates diversity when the
+IDENTICAL signal repeats (temperature steps, structural rotation, then a clean-slate reframe that
+stops echoing the anchored code back). Appended last, "you ignored the helpers" was invisible to
+that detector, which was comparing case-failure text that varies between attempts — so a model
+re-implementing the same helper the same wrong way in 6 of 6 draws never registered as anchored.
+Moving the stable signal to position 0 routes an existing, well-evidenced mechanism onto the
+failure that is actually repeating. It costs no extra model calls.
+
+**Caveat, stated because it matters: 2/6 vs 0/6 is suggestive, not significant.** It is 12 draws
+total. The claim worth carrying forward is the mechanism (a repeating failure must be the FIRST
+signal or the anti-anchor escalation cannot see it), not the rate. Re-measure before quoting it.
+
 **Failure-directed decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion re-planned a stuck
 rung on its ORIGINAL goal text — the text that produced the un-carvable plan — so it resampled the
 same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these checks
