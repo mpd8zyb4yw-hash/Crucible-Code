@@ -4,6 +4,11 @@
 //   HC_ENTRY=csvSelect     which hand carve to run (see CARVES below). Default csvSelect.
 //   HC_RUNS=3              draws (default 3 — one draw of a stochastic head is an anecdote).
 //   HC_WALL_MS=300000      per-draw wall ceiling, matching the scorecard's. 0 = uncapped.
+//   HC_VARIANT=index       which carve of the same task (raw | mask | index — see CARVES).
+//   HC_SUB_PLANNER=fm      plan SUB-goals with the real FM planner, so glue/recursion run as in
+//                          production. Default: decline below the top carve (cleaner attribution,
+//                          but compose failures are then a LOWER BOUND).
+//   HC_RETRIEVAL=1         put the offline corpus retriever in front of every rung's proposer.
 //   HC_RUNG_EPOCHS=10      per-rung epoch budget (default: decomposePerRungBudget's, i.e. 10).
 //   HC_RUNG_CALLS=64       per-rung call purse (default: decomposePerRungBudget's, i.e. 64).
 //     These two exist to answer the ONE alternative reading of a stalled hard rung: that the purse,
@@ -57,7 +62,7 @@ import { join } from 'node:path'
 
 import { fmComplete, headModelName } from '../agent/fmReact'
 import { decomposeCodeBySubFunction, type SubFunctionSpec, type SubFunctionPlanner } from './solve'
-import { decomposePerRungBudget, hasDecomposeTemplate } from './fmPlanner'
+import { decomposePerRungBudget, hasDecomposeTemplate, makeFmSubFunctionPlanner } from './fmPlanner'
 import { TASKS, HARD_TASKS, type GeneralProbe } from './__decompose_general_scorecard_live'
 import { makeLocalCorpusGround, describeCorpus } from './localCorpusGround'
 
@@ -419,12 +424,27 @@ async function main(): Promise<void> {
 
   // The hand plan, injected. Keyed on the TOP entry: recursion and the glue re-decomposition
   // re-invoke this same planner with a SUB-goal, and handing them the top-level carve again would
-  // be a plan that does not describe their problem. Returning null makes them decline cheaply.
-  const planner: SubFunctionPlanner = async (inp) =>
-    inp.entry === carve.entry ? carve.helpers.map(h => ({ ...h })) : null
+  // be a plan that does not describe their problem.
+  //
+  // What happens at a SUB-goal is a real experimental choice, not a detail:
+  //   default        — return null, so those levels decline cheaply and the measurement is ONLY the
+  //                    hand carve. Clean attribution, but it means compose failures are a LOWER
+  //                    BOUND: the `index` baseline shows `glue/re-decompose stalled 0c`, i.e. the
+  //                    recovery path firing and doing nothing where production would re-plan.
+  //   HC_SUB_PLANNER=fm — fall back to the REAL FM sub-function planner below the top level, so the
+  //                    glue and recursion stages run exactly as they do in production while the top
+  //                    carve stays hand-written. That is the honest way to ask "does the existing
+  //                    machinery close the last gap", which the default run cannot answer.
+  const subPlanner = process.env.HC_SUB_PLANNER === 'fm' ? makeFmSubFunctionPlanner() : null
+  const planner: SubFunctionPlanner = async (inp, signal) => {
+    if (inp.entry === carve.entry) return carve.helpers.map(h => ({ ...h }))
+    if (!subPlanner) return null
+    return subPlanner(inp.goal, inp.entry, inp.cases.map(c => ({ args: c.args, expected: c.expected })), signal)
+  }
 
   console.log(`# HAND-CARVE PROBE — ${row.label}${carve.variant ? `  [variant: ${carve.variant}]` : ''}`)
   console.log(`# ${carve.helpers.length} hand-written rung(s): ${carve.helpers.map(h => h.name).join(', ')}  (hard rung: ${carve.hardRung})`)
+  if (subPlanner) console.log('# sub-goals below the top carve are planned by the REAL FM planner (glue/recursion run as in production)')
   console.log(`# ${runs} draw(s) · wall ceiling ${wallMs > 0 ? s(wallMs) : 'none'} · per-rung purse ` +
     `${iterate.globalModelCalls}c / ${iterate.maxEpochs} epochs / ${s(iterate.wallClockMs)}` +
     (iterate.maxEpochs !== base.maxEpochs || iterate.globalModelCalls !== base.globalModelCalls
@@ -506,7 +526,7 @@ async function main(): Promise<void> {
           : `MIXED — hard rung ${hard}/${runs}, whole task ${solved}/${runs}. The carve is reachable but not reliably; ` +
             `read the per-draw traces above before attributing.`
   console.log(`\n   ${verdict}`)
-  console.log(JSON.stringify({ handcarve_probe: true, entry, variant: carve.variant ?? null, runs, wallMs, retrieval: retrievalOn, solved, hardRungCertified: hard, composeCertified: comp }))
+  console.log(JSON.stringify({ handcarve_probe: true, entry, variant: carve.variant ?? null, subPlanner: subPlanner ? 'fm' : null, runs, wallMs, retrieval: retrievalOn, solved, hardRungCertified: hard, composeCertified: comp }))
 }
 
 main().catch(e => { console.error('hand-carve probe failed:', e); process.exit(1) })
