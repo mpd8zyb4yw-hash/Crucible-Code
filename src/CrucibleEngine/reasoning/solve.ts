@@ -600,14 +600,56 @@ export async function decomposeCodeBySubFunction(
   const attemptOpts = outerBudget === undefined
     ? deadlineOpts
     : { ...deadlineOpts, budget: { left: () => Math.max(0, outerBudget.left() - spentCalls) } }
-  for (let attempt = 0; attempt < planAttempts; attempt++) {
+  // BUDGET-AWARE RESAMPLING (2026-08-02). `planAttempts` was a flat 3 and blind to the budget, so
+  // a carve that died on a PLAN-QUALITY gate quit while holding almost its entire allowance: on the
+  // 900s hard-set run `numberToWords` returned in 3 calls / 7 SECONDS with 737 seconds unspent, and
+  // `csvSelect` quit with 562s left. Plan-gate deaths are the cheap failures (~1 call, ~2s) — they
+  // are precisely the ones there is room to retry, and the tier-3 reserve exists to buy that room.
+  // Stopping at 3 handed the clock back unused, which is the same starvation the reserve was built
+  // to end, one level down.
+  //
+  // `planAttempts` is now a FLOOR, not a cap: always take it, then keep resampling while a further
+  // attempt plausibly FITS. "Fits" is measured against what attempts have actually cost so far
+  // (mean ms and mean calls), not a guess — an attempt that grinds rungs is expensive and will stop
+  // the loop on its own, while a stream of 2-second gate deaths keeps going. `maxPlanAttempts` is a
+  // runaway backstop, not a budget: the budget checks below are what normally end the loop.
+  //
+  // Soundness is unchanged. Every extra iteration is another `runSubFunctionOnce`, whose only
+  // outcomes are still solve / decline / abort / decompose-failed, and a solve is certified by the
+  // same gate as before. More attempts can only find MORE certified carves, never admit an uncertified
+  // one — this spends budget, it does not weaken verification.
+  const maxPlanAttempts = Math.max(planAttempts, Number(process.env.CRUCIBLE_MAX_PLAN_ATTEMPTS || 24))
+  const retryDeadline = deadlineOpts.iterate?.deadline
+  const msLeft = (): number => (retryDeadline === undefined ? Infinity : Math.max(0, retryDeadline - Date.now()))
+  const callsLeft = (): number => (outerBudget === undefined ? Infinity : Math.max(0, outerBudget.left() - spentCalls))
+  const retryLoopT0 = Date.now()
+  /**
+   * Is there room for ANOTHER attempt beyond the floor? Both axes must clear, and each is compared
+   * against the MEAN cost of the attempts already made. Unbounded axes (no deadline / no ledger)
+   * are Infinity and never block — preserving the pre-2026-08-02 behaviour for callers that set
+   * neither, except that those callers now also get the extra attempts.
+   */
+  const anotherAttemptFits = (done: number): boolean => {
+    if (done >= maxPlanAttempts) return false
+    if (msLeft() === Infinity && callsLeft() === Infinity) return true
+    const meanMs = (Date.now() - retryLoopT0) / Math.max(1, done)
+    const meanCalls = spentCalls / Math.max(1, done)
+    return msLeft() > meanMs && callsLeft() > meanCalls
+  }
+  for (let attempt = 0; attempt < planAttempts || anotherAttemptFits(attempt); attempt++) {
     if (opts.signal?.aborted) break
     // Out of calls mid-retry: stop rather than start an attempt that can only abstain.
     if (outerBudget !== undefined && outerBudget.left() - spentCalls <= 0) {
       emit({ type: 'thought', text: 'subfn: model-call budget exhausted — no further plan attempts' })
       break
     }
-    if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1}/${planAttempts} (prior plan collapsed)` })
+    // Out of CLOCK mid-retry, for the same reason. Without this the loop starts an attempt it
+    // cannot finish and the whole thing is billed as an abort.
+    if (msLeft() <= 0) {
+      emit({ type: 'thought', text: 'subfn: wall clock exhausted — no further plan attempts' })
+      break
+    }
+    if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1} (floor ${planAttempts}, prior plan collapsed)` })
     const attemptT0 = Date.now()
     const r = await runSubFunctionOnce(input, attemptOpts, proposerOverride, carry, carryStats)
     attempts.push({ attempt: attempt + 1, status: r.status, detail: r.detail, modelCalls: r.modelCalls, wallMs: Date.now() - attemptT0, rungs: r.rungs })
