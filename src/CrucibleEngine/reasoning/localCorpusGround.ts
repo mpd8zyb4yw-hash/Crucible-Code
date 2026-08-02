@@ -185,13 +185,25 @@ export function makeLocalCorpusGround(opts: LocalCorpusOpts = {}): (query: strin
   const maxBytes = opts.maxBytesPerFile ?? 24_000
   const maxScanned = opts.maxFilesScanned ?? 20_000
   const emit = opts.emit ?? (() => {})
+  // MEMOISE BY QUERY. The scan is deterministic over a tree that does not change during a run, and
+  // the live retrieval arm re-ran it for every rung of every plan attempt — measured at 3.2-5.2s a
+  // time, a dozen-plus times per draw, all returning the identical five files. Caching is free
+  // correctness-wise (same input, same output) and gives the rung its seconds back. Scoped to this
+  // retriever instance, so a caller that wants a fresh scan makes a fresh one.
+  const cache = new Map<string, string[] | null>()
   return async (query: string) => {
+    const cached = cache.get(query)
+    if (cached !== undefined) {
+      emit({ type: 'thought', text: `local corpus: reusing the cached scan for this query (${cached ? cached.length : 0} file(s))` })
+      return cached
+    }
     const keywords = queryKeywords(query)
-    if (keywords.length < 2) { emit({ type: 'thought', text: 'local corpus: query has too few keywords to rank on' }); return null }
+    if (keywords.length < 2) { emit({ type: 'thought', text: 'local corpus: query has too few keywords to rank on' }); cache.set(query, null); return null }
     const t0 = Date.now()
     const hits = scan(root, keywords, maxScanned)
     if (!hits.length) {
       emit({ type: 'thought', text: `local corpus: no file matched ${keywords.join('/')} (${Date.now() - t0}ms)` })
+      cache.set(query, null)
       return null
     }
     const top = hits.slice(0, maxFiles)
@@ -202,7 +214,9 @@ export function makeLocalCorpusGround(opts: LocalCorpusOpts = {}): (query: strin
     for (const h of top) {
       try { blobs.push(readFileSync(h.path, 'utf8').slice(0, maxBytes)) } catch { /* vanished mid-scan */ }
     }
-    return blobs.length ? blobs : null
+    const out = blobs.length ? blobs : null
+    cache.set(query, out)
+    return out
   }
 }
 
