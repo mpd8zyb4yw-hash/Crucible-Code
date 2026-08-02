@@ -1933,6 +1933,58 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-02b (PROBLEM A answered: the planner is exonerated, rung GRANULARITY is the lever)
+
+**The hand-carve probe** (`npm run handcarve:probe`, `__handcarve_probe_live.ts`). The 0/12 hard-set
+aggregate was consistent with two mutually exclusive stories — a planner-side gap or a proposer
+ceiling — and no existing output separated them. This probe removes the planner from the experiment
+by injecting a HUMAN-written decomposition through `opts.planner`: correct helper names, goals and
+witnessed example I/O, handed over for free. Everything downstream is unchanged and still fully
+verifier-gated, so a hand plan can make the search easier but cannot make it lie.
+
+- **`csvSelect` / `splitCsvLine`: 0 certifications in 290 model calls across 12 independent
+  attempts**, at a 64c/10-epoch purse AND at a 250c/40-epoch/900s purse (126c/803s and 164c/788s).
+  The trivial sibling `csvLines` certified in ONE call every draw. The purse was never the
+  constraint, and **no `fmPlanner.ts` prompt work recovers this row — that line of work is retired.**
+- **The same rung certified in 12 calls / 47s when carved ONE LEVEL FINER**: `splitCsvRaw`
+  (quote-aware split, unescapes nothing) + `unquoteCsvField` (unescapes one field, splits nothing).
+  The ceiling is not "a 1.5B cannot parse quoted CSV" but "cannot parse quoted CSV WHILE ALSO
+  splitting". Rung SIZE is the lever and `solve.ts` recursion is already the machinery for it.
+- Not banked as a rate: 1 of 3 on the first pass, worse after. And the `raw` carve is partly
+  measuring the SPEC — its dominant live failure is the head stripping quotes the goal says to keep,
+  which is anti-prior. A `mask` variant (HC_VARIANT=mask) separates the identical concerns with
+  prior-friendly goals; that A/B decides whether the fix is "smaller rungs" or "rungs the model
+  already wants to write".
+
+**Failure-directed decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion re-planned a stuck
+rung on its ORIGINAL goal text — the text that produced the un-carvable plan — so it resampled the
+same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these checks
+failed; propose helpers that SEPARATE those concerns"), domain-neutral so it generalises past CSV.
+Prompt text only: cases and verification untouched, byte-identical behaviour with no signals.
+Wired and unit-tested (9 assertions); **not yet measured live.**
+
+**The retrieval lever was never switched on, and could not have been.** `webGround` is supplied in
+exactly two places, both stubbed unit benches — so `withRetrieval` has been an IDENTITY FUNCTION on
+every live number this repo has ever recorded. Worse, every decompose/ladder-facing signature
+narrowed the retriever type to `Promise<string | null>` while `retrievalProposer.ts` already accepted
+`string | string[] | null`, so the carve path structurally could not pass per-file blobs. Fixed with
+a single exported `WebGround`, plus `localCorpusGround.ts` — an OFFLINE retriever over the installed
+packages (doctrine allows the internet as a DATA source; only external model API calls are banned).
+Not the `_learned/` trap: pre-existing, task-independent, uncurated, and MEASURED to hold no CSV
+parser (705 packages, 0 matches — the selfcheck prints it). Not yet run live.
+
+**Instrumentation, and two measurement bugs caught in it.** `SubFunctionRung.bestSignals` now records
+which cases the best candidate failed (a stalled rung parks at `bestScore -2` = "passes 3 of 5",
+since the score is the negative failing-case count; `-1000` is a compile failure) — that is the whole
+diagnosis for a stall and it was previously invisible. The two bugs, both of which would have
+produced confident wrong answers: scoring certification off `rungs` (only the LAST plan attempt,
+since `planAttempts` became a floor) instead of across `attempts`; and measuring a hand-written carve
+without first verifying it SATISFIABLE against reference implementations.
+
+New: `npm run handcarve:probe`, `planquality:probe`, `localcorpus:selfcheck`,
+`faildirected:selfcheck`. Verified: typecheck:engine:core clean, decompose 119/119, retrieval 28/28,
+code-research 22/22, local corpus 12/12, failure-directed 9/9, hygiene 5/5.
+
 ### 2026-08-02 (the reserve is VINDICATED and irrelevant: tier 3 is not starved, and 3x the clock converts nothing)
 
 **Headline: the hard set is 0/12 at a 300s ceiling and 0/4 at a 900s ceiling, and at 900s every

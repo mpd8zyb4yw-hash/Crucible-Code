@@ -17,36 +17,74 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02 (the reserve is vindicated and irrelevant) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02b (PROBLEM A is answered: it is rung GRANULARITY) (REPLACE THIS EVERY SESSION)
 
-> **TOP OPEN ITEM 1 of 2026-08-01c is CLOSED, answer "no": tier 3 is NOT starved.** The hard set is
-> **0/12 at a 300s ceiling and 0/4 at 900s**, and at 900s all four tasks quit with clock LEFT
-> (737s, 163s, 325s, 562s). Neither the wall clock nor the call ledger is the binding constraint.
-> The 2026-08-01 reserve works exactly as designed and buys nothing.
+> **PROBLEM A IS ANSWERED, and the planner is exonerated.** The `splitCsv` rung was handed to the
+> head as a HAND-WRITTEN carve — correct helper names, goals and witnessed example I/O, injected
+> through `opts.planner` — and it still never certified: **0 certifications in 290 model calls
+> across 12 independent attempts**, at a 64c/10-epoch purse AND at a 250c/40-epoch/900s purse.
+> Its trivial sibling `csvLines` certified in ONE call every draw. No `fmPlanner.ts` prompt work
+> recovers this row; that line of work is RETIRED.
 >
-> **THE FIRST THING THE NEXT SESSION SHOULD DO** is pick ONE of the two now-separated problems
-> below and fix it — do NOT re-run the hard set for its own sake; it has been measured twice at two
-> ceilings and both agree. The aggregate `0/12` was hiding two independent, separately fixable
-> failures:
+> **The same rung then certified in 12 calls / 47s when carved ONE LEVEL FINER** — `splitCsvRaw`
+> (quote-aware split, unescapes nothing) + `unquoteCsvField` (unescapes one field, splits nothing).
+> So the ceiling is not "a 1.5B cannot parse quoted CSV", it is "a 1.5B cannot parse quoted CSV
+> WHILE ALSO splitting". **Rung SIZE is the lever, and `solve.ts` recursion is already the
+> machinery** — what it lacked was a sub-plan that separates the concerns.
 >
-> **PROBLEM A — one un-certifiable rung shape (10 of 12 deaths).** Every "did not certify" helper is
-> the same kind of thing: `splitCsv`, `splitSeconds`, `splitIntoParts`, `wrapText`, `extractField`,
-> `secondsToDays` — *split a structured string/number into parts*. The control arm stalls on the
-> same names (`splitCsvLine`, `splitCSV`, `splitString`). This is ONE capability gap, not four task
-> failures, and it is the highest-value thing in the repo to attack. Start with `npm run
-> rung:postmortem` on `csvSelect`/`splitCsv`.
+> **Do not bank the 12-call solve as a rate.** It is 1 of 3 on the first pass and the follow-up
+> draws are worse; the honest figure is nearer 1-in-9. And the live failure signals say the `raw`
+> carve is partly measuring MY spec rather than the head: its dominant failure is the head
+> STRIPPING the quotes the goal explicitly says to keep (`got ["x,y","z"], expected
+> ["\"x,y\"","z"]`, repeatedly). That requirement is load-bearing for composition and anti-prior.
+> A `mask` variant (HC_VARIANT=mask) separates the identical concerns using goals that match model
+> priors; **running that A/B is the first thing to do next**, because `mask >> raw` and `mask ~ raw`
+> point at different fixes.
 >
-> **PROBLEM B — `planAttempts` is a hard-coded 3 and is not clock-aware** (`solve.ts:573`). On
-> planner-gate deaths tier 3 makes three cheap attempts and quits regardless of budget:
-> `numberToWords` at the 900s ceiling died in **3 calls / 7 seconds holding 737 seconds**, and
-> `csvSelect` quit with 562s left. The reserve buys clock the resample loop then discards. Making
-> the loop resample while clock+calls remain is a small, well-evidenced change.
->
-> **DO NOT re-derive these two facts** (they cost a session each):
-> - `reserve 0c` on every draw is CORRECT, not a bug — the scorecard bounds the ladder with an
->   AbortController and no `maxModelCalls`, so `ladderReserve` returns 0 on the call axis by design.
-> - `purse` is PER-RUNG, not tier 3's total. Tier 3 spends multiples of it (99c at 300s, 212c at
->   900s). Now printed as `[spent Nc, purse/rung Nc, …]`.
+> **NEW MECHANISM, WIRED AND UNIT-TESTED BUT NOT YET MEASURED LIVE: failure-directed
+> decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion used to re-plan a stuck rung on
+> its ORIGINAL goal text — the same text that produced the un-carvable plan — so it resampled the
+> same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these
+> checks failed; propose helpers that SEPARATE those concerns"). Domain-neutral by design (names no
+> CSV, no quotes) so it generalises to the hard set's whole recurring shape. Prompt text only —
+> cases and verification are untouched. **It has not yet moved a live number; measuring it on the
+> hard set is the highest-value experiment outstanding.**
+
+### ⚠ THE RETRIEVAL LEVER WAS NEVER SWITCHED ON — and could not have been
+`webGround` is supplied in exactly two places in this repo, both stubbed unit benches. The
+scorecard, the post-mortem and every hard-set draw ever recorded pass none, so `withRetrieval`
+(`solve.ts`) has been an IDENTITY FUNCTION on every live number here. Worse, every
+decompose/ladder-facing signature narrowed the retriever type to `Promise<string | null>` while
+`retrievalProposer.ts` already accepted `string | string[] | null` — so the carve path, the one
+path built around retrieval, structurally COULD NOT pass per-file blobs (which is what keeps
+same-named alternate implementations as distinct candidates). Both fixed: a single exported
+`WebGround`, and `localCorpusGround.ts`, an OFFLINE retriever over the installed packages.
+Doctrine permits it — only external paid/rate-limited MODEL API calls are banned, the internet is
+explicitly allowed as a data source. It is not the `_learned/` self-memorization trap: the corpus
+is pre-existing, task-independent, uncurated, and **measured** to contain no CSV parser (705
+packages, 0 matching /csv|papa|tsv|delimit/ — the selfcheck prints it). A retrieval arm still gets
+its own line and is NEVER pooled with a no-retrieval number. **It has not been run live yet.**
+
+### THE NUMBERS (measured 2026-08-02b, head confirmed `qwen2.5-1.5b`, preflight ok, NO_DISTILL)
+- **Hand carve of `csvSelect`, 300s / 64c-10-epoch purse, 3 draws:** whole task 0/3, hard rung
+  `splitCsvLine` 0/3 (stalled 19-27c, 99-131s each), compose 0/3, `csvLines` 1 call every draw.
+- **Same, fat purse (250c / 40 epochs / 900s), 2 draws:** 0/2 — 126c/803s over 5 attempts and
+  164c/788s over 7. The purse was never the constraint.
+- **Finer carve (`raw` variant), 3 draws:** 1/3 — the solve was 12 calls / 46.7s
+  (splitCsvRaw 5c, unquoteCsvField 1c, compose 6c). 6 more draws in flight.
+- Stalled rungs park at `bestScore -2.00` — the score is the NEGATIVE FAILING-CASE COUNT, so that
+  is "passes 3 of 5, fails 2", not broken code. `-1000` is a compile/load failure.
+
+### READ THIS BEFORE TRUSTING A PROBE YOU WRITE
+Two measurement bugs were caught in this session's own instrumentation, both of which would have
+produced confident wrong answers:
+- Scoring certification off `SubFunctionResult.rungs` is WRONG. Since budget-aware resampling,
+  `planAttempts` is a FLOOR and the loop re-runs the carve; `rungs` is only whichever attempt died
+  LAST, so a rung that certified once and was carried after reads as "never certified". Score
+  across `attempts`.
+- A hand-written carve must be verified SATISFIABLE before it is measured. The `mask` variant's
+  rungs and composition were run against reference implementations first; an unsatisfiable carve
+  produces a 0/N that reads as a model ceiling and is really a typo in the expected values.
 
 ### ⚠ TRAP 5 — a misconfigured head is scored as CAPABILITY failure (cost two full runs, 2026-08-02)
 A bad head does not fail loudly. It returns EMPTY completions, `search()` reports `on-device model
