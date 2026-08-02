@@ -106,6 +106,46 @@ re-decomposition is precisely "the composition is too hard, so decompose the glu
 no-opping in every probe run (`glue/re-decompose stalled 0c`) because the probe declines sub-goals
 by design. `HC_SUB_PLANNER=fm` runs it for real.
 
+### THE FULL splitCsvLine LEDGER (2026-08-02b) — 33 draws, 2 solves
+
+Every number below is the SAME rung with the SAME head, cases and verifier. Read the middle column,
+not the last one: rung certification is where the carve shape shows up.
+
+| arm                              | whole task | hard rung | compose |
+|----------------------------------|-----------|-----------|---------|
+| coarse hand carve (as `csvSelect` rung) | 0/12 (290 calls) | 0/12 | —      |
+| `raw`   (quotes retained)        | 1/9       | 1/9       | 1/9     |
+| `mask`  (sentinel char)          | 0/6       | 0/6       | 0/6     |
+| `index` (returns a number)       | 0/6       | **6/6**   | 0/6     |
+| `index` + ignored-helper feedback| 0/6       | **6/6**   | 0/6     |
+| `index` + real FM sub-planner    | 1/6       | **5/6**   | 1/6     |
+
+**What is settled.** The carve's INTERMEDIATE REPRESENTATION decides whether a rung is fillable:
+a helper returning a number certifies ~100% of the time, the same work behind a marked-up
+intermediate certifies ~0%. That is a plan property checkable before any model call.
+
+**What is now the blocker.** Composition. It ignored a certified helper in 6 of 6 draws, and
+telling it so in the prompt changed nothing (0/6, twice, signal verified reaching the prompt via
+`codeProposer.ts`). A composition that ignores its helpers IS the coarse task — the 0-in-290 one —
+so the carve's whole benefit is discarded at the last step.
+
+**Three interventions measured, none converts it:** ignored-helper feedback (0/6), the real FM glue
+re-decomposition (1/6, and the one solve came from compose succeeding DIRECTLY, not from glue —
+every failing draw had its glue plan rejected as "no helper distinct from the top-level function"),
+and a 250c/40-epoch/900s purse on the coarse rung (0/2).
+
+**The pattern across every result today: this head's PRIORS BEAT ITS INSTRUCTIONS.** It strips
+quotes it is told to keep, refuses to emit a sentinel it is told to emit, and re-implements helpers
+it is told to call. Any fix that consists of asking more clearly should be assumed dead on arrival;
+the lever has to make the desired shape structurally unavoidable (hole-filling / skeleton compose,
+or searching the composition instead of generating it) or supply the idiom (retrieval).
+
+**Candidate mechanism, not yet built:** `synth/proposers/enumerative.ts` is a bottom-up PBE search
+over a typed DSL with ZERO model inference. Seeding its pool with the CERTIFIED HELPERS as
+primitives would compose them without the model — exactly doctrine's "the model only fills leaves".
+Honest caveat: this composition needs a LOOP, and the current expression DSL (maxSize 4) has no
+fold, so it would likely return `none` on this row. The seam (`extraOps`) does not exist yet.
+
 ### ⚠ THE RETRIEVAL LEVER WAS NEVER SWITCHED ON — and could not have been
 `webGround` is supplied in exactly two places in this repo, both stubbed unit benches. The
 scorecard, the post-mortem and every hard-set draw ever recorded pass none, so `withRetrieval`
