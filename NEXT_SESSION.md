@@ -17,43 +17,56 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02d (root cause found AND fixed; 8/12 vs 3/30) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02e (root cause found; fix works on one shape, does NOT transfer) (REPLACE THIS EVERY SESSION)
 
-> **THE HEADLINE, and the only claim here that survived replication + a significance test:**
-> a rung certifying does NOT mean the search found the intended function. **5 of 12 certified
-> helpers failed held-out cases** — `nextUnquotedComma` certified 6/6 against its own examples and
-> was wrong in five of six draws, always the same defect (`('a,,b', 0)` returns 2, not 1). Its shown
-> cases test `'a,,b'` only from=2, so nothing in the loop could see it.
+> **START HERE. The single highest-value thing to do next is widen the gold-forced derivation to the
+> MAP and PIPELINE composition shapes** (`rungCounterexample.ts` covers only scan-by-index today).
+> Everything below explains why that is the bottleneck and not something else.
 >
-> **Fix, measured and replicated: 8/12 vs 3/30, Fisher p = 0.0005.** When a shape-correct MECHANICAL
-> composition fails, test the certified helper against what the task's own GOLD DATA forces it to
-> return. If it contradicts that, it is PROVEN wrong at zero model calls: record the forcing case,
-> evict its carry entry, re-plan, and the re-ground helper then passes held-out witnesses and
-> composes for free. Files: `rungCounterexample.ts`, `composeTemplates.ts`, wired in `solve.ts`.
+> **THE ROOT CAUSE, and it is settled: a rung certifying does NOT mean the search found the intended
+> function.** 5 of 12 certified helpers failed held-out cases. `nextUnquotedComma` certified 6/6
+> against its own examples and was wrong in five of six draws, always the same defect (`('a,,b', 0)`
+> returns 2, not 1); its shown cases test `'a,,b'` only from=2, so nothing in the loop could see it.
+> The correlation with outcome was exact — every draw whose helper generalised SOLVED; every draw
+> whose helper was overfit failed no matter what composed it.
 >
-> **This retires the whole "compose is the wall" line.** Six interventions aimed at the composition
-> step all failed (feedback 0/6, signal-order 2/6→0/6, glue 1/6, 6x purse 0/2, retrieval 0/4 and
-> 0/3) because composition was never the problem — the model AND the mechanical templates were both
-> being handed a helper that was wrong outside its own examples.
+> **THE FIX, replicated and significant ON ITS OWN SHAPE: 8/12 vs 3/30, Fisher p = 0.0005.** When a
+> shape-correct MECHANICAL composition fails, test the certified helper against what the task's GOLD
+> DATA forces it to return; if it contradicts, it is PROVEN wrong at zero model calls — record the
+> forcing case, evict its carry entry, re-plan, and the re-ground helper then passes held-out
+> witnesses and composes for free. `rungCounterexample.ts` + `composeTemplates.ts`, wired in
+> `solve.ts`.
 >
-> **SECOND SETTLED LAW (from earlier the same session): a carve's fillability is decided by what its
-> helpers RETURN.** Same rung, same everything: hard rung certified **6/6** returning a number,
-> **1/9** behind quotes-retained, **0/6** behind a control-char sentinel. Encoded in `planShape.ts`
-> with a selfcheck that fails if it stops reproducing those live rates; `bestOfKPlanner` acts on it
-> (sample k plans, grind the best-shaped) and is DEFAULT OFF until a live number earns it.
+> **IT DOES NOT TRANSFER. Hard set: 1/12 with the chain (that solve was TIER 1, untouched by this
+> work), 0/12 with best-of-K plan selection, 0/12 baseline.** The reason is specific and is in the
+> traces: the derivation fires only on a `(string, number) -> number` locator, and the FM planner
+> proposes whole-task-shaped helpers (`splitCsv`, `wrapWordsIntoLines`) instead. Sampling three
+> plans does not help when none of the three is the right shape — hence the top item above.
 >
-> **METHOD, THE EXPENSIVE LESSON — two claims were retracted tonight for this.** A 6-draw arm at
-> this head cannot distinguish 0% from ~15%: "1/3" became 1/9 and "2/6" became 0/6. **Replicate
-> before anything goes in a summary.** And when building a held-out test: **witness every call the
-> CALLER actually makes** — my first witness set reported GENERALISES twice for a demonstrably
-> broken helper because it missed the same input the caller used. A held-out set that misses the
-> caller's inputs is a second opinion from the same blind spot.
+> **SECOND SETTLED LAW: a carve's fillability is decided by what its helpers RETURN.** Same rung,
+> same everything: **6/6** returning a number, **1/9** behind quotes-retained, **0/6** behind a
+> control-char sentinel. In `planShape.ts` with a selfcheck that fails if it stops reproducing those
+> rates. `bestOfKPlanner` acts on it and is DEFAULT OFF — it was measured on the hard set and did
+> not earn its 3x planner cost.
 >
-> **WHAT IS NOT DONE.** The derivation understands ONE composition shape (scan-by-index) and one
-> signature (`(string, number) -> number`); MAP and PIPELINE also force helper outputs and are
-> uncovered. Everything is measured on ONE rung — the CORE and hard sets have NOT been re-run with
-> the chain enabled, and that general-path number is the real test. Measure calls as well as solves:
-> the mechanism spends plan attempts (14-50 calls on solves, 56-72 on failures).
+> **SIX THINGS FALSIFIED TONIGHT, so nobody re-runs them:** planner prompting (0/12 with a correct
+> hand carve), budget (0/2 at a 6x purse), ignored-helper feedback (0/6), signal ordering (2/6 then
+> 0/6), glue re-decomposition (1/6, and the solve came from compose succeeding directly), retrieval
+> on both the finer and coarse rung (0/4, 0/3). **The pattern: this head's PRIORS BEAT ITS
+> INSTRUCTIONS** — it strips quotes it is told to keep, refuses a sentinel it is told to emit, and
+> re-implements helpers it is told to call. Assume "ask more clearly" fixes are dead on arrival.
+>
+> **TWO METHOD RULES THAT COST RETRACTIONS TONIGHT:**
+> 1. **A 6-draw arm cannot distinguish 0% from ~15% here.** "1/3" became 1/9; "2/6" became 0/6. Both
+>    were published and retracted. REPLICATE before writing anything down.
+> 2. **Witness every call the CALLER actually makes.** My first held-out set reported GENERALISES
+>    twice for a demonstrably broken helper because it missed the same input the caller used. A
+>    held-out set that misses the caller's inputs is a second opinion from the same blind spot.
+>
+> **SECOND ROUTE TO THE SAME ROOT CAUSE, already half-built:** tier 2 reports `no case had ≥2
+> independent impls against it` — the ambiguity guard exists there and is exactly what RUNG
+> certification lacks (it stops at the first passing candidate and so cannot detect an
+> under-specified rung).
 
 ### BEST-OF-K PLAN SELECTION ALSO DOES NOT TRANSFER — 0/12
 
