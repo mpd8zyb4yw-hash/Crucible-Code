@@ -2156,10 +2156,18 @@ The full chain, live, on the `index` carve:
     -> re-ground helper now passes HELD-OUT witnesses
     -> mechanical composition fires => task solved, composition costs 0 model calls
 
-| `index` carve, 6-draw arms                              | whole task |
-|----------------------------------------------------------|-----------|
-| baseline / feedback / signal-order / glue / mechanical-only | 3 solves in 30 draws (10%) |
-| **+ gold-forced counterexamples**                          | **3/6 (50%)** |
+| `index` carve                                               | whole task |
+|-------------------------------------------------------------|------------|
+| baseline / feedback / signal-order / glue / mechanical-only  | 3 solves in 30 draws (10%) |
+| **+ gold-forced counterexamples, run 1**                    | **3/6**    |
+| **+ gold-forced counterexamples, run 2 (replication)**      | **5/6**    |
+| **pooled**                                                  | **8/12 (67%), Fisher exact p = 0.0005** |
+
+**IT REPLICATED.** 8/12 vs 3/30, p = 0.0005 — the only result tonight that survives replication and
+a significance test, against two that did not (the finer carve's "1/3" became 1/9; the signal-order
+"2/6" became 0/6). Across both arms, **0 of 10** certified helpers failed the held-out witness check
+on solved draws: the re-grind produces the intended function, not merely a helper that passes more
+examples. Solve cost 14-50 calls / 41-207s, against 27-55 calls spent FAILING at baseline.
 
 Every solve went through the diagnosed mechanism, and on all three both helpers passed the held-out
 witness check afterwards (6 checks, 0 overfit) — the re-grind produced the INTENDED FUNCTION, not
