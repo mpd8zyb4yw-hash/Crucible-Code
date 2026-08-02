@@ -65,8 +65,11 @@ import { decomposeCodeBySubFunction, type SubFunctionSpec, type SubFunctionPlann
 import { decomposePerRungBudget, hasDecomposeTemplate, makeFmSubFunctionPlanner } from './fmPlanner'
 import { TASKS, HARD_TASKS, type GeneralProbe } from './__decompose_general_scorecard_live'
 import { makeLocalCorpusGround, describeCorpus } from './localCorpusGround'
+import { verifyCode, type CodeAcceptance } from './codeVerifier'
 
 interface HandCarve {
+  /** Held-out cases per helper, never shown to the search. See Witnessed. */
+  witnesses?: Witnessed[]
   /** The task this carves. Resolved against the scorecard rows unless `row` is supplied. */
   entry: string
   /**
@@ -93,6 +96,24 @@ interface HandCarve {
   /** The human decomposition. Example I/O is derived from the row's own stated semantics. */
   helpers: SubFunctionSpec[]
 }
+
+/**
+ * HELD-OUT WITNESSES for a hand-written helper: cases the search NEVER SEES, used only to ask
+ * whether the certified implementation is the intended function or merely one that satisfies the
+ * examples it was given.
+ *
+ * Why this exists (2026-08-02c). Mechanical composition fires on certified helpers and solves the
+ * task in 0 model calls when it fits — but it fit in only 1 of 6 draws, while the helpers certified
+ * 6/6. A template that is correct for the intended function cannot fail against correct helpers, so
+ * the suspicion is that the certified helpers are NOT the intended function: they pass their own 6
+ * examples and diverge elsewhere. That would also explain the model-written compositions failing.
+ * This is the same discipline `synth/proposers/enumerative.ts` already applies to itself (reveal a
+ * SHOWN subset, verify against a HELD-OUT subset): a pass on shown examples is not a solve.
+ *
+ * Reporting only — nothing gates on it, so a helper that fails its witnesses is still certified
+ * exactly as before and the measurement is unchanged.
+ */
+interface Witnessed { name: string; witnesses: CodeAcceptance['cases'] }
 
 /** The `csvSelect` carve's hard rung, promoted to a task so it can be carved further. */
 const SPLIT_CSV_LINE: SubFunctionSpec = {
@@ -288,6 +309,26 @@ const CARVES: HandCarve[] = [
     entry: 'splitCsvLine',
     variant: 'index',
     hardRung: 'nextUnquotedComma',
+    // Held out from the search. Every one is a plain consequence of the stated goal — no new rule,
+    // just inputs the 6 shown cases happen not to cover (a comma at position 0, a `from` past the
+    // end, empty input, a quoted region with no comma inside, a later comma after a quoted region).
+    // Verified against the reference implementation before use: witnesses that are themselves wrong
+    // would indict a correct helper, which is worse than not checking.
+    witnesses: [
+      { name: 'nextUnquotedComma', witnesses: [
+        { args: [',a', 0], expected: 0 },
+        { args: ['abc', 9], expected: -1 },
+        { args: ['', 0], expected: -1 },
+        { args: ['"ab",c', 0], expected: 4 },
+        { args: ['a,"b,c",d', 2], expected: 7 },
+        { args: ['a,b,c', 2], expected: 3 },
+      ] },
+      { name: 'unquoteCsvField', witnesses: [
+        { args: ['"a"'], expected: 'a' },
+        { args: ['no quotes here'], expected: 'no quotes here' },
+        { args: ['a"b'], expected: 'a"b' },
+      ] },
+    ],
     row: {
       entry: SPLIT_CSV_LINE.name,
       label: 'splitCsvLine, carved so every helper returns a natural value (index)',
@@ -450,7 +491,7 @@ async function main(): Promise<void> {
     (iterate.maxEpochs !== base.maxEpochs || iterate.globalModelCalls !== base.globalModelCalls
       ? `  (WIDENED from ${base.globalModelCalls}c / ${base.maxEpochs} epochs — not comparable to the scorecard's tier 3)` : '') + '\n')
 
-  let solved = 0
+  let solved = 0, witnessChecks = 0, overfitHelpers = 0
   const hardRungCertified: boolean[] = []
   const composeCertified: boolean[] = []
 
@@ -468,7 +509,15 @@ async function main(): Promise<void> {
     // not the measurement — the per-attempt trace below is.
     const d = await decomposeCodeBySubFunction(
       { goal: row.goal, nl: row.goal, entry: row.entry, cases: row.cases },
-      { planner, planAttempts: 1, iterate, ...(ac ? { signal: ac.signal } : {}), ...(webGround ? { webGround } : {}) },
+      {
+        planner, planAttempts: 1, iterate,
+        // Surface the carve's own `thought` stream. Without it the probe is blind to every decision
+        // solve.ts makes that is not a rung result — including whether the MECHANICAL COMPOSITION
+        // fired, how many shapes it tried, and whether it declined. A run that silently skips a
+        // mechanism reads exactly like a run where the mechanism did not help.
+        emit: e => { const t = (e as { type?: string; text?: string }); if (t.type === 'thought' && /subfn|mechanic|corpus/.test(t.text ?? '')) console.log(`     · ${t.text}`) },
+        ...(ac ? { signal: ac.signal } : {}), ...(webGround ? { webGround } : {}),
+      },
     )
     if (timer) clearTimeout(timer)
     const wall = Date.now() - t0
@@ -504,6 +553,26 @@ async function main(): Promise<void> {
     // A recursion sub-rung is renamed `<helper>/<sub>`, so match the hard rung on its own name only.
     hardRungCertified.push(anyRung(r => r.name === carve.hardRung && r.certified))
     composeCertified.push(anyRung(r => r.phase === 'compose' && r.certified))
+
+    // HELD-OUT WITNESS CHECK. A rung is certified against the handful of examples its spec carries,
+    // and that is all "certified" means — it is NOT a claim that the search found the intended
+    // function. This runs each certified helper against cases it never saw. It is the difference
+    // between "the composition step is bad at its job" and "the composition step is being handed
+    // helpers that are wrong outside their own examples", which are different problems with
+    // different fixes, and no existing output distinguishes them.
+    for (const w of carve.witnesses ?? []) {
+      const src = d.helpers.find(h => h.name === w.name)?.source
+      if (!src) continue
+      const verdict = await verifyCode(
+        { value: src, fingerprint: `witness:${w.name}` },
+        { goal: w.name, domain: 'code', acceptance: { entry: w.name, cases: w.witnesses } as unknown as Record<string, unknown> },
+      )
+      const failed = (verdict.signals ?? []).filter(sig => /^case /.test(sig))
+      console.log(`     witness ${w.name.padEnd(22)} ${verdict.pass ? 'GENERALISES' : `OVERFIT — fails ${failed.length || '?'} of ${w.witnesses.length} held-out case(s)`}`)
+      for (const sig of failed.slice(0, 3)) console.log(`                  ${sig.slice(0, 150)}`)
+      if (!verdict.pass) overfitHelpers++
+      witnessChecks++
+    }
     console.log('')
   }
 
@@ -513,6 +582,10 @@ async function main(): Promise<void> {
   console.log(`   whole task certified      ${solved}/${runs}`)
   console.log(`   hard rung \`${carve.hardRung}\` certified   ${hard}/${runs}`)
   console.log(`   compose certified         ${comp}/${runs}`)
+  if (witnessChecks) {
+    console.log(`   certified helpers that FAIL held-out witnesses   ${overfitHelpers}/${witnessChecks}` +
+      (overfitHelpers ? '   <- "certified" did not mean "the intended function"' : '   (the carve certifies the real function)'))
+  }
   const verdict =
     hard === 0
       ? `PROPOSER CEILING — the decomposition was handed over for free and \`${carve.hardRung}\` still never certified. ` +
@@ -526,7 +599,7 @@ async function main(): Promise<void> {
           : `MIXED — hard rung ${hard}/${runs}, whole task ${solved}/${runs}. The carve is reachable but not reliably; ` +
             `read the per-draw traces above before attributing.`
   console.log(`\n   ${verdict}`)
-  console.log(JSON.stringify({ handcarve_probe: true, entry, variant: carve.variant ?? null, subPlanner: subPlanner ? 'fm' : null, runs, wallMs, retrieval: retrievalOn, solved, hardRungCertified: hard, composeCertified: comp }))
+  console.log(JSON.stringify({ handcarve_probe: true, entry, variant: carve.variant ?? null, subPlanner: subPlanner ? 'fm' : null, runs, wallMs, retrieval: retrievalOn, solved, hardRungCertified: hard, composeCertified: comp, witnessChecks, overfitHelpers }))
 }
 
 main().catch(e => { console.error('hand-carve probe failed:', e); process.exit(1) })

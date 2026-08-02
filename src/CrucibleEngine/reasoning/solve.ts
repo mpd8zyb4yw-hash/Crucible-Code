@@ -22,6 +22,7 @@ import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecF
 import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate, composeHintFor, decomposePerRungBudget } from './fmPlanner'
 import { probeCarve, skewRungBudget, type CarveProbe } from './traceCarve'
 import { planShapeScore } from './planShape'
+import { composeCandidates, type CertifiedHelper } from './composeTemplates'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -1439,6 +1440,41 @@ async function runSubFunctionOnce(
       `${missed.length === 1 ? 'that helper is' : 'those helpers are'} already implemented and tested; call ` +
       `${missed.length === 1 ? 'it' : 'them'} instead of re-implementing the behaviour`,
       ...(verdict.signals ?? [])] }
+  }
+
+  // ── MECHANICAL COMPOSITION FIRST (2026-08-02c) — zero model calls. ────────────────────────────
+  // Measured: with a good carve the helper rungs certify 6/6 and the COMPOSITION certifies ~0 (2
+  // solves in 30 draws), because the composition re-implements the certified helpers instead of
+  // calling them — the detector fired in 6 of 6 draws. Six interventions were tried against that
+  // wall (feedback, signal order, glue re-decomposition, a 6x purse, retrieval on two rungs) and
+  // none converted it: this head's priors beat its instructions, so ASKING it to call the helpers
+  // is not a lever. Assembling the call ourselves is.
+  //
+  // The shapes are chosen by SIGNATURE, not by task (pipeline / map / scan-by-index / direct), and
+  // each is just a candidate: it goes through the SAME verifier against the ORIGINAL cases, so a
+  // template that does not fit fails like any other wrong proposal and cannot certify a wrong
+  // answer. Offline check on the real certified helpers: it solves both the `index` carve (the rung
+  // the model missed 28 of 30 times) and the `raw` carve, solves an unrelated trim/upper pipeline,
+  // and correctly finds nothing for a shape it cannot express.
+  const mechHelpers: CertifiedHelper[] = helpers
+    .map(h => ({ h, spec: rungPlan.find(p => p.name === h.name) }))
+    .filter((x): x is { h: { name: string; source: string }; spec: SubFunctionSpec } => !!x.spec)
+    .map(x => ({ name: x.h.name, source: x.h.source, cases: x.spec.cases }))
+  if (mechHelpers.length) {
+    const mechT0 = Date.now()
+    const candidates = composeCandidates(input.entry, mechHelpers)
+    for (const body of candidates) {
+      if (opts.signal?.aborted) break
+      const verdict = await composingVerifier({ value: body, fingerprint: `mech:${body.length}:${body.slice(0, 40)}` }, composeSpec)
+      if (!verdict.pass) continue
+      const code = `${helperBlock}\n\n${body}`
+      rungs.push({ name: `compose:${input.entry}`, status: 'solved', bestScore: 0, modelCalls: 0,
+        certified: true, wallMs: Date.now() - mechT0, phase: 'compose' })
+      emit({ type: 'thought', text: `subfn: composed mechanically from the certified helpers — 0 model calls (${candidates.length} shape(s) tried)` })
+      return { status: 'solved', code, helpers, rungs, modelCalls, detail:
+        `mechanical composition over ${mechHelpers.map(h => h.name).join(' + ')} (0 model calls); helpers certified by search` }
+    }
+    emit({ type: 'thought', text: `subfn: no mechanical composition fits (${candidates.length} shape(s) tried, 0 calls) — asking the model` })
   }
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
