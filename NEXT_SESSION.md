@@ -17,69 +17,45 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02b (PROBLEM A is answered: it is rung GRANULARITY) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02c (one law found; compose is the wall) (REPLACE THIS EVERY SESSION)
 
-> **PROBLEM A IS ANSWERED, and the planner is exonerated.** The `splitCsv` rung was handed to the
+> **READ THIS FIRST — the methodological finding, which cost two retractions tonight.** On this
+> task at this head, a 6-DRAW ARM CANNOT DISTINGUISH 0% FROM ~15%. Two results were reported and
+> then withdrawn after replication: the finer carve's "1/3" became 1/9, and the signal-order
+> change's "2/6" became 0/6 (pooled 2/12 vs 0/12 baseline). **A single 6-draw arm is a hypothesis.
+> Replicate before it goes anywhere near a summary or a doc.**
+>
+> **PROBLEM A IS ANSWERED, and the FM planner is exonerated.** The `splitCsv` rung was handed to the
 > head as a HAND-WRITTEN carve — correct helper names, goals and witnessed example I/O, injected
-> through `opts.planner` — and it still never certified: **0 certifications in 290 model calls
-> across 12 independent attempts**, at a 64c/10-epoch purse AND at a 250c/40-epoch/900s purse.
-> Its trivial sibling `csvLines` certified in ONE call every draw. No `fmPlanner.ts` prompt work
-> recovers this row; that line of work is RETIRED.
+> through `opts.planner` — and never certified: **0 in 290 model calls across 12 attempts**, at a
+> 64c/10-epoch purse AND at a 250c/40-epoch/900s purse. Its trivial sibling `csvLines` certified in
+> ONE call every draw. No `fmPlanner.ts` prompt work recovers this row; that line is RETIRED.
 >
-> **The same rung then certified in 12 calls / 47s when carved ONE LEVEL FINER** — `splitCsvRaw`
-> (quote-aware split, unescapes nothing) + `unquoteCsvField` (unescapes one field, splits nothing).
-> So the ceiling is not "a 1.5B cannot parse quoted CSV", it is "a 1.5B cannot parse quoted CSV
-> WHILE ALSO splitting". **Rung SIZE is the lever, and `solve.ts` recursion is already the
-> machinery** — what it lacked was a sub-plan that separates the concerns.
+> **THE ONE SETTLED LAW: a carve's fillability is decided by what its helpers must RETURN.** Three
+> carves of the IDENTICAL rung, same head/cases/verifier/budget — hard rung certified **6/6** when
+> it returns a number (`index`), **1/9** behind quotes-retained (`raw`), **0/6** behind a
+> control-char sentinel (`mask`). The head will not emit a representation nobody writes down, no
+> matter how the goal is phrased. This is checkable BEFORE any model call and is now code:
+> `planShape.ts` (+ selfcheck that fails if it stops reproducing those live rates) and
+> `bestOfKPlanner` (sample k plans, grind the best-shaped; DEFAULT OFF until a live number earns it).
 >
-> **Do not bank the 12-call solve as a rate — it is 1 in 9.** The first pass was 1/3; a 6-draw
-> re-run at the same settings was **0/6**. The solve is real and reproducible in principle, but the
-> `raw` carve converts about 11% of the time, and EVERY failed draw dies the same way (see below). And the live failure signals say the `raw`
-> carve is partly measuring MY spec rather than the head: its dominant failure is the head
-> STRIPPING the quotes the goal explicitly says to keep (`got ["x,y","z"], expected
-> ["\"x,y\"","z"]`, repeatedly). That requirement is load-bearing for composition and anti-prior.
-> A `mask` variant (HC_VARIANT=mask) separates the identical concerns using goals that match model
-> priors; **running that A/B is the first thing to do next**, because `mask >> raw` and `mask ~ raw`
-> point at different fixes.
+> **THE WALL IS NOW COMPOSE: 2 solves in 30 draws.** With the `index` carve the rungs certify 6/6
+> and the composition certifies ~0 — because the composition RE-IMPLEMENTS the certified helpers
+> instead of calling them (signal fired in 6 of 6 draws). A composition that ignores its helpers IS
+> the coarse task, the 0-in-290 one, so the carve's entire benefit is discarded at the last step.
 >
-> **NEW MECHANISM, WIRED AND UNIT-TESTED BUT NOT YET MEASURED LIVE: failure-directed
-> decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion used to re-plan a stuck rung on
-> its ORIGINAL goal text — the same text that produced the un-carvable plan — so it resampled the
-> same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these
-> checks failed; propose helpers that SEPARATE those concerns"). Domain-neutral by design (names no
-> CSV, no quotes) so it generalises to the hard set's whole recurring shape. Prompt text only —
-> cases and verification are untouched. **It has not yet moved a live number; measuring it on the
-> hard set is the highest-value experiment outstanding.**
-
-### THE RESULT: CARVE WHERE EACH HELPER RETURNS A NATURAL VALUE
-
-Three hand carves of the IDENTICAL rung (`splitCsvLine`), identical 6-draw budget, identical two
-concerns separated the same way. The ONLY thing that varies is what the hard helper must RETURN:
-
-| carve   | the hard helper must return          | hard rung certified |
-|---------|--------------------------------------|---------------------|
-| `raw`   | fields with the wrapping quotes kept | **1/9**             |
-| `mask`  | a control-character sentinel         | **0/6**             |
-| `index` | a number (index of next comma)       | **6/6**             |
-
-`index` certified its hard rung on EVERY draw (1-15 calls, median ~8) and `unquoteCsvField` in 1
-call every time. So the "proposer ceiling" is not about task difficulty, rung size, or goal wording
-— all three carves separate the same concerns and two of them state the goal naturally. It is about
-whether the helper's RETURN VALUE is a representation people actually write down. A 1.5B will not
-emit a marked-up intermediate no matter what the goal says: `raw` fails by stripping the quotes it
-was told to keep (7 of 8 failures identical), `mask` by returning the line untouched.
-
-**This is a plan-quality property that is checkable BEFORE any grinding**, which makes it worth far
-more than this row: a carve whose helpers return numbers, plain fields or booleans is fillable; one
-that invents an intermediate is not. It belongs in the planner prompt and in a plan gate next to
-the degenerate/non-composing gates.
-
-**The blocker moved to COMPOSE (0/6, parked at `best -1.00`, i.e. 4 of 5 cases).** Two mechanisms,
-both visible in the signals: the composition RE-IMPLEMENTS `unquoteCsvField` instead of calling the
-certified one (`got ["he said hi","z"]` — the certified helper handles that case), and it mishandles
-the empty field (`"a,,b"` → `["a,","b"]`). NOTE: compose 0/6 here is a LOWER BOUND — the probe's
-planner returns null for sub-goals by design, so the glue re-decomposition fires and does nothing
-(`glue/re-decompose stalled 0c`). Production would hand that stage to the FM planner.
+> **SIX INTERVENTIONS MEASURED, NONE CONVERTS COMPOSE:** ignored-helper feedback (0/6), the same
+> signal moved first (2/6 then 0/6 — variance), the real FM glue re-decomposition (1/6, and that
+> solve came from compose succeeding directly, not from glue), a 250c/40-epoch/900s purse (0/2),
+> retrieval on the finer rung (0/4), retrieval on the COARSE rung (0/3).
+>
+> **THE PATTERN BEHIND ALL OF IT: this head's PRIORS BEAT ITS INSTRUCTIONS.** It strips quotes it is
+> told to keep, refuses to emit a sentinel it is told to emit, and re-implements helpers it is told
+> to call. **Assume any fix of the form "ask more clearly" is dead on arrival** — one was built and
+> measured at 0/6 tonight. The untried levers are the ones that remove the choice: hole-filling /
+> skeleton compose, or composing by SEARCH instead of generation (`synth/proposers/enumerative.ts`
+> is a zero-inference bottom-up PBE search; it would need an `extraOps` seam to take the certified
+> helpers as primitives, and a fold before it could express this particular loop).
 
 ### RETRACTED — the "first converting intervention" did NOT replicate (2/6 then 0/6)
 
