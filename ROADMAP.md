@@ -2051,6 +2051,23 @@ primitives would compose them without the model — exactly doctrine's "the mode
 Honest caveat: this composition needs a LOOP, and the current expression DSL (maxSize 4) has no
 fold, so it would likely return `none` on this row. The seam (`extraOps`) does not exist yet.
 
+### RETRIEVAL, RUN LIVE FOR THE FIRST TIME: 0/4 on the anti-prior rung
+
+The mechanism works — `shell-quote/parse.js`, a real 226-line quote-state tokenizer, was retrieved
+and put in front of the proposer on every rung of every draw. It converted nothing (`raw` carve,
+4 draws, hard rung 0/4). Three caveats keep this from being "retrieval does not work":
+- the corpus deliberately contains NO CSV parser (measured: 0 of 705 packages), so this was an
+  IDIOM-TRANSFER test, not answer lookup — the hardest version of the question;
+- it was run against `raw`, the anti-prior carve. On `index` the rung already certifies 6/6, so
+  there is nothing for retrieval to add; the informative target is the COARSE `csvSelect` rung,
+  which has not been run with retrieval yet;
+- 4 of the 5 retrieved files were noise (syntax-highlighter grammars, a tsserver bundle) — since
+  fixed by excluding those paths, so a re-run now retrieves 5 real quote-handling implementations.
+
+Two efficiency defects were found and fixed by watching it run: the corpus was re-scanned for every
+rung of every attempt (3.2-5.2s each, a dozen-plus times per draw, identical result — now memoised
+per query), and the ranking preferred 500kB bundles until density-over-volume was added.
+
 **Failure-directed decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion re-planned a stuck
 rung on its ORIGINAL goal text — the text that produced the un-carvable plan — so it resampled the
 same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these checks
