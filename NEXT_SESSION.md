@@ -17,45 +17,43 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02c (one law found; compose is the wall) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02d (root cause found AND fixed; 8/12 vs 3/30) (REPLACE THIS EVERY SESSION)
 
-> **READ THIS FIRST — the methodological finding, which cost two retractions tonight.** On this
-> task at this head, a 6-DRAW ARM CANNOT DISTINGUISH 0% FROM ~15%. Two results were reported and
-> then withdrawn after replication: the finer carve's "1/3" became 1/9, and the signal-order
-> change's "2/6" became 0/6 (pooled 2/12 vs 0/12 baseline). **A single 6-draw arm is a hypothesis.
-> Replicate before it goes anywhere near a summary or a doc.**
+> **THE HEADLINE, and the only claim here that survived replication + a significance test:**
+> a rung certifying does NOT mean the search found the intended function. **5 of 12 certified
+> helpers failed held-out cases** — `nextUnquotedComma` certified 6/6 against its own examples and
+> was wrong in five of six draws, always the same defect (`('a,,b', 0)` returns 2, not 1). Its shown
+> cases test `'a,,b'` only from=2, so nothing in the loop could see it.
 >
-> **PROBLEM A IS ANSWERED, and the FM planner is exonerated.** The `splitCsv` rung was handed to the
-> head as a HAND-WRITTEN carve — correct helper names, goals and witnessed example I/O, injected
-> through `opts.planner` — and never certified: **0 in 290 model calls across 12 attempts**, at a
-> 64c/10-epoch purse AND at a 250c/40-epoch/900s purse. Its trivial sibling `csvLines` certified in
-> ONE call every draw. No `fmPlanner.ts` prompt work recovers this row; that line is RETIRED.
+> **Fix, measured and replicated: 8/12 vs 3/30, Fisher p = 0.0005.** When a shape-correct MECHANICAL
+> composition fails, test the certified helper against what the task's own GOLD DATA forces it to
+> return. If it contradicts that, it is PROVEN wrong at zero model calls: record the forcing case,
+> evict its carry entry, re-plan, and the re-ground helper then passes held-out witnesses and
+> composes for free. Files: `rungCounterexample.ts`, `composeTemplates.ts`, wired in `solve.ts`.
 >
-> **THE ONE SETTLED LAW: a carve's fillability is decided by what its helpers must RETURN.** Three
-> carves of the IDENTICAL rung, same head/cases/verifier/budget — hard rung certified **6/6** when
-> it returns a number (`index`), **1/9** behind quotes-retained (`raw`), **0/6** behind a
-> control-char sentinel (`mask`). The head will not emit a representation nobody writes down, no
-> matter how the goal is phrased. This is checkable BEFORE any model call and is now code:
-> `planShape.ts` (+ selfcheck that fails if it stops reproducing those live rates) and
-> `bestOfKPlanner` (sample k plans, grind the best-shaped; DEFAULT OFF until a live number earns it).
+> **This retires the whole "compose is the wall" line.** Six interventions aimed at the composition
+> step all failed (feedback 0/6, signal-order 2/6→0/6, glue 1/6, 6x purse 0/2, retrieval 0/4 and
+> 0/3) because composition was never the problem — the model AND the mechanical templates were both
+> being handed a helper that was wrong outside its own examples.
 >
-> **THE WALL IS NOW COMPOSE: 2 solves in 30 draws.** With the `index` carve the rungs certify 6/6
-> and the composition certifies ~0 — because the composition RE-IMPLEMENTS the certified helpers
-> instead of calling them (signal fired in 6 of 6 draws). A composition that ignores its helpers IS
-> the coarse task, the 0-in-290 one, so the carve's entire benefit is discarded at the last step.
+> **SECOND SETTLED LAW (from earlier the same session): a carve's fillability is decided by what its
+> helpers RETURN.** Same rung, same everything: hard rung certified **6/6** returning a number,
+> **1/9** behind quotes-retained, **0/6** behind a control-char sentinel. Encoded in `planShape.ts`
+> with a selfcheck that fails if it stops reproducing those live rates; `bestOfKPlanner` acts on it
+> (sample k plans, grind the best-shaped) and is DEFAULT OFF until a live number earns it.
 >
-> **SIX INTERVENTIONS MEASURED, NONE CONVERTS COMPOSE:** ignored-helper feedback (0/6), the same
-> signal moved first (2/6 then 0/6 — variance), the real FM glue re-decomposition (1/6, and that
-> solve came from compose succeeding directly, not from glue), a 250c/40-epoch/900s purse (0/2),
-> retrieval on the finer rung (0/4), retrieval on the COARSE rung (0/3).
+> **METHOD, THE EXPENSIVE LESSON — two claims were retracted tonight for this.** A 6-draw arm at
+> this head cannot distinguish 0% from ~15%: "1/3" became 1/9 and "2/6" became 0/6. **Replicate
+> before anything goes in a summary.** And when building a held-out test: **witness every call the
+> CALLER actually makes** — my first witness set reported GENERALISES twice for a demonstrably
+> broken helper because it missed the same input the caller used. A held-out set that misses the
+> caller's inputs is a second opinion from the same blind spot.
 >
-> **THE PATTERN BEHIND ALL OF IT: this head's PRIORS BEAT ITS INSTRUCTIONS.** It strips quotes it is
-> told to keep, refuses to emit a sentinel it is told to emit, and re-implements helpers it is told
-> to call. **Assume any fix of the form "ask more clearly" is dead on arrival** — one was built and
-> measured at 0/6 tonight. The untried levers are the ones that remove the choice: hole-filling /
-> skeleton compose, or composing by SEARCH instead of generation (`synth/proposers/enumerative.ts`
-> is a zero-inference bottom-up PBE search; it would need an `extraOps` seam to take the certified
-> helpers as primitives, and a fold before it could express this particular loop).
+> **WHAT IS NOT DONE.** The derivation understands ONE composition shape (scan-by-index) and one
+> signature (`(string, number) -> number`); MAP and PIPELINE also force helper outputs and are
+> uncovered. Everything is measured on ONE rung — the CORE and hard sets have NOT been re-run with
+> the chain enabled, and that general-path number is the real test. Measure calls as well as solves:
+> the mechanism spends plan attempts (14-50 calls on solves, 56-72 on failures).
 
 ### ★★ THE FIX, MEASURED: derive the counterexample from gold, re-grind, compose free (3/6 vs 3/30)
 
