@@ -104,7 +104,8 @@
     "hardset:selfcheck": "tsx src/CrucibleEngine/reasoning/__general_hardset_selfcheck.ts",
     "ladderbudget:selfcheck": "tsx src/CrucibleEngine/reasoning/__ladder_budget_selfcheck.ts",
     "gen:scorecard": "tsx src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts",
-    "rung:postmortem": "tsx src/CrucibleEngine/reasoning/__decompose_postmortem_live.ts"
+    "rung:postmortem": "tsx src/CrucibleEngine/reasoning/__decompose_postmortem_live.ts",
+    "handcarve:probe": "tsx src/CrucibleEngine/reasoning/__handcarve_probe_live.ts"
   },
   "build": {
     "appId": "com.crucible.local",
