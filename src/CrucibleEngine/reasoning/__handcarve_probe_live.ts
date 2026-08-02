@@ -257,6 +257,74 @@ const CARVES: HandCarve[] = [
       },
     ],
   },
+  // ───────────────────────────────────────────────────────────────────────────
+  // VARIANT `index` — every helper returns a NATURAL value. The design law under test.
+  //
+  // `raw` (1/9) and `mask` both fail the same way, and the live signals say why: each needs a
+  // helper to emit an UNNATURAL INTERMEDIATE. `raw` wants fields with the wrapping quotes still
+  // attached and the head strips them anyway; `mask` wants a control-character sentinel and the
+  // head returns the line untouched, or strips the quotes it was told to copy through. Neither
+  // intermediate is a thing anyone writes down, so no amount of goal text makes the head produce
+  // one — the failures are a systematic prior, not variance (7 of 8 `raw` failures are the
+  // identical two cases failing the identical way).
+  //
+  // The intermediate here is an INDEX, which is a value functions return all the time:
+  //   nextUnquotedComma(line, from) -> number   — indexOf, but skipping quoted regions
+  //   unquoteCsvField(field)        -> string   — reused byte-identical; certifies in 1 call
+  // The concerns are separated exactly as before. The ONLY thing that changed is that neither
+  // helper has to invent a representation.
+  //
+  // Reading: `index` >> `raw`/`mask` promotes a design law the planner can be held to — CARVE AT
+  // BOUNDARIES WHERE EACH HELPER RETURNS A NATURAL VALUE (a number, a plain field, a bool), never
+  // a marked-up intermediate. That is checkable in a plan before any grinding, which makes it worth
+  // far more than one row. `index` ≈ the others means the intermediate was not the blocker and the
+  // remaining lever is supplying the idiom (retrieval), not re-cutting the task.
+  {
+    entry: 'splitCsvLine',
+    variant: 'index',
+    hardRung: 'nextUnquotedComma',
+    row: {
+      entry: SPLIT_CSV_LINE.name,
+      label: 'splitCsvLine, carved so every helper returns a natural value (index)',
+      goal: SPLIT_CSV_LINE.goal,
+      cases: SPLIT_CSV_LINE.cases,
+    },
+    helpers: [
+      {
+        name: 'nextUnquotedComma',
+        goal:
+          'Write nextUnquotedComma(line: string, from: number): number returning the index of the ' +
+          'first comma at or after position `from` that is NOT inside a double-quoted section, or ' +
+          '-1 if there is no such comma. Scan forward one character at a time keeping a boolean ' +
+          '"inside quotes" flag that flips on every double-quote character; a comma counts only ' +
+          'while that flag is false.',
+        cases: [
+          { args: ['a,b', 0], expected: 1 },
+          { args: ['a', 0], expected: -1 },
+          { args: ['a,,b', 2], expected: 2 },
+          { args: ['"x,y",z', 0], expected: 5 },
+          { args: ['"he said ""hi""",z', 0], expected: 16 },
+          { args: ['a,b', 2], expected: -1 },
+        ],
+      },
+      {
+        // Byte-identical to the other variants' second rung (1 call to certify there).
+        name: 'unquoteCsvField',
+        goal:
+          'Write unquoteCsvField(field: string): string normalising ONE CSV field. If the field ' +
+          'starts and ends with a double-quote character, remove those two outer characters and ' +
+          'then replace every doubled double-quote ("") in what remains with a single double-quote ' +
+          'character. A field not wrapped in double quotes is returned unchanged.',
+        cases: [
+          { args: ['a'], expected: 'a' },
+          { args: [''], expected: '' },
+          { args: ['"x,y"'], expected: 'x,y' },
+          { args: ['"he said ""hi"""'], expected: 'he said "hi"' },
+          { args: ['""'], expected: '' },
+        ],
+      },
+    ],
+  },
 ]
 
 const s = (ms: number): string => `${(ms / 1000).toFixed(1)}s`
