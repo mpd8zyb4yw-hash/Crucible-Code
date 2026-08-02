@@ -111,7 +111,8 @@
     "faildirected:selfcheck": "tsx src/CrucibleEngine/reasoning/__failure_directed_selfcheck.ts",
     "uncalled:selfcheck": "tsx src/CrucibleEngine/reasoning/__uncalled_helpers_selfcheck.ts",
     "planshape:selfcheck": "tsx src/CrucibleEngine/reasoning/__plan_shape_selfcheck.ts",
-    "bestofk:selfcheck": "tsx src/CrucibleEngine/reasoning/__best_of_k_selfcheck.ts"
+    "bestofk:selfcheck": "tsx src/CrucibleEngine/reasoning/__best_of_k_selfcheck.ts",
+    "rungcex:selfcheck": "tsx src/CrucibleEngine/reasoning/__rung_counterexample_selfcheck.ts"
   },
   "build": {
     "appId": "com.crucible.local",
