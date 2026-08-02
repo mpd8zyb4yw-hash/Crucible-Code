@@ -53,10 +53,13 @@
 // glue levels (which re-invoke the same planner with a SUB-goal) decline immediately instead of
 // being handed the top-level carve again for a sub-problem it does not describe.
 
+import { join } from 'node:path'
+
 import { fmComplete, headModelName } from '../agent/fmReact'
 import { decomposeCodeBySubFunction, type SubFunctionSpec, type SubFunctionPlanner } from './solve'
 import { decomposePerRungBudget, hasDecomposeTemplate } from './fmPlanner'
 import { TASKS, HARD_TASKS, type GeneralProbe } from './__decompose_general_scorecard_live'
+import { makeLocalCorpusGround, describeCorpus } from './localCorpusGround'
 
 interface HandCarve {
   /** The task this carves. Resolved against the scorecard rows unless `row` is supplied. */
@@ -242,6 +245,27 @@ async function main(): Promise<void> {
     wallClockMs: Math.max(base.wallClockMs, wallMs > 0 ? wallMs : base.wallClockMs),
   }
 
+  // RETRIEVAL ARM (off by default). `withRetrieval` puts executable candidates extracted from
+  // retrieved source in FRONT of the FM proposer for every rung, so a cornered rung can certify
+  // from real code at zero model calls. It has never run in a live measurement here (every caller
+  // passes no `webGround`), which is why it is a switch rather than a default: a retrieval number
+  // and a no-retrieval number measure different systems and must never be pooled, so the header
+  // and the trailing JSON both record which arm produced the row.
+  const retrievalOn = process.env.HC_RETRIEVAL === '1'
+  const corpusRoot = process.env.HC_CORPUS_ROOT ?? join(process.cwd(), 'node_modules')
+  const webGround = retrievalOn
+    ? makeLocalCorpusGround({ root: corpusRoot, emit: e => console.log(`     [retrieval] ${(e as { text?: string }).text ?? ''}`) })
+    : undefined
+  if (retrievalOn) {
+    // What the shelf holds decides what a retrieval solve MEANS, so print it above the numbers
+    // rather than leaving the contamination question to a reader's good faith.
+    const topic = new RegExp(carve.hardRung.replace(/([a-z0-9])([A-Z])/g, '$1|$2').toLowerCase(), 'i')
+    const desc = describeCorpus(corpusRoot, topic)
+    console.log(`# RETRIEVAL ARM — offline shelf at ${corpusRoot}: ${desc.packages} package(s), ` +
+      `matching /${topic.source}/: ${desc.matches.length ? desc.matches.join(', ') : 'NONE'}`)
+    console.log('# a retrieval row is NOT comparable to a no-retrieval row — never pool them\n')
+  }
+
   // The hand plan, injected. Keyed on the TOP entry: recursion and the glue re-decomposition
   // re-invoke this same planner with a SUB-goal, and handing them the top-level carve again would
   // be a plan that does not describe their problem. Returning null makes them decline cheaply.
@@ -273,7 +297,7 @@ async function main(): Promise<void> {
     // not the measurement — the per-attempt trace below is.
     const d = await decomposeCodeBySubFunction(
       { goal: row.goal, nl: row.goal, entry: row.entry, cases: row.cases },
-      { planner, planAttempts: 1, iterate, ...(ac ? { signal: ac.signal } : {}) },
+      { planner, planAttempts: 1, iterate, ...(ac ? { signal: ac.signal } : {}), ...(webGround ? { webGround } : {}) },
     )
     if (timer) clearTimeout(timer)
     const wall = Date.now() - t0
@@ -327,7 +351,7 @@ async function main(): Promise<void> {
           : `MIXED — hard rung ${hard}/${runs}, whole task ${solved}/${runs}. The carve is reachable but not reliably; ` +
             `read the per-draw traces above before attributing.`
   console.log(`\n   ${verdict}`)
-  console.log(JSON.stringify({ handcarve_probe: true, entry, runs, wallMs, solved, hardRungCertified: hard, composeCertified: comp }))
+  console.log(JSON.stringify({ handcarve_probe: true, entry, runs, wallMs, retrieval: retrievalOn, solved, hardRungCertified: hard, composeCertified: comp }))
 }
 
 main().catch(e => { console.error('hand-carve probe failed:', e); process.exit(1) })

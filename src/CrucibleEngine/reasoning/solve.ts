@@ -31,6 +31,32 @@ import { makeMechanicalRepairProposer } from './mechanicalRepair'
 import type { Attempt, Proposer, SearchResult, TaskSpec, Verifier } from './types'
 
 /**
+ * A retriever. Returns raw source text for a query, or null when it has nothing.
+ *
+ * `string[]` is the PREFERRED shape — one blob per retrieved FILE. `makeRetrievalProposer` keeps
+ * per-file blobs as DISTINCT candidates, so two same-named alternate implementations both reach
+ * the verifier instead of being collapsed by extractFunctions' first-wins name dedup; joining them
+ * into one string throws that away. Every decompose/ladder-facing signature here used to narrow
+ * this to `Promise<string | null>` while `retrievalProposer.ts` already accepted the wider shape,
+ * so the carve path structurally COULD NOT pass per-file blobs — a certify-rate lever silently
+ * unavailable to the one path built around it. Found 2026-08-02, when a retriever returning blobs
+ * failed to typecheck against it.
+ */
+export type WebGround = (query: string) => Promise<string | string[] | null>
+
+/** Adapt a WebGround to the single-string retriever `codeResearch` takes (it wants prose context). */
+function wgForResearch(w: WebGround | undefined): ((q: string) => Promise<string | null>) | undefined {
+  return w ? async (q: string) => joinRetrieved(await w(q)) : undefined
+}
+
+/** Collapse a retrieval result to one blob, for the channels that take a single context string. */
+function joinRetrieved(r: string | string[] | null): string | null {
+  if (r == null) return null
+  const joined = Array.isArray(r) ? r.filter(Boolean).join('\n\n') : r
+  return joined.trim() ? joined : null
+}
+
+/**
  * Compose the RETRIEVAL proposer in front of a base (FM) proposer for one rung/solve. The
  * retrieval proposer yields executable candidates extracted from web source — aliased to
  * `entry` and run STRAIGHT through the verifier — until exhausted, then the base FM takes
@@ -45,7 +71,7 @@ function withRetrieval(
   entry: string,
   goal: string,
   cases: CodeAcceptance['cases'],
-  webGround?: (query: string) => Promise<string | null>,
+  webGround?: WebGround,
   query?: string,
   emit?: (e: Record<string, unknown>) => void,
 ): Proposer<string> {
@@ -209,7 +235,7 @@ export async function solveCodeTask(
  * proposerOverride/research for deterministic tests (see __code_research_bench.ts).
  */
 export async function iterateCodeTask(
-  input: SolveCodeInput & { nl?: string; webGround?: (query: string) => Promise<string | null> },
+  input: SolveCodeInput & { nl?: string; webGround?: WebGround },
   opts: IterateOpts<string> = {},
   proposerOverride?: Proposer<string>,
 ): Promise<IterateResult<string>> {
@@ -223,7 +249,7 @@ export async function iterateCodeTask(
   if (input.webGround && !opts.research && !opts.signal?.aborted) {
     try {
       const q = buildCodeSearchQuery(input.nl ?? input.goal, input.entry)
-      const ref = (await input.webGround(q))?.trim()
+      const ref = joinRetrieved(await input.webGround(q))?.trim()
       if (ref) {
         proactiveRef = ref
         const block = `${WEB_GROUND_MARK}\n${ref}`
@@ -249,11 +275,11 @@ export async function iterateCodeTask(
   // Reuse the already-fetched reference (no second network hit) as the retrieval proposer's source;
   // only fetch inside withRetrieval when the proactive path was skipped (opts.research set).
   const base: Proposer<string> = proposerOverride ?? proposeCode
-  const retrievalSource = proactiveRef != null
-    ? (async () => proactiveRef) as (query: string) => Promise<string | null>
+  const retrievalSource: WebGround | undefined = proactiveRef != null
+    ? async () => proactiveRef
     : input.webGround
   const proposer = withRetrieval(base, input.entry, input.nl ?? input.goal, input.cases, retrievalSource, buildCodeSearchQuery(input.nl ?? input.goal, input.entry), opts.emit)
-  const research = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal, webGround: input.webGround })
+  const research = opts.research ?? makeCodeResearchFn({ nl: input.nl ?? input.goal, webGround: wgForResearch(input.webGround) })
   return iterate(spec, proposer, verifyCode, {
     mergeAcceptance: mergeCodeAcceptance,
     ...opts,
@@ -312,7 +338,7 @@ export function makeCodeSubSpec(
  * NEVER ships an unverified guess (the composition is re-run against ALL cases).
  */
 export async function decomposeCodeTask(
-  input: SolveCodeInput & { nl?: string; webGround?: (query: string) => Promise<string | null> },
+  input: SolveCodeInput & { nl?: string; webGround?: WebGround },
   opts: { planner?: Planner; rungs?: number; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit'] } = {},
   proposerOverride?: Proposer<string>,
 ): Promise<DecomposeResult<string>> {
@@ -509,7 +535,7 @@ export async function decomposeCodeBySubFunction(
      * the pure loop); each rung searches for ITS OWN goal. Sound: retrieved code only grounds
      * the PROPOSER; the candidate is still executed against the rung's spec. Absent → no web.
      */
-    webGround?: (query: string) => Promise<string | null>
+    webGround?: WebGround
     iterate?: Partial<IterateOpts<string>>
     signal?: AbortSignal
     emit?: IterateOpts<string>['emit']
@@ -836,7 +862,7 @@ export function subLevelIterateBudget(
 
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; webGround?: (query: string) => Promise<string | null>; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[]; traceProbe?: boolean; budget?: { left: () => number } },
+  opts: { planner?: SubFunctionPlanner; webGround?: WebGround; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[]; traceProbe?: boolean; budget?: { left: () => number } },
   proposerOverride?: Proposer<string>,
   // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by
   // name→{source, spec}. A rung whose plan is IDENTICAL reuses the stored source instead of
@@ -871,7 +897,7 @@ async function runSubFunctionOnce(
   // "convert 12h am/pm to minutes" retrieved 2460 chars, but "…parseAMPM javascript" (the
   // invented name appended) hit a page that yielded no code. So strip the name from the query.
   const researchFor = webGround
-    ? (nl: string) => makeCodeResearchFn({ nl, webGround: (_q: string) => webGround(buildCodeSearchQuery(nl)), differential: false })
+    ? (nl: string) => makeCodeResearchFn({ nl, webGround: async (_q: string) => joinRetrieved(await webGround(buildCodeSearchQuery(nl))), differential: false })
     : (_nl: string) => undefined
 
   if (opts.signal?.aborted) return { status: 'aborted', code: null, helpers: [], rungs, modelCalls, detail: 'aborted before planning' }
@@ -1788,7 +1814,7 @@ export type SolveCodingOpts = SearchOpts<string> & {
      * module; the server provides the network-backed implementation. Only active on the converge
      * path (that's where research runs). Absent → no web grounding.
      */
-    webGround?: (query: string) => Promise<string | null>
+    webGround?: WebGround
     /**
      * For repair/edit requests: the current broken implementation (e.g. the target file's
      * existing source). Threaded into every solveCodeTask call so the first proposal is seeded
