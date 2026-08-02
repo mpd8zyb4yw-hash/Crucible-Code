@@ -21,6 +21,7 @@ import { iterate, type IterateOpts, type IterateResult } from './iterate'
 import { solveByDecomposition, type DecomposeResult, type Planner, type SubSpecFactory } from './decompose'
 import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate, composeHintFor, decomposePerRungBudget } from './fmPlanner'
 import { probeCarve, skewRungBudget, type CarveProbe } from './traceCarve'
+import { planShapeScore } from './planShape'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -584,6 +585,54 @@ export function uncalledHelpers(candidate: string, helperNames: string[]): strin
   return helperNames.filter(n => !new RegExp(`\\b${n}\\b`).test(body))
 }
 
+/**
+ * BEST-OF-K PLAN SELECTION (2026-08-02b). Wrap a planner so it samples `k` plans and returns the
+ * one whose SHAPE scores highest (planShape.ts) — the helpers whose return values a model will
+ * actually produce.
+ *
+ * Why this is the right place to spend calls. A planner draw costs ~1 model call and ~2 seconds; a
+ * rung grind costs 20-40 calls and minutes. Tonight's measurement says the difference between a
+ * carve that certifies 6/6 and one that certifies 0/6 is visible in the plan's own example I/O
+ * BEFORE any of that is spent. So paying 2 extra planner calls to avoid committing a 40-call grind
+ * to a bad-shaped carve is the cheapest lever available, and it does not change the budget model:
+ * the same number of GRINDS happen, in a better order.
+ *
+ * SOUND. Selection only reorders which verifier-gated carve is attempted first. Every plan still
+ * goes through the same gates and every rung through the same verifier, so a mis-ranked plan costs
+ * draws and never certification. `k <= 1` returns the planner unchanged, so the default path is
+ * byte-identical to before.
+ *
+ * A plan that scores well is not a plan that works — the score reproduces an ORDERING measured on
+ * three carves of one rung, nothing more. It is a prior over where to spend the next grind.
+ */
+export function bestOfKPlanner(
+  planner: SubFunctionPlanner,
+  k: number,
+  emit?: (e: Record<string, unknown>) => void,
+): SubFunctionPlanner {
+  if (k <= 1) return planner
+  return async (input, signal) => {
+    const plans: SubFunctionSpec[][] = []
+    for (let i = 0; i < k; i++) {
+      if (signal?.aborted) break
+      const p = await planner(input, signal)
+      if (p && p.length) plans.push(p)
+    }
+    if (!plans.length) return null
+    const scored = plans.map(p => ({ plan: p, report: planShapeScore(p) }))
+    scored.sort((a, b) => b.report.score - a.report.score)
+    const best = scored[0]
+    if (emit && scored.length > 1) {
+      emit({ type: 'thought', text: `subfn: picked the best-shaped of ${scored.length} plans ` +
+        `(${scored.map(x => x.report.score.toFixed(2)).join(', ')})` +
+        (best.report.helpers.some(h => h.reasons.length && h.score < 1)
+          ? ` — runner-up flagged: ${scored[1]?.report.helpers.filter(h => h.score < 1).map(h => `${h.name}: ${h.reasons[0]}`)[0] ?? ''}`
+          : '') })
+    }
+    return best.plan
+  }
+}
+
 export async function decomposeCodeBySubFunction(
   input: SolveCodeInput & { nl?: string },
   opts: {
@@ -597,6 +646,11 @@ export async function decomposeCodeBySubFunction(
      * verifier-gated, so more attempts can only find a real solution, never fabricate one.
      */
     planAttempts?: number
+    /**
+     * Sample this many plans per attempt and grind the BEST-SHAPED one (see bestOfKPlanner /
+     * planShape). A planner draw is ~1 call; a rung grind is 20-40. Default 1 = unchanged behaviour.
+     */
+    planSamples?: number
     /**
      * WEB RETRIEVAL for the cornered kernel. Decomposition's real payoff: it corners the
      * FM's capability gap into ONE small, precisely-named helper ("convert 12h am/pm time to
@@ -933,7 +987,7 @@ export function subLevelIterateBudget(
 
 async function runSubFunctionOnce(
   input: SolveCodeInput & { nl?: string },
-  opts: { planner?: SubFunctionPlanner; webGround?: WebGround; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[]; traceProbe?: boolean; budget?: { left: () => number } },
+  opts: { planner?: SubFunctionPlanner; planSamples?: number; webGround?: WebGround; iterate?: Partial<IterateOpts<string>>; signal?: AbortSignal; emit?: IterateOpts<string>['emit']; depth?: number; maxDepth?: number; preHelpers?: { name: string; source: string }[]; traceProbe?: boolean; budget?: { left: () => number } },
   proposerOverride?: Proposer<string>,
   // CARRY-FORWARD across planAttempts: helpers certified on a prior attempt, keyed by
   // name→{source, spec}. A rung whose plan is IDENTICAL reuses the stored source instead of
@@ -1013,11 +1067,15 @@ async function runSubFunctionOnce(
   // invocation and NONE when a template matches (its `templateFor` fast-path returns first), so the
   // charge is gated on that same predicate — against `input.goal`, the value the closure forwards
   // as `inp.goal`, NOT the `input.nl ?? input.goal` used for routing elsewhere in this function.
-  const planner: SubFunctionPlanner = opts.planner ?? (async (inp, signal) => {
+  // BEST-OF-K applies to whichever planner is in play (default FM or a caller's), because the
+  // selection is about plan SHAPE and not about who proposed it. k defaults to 1 → identity.
+  const planSamples = Math.max(1, (opts as { planSamples?: number }).planSamples ?? 1)
+  const basePlanner: SubFunctionPlanner = opts.planner ?? (async (inp, signal) => {
     const fn = makeFmSubFunctionPlanner()
     const plan = await fn(inp.goal, inp.entry, inp.cases.map((c) => ({ args: c.args, expected: c.expected })), signal)
     return plan // PlannedSubFunction[] is structurally a SubFunctionSpec[]
   })
+  const planner: SubFunctionPlanner = bestOfKPlanner(basePlanner, planSamples, opts.emit)
   const plannerCosts = !opts.planner && !hasDecomposeTemplate(input.goal, input.entry)
   let plan: SubFunctionSpec[] | null = null
   try { plan = await planner({ goal: input.goal, entry: input.entry, cases: input.cases }, opts.signal) }
