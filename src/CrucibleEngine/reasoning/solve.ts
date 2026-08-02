@@ -562,6 +562,28 @@ export function failureDirectedSubGoal(goal: string, signals: string[] | undefin
     'deal with two at the same time.'
 }
 
+/**
+ * Which certified helpers a composition candidate never USES. Text-level, and used only to describe
+ * an ALREADY-FAILING candidate back to the proposer — never to judge one.
+ *
+ * "Uses" is any identifier reference, not a `name(` call site. `.map(unquoteCsvField)` passes the
+ * certified helper as a callback and is a perfectly good use; requiring a paren reported it as
+ * ignored, which would have told the model to fix something it did right. Caught by this function's
+ * own selfcheck before it ever ran live.
+ *
+ * Redefinitions are stripped first (the verifier strips them too, so the CERTIFIED source is what
+ * actually runs) — a candidate that pastes its own copy of a helper and calls that is precisely the
+ * failure being reported, so its private copy must not read as a use. Comments and string literals
+ * are removed for the same reason: a helper named in a comment is not a use.
+ */
+export function uncalledHelpers(candidate: string, helperNames: string[]): string[] {
+  const body = stripHelperRedefinitions(candidate, helperNames)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\]|\\.)*`/g, ' ')
+  return helperNames.filter(n => !new RegExp(`\\b${n}\\b`).test(body))
+}
+
 export async function decomposeCodeBySubFunction(
   input: SolveCodeInput & { nl?: string },
   opts: {
@@ -1331,8 +1353,26 @@ async function runSubFunctionOnce(
   // weak model often returns the whole module and RE-DECLARES the helpers → strip those redefinitions
   // first so the CERTIFIED helper block is the single source (see stripHelperRedefinitions).
   const helperNames = helpers.map((h) => h.name)
-  const composingVerifier: Verifier<string> = (cand, spec) =>
-    verifyCode({ value: `${helperBlock}\n\n${stripHelperRedefinitions(cand.value, helperNames)}`, fingerprint: cand.fingerprint }, spec)
+  // IGNORED-HELPER FEEDBACK (2026-08-02). Measured on the `index` carve: helpers certify 6/6 and
+  // compose still fails 6/6, and the signals show why — the composition RE-IMPLEMENTS a helper
+  // instead of calling it (`got ["he said hi","z"]`, on a case the certified `unquoteCsvField`
+  // passes in one call). The prompt already says "do NOT redefine them"; the head does it anyway,
+  // and nothing in the loop ever tells it that this is what went wrong.
+  //
+  // Added as a SIGNAL on an already-failing verdict, never as a gate. A candidate that passes every
+  // case without calling a single helper is CORRECT, and rejecting it would turn a working answer
+  // into a failure — so the pass path is untouched and the signal is appended only where the
+  // verdict is already `pass: false`. Worst case it is one more line of text on a failed attempt.
+  const composingVerifier: Verifier<string> = async (cand, spec) => {
+    const verdict = await verifyCode({ value: `${helperBlock}\n\n${stripHelperRedefinitions(cand.value, helperNames)}`, fingerprint: cand.fingerprint }, spec)
+    if (verdict.pass || !helperNames.length) return verdict
+    const missed = uncalledHelpers(cand.value, helperNames)
+    if (!missed.length) return verdict
+    return { ...verdict, signals: [...(verdict.signals ?? []),
+      `this candidate never calls ${missed.map(n => '`' + n + '`').join(', ')} — ` +
+      `${missed.length === 1 ? 'that helper is' : 'those helpers are'} already implemented and tested; call ` +
+      `${missed.length === 1 ? 'it' : 'them'} instead of re-implementing the behaviour`] }
+  }
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
   const composeT0 = Date.now()
