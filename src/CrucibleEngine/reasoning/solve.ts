@@ -524,6 +524,44 @@ export function extractOwnFunction(src: string, name: string): string {
  * then wire them in a composition rung verified against the ORIGINAL cases. Never ships an
  * unverified guess: the returned code is exactly what passed verifyCode over the full module.
  */
+
+/**
+ * FAILURE-DIRECTED DECOMPOSITION (2026-08-02). Build the goal handed to a stuck rung's
+ * re-decomposition, carrying WHAT ACTUALLY FAILED into the planner's prompt.
+ *
+ * The measurement this comes from: `splitCsvLine` ("split a CSV line on commas, but a quoted field
+ * may contain commas and doubled quotes") could not be certified in 290 model calls across 12
+ * attempts, and the SAME rung certified in 12 calls once split into `splitCsvRaw` (quote-aware
+ * split, unescapes nothing) + `unquoteCsvField` (unescapes one field, splits nothing). The head can
+ * do either concern; it cannot do both in one function. Recursion is already the machinery for
+ * subdividing a stuck rung — but it re-plans on the rung's ORIGINAL goal text, which is the same
+ * text that produced the un-carvable plan the first time, so it tends to resample the same shape.
+ *
+ * The verifier already knows which cases the closest candidate failed, and that is the only
+ * evidence in the loop about WHERE the difficulty is. Handing it to the re-planner turns a blind
+ * resample into a directed one. The instruction is deliberately domain-neutral — it names no CSV,
+ * no quotes, no algorithm, only "separate the concerns these failures involve" — so it generalises
+ * to any rung that entangles two kinds of complication, which is what the hard set's recurring
+ * "split a structured string into parts" shape is.
+ *
+ * SOUND. This changes PROMPT TEXT only. The sub-solve's acceptance cases are untouched, and its
+ * module is re-verified against them exactly as before, then the parent's composed whole against
+ * the ORIGINAL cases. A misleading note can only cost draws; it cannot certify a wrong answer.
+ *
+ * Returns the goal UNCHANGED when there are no signals to report, so a caller that has no failure
+ * evidence produces byte-identical behaviour to the pre-2026-08-02 path.
+ */
+export function failureDirectedSubGoal(goal: string, signals: string[] | undefined, maxSignals = 4): string {
+  const useful = (signals ?? []).map(s => s.trim()).filter(Boolean).slice(0, maxSignals)
+  if (!useful.length) return goal
+  return `${goal}\n\n` +
+    'A single-function implementation of the above was already attempted and FAILED these checks:\n' +
+    useful.map(s => `  - ${s}`).join('\n') + '\n' +
+    'Those failures involve more than one kind of complication at once. Propose helpers that ' +
+    'SEPARATE those concerns, so that each helper handles exactly ONE of them and no helper has to ' +
+    'deal with two at the same time.'
+}
+
 export async function decomposeCodeBySubFunction(
   input: SolveCodeInput & { nl?: string },
   opts: {
@@ -1230,8 +1268,12 @@ async function runSubFunctionOnce(
       const templated = hasDecomposeTemplate(input.nl ?? input.goal, input.entry)
       if (!templated && depth < maxDepth && res.status !== 'aborted' && !opts.signal?.aborted) {
         emit({ type: 'thought', text: `subfn: helper \`${h.name}\` won't one-shot — recursing (depth ${depth + 1}/${maxDepth})` })
+        // Carry the verifier's own account of what failed into the re-plan (see
+        // failureDirectedSubGoal). `nl` stays the ORIGINAL goal: it keys template detection and the
+        // search-query builder, and neither should be perturbed by an appended failure note.
+        const subGoal = failureDirectedSubGoal(h.goal, res.best?.verdict.signals)
         const sub = await decomposeCodeBySubFunction(
-          { goal: h.goal, entry: h.name, cases: h.cases, context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined, timeoutMs: input.timeoutMs, nl: h.goal },
+          { goal: subGoal, entry: h.name, cases: h.cases, context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined, timeoutMs: input.timeoutMs, nl: h.goal },
           { ...opts, depth: depth + 1, emit: opts.emit, iterate: subLevelIterateBudget(opts.iterate), budget: childBudget },
           proposerOverride,
         )

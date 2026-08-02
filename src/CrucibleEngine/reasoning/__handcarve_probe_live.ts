@@ -64,6 +64,16 @@ import { makeLocalCorpusGround, describeCorpus } from './localCorpusGround'
 interface HandCarve {
   /** The task this carves. Resolved against the scorecard rows unless `row` is supplied. */
   entry: string
+  /**
+   * Distinguishes TWO carves of the SAME task, selected with HC_VARIANT. Added because the first
+   * finer carve of `splitCsvLine` turned out to test two things at once: whether separating the
+   * concerns helps, AND whether the head can obey a rung goal that fights its priors. Its
+   * `splitCsvRaw` must return fields with the quotes still attached, and the live failure signals
+   * are dominated by the head stripping them anyway (`got ["x,y","z"], expected ["\"x,y\"","z"]`).
+   * A second variant that separates the same concerns while asking each helper for the thing a
+   * model already wants to produce isolates which of the two effects the 12-call solve came from.
+   */
+  variant?: string
   /** Which rung the session's evidence says is the hard one, for the verdict line. */
   hardRung: string
   /**
@@ -139,6 +149,7 @@ const CARVES: HandCarve[] = [
   // ceiling is the quote-state scan itself and no carve reaches it; retrieval is the remaining lever.
   {
     entry: 'splitCsvLine',
+    variant: 'raw',
     hardRung: 'splitCsvRaw',
     row: {
       entry: SPLIT_CSV_LINE.name,
@@ -180,6 +191,72 @@ const CARVES: HandCarve[] = [
       },
     ],
   },
+  // ───────────────────────────────────────────────────────────────────────────
+  // VARIANT `mask` — the SAME two concerns, separated the way the head already wants to write them.
+  //
+  // The `raw` variant above certifies 1 draw in 3, and its live failure signals are dominated by
+  // ONE thing: the head strips the quotes that `splitCsvRaw`'s goal explicitly says to keep
+  // (`got ["x,y","z"], expected ["\"x,y\"","z"]`, repeatedly, across draws). That requirement is
+  // load-bearing for the composition but it is anti-prior — nothing a model has ever read calls
+  // "keep the wrapping quotes" the job of a CSV splitter. So the `raw` result confounds two
+  // effects: concern-separation helping, and an unnatural rung goal hurting.
+  //
+  // This variant separates the identical concerns while asking each helper for the thing the head
+  // already wants to produce:
+  //   protectQuotedCommas — a string→string transform, quotes preserved because NOTHING is removed;
+  //   unquoteCsvField     — reused verbatim from `raw` (it was never the failing rung: 1 call).
+  // The composition is then a plain `.split(',')` plus a restore, which is inside tier-0 reach.
+  //
+  // Reading: `mask` >> `raw` means rung goals must match model priors and "make the rung smaller"
+  // is the wrong summary of today's result. `mask` ≈ `raw` means separation is what mattered and
+  // the anti-prior goal was a minor tax. Both are actionable and they point at different fixes.
+  {
+    entry: 'splitCsvLine',
+    variant: 'mask',
+    hardRung: 'protectQuotedCommas',
+    row: {
+      entry: SPLIT_CSV_LINE.name,
+      label: 'splitCsvLine, carved so each helper matches model priors (mask/restore)',
+      goal: SPLIT_CSV_LINE.goal,
+      cases: SPLIT_CSV_LINE.cases,
+    },
+    helpers: [
+      {
+        name: 'protectQuotedCommas',
+        goal:
+          'Write protectQuotedCommas(line: string): string returning the line with every comma ' +
+          'that appears INSIDE a double-quoted section replaced by the character with code 1 ' +
+          '(String.fromCharCode(1)). Scan the line one character at a time keeping a boolean ' +
+          '"inside quotes" flag that flips on every double-quote character. Commas outside quotes ' +
+          'are left alone. Every other character, including the double quotes themselves, is copied ' +
+          'through unchanged.',
+        cases: [
+          { args: ['a,b'], expected: 'a,b' },
+          { args: ['a,,b'], expected: 'a,,b' },
+          { args: ['"x,y",z'], expected: '"x\u0001y",z' },
+          { args: ['"he said ""hi""",z'], expected: '"he said ""hi""",z' },
+          { args: ['"p,q","r,s"'], expected: '"p\u0001q","r\u0001s"' },
+        ],
+      },
+      {
+        // Byte-identical to the `raw` variant's second rung — it certified in ONE call there, so
+        // reusing it keeps the comparison to the concern that actually differs.
+        name: 'unquoteCsvField',
+        goal:
+          'Write unquoteCsvField(field: string): string normalising ONE CSV field. If the field ' +
+          'starts and ends with a double-quote character, remove those two outer characters and ' +
+          'then replace every doubled double-quote ("") in what remains with a single double-quote ' +
+          'character. A field not wrapped in double quotes is returned unchanged.',
+        cases: [
+          { args: ['a'], expected: 'a' },
+          { args: [''], expected: '' },
+          { args: ['"x,y"'], expected: 'x,y' },
+          { args: ['"he said ""hi"""'], expected: 'he said "hi"' },
+          { args: ['""'], expected: '' },
+        ],
+      },
+    ],
+  },
 ]
 
 const s = (ms: number): string => `${(ms / 1000).toFixed(1)}s`
@@ -204,8 +281,14 @@ async function preflightHead(): Promise<void> {
 async function main(): Promise<void> {
   await preflightHead()
   const entry = process.env.HC_ENTRY ?? 'csvSelect'
-  const carve = CARVES.find(c => c.entry === entry)
-  if (!carve) { console.error(`no hand carve for ${entry} — add one to CARVES`); process.exit(1) }
+  const variant = process.env.HC_VARIANT
+  const carve = CARVES.find(c => c.entry === entry && (variant ? c.variant === variant : true))
+  if (!carve) {
+    const available = CARVES.filter(c => c.entry === entry).map(c => c.variant ?? '(default)')
+    console.error(`no hand carve for ${entry}${variant ? ` variant ${variant}` : ''}` +
+      (available.length ? ` — available variant(s): ${available.join(', ')}` : ' — add one to CARVES'))
+    process.exit(1)
+  }
   const row: GeneralProbe | undefined = carve.row ?? [...TASKS, ...HARD_TASKS].find(t => t.entry === entry)
   if (!row) { console.error(`no scorecard row named ${entry}`); process.exit(1) }
   // A self-contained row must be the SAME rung its parent carve failed on, byte for byte. Without
@@ -213,7 +296,7 @@ async function main(): Promise<void> {
   // "the finer carve works" when what actually happened is that the problem got easier. Cheap,
   // mechanical, and it fails loudly rather than producing a publishable-looking wrong number.
   if (carve.row) {
-    const parentRung = CARVES.flatMap(c => c.helpers).find(h => h.name === carve.row!.entry)
+    const parentRung = CARVES.filter(c => c !== carve).flatMap(c => c.helpers).find(h => h.name === carve.row!.entry)
     if (!parentRung) {
       console.error(`self-contained row \`${carve.row.entry}\` is not a rung of any carve — nothing to be faithful to`)
       process.exit(1)
@@ -272,7 +355,7 @@ async function main(): Promise<void> {
   const planner: SubFunctionPlanner = async (inp) =>
     inp.entry === carve.entry ? carve.helpers.map(h => ({ ...h })) : null
 
-  console.log(`# HAND-CARVE PROBE — ${row.label}`)
+  console.log(`# HAND-CARVE PROBE — ${row.label}${carve.variant ? `  [variant: ${carve.variant}]` : ''}`)
   console.log(`# ${carve.helpers.length} hand-written rung(s): ${carve.helpers.map(h => h.name).join(', ')}  (hard rung: ${carve.hardRung})`)
   console.log(`# ${runs} draw(s) · wall ceiling ${wallMs > 0 ? s(wallMs) : 'none'} · per-rung purse ` +
     `${iterate.globalModelCalls}c / ${iterate.maxEpochs} epochs / ${s(iterate.wallClockMs)}` +
@@ -355,7 +438,7 @@ async function main(): Promise<void> {
           : `MIXED — hard rung ${hard}/${runs}, whole task ${solved}/${runs}. The carve is reachable but not reliably; ` +
             `read the per-draw traces above before attributing.`
   console.log(`\n   ${verdict}`)
-  console.log(JSON.stringify({ handcarve_probe: true, entry, runs, wallMs, retrieval: retrievalOn, solved, hardRungCertified: hard, composeCertified: comp }))
+  console.log(JSON.stringify({ handcarve_probe: true, entry, variant: carve.variant ?? null, runs, wallMs, retrieval: retrievalOn, solved, hardRungCertified: hard, composeCertified: comp }))
 }
 
 main().catch(e => { console.error('hand-carve probe failed:', e); process.exit(1) })
