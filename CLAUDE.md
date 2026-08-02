@@ -12,6 +12,17 @@ problems it has not seen. Reference implementation: `src/CrucibleEngine/reasonin
 (`npm run vgr:bench`). If ROADMAP.md or any comment contradicts DOCTRINE.md, the doctrine
 wins and the other doc is wrong — fix it to match.
 
+**WIRING BEFORE OPTIMISATION (measured 2026-08-02, `npm run audit:reach`).** `reasoning/` is the
+doctrine's reference implementation but is NOT the live path: `solveCodeTask` / `iterate` have no
+live path from `server.ts`. User requests are served by `server.ts → agent/synthDriver.ts →
+synth/universal.ts`. ~167 commits and every capability number (ladder, carve, rung census,
+hard-set scorecard) measured the disconnected stack. Before optimising ANY component, run
+`npm run audit:reach` and confirm it is transitively reachable from `server.ts`; a benchmark on an
+unreachable module measures a sandbox. `[x]` has historically meant "built and benchmarked", never
+"reachable" — three ROADMAP items are `[x]` for files that were since deleted. This extends the
+existing "Verify, never guess" rule: grepping for callers is not enough when the caller is itself
+dead, so use the transitive check, not a one-hop grep.
+
 `ROADMAP.md` is the operational source of truth: what exists, what's planned, run commands, and
 the dated change log — all in service of the doctrine above.
 

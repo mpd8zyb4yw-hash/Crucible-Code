@@ -17,7 +17,70 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02f (the instrument changed: measure the RUNG, census in flight) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (REPLACE THIS EVERY SESSION)
+
+> **START HERE. Run `npm run audit:reach`. Do not run any capability benchmark until you have.**
+>
+> **THE FINDING (2026-08-02g).** `reasoning/solve.ts` — the most-edited source file in the repo and
+> the subject of every capability number since 2026-07-19 — **has no live path from `server.ts`.**
+>
+> ```
+> solveCodeTask            NO LIVE PATH from server.ts — research-only
+> solveWithKeptCandidates  NO LIVE PATH from server.ts — research-only
+> iterate                  NO LIVE PATH from server.ts — research-only
+> synthesizeUniversal      LIVE  (synth/universal.ts)
+> synthesizePureCode       LIVE  (synth/pureCode.ts)
+> ```
+>
+> User requests are served by `server.ts -> agent/synthDriver.ts -> synth/universal.ts`, a SECOND
+> independent implementation of the doctrine. `reasoning/` is entered only by one dynamic import of
+> `propertyVerifier` from `synth/pureCode.ts`.
+>
+> **THE RUNG CENSUS IS KILLED.** It was stopped at rung 3 of 13 and must NOT be resumed as-is: it
+> grinds `reasoning/`, which no user request can reach. Two rung rows survive in
+> `scratchpad-bench/rung-census.jsonl` (`onesWord` 30/30, `tensWord` 30/30) and are the only
+> retained data. Same for the ladder, the carve probe and the hard-set scorecard.
+>
+> **WHY IT HID.** `scripts/audit-reachability.mjs` has existed since 2026-07-19 and was never
+> re-run. Its FILE-level number even said `reasoning/` was 100% reachable — `server.ts` imports
+> `selectBestEffort` from `reasoning/keepK.ts` (a pure ranking helper), which drags `solve.ts` into
+> the file closure. One unrelated helper made a whole subsystem score as wired.
+>
+> **THE OPEN DECISION — this is the only thing that matters next, and it is the user's to make:**
+>
+> 1. **WIRE IT.** Give `solveCodeTask` a live caller from `synthDriver.ts` behind a flag, then
+>    re-measure. Justified only if `reasoning/` is genuinely better than `synth/universal.ts` — which
+>    has never been tested head to head, because they have never both been runnable on one input.
+> 2. **DELETE IT.** Treat `synth/` as the product and `reasoning/` as a research artefact. ~14k LOC
+>    of engine + ~10.7k LOC of harness stops being maintained and stops attracting sessions.
+> 3. **HEAD-TO-HEAD FIRST (recommended).** One task, both stacks, same input. Cheap, and it is the
+>    measurement that decides 1 vs 2 instead of guessing. Nothing else should be built before it.
+>
+> **DO NOT** tune a rung, a carve, a planner or a proposer in `reasoning/` until this is decided.
+> A benchmark on an unreachable module measures a sandbox. `npm run audit:reach` now runs inside
+> `prove:all` so the check cannot be skipped again.
+>
+> **ALSO STALE — three ROADMAP items are `[x]` for files that no longer exist:** `nodeExecutor.ts`,
+> `decompositionDag.ts`, `apply/applyLayer.ts` were deleted. Those capabilities are ABSENT.
+> `router/capabilityRouter.ts` `classify()` is confirmed to have no live caller.
+>
+> **PROCESS NOTE, worth more than any single fix.** `NEXT_SESSION.md` (93 edits) and `ROADMAP.md`
+> (85) are the two most-edited files in the repo — ahead of every source file. More effort has gone
+> into recording what to do next than into doing it. `reasoning/` is 46 harness files / 10,730 LOC
+> against 14,323 LOC of engine, ~1:1. The instrument instability (4+ instrumentation bugs, 2
+> retracted results, a self-memorisation vector, 2 wrong-head traps) is what produced that ratio:
+> when measurements keep turning out invalid, every session's deliverable becomes a better
+> instrument instead of a better system. Prefer dogfooding the live stack on real tasks — the
+> failures arrive pre-weighted by how often they actually bite.
+>
+> **Still valid work from this session, on the dead stack (do not run yet):** `RC_ARMS=base,derived`
+> A/B arm in `__rung_census_live.ts`. Measured for free: `deriveScanIndexCases` forces **0** cases
+> from the real `csvSelect` gold, so the derived arm is inert on every catalog rung as written —
+> widening it to MAP/PIPELINE shapes is a prerequisite for that arm existing, not a tuning knob.
+
+---
+
+## CURRENT STATE — last updated 2026-08-02f (the instrument changed: measure the RUNG, census in flight) (superseded by 2026-08-02g above)
 
 > **START HERE. Read `rung_census_30.log` / `scratchpad-bench/rung-census.jsonl` first — a 13-rung x
 > 30-draw capability census was launched this session and is the highest-information artefact

@@ -152,6 +152,23 @@ Every capability Crucible gains should be an instance of the same loop:
 
 ## The reference implementation
 
+> **WIRING STATUS, measured 2026-08-02 by `npm run audit:reach` — read this before optimising
+> anything in `reasoning/`.** `solveCodeTask`, `solveWithKeptCandidates` and `iterate` have **NO
+> LIVE PATH from `server.ts`**. The only live entry into `reasoning/` is one dynamic import of
+> `propertyVerifier` inside `synth/pureCode.ts`. The loop that actually serves user requests is
+> `server.ts → agent/synthDriver.ts → synth/universal.ts` (`synthesizeUniversal`,
+> `synthesizePureCode`) — a SECOND, independent implementation of this same doctrine.
+>
+> "Route real traffic through it" is an instruction that was never carried out. Between
+> 2026-07-19 and 2026-08-02, ~167 commits and every capability benchmark (ladder, carve, rung
+> census, hard-set scorecard) measured `reasoning/` — a subsystem no user request can reach. Those
+> numbers describe a sandbox, not the product, and none of them survive contact with a real caller.
+>
+> Consequence for anyone reading this file as a mandate: **wiring comes before optimisation.**
+> Do not tune a rung, a carve or a planner in `reasoning/` until `solveCodeTask` has a live caller
+> — otherwise the measurement cannot mean what it appears to mean. `npm run audit:reach` now runs
+> inside `prove:all` so this cannot silently recur.
+
 `src/CrucibleEngine/reasoning/` is the canonical embodiment of this doctrine — read it as the
 worked example, extend it, and route real traffic through it:
 

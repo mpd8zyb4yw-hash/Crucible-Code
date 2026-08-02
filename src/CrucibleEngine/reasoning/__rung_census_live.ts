@@ -9,6 +9,10 @@
 //   RC_CALLS=24           per-draw model-call purse (default 24).
 //   RC_EPOCHS=6           per-draw epoch budget (default 6).
 //   RC_DEPS=1             inject reference implementations of a rung's named dependencies (default 1).
+//   RC_ARMS=base,derived  rung-level A/B (default `base`): `derived` re-runs each rung with the cases
+//                         the parent task's gold FORCES merged in, so an intervention is measured at
+//                         30 draws in minutes instead of 12 draws in hours. Rungs where the gold
+//                         forces nothing are reported INERT and skipped, not silently scored as null.
 //   RC_OUT=path.jsonl     append one JSON line per rung as it finishes (default scratchpad-bench/…).
 //
 // ─── WHY THIS EXISTS ───────────────────────────────────────────────────────────
@@ -78,7 +82,24 @@ import { iterate } from './iterate'
 import { proposeCode } from './codeProposer'
 import { verifyCode, type CodeAcceptance, type CodeCase } from './codeVerifier'
 import { mergeCodeAcceptance } from './codeResearch'
+import { deriveScanIndexCases, mergeDerivedCases } from './rungCounterexample'
 import type { TaskSpec } from './types'
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PARENT-TASK GOLD, copied VERBATIM from `HARD_TASKS` in
+// `__decompose_general_scorecard_live.ts`. It exists here only to feed the DERIVED arm, which must
+// see exactly what `solve.ts` sees (`input.cases`) — a friendlier, hand-picked gold set would
+// measure a derivation that production never gets to run.
+// ─────────────────────────────────────────────────────────────────────────────
+const TASK_GOLD: Record<string, CodeCase[]> = {
+  csvSelect: [
+    { args: ['a,b\nc,d', 0], expected: ['a', 'c'] },
+    { args: ['a,b\nc,d', 1], expected: ['b', 'd'] },
+    { args: ['"x,y",z', 0], expected: ['x,y'] },
+    { args: ['"he said ""hi""",z', 0], expected: ['he said "hi"'] },
+    { args: ['a\nb,c', 1], expected: ['', 'c'] },
+  ],
+}
 
 /**
  * One rung of a hand carve, promoted to a measurable unit in its own right.
@@ -586,9 +607,33 @@ function depBlock(rung: Rung, byName: Map<string, Rung>): string | undefined {
   return out.join('\n\n')
 }
 
+/**
+ * THE DERIVED-CASES ARM. Returns the rung's shown cases AFTER merging in every case the parent
+ * task's gold FORCES for this rung — i.e. exactly what `solve.ts` would add. The point of running
+ * it here rather than end to end is resolution: 30 draws in minutes instead of 12 draws in hours.
+ *
+ * Three outcomes, and the harness must distinguish them, because two of them are findings:
+ *   • cases added        → a real arm; compare its GENERALISES column against the base arm.
+ *   • INERT (0 added)    → the derivation does not fire on this rung at all. Not a null result about
+ *                          derived cases; a result about their REACH. This is the expected outcome
+ *                          for every rung that is not a `(string, number) -> number` scan locator.
+ *   • CONTRADICTED       → the derivation disagrees with a case the rung is certified against, so it
+ *                          is UNSOUND here and is dropped. Reported loudly, never silently ignored.
+ */
+function derivedCasesFor(rung: Rung): { cases: CodeCase[]; added: number; contradicted: boolean } {
+  const gold = TASK_GOLD[rung.task] ?? []
+  const derived = gold.flatMap(c => deriveScanIndexCases(rung.name, c.args?.[0], c.expected))
+  const merged = mergeDerivedCases(rung.cases, derived)
+  return { cases: (merged.cases ?? rung.cases) as CodeCase[], added: merged.added.length, contradicted: merged.contradicted }
+}
+
 interface RungResult {
   task: string
   name: string
+  /** Which arm produced this row: the rung's own cases, or those plus gold-forced derived cases. */
+  arm: 'base' | 'derived'
+  /** How many derived cases the gold forced for this rung (0 = the derivation is inert here). */
+  derivedAdded: number
   returns: string
   runs: number
   certified: number
@@ -599,14 +644,16 @@ interface RungResult {
   overfitSignals: string[]
 }
 
-async function runRung(rung: Rung, runs: number, budget: { globalModelCalls: number; maxEpochs: number; wallClockMs: number }, byName: Map<string, Rung>): Promise<RungResult> {
+async function runRung(rung: Rung, runs: number, budget: { globalModelCalls: number; maxEpochs: number; wallClockMs: number }, byName: Map<string, Rung>, arm: 'base' | 'derived' = 'base'): Promise<RungResult> {
   const context = depBlock(rung, byName)
+  const derived = arm === 'derived' ? derivedCasesFor(rung) : { cases: rung.cases, added: 0, contradicted: false }
+  const shown = derived.cases
   const spec: TaskSpec = {
     // Byte-for-byte the rung spec `solve.ts` builds (goal + the "Implement helper" line), so this
     // measures the production path and not a friendlier prompt.
     goal: `${rung.goal}\n\nImplement helper \`${rung.name}\`.`,
     domain: 'code',
-    acceptance: { entry: rung.name, cases: rung.cases } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+    acceptance: { entry: rung.name, cases: shown } satisfies CodeAcceptance as unknown as Record<string, unknown>,
     ...(context ? { context } : {}),
   }
 
@@ -653,7 +700,7 @@ async function runRung(rung: Rung, runs: number, budget: { globalModelCalls: num
   }
 
   return {
-    task: rung.task, name: rung.name, returns: rung.returns, runs, certified, generalised,
+    task: rung.task, name: rung.name, arm, derivedAdded: derived.added, returns: rung.returns, runs, certified, generalised,
     callsMed: median(calls), wallMedS: Math.round(median(walls) / 1000),
     overfitSignals: [...overfit].slice(0, 4),
   }
@@ -667,6 +714,13 @@ async function main(): Promise<void> {
     globalModelCalls: Math.max(1, Number(process.env.RC_CALLS || 24)),
     maxEpochs: Math.max(1, Number(process.env.RC_EPOCHS || 6)),
     wallClockMs: Math.max(1000, Number(process.env.RC_WALL_MS || 90_000)),
+  }
+  // RC_ARMS=base,derived turns the census into a rung-level A/B. Default is `base` ALONE so the
+  // headline census numbers stay byte-comparable with every earlier run; the derived arm is an
+  // explicit opt-in that doubles the draw count.
+  const arms = ((process.env.RC_ARMS ?? 'base').split(',').map(x => x.trim()).filter(Boolean) as Array<'base' | 'derived'>)
+  for (const a of arms) {
+    if (a !== 'base' && a !== 'derived') { console.error(`unknown RC_ARMS entry '${a}' (expected base|derived)`); process.exit(1) }
   }
   const only = new Set((process.env.RC_ONLY ?? '').split(',').map(x => x.trim()).filter(Boolean))
   const task = process.env.RC_TASK
@@ -709,20 +763,50 @@ async function main(): Promise<void> {
   const results: RungResult[] = []
   for (const r of selected) {
     console.log(`── ${r.task} / ${r.name}  (returns ${r.returns}${r.deps?.length ? `, deps: ${r.deps.join(', ')}` : ''})`)
-    const res = await runRung(r, runs, budget, byName)
-    results.push(res)
-    const [lo, hi] = wilson(res.generalised, res.runs)
-    console.log(`   → certified ${res.certified}/${res.runs}, GENERALISES ${res.generalised}/${res.runs} ` +
-      `(95% CI ${pct(lo)}-${pct(hi)}), median ${res.callsMed}c / ${res.wallMedS}s`)
-    for (const sig of res.overfitSignals) console.log(`     held-out failure: ${sig}`)
-    console.log('')
-    appendFileSync(out, JSON.stringify({ rungCensus: true, budget, ...res }) + '\n')
+    for (const arm of arms) {
+      if (arm === 'derived') {
+        const d = derivedCasesFor(r)
+        if (d.contradicted) {
+          console.log(`   [derived] CONTRADICTED — a gold-forced case disagrees with a case this rung certifies against.`)
+          console.log(`   [derived] The derivation is UNSOUND for this rung and the batch was dropped; arm skipped.\n`)
+          continue
+        }
+        if (d.added === 0) {
+          // Not a null result about derived cases — a result about their REACH, and the exact
+          // reason the 8/12 probe number does not transfer. Never let it read as "no effect".
+          console.log(`   [derived] INERT — the gold forces 0 additional cases here, so this arm is`)
+          console.log(`   [derived] byte-identical to base. Skipped rather than spending ${runs} draws to re-measure base.\n`)
+          continue
+        }
+        // A derived case that a CORRECT implementation fails would make a solvable rung permanently
+        // unsolvable, which is worse than no fix at all. The reference is the ground truth available
+        // here, so it gates the arm — costs no model calls and runs before any draw.
+        const guard = await passes(r.name, [depBlock(r, byName), r.ref].filter(Boolean).join('\n\n'), d.cases)
+        if (!guard.ok) {
+          console.error(`ABORT: a DERIVED case for \`${r.name}\` is failed by its own reference — the derivation is unsound and would make a correct helper un-certifiable.`)
+          for (const f of guard.failed) console.error(`   ${f.slice(0, 160)}`)
+          process.exit(1)
+        }
+        console.log(`   [derived] +${d.added} gold-forced case(s), reference still passes all ${d.cases.length}`)
+      }
+      const res = await runRung(r, runs, budget, byName, arm)
+      results.push(res)
+      const [lo, hi] = wilson(res.generalised, res.runs)
+      console.log(`   → [${res.arm}] certified ${res.certified}/${res.runs}, GENERALISES ${res.generalised}/${res.runs} ` +
+        `(95% CI ${pct(lo)}-${pct(hi)}), median ${res.callsMed}c / ${res.wallMedS}s`)
+      for (const sig of res.overfitSignals) console.log(`     held-out failure: ${sig}`)
+      console.log('')
+      appendFileSync(out, JSON.stringify({ rungCensus: true, budget, ...res }) + '\n')
+    }
   }
 
   // ── THE CENSUS TABLE ───────────────────────────────────────────────────────
+  // Base arm only. The verdicts below are the capability question ("can the head fill this rung"),
+  // and mixing an intervention arm into them would answer a different question in the same column.
+  const baseResults = results.filter(r => r.arm === 'base')
   console.log('\n# ── RUNG CAPABILITY CENSUS ────────────────────────────────────────────')
   console.log('  reachable   certified   returns    task / rung')
-  for (const r of results) {
+  for (const r of baseResults) {
     const [lo, hi] = wilson(r.generalised, r.runs)
     console.log(`  ${`${r.generalised}/${r.runs}`.padStart(6)} ${`(${pct(lo)}-${pct(hi)})`.padEnd(11)} ${`${r.certified}/${r.runs}`.padStart(6)}   ` +
       `${r.returns.padEnd(9)}  ${r.task} / ${r.name}`)
@@ -731,10 +815,10 @@ async function main(): Promise<void> {
   // Per task, the census answer is decided by the WORST rung: a carve is exactly as reachable as
   // its hardest piece, so an average over rungs would hide the only fact that matters.
   console.log('\n# ── VERDICT PER TASK (a carve is as reachable as its WORST rung) ──────')
-  const tasks = [...new Set(results.map(r => r.task))]
+  const tasks = [...new Set(baseResults.map(r => r.task))]
   let anyUnreachable = false, anyOverfitOnly = false
   for (const t of tasks) {
-    const rs = results.filter(r => r.task === t)
+    const rs = baseResults.filter(r => r.task === t)
     const worst = rs.reduce((a, b) => (b.generalised / b.runs < a.generalised / a.runs ? b : a))
     const rate = worst.generalised / worst.runs
     const [, hi] = wilson(worst.generalised, worst.runs)
@@ -772,7 +856,31 @@ async function main(): Promise<void> {
     console.log('  Separately: at least one rung certifies far more often than it generalises. That is the')
     console.log('  under-determined-spec defect (rungCounterexample.ts), not capability and not the planner.')
   }
-  console.log(JSON.stringify({ rungCensusSummary: true, runs, budget, results }))
+  // ── THE A/B ARM ────────────────────────────────────────────────────────────
+  const derivedResults = results.filter(r => r.arm === 'derived')
+  if (derivedResults.length) {
+    console.log('\n# ── A/B: GOLD-FORCED DERIVED CASES (base -> derived, GENERALISES) ─────')
+    for (const d of derivedResults) {
+      const b = baseResults.find(x => x.task === d.task && x.name === d.name)
+      const delta = b ? d.generalised - b.generalised : NaN
+      const [lo, hi] = wilson(d.generalised, d.runs)
+      console.log(`  ${d.task} / ${d.name}  +${d.derivedAdded} case(s):  ` +
+        `${b ? `${b.generalised}/${b.runs}` : '—'} -> ${d.generalised}/${d.runs} (${pct(lo)}-${pct(hi)})  ` +
+        (Number.isFinite(delta) ? `${delta >= 0 ? '+' : ''}${delta}` : ''))
+    }
+    // The CIs, not the bare deltas, decide this: at 30 draws per arm a swing of a few draws is
+    // inside the noise, and calling it an effect is how the retracted 2026-08-02 numbers happened.
+    console.log('  Read the intervals, not the deltas — non-overlapping CIs are the bar for a real effect.')
+  }
+  const inert = arms.includes('derived') ? selected.filter(r => !derivedResults.some(d => d.name === r.name)) : []
+  if (inert.length) {
+    console.log(`\n  Derivation INERT or dropped on ${inert.length}/${selected.length} rung(s): ${inert.map(r => r.name).join(', ')}.`)
+    console.log('  That is the REACH result: `deriveScanIndexCases` fires only on a (string, number) -> number')
+    console.log('  scan locator, so the arm cannot be run at all on MAP or PIPELINE shaped rungs. Widening the')
+    console.log('  derivation to those shapes is the prerequisite for measuring it there, not a tuning knob.')
+  }
+
+  console.log(JSON.stringify({ rungCensusSummary: true, runs, budget, arms, results }))
 }
 
 main().catch(e => { console.error('rung census failed:', e); process.exit(1) })

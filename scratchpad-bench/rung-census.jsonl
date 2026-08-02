@@ -1,0 +1,2 @@
+{"rungCensus":true,"budget":{"globalModelCalls":24,"maxEpochs":6,"wallClockMs":90000},"task":"numberToWords","name":"onesWord","returns":"string","runs":30,"certified":30,"generalised":30,"callsMed":1,"wallMedS":3,"overfitSignals":[]}
+{"rungCensus":true,"budget":{"globalModelCalls":24,"maxEpochs":6,"wallClockMs":90000},"task":"numberToWords","name":"tensWord","returns":"string","runs":30,"certified":30,"generalised":30,"callsMed":1,"wallMedS":2,"overfitSignals":[]}

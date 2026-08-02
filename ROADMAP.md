@@ -56,6 +56,26 @@
 > which one becomes the live path (or whether they merge) is an open product decision — see
 > NEXT_SESSION.md.
 >
+> **RESOLVED MECHANICALLY 2026-08-02 (`npm run audit:reach`, now part of `prove:all`).** The
+> question above sat open for ~4 weeks while it was treated as a matter of intent. It is a matter
+> of fact, and the fact is:
+> - **LIVE stack:** `server.ts → agent/synthDriver.ts → synth/universal.ts`
+>   (`synthesizeUniversal`, `synthesizePureCode` are transitively reachable from `server.ts`).
+> - **DEAD stack:** `reasoning/solve.ts`. `solveCodeTask`, `solveWithKeptCandidates` and
+>   `iterate` have NO live path from `server.ts`. `reasoning/` is entered only by one dynamic
+>   import of `propertyVerifier` from `synth/pureCode.ts`. `reasoning/keepK.ts` looks wired
+>   because `server.ts` imports `selectBestEffort` from it — a pure ranking helper that does not
+>   call the loop.
+> - `router/capabilityRouter.ts` `classify()` — confirmed NO live caller, matching its own
+>   `[x, not live-wired]` tag below.
+> - **Three items below are marked `[x]` for files that NO LONGER EXIST**: `nodeExecutor.ts`,
+>   `decompositionDag.ts`, `apply/applyLayer.ts` were deleted. Their `[x]` is stale; treat those
+>   capabilities as ABSENT, not complete. They are left in place below as history, not as status.
+>
+> The lesson generalises past these three: `[x]` in this document has meant "built and benchmarked",
+> never "reachable from a user request". `npm run audit:reach` is now the arbiter of the second
+> claim and runs inside `prove:all`. **Wiring before optimisation.**
+>
 > 0. **Capability Router + Escalation Policy** `[x, not live-wired]` — `router/capabilityRouter.ts`. classify() is REAL: deterministic-pattern coverage from the synth catalog (241+ weighted-regex entries) → synth (strong) / fm (moderate); external/unknown signal from the Tier 1.2 index + lexical cues → retrieve; else abstain (always reachable, no "try anyway" bypass). Confidence = actual signal strength, never fixed. Proven end-to-end in isolation: NL request → DAG → router (reverse→synth 0.70, Stripe→retrieve 0.60) → executor applied synth node via the apply layer, abstained on the ungrounded node. Not reachable from a live `/api/chat` request (see correction above).
 > 1. **Task Decomposition → Dependency DAG** `[x, not live-wired]` — `src/CrucibleEngine/decompositionDag.ts`. Pure/no-model; reuses goalDecomposer; topo-ordered (Kahn, cycle-safe); nodes carry targetFiles/changeType/dependsOn/verificationGate. `classifyDag()` routes every node through the capability router (abstain reachable from each). prove:all 241/241. Not reachable from a live `/api/chat` request (see correction above).
 > 2. **Semantic Repo Index** `[x]` — `src/CrucibleEngine/state/semanticIndex.ts`. TS compiler API, syntactic mode (no Program/checker, no model). exports+kinds, import graph, call graph, transitive type-chains, class/interface heritage. Query API (findSymbol/callersOf/calleesOf/typeChain/relatedFiles…) consumed by the DAG. Incremental mtime refresh + post-mutation reindex.
@@ -1932,6 +1952,55 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM — wiring census replaces capability census)
+
+Session opened on the 13-rung x 30-draw capability census. It was **killed at rung 3 of 13** and
+should not be resumed as-is. Prompted by the user asking whether two weeks of benchmarking was the
+wrong approach, the call graph was audited instead of the model. It was.
+
+**THE FINDING.** `reasoning/solve.ts` — most-edited source file in the repo (39 commits), subject of
+the ladder, carve probe, rung census and hard-set scorecard — **has no live path from `server.ts`.**
+`npm run audit:reach`:
+
+```
+solveCodeTask            NO LIVE PATH from server.ts — research-only
+solveWithKeptCandidates  NO LIVE PATH from server.ts — research-only
+iterate                  NO LIVE PATH from server.ts — research-only
+synthesizeUniversal      LIVE  (synth/universal.ts)
+synthesizePureCode       LIVE  (synth/pureCode.ts)
+classify                 NO LIVE PATH from server.ts — research-only
+```
+
+User requests are served by `server.ts → agent/synthDriver.ts → synth/universal.ts`, a second
+independent implementation of the same doctrine. `reasoning/` is entered only by one dynamic import
+of `propertyVerifier` from `synth/pureCode.ts`.
+
+**WHY IT HID FOR TWO WEEKS.** `scripts/audit-reachability.mjs` existed since 2026-07-19 and was
+never re-run. Worse, its FILE-level number said `reasoning/` was 100% reachable — because
+`server.ts` imports `selectBestEffort` from `reasoning/keepK.ts` (a pure ranking helper), and the
+file graph then reaches `solve.ts` next door. One unrelated helper made a whole subsystem score as
+wired. Comments in `server.ts` (~:4120) describe decomposition and `iterate()` as if they run.
+
+**FIXES LANDED.**
+- `scripts/audit-reachability.mjs` — added TRANSITIVE SYMBOL liveness (BFS from `server.ts`, bodies
+  sliced by brace matching) plus dead-export detection. The first draft of this section had the same
+  one-hop bug it diagnoses: it reported `solveCodeTask` LIVE because `keepK.ts` calls it, while
+  keepK's own entry has no caller. Dead chains report live at every link if you only look one hop.
+- `npm run audit:reach` is now part of **`prove:all`**, so this cannot silently recur.
+- Three items in Tier 0/2 are `[x]` for files that were **deleted**: `nodeExecutor.ts`,
+  `decompositionDag.ts`, `apply/applyLayer.ts`. Flagged stale; capabilities are ABSENT, not complete.
+- `DOCTRINE.md` / `CLAUDE.md` — WIRING BEFORE OPTIMISATION blocks added. `[x]` has meant "built and
+  benchmarked", never "reachable from a user request".
+- `__rung_census_live.ts` — `RC_ARMS=base,derived` A/B arm added earlier in the session (still valid
+  work, but it measures the dead stack; do not run it until `solveCodeTask` has a live caller).
+  Measured for free along the way: `deriveScanIndexCases` forces **0** cases from the real
+  `csvSelect` gold, so the derived arm is inert on every catalog rung as written.
+
+**WHAT THIS INVALIDATES.** Every capability number from 2026-07-19 onward describes a sandbox: the
+0/12 hard-set, ladder 14/15, carve 2/15, tier-3 0/27, and the two retracted results. None of them
+were measurements of the assistant. They are not necessarily WRONG about the model — they are
+uninformative about the product.
 
 ### 2026-08-02f (measurement instrument replaced: the RUNG, not the hour-long ladder)
 
