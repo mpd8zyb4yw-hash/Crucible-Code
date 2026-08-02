@@ -285,8 +285,14 @@ async function main(): Promise<void> {
     for (const a of attempts) {
       console.log(`   attempt ${a.attempt}: ${a.status} — ${a.modelCalls} calls, ${s(a.wallMs)}`)
       for (const r of a.rungs) {
+        // `bestScore` is the whole diagnosis for a stalled rung and is worth more than the call
+        // count: `stalled` means two epochs without improvement, so the question is WHERE it
+        // stalled. A rung parked at 0.8 is one counterexample from certifying and the lever is
+        // failure-directed repair; a rung parked near 0 never had the shape and the lever is a
+        // smaller rung. Printing only calls/seconds hides that difference entirely.
         console.log(`     ${(r.phase ?? 'unknown').padEnd(9)} ${r.name.padEnd(28)} ${(r.certified ? 'OK' : r.status).padEnd(9)} ` +
-          `${String(r.modelCalls).padStart(3)}c ${(r.wallMs === undefined ? '   —' : s(r.wallMs)).padStart(7)}`)
+          `${String(r.modelCalls).padStart(3)}c ${(r.wallMs === undefined ? '   —' : s(r.wallMs)).padStart(7)}` +
+          `  best ${r.bestScore.toFixed(2)}`)
       }
     }
     // The verdict's two facts, read across EVERY attempt rather than the last one. `d.rungs` holds
