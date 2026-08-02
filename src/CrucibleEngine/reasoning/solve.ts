@@ -1079,7 +1079,10 @@ async function runSubFunctionOnce(
   // as `inp.goal`, NOT the `input.nl ?? input.goal` used for routing elsewhere in this function.
   // BEST-OF-K applies to whichever planner is in play (default FM or a caller's), because the
   // selection is about plan SHAPE and not about who proposed it. k defaults to 1 → identity.
-  const planSamples = Math.max(1, (opts as { planSamples?: number }).planSamples ?? 1)
+  // Env override so the scorecard can measure best-of-K without threading the option through
+  // solveByLadder — the hard set is where it has to prove itself, and it is default 1 (identity)
+  // until it does.
+  const planSamples = Math.max(1, (opts as { planSamples?: number }).planSamples ?? Number(process.env.CRUCIBLE_PLAN_SAMPLES || 1))
   const basePlanner: SubFunctionPlanner = opts.planner ?? (async (inp, signal) => {
     const fn = makeFmSubFunctionPlanner()
     const plan = await fn(inp.goal, inp.entry, inp.cases.map((c) => ({ args: c.args, expected: c.expected })), signal)

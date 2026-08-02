@@ -2186,6 +2186,43 @@ two results were retracted tonight for exactly this. A replication was launched 
 one helper signature (`(string, number) -> number`). MAP and PIPELINE compositions also force helper
 outputs and are not covered. The 5-of-12 overfit rate is measured on one rung.
 
+### ⚠ IT DOES NOT TRANSFER TO THE GENERAL PATH — 1/12 vs 0/12 (and the one solve was tier 1)
+
+The hard set, re-run with the full chain enabled (mechanical composition + gold-forced
+counterexamples + failure-directed decomposition + signal-order), head verified, 4 tasks x 3 draws
+at a 300s ceiling:
+
+| task | with the chain | baseline |
+|------|----------------|----------|
+| numberToWords  | 0/3 (67c/300s)  | 0/3 |
+| formatDuration | 0/3 (65c/304s)  | 0/3 |
+| wordWrap       | **1/3** (67c/300s) | 0/3 |
+| csvSelect      | 0/3 (90c/301s)  | 0/3 |
+| **total**      | **1/12**        | **0/12** |
+
+**The single solve was at TIER 1** ("certified from 1 mechanical proposal, no model involved") —
+pre-existing machinery that none of tonight's work touches. So it is variance, not transfer, and
+this must not be read as 1/12 > 0/12.
+
+**Why it works on the probe (8/12, p=0.0005) and not here.** The probe HANDS OVER a carve whose hard
+helper is a locator, `(string, number) -> number`. The gold-forced derivation only fires on that
+shape — it is what makes the helper's required outputs recoverable from the gold. On the general
+path the FM planner invents the carve, never proposes a locator, so the derivation never fires and
+the run degenerates to the old behaviour plus wasted plan attempts (tier 3 spends 57-105 calls,
+against a 42c baseline).
+
+**This is coherent with — not contradicted by — the earlier finding that the planner was exonerated.**
+The planner is not why the RUNG could not be filled (a correct hand carve failed too, 0 in 290
+calls). But it IS why the FIX cannot apply: the fix needs a carve of a particular shape, and the
+planner does not produce it.
+
+**So the two halves of tonight's work are the same problem seen twice, and the bridge already
+exists and is switched off.** `planShape.ts` measured that number-returning helpers certify 6/6
+where marked-up intermediates certify 0-1/9; `bestOfKPlanner` samples k plans and grinds the
+best-shaped one; both are DEFAULT OFF. If the planner can be pushed toward natural-value carves,
+the fillability law AND the counterexample derivation both start applying to the general path.
+That is the single highest-value experiment outstanding: `CRUCIBLE_PLAN_SAMPLES=3` on the hard set.
+
 **Failure-directed decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion re-planned a stuck
 rung on its ORIGINAL goal text — the text that produced the un-carvable plan — so it resampled the
 same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these checks
