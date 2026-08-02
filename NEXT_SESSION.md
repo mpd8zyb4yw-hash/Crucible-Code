@@ -57,6 +57,40 @@
 > is a zero-inference bottom-up PBE search; it would need an `extraOps` seam to take the certified
 > helpers as primitives, and a fold before it could express this particular loop).
 
+### ★★ THE FIX, MEASURED: derive the counterexample from gold, re-grind, compose free (3/6 vs 3/30)
+
+The full chain, live, on the `index` carve:
+
+  mechanical compose fails (0 calls)
+    -> the certified helper is tested against what the GOLD DATA FORCES it to return
+    -> it contradicts the gold => PROVEN wrong, not suspected
+    -> forcing case recorded, its carry entry evicted, plan attempt returns
+    -> next attempt grinds the rung against a spec that can reject the broken version
+    -> re-ground helper now passes HELD-OUT witnesses
+    -> mechanical composition fires => task solved, composition costs 0 model calls
+
+| `index` carve, 6-draw arms                              | whole task |
+|----------------------------------------------------------|-----------|
+| baseline / feedback / signal-order / glue / mechanical-only | 3 solves in 30 draws (10%) |
+| **+ gold-forced counterexamples**                          | **3/6 (50%)** |
+
+Every solve went through the diagnosed mechanism, and on all three both helpers passed the held-out
+witness check afterwards (6 checks, 0 overfit) — the re-grind produced the INTENDED FUNCTION, not
+just a helper that passes more examples. The emitted proof is human-readable and derived, not
+guessed: `gold case "a,,b" -> ["a","","b"] puts field 0 at [0, 1), so the locator must return 1 when
+scanning from 0`.
+
+**COSTS, because this is not free.** It spends plan attempts: solved draws ran 27-39 calls / 2-3
+attempts, failed ones 61-72 calls / 3-5 attempts. Versus a baseline that spent 27-55 calls to fail,
+that is a good trade here, but it must be measured on CALLS as well as solves on the general path.
+
+**REPLICATE BEFORE QUOTING.** 3/6 vs 3/30 is the largest effect of the session and rests on 6 draws;
+two results were retracted tonight for exactly this. A replication was launched immediately.
+
+**Scope, honestly.** The derivation currently understands ONE composition shape (scan-by-index) and
+one helper signature (`(string, number) -> number`). MAP and PIPELINE compositions also force helper
+outputs and are not covered. The 5-of-12 overfit rate is measured on one rung.
+
 ### ★ THE ROOT CAUSE: "certified" does not mean "the intended function" (5 of 12 helpers)
 
 Measured 2026-08-02c, `index` carve, 6 draws, each certified helper re-run against HELD-OUT cases
