@@ -105,7 +105,9 @@
     "ladderbudget:selfcheck": "tsx src/CrucibleEngine/reasoning/__ladder_budget_selfcheck.ts",
     "gen:scorecard": "tsx src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts",
     "rung:postmortem": "tsx src/CrucibleEngine/reasoning/__decompose_postmortem_live.ts",
-    "handcarve:probe": "tsx src/CrucibleEngine/reasoning/__handcarve_probe_live.ts"
+    "handcarve:probe": "tsx src/CrucibleEngine/reasoning/__handcarve_probe_live.ts",
+    "planquality:probe": "tsx src/CrucibleEngine/reasoning/__plan_quality_probe_live.ts",
+    "localcorpus:selfcheck": "tsx src/CrucibleEngine/reasoning/__local_corpus_selfcheck.ts"
   },
   "build": {
     "appId": "com.crucible.local",
