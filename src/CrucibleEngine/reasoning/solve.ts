@@ -23,6 +23,7 @@ import { makeFmPlanner, makeFmSubFunctionPlanner, hasDecomposeTemplate, composeH
 import { probeCarve, skewRungBudget, type CarveProbe } from './traceCarve'
 import { planShapeScore } from './planShape'
 import { composeCandidates, type CertifiedHelper } from './composeTemplates'
+import { deriveScanIndexCases, mergeDerivedCases, type DerivedCase } from './rungCounterexample'
 import { deriveMetamorphicSpec, canonicalImpl } from './metamorphicSpec'
 import { derivePropertySpec, supplementalPropertySpec, verifyByProperty } from './propertyVerifier'
 import { search, type SearchOpts } from './search'
@@ -738,6 +739,10 @@ export async function decomposeCodeBySubFunction(
   // not the easy ones it already got (the DP-fold scorecard showed a failed editDistance re-running
   // subCost/nextRow + a full editRow window every attempt → ~1200s). Reuse is exact-SPEC-gated.
   const carry = new Map<string, { source: string; spec: string; cost: number }>(carrySeed ?? [])
+  // Counterexamples PROVEN against the gold data, accumulated across plan attempts. Allocated here
+  // (not per attempt) for the same reason `carry` is: the whole point is that attempt N+1 grinds the
+  // rung against a spec attempt N proved was too weak. Per-task, so a case can never cross tasks.
+  const extraCases = new Map<string, NonNullable<CodeAcceptance['cases']>>()
   // The shared wall-clock deadline is fixed HERE, above the retry loop, not inside the attempt.
   // Computed per attempt it would reset `planAttempts` times over, which is the same multiplication
   // it exists to stop — a 180s budget × 3 attempts × N rungs is how a capped task reached 955s.
@@ -803,7 +808,7 @@ export async function decomposeCodeBySubFunction(
     }
     if (attempt > 0) emit({ type: 'thought', text: `subfn: plan attempt ${attempt + 1} (floor ${planAttempts}, prior plan collapsed)` })
     const attemptT0 = Date.now()
-    const r = await runSubFunctionOnce(input, attemptOpts, proposerOverride, carry, carryStats)
+    const r = await runSubFunctionOnce(input, attemptOpts, proposerOverride, carry, carryStats, extraCases)
     attempts.push({ attempt: attempt + 1, status: r.status, detail: r.detail, modelCalls: r.modelCalls, wallMs: Date.now() - attemptT0, rungs: r.rungs })
     spentCalls += r.modelCalls
     last = { ...r, modelCalls: spentCalls }
@@ -1010,6 +1015,10 @@ async function runSubFunctionOnce(
    * Mutated in place; defaulted so existing callers and tests are unaffected.
    */
   carryStats: CarryStats = { hits: 0, stale: 0, misses: 0, callsAvoided: 0 },
+  // DERIVED COUNTEREXAMPLES, owned by the caller so they survive across plan attempts (like carry).
+  // A rung whose certified helper is PROVEN wrong by the gold data gets the forcing case added here,
+  // and the next attempt grinds it against a spec that can actually reject the broken implementation.
+  extraCases?: Map<string, NonNullable<CodeAcceptance['cases']>>,
 ): Promise<SubFunctionResult> {
   const emit = opts.emit ?? (() => {})
   const proposer = proposerOverride ?? proposeCode
@@ -1302,11 +1311,17 @@ async function runSubFunctionOnce(
     // Emit in original certification order so definitions precede their callers.
     const deps = helpers.filter((x) => depSet.has(x.name))
     const priorBlock = deps.map((x) => x.source).join('\n\n')
+    // Fold in any counterexample a previous attempt PROVED this helper must satisfy (see
+    // rungCounterexample.ts). These are forced by the task's own gold cases, so they tighten the
+    // rung's spec toward the intended function rather than adding an opinion.
+    const derivedForRung = extraCases?.get(h.name) ?? []
+    const rungCases = derivedForRung.length ? [...(h.cases ?? []), ...derivedForRung] : h.cases
     const spec: TaskSpec = {
-      goal: `${h.goal}\n\nImplement helper \`${h.name}\`.`,
+      goal: `${h.goal}\n\nImplement helper \`${h.name}\`.` +
+        (derivedForRung.length ? `\n\nNOTE: ${derivedForRung.length} additional case(s) below were derived from the caller's own verified examples — an earlier implementation passed the other cases and was still wrong on these.` : ''),
       domain: 'code',
       context: [input.context, priorBlock].filter(Boolean).join('\n\n') || undefined,
-      acceptance: { entry: h.name, cases: h.cases, timeoutMs: input.timeoutMs } satisfies CodeAcceptance as unknown as Record<string, unknown>,
+      acceptance: { entry: h.name, cases: rungCases, timeoutMs: input.timeoutMs } satisfies CodeAcceptance as unknown as Record<string, unknown>,
     }
     // Retrieval-candidate path FIRST: the cornered helper is a precise search query, so try
     // executable candidates straight from web source before the FM guesses (which it provably
@@ -1460,6 +1475,12 @@ async function runSubFunctionOnce(
     .map(h => ({ h, spec: rungPlan.find(p => p.name === h.name) }))
     .filter((x): x is { h: { name: string; source: string }; spec: SubFunctionSpec } => !!x.spec)
     .map(x => ({ name: x.h.name, source: x.h.source, cases: x.spec.cases }))
+  // Helpers with a locator signature `(string, number) -> number` — the only shape the gold-forced
+  // derivation currently understands (see rungCounterexample.ts).
+  const locatorShaped = mechHelpers.filter(h => {
+    const cs = h.cases ?? []
+    return cs.length > 0 && cs.every(c => (c.args?.length ?? 0) === 2 && typeof c.args?.[0] === 'string' && typeof c.expected === 'number')
+  })
   if (mechHelpers.length) {
     const mechT0 = Date.now()
     const candidates = composeCandidates(input.entry, mechHelpers)
@@ -1486,6 +1507,51 @@ async function runSubFunctionOnce(
     emit({ type: 'thought', text: `subfn: no mechanical composition fits (${candidates.length} shape(s) tried over ${mechHelpers.map(h => `${h.name}/${h.cases?.length ?? 0}c`).join(' + ')}, 0 calls) — asking the model` })
     for (const sig of (closest?.signals ?? []).slice(0, 3)) {
       emit({ type: 'thought', text: `subfn: mechanical closest-miss — ${sig.slice(0, 180)}` })
+    }
+
+    // ── IS THE HELPER ITSELF WRONG? (2026-08-02c) ────────────────────────────────────────────────
+    // Measured: 5 of 12 certified helpers are not the intended function — they satisfy the 5-6
+    // examples the planner invented and fail held-out cases. The correlation with outcome was
+    // exact: every draw whose helper generalised solved (6 calls, composed mechanically at zero
+    // model calls); every draw whose helper was overfit failed regardless of what composed it.
+    // So a shape-correct template failing is EVIDENCE ABOUT THE HELPER, not about composition — and
+    // the gold cases say what the helper must have returned. Test that, and if the certified helper
+    // contradicts its own task's gold data, it is PROVEN wrong: record the forcing case so the next
+    // plan attempt grinds a spec that can reject it, and drop its carry entry so it is not reused.
+    //
+    // Sound: `deriveScanIndexCases` emits only what the gold FORCES and bails on any ambiguity, a
+    // batch contradicting an already-certified case is dropped whole, and the outcome is still just
+    // a rung re-ground and re-verified. It cannot certify anything.
+    if (extraCases && locatorShaped.length) {
+      const proven: DerivedCase[] = []
+      for (const loc of locatorShaped) {
+        const derived = (input.cases ?? []).flatMap(c => deriveScanIndexCases(loc.name, c.args?.[0], c.expected))
+        if (!derived.length) continue
+        const src = helpers.find(h => h.name === loc.name)?.source
+        if (!src) continue
+        for (const d of derived) {
+          const v = await verifyCode({ value: src, fingerprint: `cex:${loc.name}` },
+            { goal: loc.name, domain: 'code', acceptance: { entry: loc.name, cases: [d.testCase] } as unknown as Record<string, unknown> })
+          if (!v.pass) proven.push(d)
+        }
+      }
+      if (proven.length) {
+        const merged = mergeDerivedCases(rungPlan.find(p => p.name === proven[0].helper)?.cases, proven.map(p => p.testCase).map(tc => ({ helper: proven[0].helper, testCase: tc, why: '' })))
+        if (!merged.contradicted) {
+          const name = proven[0].helper
+          const prior = extraCases.get(name) ?? []
+          const known = new Set(prior.map(c => JSON.stringify(c.args)))
+          const fresh = proven.map(p => p.testCase).filter(tc => !known.has(JSON.stringify(tc.args)))
+          if (fresh.length) {
+            extraCases.set(name, [...prior, ...fresh])
+            carry?.delete(name)   // the stored source is the PROVEN-WRONG one — never reuse it
+            emit({ type: 'thought', text: `subfn: helper \`${name}\` is PROVEN wrong by the task's own gold cases ` +
+              `(${proven[0].why}) — added ${fresh.length} forcing case(s) and re-planning` })
+            return { status: 'decompose-failed', code: null, helpers, rungs, modelCalls,
+              detail: `certified helper \`${name}\` contradicts the gold data (${proven[0].why}); re-grinding it against ${fresh.length} derived case(s)` }
+          }
+        }
+      }
     }
   }
 
