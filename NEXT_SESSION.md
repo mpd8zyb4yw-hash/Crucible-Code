@@ -17,24 +17,63 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-01c (tier-3 budget reserve) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02 (the reserve is vindicated and irrelevant) (REPLACE THIS EVERY SESSION)
 
-> **The starvation fix landed but is UNMEASURED.** `solveByLadder` now reserves the carve's share of
-> both the call ledger and the wall clock (`ladderReserve`, `SolveCodingOpts.wallClockMs`); the
-> general harness passes its abort ceiling in so the ladder can see its own deadline. Verified by
-> `npm run ladderbudget:selfcheck` (9 checks, 0 model calls) and `typecheck:engine`. NOT verified
-> live: no local head was up this session (`:8080` down), so the hard set has not been re-scored.
+> **TOP OPEN ITEM 1 of 2026-08-01c is CLOSED, answer "no": tier 3 is NOT starved.** The hard set is
+> **0/12 at a 300s ceiling and 0/4 at 900s**, and at 900s all four tasks quit with clock LEFT
+> (737s, 163s, 325s, 562s). Neither the wall clock nor the call ledger is the binding constraint.
+> The 2026-08-01 reserve works exactly as designed and buys nothing.
 >
-> **THE FIRST THING THE NEXT SESSION SHOULD DO** is re-run the hard set under the reserve and read
-> the new `[purse Nc, reserve Nc/Ns, clock left Ns]` field on the tier-3 step. If tier 3 now opens
-> with a real purse and still converts 0/12, the 0/12 is finally a statement about the carve.
-> `GEN_SCORECARD_SET=hard GEN_SCORECARD_RUNS=3 GEN_SCORECARD_TASK_WALL_MS=300000 npm run gen:scorecard`
-> (export the TRAP-2 env vars and `CRUCIBLE_NO_DISTILL=1` first).
+> **THE FIRST THING THE NEXT SESSION SHOULD DO** is pick ONE of the two now-separated problems
+> below and fix it — do NOT re-run the hard set for its own sake; it has been measured twice at two
+> ceilings and both agree. The aggregate `0/12` was hiding two independent, separately fixable
+> failures:
 >
-> Everything below this block is the 2026-08-01b state, still accurate except TOP OPEN ITEM 1,
-> whose mechanism is now fixed and whose verdict is now pending a live re-run.
+> **PROBLEM A — one un-certifiable rung shape (10 of 12 deaths).** Every "did not certify" helper is
+> the same kind of thing: `splitCsv`, `splitSeconds`, `splitIntoParts`, `wrapText`, `extractField`,
+> `secondsToDays` — *split a structured string/number into parts*. The control arm stalls on the
+> same names (`splitCsvLine`, `splitCSV`, `splitString`). This is ONE capability gap, not four task
+> failures, and it is the highest-value thing in the repo to attack. Start with `npm run
+> rung:postmortem` on `csvSelect`/`splitCsv`.
+>
+> **PROBLEM B — `planAttempts` is a hard-coded 3 and is not clock-aware** (`solve.ts:573`). On
+> planner-gate deaths tier 3 makes three cheap attempts and quits regardless of budget:
+> `numberToWords` at the 900s ceiling died in **3 calls / 7 seconds holding 737 seconds**, and
+> `csvSelect` quit with 562s left. The reserve buys clock the resample loop then discards. Making
+> the loop resample while clock+calls remain is a small, well-evidenced change.
+>
+> **DO NOT re-derive these two facts** (they cost a session each):
+> - `reserve 0c` on every draw is CORRECT, not a bug — the scorecard bounds the ladder with an
+>   AbortController and no `maxModelCalls`, so `ladderReserve` returns 0 on the call axis by design.
+> - `purse` is PER-RUNG, not tier 3's total. Tier 3 spends multiples of it (99c at 300s, 212c at
+>   900s). Now printed as `[spent Nc, purse/rung Nc, …]`.
 
-> **Every item on the 2026-08-01 list is closed. The headline moved: the ladder is 14/15 (not 5/5),
+### ⚠ TRAP 5 — a misconfigured head is scored as CAPABILITY failure (cost two full runs, 2026-08-02)
+A bad head does not fail loudly. It returns EMPTY completions, `search()` reports `on-device model
+unavailable — N empty responses`, and the scorecard records an ordinary tier failure. Tier 3 read
+as `3c/8s` and looked starved; on a correct head the same row spends `42c/127s`. The cause was
+`-c 4096 --parallel 4` = **1024 tokens PER SLOT** (total `-c` must be `PER_SLOT_CTX x N`, see
+`bonsaiSidecar.argsFor`) plus a missing `--jinja`. Correct launch — note the binary has a stale
+`@rpath`, so its dylib dir must be reachable:
+```bash
+MAIN=/Users/justin/crucible-local/crucible-local
+$MAIN/.crucible/prismml-bin/llama-server -m $MAIN/.crucible/models/qwen2.5-1.5b-instruct-q4_k_m.gguf \
+  --jinja --host 127.0.0.1 --port 8080 -ngl 99 -np 4 -c 16384
+```
+`gen:scorecard` now runs `preflightHead()` first and ABORTS on an empty completion or on apple-fm.
+It prints `# head: qwen2.5-1.5b` / `# head preflight ok (N chars in Nms)` — if you do not see those
+two lines, the numbers below the banner are not measurements.
+
+### THE NUMBERS (measured 2026-08-02, head confirmed `qwen2.5-1.5b`, cold `_learned/`, NO_DISTILL)
+- **HARD, 300s ceiling, 4 tasks x 3 draws, both arms: ladder 0/12, control 0/12.** Medians:
+  numberToWords 19c/188s, formatDuration 65c/301s, wordWrap 74c/320s, csvSelect 103c/305s.
+- **HARD, 900s ceiling, 4 tasks x 1 draw, ladder only: 0/4** — and none hit the clock.
+  formatDuration spent 212c/650s then ABSTAINED HONESTLY ("no progress for 2 epochs").
+- Tier-3 deaths over the twelve 300s draws: **10 "helper did not certify"**, 2 planner-gate.
+- **The CORE numbers below are 2026-08-01b and were measured on a head whose config was never
+  verified.** The 14/15 may be depressed by TRAP 5 and should be re-run before it is trusted.
+
+> **The 2026-08-01b headline, NOT re-measured on a verified head: the ladder is 14/15 (not 5/5),
 > the carve alone is 2/15 (not 0/5), and tier 3 is reached on 12/12 hard draws and solved none.**
 
 ### THE NUMBERS (measured 2026-08-01b, head confirmed `qwen2.5-1.5b`, cold `_learned/`, 300s cap)
@@ -65,8 +104,14 @@ binding constraint: a re-plan invents different helper NAMES, so the lookup miss
 before the spec key is compared. Do not invest further in the key until re-plans produce stable
 names.
 
-### TOP OPEN ITEM 1 — tier 3 is STARVED on some draws, so its 0/12 is not yet a verdict
-On `numberToWords` draws 1-2, tiers 0-1 burned 14-16 calls and ~200s stalling, and tier 3 then got
+### CLOSED 2026-08-02 — tier 3 was never starved; the "3 calls" was a MISCONFIGURED HEAD (TRAP 5)
+The observation below was real but its cause was not budget: the head was serving 1024-token slots
+and returning empty completions, which starved the planner into 3-call deaths. On a correct head
+the same row spends 42c/127s, and at a 900s ceiling every hard task quits with CLOCK LEFT. The
+reserve built for this item works and changes nothing. Superseded by PROBLEM A / PROBLEM B at the
+top of this file. Original text kept for history:
+
+> On `numberToWords` draws 1-2, tiers 0-1 burned 14-16 calls and ~200s stalling, and tier 3 then got
 **3 calls** before the shared ledger ran out. A tier that is handed 3 calls has not been tested.
 Fix the ladder's budget allocation (reserve for the last tier, or stop pouring into a stalling
 cheap tier) BEFORE concluding anything about carve capability.

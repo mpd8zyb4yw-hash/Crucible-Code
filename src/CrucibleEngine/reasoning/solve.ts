@@ -1665,8 +1665,16 @@ export async function solveByLadder(
     // Report the purse tier 3 actually opened with. Without it a tier-3 failure is unattributable
     // between "the carve is weak" and "the carve got 3 calls" — the exact ambiguity the reserve
     // was added to remove, so the number has to appear in the step record, not just the code.
+    // `purse/rung` is PER-RUNG, not tier 3's total allowance — a carve grinds many rungs, so the
+    // tier routinely spends several multiples of it (measured 2026-08-02: up to 99 calls spent
+    // against a 64-call per-rung purse). It was labelled `purse` and read as a tier cap, which
+    // inverts the conclusion: a tier that spent 99 of "64" looks over-budget when it is in fact
+    // being cut off by the CLOCK. `spent` is printed beside it so the two are never confused.
+    // `reserve 0c` is likewise not a bug — with no `maxModelCalls` (the scorecard bounds the ladder
+    // with an AbortController instead) `ladderReserve` correctly returns 0 on the call axis, and
+    // only the wall-clock half of the reserve applies.
     record(3, 'sub-function decomposition', t0, d.modelCalls, pass,
-      `${d.detail} [purse ${clamped.globalModelCalls}c, reserve ${tier3Reserve}c/${Math.round(tier3WallReserve / 1000)}s,` +
+      `${d.detail} [spent ${d.modelCalls}c, purse/rung ${clamped.globalModelCalls}c, reserve ${tier3Reserve}c/${Math.round(tier3WallReserve / 1000)}s,` +
       ` clock left ${wallCeiling === undefined ? 'inf' : Math.round(Math.max(0, ladderStart + wallCeiling - Date.now()) / 1000) + 's'}]`)
     if (pass) {
       const how = d.helpers.length ? `via ${d.helpers.length} certified helper(s)` : 'via a single probe draft'

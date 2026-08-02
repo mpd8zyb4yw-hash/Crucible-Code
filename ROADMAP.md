@@ -1933,6 +1933,61 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-02 (the reserve is VINDICATED and irrelevant: tier 3 is not starved, and 3x the clock converts nothing)
+
+**Headline: the hard set is 0/12 at a 300s ceiling and 0/4 at a 900s ceiling, and at 900s every
+single task quit with clock LEFT (737s, 163s, 325s, 562s). The wall clock is not the binding
+constraint. Neither is the call ledger. The 2026-08-01 reserve works and did not help.**
+
+This closes TOP OPEN ITEM 1 from 2026-08-01c with a "no": tier 3 is NOT starved. It is reached on
+every draw, it is handed a real budget, and it converts nothing.
+
+#### FIRST — two runs were thrown away, and the reason is now a permanent guard
+The head was launched `-c 4096 --parallel 4` = **1024 tokens PER SLOT** — the exact split
+`bonsaiSidecar.argsFor` warns against (total `-c` must be `PER_SLOT_CTX x N`) — plus a missing
+`--jinja`. A head like that does not fail loudly; it returns EMPTY completions, `search()` reports
+`on-device model unavailable — N empty responses`, and the scorecard scores that as an ordinary
+tier failure. Tier 3 read as `3c/8s` and looked starved. On a correct head the same row spends
+`42c/127s`. **Every conclusion drawn from the bad runs was wrong**, including an interim one written
+down this session. Correct launch:
+```bash
+llama-server -m <model>.gguf --jinja --host 127.0.0.1 --port 8080 -ngl 99 -np 4 -c 16384
+```
+`gen:scorecard` now runs `preflightHead()` before any task: it prints the head name, aborts on
+apple-fm (TRAP 2), and aborts on an empty completion with the context-split diagnosis. Also, the
+scorecard was DROPPING `step.detail`, which is the only carrier of the `[purse …]` field — so the
+2026-08-01 reserve shipped with no way to observe it at all. Both fixed and committed.
+
+#### THE NUMBERS (head confirmed `qwen2.5-1.5b`, cold `_learned/`, `CRUCIBLE_NO_DISTILL=1`)
+- **300s ceiling, 4 hard tasks x 3 draws, both arms: ladder 0/12, control 0/12.**
+  Medians: numberToWords 19c/188s, formatDuration 65c/301s, wordWrap 74c/320s, csvSelect 103c/305s.
+- **900s ceiling, 4 hard tasks x 1 draw, ladder only: 0/4.** numberToWords 12c/163s,
+  formatDuration 222c/737s, wordWrap 129c/575s, csvSelect 83c/338s.
+- Tier-3 death causes over the twelve 300s draws: **10 "helper did not certify"** (real grinding),
+  2 planner-gate deaths. 9 of 12 hit `clock left 0s`.
+- At 900s that inverts: **0 of 4 hit the clock.** formatDuration spent 212 calls / 650s and then
+  ABSTAINED HONESTLY ("no progress for 2 epochs"). The search saturates; it does not run out.
+
+#### WHAT THE FAILURE ACTUALLY IS — one rung shape, and a fixed attempt count
+Two distinct, separately fixable problems, which the aggregate `0/12` was hiding:
+1. **A single un-certifiable rung shape.** 10 of 12 deaths are one helper failing to certify, and
+   the helpers are all the same kind of thing: `splitCsv`, `splitSeconds`, `splitIntoParts`,
+   `wrapText`, `extractField`, `secondsToDays` — "split a structured string/number into parts".
+   The control arm stalls on the same names (`splitCsvLine`, `splitCSV`, `splitString`). This is
+   ONE capability gap, not four task failures.
+2. **`planAttempts` is a hard-coded 3** (`solve.ts:573`) and is not clock-aware. On planner-gate
+   deaths tier 3 makes three cheap attempts and quits: numberToWords at the 900s ceiling died in
+   **3 calls / 7 seconds holding 737 seconds of budget**. csvSelect likewise quit with 562s left.
+   The reserve buys clock that the resample loop then throws away.
+
+#### CORRECTIONS to earlier entries
+- `reserve 0c` on every draw is **not a bug**. The scorecard bounds the ladder with an
+  AbortController and no `maxModelCalls`, so `ladderReserve` correctly returns 0 on the call axis
+  and only the wall half applies — exactly as the 2026-08-01c comment predicted.
+- `purse 64c` is **per-rung**, not tier 3's total: tier 3 routinely spends multiples of it (up to
+  99c at 300s, 212c at 900s). The field was read as a tier cap and inverted the conclusion. It now
+  prints `[spent Nc, purse/rung Nc, …]`.
+
 ### 2026-08-01c (tier 3 is no longer starved: the ladder reserves the carve's share of BOTH budgets)
 
 **TOP OPEN ITEM 1 is closed on the mechanism side.** `numberToWords` handed tier 3 three calls
