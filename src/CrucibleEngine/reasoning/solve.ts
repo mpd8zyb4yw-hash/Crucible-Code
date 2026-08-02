@@ -402,6 +402,17 @@ export interface SubFunctionRung {
    */
   wallMs?: number
   phase?: 'probe' | 'carry' | 'helper' | 'recursion' | 'compose' | 'glue'
+  /**
+   * The verifier's signals for the BEST candidate this rung reached — i.e. exactly which cases the
+   * closest attempt still failed. Added 2026-08-02: a rung that stalls at `bestScore -2` has passed
+   * 3 of 5 cases and failed 2 (the score is the negative failing-case count), and every downstream
+   * decision differs depending on WHICH 2. "It fails the two quoted-field cases" names a specific
+   * capability gap and suggests failure-directed repair; "it fails two different cases each draw"
+   * is noise and suggests the rung never had the shape. Without this the two are indistinguishable
+   * and the only available move is to guess. Reporting only — nothing reads it to decide anything,
+   * so it cannot affect what gets certified.
+   */
+  bestSignals?: string[]
 }
 
 /** One plan attempt's outcome, kept even when a LATER attempt overwrites the returned rung list. */
@@ -1198,7 +1209,7 @@ async function runSubFunctionOnce(
     const rungWallMs = Date.now() - rungT0
     modelCalls += res.modelCalls
     const certified = res.status === 'solved' && !!res.solution
-    rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified, wallMs: rungWallMs, phase: 'helper' })
+    rungs.push({ name: h.name, status: res.status, bestScore: res.bestScore, modelCalls: res.modelCalls, certified, wallMs: rungWallMs, phase: 'helper', ...(res.best?.verdict.signals?.length ? { bestSignals: res.best.verdict.signals.slice(0, 6) } : {}) })
     if (!certified) {
       // RECURSIVE DECOMPOSITION. Flat iterate couldn't certify this helper — before collapsing the
       // whole plan, re-apply decomposition to the helper itself (its own goal + a fresh FM sub-plan).
@@ -1287,7 +1298,7 @@ async function runSubFunctionOnce(
   const composeWallMs = Date.now() - composeT0
   modelCalls += composed.modelCalls
   const composedCert = composed.status === 'solved' && !!composed.solution
-  rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert, wallMs: composeWallMs, phase: 'compose' })
+  rungs.push({ name: `compose:${input.entry}`, status: composed.status, bestScore: composed.bestScore, modelCalls: composed.modelCalls, certified: composedCert, wallMs: composeWallMs, phase: 'compose', ...(composed.best?.verdict.signals?.length ? { bestSignals: composed.best.verdict.signals.slice(0, 6) } : {}) })
   if (!composedCert) {
     // COMPOSE-RUNG RECOVERY (2026-07-25, from the first live FM-general run). Recursion covered only
     // a stuck HELPER rung — but live, the weak planner's more common miss is the opposite shape: it

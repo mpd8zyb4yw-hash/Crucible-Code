@@ -317,6 +317,10 @@ async function main(): Promise<void> {
         console.log(`     ${(r.phase ?? 'unknown').padEnd(9)} ${r.name.padEnd(28)} ${(r.certified ? 'OK' : r.status).padEnd(9)} ` +
           `${String(r.modelCalls).padStart(3)}c ${(r.wallMs === undefined ? '   —' : s(r.wallMs)).padStart(7)}` +
           `  best ${r.bestScore.toFixed(2)}`)
+        // WHICH cases the closest candidate failed. On a stalled rung this is the actual diagnosis:
+        // the score says how many cases fail, only the signals say which, and "the same two quoted
+        // cases every draw" is a capability gap while "two different cases each draw" is noise.
+        for (const sig of r.bestSignals ?? []) console.log(`                  ${sig.slice(0, 160)}`)
       }
     }
     // The verdict's two facts, read across EVERY attempt rather than the last one. `d.rungs` holds
