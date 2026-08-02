@@ -81,26 +81,28 @@ the empty field (`"a,,b"` → `["a,","b"]`). NOTE: compose 0/6 here is a LOWER B
 planner returns null for sub-goals by design, so the glue re-decomposition fires and does nothing
 (`glue/re-decompose stalled 0c`). Production would hand that stage to the FM planner.
 
-### THE FIRST INTERVENTION THAT CONVERTS: signal ORDER, not signal content (2/6 vs 0/6)
+### RETRACTED — the "first converting intervention" did NOT replicate (2/6 then 0/6)
 
-| `index` carve, 6 draws, same budget/head/cases        | whole task | hard rung | compose |
-|--------------------------------------------------------|-----------|-----------|---------|
-| baseline                                                | 0/6       | 6/6       | 0/6     |
-| + ignored-helper feedback (signal appended LAST)        | 0/6       | 6/6       | 0/6     |
-| + the same signal moved FIRST                           | **2/6**   | 6/6       | **2/6** |
+| `index` carve, 6 draws each, same budget/head/cases     | whole task | hard rung | compose |
+|----------------------------------------------------------|-----------|-----------|---------|
+| baseline                                                  | 0/6       | 6/6       | 0/6     |
+| + ignored-helper feedback (signal appended LAST)          | 0/6       | 6/6       | 0/6     |
+| + the same signal moved FIRST — run 1                     | 2/6       | 6/6       | 2/6     |
+| + the same signal moved FIRST — run 2 (replication)       | **0/6**   | 5/6       | **0/6** |
 
-The feedback TEXT was already there and changed nothing. What changed is that `codeProposer.ts`
-detects anchoring by comparing `signals[0]` across attempts and escalates diversity when the
-IDENTICAL signal repeats (temperature steps, structural rotation, then a clean-slate reframe that
-stops echoing the anchored code back). Appended last, "you ignored the helpers" was invisible to
-that detector, which was comparing case-failure text that varies between attempts — so a model
-re-implementing the same helper the same wrong way in 6 of 6 draws never registered as anchored.
-Moving the stable signal to position 0 routes an existing, well-evidenced mechanism onto the
-failure that is actually repeating. It costs no extra model calls.
+**Pooled: 2/12 vs 0/12. That is variance, not an effect.** The 2/6 was reported as "the first
+intervention that converts" and it is retracted. This is the SECOND retraction of the session from
+the same cause — a 6-draw arm read as a rate — after the finer carve's "1/3" became 1/9. On this
+task, at this head, a 6-draw arm cannot distinguish 0% from ~15%. Treat any single 6-draw result
+as a hypothesis and replicate before it goes in a summary.
 
-**Caveat, stated because it matters: 2/6 vs 0/6 is suggestive, not significant.** It is 12 draws
-total. The claim worth carrying forward is the mechanism (a repeating failure must be the FIRST
-signal or the anti-anchor escalation cannot see it), not the rate. Re-measure before quoting it.
+The signal-order CHANGE IS KEPT, on its own merits and not on this number: `codeProposer.ts`
+escalates diversity when `signals[0]` repeats, so a stable "you ignored the helpers" diagnosis
+buried at the end of the list is invisible to a mechanism built for exactly that shape. That is a
+defect regardless of whether it moves this row, and the fix costs no model calls. What is NOT
+claimed is that it converts anything.
+
+**Compose remains unconverted by every intervention tried: 2 solves in 30 draws.**
 
 ### COMPOSE IS WHERE IT DIES NOW — and telling the model does not help (0/6, twice)
 
