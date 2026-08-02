@@ -1426,10 +1426,19 @@ async function runSubFunctionOnce(
     if (verdict.pass || !helperNames.length) return verdict
     const missed = uncalledHelpers(cand.value, helperNames)
     if (!missed.length) return verdict
-    return { ...verdict, signals: [...(verdict.signals ?? []),
+    // FIRST, not last, and that placement is the mechanism rather than cosmetics. `codeProposer.ts`
+    // detects ANCHORING by comparing `signals[0]` across attempts and escalates diversity when the
+    // identical signal repeats (temperature steps, structural rotation, finally a clean-slate
+    // reframe that stops echoing the anchored code back). Appended last, this signal was invisible
+    // to that detector, which instead compared case-failure text that varies between attempts — so
+    // a model re-implementing the same helper the same wrong way in 6 of 6 draws never registered
+    // as anchored. "Ignored the helpers" is exactly the stable, repeating signal the escalation was
+    // built for.
+    return { ...verdict, signals: [
       `this candidate never calls ${missed.map(n => '`' + n + '`').join(', ')} — ` +
       `${missed.length === 1 ? 'that helper is' : 'those helpers are'} already implemented and tested; call ` +
-      `${missed.length === 1 ? 'it' : 'them'} instead of re-implementing the behaviour`] }
+      `${missed.length === 1 ? 'it' : 'them'} instead of re-implementing the behaviour`,
+      ...(verdict.signals ?? [])] }
   }
 
   const composeProposer = withRetrieval(proposer, input.entry, input.nl ?? input.goal, input.cases, webGround, buildCodeSearchQuery(input.nl ?? input.goal), opts.emit)
