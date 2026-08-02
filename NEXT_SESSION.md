@@ -32,8 +32,9 @@
 > WHILE ALSO splitting". **Rung SIZE is the lever, and `solve.ts` recursion is already the
 > machinery** — what it lacked was a sub-plan that separates the concerns.
 >
-> **Do not bank the 12-call solve as a rate.** It is 1 of 3 on the first pass and the follow-up
-> draws are worse; the honest figure is nearer 1-in-9. And the live failure signals say the `raw`
+> **Do not bank the 12-call solve as a rate — it is 1 in 9.** The first pass was 1/3; a 6-draw
+> re-run at the same settings was **0/6**. The solve is real and reproducible in principle, but the
+> `raw` carve converts about 11% of the time, and EVERY failed draw dies the same way (see below). And the live failure signals say the `raw`
 > carve is partly measuring MY spec rather than the head: its dominant failure is the head
 > STRIPPING the quotes the goal explicitly says to keep (`got ["x,y","z"], expected
 > ["\"x,y\"","z"]`, repeatedly). That requirement is load-bearing for composition and anti-prior.
@@ -70,8 +71,12 @@ its own line and is NEVER pooled with a no-retrieval number. **It has not been r
   `splitCsvLine` 0/3 (stalled 19-27c, 99-131s each), compose 0/3, `csvLines` 1 call every draw.
 - **Same, fat purse (250c / 40 epochs / 900s), 2 draws:** 0/2 — 126c/803s over 5 attempts and
   164c/788s over 7. The purse was never the constraint.
-- **Finer carve (`raw` variant), 3 draws:** 1/3 — the solve was 12 calls / 46.7s
-  (splitCsvRaw 5c, unquoteCsvField 1c, compose 6c). 6 more draws in flight.
+- **Finer carve (`raw` variant): 1/9 overall** — 1/3 then 0/6. The one solve was 12 calls / 46.7s
+  (splitCsvRaw 5c, unquoteCsvField 1c, compose 6c); the 8 failures are 16-45c and 98-303s each.
+  **7 of the 8 failures are the IDENTICAL two cases failing the IDENTICAL way** — `splitCsvRaw`
+  strips the wrapping quotes its goal says to keep (`#3 got ["x,y","z"]`, `#4 got ["he said
+  hi","z"]`). That is a systematic model PRIOR, not stochastic failure, which is why the `mask`
+  variant (prior-friendly goals, same two concerns) is the deciding experiment.
 - Stalled rungs park at `bestScore -2.00` — the score is the NEGATIVE FAILING-CASE COUNT, so that
   is "passes 3 of 5, fails 2", not broken code. `-1000` is a compile/load failure.
 

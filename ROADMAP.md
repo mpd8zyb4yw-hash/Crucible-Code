@@ -1950,8 +1950,8 @@ verifier-gated, so a hand plan can make the search easier but cannot make it lie
   (quote-aware split, unescapes nothing) + `unquoteCsvField` (unescapes one field, splits nothing).
   The ceiling is not "a 1.5B cannot parse quoted CSV" but "cannot parse quoted CSV WHILE ALSO
   splitting". Rung SIZE is the lever and `solve.ts` recursion is already the machinery for it.
-- Not banked as a rate: 1 of 3 on the first pass, worse after. And the `raw` carve is partly
-  measuring the SPEC — its dominant live failure is the head stripping quotes the goal says to keep,
+- **Not banked as a rate: it is 1 in 9** (1/3, then 0/6 on a clean re-run). And the `raw` carve is
+  partly measuring the SPEC — its dominant live failure is the head stripping quotes the goal says to keep,
   which is anti-prior. A `mask` variant (HC_VARIANT=mask) separates the identical concerns with
   prior-friendly goals; that A/B decides whether the fix is "smaller rungs" or "rungs the model
   already wants to write".
