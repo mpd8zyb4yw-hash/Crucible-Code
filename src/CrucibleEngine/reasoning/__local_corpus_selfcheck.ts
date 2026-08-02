@@ -86,6 +86,19 @@ async function main(): Promise<void> {
     'split a line on commas that are outside double quotes')
   console.log(`  real-shelf query returned ${realBlobs ? realBlobs.length : 0} blob(s)`)
 
+  // 7) DENSITY BEATS VOLUME on the real tree. Measured 2026-08-02: raw keyword scoring answered
+  // every quote/split query with `@babel/parser/lib/index.js` and similar 500kB bundles, which are
+  // the worst possible proposer context — the blob cap hands the model a bundle's import prologue,
+  // containing nothing about the topic. This pins the fix (score/log(size) + a path-name bonus) on
+  // the corpus it was measured against, because the toy shelf above has no bundles to be fooled by.
+  const bulky = await makeLocalCorpusGround({ root: realRoot, maxFiles: 5 })(
+    'split one line of CSV into fields, a field may be wrapped in double quotes')
+  const paths = (bulky ?? []).map(b => b.slice(0, 120))
+  check('a huge parser bundle does not win a quote/split query',
+    !paths.some(b => /@babel\/parser|acorn|typescript\.js/.test(b)) &&
+    !(bulky ?? []).some(b => b.length >= 24_000 && /Object\.defineProperty\(exports/.test(b.slice(0, 200)) && !/quote/i.test(b.slice(0, 4000))),
+    'a bundle prologue came back as top-ranked context')
+
   console.log(`\n${failed === 0 ? '✅' : '❌'} local corpus: ${passed} passed, ${failed} failed`)
   if (failed) process.exit(1)
 }

@@ -149,7 +149,25 @@ function scan(root: string, keywords: string[], maxFilesScanned: number): ScanHi
       // against the gate and passes against the weight.
       const distinct = keywords.filter(k => hay.includes(k)).length
       if (!distinct) continue
-      hits.push({ path: full, score: score * Math.pow(distinct, 1.5), size: st.size })
+
+      // DENSITY, NOT VOLUME. Measured 2026-08-02 against the real tree: raw keyword scoring returns
+      // `@babel/parser/lib/index.js` and similar 500kB bundles for every query, because a big enough
+      // file mentions every word eventually. Those are the WORST possible proposer context — the
+      // blob cap means the model receives the first 24kB, which is a bundle's import prologue and
+      // contains nothing about the topic. Dividing by log(size) asks "how much of this file is about
+      // my query" instead of "does this file contain my query", which is the actual question.
+      const sizeKb = Math.max(1, st.size / 1024)
+      const density = score / Math.log2(sizeKb + 2)
+
+      // PATH RELEVANCE. A corpus names things: `shell-quote/parse.js` announces its subject in its
+      // path, and a package/file name matching the query is far stronger evidence than another
+      // in-body mention. Applied as a bounded multiplier so it re-ranks without letting a lucky
+      // filename outvote a file that is genuinely about the topic.
+      const relPath = full.slice(root.length + 1).toLowerCase()
+      const pathHits = keywords.filter(k => relPath.includes(k)).length
+      const pathBonus = 1 + Math.min(2, pathHits)
+
+      hits.push({ path: full, score: density * Math.pow(distinct, 1.5) * pathBonus, size: st.size })
     }
   }
   hits.sort((a, b) => b.score - a.score)
