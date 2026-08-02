@@ -109,7 +109,8 @@
     "planquality:probe": "tsx src/CrucibleEngine/reasoning/__plan_quality_probe_live.ts",
     "localcorpus:selfcheck": "tsx src/CrucibleEngine/reasoning/__local_corpus_selfcheck.ts",
     "faildirected:selfcheck": "tsx src/CrucibleEngine/reasoning/__failure_directed_selfcheck.ts",
-    "uncalled:selfcheck": "tsx src/CrucibleEngine/reasoning/__uncalled_helpers_selfcheck.ts"
+    "uncalled:selfcheck": "tsx src/CrucibleEngine/reasoning/__uncalled_helpers_selfcheck.ts",
+    "planshape:selfcheck": "tsx src/CrucibleEngine/reasoning/__plan_shape_selfcheck.ts"
   },
   "build": {
     "appId": "com.crucible.local",
