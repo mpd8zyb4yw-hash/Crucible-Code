@@ -2064,6 +2064,14 @@ and put in front of the proposer on every rung of every draw. It converted nothi
 - 4 of the 5 retrieved files were noise (syntax-highlighter grammars, a tsserver bundle) — since
   fixed by excluding those paths, so a re-run now retrieves 5 real quote-handling implementations.
 
+**The coarse rung was then run WITH retrieval and the noise fix: also 0/3.** That is the
+configuration where retrieval had something to offer — the rung the head provably cannot write
+(0 in 290 calls) — with a genuine quote-state scanner (`shell-quote/parse.js`) in front of the
+proposer on every draw. It did not convert. So on this rung, IDIOM TRANSFER from a corpus that
+lacks the exact answer is not the lever either; the head does not adapt a shell tokenizer into a
+CSV one. What remains untested for retrieval is a corpus that DOES contain the answer, which is a
+different (and contamination-prone) experiment that must never be pooled with a capability number.
+
 Two efficiency defects were found and fixed by watching it run: the corpus was re-scanned for every
 rung of every attempt (3.2-5.2s each, a dozen-plus times per draw, identical result — now memoised
 per query), and the ranking preferred 500kB bundles until density-over-volume was added.
