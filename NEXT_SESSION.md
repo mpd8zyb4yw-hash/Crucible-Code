@@ -17,7 +17,64 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02e (root cause found; fix works on one shape, does NOT transfer) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02f (the instrument changed: measure the RUNG, census in flight) (REPLACE THIS EVERY SESSION)
+
+> **START HERE. Read `rung_census_30.log` / `scratchpad-bench/rung-census.jsonl` first — a 13-rung x
+> 30-draw capability census was launched this session and is the highest-information artefact
+> available.** If it is incomplete, resume it with `npm run rung:census` (it appends per rung, so a
+> killed run leaves usable data; `RC_TASK=` / `RC_ONLY=` restrict it to what is missing).
+>
+> **STOP RUNNING THE LADDER END TO END.** ~1 hour per data point at a resolution that cannot see the
+> effects being produced. Two results were published and retracted on 2026-08-02 for exactly that
+> ("1/3" became 1/9, "2/6" became 0/6). The hard-set scorecard is now a CONFIRMATION instrument, run
+> once against a hypothesis the rung bench already supports — never an exploration instrument.
+>
+> **THE NEW INSTRUMENT: `npm run rung:census` (`__rung_census_live.ts`).** Measures the RUNG, which
+> is the unit the architecture actually rests on (a carve is exactly as good as its hardest rung), at
+> 20-90s per draw instead of an hour. Default 30 draws — enough power to detect a 2x, and 0/30 has a
+> 95% upper bound near 10%, which is what licenses the word "unreachable". Every row prints a Wilson
+> interval; a bare fraction from 6 draws licenses nothing.
+>
+> **IT REPORTS TWO NUMBERS AND YOU MUST READ BOTH.** CERTIFIED (what the system calls success today)
+> and GENERALISES (the certified source re-run against HELD-OUT witnesses). 5 of 12 certified helpers
+> failed held-out cases on 2026-08-02c and the correlation with solving was exact — so CERTIFIED
+> alone is precisely the measurement that produced the retracted claims. REACHABLE = both.
+>
+> **THE THREE VERDICTS AND WHAT EACH LICENSES:**
+> - REACHABLE (every rung generalises) -> the 1.5B is SUFFICIENT once carved; the gap is the PLANNER,
+>   and planner/composition work is on the critical path.
+> - UNREACHABLE (a rung at 0/30, and it does not certify either) -> that rung is the actual ceiling.
+>   SHRINK SCOPE — carve finer or retire the row. No planner work converts a task whose hardest rung
+>   cannot be filled.
+> - SPEC-LIMITED (certifies often, generalises rarely) -> neither. The rung's cases do not pin down
+>   which function; the fix is upstream derived cases (`rungCounterexample.ts`), not capability and
+>   not the planner. **This is checked BEFORE unreachable**, because mislabelling it sends the next
+>   session to shrink scope against a defect that is already half-solved.
+>
+> **THE CATALOG IS THE CENSUS.** All four hard tasks hand-carved into natural-value rungs (13 rungs;
+> `nextUnquotedComma` carried over byte-identical from `__handcarve_probe_live.ts` so its number is
+> comparable to the 8/12-vs-3/30 probe result). Rungs are ground in ISOLATION by the production path
+> with reference sources injected for named dependencies, so each rung's number is independent of its
+> neighbours' luck.
+>
+> **RUN `RC_VALIDATE_ONLY=1 npm run rung:census` AFTER EVERY CATALOG EDIT.** Seconds, zero model
+> calls. It asserts each rung's reference implementation passes its own shown cases AND its own
+> held-out witnesses — a witness the reference fails would indict a CORRECT helper, which is worse
+> than not checking. It already caught a wrong `wordsFittingFrom` witness before any draws ran.
+>
+> **HEAD SETUP IS MANDATORY FROM A WORKTREE** or every number is against apple-fm:
+> `export CRUCIBLE_BONSAI_BIN=<main>/.crucible/prismml-bin/llama-server` and
+> `CRUCIBLE_BONSAI_MODEL=<main>/.crucible/models/qwen2.5-1.5b-instruct-q4_k_m.gguf`. The harness
+> aborts on an apple-fm head and on an empty completion (TRAP 5).
+>
+> **Everything below this block is the 2026-08-02e state and remains true** — the gold-forced
+> derivation replicated on its own shape (8/12 vs 3/30, p=0.0005) and does NOT transfer (1/12 on the
+> hard set, and that solve was tier 1). Its stated next move — widen the derivation to MAP and
+> PIPELINE shapes — should now be re-prioritised against what the census says, not before it.
+
+---
+
+## CURRENT STATE — last updated 2026-08-02e (root cause found; fix works on one shape, does NOT transfer) (superseded by 2026-08-02f above)
 
 > **START HERE. The single highest-value thing to do next is widen the gold-forced derivation to the
 > MAP and PIPELINE composition shapes** (`rungCounterexample.ts` covers only scan-by-index today).
