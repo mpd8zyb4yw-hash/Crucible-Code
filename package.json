@@ -106,6 +106,7 @@
     "gen:scorecard": "tsx src/CrucibleEngine/reasoning/__decompose_general_scorecard_live.ts",
     "rung:postmortem": "tsx src/CrucibleEngine/reasoning/__decompose_postmortem_live.ts",
     "handcarve:probe": "tsx src/CrucibleEngine/reasoning/__handcarve_probe_live.ts",
+    "rung:census": "tsx src/CrucibleEngine/reasoning/__rung_census_live.ts",
     "planquality:probe": "tsx src/CrucibleEngine/reasoning/__plan_quality_probe_live.ts",
     "localcorpus:selfcheck": "tsx src/CrucibleEngine/reasoning/__local_corpus_selfcheck.ts",
     "faildirected:selfcheck": "tsx src/CrucibleEngine/reasoning/__failure_directed_selfcheck.ts",

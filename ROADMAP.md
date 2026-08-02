@@ -1933,6 +1933,39 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-02f (measurement instrument replaced: the RUNG, not the hour-long ladder)
+
+**`npm run rung:census` (`__rung_census_live.ts`).** Every hard-set number this project has ever
+published came from running the ladder end to end: ~1 hour per data point, 12 draws the most anyone
+has collected. That resolution cannot see the effects being produced — two results were published
+and retracted on 2026-08-02 for exactly that ("1/3" became 1/9; "2/6" became 0/6). This harness
+measures the RUNG instead, at 20–90s per draw, so 30 draws per arm is routine.
+
+- **Two numbers per rung, never one.** CERTIFIED (what the system calls success today) and
+  GENERALISES (the certified source re-run against held-out witnesses). Reporting CERTIFIED alone is
+  the measurement that produced the retracted claims: 5 of 12 certified helpers failed held-out cases
+  on 2026-08-02c, and the correlation with whether the task solved was exact. REACHABLE means both.
+- **All four hard tasks hand-carved into natural-value rungs** (13 rungs), each ground in isolation
+  by the production path (`iterate` + `proposeCode` + `verifyCode`) with reference sources injected
+  for named dependencies — byte-for-byte the rung spec `solve.ts` builds, so this measures the
+  production path and not a friendlier prompt. `nextUnquotedComma` is carried over verbatim from
+  `__handcarve_probe_live.ts` so the census number is comparable to the 8/12-vs-3/30 probe result.
+- **Three soundness guards, all of which abort before spending a draw.** (1) Every rung's reference
+  implementation must pass its own shown cases. (2) It must pass its own held-out witnesses — a
+  witness the reference fails encodes a rule the goal does not state and would indict a CORRECT
+  helper, which is worse than not checking. (3) A witness failure with ZERO failing cases aborts as
+  an instrumentation fault; that guard caught the harness's own first bug (`solution` is a Candidate,
+  so `String(solution)` is `"[object Object]"` and fails everything silently). Guard (2) caught a
+  wrong witness in `wordsFittingFrom` before any draws ran. `RC_VALIDATE_ONLY=1` runs the guards
+  alone, in seconds and zero model calls — run it after every catalog edit.
+- **SPEC-LIMITED is tested before UNREACHABLE, and that ordering is the diagnostic.** A rung that
+  certifies 30/30 and generalises 0/30 is not a capability ceiling; its cases fail to pin down which
+  function. Calling that "unreachable" would send the next session to shrink scope when the actual
+  fix is upstream derived cases (`rungCounterexample.ts`).
+- **Power is printed, not implied.** Wilson 95% intervals on every row. 0/30 has an upper bound near
+  10% — that is what licenses the word "unreachable". 0/6 licenses nothing, which is why the default
+  is 30 draws and every printed verdict names its draw count.
+
 ### 2026-08-02b (PROBLEM A answered: the planner is exonerated, rung GRANULARITY is the lever)
 
 **The hand-carve probe** (`npm run handcarve:probe`, `__handcarve_probe_live.ts`). The 0/12 hard-set
