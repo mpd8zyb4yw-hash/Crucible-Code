@@ -77,12 +77,12 @@
 > claim and runs inside `prove:all`. **Wiring before optimisation.**
 >
 > 0. **Capability Router + Escalation Policy** `[x, not live-wired]` — `router/capabilityRouter.ts`. classify() is REAL: deterministic-pattern coverage from the synth catalog (241+ weighted-regex entries) → synth (strong) / fm (moderate); external/unknown signal from the Tier 1.2 index + lexical cues → retrieve; else abstain (always reachable, no "try anyway" bypass). Confidence = actual signal strength, never fixed. Proven end-to-end in isolation: NL request → DAG → router (reverse→synth 0.70, Stripe→retrieve 0.60) → executor applied synth node via the apply layer, abstained on the ungrounded node. Not reachable from a live `/api/chat` request (see correction above).
-> 1. **Task Decomposition → Dependency DAG** `[x, not live-wired]` — `src/CrucibleEngine/decompositionDag.ts`. Pure/no-model; reuses goalDecomposer; topo-ordered (Kahn, cycle-safe); nodes carry targetFiles/changeType/dependsOn/verificationGate. `classifyDag()` routes every node through the capability router (abstain reachable from each). prove:all 241/241. Not reachable from a live `/api/chat` request (see correction above).
+> 1. **Task Decomposition → Dependency DAG** `[REMOVED 2026-07-11 — FILE DELETED, capability ABSENT]` — `src/CrucibleEngine/decompositionDag.ts` was deleted in commit d0730b5 ("Dead-code sweep: … parked DAG files …"). `executeDag` has no callers anywhere in the repo and no equivalent exists under another name. The description below is HISTORY, not status. Verified 2026-08-02 by `npm run audit:reach`. Pure/no-model; reuses goalDecomposer; topo-ordered (Kahn, cycle-safe); nodes carry targetFiles/changeType/dependsOn/verificationGate. `classifyDag()` routes every node through the capability router (abstain reachable from each). prove:all 241/241. Not reachable from a live `/api/chat` request (see correction above).
 > 2. **Semantic Repo Index** `[x]` — `src/CrucibleEngine/state/semanticIndex.ts`. TS compiler API, syntactic mode (no Program/checker, no model). exports+kinds, import graph, call graph, transitive type-chains, class/interface heritage. Query API (findSymbol/callersOf/calleesOf/typeChain/relatedFiles…) consumed by the DAG. Incremental mtime refresh + post-mutation reindex.
 > 3. **Internet Retrieval Layer** `[x]` — `src/CrucibleEngine/retrieval/retrievalLayer.ts`. Direct https (no model intermediary, no paid API): DDG search, page fetch, npm/DefinitelyTyped d.ts pulling, session cache, graceful degradation. Pre-processing pipeline (strip boilerplate→extract code/type-sigs→rank→budget-fit). Injected via repoContext.withRetrieval → universal.ts fmSpecPrefix (opt-in `retrievalBlock`); FM never sees a raw dump.
-> 4. **Agentic Execution Loop** `[x, not live-wired]` — `src/CrucibleEngine/nodeExecutor.ts`. emit→commit(apply gate)→observe→parse semantically (verify.ts fingerprint/extractHints)→mutate spec→retry. Hard budget (maxAttempts), anti-thrash (repeated fingerprint⇒abstain), abstain exit reachable everywhere, audit trail (.crucible/exec-ledger.jsonl). executeDag runs nodes topologically, dependency-gated; honest buckets applied/abstained/blocked. Synthesis injected (model-agnostic). Not reachable from a live `/api/chat` request (see correction above) — the live coding-agent path is `agent/planner.ts` + `agent/loop.ts`.
+> 4. **Agentic Execution Loop** `[REMOVED 2026-07-11 — FILE DELETED, capability ABSENT]` — `src/CrucibleEngine/nodeExecutor.ts` was deleted in commit d0730b5. The live coding-agent path is `agent/planner.ts` + `agent/loop.ts`, which does NOT implement the emit→commit→observe→retry loop described below. The description below is HISTORY, not status. Verified 2026-08-02 by `npm run audit:reach`. emit→commit(apply gate)→observe→parse semantically (verify.ts fingerprint/extractHints)→mutate spec→retry. Hard budget (maxAttempts), anti-thrash (repeated fingerprint⇒abstain), abstain exit reachable everywhere, audit trail (.crucible/exec-ledger.jsonl). executeDag runs nodes topologically, dependency-gated; honest buckets applied/abstained/blocked. Synthesis injected (model-agnostic). Not reachable from a live `/api/chat` request (see correction above) — the live coding-agent path is `agent/planner.ts` + `agent/loop.ts`.
 >
-> **Tier 2:** 5. Apply layer + RSI gate `[x, live only via scripts/selfHeal.ts]` (`apply/applyLayer.ts` — snapshot→baseline→apply→verify→keep-if-not-worse else hard-restore; path-escape refused, kill switch, dry-run, ledger). Not reachable from the live coding-agent path (see correction above). · 6. Mock/stub injection `[x, not live-wired]` (`synth/mockInjection.ts` — ambient declare-module + relative stub files + type stubs; prefers real index/retrieved shapes; proven via tsc Program). · 7. Relevance-ranked context assembly `[x]` (`contextAssembly.ts` — fuses tf + graph proximity, budget-fit). · 8. Ambiguity resolution `[x, not live-wired]` (`ambiguity.ts` — resolve definite refs via index; abstain+clarify when unresolvable; wired into nodeExecutor pre-synth gate, not into agent/loop.ts; regression bench `ambiguity-bench.ts` added 2026-07-04, `npm run ambiguity:bench`, 9/9).
+> **Tier 2:** 5. Apply layer + RSI gate `[REMOVED 2026-07-11 — FILE DELETED, capability ABSENT]` (`apply/applyLayer.ts` was deleted in commit d0730b5; the `apply/` directory no longer exists, so the snapshot→verify→restore safety net described here is GONE, including for `scripts/selfHeal.ts`. History, not status.) (former description: `apply/applyLayer.ts` — snapshot→baseline→apply→verify→keep-if-not-worse else hard-restore; path-escape refused, kill switch, dry-run, ledger). Not reachable from the live coding-agent path (see correction above). · 6. Mock/stub injection `[REMOVED 2026-07-11 — FILE DELETED, capability ABSENT]` (`synth/mockInjection.ts` was deleted in commit d0730b5; history, not status. Former description: — ambient declare-module + relative stub files + type stubs; prefers real index/retrieved shapes; proven via tsc Program). · 7. Relevance-ranked context assembly `[REMOVED 2026-07-11 — FILE DELETED, capability ABSENT]` (`contextAssembly.ts` was deleted in commit d0730b5; history, not status. Former description: — fuses tf + graph proximity, budget-fit). · 8. Ambiguity resolution `[x, not live-wired]` (`ambiguity.ts` — resolve definite refs via index; abstain+clarify when unresolvable; wired into nodeExecutor pre-synth gate, not into agent/loop.ts; regression bench `ambiguity-bench.ts` added 2026-07-04, `npm run ambiguity:bench`, 9/9).
 > **Tier 3:** 9. Benchmark overhaul — externally-anchored (SWE-bench-style), per-bucket honest (verified / FM-pattern / retrieval-grounded / escalated / abstained). Moat number = verified + FM-pattern only.
 >
 > ### ACTIVE phase — Closing the Frontier-SWE Gap (gate OPENED 2026-07-04)
@@ -561,7 +561,7 @@ Crucible at its logical conclusion is:
   `finetune_autotrigger` (`improvementDaemon.ts` + handler in `server.ts` daemon tick) submits an
   SFT job when the gold-standard set first crosses 1000 entries, then every +500, persisting a
   marker in `.crucible/finetune-autotrigger.json`. Skips (without advancing) if HF_REPO/HF_TOKEN unset.
-- [x] **3.2 re-integrate fine-tuned model** — DONE (guarded). `registerFineTunedModel()` in
+- [REMOVED — FILE DELETED, capability ABSENT] **3.2 re-integrate fine-tuned model** — `modelRegistry.ts` was deleted with the old localModels stack (d0730b5, 2026-07-11); `registerFineTunedModel()` exists nowhere in the repo, so a completed fine-tune is NOT re-integrated. History, not status. Former claim: `registerFineTunedModel()` in
   `modelRegistry.ts` adds the completed fine-tune as a first-class ensemble member; called at
   startup with `getFineTunedModelId()`. No-op until a fine-tune actually completes (zero risk now).
 - [x] **3.3 calibration training (K5)** — was mostly ALREADY DONE (cross-ref `buildCalibrationDataset`
@@ -570,7 +570,7 @@ Crucible at its logical conclusion is:
 - [x] **3.4 cross-session knowledge synthesis (J5)** — DONE (same as 0.2a).
 
 ### Phase 4 — Reliability & distribution
-- [x] **4.1 provider rebalance on trip** — DONE. `rebalancePool()` in `modelRegistry.ts` recomputes
+- [REMOVED — FILE DELETED, capability ABSENT] **4.1 provider rebalance on trip** — `modelRegistry.ts` was deleted with the old localModels stack (d0730b5, 2026-07-11); `rebalancePool()` exists nowhere in the repo. History, not status. Former claim: `rebalancePool()` in `modelRegistry.ts` recomputes
   per-provider health (active/total free models, floored) on every `tripCircuitBreaker`/
   `resetCircuitBreaker`; folds `providerHealthFactor(provider)` into the selection score. Surfaced in
   `/api/diag` → `substrate.providerHealth`.
@@ -1031,9 +1031,9 @@ Implementation lives in `src/CrucibleEngine/state/session.ts`, wired into the ag
 - [ ] Label source is currently regex-derived — improve by back-labeling from winning model's promptType fit when score clearly wins one category
 
 ### Model Specialization Memory
-- [x] After each completed round, write `(model_id, query_type, score)` to `.crucible/specialization.json` — EMA (α=0.2) smoothing via `recordSpecialization()` in `modelRegistry.ts`
+- [REMOVED — FILE DELETED, capability ABSENT] After each completed round, write `(model_id, query_type, score)` to `.crucible/specialization.json` — `recordSpecialization()` in `modelRegistry.ts` was deleted (d0730b5) and exists nowhere in the repo. History, not status. Former claim: EMA (α=0.2) smoothing
 - [x] `getSpecializationWeights(queryType)` returns per-model EMA score for that category
-- [x] `selectModels` in `modelRegistry.ts` applies the bias at selection time — `specBias = 1 + (ema - 0.5) * 0.15` (±4.5% at extremes, additive to existing score)
+- [REMOVED — FILE DELETED, capability ABSENT] `selectModels` in `modelRegistry.ts` (deleted d0730b5, 2026-07-11) applied the bias at selection time — `specBias = 1 + (ema - 0.5) * 0.15` (±4.5% at extremes, additive to existing score)
 - [x] Tracks all PromptType categories: coding / reasoning / creative / factual / math / general
 - [x] Surfaces in `/api/debug/topology` — e.g. `"Qwen3 32B: factual +14.0% · creative -3.0%"`
 - [x] Exponential decay with 60-day half-life: EMAs drift back toward neutral (0.5) based on time since last call. Timestamps stored in `.crucible/specialization-ts.json`. Prevents early-winner lock-in. `recordSpecialization` applies decay before blending new score.
@@ -1077,7 +1077,7 @@ Implementation lives in `src/CrucibleEngine/state/session.ts`, wired into the ag
 ## SPECIAL TRACK — Speed (free-models-only)
 
 - [x] Pre-warm — keypress `/api/prewarm` + continuous rolling keepalive every 4 min (`runKeepaliveRound`, `server.ts`). All registry models pinged with staggered 3 s delay; tripped circuit breakers skipped.
-- [x] Rate-limit handling — reactive circuit breakers PLUS *predictive* rate management: `predictProviderLoad()` in `modelRegistry.ts` measures per-provider request velocity (15 s window → per-min rate), projects load 10 s ahead, and the selection penalty now reacts to *projected* fill, not just current count — load shifts off a provider before it hits its soft cap. Exposed via `GET /api/debug/ratelimit` + `providerLoad` in topology; keepalive emits `ratelimit_warning` to the debug bus for at-risk providers.
+- [REMOVED — FILE DELETED, capability ABSENT] Rate-limit handling — reactive circuit breakers PLUS *predictive* rate management: `predictProviderLoad()` in `modelRegistry.ts` (deleted d0730b5, 2026-07-11) measures per-provider request velocity (15 s window → per-min rate), projects load 10 s ahead, and the selection penalty now reacts to *projected* fill, not just current count — load shifts off a provider before it hits its soft cap. Exposed via `GET /api/debug/ratelimit` + `providerLoad` in topology; keepalive emits `ratelimit_warning` to the debug bus for at-risk providers.
 - [x] Speculative stage execution — `maybeSpeculate()` in `server.ts` Stage 1: when a leader finishes with a dominant score (≥0.85, forcing early-exit) or any simple-path leader lands (both skip Stage 3+4), synthesis starts *immediately* on the responses gathered so far, overlapping the synth call with the dead wait for stragglers. At Stage 5 the speculative result is COMMITTED iff its input id-set exactly matches the final synthesis input set (stragglers dropped/rolled back) — else DISCARDED and synthesised normally. Free-tier so a wasted call costs nothing; the win is hiding synth latency behind Stage 1. Verified live: all three paths fire (`speculative_synthesis_start/hit/miss` on the debug bus) and the final answer is correct on both hit and miss.
 - [x] Partial/streaming scoring — `provisionalScore()` in `server.ts` Stage 1 runs a cheap, deterministic heuristic (length-completeness · structure (code-fence/sentences) · prompt-keyword relevance · stub/refusal penalty) on the *partial* text as it streams, re-scored every ~200 chars. Emitted on the `layer1` event as `{ score, provisional: true }`, which the existing client handler already applies — so the score bar fills live (verified: 0.31→0.52→0.73→0.80 as a response builds) instead of snapping to a value only when the model finishes. The authoritative `evaluateIteration` score still overrides on `done`.
 - [x] Explicit KV-cache optimization — `withStaticPrefix()` in `server.ts` prepends ONE byte-for-byte identical `STATIC_PREAMBLE` (global rules, marker `[[crucible-core-v1]]`) to the system message of *every* call (both `callModel` and `callModelStreaming`), same text and position every time, so providers' prefix KV caches hit across requests. Variable per-call content (contract/aspect/codebase/question) follows the shared prefix. Idempotent via the marker. The rolling keepalive pings carry the same preamble, so they actively keep this prefix warm. Verified: prose + directive-constrained queries return correctly with the prefix in force.
@@ -1952,6 +1952,62 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ---
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
+
+### 2026-08-02h (the head-to-head that had never been run: DEAD 2/9, LIVE 2/9 — a tie)
+
+Ran all five follow-ups from 2026-08-02g. The decisive one first.
+
+**1. STACK HEAD-TO-HEAD (`npm run stack:h2h`, `__stack_headtohead_live.ts`).** The two stacks had
+never been run on the same input because they were never both invoked from one process. Now they
+have been, 3 tasks x 3 draws x 2 arms, scored on HELD-OUT witnesses (not each arm's own oracle),
+distillation disabled both sides so a catalog hit cannot fake a win:
+
+```
+  task                band    DEAD (reasoning)   LIVE (synth)
+  editDistance        easy    1/3                2/3
+  nextUnquotedComma   rung    1/3                0/3
+  csvSelect           hard    0/3                0/3
+  TOTAL                       2/9                2/9
+```
+
+**2. DECISION: do NOT wire `reasoning/` in, and do NOT delete it yet.** A tie does not justify
+paying ~14k LOC of engine + ~10.7k LOC of harness to integrate a second stack. It also does not
+license deletion: at 3 draws/arm every interval is wide and overlapping (e.g. 6%-79% vs 21%-94% on
+editDistance), and the two arms fail in DIFFERENT places — `reasoning/` is the only one that ever
+solved `nextUnquotedComma`, `synth/` is better on the easy task and roughly 2x cheaper in wall
+clock. The honest verdict is NO EVIDENCE OF SUPERIORITY, which is enough to stop investing and not
+enough to be sure. Status: frozen, not deleted.
+
+**3. FIRST HONEST PRODUCT NUMBER: the live stack is 2/9 on this set, and 0/3 on the hard task.**
+Both stacks score 0/3 on `csvSelect`. This is the first measurement in two weeks that describes
+what a user actually reaches.
+
+**3b. A REAL LIVE-PATH DEFECT, found by dogfooding.** Gate A3 (`synth/contractGate.ts`) emitted
+`fail-open gate 'gateA3_contract' SKIPPED — it is providing no protection this session`. It only
+runs when the spec carries an `Exact public API (<path>):` block, and that literal originates in
+exactly ONE place in the repo: `coding-benchmarks.ts`. `synthDriver.ts` only ever STRIPS such
+blocks; `buildEditSpec` never emits one. **So Gate A3 protects the benchmark corpus and is inert
+for every real user request** — benchmark scores are gated more strictly than production work, which
+means they overstate real reliability. NOT fixed this session, deliberately: the safe fix is to make
+`synthDriver` EMIT a contract block when the user goal states an explicit exported signature, NOT to
+loosen `declaredSignatures()` — a wrong contract makes a CORRECT candidate un-certifiable, the same
+asymmetry that governs derived counterexamples. That change alters live behaviour and needs
+end-to-end verification, which is not something to ship unverified at the end of a long session.
+
+**4. ROADMAP PHANTOMS PURGED — 8 stale `[x]` claims corrected**, for 6 files deleted a month ago in
+`d0730b5` (2026-07-11, "Dead-code sweep"): `nodeExecutor.ts`, `decompositionDag.ts`,
+`apply/applyLayer.ts`, `synth/mockInjection.ts`, `contextAssembly.ts`, `modelRegistry.ts` (x4
+claims). `audit:reach` now audits every `.ts` path cited on a `[x]` status line, scoped above the
+CHANGE LOG (a dated changelog entry about a since-deleted file is correct history, not a stale
+claim) and skipping meta-commentary. Phantom count is now 0 and it stays checked automatically.
+
+**5. HARNESS FREEZE, as a gate rather than a note.** `reasoning/__*.ts` is frozen at 46 files in
+`scripts/audit-reachability.mjs`; exceeding it EXITS NONZERO and fails `prove:all`. Raising
+`FROZEN_AT` is one line and is meant to be a deliberate act naming the shipping-path hypothesis the
+new harness tests. This is a gate and not a doc note precisely because `audit:reach` itself was
+built 2026-07-19 for the wiring question and then never run again — a rule that needs remembering
+has already failed once here.
+
 
 ### 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM — wiring census replaces capability census)
 

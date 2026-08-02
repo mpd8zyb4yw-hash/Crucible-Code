@@ -210,3 +210,102 @@ for (const sym of ['solveCodeTask', 'solveWithKeptCandidates', 'iterate', 'synth
   console.log(`  ${sym.padEnd(24)} ${verdict}`)
 }
 console.log(`\n  ${liveSyms.size} exported symbol(s) are transitively reachable from server.ts.`)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROADMAP PHANTOM CAPABILITIES. Three items were found on 2026-08-02 marked `[x]` for files
+// deleted a month earlier in a dead-code sweep (d0730b5). Hand-checking does not scale and did
+// not happen; this does it mechanically for every `.ts` path the document cites.
+//
+// A hit here does not always mean the doc is wrong — a path can be cited as history, or renamed.
+// It means the claim needs a human decision, which is exactly what nobody was prompted to make.
+// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// HARNESS FREEZE (2026-08-02). `reasoning/` carries 46 harness files / ~10.7k LOC against ~14.3k
+// LOC of engine — near 1:1 — and `solveCodeTask` has no live path from `server.ts`. Every one of
+// those harnesses measures a subsystem no user request reaches.
+//
+// This is a GATE, not a note, because the same lesson was already written down: `audit:reach`
+// itself was built 2026-07-19 for this exact question and simply never run again. A rule that
+// depends on somebody remembering to read it has already failed once here.
+//
+// To land a new `reasoning/__*.ts`, raise FROZEN_AT deliberately in the same commit and say in the
+// message what hypothesis about the SHIPPING path it tests. Raising it is one line; the point is
+// that it is a decision, not a default.
+// ─────────────────────────────────────────────────────────────────────────────
+const FROZEN_AT = 46
+const harnessDir = path.join(ROOT, 'src', 'CrucibleEngine', 'reasoning')
+let freezeBreached = false
+if (fs.existsSync(harnessDir)) {
+  const harnesses = fs.readdirSync(harnessDir).filter(f => /^__.*\.tsx?$/.test(f))
+  const over = harnesses.length - FROZEN_AT
+  console.log(`\n--- HARNESS FREEZE: reasoning/__*.ts = ${harnesses.length} (frozen at ${FROZEN_AT}) ---`)
+  if (over > 0) {
+    freezeBreached = true
+    console.log(`  BREACH: ${over} harness file(s) added since the freeze.`)
+    console.log(`  reasoning/ has no live path from server.ts — a new harness there measures a sandbox.`)
+    console.log(`  Either remove it, or raise FROZEN_AT in scripts/audit-reachability.mjs in the same`)
+    console.log(`  commit and state the hypothesis about the SHIPPING path that it tests.`)
+  } else {
+    console.log(`  ok — no new harnesses under the freeze.`)
+  }
+}
+
+const roadmap = path.join(ROOT, 'ROADMAP.md')
+if (fs.existsSync(roadmap)) {
+  const text = fs.readFileSync(roadmap, 'utf8')
+  // Only STATUS lines matter — a line claiming `[x]`/`[~]` completion. Scanning every backticked
+  // path instead floods the report with prose examples (`utils.ts`, `x.ts`), scratch hashes and
+  // hypotheticals, which is how a real phantom stays invisible in the noise.
+  // Scope: only the CURRENT status section, i.e. everything above the CHANGE LOG. A dated
+  // changelog entry that says "[x] did X in modelRegistry.ts" stays TRUE after the file is
+  // deleted — it is a record of what happened, not a claim about what exists. Auditing the
+  // archive produces permanent unfixable noise and buries the live claims.
+  const head = text.split(/^## CHANGE LOG/m)[0]
+  const statusLines = head.split('\n').filter(l =>
+    (/\[[x~]\b|\[[x~],/.test(l)) &&
+    // Drop meta-commentary ABOUT stale markers — the correction blocks quote `[x]` while
+    // describing the defect, and would otherwise re-report the very items they resolve.
+    !/stale|NO LONGER EXIST|were deleted|capability ABSENT|has meant/.test(l))
+  // Repo-wide file list: `all` only walks src/, but ROADMAP legitimately cites server.ts and
+  // scripts/*.ts, which would otherwise report as phantoms.
+  const everyFile = [...all]
+  for (const extra of ['server.ts', 'vite.config.ts']) {
+    if (fs.existsSync(path.join(ROOT, extra))) everyFile.push(path.join(ROOT, extra))
+  }
+  const scriptsDir = path.join(ROOT, 'scripts')
+  if (fs.existsSync(scriptsDir)) {
+    for (const e of fs.readdirSync(scriptsDir)) if (/\.tsx?$/.test(e)) everyFile.push(path.join(scriptsDir, e))
+  }
+  const cited = new Set()
+  for (const line of statusLines) {
+    for (const m of line.matchAll(/`([A-Za-z0-9_./-]+\.tsx?)`/g)) cited.add(m[1])
+  }
+  // A missing path is only ACTIONABLE if the document has not already owned up to it. Several
+  // ROADMAP lines carry more than one numbered item, so a line can legitimately hold both a live
+  // `[x]` and an already-annotated REMOVED entry; without this split those re-report forever and
+  // the report trains you to ignore it.
+  const open = [], acknowledged = []
+  for (const c of cited) {
+    const base = path.basename(c)
+    if (/^[0-9a-f]{8,}\.tsx?$/.test(base)) continue        // scratch hashes, not claims
+    if (everyFile.find(p => p.endsWith('/' + c) || path.basename(p) === base)) continue
+    // Only STATUS lines count as claims. The same path is often discussed in surrounding prose
+    // and correction blocks; those are commentary, and requiring them to say REMOVED too would
+    // keep an already-resolved item flagged forever.
+    const lines = statusLines.filter(l => l.includes('`' + c + '`'))
+    ;(lines.length && lines.every(l => /REMOVED|capability ABSENT/.test(l)) ? acknowledged : open).push(c)
+  }
+  console.log(`\n--- ROADMAP [x] STATUS LINES cite ${cited.size} .ts path(s) ---`)
+  console.log(`  ${open.length} PHANTOM (claimed complete, no file, not yet annotated):`)
+  for (const m of open.sort()) console.log(`   PHANTOM  ${m}`)
+  console.log(`  ${acknowledged.length} already annotated REMOVED / capability ABSENT (no action):`)
+  for (const m of acknowledged.sort()) console.log(`   ok       ${m}`)
+  if (open.length) {
+    console.log('   Each PHANTOM needs a decision: mark the item REMOVED/capability ABSENT, or restore the file.')
+    console.log('   `[x]` has historically meant "built and benchmarked", never "exists and is reachable".')
+  }
+}
+
+// The freeze is the only condition that FAILS this audit. Everything above is a report a human
+// reads; this is a rule a commit can violate, so it must be able to stop `prove:all`.
+if (freezeBreached) process.exit(1)

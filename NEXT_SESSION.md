@@ -17,7 +17,63 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02h (head-to-head run: a TIE; stop investing in reasoning/) (REPLACE THIS EVERY SESSION)
+
+> **START HERE. `npm run audit:reach` (now inside `prove:all`) is the first thing to run, always.**
+>
+> **THE DECISION IS MADE — do NOT wire `reasoning/` in, do NOT delete it, stop investing.**
+> `npm run stack:h2h` finally ran the two stacks on the same input (3 tasks x 3 draws x 2 arms,
+> scored on HELD-OUT witnesses, distillation off):
+>
+> ```
+>   task                band    DEAD (reasoning)   LIVE (synth)
+>   editDistance        easy    1/3                2/3
+>   nextUnquotedComma   rung    1/3                0/3
+>   csvSelect           hard    0/3                0/3
+>   TOTAL                       2/9                2/9
+> ```
+>
+> A tie does not justify paying ~14k LOC engine + ~10.7k LOC harness to integrate a second stack.
+> It also does not license deletion: at 3 draws every interval is wide and overlapping, and the arms
+> fail in DIFFERENT places (`reasoning/` is the only one that ever solved `nextUnquotedComma`;
+> `synth/` is better on easy and ~2x faster). Verdict: NO EVIDENCE OF SUPERIORITY. Frozen, not deleted.
+> If you want to revisit, raise H2H_RUNS — but ask first whether the answer would change what you do.
+>
+> **THE FIRST HONEST PRODUCT NUMBER: the live stack is 2/9 on this set, 0/3 on the hard task.**
+> That is what a user actually reaches. Every number before 2026-08-02g measured `reasoning/`, which
+> has no live path from `server.ts`.
+>
+> **THE NEXT REAL FIX — Gate A3 is inert in production.** `synth/contractGate.ts` only runs when the
+> spec carries an `Exact public API (<path>):` block. That literal originates in exactly ONE file:
+> `coding-benchmarks.ts`. `synthDriver.buildEditSpec` never emits one; `synthDriver` only STRIPS
+> them. So the contract gate protects the BENCHMARK corpus and is dead weight for every real user
+> request — benchmark scores are gated more strictly than production work.
+> **Fix it by making `synthDriver` EMIT a contract block when the user's goal states an explicit
+> exported signature. Do NOT loosen `declaredSignatures()`** — a wrong contract makes a CORRECT
+> candidate un-certifiable, which is strictly worse than no gate (same asymmetry as derived
+> counterexamples). Needs end-to-end verification; left undone deliberately rather than shipped blind.
+>
+> **STANDING RULES NOW ENFORCED MECHANICALLY (all inside `prove:all`):**
+> - `audit:reach` reports TRANSITIVE SYMBOL liveness from `server.ts`. Read that section, not the
+>   file-level percentage — the file-level number said `reasoning/` was 100% reachable and was wrong.
+> - ROADMAP phantom check: every `.ts` path cited on a `[x]` status line must exist. Currently 0.
+> - HARNESS FREEZE: `reasoning/__*.ts` frozen at 46; adding one FAILS `prove:all` until `FROZEN_AT`
+>   is raised deliberately with a stated hypothesis about the SHIPPING path.
+>
+> **TRAP THAT COST A RUN THIS SESSION:** in a git worktree `.crucible/` does not exist, so
+> `isBonsaiInstalled()` is false and the head silently falls back to `apple-fm`. Export both before
+> any live bench:
+> `CRUCIBLE_BONSAI_BIN=<repo>/.crucible/prismml-bin/llama-server`
+> `CRUCIBLE_BONSAI_MODEL=<repo>/.crucible/models/qwen2.5-1.5b-instruct-q4_k_m.gguf`
+>
+> **PROCESS NOTE (unchanged, still the biggest lever).** `NEXT_SESSION.md` and `ROADMAP.md` are the
+> two most-edited files in the repo, ahead of every source file. Prefer dogfooding the LIVE stack on
+> real tasks over building instruments: the Gate A3 defect above was found by simply RUNNING the
+> live stack once and reading its own telemetry, not by a new harness.
+
+---
+
+## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-02h above)
 
 > **START HERE. Run `npm run audit:reach`. Do not run any capability benchmark until you have.**
 >
