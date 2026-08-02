@@ -88,6 +88,26 @@ function isCandidateFile(name: string): boolean {
   return true
 }
 
+/**
+ * SYNTAX-HIGHLIGHTER LANGUAGE DEFINITIONS AND EDITOR BUNDLES — keyword-dense, implementation-free.
+ * Measured on the live retrieval arm: a "split on commas outside double quotes" query returned
+ * `highlight.js/lib/languages/vim.js`, `prismjs/components/prism-avisynth.js` and
+ * `typescript/lib/_tsserver.js` in its top five. A grammar definition is a table of the exact words
+ * the query is made of and contains no reusable logic, so it wins on keyword score while teaching
+ * the proposer nothing — and each one costs a retrieval candidate slot that a real implementation
+ * could have used (only 1 of the 5 hits, shell-quote/parse.js, was an actual quote-state scanner).
+ * Excluded by PATH rather than by content: these live in predictable places, and reading them to
+ * find out is what costs the time.
+ */
+function isNoiseSourcePath(relPath: string): boolean {
+  const p = relPath.toLowerCase()
+  return /(^|\/)(highlight\.js|prismjs|shiki|linguist)(\/|$)/.test(p) ||
+    /(^|\/)languages\//.test(p) ||
+    /(^|\/)components\/prism-/.test(p) ||
+    /(^|\/)typescript\/lib\//.test(p) ||
+    /(^|\/)locales?\//.test(p)
+}
+
 /** Directories that are all build output or noise — skipping them is most of the scan budget. */
 function isSkippedDir(name: string): boolean {
   return name === '.bin' || name === '.cache' || name === 'dist' || name === 'umd' ||
@@ -127,6 +147,7 @@ function scan(root: string, keywords: string[], maxFilesScanned: number): ScanHi
         continue
       }
       if (!isCandidateFile(name)) continue
+      if (isNoiseSourcePath(full.slice(root.length + 1))) continue
       scanned++
       let head: string
       try { head = readFileSync(full, 'utf8').slice(0, HEAD_BYTES) } catch { continue }
