@@ -57,6 +57,51 @@
 > is a zero-inference bottom-up PBE search; it would need an `extraOps` seam to take the certified
 > helpers as primitives, and a fold before it could express this particular loop).
 
+### ★ THE ROOT CAUSE: "certified" does not mean "the intended function" (5 of 12 helpers)
+
+Measured 2026-08-02c, `index` carve, 6 draws, each certified helper re-run against HELD-OUT cases
+it never saw:
+
+| draw | hard helper vs held-out witnesses | mechanical compose | outcome |
+|------|-----------------------------------|--------------------|---------|
+| 1-4, 6 | **OVERFIT** (fails 1 of 10) | no shape fits | fails, 27-55 calls burned |
+| 5      | **GENERALISES**             | **fires**          | **SOLVED — 6 calls, 20.6s** |
+
+**5 of 12 certified helpers fail held-out cases.** `nextUnquotedComma` certified 6/6 against its own
+examples in every draw and was WRONG in five of them — always the same defect, `('a,,b', 0)` returns
+2 instead of 1 (it skips consecutive commas). Its shown cases test `'a,,b'` only from=2, so nothing
+in the loop could see it.
+
+**The correlation across the six draws is exact**, and it retires the compose investigation: the
+composition step was never the problem. Every draw with a correct helper solved, in 6 calls; every
+draw with an overfit helper failed no matter what composed it. That is why SIX interventions aimed
+at the composition all failed — the model and the mechanical templates were being defeated by the
+same upstream defect, and neither can compose a helper that is wrong.
+
+**This also re-reads earlier results.** "The rungs certify 6/6 but compose 0/6" was never a glue
+problem. And a rung certifying is NOT evidence the search found the function — only that it found
+something satisfying 5-6 planner-invented examples.
+
+**THE FIX IS UPSTREAM AND CHEAPER THAN ANY COMPOSITION MECHANISM.** Three candidates, in order of
+how well tonight's evidence supports them:
+1. **Derive counterexamples from the parent's gold cases.** A template that is shape-correct fails
+   ONLY if a helper misbehaves, and for a known composition shape the gold output determines what
+   the helper must have returned — so a mechanical compose failure is a free, SOUND counterexample
+   for the rung. Nothing currently uses it: the failure is discarded and the model is asked instead.
+2. **The ambiguity guard, applied to rungs.** `synth/proposers/enumerative.ts` already does exactly
+   the right thing for its own path — collect every program satisfying the examples, probe them
+   against generated inputs, and report UNDER-SPECIFIED when two disagree rather than shipping a
+   coin-flip. Rung certification stops at the first passing candidate and cannot detect this.
+3. **More/adversarial cases per rung.** Weakest of the three (it needs an oracle to write them), but
+   note the shown cases here were HAND-WRITTEN by a careful human and still missed it — so expecting
+   the FM planner to invent sufficient cases is optimistic.
+
+**METHOD NOTE, the third instrumentation bug of the session.** The first witness set reported
+`GENERALISES` for this same broken helper, twice, because it also failed to test `'a,,b'` from 0.
+The rule that catches it: **witness every call the CALLER actually makes** — for a scan helper that
+means from=0 on every gold line and resuming past each hit — not "think of some edge cases". A
+held-out set that misses the inputs the caller uses is a second opinion from the same blind spot.
+
 ### RETRACTED — the "first converting intervention" did NOT replicate (2/6 then 0/6)
 
 | `index` carve, 6 draws each, same budget/head/cases     | whole task | hard rung | compose |
