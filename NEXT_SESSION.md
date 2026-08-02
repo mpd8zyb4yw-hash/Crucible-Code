@@ -81,6 +81,31 @@ the empty field (`"a,,b"` → `["a,","b"]`). NOTE: compose 0/6 here is a LOWER B
 planner returns null for sub-goals by design, so the glue re-decomposition fires and does nothing
 (`glue/re-decompose stalled 0c`). Production would hand that stage to the FM planner.
 
+### COMPOSE IS WHERE IT DIES NOW — and telling the model does not help (0/6, twice)
+
+With the `index` carve the helpers certify 6/6 and the composition certifies 0/6. Two things are
+now measured about that stage, and the second one is the load-bearing insight:
+
+- **Ignored-helper feedback does NOT convert: 0/6, identical to baseline.** A failing composition is
+  now told, in the prompt, exactly which certified helper it re-implemented instead of calling
+  (verified wired — `codeProposer.ts` feeds verdict signals into the next prompt under "Your
+  previous attempts FAILED verification"). The signal fired on **all 6 draws** and changed nothing.
+- **The composition ignored a certified helper in 6 of 6 draws.** That is the whole problem, because
+  a composition that ignores its helpers IS THE ORIGINAL COARSE TASK — the one measured at 0
+  certifications in 290 model calls. The carve's entire benefit is discarded at the final step.
+
+So the loop cannot get the win by ASKING for helper use. Three today's-evidence-backed readings of
+why, in decreasing confidence: the head's prior for "how you write splitCsvLine" overrides the
+instruction (the same pattern as stripping quotes it was told to keep and refusing to emit a
+sentinel); the composition needs index arithmetic it gets wrong independently (`"a,,b"` →
+`["a,","b"]` is a `start = i + 1` bug, present even when helpers ARE called); and context crowding
+(unlikely — the helper block is ~300 chars).
+
+**The next move is to measure the machinery that already exists before building more.** The glue
+re-decomposition is precisely "the composition is too hard, so decompose the glue", and it has been
+no-opping in every probe run (`glue/re-decompose stalled 0c`) because the probe declines sub-goals
+by design. `HC_SUB_PLANNER=fm` runs it for real.
+
 ### ⚠ THE RETRIEVAL LEVER WAS NEVER SWITCHED ON — and could not have been
 `webGround` is supplied in exactly two places in this repo, both stubbed unit benches. The
 scorecard, the post-mortem and every hard-set draw ever recorded pass none, so `withRetrieval`
