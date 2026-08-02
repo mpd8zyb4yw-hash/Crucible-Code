@@ -2223,6 +2223,29 @@ best-shaped one; both are DEFAULT OFF. If the planner can be pushed toward natur
 the fillability law AND the counterexample derivation both start applying to the general path.
 That is the single highest-value experiment outstanding: `CRUCIBLE_PLAN_SAMPLES=3` on the hard set.
 
+### BEST-OF-K PLAN SELECTION ALSO DOES NOT TRANSFER — 0/12
+
+`CRUCIBLE_PLAN_SAMPLES=3` on the hard set (sample 3 plans per attempt, grind the best-shaped by
+planShape): **0/12**, against 1/12 with the chain alone and 0/12 baseline — statistically identical.
+It is not free: 3 planner calls per attempt buys fewer attempts, and tier 3's spend fell from 57-105
+calls to 18-41 without converting anything. **Keep it DEFAULT OFF.** It has now had its general-path
+test and did not earn its cost.
+
+**What the traces say is actually blocking the general path** (worth more than the score): on
+`csvSelect` tier 3 died with `planner proposed no checkable helpers` and `aborted at helper
+splitCsv`; on `wordWrap` with `helper wrapWordsIntoLines did not certify`. The FM planner proposes
+whole-task-shaped helpers (`splitCsv`, `wrapWordsIntoLines`) and never a locator — so the gold-forced
+derivation, which only fires on `(string, number) -> number`, has nothing to act on. Selecting among
+three such plans does not help, because none of them is the shape that works.
+
+**So the transfer blocker is narrower and clearer than "plan quality":** the derivation covers ONE
+composition shape. The route to transfer is to widen it (MAP and PIPELINE compositions also force
+helper outputs from gold), not to keep re-rolling the planner and hoping for a locator.
+
+Also noted from the traces: tier 2 already reports `no case had ≥2 independent impls against it` —
+i.e. the ambiguity-guard idea EXISTS at tier 2 and is exactly what rung certification lacks. That is
+a second, independent route to the same root cause, and it is already half-built.
+
 **Failure-directed decomposition** (`failureDirectedSubGoal`, solve.ts). Recursion re-planned a stuck
 rung on its ORIGINAL goal text — the text that produced the un-carvable plan — so it resampled the
 same shape. It now carries the verifier's own failure signals into the sub-plan prompt ("these checks
