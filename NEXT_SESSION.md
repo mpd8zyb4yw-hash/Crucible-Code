@@ -17,41 +17,51 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02h (head-to-head run: a TIE; stop investing in reasoning/) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-02i (Gate A3 armed on the live path; a 2nd hole found by RUNNING it) (REPLACE THIS EVERY SESSION)
 
-> **START HERE. `npm run audit:reach` (now inside `prove:all`) is the first thing to run, always.**
+> **START HERE. `npm run audit:reach` (inside `prove:all`) is the first thing to run, always.**
 >
-> **THE DECISION IS MADE — do NOT wire `reasoning/` in, do NOT delete it, stop investing.**
-> `npm run stack:h2h` finally ran the two stacks on the same input (3 tasks x 3 draws x 2 arms,
-> scored on HELD-OUT witnesses, distillation off):
+> **DONE THIS SESSION — Gate A3 now actually runs in production.** `agent/synthDriver.ts` gained
+> `goalApiContractBlock()`: when the user's goal declares an exported signature for the target file,
+> the spec handed to `synthesizeUniversal` now carries an `Exact public API (<path>):` block, so
+> `synth/contractGate.ts` fires on real requests instead of only on `coding-benchmarks.ts` specs.
+> The emitter is false-positive-averse by design (declaration syntax only, primary files only,
+> no-op when a block already exists) because a WRONG contract makes a CORRECT candidate
+> un-certifiable — strictly worse than no gate. `declaredSignatures()` was NOT loosened.
 >
-> ```
->   task                band    DEAD (reasoning)   LIVE (synth)
->   editDistance        easy    1/3                2/3
->   nextUnquotedComma   rung    1/3                0/3
->   csvSelect           hard    0/3                0/3
->   TOTAL                       2/9                2/9
-> ```
+> **THE LESSON, AGAIN: running it end-to-end found a hole nothing else would have.** With the
+> emitter in place the gate still logged `SKIPPED`. A stack trace showed
+> `structuralSynthBridge.ts` calling `verifyCandidateAsync(...)` with **no `spec` at all**
+> (`specLen=0`) — so a catalog/skill hit could be ACCEPTED with zero contract check, on the exact
+> route a real request took. Both call sites now thread `spec`. The unit bench could never have
+> seen this. Prefer one live run over one more harness.
 >
-> A tie does not justify paying ~14k LOC engine + ~10.7k LOC harness to integrate a second stack.
-> It also does not license deletion: at 3 draws every interval is wide and overlapping, and the arms
-> fail in DIFFERENT places (`reasoning/` is the only one that ever solved `nextUnquotedComma`;
-> `synth/` is better on easy and ~2x faster). Verdict: NO EVIDENCE OF SUPERIORITY. Frozen, not deleted.
-> If you want to revisit, raise H2H_RUNS — but ask first whether the answer would change what you do.
+> Verified: `npm run contractemit:bench` 20/20 (round-trip emitter→gate, both directions, plus five
+> must-NOT-emit cases), `npm run contract:bench` 10/10, `typecheck:engine` clean, and a live
+> end-to-end run moved telemetry from `ran=0 skipped=1` to `ran=1 skipped=0`.
 >
-> **THE FIRST HONEST PRODUCT NUMBER: the live stack is 2/9 on this set, 0/3 on the hard task.**
-> That is what a user actually reaches. Every number before 2026-08-02g measured `reasoning/`, which
-> has no live path from `server.ts`.
+> **OPEN ITEMS, in priority order:**
 >
-> **THE NEXT REAL FIX — Gate A3 is inert in production.** `synth/contractGate.ts` only runs when the
-> spec carries an `Exact public API (<path>):` block. That literal originates in exactly ONE file:
-> `coding-benchmarks.ts`. `synthDriver.buildEditSpec` never emits one; `synthDriver` only STRIPS
-> them. So the contract gate protects the BENCHMARK corpus and is dead weight for every real user
-> request — benchmark scores are gated more strictly than production work.
-> **Fix it by making `synthDriver` EMIT a contract block when the user's goal states an explicit
-> exported signature. Do NOT loosen `declaredSignatures()`** — a wrong contract makes a CORRECT
-> candidate un-certifiable, which is strictly worse than no gate (same asymmetry as derived
-> counterexamples). Needs end-to-end verification; left undone deliberately rather than shipped blind.
+> 1. **`csvSelect` is 0/3 on BOTH stacks** — the one task where they agree completely and the shape
+>    closest to a real user request. Nobody has yet read a single failed `csvSelect` candidate to
+>    find out WHY. Do that before any further capability work; it is the cheapest real signal left.
+> 2. **Dogfood a real MULTI-FILE repo task** through `server.ts → agent/synthDriver.ts`. The h2h and
+>    this session's e2e both exercised single-function synthesis only — retrieval, repo context and
+>    `applyPatch` have never been measured on the live path.
+> 3. **Audit the OTHER fail-open gates for the same `specLen=0` defect** that `structuralSynthBridge`
+>    had. Grep every `verifyCandidateAsync(` / `verifyCandidate(` call site and confirm each passes
+>    `spec`; `gateA2_lint` and `gateA3_dupsymbol` should get the same live-telemetry check Gate A3
+>    just got. A gate that fails open on an empty spec is indistinguishable from a working one.
+> 4. **Decide whether the 8GB / no-external-API constraint applies to the PRODUCT or only to the
+>    research thesis.** It is still fused into `DOCTRINE.md`, and that fusion is what keeps turning
+>    product questions into capability censuses.
+> 5. **Do NOT raise `H2H_RUNS` unless the answer changes a decision.** At 3 draws/arm the tie is
+>    real but low-power; re-measuring a frozen subsystem is the treadmill again. `reasoning/` stays
+>    frozen — not wired, not deleted.
+>
+> **THE FIRST HONEST PRODUCT NUMBER (unchanged): the live stack is 2/9 on the h2h set, 0/3 on the
+> hard task.** That is what a user actually reaches. Every number before 2026-08-02g measured
+> `reasoning/`, which has no live path from `server.ts`.
 >
 > **STANDING RULES NOW ENFORCED MECHANICALLY (all inside `prove:all`):**
 > - `audit:reach` reports TRANSITIVE SYMBOL liveness from `server.ts`. Read that section, not the
@@ -60,20 +70,21 @@
 > - HARNESS FREEZE: `reasoning/__*.ts` frozen at 46; adding one FAILS `prove:all` until `FROZEN_AT`
 >   is raised deliberately with a stated hypothesis about the SHIPPING path.
 >
-> **TRAP THAT COST A RUN THIS SESSION:** in a git worktree `.crucible/` does not exist, so
+> **TRAP THAT COST A RUN (2026-08-02h):** in a git worktree `.crucible/` does not exist, so
 > `isBonsaiInstalled()` is false and the head silently falls back to `apple-fm`. Export both before
 > any live bench:
 > `CRUCIBLE_BONSAI_BIN=<repo>/.crucible/prismml-bin/llama-server`
 > `CRUCIBLE_BONSAI_MODEL=<repo>/.crucible/models/qwen2.5-1.5b-instruct-q4_k_m.gguf`
+> (or point `LOCAL_INFERENCE_URL` at an already-running llama-server, e.g. `http://127.0.0.1:8080`).
 >
 > **PROCESS NOTE (unchanged, still the biggest lever).** `NEXT_SESSION.md` and `ROADMAP.md` are the
 > two most-edited files in the repo, ahead of every source file. Prefer dogfooding the LIVE stack on
-> real tasks over building instruments: the Gate A3 defect above was found by simply RUNNING the
-> live stack once and reading its own telemetry, not by a new harness.
+> real tasks over building instruments: BOTH Gate A3 defects were found by RUNNING the live stack
+> and reading its own telemetry, not by a new harness.
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-02h above)
+## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-02i above; see ROADMAP CHANGE LOG 2026-08-02h for the head-to-head)
 
 > **START HERE. Run `npm run audit:reach`. Do not run any capability benchmark until you have.**
 >

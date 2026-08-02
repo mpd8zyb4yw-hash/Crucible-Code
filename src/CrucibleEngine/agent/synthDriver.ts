@@ -2130,6 +2130,57 @@ function scopeNumberedFileSections(goal: string, targetPath: string): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n')
 }
 
+/**
+ * Emit an "Exact public API (<targetPath>):" contract block when the goal itself declares an
+ * exported signature for that file.
+ *
+ * Why this exists (found 2026-08-02 by dogfooding, fixed 2026-08-02): Gate A3
+ * (`synth/contractGate.ts`) only runs when the spec carries that literal block, and the ONLY
+ * place in the repo that emitted one was `coding-benchmarks.ts`. `synthDriver` strips foreign
+ * blocks and `buildEditSpec` never writes one — so Gate A3 was inert for every real user
+ * request while gating the benchmark corpus. Benchmarks were gated more strictly than
+ * production, which makes benchmark scores overstate real reliability.
+ *
+ * The fix is to make production emit a contract, NOT to loosen `declaredSignatures()`. A
+ * looser parser guesses; a wrong contract makes a CORRECT candidate un-certifiable, which is
+ * strictly worse than no gate. So this is deliberately false-positive-averse:
+ * - Only genuine declaration syntax counts (`export function f(...)`, `export const f = (...) =>`).
+ *   Prose mentioning a name, or a call site, never produces a contract.
+ * - Only for the PRIMARY file, and only against goal text already scoped to targetPath by
+ *   stripForeignApiBlocks/scopeNumberedFileSections — a sibling file's exports must never
+ *   become this file's contract.
+ * - `export const name: SomeType = (...)` is skipped: the parens may belong to the annotation's
+ *   own shape rather than to the value's parameter list.
+ * - No-op if the goal already carries a block for this path (benchmark specs stay untouched).
+ *
+ * Signatures are re-emitted in normalized `export function name(params): Ret` form regardless of
+ * the goal's declaration style, because `declaredSignatures()` parses only the `function` form
+ * while `actualSignatures()` accepts either — so an arrow-style goal still yields a checkable
+ * contract, and an arrow-style candidate still satisfies it.
+ */
+export function goalApiContractBlock(goal: string, targetPath: string): string {
+  if (new RegExp(`Exact public API \\(${targetPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\):`).test(goal)) return ''
+
+  const sigs: string[] = []
+  const seen = new Set<string>()
+  const push = (name: string, params: string, ret: string | undefined) => {
+    if (seen.has(name)) return
+    seen.add(name)
+    const r = ret?.trim().replace(/[;,{]\s*$/, '').trim()
+    sigs.push(`  export function ${name}(${params.trim()})${r ? `: ${r}` : ''}`)
+  }
+
+  const fnRe = /export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(([^)]*)\)\s*(?::\s*([^\n{;]+))?/g
+  const arrowRe = /export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*(?::\s*([^\n=]+?))?\s*=>/g
+  let m: RegExpExecArray | null
+  while ((m = fnRe.exec(goal))) push(m[1], m[2], m[3])
+  while ((m = arrowRe.exec(goal))) push(m[1], m[2], m[3])
+
+  if (!sigs.length) return ''
+  // Trailing blank line: declaredSignatures() terminates the block at "\n\n" or end-of-spec.
+  return `\n\nExact public API (${targetPath}):\n${sigs.join('\n')}\n`
+}
+
 async function solveCodeWrite(
   targetPath: string,
   state: CurrentState,
@@ -2153,7 +2204,7 @@ async function solveCodeWrite(
   // file's contract just as readily as into a secondary self-test's.
   const goalForSpec = scopeNumberedFileSections(stripForeignApiBlocks(state.goal, targetPath), targetPath)
 
-  const spec = state.existingFileContent && !isSecondary
+  const baseSpec = state.existingFileContent && !isSecondary
     ? buildEditSpec(goalForSpec, targetPath, state.existingFileContent, errors)
     : [
         goalForSpec,
@@ -2161,6 +2212,11 @@ async function solveCodeWrite(
         primaryNote,
         `\n\nTarget file: ${targetPath}`,
       ].filter(Boolean).join('\n')
+
+  // Arm Gate A3 on the live path (see goalApiContractBlock). Primary files only: a secondary
+  // self-test's scoped goal still carries the PRIMARY file's preamble, so a signature found
+  // there describes the file under test, not the file being written.
+  const spec = isSecondary ? baseSpec : baseSpec + goalApiContractBlock(goalForSpec, targetPath)
 
   // UNIVERSAL grounding (cont.71): retrieve reference material and synthesize against it —
   // the SAME spine as the answer path and the game path, now for general code. synthesizeUniversal

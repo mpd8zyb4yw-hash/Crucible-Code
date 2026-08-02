@@ -1953,6 +1953,42 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-02i (Gate A3 armed on the live path — and a SECOND hole found by running it)
+
+Fixed open item 1 from 2026-08-02h: Gate A3 (`synth/contractGate.ts`) was inert for every real
+user request while gating the benchmark corpus, so benchmark scores were gated MORE strictly than
+production work. Per the stated design constraint, the fix EMITS a contract from production rather
+than loosening `declaredSignatures()` — a looser parser guesses, and a wrong contract makes a
+CORRECT candidate un-certifiable, which is strictly worse than no gate.
+
+**1. `goalApiContractBlock()` (`agent/synthDriver.ts`).** When the user's goal declares an exported
+signature for the target file, synthDriver now appends an `Exact public API (<path>):` block to the
+spec it hands `synthesizeUniversal`. Deliberately false-positive-averse: only real declaration
+syntax counts (`export function f(...)` / `export const f = (...) =>`), never prose or a call site;
+primary files only (a secondary self-test's scoped goal still carries the PRIMARY file's preamble);
+`export const f: SomeType = (...)` is skipped because the parens may belong to the annotation; and
+it is a no-op when the goal already carries a block, so benchmark specs are untouched. Signatures
+are re-emitted in normalized `function` form because `declaredSignatures()` parses only that form
+while `actualSignatures()` accepts either — so an arrow-style goal still yields a checkable
+contract and an arrow-style candidate still satisfies it.
+
+**2. A SECOND LIVE-PATH HOLE, found only by running it end-to-end.** With the emitter in place the
+gate STILL logged `SKIPPED — no "Exact public API" block in spec`. A stack trace showed the accepted
+candidate came through `structuralSynthBridge.ts`, which called `verifyCandidateAsync(...)` with no
+`spec` at all — `specLen=0`. A catalog/skill hit could therefore be ACCEPTED with no contract check
+whatsoever, on the exact route a real request took. Both call sites now thread `spec`. This is the
+accept side, where a missing check false-CERTIFIES. Neither the unit bench nor the emitter alone
+would ever have surfaced it — only the end-to-end run did, which is the 2026-08-02h lesson again.
+
+**3. Verified, both directions.** New committed bench `npm run contractemit:bench`
+(`agent/__goalApiContract_bench.ts`, 20/20) checks the ROUND TRIP — whatever the emitter writes,
+`declaredSignatures()` must parse back, a correct candidate must certify, a violating one must be
+rejected — plus five must-NOT-emit cases (prose, call site, non-exported helper, annotated const,
+pre-existing block). End-to-end on the live wiring (`makeOfflineDriveTurn` → `solveCodeWrite` →
+`synthesizeUniversal`, local head on :8080): telemetry went from `ran=0 skipped=1` to
+`ran=1 skipped=0` and the fail-open console warning is gone. `contract:bench` still 10/10,
+`typecheck:engine` clean. `contractemit:bench` added to `prove:all`.
+
 ### 2026-08-02h (the head-to-head that had never been run: DEAD 2/9, LIVE 2/9 — a tie)
 
 Ran all five follow-ups from 2026-08-02g. The decisive one first.

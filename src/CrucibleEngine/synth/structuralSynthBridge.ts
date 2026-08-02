@@ -111,7 +111,11 @@ export async function structuralSynthBridge(
     try {
       const files = skill.emit(feats)
       if (!files.length) continue
-      const v = await verifyCandidateAsync(files, derived.testFile, { compileTimeoutMs: 30_000, runTimeoutMs: 15_000 })
+      // `spec` must ride along: without it the oracle's contract critic (Gate A3) sees an empty
+      // spec and fails open. Found 2026-08-02 by an end-to-end run — a catalog skill can win here
+      // and be accepted with NO contract check, which is exactly the route a real user request
+      // took. This is the accept side, where a missing check false-CERTIFIES.
+      const v = await verifyCandidateAsync(files, derived.testFile, { spec, compileTimeoutMs: 30_000, runTimeoutMs: 15_000 })
       if (v.accepted) {
         if (distill) {
           try { distillToSkill(spec, files[0].path, files[0].content) } catch { /* best-effort */ }
@@ -140,7 +144,7 @@ export async function structuralSynthBridge(
           { path: composedPath, content: composed },
           ...dedup([...pFiles, ...sFiles], composedPath),
         ]
-        const v = await verifyCandidateAsync(allFiles, derived.testFile, { compileTimeoutMs: 30_000, runTimeoutMs: 20_000 })
+        const v = await verifyCandidateAsync(allFiles, derived.testFile, { spec, compileTimeoutMs: 30_000, runTimeoutMs: 20_000 })
         if (v.accepted) {
           if (distill) {
             try { distillToSkill(spec, composedPath, composed) } catch { /* best-effort */ }
