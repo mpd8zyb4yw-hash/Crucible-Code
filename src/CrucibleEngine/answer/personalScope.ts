@@ -30,7 +30,23 @@
 // fires when the history is silent, which is exactly the case that was being fabricated.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export interface ConvTurnLike { role?: string; content?: string }
+// Two turn shapes reach this file and they are NOT the same. The engine's internal ConvTurn is
+// {role, content}; the CLIENT posts {user, assistant} pairs (src/App.tsx:1253, and server.ts
+// passes req.body.history through). MEASURED 2026-08-03 in the running UI: the gate read only
+// .content, saw an empty transcript, and refused "Where did I go on holiday last year?" one turn
+// after the user answered it with "I went to Lisbon on holiday last year" -- breaking the exact
+// promise the refusal text makes. A gate that cannot read the conversation is a gate that
+// refuses everything.
+export interface ConvTurnLike {
+  role?: string; content?: string
+  user?: string; assistant?: string
+}
+
+/** Flatten either turn shape to the text it contributed to the conversation. */
+export function turnText(t: ConvTurnLike | undefined): string {
+  if (!t) return ''
+  return [t.content, t.user, t.assistant].filter(x => typeof x === 'string').join(' \n ')
+}
 
 // A first-person possessive or subject pronoun referring to the ASKER. "my", "I", "me", "mine".
 const FIRST_PERSON = /\b(my|mine|i|me|myself)\b/i
@@ -92,7 +108,7 @@ export function refusePrivateFact(
 
   const kws = keywords(message)
   if (kws.length) {
-    const hay = (history ?? []).map(t => String(t?.content ?? '')).join(' \n ').toLowerCase()
+    const hay = (history ?? []).map(turnText).join(' \n ').toLowerCase()
     // Any content word of the question appearing in the transcript means the conversation
     // plausibly holds the answer; defer rather than refuse over something already said.
     if (kws.some(k => hay.includes(k))) return null

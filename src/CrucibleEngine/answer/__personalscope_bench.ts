@@ -55,6 +55,19 @@ check('defers to recall when the transcript mentions the subject',
 check('still refuses an unrelated private fact with that same history',
   refusePrivateFact("What is my sister's name?", hist) !== null)
 
+// ── The CLIENT's turn shape, which is {user, assistant} and not {role, content} ──────
+// Measured in the running UI: the user answered the question one turn earlier and the gate
+// refused anyway, because it could not read this shape. This is the regression test for the
+// promise the refusal text makes ("tell me and I'll remember it").
+const clientHist = [{ user: 'I went to Lisbon on holiday last year.', assistant: 'You went to Lisbon on holiday last year.' }]
+check('reads the client {user, assistant} shape and defers',
+  refusePrivateFact('Where did I go on holiday last year?', clientHist) === null)
+check('still refuses an unrelated fact against that same client history',
+  refusePrivateFact('When is my dentist appointment?', clientHist) !== null)
+check('reads a fact stated only in the ASSISTANT half',
+  refusePrivateFact('What is my nephew called?',
+    [{ user: 'remind me', assistant: 'Your nephew Arlo turns four in May.' }]) === null)
+
 // ── Detection is independent of the refusal decision ─────────────────────────────────
 check('detects a private-fact question', isPrivateFactQuestion('Where did I park my car?'))
 check('does not detect an imperative', !isPrivateFactQuestion('Find my car keys in the notes.'))
