@@ -1,5 +1,12 @@
 # Crucible — UI OVERHAUL SPEC
 
+> **SUPERSEDED IN PART — read `DESIGN_HANDOFF.md` FIRST (added 2026-08-03d).**
+> The visual direction changed after this file was written. §0 and §1 below describe a dense
+> instrument-panel aesthetic; the chosen direction is a full-depth frosted-glass, card-as-home
+> assistant surface, phone-first. `DESIGN_HANDOFF.md` §1 lists exactly which sections here are
+> repealed and which still stand. **The Surface protocol (§2), the email worked example (§4),
+> tables (§5), run visualization (§6) and the honesty states (§8) all still stand.**
+
 > **Status: SPECIFICATION ONLY. No UI code has been written against this yet.**
 > This document is written to be handed to a fresh session with no prior context. It should be
 > implementable from this file alone, plus the repo.

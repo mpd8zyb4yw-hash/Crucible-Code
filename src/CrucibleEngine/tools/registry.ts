@@ -13,6 +13,7 @@ import { gFetch, googleServicesStatus } from './googleApis'
 import { getUITree, clickElement, typeText, navigateBrowser } from '../macTools'
 import { runCapability, capabilityIntents } from '../agent/macCapabilities'
 import { read_image, read_pdf } from './visionTools'
+import { evalArithmeticExpr } from '../answer/wordProblem'
 
 const tools = new Map<string, ToolDef>()
 
@@ -484,6 +485,37 @@ registry.register({
     ctx.emit?.({ type: 'diff', path: abs, patch: String(args.patch).slice(0, 2000) })
     ctx.onFileMutated?.([abs])
     return { ok: true, output: `Patched ${abs}: ${result.hunks} hunk(s) applied.` }
+  },
+})
+
+registry.register({
+  name: 'compute',
+  description: 'Evaluate an exact arithmetic expression (sums, products, percentages). Use this instead of doing mental arithmetic — it is exact and cannot be wrong.',
+  params: {
+    type: 'object',
+    properties: {
+      expression: { type: 'string', description: 'Arithmetic only, e.g. "49.99 + 229.50 + 12.75". No words.' },
+    },
+    required: ['expression'],
+  },
+  async run(args) {
+    // MEASURED 2026-08-03 (`npm run agent:workflow`, read-then-write): the agent read a CSV
+    // and then never wrote the total, because summing a column is arithmetic and NOTHING in a
+    // 45-tool registry could add three numbers. moneyMath.ts and wordProblem.ts carry exact
+    // arithmetic, but only on the ANSWER path — the agent could not reach them. Asking a 1.5B
+    // head to sum a column in its own head is the oracle-trust DOCTRINE §1 forbids; giving it
+    // a tool that is exact by construction is the loop.
+    const raw = String(args.expression ?? '')
+    const expr = raw.replace(/[£$€,]/g, '').trim()
+    // Whitelist: digits, operators, decimal points, parentheses, whitespace. Anything else and
+    // we refuse rather than evaluate — this string reaches a numeric evaluator.
+    if (!expr || !/^[\d+\-*/().\s%]+$/.test(expr)) {
+      return { ok: false, output: `compute takes arithmetic only, got: ${raw.slice(0, 80)}. Extract the numbers first.` }
+    }
+    const value = evalArithmeticExpr(expr)
+    if (value === null || !isFinite(value)) return { ok: false, output: `Could not evaluate: ${expr.slice(0, 80)}` }
+    const out = Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)))
+    return { ok: true, output: `${expr} = ${out}` }
   },
 })
 

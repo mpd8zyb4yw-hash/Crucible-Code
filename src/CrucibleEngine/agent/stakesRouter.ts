@@ -110,8 +110,18 @@ export function assessStakes(toolName: string, args: Record<string, unknown>, go
 
   if (!irreversibleLabel) return { stakes: 'low', reversible: true, blastRadius: 'narrow', reason: '' }
 
+  // BULK scope is never covered by an explicit verb. MEASURED 2026-08-03
+  // (`npm run agent:workflow`, confirm-before-destroy): "Delete every file in the folder X"
+  // contains "delete", so EXPLICIT_VERBS marked it LOW stakes and the agent went straight to
+  // delete_file with no confirmation. Saying "delete" authorises the ACTION CLASS; it does not
+  // authorise UNBOUNDED SCOPE. A user who names one file has told you which file. A user who
+  // says "every"/"all"/"everything" has told you a rule, and the set it resolves to is
+  // something only the machine can see — which is exactly when a human should look first.
+  const BULK_SCOPE = /\b(every|all|everything|each|entire|whole)\b/i
+  const bulk = BULK_SCOPE.test(goal)
+
   const authorizeRe = EXPLICIT_VERBS[toolName]
-  const explicitlyAuthorized = !!authorizeRe && authorizeRe.test(goal)
+  const explicitlyAuthorized = !!authorizeRe && authorizeRe.test(goal) && !bulk
   if (explicitlyAuthorized) {
     // The user's own words already asked for this class of action — automate per §3
     // ("automate when safe and effective"); re-confirming something they just asked for
@@ -123,6 +133,6 @@ export function assessStakes(toolName: string, args: Record<string, unknown>, go
     stakes: 'high',
     reversible: false,
     blastRadius,
-    reason: `About to ${irreversibleLabel} — this can't be undone${blastRadius === 'wide' ? ' and affects more than one item' : ''}, and the request didn't explicitly ask for this.`,
+    reason: `About to ${irreversibleLabel} — this can't be undone${blastRadius === 'wide' ? ' and affects more than one item' : ''}, and ${bulk ? 'the request covers every matching item, not one you named' : "the request didn't explicitly ask for this"}.`,
   }
 }

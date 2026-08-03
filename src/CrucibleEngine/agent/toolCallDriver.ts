@@ -245,7 +245,15 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       const name = sig.slice(0, sig.indexOf('('))
       successCount.set(name, (successCount.get(name) ?? 0) + 1)
     }
-    const usable = tools.filter(t => (successCount.get(t.name) ?? 0) < 2)
+    // Tools ruled out THIS turn: two prior successes, or a repeat blocked below. A blocked
+    // repeat must not end the turn — MEASURED, returning zero tool calls made the loop treat
+    // "you already read that file" as a FINAL ANSWER, so the run ended having done half the
+    // goal. Re-select instead, with the dead option removed.
+    const excluded = new Set<string>()
+    for (const [name, n] of successCount) if (n >= 2) excluded.add(name)
+    let picked = '', tool: ToolDef | undefined, args: Record<string, unknown> = {}
+    for (let attempt = 0; attempt < 3; attempt++) {
+    const usable = tools.filter(t => !excluded.has(t.name))
     const choices = [...(usable.length ? usable : tools).map(t => t.name), FINISH]
     const selectSystem = [
       'You are the executor of a task. You act by choosing ONE tool to call next.',
@@ -266,7 +274,7 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       'Which single tool next?',
     ].join('\n')
 
-    const picked = (await complete(
+    picked = (await complete(
       [{ role: 'system', content: selectSystem }, { role: 'user', content: selectUser }],
       { gbnf: enumGrammar(choices), maxTokens: 16, temperature: 0, signal },
     )).trim()
@@ -274,7 +282,7 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     if (!picked || picked === FINISH) {
       return { text: picked === FINISH ? 'Goal complete.' : 'No action selected.', toolCalls: [] }
     }
-    const tool = byName.get(picked)
+    tool = byName.get(picked)
     if (!tool) {
       // The grammar makes this unreachable on a grammar-aware backend; on one that ignores
       // GBNF it is the honest fallthrough rather than a silently mangled call.
@@ -309,7 +317,6 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // carrying every required key is a FAILED TURN, never a call with the gaps left empty:
     // `write_file` with no path is not a degraded write, it is a different action. The bench
     // caught exactly this — refusal prose contains no "{", which silently became `args: {}`.
-    let args: Record<string, unknown>
     const s = raw.indexOf('{'); const e = raw.lastIndexOf('}')
     if (s < 0 || e <= s) return { text: `No arguments returned for ${tool.name}.`, toolCalls: [] }
     try {
@@ -341,6 +348,10 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // rather than re-issuing a call whose outcome is already known.
     const sig = `${tool.name}(${JSON.stringify(args)})`
     if (attempted.has(sig)) {
+      // Do not end the turn — rule this tool out and pick again. Falls through to the loop's
+      // next attempt; only if three attempts all land on already-done work do we report it.
+      excluded.add(tool.name)
+      if (attempt < 2) continue
       // Succeeded OR failed, an identical call cannot advance the goal: a re-read returns the
       // same bytes, a re-failure returns the same error. Measured both ways -- read_file on a
       // mistyped path, then read_file on the CORRECT path six times running. The count-based
@@ -354,5 +365,7 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       text: `Calling ${tool.name}.`,
       toolCalls: [{ id: nextId(), name: tool.name, args }],
     }
+    }
+    return { text: 'Every available next action has already been carried out.', toolCalls: [] }
   }
 }
