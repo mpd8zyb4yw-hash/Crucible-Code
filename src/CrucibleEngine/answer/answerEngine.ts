@@ -21,6 +21,7 @@ import { applyRecomputation, recomputeMultiStep, recomputeWordProblem, directAri
 import { solveSchedule } from './schedule'
 import { solveRelease } from './releases'
 import { applyDateRecomputation, isDateQuestion, recomputeDate, solveDate } from './dateTime'
+import { refusePrivateFact, type ConvTurnLike } from './personalScope'
 import { isConversionQuestion, parseConversion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
 import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
@@ -351,6 +352,20 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     debugBus.emit('pipeline', 'direct_arithmetic', { message: message.slice(0, 60), value: arith.value }, { severity: 'info' })
     // Exact arithmetic computed by machine — genuinely certified.
     return { text, verified: true, verification: { passed: ['deterministic-arithmetic'], failed: [] }, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
+  }
+
+  // Private-fact scope gate. MEASURED 2026-08-03: "Where did I go on holiday last year?" was
+  // web-searched, matched "I Know What You Did Last Summer", and answered "you went on holiday
+  // to Los Angeles"; "what did I have for breakfast yesterday" pulled a Wikipedia article about
+  // a dog. Retrieval and grounding were both working — the defect is that a question no public
+  // source can answer was allowed to reach a public source at all. This runs before retrieval
+  // precisely so no search happens, and it defers whenever the transcript actually discussed
+  // the subject, so ordinary recall is never intercepted.
+  const priv = refusePrivateFact(message, rawHistory as ConvTurnLike[] | undefined)
+  if (priv) {
+    emit?.({ type: 'verify', passed: true, report: 'Refused deterministically: a private fact with no record, and no source that could supply one.' })
+    debugBus.emit('pipeline', 'private_fact_refused', { message: message.slice(0, 60) }, { severity: 'info' })
+    return { text: priv.text, verified: true, verification: { passed: ['deterministic-scope-refusal'], failed: [] }, abstained: true, ...base, facets: { ...facets, intent: 'converse' } }
   }
 
   // Calendar arithmetic ("90 days after 3 August 2026", "what day of the week was 4 July 1776").
