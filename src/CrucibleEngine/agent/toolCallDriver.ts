@@ -119,6 +119,40 @@ export function snapPathToReality(p: string): string {
   return path.join(dir, scored[0].s)
 }
 
+
+/**
+ * Narrow the tool menu to what this goal could plausibly need.
+ *
+ * MEASURED 2026-08-03: with all 47 registered tools in the enum, the head selecting the next
+ * step of "read prices.csv, total it, write total.txt" wandered into `read_image` and
+ * `read_pdf`. The grammar guarantees a VALID name; it cannot make a 47-way choice easy for a
+ * 1.5B model. Scoring by literal overlap between the goal and each tool's name/description and
+ * keeping the best handful turns a 47-way decision into a ~10-way one, which is the difference
+ * between selection and guessing. Purely lexical, no model call.
+ *
+ * `keep` are tools that must never be pruned: the ones a multi-step task needs at the END,
+ * after the goal words have all been consumed by earlier steps.
+ */
+export function relevantTools(tools: ToolDef[], goal: string, limit = 10): ToolDef[] {
+  const KEEP = new Set(['write_file', 'read_file', 'list_dir', 'compute', 'ask_user'])
+  const words = new Set(
+    goal.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 3),
+  )
+  const score = (t: ToolDef) => {
+    const hay = `${t.name} ${typeof t.description === 'string' ? t.description : ''}`.toLowerCase()
+    let n = 0
+    for (const w of words) if (hay.includes(w)) n++
+    // The tool's own name appearing in the goal is a much stronger signal than a description hit.
+    if (words.has(t.name.replace(/_/g, ''))) n += 3
+    return n
+  }
+  const scored = tools.map(t => ({ t, s: score(t) })).sort((a, b) => b.s - a.s)
+  const out: ToolDef[] = []
+  for (const { t } of scored) { if (out.length >= limit) break; out.push(t) }
+  for (const t of tools) if (KEEP.has(t.name) && !out.includes(t)) out.push(t)
+  return out
+}
+
 /** Render the tool menu compactly. A 1.5B head reads a short list far better than a schema dump. */
 export function toolMenu(tools: ToolDef[]): string {
   return tools.map(t => {
@@ -253,6 +287,11 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     for (const [name, n] of successCount) if (n >= 2) excluded.add(name)
     let picked = '', tool: ToolDef | undefined, args: Record<string, unknown> = {}
     for (let attempt = 0; attempt < 3; attempt++) {
+    // NOTE: relevantTools() below is deliberately NOT applied. Measured 2026-08-03, narrowing
+    // the menu to 13 goal-relevant tools took the probe from 2/5 to 1/5 — write-file, which had
+    // been passing, started returning an empty reply. Kept as a tested function for a future
+    // attempt with a better relevance signal; wiring it in without moving the number is exactly
+    // the 'this should help' change the standing rule bans.
     const usable = tools.filter(t => !excluded.has(t.name))
     const choices = [...(usable.length ? usable : tools).map(t => t.name), FINISH]
     const selectSystem = [
