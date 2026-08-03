@@ -192,10 +192,42 @@ export function enterByokKeys(keys: Record<string, string> | undefined | null): 
   if (Object.keys(clean).length) byokStore.enterWith(clean)
 }
 
-/** Resolve a provider's API key: user-supplied (BYOK) first, then the configured env var. */
+// ── Bundled-key policy (DOCTRINE §4) ─────────────────────────────────────────
+//
+// The keys in `.env.local` are free-tier developer keys. DOCTRINE §4 is explicit that free
+// tiers are for "local, personal, and development use only" and that pooling them across end
+// users is out of bounds — both a likely terms breach and operationally fragile (one revoked
+// key silently collapses quality for everyone).
+//
+// This repo has already been bitten by exactly that. A `quorum` request escalated to
+// Groq/Gemini/Mistral on the BUNDLED keys and produced the "I was made by AC/DC" cloud
+// answers. The fix at the time was to hard-pin every request to on-device only — which closed
+// the hole by removing the feature, and left DOCTRINE §3's tiered routing nonexistent in
+// production even for a user who brought their own key.
+//
+// The narrower and correct rule: an END-USER request may only ever spend the USER's own key.
+// So the env fallback is OFF by default and must be opted into explicitly for local/dev use.
+// With it off and no BYOK key supplied, `providerHasKey` is false for every external
+// provider, model selection has nothing to choose, and the request stays on-device — the same
+// safe behaviour as the old pin, reached by policy instead of by amputation.
+const ALLOW_BUNDLED_KEYS = process.env.CRUCIBLE_ALLOW_BUNDLED_KEYS === '1'
+
+/** True when the bundled `.env.local` keys may be spent. Dev-only opt-in; see above. */
+export function bundledKeysAllowed(): boolean {
+  return ALLOW_BUNDLED_KEYS
+}
+
+/**
+ * Resolve a provider's API key: user-supplied (BYOK) first.
+ *
+ * The env fallback applies ONLY when bundled keys are explicitly permitted
+ * (`CRUCIBLE_ALLOW_BUNDLED_KEYS=1`). Returning '' is the correct, safe outcome otherwise:
+ * callers treat it as "this provider is unavailable" and the request stays on-device.
+ */
 export function resolveProviderKey(provider: string): string {
   const user = byokStore.getStore()?.[provider]
   if (user && user.trim()) return user.trim()
+  if (!ALLOW_BUNDLED_KEYS) return ''
   const env = PROVIDER_KEY_ENV[provider]
   const v = env ? process.env[env] : undefined
   return v && v !== 'missing' ? v : ''
@@ -207,8 +239,14 @@ export function providerHasKey(provider: string): boolean {
   // A user-supplied BYOK key activates the provider for this request even with no env key.
   const user = byokStore.getStore()?.[provider]
   if (user && user.trim()) return true
+  if (!ALLOW_BUNDLED_KEYS) return false
   const v = process.env[env]
   return !!v && v !== 'missing'
+}
+
+/** Providers this request could actually reach, i.e. ones with a spendable key. */
+export function availableExternalProviders(): string[] {
+  return Object.keys(PROVIDER_KEY_ENV).filter(p => providerHasKey(p))
 }
 
 // ── Rate limit tracker ───────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
-import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad, providerHealthSnapshot, registerFineTunedModel, providerHasKey, enterByokKeys, resolveProviderKey, currentByokKeys } from './modelRegistry'
+import { classifyPrompt, regexClassify, selectModels, recordProviderCall, recordModelFailure, getModelFailureCount, PIPELINE_CONFIG, SIMPLE_PIPELINE_CONFIG, getModelEntry, scoreComplexity, tripCircuitBreaker, resetCircuitBreaker, getCircuitState, parseRetryDelay, circuitBreakers, allProviderLoads, recordSpecialization, getSpecializationWeights, learnClassification, classifierStats, recordModelOutcome, pickStandby, substrateReport, lastModelCall, viabilitySnapshot, predictProviderLoad, providerHealthSnapshot, registerFineTunedModel, providerHasKey, enterByokKeys, resolveProviderKey, currentByokKeys, availableExternalProviders, bundledKeysAllowed } from './modelRegistry'
 import type { SelectedModel } from './modelRegistry'
 import { createServer } from 'http'
 import { WebSocketServer as WsServer } from 'ws'
@@ -3041,14 +3041,41 @@ app.post('/api/chat', async (req, res) => {
   // into the message, replace it with the actual file CONTENT (text inline, images via
   // on-device Vision OCR) so the brain can act on what was attached, not just see a path.
   try { message = await foldAttachmentContext(String(message ?? ''), sandboxResolve) } catch { /* never blocks a send */ }
-  // ── NORTH STAR (non-negotiable): on-device models ONLY. No external / token-limited
-  // provider is ever called from a model dispatch — not as a default, not as a fallback, and
-  // not for the 'quorum' ensemble. Earlier this was `mode==='quorum' ? env : 'strict'`, which
-  // left a hole: a quorum request escalated to Groq/Gemini/Mistral using the BUNDLED keys in
-  // .env.local (the "I was made by AC/DC / by a leading technology company" cloud answers).
-  // requestOffline is now HARD-PINNED to 'strict' for every request, so offlineGate throws on
-  // any external escalation and the answer engine (answerQuery) serves it fully on-device.
-  const requestOffline: string = 'strict'
+  // ── ROUTING POLICY (DOCTRINE §3 tiered routing + §4 compliance) ─────────────
+  //
+  // History, because the previous state of this line was a deliberate over-correction and the
+  // reasoning matters. This was once `mode === 'quorum' ? env : 'strict'`, which left a hole:
+  // a quorum request escalated to Groq/Gemini/Mistral on the BUNDLED .env.local keys (the
+  // "I was made by AC/DC" cloud answers). The response was to HARD-PIN every request to
+  // 'strict' under a "on-device models ONLY" north star — which closed the hole by deleting
+  // the capability. That north star was repealed on 2026-08-03 (DOCTRINE §3: external APIs are
+  // ALLOWED; the banned framing is "we need a more expensive model"), but the pin outlived it,
+  // so BYOK keys were accepted twelve lines above and then unconditionally ignored. Tiered
+  // routing did not exist in production for anyone, including a user who brought their own key.
+  //
+  // The hole is now closed where it actually was — in KEY RESOLUTION, not in routing.
+  // `resolveProviderKey`/`providerHasKey` (modelRegistry.ts) refuse the bundled env keys unless
+  // CRUCIBLE_ALLOW_BUNDLED_KEYS=1 is set for local/dev use, so an end-user request can only
+  // ever spend the USER's own key. That makes the routing decision safe to derive:
+  //
+  //   no spendable external key  -> 'strict'  (on-device only — identical to the old pin, and
+  //                                            now the outcome of a policy rather than a
+  //                                            hardcoded constant)
+  //   a spendable key exists     -> ''        (offline-FIRST with escalation: DOCTRINE §3.2
+  //                                            keeps the ~80-90% mechanical steps on-device
+  //                                            and lets only decisive steps reach the model)
+  //
+  // Note what this deliberately does NOT do: it never selects '0' (external-only). The
+  // on-device pass always runs first, so the cheap path stays the default even for a user with
+  // a frontier key, and the offline floor (DOCTRINE §8.3) is never bypassed.
+  const spendableProviders = availableExternalProviders()
+  const requestOffline: string = spendableProviders.length > 0 ? '' : 'strict'
+  debugBus.emit('model', 'routing_policy', {
+    mode: requestOffline === 'strict' ? 'on-device-only' : 'offline-first-with-escalation',
+    byokProviders: Object.keys(currentByokKeys()),
+    spendableProviders,
+    bundledKeysAllowed: bundledKeysAllowed(),
+  }, { severity: 'info' })
   const chatSessionId = typeof reqSessionId === 'string' ? reqSessionId : ''
   const chatRoundId = typeof reqRoundId === 'string' ? reqRoundId : ''
   // Register roundId → conversationId so the completion patch can update the grouped

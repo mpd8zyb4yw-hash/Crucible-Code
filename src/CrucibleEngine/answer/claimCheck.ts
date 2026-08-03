@@ -47,12 +47,23 @@
 
 export type ClaimVerdict = 'supported' | 'unsupported' | 'incoherent'
 
+/**
+ * What made a sentence checkable at all.
+ *
+ * Both kinds are checked by the SAME subject-attachment rule, because both failures have the
+ * same shape: the model keeps a real span from the evidence and re-attaches it to the wrong
+ * subject. The anchor is just the span we require the evidence to agree about.
+ */
+export type AnchorKind = 'superlative' | 'date'
+
 export interface CheckedClaim {
   sentence: string
   verdict: ClaimVerdict
-  /** The superlative that made this sentence checkable ("most populous", "largest"). */
+  /** Which rule made this sentence checkable. */
+  kind: AnchorKind
+  /** The span that anchors the check ("most populous", "largest", "1908"). */
   superlative: string
-  /** Subject the superlative was attached to, after pronoun resolution. */
+  /** Subject the anchor was attached to, after pronoun resolution. */
   subject: string
   /** Evidence sentence that supports it, when one does. */
   support?: string
@@ -206,8 +217,11 @@ function superlativeHead(sup: string): string {
  */
 export function findAttachment(
   claim: string, subject: string, sup: string, evidenceSentences: string[],
+  kind: AnchorKind = 'superlative',
 ): string | null {
-  const head = superlativeHead(sup)
+  // A date anchors on the literal year; a superlative on its head word. Everything after this
+  // line is identical for both, which is the point — the two failure modes are the same shape.
+  const head = kind === 'date' ? sup : superlativeHead(sup)
   const subjTerms = terms(subject)
   // Predicate terms: the claim minus the subject, minus the superlative itself.
   const predTerms = terms(claim).filter(t => !subjTerms.includes(t) && t !== head)
@@ -222,6 +236,36 @@ export function findAttachment(
     if (hits >= need) return ev
   }
   return null
+}
+
+// ── Rule 3: dated claims ─────────────────────────────────────────────────────
+//
+// MEASURED 2026-08-03c, a later run of the same Canberra question:
+//
+//   "It was established as the seat of government for the Australian Capital Territory
+//    in 1908, following discussions and exploration of various sites within New South Wales."
+//
+// False (the ACT was created in 1911; Canberra was named in 1913), non-superlative, and
+// therefore invisible to rules 1 and 2. But it fails in exactly the same WAY: 1908 is a real
+// year that really appears in the evidence — "Canberra is located within the Australian
+// Capital Territory, which was excised from New South Wales in 1908" — attached to a
+// different predicate. A borrowed span, re-attached.
+//
+// So this needs no new machinery, only a new anchor. Where rule 2 anchors on a superlative,
+// this anchors on a YEAR and applies the identical same-sentence attachment test. Note that
+// naive "is this year in the evidence?" checking passes the failure above; requiring the
+// PREDICATE to match in the same sentence is what catches it.
+//
+// Years only, not every numeral. Dates are the fabrication-prone, high-salience class, and
+// they are unambiguous to extract. Quantities ("about 400,000 residents") are a real gap and
+// are left to a later rule rather than guessed at here — a checker that fires on measurement
+// noise teaches people to ignore it.
+const YEAR_RE = /\b(1[0-9]{3}|20[0-9]{2}|21[0-9]{2})\b/
+
+/** The first year asserted by a sentence, or null. */
+export function yearOf(sentence: string): string | null {
+  const m = YEAR_RE.exec(sentence)
+  return m ? m[1] : null
 }
 
 // ── The gate ─────────────────────────────────────────────────────────────────
@@ -244,22 +288,43 @@ export function checkClaims(answer: string, evidence: string, opts: CheckOpts = 
   const claims: CheckedClaim[] = []
 
   for (const sentence of splitSentences(answer)) {
-    const sup = superlativeOf(sentence)
-    if (!sup) continue
     const subject = subjectOf(sentence, topic)
+    const sup = superlativeOf(sentence)
 
-    if (isDistributiveSuperlative(sentence, subject)) {
-      claims.push({
-        sentence, superlative: sup, subject, verdict: 'incoherent',
-        reason: `"${subject}" is a single thing, so it cannot be ${sup} across each of several places at once.`,
-      })
+    if (sup) {
+      if (isDistributiveSuperlative(sentence, subject)) {
+        claims.push({
+          sentence, kind: 'superlative', superlative: sup, subject, verdict: 'incoherent',
+          reason: `"${subject}" is a single thing, so it cannot be ${sup} across each of several places at once.`,
+        })
+        continue
+      }
+      const support = findAttachment(sentence, subject, sup, evidenceSentences, 'superlative')
+      claims.push(support
+        ? { sentence, kind: 'superlative', superlative: sup, subject, verdict: 'supported', support, reason: 'Matched a source sentence making the same claim about the same subject.' }
+        : { sentence, kind: 'superlative', superlative: sup, subject, verdict: 'unsupported', reason: `No source says "${subject}" is ${sup} — the sources use that phrase about something else.` })
       continue
     }
 
-    const support = findAttachment(sentence, subject, sup, evidenceSentences)
-    claims.push(support
-      ? { sentence, superlative: sup, subject, verdict: 'supported', support, reason: 'Matched a source sentence making the same claim about the same subject.' }
-      : { sentence, superlative: sup, subject, verdict: 'unsupported', reason: `No source says "${subject}" is ${sup} — the sources use that phrase about something else.` })
+    // A sentence can carry a date claim without a superlative. Checked with the identical
+    // attachment rule, anchored on the year instead of the superlative head.
+    const year = yearOf(sentence)
+    if (year) {
+      const support = findAttachment(sentence, subject, year, evidenceSentences, 'date')
+      // The two failures are genuinely different and the message must not blur them: a year
+      // that is absent entirely is a fabricated date, while a year that is present but
+      // attached elsewhere is a borrowed one. Saying "it appears in the sources" about a year
+      // that does not would be the checker committing the same sin it is catching.
+      const yearAppears = evidenceSentences.some(s => s.includes(year))
+      claims.push(support
+        ? { sentence, kind: 'date', superlative: year, subject, verdict: 'supported', support, reason: `A source dates this to ${year} for the same subject.` }
+        : {
+            sentence, kind: 'date', superlative: year, subject, verdict: 'unsupported',
+            reason: yearAppears
+              ? `No source ties "${subject}" to ${year} for this — ${year} appears in the sources, but about something else.`
+              : `No source mentions ${year} at all.`,
+          })
+    }
   }
 
   return { claims, failed: claims.filter(c => c.verdict !== 'supported'), checked: claims.length > 0 }

@@ -59,6 +59,29 @@ const CASES: Case[] = [
   { name: 'true: most populous cities are Sydney and Melbourne', evidence: EVIDENCE, topic: 'Canberra',
     answer: "Canberra is the nation's capital, while its most populous cities are Sydney and Melbourne.", want: 'supported' },
 
+  // ── Dated claims (rule 3) ──────────────────────────────────────────────────
+  // MEASURED, a later run of the same question. False — the ACT was created in 1911 and
+  // Canberra named in 1913 — and non-superlative, so rules 1 and 2 cannot see it. The year
+  // 1908 IS in the evidence, attached to a different predicate, so a naive "is this year
+  // present?" check passes it. Requiring the PREDICATE to match in the same sentence is what
+  // catches it.
+  { name: 'MEASURED: Canberra "established ... in 1908"', evidence: EVIDENCE, topic: 'Canberra',
+    answer: 'The capital of Australia is Canberra. It was established as the seat of government for the Australian Capital Territory in 1908, following discussions and exploration of various sites.',
+    want: 'unsupported' },
+
+  // The TRUE dated sentence from the same answer must survive — same subject, same year,
+  // same predicate as the source. If this flags, the rule is useless.
+  { name: 'true: excised from New South Wales in 1908', evidence: EVIDENCE, topic: 'Canberra',
+    answer: 'Canberra is located within the Australian Capital Territory, which was excised from New South Wales in 1908.',
+    want: 'supported' },
+  { name: 'true: national government relocated in 1927', evidence: EVIDENCE, topic: 'Canberra',
+    answer: 'In 1927, the national capital was finally ready and the national government relocated from its former seat in Melbourne to Canberra.',
+    want: 'supported' },
+  // A year the evidence never mentions at all.
+  { name: 'invented year', evidence: EVIDENCE, topic: 'Canberra',
+    answer: 'Canberra was formally founded in 1874 after a long parliamentary debate about the site.',
+    want: 'unsupported' },
+
   // ── Nothing checkable ──────────────────────────────────────────────────────
   { name: 'no superlative at all', evidence: EVIDENCE, topic: 'Canberra',
     answer: 'The capital of Australia is Canberra. It is located in the Australian Capital Territory.', want: 'none' },
