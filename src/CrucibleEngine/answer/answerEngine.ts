@@ -20,8 +20,8 @@ import { solveByConsensus } from './selfConsistency'
 import { applyRecomputation, recomputeMultiStep, recomputeWordProblem, directArithmetic } from './wordProblem'
 import { solveSchedule } from './schedule'
 import { solveRelease } from './releases'
-import { applyDateRecomputation, isDateQuestion, recomputeDate } from './dateTime'
-import { isConversionQuestion, recomputeConversion } from './unitConvert'
+import { applyDateRecomputation, isDateQuestion, recomputeDate, solveDate } from './dateTime'
+import { isConversionQuestion, parseConversion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
 import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
 import { applyExplainCheck, checkExplanation } from './explainCheck'
@@ -351,6 +351,39 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     debugBus.emit('pipeline', 'direct_arithmetic', { message: message.slice(0, 60), value: arith.value }, { severity: 'info' })
     // Exact arithmetic computed by machine — genuinely certified.
     return { text, verified: true, verification: { passed: ['deterministic-arithmetic'], failed: [] }, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
+  }
+
+  // Calendar arithmetic ("90 days after 3 August 2026", "what day of the week was 4 July 1776").
+  // MEASURED 2026-08-03: the model-proposed setup put "90 days after 3 August 2026" at March 22,
+  // 2027 and the Jan 1 - Aug 3 span at 125 days, each after ~10s of quorum sampling. Reading a
+  // date out of a sentence is parsing, not reasoning, so solveDate does it deterministically and
+  // hands anything it cannot read with certainty (relative anchors, month-granularity spans,
+  // ambiguous operand counts) to the existing quorum untouched.
+  const dateAns = solveDate(message)
+  if (dateAns) {
+    emit?.({ type: 'verify', passed: true, report: 'Computed deterministically (UTC calendar arithmetic, no model).' })
+    debugBus.emit('pipeline', 'direct_date', { message: message.slice(0, 60), kind: dateAns.kind }, { severity: 'info' })
+    return { text: dateAns.text, verified: true, verification: { passed: ['deterministic-calendar'], failed: [] }, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
+  }
+
+  // Unit conversion ("100 km to miles", "how many cups is 500 ml"). parseConversion carries the
+  // exact standard factors, so a Tier-1 parse IS the answer — but until now it only ran at the
+  // recomputation stage, as a post-hoc correction applied to a model draft. MEASURED 2026-08-03:
+  // the four conversion probes each spent a full model turn (median ~5s) to arrive at a number
+  // the table already held, and the correction pass rescued only one of them. Returning the
+  // parse directly costs no inference and cannot be wrong; odd phrasings that do not parse still
+  // fall through to the Tier-2 quorum below, unchanged.
+  const conv = parseConversion(message)
+  if (conv) {
+    const round = (n: number) => {
+      const abs = Math.abs(n)
+      const dp = abs === 0 ? 0 : abs < 1 ? 4 : abs < 100 ? 2 : 2
+      return Number(n.toFixed(dp)).toString()
+    }
+    const text = `**${round(conv.value)} ${conv.from} = ${round(conv.result)} ${conv.to}**`
+    emit?.({ type: 'verify', passed: true, report: 'Computed deterministically (exact conversion factor, no model).' })
+    debugBus.emit('pipeline', 'direct_conversion', { message: message.slice(0, 60), from: conv.from, to: conv.to, result: conv.result }, { severity: 'info' })
+    return { text, verified: true, verification: { passed: ['deterministic-conversion'], failed: [] }, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
   }
 
   // Free/busy interval arithmetic ("meetings at 9, 11 and 2, each an hour — when am I free?").

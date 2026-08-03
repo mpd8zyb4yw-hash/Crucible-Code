@@ -102,6 +102,109 @@ export function evalDateSetup(s: DateSetup): { result: string; kind: DateRecompu
   return null
 }
 
+// ── Tier 1: DETERMINISTIC setup extraction (no model anywhere) ─────────────────────
+//
+// The arithmetic below was always exact; the SETUP was not. MEASURED 2026-08-03, the model
+// read "90 days after 3 August 2026" as March 22, 2027 and "between 1 January and 3 August
+// 2026" as 125 days — both wrong, both after ~10s of quorum sampling, and the quorum agreed
+// with itself often enough to ship the answer with only a soft "unverified" note attached.
+// Reading a date out of a sentence is a parsing job, not a reasoning job, so the machine does
+// it. Anything this parser cannot read with certainty returns null and falls through to the
+// existing model-proposed quorum, which is strictly better than it was: it now only sees the
+// phrasings the parser declined.
+
+const MONTH_NAMES: Record<string, number> = {}
+for (let i = 0; i < MONTHS.length; i++) {
+  MONTH_NAMES[MONTHS[i].toLowerCase()] = i
+  MONTH_NAMES[MONTHS[i].toLowerCase().slice(0, 3)] = i
+}
+MONTH_NAMES['sept'] = 8
+
+function iso(y: number, mo: number, d: number): string | null {
+  const dt = new Date(Date.UTC(y, mo, d))
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo || dt.getUTCDate() !== d) return null
+  return `${y}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+}
+
+/** Every explicit date literal in the message, in order of appearance, as ISO strings. */
+function findDates(m: string): string[] {
+  const out: Array<{ at: number; end: number; iso: string }> = []
+  const push = (at: number, len: number, s: string | null) => { if (s) out.push({ at, end: at + len, iso: s }) }
+
+  // 2026-11-01
+  for (const x of m.matchAll(/\b(\d{4})-(\d{2})-(\d{2})\b/g)) push(x.index!, x[0].length, iso(+x[1], +x[2] - 1, +x[3]))
+  // August 3, 2026 / Aug 3 2026
+  for (const x of m.matchAll(new RegExp(`\\b(${MONTH})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b`, 'gi'))) {
+    push(x.index!, x[0].length, iso(+x[3], MONTH_NAMES[x[1].toLowerCase()], +x[2]))
+  }
+  // 3 August 2026 / 4th July 1776
+  for (const x of m.matchAll(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH})\\.?,?\\s+(\\d{4})\\b`, 'gi'))) {
+    push(x.index!, x[0].length, iso(+x[3], MONTH_NAMES[x[2].toLowerCase()], +x[1]))
+  }
+  out.sort((a, b) => a.at - b.at || b.end - a.end)
+  // Dedup by SPAN, not by value: one literal caught by two patterns is one date, but the same
+  // date written twice ("between 2026-01-01 and 2026-01-01") is genuinely two operands.
+  const kept: typeof out = []
+  for (const d of out) if (!kept.some(k => d.at < k.end && k.at < d.end)) kept.push(d)
+  return kept.map(d => d.iso)
+}
+
+const UNIT_RX = /\b(\d[\d,]*)\s+(day|week|month|year)s?\b/i
+const AFTER_RX = /\b(after|from|later than|following|past)\b/i
+const BEFORE_RX = /\b(before|prior to|earlier than|ahead of)\b/i
+
+/** Parse a self-contained calendar question into a setup, with ZERO model involvement. */
+export function parseDateSetup(message: string): DateSetup | null {
+  const m = message ?? ''
+  if (!isDateQuestion(m)) return null
+  const dates = findDates(m)
+  if (!dates.length) return null
+
+  // "how many days between A and B" — needs exactly two dates so there is nothing to guess.
+  if (/\bhow many (days|weeks|months|years)\b/i.test(m) && !UNIT_RX.test(m)) {
+    if (dates.length !== 2) return null
+    if (!/\b(days|weeks|months|years)\b/i.test(m)) return null
+    // Only day-granularity diffs are exact without calendar-unit ambiguity.
+    if (!/\bhow many days\b/i.test(m)) return null
+    return { base: dates[0], op: 'diff', other: dates[1] }
+  }
+
+  // "what day of the week was <date>"
+  if (/\b(day of the week|which day|what day)\b/i.test(m) && !UNIT_RX.test(m)) {
+    if (dates.length !== 1) return null
+    return { base: dates[0], op: 'weekday' }
+  }
+
+  // "<N> <unit> after|before <date>"
+  const u = UNIT_RX.exec(m)
+  if (u) {
+    if (dates.length !== 1) return null
+    const amount = Number(u[1].replace(/,/g, ''))
+    if (!isFinite(amount) || amount < 0 || amount > 100000) return null
+    const tail = m.slice(u.index + u[0].length)
+    const isBefore = BEFORE_RX.test(tail)
+    const isAfter = AFTER_RX.test(tail)
+    // Both or neither present means the direction is genuinely ambiguous — abstain.
+    if (isBefore === isAfter) return null
+    return { base: dates[0], op: isBefore ? 'subtract' : 'add', amount, unit: `${u[2].toLowerCase()}s` as DateSetup['unit'] }
+  }
+  return null
+}
+
+/** Full deterministic solve: parse + evaluate + render. Null when not certain. */
+export function solveDate(message: string): { text: string; kind: DateRecomputation['kind'] } | null {
+  const setup = parseDateSetup(message)
+  if (!setup) return null
+  const r = evalDateSetup(setup)
+  if (!r) return null
+  const label = r.kind === 'weekday'
+    ? `${fmtDate(parseISO(setup.base)!)} was a **${r.result}**.`
+    : r.kind === 'days-between'
+      ? `There are **${r.result}** between ${fmtDate(parseISO(setup.base)!)} and ${fmtDate(parseISO(setup.other!)!)}.`
+      : `${setup.amount} ${setup.unit} ${setup.op === 'add' ? 'after' : 'before'} ${fmtDate(parseISO(setup.base)!)} is **${r.result}**.`
+  return { text: label, kind: r.kind }
+}
+
 // ── Setup extraction (model proposes; machine evaluates) ───────────────────────────
 
 const SYSTEM = [
