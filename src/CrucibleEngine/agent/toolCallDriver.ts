@@ -85,6 +85,34 @@ export function toolMenu(tools: ToolDef[]): string {
 }
 
 /**
+ * Signatures of calls that ALREADY SUCCEEDED, as `name(argsJson)`.
+ *
+ * The ledger alone did not stop the repeat — measured, the head still re-picked `read_file` on
+ * a file it had just read. Telling a 1.5B model not to repeat itself is advice; removing the
+ * option is a constraint, and DOCTRINE §1 says to prefer the constraint. A tool whose identical
+ * call has already succeeded is dropped from the SELECT enum, so re-picking it is unsamplable
+ * and the head must choose the next step. Only exact (name, args) pairs are excluded — reading
+ * a DIFFERENT file, or writing a second file, stays available.
+ */
+export function succeededSignatures(messages: Array<Record<string, unknown>>): Set<string> {
+  const out = new Set<string>()
+  let pending: string[] = []
+  for (const m of messages) {
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      pending = (m.tool_calls as Array<Record<string, unknown>>).map(tc => {
+        const fn = (tc.function ?? {}) as { name?: string; arguments?: string }
+        return `${fn.name ?? ''}(${fn.arguments ?? ''})`
+      })
+    } else if (m.role === 'tool') {
+      const c = String(m.content ?? '')
+      const sig = pending.shift()
+      if (sig && c.startsWith('(ok)')) out.add(sig)
+    }
+  }
+  return out
+}
+
+/**
  * An explicit ledger of the tool calls already made and how they went.
  *
  * MEASURED 2026-08-03: on "read prices.csv, total the amount column, write total.txt" the
@@ -143,12 +171,24 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
 
     // ── Stage 1: SELECT ───────────────────────────────────────────────────────────
     // The choice set is the grammar. Refusal prose is not in it.
-    const choices = [...tools.map(t => t.name), FINISH]
+    // A tool that has already succeeded TWICE is dropped from the choice set. The measured
+    // loop was `read_file` on the same path over and over until the stall detector fired; the
+    // loop's own guard stops at three identical turns, so two successes is the point where
+    // continuing cannot be progress. Reading a different file the first two times still works,
+    // and FINISH is never removed.
+    const succeeded = succeededSignatures(messages)
+    const successCount = new Map<string, number>()
+    for (const sig of succeeded) {
+      const name = sig.slice(0, sig.indexOf('('))
+      successCount.set(name, (successCount.get(name) ?? 0) + 1)
+    }
+    const usable = tools.filter(t => (successCount.get(t.name) ?? 0) < 2)
+    const choices = [...(usable.length ? usable : tools).map(t => t.name), FINISH]
     const selectSystem = [
       'You are the executor of a task. You act by choosing ONE tool to call next.',
       '',
       'TOOLS:',
-      toolMenu(tools),
+      toolMenu(usable.length ? usable : tools),
       '',
       `Reply with EXACTLY ONE of these words and nothing else: ${choices.join(', ')}`,
       `Choose ${FINISH} only when the goal is already fully achieved by the work shown below.`,
