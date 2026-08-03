@@ -1,3 +1,70 @@
+# CURRENT STATE (2026-08-03d — replace this block every session)
+
+## The two numbers that matter
+
+- **Single-turn: 23/23** (`npm run daily:probe`), median 63ms. **12/12 over the real HTTP wire**
+  (`npm run e2e:http`), 0 over budget, max 822ms. This surface is solid.
+- **Agentic: 1/5** (`npm run agent:workflow`), up from 0/5. This is the product, and it is not
+  finished.
+
+`npm run prove:all` green (251 skills, 0 failed) plus every bench below.
+
+## What runs the agentic path now
+
+`agent/toolCallDriver.ts` — a general grammar-constrained tool-call driver. The offline path had
+none: `makeOfflineDriveTurn` is a code-synthesis state machine for the abandoned coding scope.
+SELECT is an `enumGrammar` over literal tool names (refusal prose is unsamplable), FILL is a
+`jsonObjectGrammar` from the chosen tool's own schema. 15/15.
+
+`agent/postconditions.ts` — post-conditions extracted from goal text, checked against the real
+filesystem. `loop.ts:65` still makes verification optional and defaults to accepting; `gatedVerify`
+in server.ts wraps it so a failed post-condition returns `{passed:false, signal:'postcondition'}`.
+Zero extractable conditions reports UNVERIFIED, never verified. 17/17.
+
+## Open, in priority order
+
+1. **`read-then-write` stops at "Calling read_file"** — the second verb never runs, and
+   `succeededSignatures` never arms, which means `read_file` is not returning `(ok)`. Instrument
+   `registry.exec` for that call before touching the driver again. This one task blocks the whole
+   multi-step claim.
+2. **`research-to-file` is routed to the CODE state machine** and dies with "no oracle-passing
+   code for Node.js". `isCodeImplementationTask` still matches goals that merely write a file.
+   The gate needs to key on producing a PROGRAM, not on the presence of a write verb.
+3. **`confirm-before-destroy` never asks.** The stakes gate in `loop.ts:505` only fires when
+   `ctx.allowDestructive` is false; the run reached "Calling delete_file" with no clarification.
+   Verify what `allowDestructive` is set to on the chat path — this is a safety property, not a
+   quality one.
+4. **`multi-file-edit` calls `edit_file` and the symbol survives.** Likely the exact-match
+   contract (old string must appear exactly once) failing silently across two files.
+5. **UI is unstarted.** `UI_OVERHAUL.md` Part II is the implementation handoff, written against
+   shipped code — it names the three verification states, the provenance tokens, and the
+   fixtures to record. Part I §8.1 is superseded. No UI code may be written outside that doc's
+   direction.
+
+## Traps that already cost time this session
+
+- `isCodingQuery("…notes.md in /var/folders/…")` is **true**. It is not a code-goal gate.
+- The **meta-router builds its own driver instance** (server.ts ~4326) separately from the
+  single-loop path (~4424). Patch both or you are patching a branch that never runs.
+- `CRUCIBLE_OFFLINE` had **no effect** after `requestOffline` was un-pinned; a box with bundled
+  env keys escalated to the external free pool, whose garbage reads as "the reasoning model
+  declined this task". Fixed, but the failure mode is very convincing.
+- The file tools refuse `os.tmpdir()` — "outside permitted locations. Allowed: project folder,
+  Desktop, Downloads, Documents." A harness that writes to /tmp measures the sandbox.
+
+## Run commands
+
+    npm run daily:probe          # 23 single-turn, in-process
+    npm run e2e:http             # 12 over the real SSE wire (needs the server)
+    npm run agent:workflow       # 5 multi-step, scored on side effects (needs the server)
+    npm run prove:all            # everything hermetic
+
+The probes that need a server want it started as:
+
+    CRUCIBLE_OFFLINE=strict CRUCIBLE_VGR=0 JWT_SECRET=demo-poc-secret PORT=3021 \
+      LOCAL_INFERENCE_URL=http://127.0.0.1:8080 npx tsx server.ts
+
+
 # Crucible — Open Problems & Next Build Priorities
 
 > This document is a handoff for the next engineering session.

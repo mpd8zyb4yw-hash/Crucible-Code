@@ -1953,6 +1953,45 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+
+### 2026-08-03d — the agentic path starts executing, and the first honest number for it
+
+**Measured first, as always.** `__agent_workflow_probe.ts` scores five multi-step tasks on
+OBSERVABLE SIDE EFFECTS only — what is true on disk afterwards. Baseline **0/5**. Three tasks
+ended with ZERO tool calls; one reported *"The file prices.csv has been successfully read and
+added. No problems were flagged"* with nothing on disk.
+
+**Root cause was not the model.** The offline path had no general tool-calling driver at all —
+`makeOfflineDriveTurn` is a code-synthesis state machine (S0-S6) for the scope abandoned at 2/9.
+
+- `agent/toolCallDriver.ts` — SELECT under `enumGrammar` over literal tool names (refusal prose
+  is unsamplable), FILL under `jsonObjectGrammar` from the chosen tool's own schema. Against the
+  same 1.5B head that refused five times it returns `write_file` with the correct absolute path
+  in 1.7s. Partial args produce NO call. 15/15.
+- `agent/postconditions.ts` — conditions extracted from goal text, checked against the real
+  filesystem; zero conditions reports UNVERIFIED, never verified. 17/17.
+- Three routing defects found by chasing why the above looked inert: the meta-router builds its
+  own driver instance; `isCodingQuery` is true for any file-mentioning goal; and `CRUCIBLE_OFFLINE`
+  had no effect after `requestOffline` was un-pinned, so the box escalated to the external free
+  pool whose garbage reads as an on-device capability limit.
+- The probe itself was wrong: it wrote to `os.tmpdir()`, which the file tools correctly refuse.
+
+**Agentic 0/5 -> 1/5.** Every remaining failure is now specific and diagnosable rather than a
+blanket refusal. Open items in NEXT_SESSION.md.
+
+**Single-turn, same session.** Conversion 1/4 -> 4/4 (median 5.3s -> 2ms), date 1/3 -> 3/3
+(12.9s -> 2ms), math 4/4 with 0 over budget (6.6s -> 3ms), and the private-fact gate: the
+assistant was measured answering *"Where did I go on holiday last year?"* with *"you went on
+holiday to Los Angeles"*, drawn from *I Know What You Did Last Summer*. Now a 0-2ms honest
+refusal. **Daily probe 19/23 -> 23/23, median 1141ms -> 63ms. E2E over the wire 12/12** — that
+probe found a 105-second empty reply caused by the ".js" in "Node.js" matching a file-extension
+build signal.
+
+`UI_OVERHAUL.md` gained Part II: the implementation handoff, written against shipped code. It
+supersedes Part I §8.1 — the verification chip now has a real ledger behind it and must render
+three states, `certified` / `refuted` / `unexamined`.
+
+
 ### 2026-08-03c (VERIFIED PROSE — the badge can now return "no"; mechanical dogfood 7/7)
 
 The dogfood harness now **scores** instead of only printing: 12 probes, 7 carrying a mechanical
