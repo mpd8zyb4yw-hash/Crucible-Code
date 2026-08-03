@@ -106,7 +106,14 @@ function editDistance(a: string, b: string): number {
  * silently redirecting a write onto an existing file would destroy data.
  */
 export function snapPathToReality(p: string): string {
-  if (typeof p !== 'string' || !p.startsWith('/') || fs.existsSync(p)) return p
+  if (typeof p !== 'string' || !p.startsWith('/')) return p
+  // A glob is not a path. Collapse "<dir>/**/*.js" to "<dir>" so the call reaches the directory
+  // the user meant rather than failing on a pattern no file tool accepts.
+  if (/[*?]/.test(p)) {
+    const dir = p.split('/').filter(seg => !/[*?]/.test(seg)).join('/')
+    if (dir && fs.existsSync(dir)) return dir
+  }
+  if (fs.existsSync(p)) return p
   const dir = path.dirname(p), base = path.basename(p)
   let siblings: string[]
   try { siblings = fs.readdirSync(dir) } catch { return p }
@@ -176,7 +183,11 @@ export function relevantTools(tools: ToolDef[], goal: string, limit = 10): ToolD
  */
 const CATEGORY_VERBS: Array<{ cat: string; rx: RegExp }> = [
   { cat: 'READ', rx: /\b(read|open|inspect|examine|load)\b/gi },
-  { cat: 'CALCULATE', rx: /\b(add up|sum|total|calculate|compute|work out|average)\b/gi },
+  // "total" is only a verb with an object after it. MEASURED 2026-08-03: "write the TOTAL into
+  // total.txt" contributed a phantom fourth CALCULATE step, so after read -> sum -> compute the
+  // plan pointed at CALCULATE again and the agent never reached the write. A noun is not an
+  // instruction.
+  { cat: 'CALCULATE', rx: /\b(add up|sum|calculate|compute|work out|average)\b|\btotal(?:s|ling|ing)?\s+(?:up\s+)?the\b/gi },
   { cat: 'SEARCH', rx: /\b(search|find out|look up|research)\b/gi },
   // Edit-in-place verbs are WRITE verbs — renaming a symbol changes the file. They also trigger
   // the READ prepend below, because edit_file's contract needs the exact existing string.
@@ -188,7 +199,7 @@ const PLAN_TOOLS: Record<string, string[]> = {
   READ: ['read_file', 'list_dir'],
   CALCULATE: ['sum_column', 'compute'],
   SEARCH: ['web_search'],
-  WRITE: ['write_file', 'edit_file'],
+  WRITE: ['write_file', 'edit_file', 'rename_symbol'],
 }
 
 export function categoryPlan(goal: string): string[] {
@@ -219,7 +230,11 @@ export function categoryPlan(goal: string): string[] {
  */
 export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number): ToolDef[] | null {
   const plan = categoryPlan(goal)
-  const cat = plan[stepsDone]
+  // Clamp to the LAST planned step rather than falling back to the full 47-tool menu once the
+  // plan is exhausted. MEASURED 2026-08-03: after rename_symbol succeeded, the next turn got the
+  // unrestricted menu, chose write_file, and overwrote a.js with the 7 characters "newName".
+  // A plan that has run out is a signal the goal is done, not a licence to try anything.
+  const cat = plan[stepsDone] ?? plan[plan.length - 1]
   if (!cat) return null
   let list = PLAN_TOOLS[cat] ?? []
   // A goal that names a COLUMN is a column sum, and `sum_column` reads every row itself.
@@ -228,6 +243,18 @@ export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number):
   // Handing the model a calculator only moves the guess from the arithmetic to the
   // TRANSCRIPTION, so where an exact tool exists the approximate one is removed.
   if (cat === 'CALCULATE' && /\bcolumn\b/i.test(goal)) list = ['sum_column']
+  // A goal about FILES (plural) or a wildcard cannot start with read_file: there is no single
+  // file to read. MEASURED 2026-08-03 on multi-file-edit — the head answered the READ step with
+  // read_file("<dir>/**/*.js"), a glob no file tool accepts, and the run ended there. Which
+  // files exist is a question the filesystem answers, so the step is list_dir and the head is
+  // never asked to guess a filename it has not been shown.
+  if (cat === 'READ' && /\b\w+ files\b|\bfiles\b.*\b(in|under|inside)\b|\*\.[a-z]+/i.test(goal)) list = ['list_dir']
+  // A RENAME gets exactly one tool. MEASURED 2026-08-03: edit_file refused (its contract needs
+  // the old string exactly once, and a rename hits every occurrence), and the head then fell
+  // back to write_file and OVERWROTE the file with invented content. Leaving write_file on the
+  // menu for a rename is leaving a loaded data-loss path in reach of a model that has not read
+  // the file. rename_symbol does the whole operation exactly, so it is the only offer.
+  if (cat === 'WRITE' && /\brename\b/i.test(goal)) list = ['rename_symbol']
   const names = new Set(list)
   const picked = tools.filter(t => names.has(t.name))
   return picked.length ? picked : null
@@ -374,6 +401,17 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // the 'this should help' change the standing rule bans.
     // Step N of the goal's own verb plan narrows the menu to a handful; anything the plan does
     // not cover, or any retry after a blocked repeat, falls back to the full set.
+    // The plan is finished — stop. MEASURED 2026-08-03: on write-file the agent wrote
+    // "Crucible agent test" CORRECTLY, then took another turn and called edit_file to change it
+    // to "crucible-agent-test", corrupting work that was already right. A model with a tool and
+    // no remaining instruction will keep using the tool. The plan knows when the verbs are
+    // spent, and postconditions.ts is what decides whether the result is actually good — the
+    // driver's job is only to stop proposing.
+    const plan = categoryPlan(goal)
+    if (plan.length > 0 && succeeded.size >= plan.length) {
+      return { text: 'Every step of the request has been carried out.', toolCalls: [] }
+    }
+
     const planned = attempt === 0 ? plannedTools(tools, goal, succeeded.size) : null
     console.log(`[SEL] attempt=${attempt} succeeded=${succeeded.size} plan=${JSON.stringify(categoryPlan(goal))} offering=${planned?planned.map(t=>t.name).join('/'):'ALL'} ntools=${tools.length} sigs=${JSON.stringify([...succeeded].map(x=>x.slice(0,28)))}`)
     const usable = (planned ?? tools).filter(t => !excluded.has(t.name))
@@ -456,6 +494,27 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
 
     // Snap read-side path arguments onto a file that actually exists (see snapPathToReality).
     // Writes are never redirected: a near-miss filename on a write is a NEW file.
+    // A rename asked for "in the .js files" of a FOLDER must be applied to the folder. MEASURED:
+    // the head passed a.js, rename_symbol correctly renamed a.js only, and b.js was left
+    // untouched — a half-done rename, which is worse than none. The goal states the scope, so
+    // the machine widens the path back to the directory the user named.
+    // When the goal DICTATES the file's content verbatim, use it. MEASURED 2026-08-03: asked for
+    // a file "containing exactly the line: Crucible agent test", the head wrote
+    // "crucible-agent-test" — it had reached for the scratch directory's name instead of the
+    // literal three words in front of it. "Exactly" is a promise the machine can keep and the
+    // model cannot; copying a quoted literal is transcription, not reasoning.
+    if (tool.name === 'write_file' && typeof args.content === 'string') {
+      const lit = /\bcontain(?:ing|s)?\s+(?:exactly\s+)?(?:the\s+)?(?:line|text|string)\s*:?\s*["“']?([^"”'\n]{3,200}?)\.?\s*$/i.exec(goal)
+      if (lit) args.content = lit[1].trim()
+    }
+
+    if (tool.name === 'rename_symbol' && /\bfolder\b|\bfiles\b|\beverywhere\b|\ball\b/i.test(goal)) {
+      const p0 = args.path
+      if (typeof p0 === 'string' && p0) {
+        try { if (fs.statSync(p0).isFile()) args.path = path.dirname(p0) } catch { /* leave as-is */ }
+      }
+    }
+
     if (!tool.mutates) {
       for (const f of fields) {
         if (f.type === 'string' && /path|file|dir/i.test(f.key) && typeof args[f.key] === 'string') {

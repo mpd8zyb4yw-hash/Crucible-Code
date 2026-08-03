@@ -441,7 +441,13 @@ registry.register({
   },
   mutates: true,
   async run(args, ctx) {
-    const abs = resolveSafe(String(args.path ?? ''), ctx)
+    // Same whitelist as write_file and read_file. MEASURED 2026-08-03 (`npm run agent:workflow`,
+    // multi-file-edit): the agent listed the directory, chose the right file and the right
+    // strings, and edit_file refused with "outside the project root" — on a path write_file
+    // would happily have CREATED. An agent that can create a file in Documents but cannot edit
+    // the one it just created is not a sandbox, it is an inconsistency, and the whitelist
+    // (project folder, Desktop, Downloads, Documents) is the boundary either way.
+    const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
     const read = readFileChecked(abs)
     if (!read.ok) return read
     const protectedReason = protectedFileReason(read.content)
@@ -472,7 +478,8 @@ registry.register({
   },
   mutates: true,
   async run(args, ctx) {
-    const abs = resolveSafe(String(args.path ?? ''), ctx)
+    // Same whitelist as edit_file above — a patch is an edit.
+    const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
     const read = readFileChecked(abs)
     if (!read.ok) return read
     const protectedReason = protectedFileReason(read.content)
@@ -512,7 +519,11 @@ registry.register({
     if (!expr || !/^[\d+\-*/().\s%]+$/.test(expr)) {
       return { ok: false, output: `compute takes arithmetic only, got: ${raw.slice(0, 80)}. Extract the numbers first.` }
     }
-    const value = evalArithmeticExpr(expr)
+    // A bare number is a valid expression. MEASURED 2026-08-03: after sum_column returned
+    // 292.24 the agent called compute("292.24") to carry the value forward and got "Could not
+    // evaluate", which sent it hunting through read_pdf and read_image for a number it already
+    // had. evalArithmeticExpr refuses a lone literal; the identity case is handled here.
+    const value = /^-?\d+(\.\d+)?$/.test(expr) ? Number(expr) : evalArithmeticExpr(expr)
     if (value === null || !isFinite(value)) return { ok: false, output: `Could not evaluate: ${expr.slice(0, 80)}` }
     const out = Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)))
     return { ok: true, output: `${expr} = ${out}` }
@@ -569,6 +580,69 @@ registry.register({
       output: `Sum of "${header[idx]}" over ${counted} row(s) in ${abs} = ${out}` +
         (skipped.length ? ` (skipped ${skipped.length} non-numeric: ${skipped.slice(0, 3).join(', ')})` : ''),
     }
+  },
+})
+
+registry.register({
+  name: 'rename_symbol',
+  description: 'Rename an identifier everywhere it appears, across every matching file in a folder. Whole-word only. Use this for any rename — never rewrite the file by hand.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Folder to rename across (or a single file).' },
+      old: { type: 'string', description: 'Existing identifier, e.g. "oldName".' },
+      new: { type: 'string', description: 'Replacement identifier, e.g. "newName".' },
+    },
+    required: ['path', 'old', 'new'],
+  },
+  mutates: true,
+  async run(args, ctx) {
+    // MEASURED 2026-08-03 (`npm run agent:workflow`, multi-file-edit). The agent did everything
+    // right — listed the folder, picked the file, picked the correct strings — and edit_file
+    // refused because its contract requires the old string to appear EXACTLY ONCE, while a
+    // rename by definition hits every occurrence. The head then fell back to write_file and
+    // OVERWROTE a.js with invented content: real data loss, caused by asking a 1.5B model to
+    // reconstruct a file it had never been shown.
+    //
+    // A rename is decidable, so it becomes a tool. Whole-word matching only, so renaming
+    // `oldName` never touches `oldNameSuffix`; per-file counts are reported so a file that was
+    // silently missed is visible rather than assumed.
+    const target = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    const oldId = String(args.old ?? '').trim()
+    const newId = String(args.new ?? '').trim()
+    if (!/^[A-Za-z_$][\w$]*$/.test(oldId) || !/^[A-Za-z_$][\w$]*$/.test(newId)) {
+      return { ok: false, output: `rename_symbol takes identifiers, got "${oldId}" -> "${newId}".` }
+    }
+    if (oldId === newId) return { ok: false, output: 'Old and new identifiers are the same.' }
+
+    let files: string[]
+    try {
+      const st = fs.statSync(target)
+      files = st.isDirectory()
+        ? fs.readdirSync(target)
+            .filter(f => /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|php|css|json|md|txt)$/i.test(f))
+            .map(f => path.join(target, f))
+        : [target]
+    } catch { return { ok: false, output: `Not found: ${target}` } }
+    if (!files.length) return { ok: false, output: `No editable files in ${target}` }
+
+    const rx = new RegExp(`\\b${oldId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g')
+    const changed: string[] = []
+    let total = 0
+    for (const f of files) {
+      let text: string
+      try { text = fs.readFileSync(f, 'utf-8') } catch { continue }
+      const reason = protectedFileReason(text)
+      if (reason) continue
+      const hits = (text.match(rx) ?? []).length
+      if (!hits) continue
+      fs.writeFileSync(f, text.replace(rx, newId), 'utf-8')
+      changed.push(`${path.basename(f)} (${hits})`)
+      total += hits
+    }
+    if (!total) return { ok: false, output: `"${oldId}" does not appear in ${target}` }
+    ctx.onFileMutated?.(files)
+    return { ok: true, output: `Renamed ${oldId} -> ${newId}: ${total} occurrence(s) across ${changed.length} file(s) — ${changed.join(', ')}` }
   },
 })
 
