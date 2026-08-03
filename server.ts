@@ -2794,7 +2794,15 @@ function detectAgentTask(message: string): boolean {
   // trivially matches build-ish regexes below (any attached .ts file contains ".ts"), which
   // hijacked "what can you tell me about this file?" onto the agent path (cont.66k report).
   message = message.split('\nATTACHED FILE CONTENT')[0].split(/\[User attached \d+ file\(s\)/)[0]
-  const m = message.toLowerCase()
+  // A ".js" inside a PRODUCT NAME is not a filename. MEASURED 2026-08-03 over the wire, on
+  // the UI's default mode ('code', src/App.tsx:57): "What is the current LTS version of
+  // Node.js?" matched the file-extension build signal below on the ".js" in "Node.js", routed
+  // to the agent loop, and returned EMPTY TEXT after 105 SECONDS -- while the same question
+  // answers in 480ms through the answer engine, which owns it. The in-process probe cannot see
+  // this at all: it calls answerQuery directly and never crosses the branch that mis-routed.
+  // Every one of these names ends in .js by convention, so this is a closed, checkable set.
+  const JS_PRODUCT_NAMES = /\b(node|next|nuxt|vue|react|express|nest|three|d3|p5|ember|backbone|angular|socket|chart|discord|video|alpine|solid|svelte|electron)\.js\b/gi
+  const m = message.toLowerCase().replace(JS_PRODUCT_NAMES, (s) => s.replace(/\.js$/i, 'js'))
   // Display-only intent — user wants to SEE code, not have files written/run.
   const wantsDisplay = /\b(show|display|paste|print|give)\b[\s\S]{0,30}\bcode\b/.test(m)
     || /\bjust (the )?code\b/.test(m) || /\b(snippet|example)\b/.test(m)

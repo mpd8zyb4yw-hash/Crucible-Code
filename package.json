@@ -129,7 +129,9 @@
     "convertfast:bench": "tsx src/CrucibleEngine/answer/__convertfast_bench.ts",
     "datefast:bench": "tsx src/CrucibleEngine/answer/__datefast_bench.ts",
     "personalscope:bench": "tsx src/CrucibleEngine/answer/__personalscope_bench.ts",
-    "moneymath:bench": "tsx src/CrucibleEngine/answer/__moneymath_bench.ts"
+    "moneymath:bench": "tsx src/CrucibleEngine/answer/__moneymath_bench.ts",
+    "e2e:http": "tsx src/CrucibleEngine/__e2e_http_probe.ts",
+    "daily:probe": "tsx src/CrucibleEngine/__daily_probe.ts"
   },
   "build": {
     "appId": "com.crucible.local",
