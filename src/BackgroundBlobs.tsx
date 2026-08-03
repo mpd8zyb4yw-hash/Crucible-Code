@@ -1,65 +1,45 @@
-// BackgroundBlobs — the ambient animated gradient-blob backdrop from the Crucible v2
-// design. Fixed, full-viewport, pointer-transparent, sits behind all chat content
-// (z-index 0). Blobs drift and shift hue slowly; they brighten slightly while the app is
-// working. Pure canvas, no DOM churn. Adapted from the v2.dc.html `startBg` reference.
-
-import { useEffect, useRef } from 'react'
+// ── Ambient field (elevation 0) ────────────────────────────────────────────────
+// DESIGN_HANDOFF §3.1. Glass is meaningless without something behind it: this is the
+// self-authored gradient mesh the frosted surfaces sample.
+//
+// REPLACES the old canvas implementation rather than extending it (the handoff asked
+// for an explicit call on that). Reasons the canvas had to go:
+//   - It ran a requestAnimationFrame loop forever, repainting a full-viewport radial
+//     gradient every frame to express a 55s cycle. The CSS version is composited on the
+//     GPU and costs nothing after the first paint.
+//   - It could not honour `prefers-reduced-motion` without extra code, and freezing the
+//     drift is a hard requirement (§6.2).
+//   - Its two blobs at alpha 0.02 were too faint for glass to sample; the four-blob
+//     field in `.cru-ambient` is what the glass tokens were measured against (§3.4).
+//   - Canvas colours could not follow the light/dark theme tokens. `.cru-ambient` reads
+//     --amb-base and --amb-1..4, so both themes are one variable swap.
+//
+// MoltenPour.tsx is untouched — it is a foreground identity moment, not a backdrop, and
+// does not overlap this component's job.
+//
+// Everything visual here is authored in CSS in index.css (`.cru-ambient`): no images, no
+// external asset requests, per house rule 2.
 
 export default function BackgroundBlobs({ working = false }: { working?: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const workingRef = useRef(working)
-  workingRef.current = working
-
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    let t = 0
-    let anim = 0
-    const resize = () => {
-      canvas.width = window.innerWidth
-      canvas.height = window.innerHeight
-    }
-    resize()
-    window.addEventListener('resize', resize)
-    const draw = () => {
-      // Item-22: tone down the ambient orbs (kept per explicit product direction, not removed) —
-      // slower drift (was 0.003/frame, ~35s cycle; now ~55s), fewer blobs (3 → 2), and lower
-      // opacity so they read as a faint ambient wash instead of competing with foreground content.
-      t += 0.0019
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      const blobs = [
-        { x: 0.2, y: 0.3, r: 0.3, h: 255 + Math.sin(t) * 20 },
-        { x: 0.8, y: 0.7, r: 0.26, h: 210 + Math.cos(t * 1.3) * 15 },
-      ]
-      const alpha = workingRef.current ? 0.03 : 0.02
-      for (const b of blobs) {
-        const x = b.x * canvas.width
-        const y = b.y * canvas.height
-        const r = b.r * Math.min(canvas.width, canvas.height)
-        const g = ctx.createRadialGradient(x, y, 0, x, y, r)
-        g.addColorStop(0, `hsla(${b.h},70%,60%,${alpha * 2.2})`)
-        g.addColorStop(1, `hsla(${b.h},70%,60%,0)`)
-        ctx.beginPath()
-        ctx.arc(x, y, r, 0, Math.PI * 2)
-        ctx.fillStyle = g
-        ctx.fill()
-      }
-      anim = requestAnimationFrame(draw)
-    }
-    draw()
-    return () => {
-      cancelAnimationFrame(anim)
-      window.removeEventListener('resize', resize)
-    }
-  }, [])
-
   return (
-    <canvas
-      ref={canvasRef}
+    <div
       aria-hidden
-      style={{ position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none' }}
-    />
+      style={{ position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none', overflow: 'hidden' }}
+    >
+      {/* The field itself drifts 52s linear — imperceptible frame to frame, frozen
+          entirely under prefers-reduced-motion. */}
+      <div className="cru-ambient" />
+      {/* While the assistant is working the field warms very slightly. This is ambient
+          reassurance, not a progress indicator — the dock says what it is doing in
+          words (§6.3). Opacity-only, so it survives reduced motion untouched. */}
+      <div
+        style={{
+          position: 'absolute', inset: '-14%',
+          background: 'radial-gradient(70% 55% at 50% 100%, var(--amb-3) 0%, transparent 65%)',
+          opacity: working ? 0.5 : 0,
+          transition: 'opacity 1.2s var(--ease-standard)',
+        }}
+      />
+    </div>
   )
 }

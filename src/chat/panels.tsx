@@ -141,7 +141,7 @@ export function ModelTheaterCard({ model, round }: { model: DynamicModel; round:
             height: '100%', borderRadius: 2,
             width: `${(score * 100).toFixed(1)}%`,
             background: score >= 0.7 ? '#4db89e' : score >= 0.5 ? '#c084fc' : '#f87171',
-            transition: 'width 0.8s cubic-bezier(0.22,1,0.36,1)',
+            transition: 'width 0.8s var(--ease-standard)',
           }} />
         </div>
       )}
@@ -182,7 +182,7 @@ export function PipelineTheater({ round }: { round: Round }) {
   const models = round.models
   if (!models.length) return null
   return (
-    <div className="crucible-pipeline-theater" style={{ animation: 'panelUp 0.25s cubic-bezier(0.22,1,0.36,1)' }}>
+    <div className="crucible-pipeline-theater" style={{ animation: 'panelUp 0.25s var(--ease-standard)' }}>
       <div style={{
         // Responsive auto-fill: cards flow into as many columns as fit, so a 3rd
         // (or 5th) model never sits orphaned in a half-empty row. Mobile.css overrides
@@ -207,7 +207,7 @@ export function CritiqueGrid({ round, onToggle }: { round: Round; onToggle: (cri
 
   const expanded = round.expandedCritique
   return (
-    <div className="crucible-critique-grid" style={{ padding: '0 2px', animation: 'panelUp 0.3s cubic-bezier(0.22,1,0.36,1)' }}>
+    <div className="crucible-critique-grid" style={{ padding: '0 2px', animation: 'panelUp 0.3s var(--ease-standard)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
         <div style={{ height: 1, flex: 1, background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.06))' }} />
         <span style={{
@@ -276,7 +276,7 @@ export function CritiqueGrid({ round, onToggle }: { round: Round; onToggle: (cri
             backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
             border: `1px solid rgba(${criticModel.rgb},0.15)`,
             boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
-            animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)',
+            animation: 'panelUp 0.18s var(--ease-standard)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 8 }}>
               <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: `rgba(${criticModel.rgb},0.6)`, textTransform: 'uppercase' as const }}>{criticModel.label}</span>

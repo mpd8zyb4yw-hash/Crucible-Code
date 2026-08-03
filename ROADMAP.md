@@ -1933,6 +1933,83 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-03 (cont.121 — UI OVERHAUL PHASE 1: the design handoff, implemented)
+
+Implemented the Claude Design response to `DESIGN_HANDOFF.md` (project `fb3287e3`, file
+`Crucible UI.dc.html`). Scope agreed with the user up front: foundations + the home surface.
+Deliverables 4–9 of the handoff (item deck, facet card, run card, email confirm gate, watch
+diff screen, desktop board) are NOT built — see NEXT_SESSION.md.
+
+**Design tokens (`src/index.css`).** Full-depth frosted-glass system from §3.2: `--glass-blur`,
+`--glass-fill/-2/-plate`, `--glass-edge`, `--glass-inner-light`, `--glass-shadow/-2`, the four
+radii, the ambient-field colours, the four domain tints, three honesty-state colours, and the
+display/title type steps. Light theme (`html[data-theme="light"]`) and the reduce-transparency
+accommodation (`html[data-transparency="reduce"]`) are token-only swaps. Neither has a toggle
+in the UI yet — that is a settings control, not a token problem.
+
+**Motion (§6).** Two named curves replace one ad-hoc one: `--ease-standard` (0.4,0,0.2,1) and
+`--ease-glide` (0.32,0.72,0,1). The `cubic-bezier(0.22,1,0.36,1)` literal that appeared in 26+
+places across 10 files is gone (0 occurrences remain); `--ease` now aliases ease-standard, so
+every existing `var(--ease)` call site moved with it. **`prefers-reduced-motion` now exists in
+the codebase for the first time** — it was previously at ZERO occurrences. The block freezes
+the ambient drift, clamps transitions to 120ms, and deliberately exempts `.cru-pulse`
+(opacity-only liveness, which is the honest alternative to a spinner).
+
+**Ambient field (`src/BackgroundBlobs.tsx`).** REPLACED the canvas implementation, per the
+design's own call. The old one ran a rAF loop forever to express a 55s cycle, could not honour
+reduced motion, was too faint at alpha 0.02 for glass to sample, and could not follow theme
+tokens. Now one CSS element (`.cru-ambient`), four radial stops, one 52s linear transform,
+GPU-composited. `MoltenPour.tsx` untouched — different metaphor, not a backdrop.
+
+**PRIVACY FIX, independent of the redesign (`src/chat/MessageList.tsx`).** Every source chip
+built `https://www.google.com/s2/favicons?domain=…` and rendered it in an `<img>` — announcing
+every domain Crucible retrieves to Google from the user's machine, and violating house rule 2
+(no external asset requests at runtime). Replaced with a self-authored monogram tile: two
+letters from the hostname, hue from a hash of it. Zero external requests remain in `src/`
+except a model-supplied `thumb` URL in `agentic/SurfaceRenderer.tsx:728` (flagged, not fixed).
+
+**Glass primitives (`src/design/glass.tsx`).** `glassSurface()` (4-level elevation ladder),
+`GlassCard`, `TextPlate`, `CardLabel`, `SectionRule`, `PinMark`, `WorkingLine`, and
+`VerificationChip`. The chip encodes §7 mechanically: three states that never collapse into
+two, and **it renders `null` without a backing ledger record** — the "badge that cannot fail"
+regression is structurally impossible rather than merely discouraged.
+
+**Home surface (`src/HomeSurface.tsx`, `design/homeLayout.ts`, `design/homeData.ts`).** Cards
+are home (§4.1). This SUPERSEDES the 2026-07-21 "nothing on the splash, permanent" note that
+was written into the old file; the repeal is the product owner's in §4.1 and was confirmed by
+the user directly this session. Two regions in one scroll: pinned (user order, never re-sorted
+by score) and suggested (ranked). Ranking is a pure function of a snapshot taken on open and
+explicit refresh only — never under a moving finger. Four signals, each of which must produce
+a true one-line reason, which is why behavioural profiling is excluded. Pin / hide / resize per
+card via long-press or the Arrange mode; hide is permanent per card TYPE and restorable.
+
+Every card is backed by a real endpoint — `/api/connections/google/preview` (with the
+DETERMINISTIC `importance.ts` verdict, so "3 need you" is not an unread count), `/api/automations`,
+`/api/automations/digest`. `longestFreeBlock()` is exact interval arithmetic over the real event
+list. **A card with no real data does not render** — the "fewer cards, never filler" rule from
+the old splash survives the redesign intact.
+
+**CONTRAST FINDING (§3.4), measured not assumed.** The app-wide `--c-dim` (#77778c) computes to
+**~1.35:1** against the composited backdrop at the lightest point of the ambient field. It is
+safe on the opaque chrome it was designed for and unusable on translucent glass. Added
+`--glass-text` / `-2` / `-3` (measured against the worst case, not the average) and switched
+every card text colour to them. Hierarchy on glass now comes from size and weight, never from
+dropping alpha. The first light-theme pass then exposed the same class of bug in the domain
+label colours and the alarm ink — both are now theme-aware tokens.
+
+**Verified in-browser** (the live app needs OAuth, which Claude cannot perform, so the surface
+was driven in a throwaway harness against the real component, then the harness was deleted):
+first-run / populated / sparse-empty states render; Arrange mode and pin/hide/resize work and
+persist; pinning moves a card to the fixed region and drops its promotion line; house rule 3
+holds under a programmatic 3× string inflation of every text node (0px horizontal overflow,
+0 clipped cards) — that test found and fixed a `SectionRule` label running past the viewport;
+the reduced-motion block is present in the CSSOM with the ambient frozen at scale(1.06). One
+real console error found and fixed (a React `key` inside a spread). `tsc -p tsconfig.app.json`
+clean; `vite build` clean.
+
+**No benchmark run this turn** — this session touched only UI; the offline capability harness
+was not run and this work does not move it.
+
 ### 2026-07-27 (cont.117 — THE SAMPLE-EFFICIENCY FORK IS RESOLVED: it was typecheck, and 42% of the budget goes to an ungraded file)
 
 cont.116 measured that candidates are judged far more often than executed and named the fork it

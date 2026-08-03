@@ -144,7 +144,7 @@ export function TasksBinder({ onResume }: { onResume: (goal: string) => void }) 
             WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
             borderLeft: '1px solid rgba(255,255,255,0.08)',
             boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
-            animation: 'tasksSlideIn 0.28s cubic-bezier(0.22,1,0.36,1)',
+            animation: 'tasksSlideIn 0.28s var(--ease-standard)',
             overflow: 'hidden',
           }}
         >
@@ -279,7 +279,7 @@ export function TasksBinder({ onResume }: { onResume: (goal: string) => void }) 
                       <div style={{
                         width: `${pct}%`, height: '100%', borderRadius: 3,
                         background: 'linear-gradient(90deg, rgba(77,184,158,0.8), rgba(124,124,248,0.8))',
-                        transition: 'width 0.4s cubic-bezier(0.22,1,0.36,1)',
+                        transition: 'width 0.4s var(--ease-standard)',
                       }} />
                     </div>
                     <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, color: 'rgba(160,200,180,0.6)', letterSpacing: '0.04em' }}>
@@ -447,7 +447,7 @@ export function HistoryBinder({ onRestore }: { onRestore: (session: HistorySessi
         .hrow-expand {
           display: grid;
           grid-template-rows: 0fr;
-          transition: grid-template-rows 0.26s cubic-bezier(0.22,1,0.36,1);
+          transition: grid-template-rows 0.26s var(--ease-standard);
         }
         .hrow-expand.open { grid-template-rows: 1fr; }
         .hrow-expand > div { overflow: hidden; }
@@ -503,7 +503,7 @@ export function HistoryBinder({ onRestore }: { onRestore: (session: HistorySessi
             WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
             borderLeft: '1px solid rgba(255,255,255,0.08)',
             boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
-            animation: 'histSlideIn 0.28s cubic-bezier(0.22,1,0.36,1)',
+            animation: 'histSlideIn 0.28s var(--ease-standard)',
             overflow: 'hidden',
           }}
         >

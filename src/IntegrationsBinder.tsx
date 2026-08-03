@@ -150,7 +150,7 @@ export function IntegrationsBinder({ draft }: { draft: string }) {
           WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
           borderLeft: '1px solid rgba(255,255,255,0.08)',
           boxShadow: '-24px 0 80px rgba(0,0,0,0.5), inset 1px 0 0 rgba(255,255,255,0.05)',
-          animation: 'intgSlideIn 0.28s cubic-bezier(0.22,1,0.36,1)',
+          animation: 'intgSlideIn 0.28s var(--ease-standard)',
           overflow: 'hidden',
         }}>
           {/* Prismatic top edge — same language as the other drawers */}
@@ -305,7 +305,7 @@ export function IntegrationsBinder({ draft }: { draft: string }) {
                     position: 'absolute', top: 2, left: i.enabled ? 18 : 2,
                     width: 14, height: 14, borderRadius: 7,
                     background: i.enabled ? '#4db89e' : '#6a6a8a',
-                    transition: 'left 0.2s cubic-bezier(0.22,1,0.36,1), background 0.2s ease',
+                    transition: 'left 0.2s var(--ease-standard), background 0.2s ease',
                   }} />
                 </button>
               </div>

@@ -23,12 +23,47 @@ import { AgentPanel, CollapsibleCode } from './AgentPanel'
 // examination, deterministic verdict. Winner and revised positions are marked;
 // dissent is shown, not hidden. Used inside the ensemble process trail AND as a
 // standalone collapsible on local replies (the strict-path corroboration).
-// ── Live sources strip — the tiny-favicon row shown while a grounded answer is being
+// ── Live sources strip — the source row shown while a grounded answer is being
 // researched. 'reading' sources pulse; once the answer cites them they flip to a check.
-// Favicons come from Google's keyless favicon service (any domain: wikipedia, npm, SO…),
-// with a graceful first-letter fallback if the image 404s. Pure presentational.
-function faviconUrl(host: string): string {
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=64`
+//
+// SOURCE MARKS ARE SELF-AUTHORED (fixed 2026-08-03). This used to build
+// `https://www.google.com/s2/favicons?domain=…` and render it in an <img>, which
+// (a) violated house rule 2 — no external asset requests at runtime — and (b) was a
+// real privacy leak: every domain Crucible retrieved was announced to Google from the
+// user's machine, one request per source, whether or not the user ever saw the chip.
+// Replaced with a monogram tile derived deterministically from the hostname. Do not
+// reintroduce a remote favicon service, keyless or not.
+
+/** Stable hue from a hostname, so a domain always gets the same mark. */
+function hostHue(host: string): number {
+  let h = 0
+  for (let i = 0; i < host.length; i++) h = (h * 31 + host.charCodeAt(i)) % 360
+  return h
+}
+
+/** Two letters from the hostname, per the design's monogram spec. */
+function hostMonogram(host: string): string {
+  const bare = host.replace(/^www\./, '')
+  const name = bare.split('.')[0] || bare
+  return (name.slice(0, 2) || '??').toUpperCase()
+}
+
+/** Self-authored per-domain mark. No network request, no external asset. */
+function SourceMark({ host, size = 15 }: { host: string; size?: number }) {
+  const hue = hostHue(host)
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: size, height: size, borderRadius: 4, flexShrink: 0,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        background: `linear-gradient(140deg, hsla(${hue},62%,58%,0.85), hsla(${(hue + 40) % 360},62%,44%,0.85))`,
+        color: 'rgba(255,255,255,0.96)',
+        fontSize: Math.max(7, Math.round(size * 0.46)), fontWeight: 700, lineHeight: 1,
+        letterSpacing: '-0.02em', fontFamily: 'var(--sans)',
+      }}
+    >{hostMonogram(host)}</span>
+  )
 }
 
 function SourceChip({ s }: { s: LiveSource }) {
@@ -49,16 +84,10 @@ function SourceChip({ s }: { s: LiveSource }) {
       }}
     >
       <span style={{
-        position: 'relative', width: 15, height: 15, borderRadius: 4, flexShrink: 0,
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
-        background: 'rgba(255,255,255,0.08)',
+        position: 'relative', display: 'inline-flex', flexShrink: 0,
         animation: grounded ? 'none' : 'sourcePulse 1.4s ease-in-out infinite',
       }}>
-        <img
-          src={faviconUrl(s.host)} alt="" width={15} height={15}
-          style={{ display: 'block', borderRadius: 4 }}
-          onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none' }}
-        />
+        <SourceMark host={s.host} />
       </span>
       <span style={{
         fontSize: 10.5, color: 'rgba(255,255,255,0.72)', whiteSpace: 'nowrap',
@@ -536,7 +565,7 @@ export const MessageList = memo(function MessageList({
                           <div className="crucible-sw-body" style={{
                             marginTop: 8, padding: '13px 15px', borderRadius: 8,
                             background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
-                            animation: 'panelUp 0.28s cubic-bezier(0.22,1,0.36,1)',
+                            animation: 'panelUp 0.28s var(--ease-standard)',
                           }}>
                             <CouncilDebateSection debate={round.localDebate} />
                           </div>
@@ -663,7 +692,7 @@ export const MessageList = memo(function MessageList({
                                marginTop: 8, padding: '13px 15px', borderRadius: 8,
                                background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)',
                                display: 'flex', flexDirection: 'column' as const, gap: 14,
-                               animation: 'panelUp 0.28s cubic-bezier(0.22,1,0.36,1)',
+                               animation: 'panelUp 0.28s var(--ease-standard)',
                              }}>
 
                                {/* Model agreement — genealogy contribution bars */}

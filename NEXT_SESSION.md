@@ -17,89 +17,62 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-07-29 (cont.120 — three reported bugs, six defects; the drafting flow had no concept of an action) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-03 (cont.121 — UI overhaul phase 1: tokens, ambient field, glass primitives, card home) (REPLACE THIS EVERY SESSION)
 
-> **The brief:** a debug report with three complaints — (1) a drafted email was never sent when
-> confirmed, needed a follow-up before it could be sent, and had no name at the bottom; (2) an
-> unrelated query was answered with a hallucinated email response; (3) "scrolling is and has been
-> broken for a very long time please dig in and fix it decisively".
+> **What landed.** The Claude Design response to `DESIGN_HANDOFF.md` (design project
+> `fb3287e3`, file `Crucible UI.dc.html`), implemented at the scope the user agreed:
+> **foundations + the home surface**. Full detail in the ROADMAP CHANGE LOG entry for
+> 2026-08-03. Summary:
 >
-> Six defects behind those three. Commits `b9aba46`, `a3fedec`, `5ba9ff4`, `3e902db`.
+>  - `src/index.css` — the full frosted-glass token set, light theme, reduce-transparency,
+>    two named easing curves, and the FIRST `prefers-reduced-motion` support in the codebase
+>    (it was at zero occurrences). The ad-hoc `cubic-bezier(0.22,1,0.36,1)` is gone from all
+>    10 files that carried it.
+>  - `src/BackgroundBlobs.tsx` — canvas rAF loop REPLACED by one CSS ambient field.
+>  - `src/chat/MessageList.tsx` — the Google favicon call is GONE (privacy leak + house-rule-2
+>    violation). Self-authored monogram tiles instead.
+>  - `src/design/glass.tsx` — glass primitives + the verification chip that renders `null`
+>    without a ledger record.
+>  - `src/HomeSurface.tsx` + `src/design/{homeLayout,homeData}.ts` — cards are home: pinned
+>    vs suggested, snapshot ranking, pin/hide/resize, all cards backed by real endpoints.
 >
-> **1. SCROLLING — two independent bugs, both closed.**
->  - Auto-follow was scheduled ONLY as `requestAnimationFrame(followBottom)`, making it
->    conditional on the page painting. MEASURED with `document.hidden`: the effect ran 28 times in
->    one turn, `followBottom` ran ZERO times, content grew 672px → 1119px in a 672px viewport with
->    scrollTop stuck at 0. Nothing recovers — once the stream ends `rounds` stops changing, so no
->    later commit schedules another frame. Now called directly (reading scrollHeight flushes
->    layout, so no frame is needed) with the rAF kept as a second pass, plus a
->    visibilitychange/focus re-sync. Verified live: dist-from-bottom 447 → 1.
->  - The programmatic-scroll latch leaked. A boolean armed before every scrollTop write and
->    cleared by the next scroll event — but **a write that does not move the element fires no
->    event**, and with the view pinned to the bottom nearly every write is that no-op. The latch
->    stayed armed and ate the user's next real scroll. That is "I can't scroll up while it's
->    answering". Replaced by comparing POSITIONS (`src/chat/followState.ts`, 11/11, mutation-tested
->    — reintroducing the bug drops it to 8/11). Also now catches scrollbar drags and PageUp, which
->    emit no wheel or touch event.
->
-> **2. THE DRAFT→SEND FLOW DID NOT EXIST.** "send it" ran ZERO tools and re-printed the draft.
->    Three things were missing and they are one omission: "send it" matched no routing predicate;
->    the draft was prose with no recipient, subject or link to the message it answered; and
->    `gmail_read` returned a bare string (the one mail tool emitting no entities, so a message you
->    had just read afforded nothing — no Reply button, nothing to bind a send to).
->    New concept: a **proposal** (`src/CrucibleEngine/agent/proposedAction.ts`) — a mutating
->    action, fully bound, held pending the user's word. NOT an email feature: `draftableAction`
->    finds the mutating affordance whose single free-text input the draft fills, so any tool
->    emitting an entity of such a kind inherits draft-then-confirm.
->    Safety is in code, not a prompt: args bound by the system from real tool output and never
->    model-authored; drafting keeps `allowMutation: false` and only the confirmed turn sets it
->    true; consumed BEFORE the tool runs so a repeated "yes" cannot double-send; 15-minute expiry;
->    anything ambiguous is not a confirmation.
->    **Verified live end to end** (`:3011`, with the user's explicit approval for one real send to
->    a dev inbox): draft → 0 sends + proposal parked; "who is that from?" → 0 sends, proposal
->    survives; "no, dont send it" → cancelled; "send it" → `Email sent. Message ID:
->    19faeb16e1dad4fd`; "send it" again → 0 sends.
->
-> **3. `[Your Name]` MADE THE DRAFT UNSENDABLE.** Now filled from the Google profile
->    (`userinfo.profile` was already a granted scope) or removed when genuinely unknown, since a
->    sign-off with nothing after it can at least be sent. A name is never guessed.
->
-> **4. THE ARTIFACT CONTRACT WAS INVENTED.** `goalSpec`'s fallback returned quantity 10 / shape
->    `block` for every unrecognised deliverable, so a correct four-line email shipped under
->    "**This does not match what you asked for.** You asked for 10 reply". Unknown deliverable now
->    means one piece of prose, no asserted count, no asserted length (`minWords: 0`). Fires on an
->    open class: reply, response, message, letter, cover letter, bio, caption.
->
-> **5. ONE PREPOSITION LOST THE REQUEST.** "build me a quizlet study guide **of** simple italian
->    terms" parsed to NOTHING — `deliverableOf`'s four-token capture is exhausted by "quizlet
->    study guide of simple" before any terminator matches, and `of` cannot be a terminator or
->    "set of flash cards" breaks. So the whole class "<two-word deliverable> of <topic>" was lost
->    and fell to the general pipeline holding a transcript. Third instance of the cont.118/119
->    shape. Fixed with a second pass that admits `of` and runs only when the strict pass declined
->    — adds parses, never changes an existing one.
->
-> **6. NOTHING SAW A PROSE LOOP.** The answer was one email draft repeated five times.
->    `stripDegenerateRepetition` handles this for code and structurally cannot see prose (it
->    anchors on declaration lines). `src/CrucibleEngine/answer/deloopProse.ts` matches
->    PERIODICITY, not duplicate blocks — the first version deduplicated blocks and the bench
->    caught it mangling the very answer it was written for.
->
-> **Benches:** goalspec 37/37, clarify 12/12, libdetect 17/17, surface 165/165, ambiguity 35/35,
-> artifact 48/48, proposal 60/60, signature 45/45, draft-flow 22/22, prose-deloop 20/20,
-> followstate 11/11, code-deloop 6/6. No new `server.ts` type errors (baseline 3, still 3).
->
-> **Open, unresolved:**
->  - **On-device content quality is the ceiling now, not routing.** The quizlet request routes
->    correctly and delivers honestly, but the 1.5B model wrote "What is an Italian vegetable?
->    Pasta." Same finding as `CAPABILITY_CEILING.md` — every gate above it reports the shortfall
->    and none can fix it.
->  - The proposal flow is wired into the NAMED-TOOL executor only. A draft produced by `fmReact`
->    or the content path does not yet park one; `draftableAction` is executor-agnostic, so this is
->    a wiring job, not a design one.
->  - Proposals are in-memory (deliberately, like `pendingClarify`) — a server restart between
->    draft and confirmation loses the draft. Correct for safety, worth a note in the UI.
->  - Carried from cont.119, still open: the agent emits duplicate tool calls (schedule_task fired
->    3x for one request; the dedupe guard caught it, but the loop should not do that).
+> **A standing decision was repealed.** The 2026-07-21 note in `HomeSurface.tsx` ("NOTHING else
+> on the splash… permanent") is superseded by `DESIGN_HANDOFF.md` §4.1, confirmed by the user
+> on 2026-08-03. The new file documents the repeal in its header so this does not get re-litigated.
+
+### Open, in priority order
+
+1. **The email flow end to end is NOT built** — handoff deliverable 7 and the best test of the
+   whole system: triage item deck → open item → drafted reply → **confirm gate** → sent. The
+   confirm gate (§7.3) is a HARD requirement: nothing outward-facing may send without an
+   explicit accept showing the exact recipient and body. `src/ReplyComposer.tsx` and
+   `src/EmailReader.tsx` exist and are where this goes.
+2. **Three of the four card kinds are unbuilt** (handoff §5.2–§5.4): the item card (deck,
+   swipe = next item, "3 of 12" counter, next card peeks 12px), the facet card (fixed frame,
+   segmented control, 180ms cross-fade in place), and the run card (timeline, monospace).
+   `src/design/glass.tsx` has the surface primitives they build on.
+3. **The Watch diff screen** (§5.5.4, deliverable 8) — old value → new value, when it changed,
+   and what source proved it. The home card shows the *summary*; the diff itself is the most
+   distinctive screen in the product and is currently a list row.
+4. **The chat dock** (§4.3) — collapsed / active / full. Today the composer is still the old
+   input bar; the handoff wants a level-4 glass dock that expands upward over a dimmed home,
+   and says what it is doing in words rather than showing a spinner.
+5. **No UI toggle for light theme or reduce-transparency.** Both work as token swaps
+   (`data-theme="light"`, `data-transparency="reduce"` on `<html>`) but nothing sets them.
+   Reduce-transparency is an accessibility requirement, not a nicety (§3.4) — it needs a
+   settings control and an OS-preference read.
+6. **Desktop adaptation at 1280px** (deliverable 9) — lanes become a 2–3 column board, radius
+   tightens to `--radius-card-d`, and the design's position is a right-hand chat rail (380–420px)
+   rather than a bottom dock. The home surface is currently phone-width on every viewport.
+7. **One external asset request remains**: `src/agentic/SurfaceRenderer.tsx:728` renders a
+   model-supplied `thumb` URL in an `<img>`. Same class of violation as the favicon leak that
+   was fixed this session, but it is card data from the surface protocol, so it needs a
+   decision (proxy, strip, or self-authored placeholder) rather than a mechanical replacement.
+
+### Capability
+
+No benchmark run in cont.121 — the session was UI-only. The last offline capability figure is
+whatever cont.117 recorded; do NOT quote a number that was not produced by a run.
 
 ---
 

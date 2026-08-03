@@ -2130,14 +2130,15 @@ export default function App() {
 
   return (
     <div className="crucible-root" style={{
-      height: '100dvh', background: '#101016',
+      height: '100dvh', background: 'var(--c-bg)',
       marginLeft: 0,
-      transition: 'margin-left 0.38s cubic-bezier(0.22,1,0.36,1)', width: '100vw',
+      transition: 'margin-left 0.38s var(--ease-standard)', width: '100vw',
       display: 'flex', flexDirection: 'column',
       fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       color: '#e4e4ee', position: 'relative', overflow: 'hidden', userSelect: 'none',
     }}>
-      {/* Ambient animated backdrop (Crucible v2 design) — sits behind all content */}
+      {/* Ambient field (elevation 0) — the self-authored gradient mesh every glass
+          surface samples. Sits behind all content; frozen under reduced motion. */}
       <BackgroundBlobs working={thinking} />
       {/* Ensemble key management lives in the Settings tab; the per-query confirm is an
           inline card above the composer (v3) — no modals. */}
@@ -2183,7 +2184,7 @@ export default function App() {
       {tab === 'settings' && (
         <div style={{
           position: 'absolute', inset: 0, zIndex: 30, background: '#101016',
-          display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s cubic-bezier(0.22,1,0.36,1)',
+          display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s var(--ease-standard)',
         }}>
           <button
             onClick={() => setTab('chat')}
@@ -2267,7 +2268,7 @@ export default function App() {
             background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
             borderRight: '1px solid rgba(255,255,255,0.08)',
             boxShadow: '24px 0 80px rgba(0,0,0,0.5), inset -1px 0 0 rgba(255,255,255,0.05)',
-            animation: 'studioIn 0.24s cubic-bezier(0.22,1,0.36,1)',
+            animation: 'studioIn 0.24s var(--ease-standard)',
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
           }}>
             <button
@@ -2349,7 +2350,7 @@ export default function App() {
             boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
             pointerEvents: 'auto',
             touchAction: 'none',
-            transition: 'top 0.3s cubic-bezier(0.22,1,0.36,1), left 0.3s cubic-bezier(0.22,1,0.36,1)',
+            transition: 'top 0.3s var(--ease-standard), left 0.3s var(--ease-standard)',
           }}
             onTouchStart={e => {
               const t = e.touches[0]
@@ -2371,7 +2372,7 @@ export default function App() {
             }}
             onTouchEnd={() => {
               pipDragRef.current = null
-              if (pipDivRef.current) pipDivRef.current.style.transition = 'top 0.3s cubic-bezier(0.22,1,0.36,1), left 0.3s cubic-bezier(0.22,1,0.36,1)'
+              if (pipDivRef.current) pipDivRef.current.style.transition = 'top 0.3s var(--ease-standard), left 0.3s var(--ease-standard)'
               // Sync React state once at drag end (one re-render vs 60fps re-renders)
               setPipPos({ ...pipPosRef.current })
             }}
@@ -2776,7 +2777,7 @@ export default function App() {
       {resumeOffer && (
         <div className="crucible-resume-banner" style={{
           position: 'fixed', bottom: 155, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 50, animation: 'panelUp 0.3s cubic-bezier(0.22,1,0.36,1)',
+          zIndex: 50, animation: 'panelUp 0.3s var(--ease-standard)',
           background: 'rgba(18,18,28,0.96)', backdropFilter: 'blur(20px)',
           border: '1px solid rgba(124,124,248,0.25)',
           borderRadius: 14, padding: '14px 18px',
@@ -2831,11 +2832,14 @@ export default function App() {
           display: 'flex', flexDirection: 'column', alignItems: 'center',
           paddingBottom: Math.min(inputBarHeight + 24, 120), animation: 'fadeIn 0.5s ease', overflow: 'hidden auto',
         }}>
-          {/* Home: clean greeting + one door to Mission Control (the day's widgets live
-              THERE now); HomeSurface falls back to the identity splash below on first run. */}
+          {/* Home is a CARD SURFACE (DESIGN_HANDOFF §4.1), not an empty chat box: the
+              pinned region the user controls, then the region Crucible ranks. The
+              identity mark below is still the first-run header. */}
           <HomeSurface
             allRounds={allRounds}
             onOpenAgents={() => setAgentsOpen(true)}
+            onOpenAutomations={() => { setAgentsOpen(false); setConnectionsOpen(false); setAutomationsOpen(true) }}
+            onOpenConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(true) }}
             splash={
           <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
           {/* Quiet branded splash: the vessel mark over a slow ember glow — the product's
@@ -2959,7 +2963,7 @@ export default function App() {
             width: 'min(420px, calc(100% - 24px))', marginBottom: 6,
             background: 'rgba(18,18,24,0.96)', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
             border: '1px solid rgba(255,255,255,0.09)', borderRadius: 12, boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
-            overflow: 'hidden', animation: 'panelUp 0.16s cubic-bezier(0.22,1,0.36,1)',
+            overflow: 'hidden', animation: 'panelUp 0.16s var(--ease-standard)',
           }}>
             {slashResults.map((t, i) => (
               <div
@@ -3206,7 +3210,7 @@ export default function App() {
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 border: `1px solid ${composerExpandOpen ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.09)'}`,
                 background: composerExpandOpen ? 'rgba(124,124,248,0.14)' : 'rgba(255,255,255,0.04)',
-                transition: 'background 0.2s, border-color 0.2s, transform 0.22s cubic-bezier(0.22,1,0.36,1)',
+                transition: 'background 0.2s, border-color 0.2s, transform 0.22s var(--ease-standard)',
                 transform: composerExpandOpen ? 'rotate(45deg)' : 'none',
               }}
             >
@@ -3315,7 +3319,7 @@ export default function App() {
                   minWidth: 230, maxWidth: 300, padding: 6, borderRadius: 12,
                   background: 'rgba(22,22,30,0.98)', border: '1px solid rgba(255,255,255,0.1)',
                   boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
-                  animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)',
+                  animation: 'panelUp 0.18s var(--ease-standard)',
                   display: 'flex', flexDirection: 'column', gap: 2,
                 }}>
                   <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: '#55556a', padding: '6px 8px 4px' }}>Answer with</div>
@@ -3369,7 +3373,7 @@ export default function App() {
                   minWidth: 260, maxWidth: 320, padding: 6, borderRadius: 12,
                   background: 'rgba(22,22,30,0.98)', border: '1px solid rgba(255,255,255,0.1)',
                   boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
-                  animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)',
+                  animation: 'panelUp 0.18s var(--ease-standard)',
                   display: 'flex', flexDirection: 'column', gap: 2,
                 }}>
                   <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase' as const, color: '#55556a', padding: '6px 8px 4px' }}>
@@ -3403,7 +3407,7 @@ export default function App() {
                   })}
                 </div>
               )}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, animation: 'panelUp 0.18s cubic-bezier(0.22,1,0.36,1)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, animation: 'panelUp 0.18s var(--ease-standard)' }}>
                 <button
                   onClick={() => {
                     if (mode === 'quorum') { setMode('code'); ensemble.setOn(false); return }

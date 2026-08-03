@@ -162,7 +162,7 @@ export function SelfRepairPage() {
               position: 'absolute', top: 2, left: st.autoApprove ? 18 : 2,
               width: 14, height: 14, borderRadius: 7,
               background: st.autoApprove ? '#4db89e' : '#6a6a8a',
-              transition: 'left 0.2s cubic-bezier(0.22,1,0.36,1), background 0.2s ease',
+              transition: 'left 0.2s var(--ease-standard), background 0.2s ease',
             }} />
           </button>
         </div>

@@ -38,7 +38,7 @@ function SectionHeader({ label, count, open, onToggle }: {
       fontFamily: 'inherit',
     }}>
       <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{
-        transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s cubic-bezier(0.22,1,0.36,1)',
+        transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s var(--ease-standard)',
         flexShrink: 0,
       }}>
         <path d="M3 1.5L7 5l-4 3.5" stroke="rgba(160,160,200,0.6)" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>

@@ -140,7 +140,7 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
   const latestThought = agent.thoughts[agent.thoughts.length - 1]
   return (
     <div style={{
-      animation: 'panelUp 0.3s cubic-bezier(0.22,1,0.36,1)',
+      animation: 'panelUp 0.3s var(--ease-standard)',
       border: '1px solid rgba(124,124,248,0.18)', borderRadius: 12, padding: 12,
       background: 'rgba(124,124,248,0.04)', display: 'flex', flexDirection: 'column', gap: 10,
     }}>
@@ -204,7 +204,7 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
           }}
         >
           <span style={{
-            display: 'inline-block', transition: 'transform 0.2s cubic-bezier(0.22,1,0.36,1)',
+            display: 'inline-block', transition: 'transform 0.2s var(--ease-standard)',
             transform: showWork ? 'rotate(90deg)' : 'none', fontSize: 8,
           }}>▶</span>
           {showWork ? 'hide work' : 'show work'}

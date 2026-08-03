@@ -1,7 +1,9 @@
 /* ── Crucible design tokens (v3 design system) ─────────────────────────────────
    Single source of truth for the visual language. Components may still carry
    inline literals from the pre-componentization era; new/edited code should
-   reference these variables. Dark-only by design. */
+   reference these variables. Dark is the default; light is a first-class theme
+   (data-theme="light"), and data-transparency="reduce" is the accessibility
+   accommodation. See DESIGN_HANDOFF §3. */
 :root {
   /* Surfaces */
   --c-bg: #101016;
@@ -41,10 +43,82 @@
   --t-small: 11px;       /* secondary metadata */
   --t-micro: 10px;       /* uppercase section labels, chips */
 
-  /* Motion — one easing + two durations, everywhere. */
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --dur-fast: 0.16s;
-  --dur: 0.28s;
+  /* Motion — two named curves (DESIGN_HANDOFF §6). `--ease` now points at
+     ease-standard; the old ad-hoc 0.22/1/0.36/1 curve overshoots and reads as
+     bounce at short durations, so it is retired rather than kept as a third curve. */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);   /* state changes, fades, resizes */
+  --ease-glide: cubic-bezier(0.32, 0.72, 0, 1);    /* cards, sheets, swipe settle */
+  --ease: var(--ease-standard);
+  --dur-fast: 0.16s;     /* state, hover, toggle */
+  --dur: 0.28s;          /* card entrance, sheet present, swipe settle */
+  --dur-facet: 0.18s;    /* cross-fade between facets */
+  --dur-drift: 52s;      /* ambient background drift — linear */
+
+  /* ── Full-depth frosted glass (DESIGN_HANDOFF §3.2) ──────────────────────────
+     The inner light edge is what makes glass read as glass rather than a grey box.
+     Never drop it. Both themes are first-class; light is not an inversion. */
+  --glass-blur: blur(40px) saturate(180%);
+  --glass-blur-light: blur(20px) saturate(140%);   /* chrome, dock, nav */
+  --glass-fill: rgba(22, 24, 34, 0.55);
+  --glass-fill-2: rgba(22, 24, 34, 0.61);          /* elevation 2: +6% fill */
+  --glass-fill-plate: rgba(22, 24, 34, 0.80);      /* text plate — §3.4 */
+  --glass-edge: rgba(255, 255, 255, 0.14);
+  --glass-edge-2: rgba(255, 255, 255, 0.18);
+  --glass-inner-light: inset 0 1px 0 rgba(255, 255, 255, 0.20);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.32);
+  --glass-shadow-2: 0 16px 64px rgba(0, 0, 0, 0.46);
+  --scrim: rgba(6, 7, 14, 0.42);
+
+  /* Text ON glass (§3.4). The app-wide --c-dim (#77778c) measures ~1.35:1 against the
+     COMPOSITED backdrop at the lightest point of the ambient field — it is safe on the
+     opaque chrome it was designed for and unusable on a translucent card. These three
+     are measured against that worst case, not the average:
+       glass-text   ~5.5:1   primary
+       glass-text-2 ~4.8:1   secondary — the floor for any body-size prose
+       glass-text-3 ~4.3:1   LARGE text and labels only, never a paragraph
+     Hierarchy on glass comes from size and weight, not from dropping alpha. */
+  --glass-text: rgba(255, 255, 255, 0.94);
+  --glass-text-2: rgba(255, 255, 255, 0.86);
+  --glass-text-3: rgba(255, 255, 255, 0.78);
+
+  --radius-card: 24px;    /* phone */
+  --radius-card-d: 20px;  /* desktop */
+  --radius-sheet: 28px;
+
+  /* Ambient field (level 0) — self-authored, no external assets. */
+  --amb-base: #0B0D17;
+  --amb-1: rgba(79, 70, 229, 0.55);    /* indigo */
+  --amb-2: rgba(124, 58, 237, 0.48);   /* violet */
+  --amb-3: rgba(245, 158, 11, 0.30);   /* warm bloom */
+  --amb-4: rgba(34, 211, 238, 0.22);   /* cyan */
+
+  /* Domain tint — encodes WHICH domain, never decoration (§5.1). */
+  --domain-research: 99, 102, 241;   /* indigo 244° */
+  --domain-mail: 45, 212, 191;       /* teal 172° */
+  --domain-time: 251, 191, 36;       /* amber 43° */
+  --domain-watch: 167, 139, 250;     /* violet 265° */
+
+  /* Label colour per domain. These are tokens rather than component literals because
+     the light theme needs a genuinely different value — a pale pastel that reads on
+     dark glass disappears on light glass. */
+  --domain-research-label: rgba(199, 210, 254, 0.95);
+  --domain-mail-label: rgba(153, 246, 228, 0.95);
+  --domain-time-label: rgba(253, 230, 138, 0.95);
+  --domain-watch-label: rgba(221, 214, 254, 0.95);
+
+  /* Honesty states (§7.1) — three, never collapsed into two. */
+  --state-verified: #34D399;
+  --state-unverified: rgba(255, 255, 255, 0.42);
+  --state-abstained: #A5B4FC;
+  /* Alarm ink for the one genuinely alarming state (a watch that stopped itself).
+     Theme-aware so it does not wash out on light glass. */
+  --alarm-ink: #FCA5A5;
+  --alarm-fill: rgba(248, 113, 113, 0.10);
+  --alarm-edge: rgba(248, 113, 113, 0.30);
+
+  /* Type scale (§01 Foundations). */
+  --t-display: 34px;   /* widget hero value */
+  --t-title: 22px;     /* sheet + item headline */
 
   /* macOS traffic-light clearance. 0 on the web; main.tsx adds .electron to <html>
      inside the desktop shell (hiddenInset titlebar) and every top-anchored surface
@@ -66,6 +140,61 @@
 html.electron {
   --titlebar-clearance: 38px;
   --titlebar-clearance-x: 78px;
+}
+
+/* ── Light theme (DESIGN_HANDOFF §3.2) ────────────────────────────────────────
+   Same blob geometry, lifted base, lower alpha — a first-class theme, not an
+   inversion. Nothing toggles this yet; set data-theme="light" on <html> to use it. */
+html[data-theme='light'] {
+  color-scheme: light;
+  --glass-fill: rgba(255, 255, 255, 0.62);
+  --glass-fill-2: rgba(255, 255, 255, 0.68);
+  --glass-fill-plate: rgba(255, 255, 255, 0.86);
+  --glass-edge: rgba(255, 255, 255, 0.85);
+  --glass-edge-2: rgba(255, 255, 255, 0.92);
+  --glass-inner-light: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+  --glass-shadow: 0 8px 32px rgba(31, 38, 68, 0.14);
+  --glass-shadow-2: 0 16px 64px rgba(31, 38, 68, 0.22);
+  --scrim: rgba(238, 240, 248, 0.55);
+  --amb-base: #EEF0F8;
+  --amb-1: rgba(129, 140, 248, 0.42);
+  --amb-2: rgba(167, 139, 250, 0.38);
+  --amb-3: rgba(251, 191, 36, 0.30);
+  --amb-4: rgba(103, 232, 249, 0.26);
+  --c-bg: #EEF0F8;
+  --c-text: #101222;
+  --c-text-soft: rgba(16, 18, 34, 0.90);
+  --c-dim: rgba(24, 26, 40, 0.62);
+  --c-dim-deep: rgba(24, 26, 40, 0.48);
+  /* Ink on light glass. The light field's darkest point is far lighter than the dark
+     field's lightest point, so these clear 4.5:1 comfortably at lower alpha. */
+  --glass-text: rgba(16, 18, 32, 0.94);
+  --glass-text-2: rgba(16, 18, 32, 0.82);
+  --glass-text-3: rgba(16, 18, 32, 0.68);
+  /* Same hues, darkened until they clear 4.5:1 on light glass. */
+  --domain-research-label: rgba(55, 48, 163, 0.92);
+  --domain-mail-label: rgba(15, 106, 94, 0.92);
+  --domain-time-label: rgba(120, 78, 8, 0.92);
+  --domain-watch-label: rgba(76, 46, 156, 0.92);
+  --alarm-ink: #9F1239;
+  --alarm-fill: rgba(248, 113, 113, 0.14);
+  --alarm-edge: rgba(159, 18, 57, 0.28);
+}
+
+/* ── Reduce transparency (§3.4) ───────────────────────────────────────────────
+   Mirrors the OS accommodation: opaque fills, no blur. An accessibility
+   requirement, not a nicety. Set data-transparency="reduce" on <html>. */
+html[data-transparency='reduce'] {
+  --glass-blur: none;
+  --glass-blur-light: none;
+  --glass-fill: rgba(16, 18, 28, 0.96);
+  --glass-fill-2: rgba(20, 22, 34, 0.98);
+  --glass-fill-plate: rgba(16, 18, 28, 0.98);
+}
+html[data-theme='light'][data-transparency='reduce'] {
+  --glass-fill: rgba(252, 253, 255, 0.96);
+  --glass-fill-2: rgba(255, 255, 255, 0.98);
+  --glass-fill-plate: rgba(255, 255, 255, 0.98);
 }
 
 * { box-sizing: border-box; }
@@ -108,6 +237,45 @@ pre code {
   }
 }
 
+/* ── Ambient field (level 0, DESIGN_HANDOFF §3.1) ─────────────────────────────
+   Four soft, low-saturation blobs on a deep neutral base, authored in CSS. No
+   images, no external assets. The drift is 52s linear and deliberately
+   imperceptible frame to frame — it must never read as "an animation". */
+@keyframes cru-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1.06); }
+  50%  { transform: translate3d(-3%, 2%, 0) scale(1.12); }
+  100% { transform: translate3d(0, 0, 0) scale(1.06); }
+}
+.cru-ambient {
+  position: absolute; inset: -14%; pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 14% 6%,  var(--amb-1) 0%, transparent 58%),
+    radial-gradient(100% 80% at 86% 18%, var(--amb-2) 0%, transparent 55%),
+    radial-gradient(95% 75% at 74% 96%,  var(--amb-3) 0%, transparent 58%),
+    radial-gradient(85% 65% at 6% 86%,   var(--amb-4) 0%, transparent 60%),
+    var(--amb-base);
+  animation: cru-drift var(--dur-drift) linear infinite;
+  will-change: transform;
+}
+
+/* ── Reduced motion (§6.2) ────────────────────────────────────────────────────
+   Freeze the ambient drift entirely; replace movement with opacity-only at
+   120ms. Previously this codebase had zero support for the media query. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 120ms !important;
+    scroll-behavior: auto !important;
+  }
+  .cru-ambient { animation: none !important; transform: scale(1.06); }
+  /* Opacity-only liveness (a "working" pulse) is permitted under reduced motion —
+     it carries state, moves nothing, and is the honest alternative to a spinner. */
+  .cru-pulse { animation-duration: 1.6s !important; animation-iteration-count: infinite !important; }
+}
+@keyframes cru-pulse-kf { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
+.cru-pulse { animation: cru-pulse-kf 1.6s var(--ease-standard) infinite; }
+
 /* ── Shared keyframes ── */
 @keyframes slideUp  { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes panelUp  { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
@@ -127,7 +295,7 @@ pre code {
   display: flex; align-items: center; gap: 9px;
   padding: 7px 8px; border-radius: 9px; cursor: pointer;
   border-left: 2px solid transparent;
-  transition: background 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: background 0.16s var(--ease-standard);
 }
 .rail-sliver:hover { background: rgba(255, 255, 255, 0.05); }
 .rail-sliver-active {
@@ -140,7 +308,7 @@ pre code {
   display: flex; align-items: center; gap: 9px; width: 100%;
   padding: 7px 8px; border-radius: 9px; border: none; cursor: pointer;
   background: transparent; color: #b8b8cc; font-family: inherit; text-align: left;
-  transition: background 0.16s cubic-bezier(0.22, 1, 0.36, 1), color 0.16s;
+  transition: background 0.16s var(--ease-standard), color 0.16s;
 }
 .rail-nav-row:hover { background: rgba(255, 255, 255, 0.05); color: var(--c-text); }
 .rail-nav-row-active { background: rgba(124, 124, 248, 0.13); color: #9d9dfa; }
