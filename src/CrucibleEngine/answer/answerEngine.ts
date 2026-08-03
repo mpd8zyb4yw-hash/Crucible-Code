@@ -22,6 +22,7 @@ import { solveSchedule } from './schedule'
 import { solveRelease } from './releases'
 import { applyDateRecomputation, isDateQuestion, recomputeDate, solveDate } from './dateTime'
 import { refusePrivateFact, type ConvTurnLike } from './personalScope'
+import { solveMoneyMath } from './moneyMath'
 import { isConversionQuestion, parseConversion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
 import { corroborateFact, UNVERIFIED_NOTE, type FactConsensus } from './factConsensus'
@@ -366,6 +367,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     emit?.({ type: 'verify', passed: true, report: 'Refused deterministically: a private fact with no record, and no source that could supply one.' })
     debugBus.emit('pipeline', 'private_fact_refused', { message: message.slice(0, 60) }, { severity: 'info' })
     return { text: priv.text, verified: true, verification: { passed: ['deterministic-scope-refusal'], failed: [] }, abstained: true, ...base, facets: { ...facets, intent: 'converse' } }
+  }
+
+  // Everyday money math (percent-of, tip, discount, tax, split). MEASURED 2026-08-03: all four
+  // math probes were CORRECT but slow -- median 6.6s, two over budget -- because directArithmetic
+  // only fires on a bare expression and these carry a word that supplies the operation ("of",
+  // "tip", "off", "split ... ways"). Decidable, so computed. The split case also reports the
+  // remainder: $137.50 three ways is $45.83 with a cent over, and rounding it away loses money.
+  const mm = solveMoneyMath(message)
+  if (mm) {
+    emit?.({ type: 'verify', passed: true, report: 'Computed deterministically (exact money arithmetic, no model).' })
+    debugBus.emit('pipeline', 'direct_money', { message: message.slice(0, 60), kind: mm.kind }, { severity: 'info' })
+    return { text: mm.text, verified: true, verification: { passed: ['deterministic-money'], failed: [] }, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
   }
 
   // Calendar arithmetic ("90 days after 3 August 2026", "what day of the week was 4 July 1776").
