@@ -29,7 +29,13 @@ const BASE = process.env.CRUCIBLE_E2E_URL ?? 'http://127.0.0.1:3021'
 const SECRET = process.env.JWT_SECRET ?? 'demo-poc-secret'
 const TOKEN = signJwt({ id: 'agentprobe', email: 'agent@local', exp: Math.floor(Date.now() / 1000) + 7200 }, SECRET)
 
-const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'crucible-agent-'))
+// Scratch lives under Documents, not os.tmpdir(). MEASURED: every task failed with
+// "Path … is outside permitted locations. Allowed: project folder, Desktop, Downloads,
+// Documents." — the file tools deliberately whitelist user folders, and a probe that asks the
+// agent to breach its own sandbox measures the sandbox, not the agent. The harness was the
+// thing that was wrong; scoring a correct refusal as a capability failure is exactly the
+// self-deception this file exists to prevent.
+const ROOT = fs.mkdtempSync(path.join(os.homedir(), 'Documents', 'crucible-agent-'))
 
 interface Task {
   id: string

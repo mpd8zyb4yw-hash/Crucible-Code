@@ -40,6 +40,8 @@ import { foldAttachmentContext } from './src/CrucibleEngine/agent/attachmentCont
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
+import { makeToolCallDriveTurn } from './src/CrucibleEngine/agent/toolCallDriver'
+import { verifyGoal, correctionFor } from './src/CrucibleEngine/agent/postconditions'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
@@ -3077,7 +3079,16 @@ app.post('/api/chat', async (req, res) => {
   // on-device pass always runs first, so the cheap path stays the default even for a user with
   // a frontier key, and the offline floor (DOCTRINE §8.3) is never bypassed.
   const spendableProviders = availableExternalProviders()
-  const requestOffline: string = spendableProviders.length > 0 ? '' : 'strict'
+  // An EXPLICIT operator override always wins over the derived policy. Un-pinning this value
+  // from the hard-coded 'strict' left CRUCIBLE_OFFLINE with no effect, so a box with bundled
+  // env keys silently escalated to the external free pool even when the operator had demanded
+  // on-device only — and the pool's garbage came back as "the reasoning model declined this
+  // task", which reads as an on-device capability limit and is not one. Measured while
+  // debugging the 0/5 agentic run: three separate red herrings traced to this line.
+  const _offlineEnv = (process.env.CRUCIBLE_OFFLINE ?? '').trim()
+  const requestOffline: string = _offlineEnv !== ''
+    ? _offlineEnv
+    : spendableProviders.length > 0 ? '' : 'strict'
   debugBus.emit('model', 'routing_policy', {
     mode: requestOffline === 'strict' ? 'on-device-only' : 'offline-first-with-escalation',
     byokProviders: Object.keys(currentByokKeys()),
@@ -4308,7 +4319,15 @@ app.post('/api/chat', async (req, res) => {
         //   CRUCIBLE_OFFLINE=strict — offline-only (Apple FM + synth; no external models)
         //   CRUCIBLE_OFFLINE=0      — external models only (opt-out of offline brain)
         //   default                 — offline-first with external fallback (production default)
-        const _offlineDrive = makeOfflineDriveTurn(projectPath)
+        // Same split as the single-loop path below: the code state machine only sees code
+        // goals. This branch has its OWN driver instance, so fixing only the other one left
+        // the measured 0/5 exactly where it was — the meta-router is what actually ran.
+        const _offlineDrive = isCodeImplementationTask(message ?? '')
+          ? makeOfflineDriveTurn(projectPath)
+          : makeToolCallDriveTurn(
+              (msgs, o) => fmComplete(msgs, { gbnf: o?.gbnf, maxTokens: o?.maxTokens, temperature: o?.temperature, signal: o?.signal }),
+              message ?? '',
+            )
         const _offlineMode = requestOffline
         const activeDriveTurn = _offlineMode === 'strict'
           ? _offlineDrive
@@ -4387,7 +4406,20 @@ app.post('/api/chat', async (req, res) => {
     // Pass the current turn's goal explicitly: this single-loop path prepends prior
     // conversation history ahead of the goal, so the offline driver must NOT re-derive
     // the goal from the first user message (that returns a stale earlier turn).
-    const _offlineDriveSingle = makeOfflineDriveTurn(projectPath, agentGoal)
+    // MEASURED 2026-08-03 (`npm run agent:workflow`): 0/5 on ordinary multi-step assistant
+    // tasks, three of them ending with ZERO tool calls. makeOfflineDriveTurn is a CODE-SYNTHESIS
+    // state machine (S0-S6: goal paths -> write -> self-test -> done) built for the coding-agent
+    // scope this product abandoned at 2/9. Handed "sum the amount column and write total.txt" it
+    // misparses the goal and emits nothing usable, and loop.ts's refusal bounce fires twice.
+    // Non-code goals now get the general grammar-constrained tool-call driver, where refusal
+    // prose is not in the sampler's output space. Code goals keep the state machine unchanged.
+    const _offlineDriveCode = makeOfflineDriveTurn(projectPath, agentGoal)
+    const _offlineDriveTools = makeToolCallDriveTurn(
+      (msgs, o) => fmComplete(msgs, { gbnf: o?.gbnf, maxTokens: o?.maxTokens, temperature: o?.temperature, signal: o?.signal }),
+      agentGoal,
+    )
+    const _offlineDriveSingle: typeof _offlineDriveCode =
+      isCodeImplementationTask(agentGoal) ? _offlineDriveCode : _offlineDriveTools
     const _offlineModeSingle = requestOffline
     const activeDriveTurn = _offlineModeSingle === 'strict'
       ? _offlineDriveSingle
@@ -4448,6 +4480,29 @@ app.post('/api/chat', async (req, res) => {
       patchActiveSessionRound(chatUser, chatRoundId, { synthesis: finalText, synthesisDone: true, synthStreaming: false })
     } else {
       const verifier = makeVerifier({ command: req.body.verifyCommand, goal: agentGoal })
+      // POST-CONDITION GATE. loop.ts:65 makes verification optional and DEFAULTS TO ACCEPTING
+      // the final answer, so the only thing standing between "I did it" and "it is done" was a
+      // system-prompt instruction addressed to a 1.5B model. MEASURED: "The file prices.csv has
+      // been successfully read and added. No problems were flagged" -- with total.txt never
+      // created. Post-conditions are extracted from the GOAL TEXT and checked against the real
+      // filesystem; a goal we cannot read yields zero conditions and defers to the existing
+      // verifier rather than inventing a pass (absence of a check is never a check).
+      const _postSeed = ((): string[] => {
+        const m = /((?:\/[\w.@+-]+)+)/.exec(agentGoal)
+        try { return m ? fs.readdirSync(m[1].replace(/[.,;:!?)\]]+$/, '')) : [] } catch { return [] }
+      })()
+      const gatedVerify: typeof verifier.verify = async (finalText, ctx) => {
+        const post = verifyGoal(agentGoal, _postSeed)
+        if (post.failed.length > 0) {
+          debugBus.emit('agent', 'postcondition_failed', { goal: agentGoal.slice(0, 80), failed: post.failed }, { severity: 'error' })
+          return { passed: false, signal: 'postcondition', reason: correctionFor(post) } as Awaited<ReturnType<typeof verifier.verify>>
+        }
+        const base = await verifier.verify(finalText, ctx)
+        // A real post-condition that PASSED is a genuine check, so it can retire the
+        // "unverified" flag the base verifier sets when it had nothing runnable to run.
+        if (post.verified && base.passed) return { ...base, unverified: false, signal: base.signal ?? 'postcondition' }
+        return base
+      }
       loopEntry('loop', 'entered')
       const result = await runAgentLoop({
         goal: agentGoal,
@@ -4456,7 +4511,7 @@ app.post('/api/chat', async (req, res) => {
         driveTurn: activeDriveTurn,
         emit: send,
         signal: ac.signal,
-        verify: verifier.verify,
+        verify: gatedVerify,
         // Adversarial harden pass — self-gates on a passing execution check, so it only
         // fires for code-producing tasks (catches edge-case bugs the agent's tests miss).
         hardenFinal: true,

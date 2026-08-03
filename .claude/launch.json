@@ -23,7 +23,9 @@
         "--strictPort"
       ],
       "cwd": "/Users/justin/crucible-local/crucible-local",
-      "env": { "CRUCIBLE_API_TARGET": "http://localhost:3011" },
+      "env": {
+        "CRUCIBLE_API_TARGET": "http://localhost:3011"
+      },
       "port": 5181
     },
     {
@@ -37,6 +39,21 @@
         "/Users/justin/Desktop/Crucible/reef-lend-range-fold"
       ],
       "port": 5191
+    },
+    {
+      "name": "crucible-poc",
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "runtimeArgs": [
+        "/Users/justin/crucible-local/crucible-local/node_modules/vite/bin/vite.js",
+        "--port",
+        "5185",
+        "--strictPort"
+      ],
+      "cwd": "/Users/justin/crucible-local/crucible-local/.claude/worktrees/loving-robinson-6aec14",
+      "env": {
+        "CRUCIBLE_API_TARGET": "http://localhost:3021"
+      },
+      "port": 5185
     }
   ]
 }
