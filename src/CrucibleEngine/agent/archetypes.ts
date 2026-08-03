@@ -109,6 +109,21 @@ export function buildArchetypeTools(id: ArchetypeId, allTools: ToolDef[]): ToolD
 // Pick the best archetype for a subtask based on its description
 export function selectArchetype(subtaskDescription: string): ArchetypeId {
   const d = subtaskDescription.toLowerCase()
+  // A task that PRODUCES something must not be handed to a read-only archetype.
+  //
+  // MEASURED 2026-08-03 (`npm run agent:workflow`, read-then-write): "Read prices.csv, add up
+  // the amount column, and write the total into total.txt" matched none of the patterns below
+  // and fell through to the `researcher` default — which has no 'write' category, so
+  // buildArchetypeTools handed the loop 30 tools with write_file REMOVED. The agent read the
+  // file, computed the total correctly, and then could not write it: the task was unwinnable
+  // by construction, and every symptom downstream (repeated reads, wandering into read_pdf)
+  // was the head hunting for a tool that had been taken away from it.
+  //
+  // This check runs FIRST and is deliberately about the deliverable, not the topic: "research X
+  // and save it to a file" is a writing task that happens to involve research. Getting this
+  // wrong in the other direction is cheap — a coder archetype that only reads is merely
+  // over-provisioned — while getting it wrong this way makes the goal impossible.
+  if (/\b(write|save|create|record|store|output|produce|generate|rename|edit|update|delete|remove|move|download)\b/.test(d)) return 'coder'
   if (/search|find|research|look up|source|reference|paper|article|fact/.test(d)) return 'researcher'
   if (/code|implement|build|write.*function|fix.*bug|run|execute|test|debug/.test(d)) return 'coder'
   if (/review|critique|check|verify|validate|flaw|problem|wrong|issue/.test(d)) return 'critic'

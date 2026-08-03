@@ -520,6 +520,59 @@ registry.register({
 })
 
 registry.register({
+  name: 'sum_column',
+  description: 'Sum a named numeric column of a CSV file exactly. Use this instead of adding the numbers yourself.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path to the CSV file.' },
+      column: { type: 'string', description: 'Column header to total, e.g. "amount".' },
+    },
+    required: ['path', 'column'],
+  },
+  async run(args, ctx) {
+    // MEASURED 2026-08-03 (`npm run agent:workflow`, read-then-write): with `compute` available
+    // the agent finally completed read -> calculate -> write, and wrote 242.25 into total.txt.
+    // The correct total is 292.24 — the head had built the expression "229.50 + 12.75" and
+    // silently dropped the first row. That is the failure mode this whole product exists to
+    // remove: a plausible number, confidently written, with nothing checking it against the
+    // source. Handing the model a calculator only moves the guess from the arithmetic to the
+    // TRANSCRIPTION. Reading the column is mechanical, so the machine does all of it and the
+    // model chooses only WHICH file and WHICH column.
+    const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    let text: string
+    try { text = fs.readFileSync(abs, 'utf-8') } catch { return { ok: false, output: `File not found: ${abs}` } }
+    const lines = text.split(/\r?\n/).filter(l => l.trim())
+    if (lines.length < 2) return { ok: false, output: `${abs} has no data rows.` }
+    const header = lines[0].split(',').map(h => h.trim().toLowerCase())
+    const want = String(args.column ?? '').trim().toLowerCase()
+    let idx = header.indexOf(want)
+    // A header the model half-remembered ("amounts", "Amount ") should not fail the task when
+    // exactly one column plausibly matches.
+    if (idx < 0) {
+      const near = header.map((h, i) => ({ h, i })).filter(x => x.h.startsWith(want) || want.startsWith(x.h))
+      if (near.length === 1) idx = near[0].i
+    }
+    if (idx < 0) return { ok: false, output: `No column "${args.column}" in ${abs}. Columns: ${header.join(', ')}` }
+    let total = 0, counted = 0
+    const skipped: string[] = []
+    for (const line of lines.slice(1)) {
+      const cell = (line.split(',')[idx] ?? '').replace(/[£$€,\s]/g, '')
+      const v = Number(cell)
+      if (cell !== '' && isFinite(v)) { total += v; counted++ } else if (cell !== '') skipped.push(cell)
+    }
+    if (!counted) return { ok: false, output: `No numeric values in column "${args.column}" of ${abs}.` }
+    const out = Number(total.toFixed(6))
+    // Report the row count so a dropped row is visible rather than silent.
+    return {
+      ok: true,
+      output: `Sum of "${header[idx]}" over ${counted} row(s) in ${abs} = ${out}` +
+        (skipped.length ? ` (skipped ${skipped.length} non-numeric: ${skipped.slice(0, 3).join(', ')})` : ''),
+    }
+  },
+})
+
+registry.register({
   name: 'search',
   description: 'Search file contents in the project for a pattern (regex). Returns file:line: matches.',
   params: {

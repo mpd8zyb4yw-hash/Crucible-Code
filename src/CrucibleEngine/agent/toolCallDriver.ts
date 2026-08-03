@@ -153,6 +153,86 @@ export function relevantTools(tools: ToolDef[], goal: string, limit = 10): ToolD
   return out
 }
 
+
+/**
+ * The ordered CATEGORY PLAN a goal implies, derived from its verbs — no model call.
+ *
+ * MEASURED 2026-08-03: with all 47 tools in one enum the head, trying to total a CSV column,
+ * reached for `read_image`, `read_pdf` and once `gmail_search`, and never found `compute`.
+ * Narrowing the flat list by lexical overlap made it WORSE (2/5 -> 1/5) — the words in a goal
+ * do not name the tools it needs; "add up the amount column" contains no token like `compute`.
+ * Asking the head to pick a CATEGORY first was no better: it chose OTHER, the 27-tool bucket.
+ *
+ * But the goal already states the order. "Read prices.csv, add up the amount column, and write
+ * the total into total.txt" is READ, then CALCULATE, then WRITE, in the order the verbs appear.
+ * That is string work a machine does exactly, so it does it, and the model is left with the one
+ * question it can answer: WHICH file, WHICH expression.
+ *
+ * DELETE is deliberately absent. Scoping the menu to destructive tools on the strength of the
+ * word "delete" removes every non-destructive alternative from the sampler, and measured, that
+ * walked the agent straight into deleting two files. Destructive intent must widen the choice,
+ * never narrow it — the stakes gate is what handles it, and it needs the agent to still be able
+ * to choose something else.
+ */
+const CATEGORY_VERBS: Array<{ cat: string; rx: RegExp }> = [
+  { cat: 'READ', rx: /\b(read|open|inspect|examine|load)\b/gi },
+  { cat: 'CALCULATE', rx: /\b(add up|sum|total|calculate|compute|work out|average)\b/gi },
+  { cat: 'SEARCH', rx: /\b(search|find out|look up|research)\b/gi },
+  // Edit-in-place verbs are WRITE verbs — renaming a symbol changes the file. They also trigger
+  // the READ prepend below, because edit_file's contract needs the exact existing string.
+  { cat: 'WRITE', rx: /\b(write|create|save|record|output|store|rename|replace|edit|update|modify)\b/gi },
+]
+
+/** Tools per plan category. Deliberately small and non-destructive. */
+const PLAN_TOOLS: Record<string, string[]> = {
+  READ: ['read_file', 'list_dir'],
+  CALCULATE: ['sum_column', 'compute'],
+  SEARCH: ['web_search'],
+  WRITE: ['write_file', 'edit_file'],
+}
+
+export function categoryPlan(goal: string): string[] {
+  // Strip filesystem paths FIRST. MEASURED 2026-08-03: the scratch directory for the
+  // read-then-write task is literally named ".../read-then-write", so the path contributed a
+  // spurious WRITE and the plan came out READ, WRITE, CALCULATE — putting the write step before
+  // the total had been computed. A path is a NAME, not an instruction; only the prose the user
+  // wrote states the order.
+  const prose = (goal ?? '').replace(/(?:\/[\w.@+-]+)+/g, ' ')
+  const hits: Array<{ at: number; cat: string }> = []
+  for (const { cat, rx } of CATEGORY_VERBS) {
+    for (const m of prose.matchAll(rx)) hits.push({ at: m.index ?? 0, cat })
+  }
+  hits.sort((a, b) => a.at - b.at)
+  const out: string[] = []
+  for (const h of hits) if (out[out.length - 1] !== h.cat) out.push(h.cat)
+  // An EDIT-IN-PLACE verb implies a read first: you cannot rename a symbol in a file you have
+  // not looked at, and edit_file's contract needs the exact existing string. MEASURED: the
+  // rename task planned WRITE as step one, so the agent was offered only write tools and
+  // returned empty. Prepending READ is not a guess — it is the precondition of the edit.
+  if (/\b(rename|replace|update|edit|change|modify|fix)\b/i.test(prose) && out[0] !== 'READ') out.unshift('READ')
+  return out
+}
+
+/**
+ * The tools to offer for step N of the plan, or null when the plan does not cover this step.
+ * Null means "offer everything" — the plan is a hint, never a cage.
+ */
+export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number): ToolDef[] | null {
+  const plan = categoryPlan(goal)
+  const cat = plan[stepsDone]
+  if (!cat) return null
+  let list = PLAN_TOOLS[cat] ?? []
+  // A goal that names a COLUMN is a column sum, and `sum_column` reads every row itself.
+  // MEASURED 2026-08-03: offered both, the head chose `compute` and hand-built the expression
+  // "229.50 + 12.75", silently dropping the first row — total.txt got 242.25 instead of 292.24.
+  // Handing the model a calculator only moves the guess from the arithmetic to the
+  // TRANSCRIPTION, so where an exact tool exists the approximate one is removed.
+  if (cat === 'CALCULATE' && /\bcolumn\b/i.test(goal)) list = ['sum_column']
+  const names = new Set(list)
+  const picked = tools.filter(t => names.has(t.name))
+  return picked.length ? picked : null
+}
+
 /** Render the tool menu compactly. A 1.5B head reads a short list far better than a schema dump. */
 export function toolMenu(tools: ToolDef[]): string {
   return tools.map(t => {
@@ -292,7 +372,11 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // been passing, started returning an empty reply. Kept as a tested function for a future
     // attempt with a better relevance signal; wiring it in without moving the number is exactly
     // the 'this should help' change the standing rule bans.
-    const usable = tools.filter(t => !excluded.has(t.name))
+    // Step N of the goal's own verb plan narrows the menu to a handful; anything the plan does
+    // not cover, or any retry after a blocked repeat, falls back to the full set.
+    const planned = attempt === 0 ? plannedTools(tools, goal, succeeded.size) : null
+    console.log(`[SEL] attempt=${attempt} succeeded=${succeeded.size} plan=${JSON.stringify(categoryPlan(goal))} offering=${planned?planned.map(t=>t.name).join('/'):'ALL'} ntools=${tools.length} sigs=${JSON.stringify([...succeeded].map(x=>x.slice(0,28)))}`)
+    const usable = (planned ?? tools).filter(t => !excluded.has(t.name))
     const choices = [...(usable.length ? usable : tools).map(t => t.name), FINISH]
     const selectSystem = [
       'You are the executor of a task. You act by choosing ONE tool to call next.',
