@@ -177,9 +177,40 @@ already working for you rather than a prompt waiting for input.
 ```
 
 - **Vertical scroll** moves between lanes. **Horizontal swipe** moves within a lane.
-- Home content is real and earned: today's schedule, unread/urgent mail, a running agent, a
+- Home content is real and earned: today's schedule, urgent mail, a running watcher, a
   recent verified answer. **If there is nothing real to show, show fewer cards — never filler.**
 - First run has no data. Design that state explicitly; it is the first thing anyone sees.
+
+### 4.1.1 The home adapts, and the user overrules it
+
+The home surface is **dynamically ranked by Crucible and independently customizable by the
+user.** Both, at once. That combination is the whole point and it is also the easiest thing in
+this document to get wrong, so it gets an explicit law:
+
+> **User intent is sticky. System suggestion is fluid.**
+> Anything the user placed stays exactly where they put it, forever, until they move it.
+> Everything else is free to reorder as relevance changes.
+
+Concretely:
+
+- The surface has **two regions in one scroll**: a **pinned region** the user controls, and a
+  **suggested region** Crucible ranks. The boundary must be *visible but quiet* — a hairline and
+  a small label, not a heavy divider.
+- **Pinned cards never move on their own.** Not to make room, not because something got urgent.
+- **Suggested cards re-rank freely** on signals like time of day, urgency, and what is running.
+- **Never re-rank while the user is looking at it.** Recompute on app open, on pull-to-refresh,
+  or after a real state change — never under the user's finger mid-scroll. A surface that
+  reshuffles as you read it feels haunted.
+- Every card carries **pin / hide / resize** in a long-press (phone) or hover (desktop) menu.
+  **Hide is permanent and per-card-type**, and must be undoable from settings — a user who
+  hides Calendar should not see it return next week because it got "relevant".
+- A suggested card that gets promoted should **explain itself in one short line** ("3 replies
+  waiting"). Adaptation the user cannot understand reads as randomness.
+- **First run ships a sensible default arrangement**, not an empty grid asking to be configured.
+  The user edits a working home; they do not assemble one.
+
+Design deliverable: show the home in **three states** — default, personalized (several pinned,
+some hidden), and mid-edit (the arrangement mode itself).
 
 ### 4.2 Desktop adaptation (≥ 1024px)
 
@@ -243,6 +274,93 @@ becomes ambiguous. **Design four card kinds that are instantly distinguishable a
 - This is the one place monospace is appropriate (paths, tool names, IDs). Never for prose.
 
 ---
+
+### 5.5 THE FOUR LAUNCH WIDGETS
+
+These four ship first. Each must be **beautiful, simple to use, and extremely powerful** — and
+those pull against each other, so the resolution is the same in all four cases:
+
+> **The card at rest shows one answer, not a dashboard. The power lives one tap down.**
+
+A widget that shows six numbers is a report. A widget that shows *the one thing you needed to
+know* and opens into full capability is an assistant. Every card below is specified as
+**at rest → on tap → the power move.**
+
+All four have real engine backing today — this is not aspirational, and the "what's real"
+lines below are measured from the codebase, not assumed.
+
+#### 5.5.1 Deep Research
+
+*Backing: `research/researchDag.ts` — decompose → retrieve → verify → synthesize, with
+per-source citations, a confidence score, and honest abstention.*
+
+- **At rest:** the headline finding of your most recent research, one line, with its
+  verification state. If a run is in flight, the card becomes live and shows the current phase
+  in words ("Checking 6 sources") — never a bare spinner.
+- **On tap:** the full report — findings, the sources that actually contributed, and the
+  confidence. Facet card (§5.3): Summary / Sources / Verification.
+- **The power move:** *research that keeps itself current.* Promote any report to a standing
+  question via §5.5.4, so it re-runs and tells you when the answer changes.
+- **Design the abstention state deliberately.** This engine really does return "no source
+  answered this", and that is a feature. It must look considered, never broken.
+
+#### 5.5.2 Email
+
+*Backing: `gmail_search` / `gmail_read` / `gmail_send`, plus `importance.ts` for ranking and a
+draft-approval flow that already exists.*
+
+- **At rest:** **not an unread count.** Unread count is anxiety, not information. Show *"3 need
+  you"* — messages actually requiring a reply — and the single most important sender.
+- **On tap:** a triage **item deck** (§5.2). One message per card, swipe through, actions in a
+  fixed bottom row: Reply / Archive / Later.
+- **The power move:** Crucible has already **drafted the replies**. The user reviews and
+  approves rather than composing. This is the difference between a mail client and an assistant.
+- **The confirm gate (§7.3) is mandatory here.** Nothing sends without an explicit accept
+  showing the exact recipient and body. Design it as the most reassuring screen in the product.
+
+#### 5.5.3 Calendar
+
+*Backing: `calendar_list` + `calendar_create` (read **and** write), and — importantly —
+`answer/schedule.ts`, a deterministic free/busy solver that computes exact answers in ~2ms.*
+
+- **At rest:** the next thing, with time-until. Below it, one computed line the user actually
+  wants: *"Longest free block today: 12–2pm."*
+- **On tap:** the day as a timeline with free blocks shown as **first-class objects**, not gaps.
+- **The power move:** *"find me 90 minutes before Thursday"* is answered by a **deterministic
+  solver, not a model** — exact, instant, and provably correct. Surface that certainty: this
+  answer is verified in a way a chatbot's cannot be.
+- Because the solver is exact, the calendar card should feel **crisp and confident** — the most
+  precise-feeling surface in the app.
+
+#### 5.5.4 Watch — standing questions *(proposed for the 4th)*
+
+*Backing: `automations/store.ts` — triggers, `computeNextRun`, `pickDue`, run history,
+auto-disable after 3 consecutive failures, and `offBriefReason`, which checks that a run's
+answer actually addressed the brief. Automations already execute through the normal answer
+path, so a scheduled run is a normal verified request.*
+
+You asked for something genuinely unique for the fourth. **Scheduled tasks alone are not
+unique** — every assistant has reminders. What is unique to Crucible is that it can tell
+whether **the answer changed**, as opposed to the wording changing, because it verifies its
+answers rather than trusting the model. That makes a category no chatbot can offer:
+
+> **A Watch is a standing question that only speaks up when the verified answer actually
+> changes.** Not "run this prompt on a schedule" — *"tell me when the truth moves."*
+
+- **At rest:** how many watches are quiet, and any that have **changed**. A change is the only
+  thing that earns attention; silence is the normal, healthy state.
+- **On tap:** the watch list. Each shows its question, its cadence, when it last ran, and a
+  **before → after diff** when something moved.
+- **The power move:** anything the user has ever asked can become a watch in one tap. *"Is Node
+  24 still the LTS?"* · *"Has my landlord replied?"* · *"Did this API get deprecated?"*
+- **Design the diff.** It is the emotional core of this widget and the thing people will
+  screenshot. Old value, new value, when it changed, and what source proved it.
+- **Honesty rule, from the engine:** a watch that fails 3 times in a row **disables itself and
+  says so.** Silence must never be mistakable for "nothing changed" — design the failed state
+  as loudly as the changed state.
+
+If you want a different fourth, the bar it has to clear is this one: *it should be impossible
+for an assistant that doesn't verify its own answers.*
 
 ## 6. Motion
 
@@ -316,14 +434,20 @@ including "the user already approved a similar thing". Design this as a level-3 
    motion. As a table or JSON, implementable directly.
 2. **The ambient background** — authored gradient field, both themes, with the reduced-motion
    variant.
-3. **Home surface at 390px** — populated, sparse, and first-run/empty.
+3. **Home surface at 390px** in **five** states — first-run/empty, populated, sparse (little
+   real data), personalized (pinned + hidden), and **mid-edit** (the arrangement mode). §4.1.1.
 4. **All four card kinds** at 390px, each in resting / focused / working / error states.
-5. **The chat dock** in collapsed / active / full.
-6. **The email flow** end to end — triage deck → open item → draft reply → **confirm gate** →
+5. **The four launch widgets** (§5.5) — Deep Research, Email, Calendar, Watch — each **at rest
+   and expanded**. These are the product's first impression; they carry the most design weight
+   in this list.
+6. **The chat dock** in collapsed / active / full.
+7. **The email flow** end to end — triage deck → open item → draft reply → **confirm gate** →
    sent. This is the best test of the whole system; `UI_OVERHAUL.md` §4 has the state machine.
-7. **Desktop adaptation at 1280px** of the home surface and one card kind.
-8. **The contrast proof** from §3.4 — your glass cards over both the lightest and darkest
-   region of your background, with measured ratios. Not optional.
+8. **The Watch diff** (§5.5.4) — the before → after moment, plus the self-disabled failure
+   state. This is the most distinctive screen in the product; do not treat it as a list row.
+9. **Desktop adaptation at 1280px** of the home surface and one card kind.
+10. **The contrast proof** from §3.4 — your glass cards over both the lightest and darkest
+    region of your background, with measured ratios. Not optional.
 
 **Deliver as design, not implementation** — mockups, tokens, redlines, and prose. Do not write
 application code. A self-contained HTML/CSS mock purely to *demonstrate* the glass system and
@@ -350,10 +474,19 @@ the matches were all `debounce`. There are no bounce animations in the build.*
 
 ## 10. Open questions worth resolving during design
 
+*Resolved by the product owner 2026-08-03d: the home both adapts and is user-customizable
+(§4.1.1), and the four launch widgets are Deep Research, Email, Calendar and Watch (§5.5).
+Those are decided — do not reopen them.*
+
+Still genuinely open:
+
 1. **Desktop chat placement** — right rail vs. bottom dock. Pick one and justify.
-2. **Does the home surface personalize over time?** Lanes could reorder by what the user
-   actually opens. Powerful, but it makes the UI non-deterministic — worth an explicit decision.
-3. **Widget catalogue.** Which widgets ship first? Suggest: Schedule, Mail, Running agents,
-   Recent answer. All four have real backing in the engine today.
-4. **How much of the verification story surfaces at rest** — is there a home widget for "what
+2. **What signals may re-rank the suggested region?** Time of day and urgency are safe.
+   Behavioural learning ("you open Mail every morning") is more powerful but harder to make
+   legible — and §4.1.1 requires every promotion to explain itself in one line. Propose the
+   smallest set of signals that feels alive without feeling arbitrary.
+3. **How much of the verification story surfaces at rest** — is there a home widget for "what
    Crucible checked for you today", or does verification only appear on answers?
+4. **Does Watch deserve to be more than a widget?** If standing verified questions are the
+   product's most defensible idea, a widget may undersell it. Say so if the design wants it
+   promoted to a primary surface.
