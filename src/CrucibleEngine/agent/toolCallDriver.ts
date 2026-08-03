@@ -84,6 +84,31 @@ export function toolMenu(tools: ToolDef[]): string {
   }).join('\n')
 }
 
+/**
+ * An explicit ledger of the tool calls already made and how they went.
+ *
+ * MEASURED 2026-08-03: on "read prices.csv, total the amount column, write total.txt" the
+ * driver called `read_file`, got the CSV back, and then called `read_file` again, and again,
+ * until the loop's stall detector stopped it. A raw transcript buries "what has been done" in
+ * amongst assistant chatter and tool payloads, and a 1.5B head reading 8 mixed messages cannot
+ * reliably infer which step it is on. State it, rather than hoping the model derives it.
+ */
+function ledger(messages: Array<Record<string, unknown>>): string {
+  const lines: string[] = []
+  for (const m of messages) {
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      for (const tc of m.tool_calls as Array<Record<string, unknown>>) {
+        const fn = (tc.function ?? {}) as { name?: string; arguments?: string }
+        if (fn.name) lines.push(`  called ${fn.name}(${String(fn.arguments ?? '').slice(0, 120)})`)
+      }
+    } else if (m.role === 'tool') {
+      const c = String(m.content ?? '')
+      lines.push(`    -> ${c.slice(0, 200).replace(/\s+/g, ' ')}`)
+    }
+  }
+  return lines.length ? lines.join('\n') : '  (no tool has been called yet)'
+}
+
 /** Last N messages flattened to a short transcript the head can actually hold. */
 function recentContext(messages: Array<Record<string, unknown>>, n = 8): string {
   return messages.slice(-n).map(m => {
@@ -114,6 +139,7 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
 
     const byName = new Map(tools.map(t => [t.name, t]))
     const ctx = recentContext(messages)
+    const done = ledger(messages)
 
     // ── Stage 1: SELECT ───────────────────────────────────────────────────────────
     // The choice set is the grammar. Refusal prose is not in it.
@@ -127,8 +153,15 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       `Reply with EXACTLY ONE of these words and nothing else: ${choices.join(', ')}`,
       `Choose ${FINISH} only when the goal is already fully achieved by the work shown below.`,
       'Never explain. Never apologise. Never say you cannot — choose the closest useful tool.',
+      'Do NOT repeat a call that already succeeded. Look at STEPS ALREADY DONE and choose the NEXT',
+      'step of the goal. A goal with several verbs ("read X … write Y") needs one call per verb.',
     ].join('\n')
-    const selectUser = `GOAL: ${goal}\n\nWORK SO FAR:\n${ctx || '(nothing yet)'}\n\nWhich single tool next?`
+    const selectUser = [
+      `GOAL: ${goal}`, '',
+      'STEPS ALREADY DONE:', done, '',
+      'RECENT CONTEXT:', ctx || '(nothing yet)', '',
+      'Which single tool next?',
+    ].join('\n')
 
     const picked = (await complete(
       [{ role: 'system', content: selectSystem }, { role: 'user', content: selectUser }],
@@ -157,7 +190,12 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       `Output ONLY a JSON object with exactly these keys, in this order: ${fields.map(f => f.key).join(', ')}`,
       'Use absolute paths exactly as they appear in the goal. Copy values from the goal verbatim where possible.',
     ].join('\n')
-    const fillUser = `GOAL: ${goal}\n\nWORK SO FAR:\n${ctx || '(nothing yet)'}\n\nArguments for ${tool.name}:`
+    const fillUser = [
+      `GOAL: ${goal}`, '',
+      'STEPS ALREADY DONE:', done, '',
+      'RECENT CONTEXT:', ctx || '(nothing yet)', '',
+      `Arguments for ${tool.name}:`,
+    ].join('\n')
 
     const raw = await complete(
       [{ role: 'system', content: fillSystem }, { role: 'user', content: fillUser }],
