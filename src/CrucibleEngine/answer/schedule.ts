@@ -156,8 +156,31 @@ export function solveSchedule(message: string): ScheduleSolution | null {
   const text = message.trim()
   if (!text || !ASKS_FREE.test(text) || !HAS_MEETING.test(text)) return null
 
-  // Window: "between X and Y" / "from X to Y".
-  const winMatch = /\b(?:between|from)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midday|midnight)\s*(?:and|to|until|till|-|–)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midday|midnight)\b/i.exec(text)
+  // Window. Two accepted shapes, tried in order:
+  //
+  //   1. "between X and Y" / "from X to Y"  — an explicit range preposition.
+  //   2. "my workday is X to Y" / "office hours are X-Y" — a range introduced by a WINDOW
+  //      NOUN instead of a preposition.
+  //
+  // Shape 2 was missing, and it is not an exotic phrasing. MEASURED 2026-08-03c: "My workday
+  // is 8am to 6pm. I have calls at 9am, 10:30am and 4pm, each 45 minutes. What is my longest
+  // free stretch?" returned null here, fell through to the model, and got "10:30am to 4pm,
+  // 4 hours and 30 minutes" — which runs straight through the 10:30 call. The correct answer
+  // is 11:15am-4pm. Every time this parser refuses, the question goes to the component we
+  // already measured as unreliable at interval arithmetic, so the refusals are where the
+  // wrong answers come from.
+  //
+  // The window noun is required in shape 2: a bare "X to Y" would happily read "calls at 9am,
+  // 10:30am and 4pm" as a range and silently invent a window.
+  const TIME = String.raw`(\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midday|midnight)`
+  const SEP = String.raw`(?:and|to|until|till|through|-|–|—)`
+  const winMatch =
+    new RegExp(String.raw`\b(?:between|from)\s+${TIME}\s*${SEP}\s*${TIME}\b`, 'i').exec(text)
+    ?? new RegExp(
+      String.raw`\b(?:work\s?day|working\s+day|working\s+hours|office\s+hours|day|hours|shift|schedule|availability|window)\b` +
+      String.raw`\s*(?:is|are|runs?|go(?:es)?|starts?)?\s*(?:from\s+)?${TIME}\s*${SEP}\s*${TIME}\b`,
+      'i',
+    ).exec(text)
   if (!winMatch) return null
   const wStart = parseClock(winMatch[1])
   const wEnd = parseClock(winMatch[2])

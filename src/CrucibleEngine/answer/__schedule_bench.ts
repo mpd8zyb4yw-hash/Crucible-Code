@@ -67,6 +67,36 @@ console.log('— other real shapes —')
   if (s) ok(/no free time/i.test(s.text), 'fully booked wording is explicit')
 }
 
+// MEASURED 2026-08-03c, `npm run dogfood:assistant`. The window parser accepted only an
+// explicit range preposition ("between X and Y" / "from X to Y"). A window introduced by a
+// NOUN — "my workday is 8am to 6pm" — was refused, the question fell through to the model,
+// and the model answered "10:30am to 4pm, 4 hours and 30 minutes", which runs straight
+// through the 10:30 call. Correct: 11:15am-4pm, 4h45m. Every refusal here hands the question
+// to the component already measured as unreliable at interval arithmetic, so the phrasings
+// this parser accepts ARE the product's accuracy on this question class.
+console.log('— window introduced by a noun, not a preposition —')
+{
+  const s = solveSchedule('My workday is 8am to 6pm. I have calls at 9am, 10:30am and 4pm, each 45 minutes. What is my longest free stretch?')
+  ok(!!s, 'parses "my workday is 8am to 6pm"')
+  if (s) {
+    ok(s.window.start === 480 && s.window.end === 1080, `window 8am-6pm (got ${formatClock(s.window.start)}-${formatClock(s.window.end)})`)
+    ok(s.longest.length === 1 && s.longest[0].start === 675 && s.longest[0].end === 960,
+      `longest 11:15am-4pm (got ${s.longest.map(l => `${formatClock(l.start)}-${formatClock(l.end)}`).join(', ')})`)
+    ok(/11:15am/.test(s.text) && /4 hours 45 minutes/.test(s.text), 'renders 11:15am-4pm, 4 hours 45 minutes')
+    // The model's wrong answer started the block at 10:30am, mid-call. Assert it cannot recur.
+    ok(!/longest free block is \*\*10:30am/.test(s.text), 'does not start a free block inside a call')
+  }
+}
+{
+  const s = solveSchedule('My office hours are 9am-5pm and I have appointments at 10am and 1pm, each 30 minutes. When am I free?')
+  ok(!!s, 'parses "office hours are 9am-5pm" with an en-dash-free hyphen range')
+  if (s) ok(s.longest[0].start === 810 && s.longest[0].end === 1020, `longest 1:30pm-5pm (got ${s.longest.map(l => `${formatClock(l.start)}-${formatClock(l.end)}`).join(', ')})`)
+}
+{
+  const s = solveSchedule('Working hours 9am to 5pm, sessions at 9am, 10am, 11am, 12pm, 1pm, 2pm, 3pm, 4pm each one hour. Any free time?')
+  ok(!!s && s.free.length === 0, 'noun-introduced window still detects a fully booked day')
+}
+
 console.log('— refuses what it cannot be sure of (falls through to reasoning) —')
 for (const q of [
   'what is the capital of Australia',                                  // not a schedule question

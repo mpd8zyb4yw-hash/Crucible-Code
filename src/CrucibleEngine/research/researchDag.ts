@@ -591,8 +591,36 @@ export async function* runResearchDag(
       }, { severity: 'info' })
     }
 
-    // Build sources citation
-    const allSources = [...new Set(leafResults.flatMap(r => r.sources))].slice(0, 8)
+    // Build sources citation — from what CONTRIBUTED, not from what was touched.
+    //
+    // MEASURED 2026-08-03c. "What are the main differences between HTTP/2 and HTTP/3, and what
+    // PROBLEM does HTTP/3 solve...?" cited, alongside the two correct RFCs and articles:
+    //   https://en.wikipedia.org/wiki/Trolley_problem
+    //   https://en.wikipedia.org/wiki/List_of_unsolved_problems_in_mathematics
+    // Both were retrieved on the word "problem" and neither produced a single verified claim.
+    // Citing them is worse than untidy: a citation is a provenance assertion, and padding the
+    // list with sources that contributed nothing is exactly the kind of decorative-verification
+    // signal DOCTRINE §6.5 exists to forbid. It also teaches users to stop reading the list.
+    //
+    // Every verified claim records the URL its evidence came from, so the honest citation list
+    // is already available — it just was not the one being printed.
+    const contributing = new Set(
+      verifiedClaims.map(vc => vc.evidence?.url).filter((u): u is string => !!u),
+    )
+    const touched = [...new Set(leafResults.flatMap(r => r.sources))]
+    // Fall back to touched sources only when NO claim carries a URL (e.g. every claim came
+    // from the executable or corroboration tier). Showing nothing would be less auditable
+    // than showing what was read, and this branch cannot pad a list that is already honest.
+    const allSources = (contributing.size > 0
+      ? touched.filter(s => contributing.has(s))
+      : touched
+    ).slice(0, 8)
+    const dropped = touched.length - allSources.length
+    if (dropped > 0) {
+      debugBus.emit('pipeline', 'research_citations_pruned', {
+        question: question.slice(0, 80), kept: allSources.length, dropped,
+      }, { severity: 'info' })
+    }
 
     // Build confidence header
     const confHeader = buildConfidenceHeader(rollup, abstainedCount, leafResults.length, verifiedClaims)

@@ -26,6 +26,9 @@ import { certifyAnswer } from '../reasoning/executionVerify'
 import { repairUntilFaithful, type RepairMessage } from '../reasoning/faithfulRepair'
 import { isMiniCpmAvailable, miniCpmComplete } from '../agent/miniCpmHarness'
 import { bonsaiComplete, isBonsaiInstalled, repairModelName } from '../localModels/bonsaiSidecar'
+// Checks PROSE claims. certifyAnswer above only checks code, and abstains on everything else —
+// which is why every prose answer this module ever produced was badged verified by default.
+import { checkClaims, stripFailedClaims } from './claimCheck'
 
 export interface GroundedResult {
   text: string
@@ -33,6 +36,16 @@ export interface GroundedResult {
   sources: string[]
   /** How many independent sources fed the answer. */
   sourceCount: number
+  /**
+   * Superlative claims this answer makes that the evidence does NOT support (claimCheck.ts).
+   * Non-empty means the answer is grounded but contains a claim we caught being wrong, so the
+   * caller must not badge it verified. Empty means either every checkable claim held or the
+   * answer made none — `claimsChecked` distinguishes those, and the difference matters:
+   * "nothing refuted it" is not "we checked it".
+   */
+  claimFailures: string[]
+  /** True when at least one superlative claim was found AND checked. */
+  claimsChecked: boolean
 }
 
 export interface GroundOpts {
@@ -736,13 +749,53 @@ export async function answerWithWebGrounding(message: string, opts: GroundOpts =
     }
   }
 
+  // ── PROSE CLAIM GATE (claimCheck.ts) ────────────────────────────────────────
+  // Everything above this line checks CODE. `certifyAnswer` abstains on prose, so until now a
+  // prose answer emitted `passed: true` unconditionally and "verified" meant only "we
+  // retrieved something". MEASURED 2026-08-03: "What is the capital of Australia?" shipped
+  // verified with "Canberra ... is the most populous city in each state and internal
+  // territory" — a predicate lifted off a source sentence whose subject was "the capital".
+  // Superlatives are unique by reference, which is what makes subject attachment mechanically
+  // checkable; that narrow class is all this gate claims to cover.
+  // Topic is inferred from the ANSWER, not the question: in "What is the capital of
+  // Australia?" the question's subject is Australia, but the answer's later "It" refers to
+  // Canberra. Resolving the pronoun to the question subject would attach the claim to the
+  // wrong entity — right verdict here by luck, wrong reason, and wrong on the next case.
+  const claims = checkClaims(text, ev.block)
+  if (claims.failed.length) {
+    debugBus.emit('pipeline', 'claim_unsupported', {
+      message: message.slice(0, 80),
+      failures: claims.failed.map(f => ({ subject: f.subject, superlative: f.superlative, verdict: f.verdict })),
+    }, { severity: 'warn' })
+    // The check is sentence-scoped, so we know exactly which words are unsupported — delete
+    // those and keep the rest. Badge honesty alone is not enough here: most people read the
+    // answer, not the badge, and leaving a sentence we PROVED wrong on screen is a worse
+    // outcome than either abstaining or trimming. Refuses to trim when nothing substantial
+    // would survive, in which case the text ships whole but unbadged.
+    const trimmed = stripFailedClaims(text, claims)
+    if (trimmed.removed.length) {
+      text = trimmed.text
+      emit?.({ type: 'thought', text: `Removed a claim the sources do not support: ${claims.failed[0].reason}` })
+      debugBus.emit('pipeline', 'claim_stripped', { removed: trimmed.removed.length }, { severity: 'info' })
+    }
+  }
+
   const cites = (text.match(/\[S\d+\]/g) ?? []).length
   emit?.(unfaithful
     ? { type: 'verify', passed: false, report: `Grounded in ${ev.sources.length} source${ev.sources.length > 1 ? 's' : ''}, but UNVERIFIED — ${unfaithful}. Treat this code with suspicion.` }
-    : { type: 'verify', passed: true, report: `Answer grounded in ${ev.sources.length} web source${ev.sources.length > 1 ? 's' : ''}${cites ? ` with ${cites} inline citation${cites > 1 ? 's' : ''}` : ''}${executed ? `, and the code was EXECUTED against the real ${faith.library ?? 'library'} without failing.` : '.'}` })
+    : claims.failed.length
+      ? { type: 'verify', passed: false, report: `Grounded in ${ev.sources.length} source${ev.sources.length > 1 ? 's' : ''}, but one claim did not check out — ${claims.failed[0].reason}` }
+      : { type: 'verify', passed: true, report: `Answer grounded in ${ev.sources.length} web source${ev.sources.length > 1 ? 's' : ''}${cites ? ` with ${cites} inline citation${cites > 1 ? 's' : ''}` : ''}${claims.checked ? `, and its ${claims.claims.length} superlative claim${claims.claims.length > 1 ? 's were' : ' was'} matched to a source sentence about the same subject` : ''}${executed ? `, and the code was EXECUTED against the real ${faith.library ?? 'library'} without failing.` : '.'}` })
   // Flip the live strip's sources to 'grounded' (check-marked) now the answer actually cites them.
   emit?.({ type: 'sources', phase: 'grounded', items: ev.sources.map(u => ({ url: u, host: safeHost(u) })) })
   debugBus.emit('pipeline', 'grounding_hit', { message: message.slice(0, 80), sources: ev.sources.length, cites, ms: Date.now() - started }, { severity: 'info' })
 
-  return { text: withSourcesFooter(text, ev), sources: ev.sources, sourceCount: ev.sources.length }
+  return {
+    text: withSourcesFooter(text, ev),
+    sources: ev.sources,
+    sourceCount: ev.sources.length,
+    claimFailures: claims.failed.map(f => f.reason),
+    claimsChecked: claims.checked,
+  }
 }
+

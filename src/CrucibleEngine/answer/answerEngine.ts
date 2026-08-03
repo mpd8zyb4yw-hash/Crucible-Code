@@ -19,6 +19,7 @@ import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
 import { applyRecomputation, recomputeMultiStep, recomputeWordProblem, directArithmetic } from './wordProblem'
 import { solveSchedule } from './schedule'
+import { solveRelease } from './releases'
 import { applyDateRecomputation, isDateQuestion, recomputeDate } from './dateTime'
 import { isConversionQuestion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
@@ -372,6 +373,32 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     }
   }
 
+  // Release / lifecycle lookups ("current Node LTS", "is Ubuntu 20.04 still supported").
+  // MEASURED 2026-08-03: this whole question class ABSTAINED — none of our keyless sources
+  // carries release data, so the DAG honestly reported "no source answered the question".
+  // It is also the class where a parametric answer is guaranteed to rot: today's LTS changes
+  // every six months, so a model that "knows" it is a model that will be confidently wrong.
+  // solveRelease computes it from a structured release table plus today's date and renders the
+  // row it used, so the answer and its evidence are the same object. Refuses to null on an
+  // unknown product or an ambiguous ask, so nothing else is intercepted.
+  try {
+    const rel = await solveRelease(message)
+    if (rel) {
+      emit?.({ type: 'verify', passed: true, report: `Computed deterministically from the published ${rel.product} release table (no model).` })
+      debugBus.emit('pipeline', 'release_solved', {
+        message: message.slice(0, 60), slug: rel.slug, ask: rel.ask,
+      }, { severity: 'info' })
+      return {
+        text: rel.text, verified: true,
+        verification: { passed: ['deterministic-release-table'], failed: [] },
+        abstained: false, ...base,
+        sources: [rel.sourceUrl],
+        usedRetrieval: true,
+        facets: { ...facets, intent: 'lookup' },
+      }
+    }
+  } catch { /* a dead lookup API must never take down the answer path */ }
+
   if (!(await checkFmAvailable())) {
     return { text: ABSTAIN_TEXT, ...NOT_CHECKED, abstained: true, ...base }
   }
@@ -429,6 +456,8 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   let retrievalMeta: NonCodeMeta | null = null
   let grounded = false
   let groundedSources: string[] = []
+  /** Superlative claims the evidence refused to support — surfaced to the user, not just logged. */
+  let claimFailures: string[] = []
   let streamed = false
   try {
     if (usedRetrieval) {
@@ -457,6 +486,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
         usedRetrieval = true          // gates the redundant FM verification lanes below
         groundedSources = g.sources
         streamed = !!onToken
+        // A claim we CAUGHT being wrong must not ship green. MEASURED 2026-08-03: the Canberra
+        // answer was badged verified while asserting it is "the most populous city in each
+        // state and internal territory" — a predicate lifted off a source sentence about
+        // something else. `grounded` drives the verified badge downstream, so a failed claim
+        // has to clear it, not merely be logged.
+        if (g.claimFailures.length) {
+          grounded = false
+          claimFailures = g.claimFailures
+          debugBus.emit('pipeline', 'grounded_claim_rejected', {
+            message: message.slice(0, 60), failures: g.claimFailures.length,
+          }, { severity: 'warn' })
+        }
       } else {
         // Web yielded nothing usable → answer from on-device knowledge (never worse than before).
         emit?.({ type: 'thought', text: 'No usable web sources — answering from on-device knowledge.' })
@@ -725,6 +766,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
 
   // Grounding counts as a real check: the answer was reconciled against retrieved sources.
   if (grounded && groundedSources.length > 0) vPassed.push('grounded')
+  // ...and a claim the evidence refused is a real FAILURE, which must appear in the ledger.
+  // Recording it here (not only in the log) is what makes `verified` mean "checked and passed"
+  // rather than "nothing happened to contradict it".
+  for (const _f of claimFailures) vFailed.push('claim-unsupported')
   // A machine recomputation of a date/duration is the strongest signal available here.
   if (recomputed) vPassed.push('recomputed')
 
