@@ -459,3 +459,160 @@ special-cased event types is how the current state happened.
    rehydrating on scroll-back.
 4. **Does the existing `NavRail`/`SidebarRail` survive?** Probably yes as chrome, but it was
    designed for a tab-based product. Re-evaluate once the two-region shell exists.
+
+---
+
+# PART II — IMPLEMENTATION HANDOFF (added 2026-08-03c)
+
+> Part I above was written before the backend was measured. Everything below is grounded in code
+> that now exists and in numbers taken from real runs. **Where Part I and Part II disagree,
+> Part II wins** — it was written with the measurements in hand.
+>
+> This part exists so that a fresh session with no chat history can implement the UI without
+> re-deriving any of it. It names files, line numbers, event shapes and exact strings.
+
+## 12. What changed in the backend, and what the UI may now rely on
+
+Part I §8.1 said the verification signal could not be trusted and told the UI to render nothing.
+**That is now out of date.** `answerQuery` returns a real ledger:
+
+```ts
+// src/CrucibleEngine/answer/answerEngine.ts
+interface VerificationRecord { passed: string[]; failed: string[] }
+verified: boolean   // TRUE only when passed.length > 0 && failed.length === 0
+```
+
+`verified` can no longer be true by default: the value is derived from the ledger at every exit,
+and a check that never ran contributes nothing. **The UI may now render the chip from
+`verification`, and must render the three states distinctly:**
+
+| `verification` | Chip | Meaning |
+|---|---|---|
+| `passed.length > 0, failed.length === 0` | **certified** | a real check ran and passed |
+| `failed.length > 0` | **refuted** | a check ran and failed — show which |
+| `passed.length === 0 && failed.length === 0` | **unexamined** (neutral, not green) | nothing checked this |
+
+The third state is the whole thesis. It must not look like success, and it must not look like an
+error. Give it the most colorless treatment in the palette.
+
+**Known `passed` tokens** (render the provenance line from these, do not invent labels):
+`deterministic`, `deterministic-arithmetic`, `deterministic-money`, `deterministic-conversion`,
+`deterministic-calendar`, `deterministic-schedule`, `deterministic-release-table`,
+`deterministic-scope-refusal`, `grounded`, `consensus`.
+
+Anything prefixed `deterministic-` means **no model was involved** and the answer is exact. That
+deserves a visibly stronger treatment than `grounded` (retrieved and entailment-checked) or
+`consensus` (several samples agreed). Three tiers, not one badge.
+
+## 13. Surfaces that now have real backing
+
+Part I specced surfaces speculatively. These four are backed by shipped code and should be built
+first, because each has a deterministic backend that cannot regress under you.
+
+### 13.1 `refusal` — the private-fact surface (`answer/personalScope.ts`)
+
+Asking about the user's own life when nothing on record answers it returns `abstained: true`,
+`verified: true`, `passed: ['deterministic-scope-refusal']`, in **0–2ms**, with a three-paragraph
+body. This exists because the assistant was measured inventing the user's holiday from *I Know
+What You Did Last Summer*.
+
+**UI obligations.** Render as a distinct `refusal` surface, never as an error and never as a normal
+answer. The body's third paragraph offers two routes forward — *tell me* and *point me at a source*
+— and those must be **actionable affordances**, not prose:
+
+- a text field wired to send the fact back as an ordinary message, and
+- a button to open Connections (calendar / email / notes).
+
+The refusal is currently the only place the product explains its own privacy posture. Do not bury
+it in a grey box.
+
+### 13.2 `computed` — deterministic answers (`answer/moneyMath.ts`, `unitConvert.ts`, `dateTime.ts`, `schedule.ts`, `releases.ts`)
+
+These return in **0–7ms** with `deterministic-*` provenance. Measured medians: money 3ms, conversion
+0ms, date 1ms, schedule 1ms, release 65ms.
+
+**The latency is a feature and the UI is currently hiding it.** A 2ms exact answer arrives before
+any spinner is justified. **Never show a thinking state for a surface that arrives under ~150ms** —
+the current UI animates a shimmer regardless, which makes an instant exact answer feel identical to
+a 20-second guess. Render immediately, no transition-in.
+
+`moneyMath` returns a second number the asker did not ask for but wants (the total after tip, the
+remainder on an uneven split). Give it typographic subordination, not a second card.
+
+### 13.3 `run` — the agentic timeline (`agent/loop.ts`, `agent/toolCallDriver.ts`)
+
+The loop emits, per iteration: `{type:'thought'}`, an assistant message carrying `tool_calls`, then
+one `{role:'tool'}` result per call. The driver proposes **exactly one tool call per turn**, so the
+timeline is strictly linear — no fan-out to render.
+
+**UI obligations.**
+- One row per tool call: tool name, the arguments **verbatim**, and the ok/error result.
+- Arguments must be inspectable before the eye moves on. The measured failure mode of this whole
+  product is a confident summary detached from what actually happened; the timeline is the antidote
+  and it only works if the payload is visible.
+- A failed call is normal, not exceptional — the agent retries. Style errors as ordinary rows, and
+  reserve alarm styling for the run's terminal state.
+
+### 13.4 The post-condition verdict (`agent/postconditions.ts`)
+
+After an agentic run, post-conditions extracted from the goal text are checked **against the real
+filesystem**, and failures are returned as `{passed:false, signal:'postcondition', reason}` where
+`reason` is a multi-line block beginning `POST-CONDITION CHECK FAILED.` followed by `  - ` bullets.
+
+**UI obligations.** Parse those bullets and render them as a checklist against the goal — this is
+the most credible thing the product can show. It is the difference between *"I created the file"*
+and *"notes.md exists, and contains the requested line"*. Show the checklist even on success.
+
+Measured, and the reason this exists: the agent reported *"The file prices.csv has been successfully
+read and added. No problems were flagged during the process."* while `total.txt` did not exist.
+
+## 14. Corrections to Part I
+
+1. **§8.1 is superseded by §12.** Render the chip; render three states.
+2. **The console's six modes (§7.1) are unbacked.** No backend signal distinguishes them today.
+   Build the console with **one** mode and a clean seam for more, rather than five dead branches.
+3. **§4's email pane cannot be built end-to-end yet.** `gmail_search` / `gmail_read` /
+   `gmail_send` exist in `tools/registry.ts` but require the user's OAuth. Build it against
+   fixtures only, and treat §13.1–13.4 as the paths with real backing.
+4. **Add a `mode` control to the composer.** `src/App.tsx:57` defaults the UI to `mode: 'code'`
+   for every message, which routes ordinary questions through code-shaped machinery. That default
+   caused a measured 105-second empty reply. The UI should not be choosing a routing mode on the
+   user's behalf at all; if the seam must stay, default it to the general path.
+
+## 15. The one string the UI must stop shipping
+
+The splash currently reads **"Private, on-device. Nothing leaves this Mac."** The system performs
+outbound web retrieval on the grounded path (`retrieval/sources.ts` federates seven public APIs).
+**That sentence is false and must be removed or corrected** — the honest form is on-device *models*,
+with retrieval clearly disclosed. This is a correctness bug, not copy polish, and it is the same
+class of defect as a lying verification badge.
+
+Note the standing rule that the splash stays minimal — remove the claim, do not replace it with a
+paragraph.
+
+## 16. Fixtures to build against
+
+Capture these from a live run rather than hand-writing them; the harnesses already produce them:
+
+```
+npm run daily:probe        # 23 single-turn answers, all surface types above
+npm run agent:workflow     # 5 agentic runs — the run timeline + post-condition verdicts
+npm run e2e:http           # 12 requests over the real SSE wire
+```
+
+`__e2e_http_probe.ts` shows exactly how to authenticate and read the stream (mint a JWT with
+`src/server/jwt.ts`, POST `/api/chat`, parse `data:` lines). Record one SSE transcript per surface
+type into `src/fixtures/` and build the card gallery from those, so the gallery cannot drift from
+what the server actually emits.
+
+## 17. Definition of done (additions to §10)
+
+- [ ] The verification chip renders **three** states, and `unexamined` is visually distinct from
+      both success and error.
+- [ ] `deterministic-*` provenance is visually distinguished from `grounded` and `consensus`.
+- [ ] No loading state is shown for a surface that resolves in under ~150ms.
+- [ ] The refusal surface offers a text field and a Connections link, not prose alone.
+- [ ] The run timeline shows every tool call's arguments verbatim, and a failed call is not styled
+      as an alarm.
+- [ ] The post-condition checklist renders on success as well as failure.
+- [ ] The false privacy claim is gone from the splash.
