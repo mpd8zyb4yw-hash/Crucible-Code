@@ -20,6 +20,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { SectionLabel, tint } from '../ui'
+import { markGradient, titleMonogram } from '../design/mark'
 
 // ── Protocol types, mirrored ─────────────────────────────────────────────────
 // Declared structurally rather than imported from CrucibleEngine: this file ships in the browser
@@ -706,30 +707,49 @@ function TableRow({ e, cols, acts, index, open, onRun, onToggle }: {
   )
 }
 
-/** Things whose identity is visual. Thumbnails when the provider gave one; type-led when not. */
+/** Things whose identity is visual. Every tile is drawn here, from the entity's own text.
+ *
+ *  NO REMOTE THUMBNAILS (fixed 2026-08-04). This used to render the protocol's `thumbnail`
+ *  field straight into an <img src={…}>. That field is model- and provider-supplied (the
+ *  YouTube adapter fills it with a googleusercontent URL, and any future adapter can name
+ *  any host at all), so every grid render fired requests from the user's machine to hosts
+ *  the surface protocol chose — house rule 2 (no external asset requests at runtime), and
+ *  the same leak as the Google favicon marks in chat/MessageList. A local proxy was
+ *  considered and rejected: it would hide the user's IP but still put external imagery on
+ *  screen, which is the part the rule actually forbids.
+ *
+ *  The replacement is not a fallback — it is the tile. A monogram from the title over a
+ *  gradient hashed from it, so each card still gets a distinct, stable visual identity
+ *  (which is the whole point of this layout) without anything leaving the machine. The
+ *  `thumbnail` field stays in the protocol as data — it is a real URL the user can act on
+ *  via an affordance — it is simply never fetched for decoration. */
 function GridView({ v, onRun }: LayoutProps) {
   return (
     <div style={{
       display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 14,
     }}>
       {v.entities.map((e, i) => {
-        const thumb = e.fields.find(f => f.key === 'thumbnail' && typeof f.value === 'string')?.value as string | undefined
         return (
           <div key={`${e.id}-${i}`} style={{
             display: 'flex', flexDirection: 'column', gap: 8,
             animation: `slideUp var(--dur) var(--ease) ${Math.min(i, 12) * 26}ms both`,
           }}>
-            <div style={{
+            <div aria-hidden style={{
+              position: 'relative',
               aspectRatio: '16 / 9', borderRadius: 'var(--c-radius)', overflow: 'hidden',
-              background: 'var(--c-glass)', border: '1px solid var(--c-hairline)',
+              background: markGradient(e.title || e.id, 0.5),
+              border: '1px solid var(--c-hairline)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}>
-              {thumb
-                ? <img src={thumb} alt="" loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                : <span style={{
-                    fontSize: 'var(--t-micro)', fontWeight: 700, letterSpacing: '0.12em',
-                    textTransform: 'uppercase', color: 'var(--c-dim-deep)',
-                  }}>{e.kind}</span>}
+              <span style={{
+                fontSize: 30, fontWeight: 700, letterSpacing: '-0.03em', lineHeight: 1,
+                color: 'rgba(255,255,255,0.92)',
+              }}>{titleMonogram(e.title || e.kind)}</span>
+              <span style={{
+                position: 'absolute', left: 8, bottom: 6,
+                fontSize: 'var(--t-micro)', fontWeight: 700, letterSpacing: '0.12em',
+                textTransform: 'uppercase', color: 'rgba(255,255,255,0.62)',
+              }}>{e.kind}</span>
             </div>
             <span style={{
               fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text-soft)', lineHeight: 1.4,

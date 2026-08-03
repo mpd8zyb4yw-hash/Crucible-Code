@@ -5,6 +5,7 @@ import MoltenPour, { type MoltenPhase } from '../MoltenPour'
 import { CopyButton, FeedbackButtons, type DynamicModel, type Round, type LocalDebateSummary, type LiveSource } from './core'
 import { PipelineTheater, CritiqueGrid, narrateProcess } from './panels'
 import { AgentPanel, CollapsibleCode } from './AgentPanel'
+import { markGradient, hostMonogram } from '../design/mark'
 
 // Wraps a reply card and mounts the MoltenPour canvas over it while it's the live
 // (currently-streaming) round.
@@ -32,32 +33,18 @@ import { AgentPanel, CollapsibleCode } from './AgentPanel'
 // real privacy leak: every domain Crucible retrieved was announced to Google from the
 // user's machine, one request per source, whether or not the user ever saw the chip.
 // Replaced with a monogram tile derived deterministically from the hostname. Do not
-// reintroduce a remote favicon service, keyless or not.
-
-/** Stable hue from a hostname, so a domain always gets the same mark. */
-function hostHue(host: string): number {
-  let h = 0
-  for (let i = 0; i < host.length; i++) h = (h * 31 + host.charCodeAt(i)) % 360
-  return h
-}
-
-/** Two letters from the hostname, per the design's monogram spec. */
-function hostMonogram(host: string): string {
-  const bare = host.replace(/^www\./, '')
-  const name = bare.split('.')[0] || bare
-  return (name.slice(0, 2) || '??').toUpperCase()
-}
+// reintroduce a remote favicon service, keyless or not. The derivation now lives in
+// `design/mark`, shared with the agentic surface tiles (same bug, same fix).
 
 /** Self-authored per-domain mark. No network request, no external asset. */
 function SourceMark({ host, size = 15 }: { host: string; size?: number }) {
-  const hue = hostHue(host)
   return (
     <span
       aria-hidden
       style={{
         width: size, height: size, borderRadius: 4, flexShrink: 0,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        background: `linear-gradient(140deg, hsla(${hue},62%,58%,0.85), hsla(${(hue + 40) % 360},62%,44%,0.85))`,
+        background: markGradient(host),
         color: 'rgba(255,255,255,0.96)',
         fontSize: Math.max(7, Math.round(size * 0.46)), fontWeight: 700, lineHeight: 1,
         letterSpacing: '-0.02em', fontFamily: 'var(--sans)',
@@ -255,7 +242,14 @@ export const MessageList = memo(function MessageList({
       <div ref={scrollRef} onScroll={handleScroll} onWheel={handleWheel} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} className="crucible-scroll" style={{
         flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column',
         alignItems: 'center', paddingTop: 28, paddingLeft: 24, paddingRight: 24, paddingBottom: inputBarHeight + 16,
-        gap: 32, zIndex: 1,
+        gap: 32,
+        // NO zIndex HERE. This element is position:static but it IS a flex item, and per the
+        // Flexbox spec z-index applies to flex items regardless of position — so `zIndex: 1`
+        // made it a stacking context that tied with the Home overlay (also z:1) and won on
+        // DOM order, painting an invisible, empty, full-height scroll container over the
+        // entire home surface and swallowing every click. That is the "cards don't respond"
+        // bug (2026-08-04). Proven with elementFromPoint: with the token, hits resolve to
+        // this div; without it, they reach the card. Do not reintroduce it.
         // Exponential alpha fade anchored to the CARD LINE. The scroll viewport now
         // extends to the very bottom (spacer moved inside), so the fade can land exactly
         // where the cards begin (`inputBarHeight - 8` px from the bottom). Text is fully

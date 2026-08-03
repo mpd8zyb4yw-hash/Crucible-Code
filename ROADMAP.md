@@ -1933,6 +1933,36 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04 (cont.122 — the last external asset request in `src/` is gone)
+
+Closed the item the 2026-08-03 entry left open: the model-supplied `thumbnail` URL rendered
+into an `<img>` by `agentic/SurfaceRenderer.tsx` GridView. Same bug class as the Google favicon
+marks, one layer further out — the URL is card data from the surface protocol, so the host was
+chosen by a provider adapter (or, in principle, by the model), and every grid render announced
+the user to it.
+
+**Checked the producer before choosing a fix.** `tools/adapters.ts:194` (`youtubeVideos`) does
+populate `thumbnail` from `snippet.thumbnails.medium.url`, so "strip it from the protocol" was
+out — the field carries real data. A local proxy was also rejected: it hides the user's IP but
+still puts external imagery on screen, which is the part house rule 2 actually forbids.
+
+**Fix: the tile is drawn, not fetched.** A monogram from the entity title over a gradient hashed
+from it, with the `kind` label kept as a corner mark. This is not a fallback path — there is no
+remote path left. GridView's premise ("things whose identity is visual") survives because each
+card still gets a distinct, stable mark. `thumbnail` stays in the protocol as data the user can
+act on via an affordance; it is simply never fetched for decoration.
+
+**Extracted `src/design/mark.ts`** (`markHue`, `markGradient`, `hostMonogram`, `titleMonogram`)
+and rewired `chat/MessageList.tsx` SourceMark onto it, so the two self-authored-mark sites share
+one derivation instead of drifting. Both comment blocks name the bug they replaced.
+
+**Verified, not assumed.** `tsc -p tsconfig.app.json` clean; `grep -rn "<img" src/` now matches
+only comments and one sanitizer test string, and there are no `url(http…)` / `background-image`
+matches; a throwaway harness rendered a grid of three YouTube entities whose `thumbnail` fields
+were real `i.ytimg.com` URLs and the network log showed **zero** requests off localhost. Harness
+deleted. Note for future audits: `DESIGN_HANDOFF.md` is no longer in the tree — the §9 audit
+context now lives in the 2026-08-03 entry below.
+
 ### 2026-08-03 (cont.121 — UI OVERHAUL PHASE 1: the design handoff, implemented)
 
 Implemented the Claude Design response to `DESIGN_HANDOFF.md` (project `fb3287e3`, file
@@ -1967,6 +1997,7 @@ every domain Crucible retrieves to Google from the user's machine, and violating
 (no external asset requests at runtime). Replaced with a self-authored monogram tile: two
 letters from the hostname, hue from a hash of it. Zero external requests remain in `src/`
 except a model-supplied `thumb` URL in `agentic/SurfaceRenderer.tsx:728` (flagged, not fixed).
+*(FIXED 2026-08-04 — see the entry above; `src/` is now clean of runtime external assets.)*
 
 **Glass primitives (`src/design/glass.tsx`).** `glassSurface()` (4-level elevation ladder),
 `GlassCard`, `TextPlate`, `CardLabel`, `SectionRule`, `PinMark`, `WorkingLine`, and
