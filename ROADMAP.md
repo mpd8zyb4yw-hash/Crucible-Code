@@ -1953,6 +1953,63 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-03a (SCOPE CHANGE — Crucible is an agentic assistant, not a coding agent)
+
+**Decision by the project owner, taken on the 2/9 measurement.** The "frontier SWE work, on-device
+only, zero external model API calls" bar is abandoned. Crucible is now a **broadly capable agentic
+assistant**: ask anything, get exactly that, fast and polished, on phone and computer.
+`DOCTRINE.md` rewritten end to end (prior version in git history).
+
+**1. The loop thesis SURVIVES — the terrain changed, not the architecture.** Coding is the worst
+shape for this design (huge artifact per proposal, seconds per verification, low information per
+call). Assistant work inverts all three: per-step proposals are tiny, verification is milliseconds,
+information per call is high. See DOCTRINE §2 for the table.
+
+**2. THE SURPRISE — the pivot target is ~70% already built and WIRED.** Verified by
+`npm run audit:reach`, not by reading docs. Live from `server.ts` today: ~40 agent tools
+(`tools/registry.ts`) incl. web_search, image_search, download_file, `run`, file ops, `open_app`
+Mac control, `create_tool`; full Google OAuth (Gmail/Calendar/Drive/Contacts/YouTube/Maps);
+`research/researchDag.ts` (decompose → per-leaf retrieval → contradiction detection → provenance →
+abstain); `retrieval/retrievalLayer.ts` (DDG+Bing+fetch); `automations/store.ts` + scheduler;
+`connections/registry.ts`; GitHub. UI exists for all of it (AutomationsView, ConnectionsView,
+AgentMissionControl, EmailReader, SettingsTabView, mobile.css) and so does delivery (PWA manifest +
+service worker, Electron, `fly.toml`, Cloudflare worker, VS Code extension).
+**This is not a ground-up rework. It is a redirection of effort onto a surface that was already
+wired and then neglected for two weeks.** The genuine gap in the stated scope is SPREADSHEETS —
+only a Drive CSV export-read path exists; no create, no write, no formulas.
+
+**3. THE ECONOMIC DOCTRINE replaces the zero-external-API rule (DOCTRINE §3).** External model APIs
+are allowed; the newly-banned framing is "we need a more expensive model". Cost per *good answer*
+is attacked in this order: (1) verification manufactures quality from a cheap model — the existing
+loop, far cheaper per certified answer; (2) route the ~80-90% mechanical steps (intent classify,
+tool-arg fill, field extract, rerank, done-check) on-device, cutting hosted calls several-fold with
+no user-visible quality change; (3) cache verified claims (`verifiedClaimCache.ts` exists);
+(4) only then spend more per call. `modelRegistry.ts` already implements multi-provider routing
+with circuit breakers, TPM floors and a driver/worker split — the infrastructure is there.
+
+**4. COMPLIANCE IS NOW A CORRECTNESS PROPERTY (DOCTRINE §4).** Crucible is intended to be
+monetized. Free tiers are for local/personal/dev use only; **pooling free-tier keys across paying
+end users is out of bounds** — likely a terms breach and operationally fragile. The commercial
+product runs on paid tiers, which levers 3.1-3.3 make affordable. BYO-key stays first-class.
+Provider terms must be re-read live before shipping; no summary in this repo is authoritative.
+
+**5. "NEVER DEGRADES" HAS AN ARCHITECTURAL ANSWER: degrade latency, never correctness
+(DOCTRINE §6).** This promise is keepable ONLY because there is a verifier — the verifier holds
+quality constant so time is what flexes. Free vs paid differs in speed, concurrency and connectors,
+never in whether the answer is right. No "cheap mode" that quietly thinks less.
+
+**6. BREADTH COMES FROM THE SPINE, NOT FROM VERTICALS (DOCTRINE §5).**
+`decompose → retrieve → propose → verify → synthesize` is the same shape for "what laptop should I
+buy", "summarize my inbox" and "build me a budget spreadsheet". Deep research goes first because it
+exercises the whole spine; every later capability is a TOOL + a VERIFIER on that same spine, never
+a new pipeline. `CLAUDE.md` updated to match, including a new progress metric — the pre-2026-08-03
+coding percentages are not comparable and must not be carried forward.
+
+**NOT done this session, deliberately:** no code deleted. `reasoning/` (14.3k LOC, dead),
+`coding-bench/` + `coding-bench-ext/` (4.9k LOC, 51 files, dead) and most of `synth/` (32.2k LOC)
+now serve an abandoned goal, but deletion is the one irreversible step here and it should follow a
+green light on this doctrine, not precede it.
+
 ### 2026-08-02i (Gate A3 armed on the live path — and a SECOND hole found by running it)
 
 Fixed open item 1 from 2026-08-02h: Gate A3 (`synth/contractGate.ts`) was inert for every real

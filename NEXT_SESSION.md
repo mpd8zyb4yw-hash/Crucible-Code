@@ -17,74 +17,70 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02i (Gate A3 armed on the live path; a 2nd hole found by RUNNING it) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-03a (SCOPE CHANGE: agentic assistant, not a coding agent) (REPLACE THIS EVERY SESSION)
 
-> **START HERE. `npm run audit:reach` (inside `prove:all`) is the first thing to run, always.**
+> **READ `DOCTRINE.md` FIRST — it was rewritten end-to-end on 2026-08-03 and the scope changed.**
+> Crucible is a **broadly capable agentic assistant** (ask anything → exactly that, fast, polished,
+> phone + computer). It is NOT a coding agent. Do not restart general code synthesis. Any doc,
+> comment, benchmark or `[x]` still describing a coding agent is STALE.
 >
-> **DONE THIS SESSION — Gate A3 now actually runs in production.** `agent/synthDriver.ts` gained
-> `goalApiContractBlock()`: when the user's goal declares an exported signature for the target file,
-> the spec handed to `synthesizeUniversal` now carries an `Exact public API (<path>):` block, so
-> `synth/contractGate.ts` fires on real requests instead of only on `coding-benchmarks.ts` specs.
-> The emitter is false-positive-averse by design (declaration syntax only, primary files only,
-> no-op when a block already exists) because a WRONG contract makes a CORRECT candidate
-> un-certifiable — strictly worse than no gate. `declaredSignatures()` was NOT loosened.
+> **WHY:** the coding bar was measured at 2/9 (0/3 hard) on 2026-08-02 by `npm run stack:h2h`.
+> The loop thesis was never the problem — the terrain was. Coding = huge artifact per proposal,
+> seconds per verification, low information per call. Assistant work inverts all three.
 >
-> **THE LESSON, AGAIN: running it end-to-end found a hole nothing else would have.** With the
-> emitter in place the gate still logged `SKIPPED`. A stack trace showed
-> `structuralSynthBridge.ts` calling `verifyCandidateAsync(...)` with **no `spec` at all**
-> (`specLen=0`) — so a catalog/skill hit could be ACCEPTED with zero contract check, on the exact
-> route a real request took. Both call sites now thread `spec`. The unit bench could never have
-> seen this. Prefer one live run over one more harness.
->
-> Verified: `npm run contractemit:bench` 20/20 (round-trip emitter→gate, both directions, plus five
-> must-NOT-emit cases), `npm run contract:bench` 10/10, `typecheck:engine` clean, and a live
-> end-to-end run moved telemetry from `ran=0 skipped=1` to `ran=1 skipped=0`.
+> **THE THING THAT CHANGES YOUR PLANNING: the pivot target is ~70% ALREADY BUILT AND WIRED.**
+> Confirmed with `npm run audit:reach`, not by reading docs. Live from `server.ts` right now:
+> ~40 tools (`tools/registry.ts`: web_search, image_search, download_file, `run`, file ops,
+> `open_app` Mac control, `create_tool`), full Google OAuth (Gmail/Calendar/Drive/Contacts/YouTube/
+> Maps), `research/researchDag.ts`, `retrieval/retrievalLayer.ts`, `automations/store.ts` +
+> scheduler, `connections/registry.ts`, GitHub. UI + delivery exist too (AutomationsView,
+> ConnectionsView, AgentMissionControl, EmailReader, mobile.css; PWA manifest + service worker,
+> Electron, `fly.toml`, Cloudflare worker, VS Code extension).
+> **Do not rebuild any of that. Go and RUN it before you write anything.**
 >
 > **OPEN ITEMS, in priority order:**
 >
-> 1. **`csvSelect` is 0/3 on BOTH stacks** — the one task where they agree completely and the shape
->    closest to a real user request. Nobody has yet read a single failed `csvSelect` candidate to
->    find out WHY. Do that before any further capability work; it is the cheapest real signal left.
-> 2. **Dogfood a real MULTI-FILE repo task** through `server.ts → agent/synthDriver.ts`. The h2h and
->    this session's e2e both exercised single-function synthesis only — retrieval, repo context and
->    `applyPatch` have never been measured on the live path.
-> 3. **Audit the OTHER fail-open gates for the same `specLen=0` defect** that `structuralSynthBridge`
->    had. Grep every `verifyCandidateAsync(` / `verifyCandidate(` call site and confirm each passes
->    `spec`; `gateA2_lint` and `gateA3_dupsymbol` should get the same live-telemetry check Gate A3
->    just got. A gate that fails open on an empty spec is indistinguishable from a working one.
-> 4. **Decide whether the 8GB / no-external-API constraint applies to the PRODUCT or only to the
->    research thesis.** It is still fused into `DOCTRINE.md`, and that fusion is what keeps turning
->    product questions into capability censuses.
-> 5. **Do NOT raise `H2H_RUNS` unless the answer changes a decision.** At 3 draws/arm the tie is
->    real but low-power; re-measuring a frozen subsystem is the treadmill again. `reasoning/` stays
->    frozen — not wired, not deleted.
+> 1. **DOGFOOD THE ASSISTANT — this is item 1 and it is not optional.** Run 10 real, varied requests
+>    through the live UI (research question, inbox triage, a scheduled automation, a file task) and
+>    write down verbatim what is broken. Both live defects found in the 2026-08-02 sessions were
+>    found by RUNNING the product; none came from a harness. There is no current honest number for
+>    assistant quality — only for the abandoned coding bar. Get one.
+> 2. **Route the mechanical steps on-device (DOCTRINE §3.2).** Intent classify, tool-arg fill, field
+>    extract, snippet rerank, done-check are ~80-90% of calls in an agentic run and are well within
+>    qwen2.5-1.5b when verified. This is the single biggest cost lever and it changes no user-visible
+>    quality. `modelRegistry.ts` already has the driver/worker split to build on.
+> 3. **Decide the fate of ~50k LOC of coding machinery.** `reasoning/` (14.3k, dead),
+>    `coding-bench/` + `coding-bench-ext/` (4.9k, 51 files, dead), most of `synth/` (32.2k). Keep
+>    only what `create_tool` genuinely needs (bounded, sandboxed, verified tool synthesis — that
+>    survives per DOCTRINE §2). Deletion is the one irreversible step; it was deliberately NOT done
+>    on 2026-08-03.
+> 4. **Spreadsheets are the one real gap in the stated scope.** Today there is only a Drive CSV
+>    export-READ path (`tools/registry.ts` `drive_read`). No create, no write, no formulas. This is
+>    also the most mechanically verifiable domain in the product, so it suits the spine best.
+> 5. **Pick the paid cheap-tier provider and read its live terms (DOCTRINE §4).** Free tiers are
+>    local/dev only; pooling free keys across paying users is out of bounds. Nothing ships
+>    commercially until this is settled, and no remembered summary of provider terms counts.
 >
-> **THE FIRST HONEST PRODUCT NUMBER (unchanged): the live stack is 2/9 on the h2h set, 0/3 on the
-> hard task.** That is what a user actually reaches. Every number before 2026-08-02g measured
-> `reasoning/`, which has no live path from `server.ts`.
->
-> **STANDING RULES NOW ENFORCED MECHANICALLY (all inside `prove:all`):**
-> - `audit:reach` reports TRANSITIVE SYMBOL liveness from `server.ts`. Read that section, not the
->   file-level percentage — the file-level number said `reasoning/` was 100% reachable and was wrong.
+> **STANDING RULES (mechanically enforced inside `prove:all`):**
+> - `audit:reach` — TRANSITIVE SYMBOL liveness from `server.ts`. Read that section, not the
+>   file-level percentage, which said `reasoning/` was 100% reachable and was wrong.
 > - ROADMAP phantom check: every `.ts` path cited on a `[x]` status line must exist. Currently 0.
-> - HARNESS FREEZE: `reasoning/__*.ts` frozen at 46; adding one FAILS `prove:all` until `FROZEN_AT`
->   is raised deliberately with a stated hypothesis about the SHIPPING path.
+> - HARNESS FREEZE: `reasoning/__*.ts` frozen at 46. Given the scope change, do not raise it —
+>   build tools and verifiers on the spine instead.
 >
-> **TRAP THAT COST A RUN (2026-08-02h):** in a git worktree `.crucible/` does not exist, so
-> `isBonsaiInstalled()` is false and the head silently falls back to `apple-fm`. Export both before
-> any live bench:
-> `CRUCIBLE_BONSAI_BIN=<repo>/.crucible/prismml-bin/llama-server`
-> `CRUCIBLE_BONSAI_MODEL=<repo>/.crucible/models/qwen2.5-1.5b-instruct-q4_k_m.gguf`
-> (or point `LOCAL_INFERENCE_URL` at an already-running llama-server, e.g. `http://127.0.0.1:8080`).
+> **STILL-VALID TRAP:** in a git worktree `.crucible/` does not exist, so `isBonsaiInstalled()` is
+> false and the head silently falls back to `apple-fm`. Export `CRUCIBLE_BONSAI_BIN` +
+> `CRUCIBLE_BONSAI_MODEL`, or point `LOCAL_INFERENCE_URL` at a running llama-server
+> (e.g. `http://127.0.0.1:8080`).
 >
-> **PROCESS NOTE (unchanged, still the biggest lever).** `NEXT_SESSION.md` and `ROADMAP.md` are the
-> two most-edited files in the repo, ahead of every source file. Prefer dogfooding the LIVE stack on
-> real tasks over building instruments: BOTH Gate A3 defects were found by RUNNING the live stack
-> and reading its own telemetry, not by a new harness.
+> **PROCESS NOTE — the biggest lever, now doubly true.** `NEXT_SESSION.md` and `ROADMAP.md` are the
+> two most-edited files in the repo, ahead of every source file. Two weeks of benchmarking measured
+> a subsystem no user could reach. The corrective is item 1: run the product, on real requests,
+> and fix what a real person actually hits.
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-02i above; see ROADMAP CHANGE LOG 2026-08-02h for the head-to-head)
+## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-03a above; see ROADMAP CHANGE LOG 2026-08-02h for the head-to-head)
 
 > **START HERE. Run `npm run audit:reach`. Do not run any capability benchmark until you have.**
 >
