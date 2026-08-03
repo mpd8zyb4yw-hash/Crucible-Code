@@ -1953,6 +1953,64 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-03c (VERIFIED PROSE — the badge can now return "no"; mechanical dogfood 7/7)
+
+The dogfood harness now **scores** instead of only printing: 12 probes, 7 carrying a mechanical
+bar, 5 printed for hand-scoring and counted in neither direction. Widened-set baseline was
+**5/7**; it is now **7/7**, median latency 996ms → **308ms**, max 29.7s → 8.8s.
+
+**The headline defect.** `answerWithWebGrounding` emitted `passed: true` for ALL prose. The only
+real gate on that path is `certifyAnswer`, which checks library identifiers in CODE and abstains
+on prose — so for every non-code answer the product had ever given, "verified" meant *we
+retrieved something*. Measured: "What is the capital of Australia?" shipped `verified: true` with
+three citations while asserting Canberra "is the most populous city in each state and internal
+territory". The evidence really did contain "In each state and internal territory, **the capital**
+is also the jurisdiction's most populous city" — every content word survives and only the SUBJECT
+changed, so every bag-of-words entailment check certifies it. Three states had been collapsed into
+two, with **unexamined rendering as certified**.
+
+New `answer/claimCheck.ts` checks superlative/exclusive claims only — deliberately narrow, because
+superlatives are unique by reference, which is what makes subject attachment mechanically
+decidable at all. A broad "is every sentence entailed" checker is a model call wearing a
+verifier's clothes. Two independent rules: **incoherence** (needs no evidence — one city cannot be
+the most populous city in *each* of eight jurisdictions; this alone catches the measured failure
+with zero retrieval) and **same-sentence attachment**. A failed claim clears `grounded`, enters
+the ledger as a FAILURE, and the offending sentence is **stripped** when a real answer survives
+without it — refusing to strip when the failing claim IS the answer. Bench 25/25, anchored on the
+verbatim measured text plus true superlatives that must NOT be flagged.
+
+**Three more, all found by running it:**
+- **"Current version of X" had no ground truth.** None of the seven keyless sources carries
+  release data, so the class abstained honestly and uselessly — and it is the class where a
+  remembered answer is *guaranteed* to rot. `answer/releases.ts` computes current LTS / latest /
+  EOL / still-supported from a structured release table plus today's date. Zero model calls; the
+  row used is the citation. Node LTS: **ABSTAIN → correct, cited, 292ms**. Bench is hermetic
+  (pinned table + pinned today) so it cannot rot or go green on a dead network: 42/42, plus 10/10
+  live across products never hard-coded. Note it correctly declines to call Node 26 the LTS — its
+  LTS date is still in the future, a distinction the date comparison makes impossible to get wrong.
+- **The schedule solver only accepted a window introduced by a preposition.** "My workday **is**
+  8am to 6pm" was refused, fell through to the model, and got "10:30am to 4pm, 4 hours and 30
+  minutes" — straight through the 10:30 call. Correct: 11:15am–4pm. **Every refusal hands the
+  question to the component already measured as unreliable at interval arithmetic, so the
+  phrasings this parser accepts ARE the product's accuracy on this class.** 2703ms and wrong →
+  **2ms and right**. Bench 47/47.
+- **Research cited sources that contributed nothing** — "Trolley problem" and "List of unsolved
+  problems in mathematics", both retrieved on the word "problem". A citation is a provenance
+  assertion; padding it is the decorative-verification signal DOCTRINE §6.5 forbids. Now cites
+  only URLs attached to a verified claim. Measured 6 → 1, answer unchanged.
+
+**Also:** fixed a harness bug that READ as a product defect — `/\b840\b/` cannot match inside
+"840ms" (no word boundary between "0" and "m"), so a completely correct rewrite scored FAIL. A
+harness that lies about the product is worse than no harness.
+
+**Deliverable:** a published assay page whose two instruments run the REAL `claimCheck` and
+`solveSchedule` logic in the browser, ported without behavioural changes and confirmed by a
+70-case differential test against the TypeScript (70 identical, 0 divergent). Nothing on it is
+pre-baked.
+
+`releases:bench` and `claimcheck:bench` wired into `prove:all` (green, 251 skills, 0 failed);
+`typecheck:engine` clean; all four new modules confirmed transitively reachable from `server.ts`.
+
 ### 2026-08-03b (FIRST ASSISTANT-SCOPE MEASUREMENT — 2/6, and five real defects fixed)
 
 Dogfooded the live assistant (`npm run dogfood:assistant`, new). Every prior number in this repo

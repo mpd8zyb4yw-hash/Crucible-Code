@@ -17,58 +17,63 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-03b (first assistant number: 2/6; 5 defects fixed) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-03c (mechanical dogfood 7/7; the verified badge can now fail) (REPLACE THIS EVERY SESSION)
 
 > **READ `DOCTRINE.md` FIRST — scope changed 2026-08-03.** Crucible is a broadly capable agentic
 > assistant, NOT a coding agent. Also read `UI_OVERHAUL.md` (spec only; no UI code written yet).
 >
 > **THE ONE HABIT THAT MATTERS: run `npm run dogfood:assistant` before you write anything.**
-> Every defect fixed on 2026-08-03 was found by RUNNING the product; none by a harness. The
-> baseline was 2/6 on ordinary requests. Re-measure, do not assume.
+> Every defect fixed on 2026-08-03 (both sessions) was found by RUNNING the product; none by a
+> harness. The harness was written afterwards to hold the ground. Re-measure, do not assume.
 >
-> **FIXED 2026-08-03b** (detail in ROADMAP CHANGE LOG; all have committed benches in `prove:all`):
-> retrieval was a single rate-limited encyclopedia -> keyless federation over 7 sources
-> (`retrieval/sources.ts`, probe 4/8 -> 8/8); Wikipedia `exchars` silently capped every article at
-> 1,200 chars; the DAG read only the first 1,500 chars of each source -> passage selection
-> (`retrieval/passages.ts`); the model's self-reported verdict was trusted over a checkable fact
-> -> `groundVerdict`; `verified:true` was the DEFAULT when nothing checked the answer -> explicit
-> ledger; "What can you do for me?" returned a Utah Saints single -> `matchMeta` filler fix;
-> false "nothing leaves your machine" copy corrected; NEW deterministic schedule solver
-> (`answer/schedule.ts`) — that question went from 27.7s and wrong to 2ms and provably correct.
+> **WHERE IT STANDS.** The dogfood now SCORES: 12 probes, 7 with a mechanical bar, 5 printed for
+> hand-scoring and counted in neither direction. **7/7 mechanical**, median latency 308ms, max
+> 8.8s. Do not quote this as "the assistant is 7/7" — seven probes catch regressions and come
+> nowhere near characterising a general assistant. Widening the mechanical set is item 3 below.
+>
+> **FIXED 2026-08-03c** (detail in ROADMAP CHANGE LOG; benches in `prove:all`):
+> `verified: true` on prose meant only "we retrieved something" — `certifyAnswer` checks CODE and
+> abstains on prose, so **unexamined rendered as certified** → new `answer/claimCheck.ts` (25/25),
+> which clears `grounded`, records a ledger FAILURE, and strips the refuted sentence; the
+> "current version of X" class had NO ground truth in any of our seven sources → new
+> `answer/releases.ts` (42/42 hermetic + 10/10 live), Node LTS went ABSTAIN → cited answer in
+> 292ms; the schedule solver refused "my workday IS 8am to 6pm" and the model then answered
+> straight through a meeting → window parser widened (47/47), 2703ms-and-wrong → 2ms-and-right;
+> research cited "Trolley problem" for an HTTP question → cites only sources that produced a
+> verified claim (6 → 1). Also fixed a HARNESS bug that read as a product defect (`/\b840\b/`
+> cannot match inside "840ms").
 >
 > **OPEN ITEMS, in priority order:**
 >
 > 1. **`server.ts:3051` still hard-pins `requestOffline = 'strict'`** with a comment citing the
 >    REPEALED "on-device models ONLY" north star. BYOK keys are accepted at line 3039 and then
->    blocked. Until this changes, DOCTRINE §3's tiered routing does not exist in production. The
+>    blocked. Until this changes, DOCTRINE §3's tiered routing does not exist in production, and
+>    the ceiling on answer QUALITY has not moved regardless of how good verification gets. The
 >    compliant first step (DOCTRINE §4) is: allow external ONLY when the user supplied their own
 >    key, since that runs under the user's own terms. Do NOT pool bundled free-tier keys.
-> 2. **Route the ~80-90% mechanical steps on-device (DOCTRINE §3.2).** Intent classify, tool-arg
+> 2. **Grounding is still answer-level for everything except superlatives.** `claimCheck.ts`
+>    covers superlative/exclusive claims because they are unique by reference. A later Canberra
+>    run asserted the ACT's seat of government was established in 1908 — wrong, non-superlative,
+>    invisible to the gate. **Dates and attributions are the obvious next rule**, and they are
+>    checkable the same way (same-sentence subject attachment against the evidence).
+> 3. **The mechanical dogfood set is 7 probes.** Every probe without a `must` is invisible to the
+>    score. Add mechanical bars for the conversational/explanatory probes, or accept that the
+>    number covers only the deterministic half of the product and say so wherever it is quoted.
+> 4. **Route the ~80-90% mechanical steps on-device (DOCTRINE §3.2).** Intent classify, tool-arg
 >    fill, field extract, snippet rerank, done-check. `modelRegistry.ts` already has the
 >    driver/worker split. Biggest cost lever; no user-visible quality change.
-> 3. **Grounding passes on a hallucinated sentence.** The Canberra answer is marked
->    `verified:true` via the `grounded` check while containing "Canberra is the most populous city
->    in the state of New South Wales" (false). Sentence-level grounding, not answer-level.
-> 4. **Research source lists carry junk** — a question containing "problem" pulled in "Trolley
->    problem" and "List of unsolved problems in mathematics". Only cite sources that actually
->    contributed a claim.
-> 5. **"Current version of X" still abstains** (e.g. Node LTS). Honest, but our keyless sources do
->    not carry release data. A versions/releases source (GitHub releases, endoflife.date) would
->    close a whole common question class.
-> 6. **Spreadsheets remain the one untouched capability** in the stated scope — `drive_read` only
+> 5. **Spreadsheets remain the one untouched capability** in the stated scope — `drive_read` only
 >    exports CSV; no create, no write, no formulas. `UI_OVERHAUL.md` §5 specs the UI side.
+> 6. **`UI_OVERHAUL.md` is still spec-only.** No UI code has been written against it.
 >
-> **STANDING RULES (mechanically enforced in `prove:all`):** `audit:reach` for transitive
-> liveness from `server.ts`; ROADMAP phantom check; harness freeze on `reasoning/__*.ts` at 46 —
-> do not raise it, build tools and verifiers on the spine instead (DOCTRINE §5).
->
-> **TRAP:** in a worktree `.crucible/` does not exist so the head silently falls back to
-> `apple-fm`. Export `CRUCIBLE_BONSAI_BIN`/`CRUCIBLE_BONSAI_MODEL`, or point
-> `LOCAL_INFERENCE_URL` at a running llama-server (`http://127.0.0.1:8080`).
-
+> **DELIVERABLE (2026-08-03c):** a published assay page whose two instruments run the REAL
+> `claimCheck` and `solveSchedule` logic in the browser — ported without behavioural changes and
+> confirmed by a 70-case differential test against the TypeScript (70 identical, 0 divergent).
+> If either module changes, that port is now a thing that can silently drift; re-run the
+> differential before republishing.
 ---
 
-## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-03b above; see ROADMAP CHANGE LOG 2026-08-02h for the head-to-head)
+## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-03c above; the 2026-08-03b block it used to name was itself replaced per the standing rule — see ROADMAP CHANGE LOG 2026-08-02h for the head-to-head and 2026-08-03b for the first assistant measurement)
 
 > **START HERE. Run `npm run audit:reach`. Do not run any capability benchmark until you have.**
 >
