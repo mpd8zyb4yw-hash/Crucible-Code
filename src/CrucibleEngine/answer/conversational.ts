@@ -36,32 +36,57 @@ const IDENTITY = /^\s*(?:who\s+(?:are|r)\s+(?:you|u)|what\s+are\s+you|what'?s\s+
 const CREATOR = /^\s*(?:(?:so\s+|hey\s+)?who(?:'?s|\s+is|\s+are)?\s+(?:the\s+one\s+that\s+|the\s+people\s+that\s+)?(?:made|created|built|designed|developed|programmed|coded|invented|trained|(?:is\s+)?behind|owns?|runs?|made\s+up)\s+(?:you|u|this|crucible)|who(?:'?s|\s+is)\s+your\s+(?:maker|creator|developer|author|owner|inventor|founder|boss)|where\s+(?:do|did)\s+you\s+come\s+from|who\s+do\s+you\s+belong\s+to|are\s+you\s+made\s+by\s+\w+)\b[\s?.!]*$/i
 
 // "what can you do", "what do you do", "how can you help", "what are you capable of".
-const CAPABILITY = /^\s*(?:what\s+can\s+you\s+(?:do|help(?:\s+with)?)|what\s+do\s+you\s+do|what\s+are\s+you\s+(?:capable\s+of|able\s+to\s+do)|how\s+(?:can|do)\s+you\s+help|what\s+(?:can|could)\s+you\s+help\s+(?:me\s+)?with|help)\b[\s?.!]*$/i
+//
+// TRAILING COURTESY FILLER (fixed 2026-08-03). Every pattern here anchors to end-of-message,
+// which is right — it stops "who won the 1998 World Cup" matching IDENTITY. But it also meant
+// "What can you do for me?" did NOT match, fell through to web search, and was answered with a
+// Utah Saints single and a Willie Nelson album (both are songs titled "What Can You Do for Me"),
+// reported as verified. That is very likely the FIRST thing a new user types.
+// FILLER absorbs the short, meaning-free tail a real person appends. It is deliberately a
+// closed list of specific phrases, not `.*`, so the end-anchor keeps doing its job.
+const FILLER = String.raw`(?:\s+(?:for|to)\s+(?:me|us)|\s+here|\s+exactly|\s+really|\s+though|\s+then|\s+now|\s+today|\s+in\s+this\s+(?:app|chat)|\s+please)*`
+const CAPABILITY = new RegExp(
+  String.raw`^\s*(?:what\s+can\s+you\s+(?:do|help(?:\s+with)?)|what\s+do\s+you\s+do|what\s+are\s+you\s+(?:capable\s+of|able\s+to\s+do)|how\s+(?:can|do)\s+you\s+help|what\s+(?:can|could)\s+you\s+help\s+(?:me\s+)?with|what\s+else\s+can\s+you\s+do|help)` +
+  FILLER + String.raw`[\s?.!]*$`,
+  'i',
+)
 
 const GREETING_TEXT =
-  "Hi — I'm Crucible, a private assistant running entirely on your device. " +
+  "Hi — I'm Crucible, a private assistant whose models run on your own device. " +
   "Ask me a question, hand me a problem to reason through, or ask me to build something. " +
   'What would you like to do?'
 
 const IDENTITY_TEXT =
-  "I'm Crucible — an AI assistant that runs entirely on your own device. Everything happens " +
-  'locally: no cloud, no account, nothing leaves your machine. I can answer questions and ' +
-  'explain things, reason through problems step by step and check my own work, and write, ' +
-  'build, and run code. What can I help you with?'
+  "I'm Crucible — an AI assistant whose models run on your own device. No account, and your " +
+  'conversation is never handed to another company\'s model; when I need a fact I fetch it from ' +
+  'public sources directly. I can answer questions and research topics, reason through problems ' +
+  'and check my own work, work with your mail, calendar and files, run tasks on a schedule, and ' +
+  'write and run code. What can I help you with?'
 
 const CREATOR_TEXT =
-  "I'm Crucible — a private AI assistant that runs entirely on your own device. I'm built " +
+  "I'm Crucible — a private AI assistant whose models run on your own device. I'm built " +
   'around on-device language models (Apple\'s on-device Foundation model plus a small local ' +
   'model) coordinated by a verification-first reasoning system that checks its own work before ' +
-  "answering. I'm not made by any big cloud provider, and nothing you say leaves your machine. " +
+  "answering. I'm not built by any big cloud provider: the models run on your own device, and " +
+  'looking something up reaches public sources directly rather than sending your conversation to ' +
+  'another company\'s model. ' +
   'What can I help you with?'
 
+// ACCURACY NOTE (2026-08-03): this text previously opened "A few things, all on-device" and
+// the identity/creator texts claimed "nothing you say leaves your machine". That was FALSE and
+// had been for a long time — factual questions go out to public APIs (Wikipedia, Wiktionary,
+// Wikidata, arXiv, Crossref, Hacker News, Open-Meteo) via retrieval/sources.ts. Under
+// DOCTRINE §6 honesty is a product promise, so the copy states what actually happens: the
+// MODELS run locally, LOOKUPS go to public sources, and no third-party model provider sees
+// the conversation. Keep this accurate if the routing changes.
 const CAPABILITY_TEXT =
-  'A few things, all on-device:\n\n' +
-  '- **Answer questions and explain concepts** — from a quick fact to a deep walkthrough.\n' +
-  '- **Reason through problems** — math, logic, multi-step questions — and I check my own work before answering.\n' +
-  '- **Write, build, and run code** — from a one-off snippet to a working, runnable app.\n\n' +
-  'What would you like to start with?'
+  'Quite a lot. The main things:\n\n' +
+  '- **Answer questions and research topics properly** — I look things up across public sources, cross-check what they say, and tell you when I could not verify something rather than guessing.\n' +
+  '- **Reason through problems** — math, logic, planning, multi-step questions — and I check my own work before answering.\n' +
+  '- **Work with your mail, calendar and files** — search and summarise, draft replies for you to review. I never send anything without you confirming it first.\n' +
+  '- **Run tasks on a schedule** — a morning briefing, a watch on a topic, a recurring summary.\n' +
+  '- **Write and run code** — from a one-off snippet to a small working tool.\n\n' +
+  'The models run on your device; looking things up reaches public sources on the internet. What would you like to start with?'
 
 /**
  * If the message is a pure greeting, identity question, or capability question, return the

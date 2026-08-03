@@ -1953,6 +1953,84 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-03b (FIRST ASSISTANT-SCOPE MEASUREMENT — 2/6, and five real defects fixed)
+
+Dogfooded the live assistant (`npm run dogfood:assistant`, new). Every prior number in this repo
+described the abandoned coding bar; this is the first that describes what a user actually gets.
+**Baseline: 2/6.** Five defects found by RUNNING it, all now fixed, all with committed benches.
+
+**1. RETRIEVAL WAS ONE ENCYCLOPEDIA, AND IT WAS RATE-LIMITED.** `retrievalLayer.search()` sent
+every non-coding query to Wikipedia REST alone (the DDG/Bing scrapers behind it are dead — the
+file says so itself). Worse, Wikimedia returns **HTTP 429** to this box under modest load and the
+helper collapsed every non-200 into `[]`, so a rate-limit was indistinguishable from "the web has
+no answer". The assistant could silently lose its entire factual substrate mid-session.
+New `retrieval/sources.ts`: keyless federation over Wikipedia, Wikidata, Wiktionary, Hacker News,
+arXiv, Crossref and Open-Meteo, each failing closed independently, with a descriptive UA,
+per-host request serialisation, 429/503 backoff and a response cache. Live probe
+(`npm run sources:probe`) went **4/8 -> 8/8**. Weather, definitions, papers and entity facts were
+previously unanswerable at all. Also removed restcountries.com v3.1: it is DEPRECATED and answers
+**HTTP 200 with an error body**, the nastiest shape of dead dependency.
+
+**2. `exchars` SILENTLY CAPPED EVERY ARTICLE AT 1,200 CHARACTERS.** The Wikipedia extract call
+asked for `exchars=6000`; the API maximum is 1,200 and exceeding it is a WARNING, not an error —
+the request succeeds and returns a truncated body. So every "full article" had always been a stub,
+which is the direct cause of the research DAG abstaining: a 1.2k stub cannot support a specific
+claim. Dropping the parameter returns whole articles (HTTP/3 -> 5.2k, Node.js -> 15.7k).
+
+**3. THE DAG READ ONLY THE FIRST 1,500 CHARACTERS OF EACH SOURCE.** `src.text.slice(0, 1500)` —
+the document HEAD, which for an encyclopedia article is the lead paragraph and almost never holds
+the fact asked for. New `retrieval/passages.ts` spends the SAME budget on the RIGHT characters:
+deterministic term/stem overlap scoring with a numeric-question bonus. Proven on the live HTTP/3
+article — head-truncation does not contain "head-of-line", passage selection does
+(`npm run passages:bench`, 9/9). Also fixed a ranking bug that kept the one document answering the
+question outside the fetch budget entirely.
+
+**4. THE MODEL'S SELF-REPORTED VERDICT WAS TRUSTED OVER A CHECKABLE FACT.** Given the correct
+passage, qwen2.5-1.5b replied `VERDICT: no` with `ANSWER: QUIC` — a correct, source-grounded
+answer with a wrong self-label — and the DAG `continue`s on 'no'. New `groundVerdict`
+(`leafPrimitives.ts`) checks whether the extracted span actually occurs in the source and
+overrides the label in BOTH directions: grounded-but-labelled-no is promoted to partial;
+labelled-yes-but-ungrounded is demoted, which is the anti-hallucination direction.
+`npm run groundverdict:bench`, 16/16.
+**Result: the comparative research probe went from ABSTAIN to a correct QUIC/UDP-vs-TCP answer at
+93% confidence.**
+
+**5. `verified: true` WAS THE DEFAULT WHEN NOTHING CHECKED THE ANSWER.** `answerEngine` computed
+`verified: !(factChecked && !factChecked.confirmed) && explainFlags === 0`, which is TRUE when
+`factChecked` is null — i.e. when no verification ran at all. All four answer probes reported
+verified=true, including "the longest free block is 7 hours 30 minutes" (answer: 2 hours) and the
+Utah Saints answer below. A verification signal that is true by default is worse than none,
+because the UI and the user trust it. Replaced with an explicit ledger: `verified` is true only
+when a check RAN and passed, and `AnswerResult.verification` now records which checks ran.
+
+**6. "What can you do for me?" WAS ANSWERED WITH A UTAH SAINTS SINGLE.** `matchMeta`'s CAPABILITY
+regex anchors to end-of-message, so the trailing " for me" made it miss, and the question fell
+through to web search — which found songs titled "What Can You Do for Me". Very likely the first
+thing a new user types. Fixed with a closed list of trailing courtesy filler.
+**11,750ms and wrong -> 3ms and correct.** `npm run meta:bench`, 53/53, half of them
+false-positive guards.
+
+**7. A FALSE PRIVACY CLAIM IN PRODUCT COPY.** The identity/capability text claimed "nothing you
+say leaves your machine" and "all on-device" while the system has always made outbound retrieval
+calls. Corrected to state what actually happens; the bench now asserts the claim cannot return.
+
+**8. NEW CAPABILITY — deterministic schedule solving (`answer/schedule.ts`).** Free/busy interval
+arithmetic with zero inference: parses clock times, durations (including spelled-out "one hour"),
+and the window, then computes gaps exactly. The dogfood question went from **27,734ms and wrong**
+("7 hours 30 minutes", and on a rerun an 11am-1pm block colliding with the 11am meeting) to
+**2ms and provably correct**, reporting the 12pm-2pm / 3pm-5pm tie rather than silently breaking
+it. Refuses and falls through whenever anything is ambiguous. `npm run schedule:bench`, 39/39.
+
+**ALSO:** `UI_OVERHAUL.md` written (spec only, no UI code touched, per instruction) — a Surface
+card protocol, the email pane state machine, the adaptive console, phone/desktop layout policy,
+and a client-enforced confirmation gate for anything that sends, deletes or spends.
+
+**STILL OPEN:** "current Node.js LTS version" still abstains (honest, but our keyless sources do
+not carry it — a versions API would); the Canberra answer still contains one hallucinated
+sentence despite passing the grounding check; research source lists include junk pulled in by
+common words ("Trolley problem" for a question containing "problem"); `server.ts:3051` still
+hard-pins `requestOffline='strict'`, so DOCTRINE §3's tiered routing is not yet live.
+
 ### 2026-08-03a (SCOPE CHANGE — Crucible is an agentic assistant, not a coding agent)
 
 **Decision by the project owner, taken on the 2/9 measurement.** The "frontier SWE work, on-device

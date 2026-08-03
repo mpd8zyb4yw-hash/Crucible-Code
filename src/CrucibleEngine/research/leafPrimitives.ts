@@ -75,6 +75,22 @@ const SNIPPET_SYSTEM =
   'ANSWER: <the exact answer from the snippet, or "none" if not found>\n' +
   'CONFIDENCE: <0.1-1.0>'
 
+/** Whitespace/case-insensitive containment — "is this span really in the source?". */
+function occursIn(haystack: string, needle: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/[\s ]+/g, ' ').replace(/[""'']/g, "'").trim()
+  const h = norm(haystack)
+  const n = norm(needle)
+  if (n.length < 3) return false
+  if (h.includes(n)) return true
+  // Multi-word answers often paraphrase connectives; require most content words present.
+  const words = n.split(/[^a-z0-9./+#-]+/).filter(w => w.length > 3)
+  if (words.length < 2) return false
+  const hits = words.filter(w => h.includes(w)).length
+  return hits / words.length >= 0.75
+}
+
+const NON_ANSWERS = /^(none|n\/a|na|unknown|not (?:stated|mentioned|specified|found|available)|nothing|no answer|cannot .*)$/i
+
 export async function snippetAnswers(
   question: string,
   snippet: string,
@@ -82,9 +98,51 @@ export async function snippetAnswers(
 ): Promise<SnippetAnswer> {
   const user =
     `QUESTION: ${question.slice(0, 200)}\n\n` +
-    `SNIPPET:\n${snippet.slice(0, 1200)}`
+    // Keep the model's view and the grounding check on the SAME text. This used to slice to
+    // 1200 while callers selected a 1500-char excerpt, so the last 300 chars were shown to
+    // nobody and could not be cited.
+    `SNIPPET:\n${snippet.slice(0, SNIPPET_BUDGET)}`
   const raw = await fmCall(SNIPPET_SYSTEM, user)
-  return parseSnippetAnswer(raw)
+  const parsed = parseSnippetAnswer(raw)
+  return groundVerdict(parsed, snippet.slice(0, SNIPPET_BUDGET))
+}
+
+/** Characters of source text shown to the model. Callers should select passages to this budget. */
+export const SNIPPET_BUDGET = 1200
+
+/**
+ * Replace the model's SELF-REPORTED verdict with a deterministic check against the source.
+ *
+ * MEASURED 2026-08-03 on qwen2.5-1.5b: given the HTTP/3 article passage that plainly contains
+ * the answer, the model replied `VERDICT: no` and `ANSWER: QUIC`. It extracted a correct,
+ * source-grounded answer and then mislabelled its own verdict — and researchDag, which
+ * `continue`s on verdict 'no', threw the answer away. Every research probe abstained this way.
+ *
+ * The verdict is a model OPINION. Whether the extracted span actually occurs in the snippet is
+ * a FACT we can check for free. So we check it, in both directions (DOCTRINE §1 — the model
+ * proposes, a deterministic check certifies):
+ *
+ *   - 'no'/'partial' + a concrete answer that IS grounded  -> promote to 'partial'.
+ *     Conservative: promoted to partial, never straight to 'yes', so it still has to survive
+ *     the oracle cascade downstream.
+ *   - 'yes' + an answer that is NOT grounded in the snippet -> demote to 'partial'.
+ *     This is the more important direction: it catches the model answering from parametric
+ *     memory while claiming the source said it, which is exactly the hallucination the
+ *     research path exists to prevent.
+ */
+export function groundVerdict(parsed: SnippetAnswer, snippet: string): SnippetAnswer {
+  const answer = (parsed.extractedAnswer ?? '').trim()
+  const concrete = answer.length >= 3 && !NON_ANSWERS.test(answer)
+  if (!concrete) return parsed.verdict === 'no' ? parsed : { ...parsed, verdict: 'no', extractedAnswer: 'none' }
+
+  const grounded = occursIn(snippet, answer)
+  if (grounded && parsed.verdict === 'no') {
+    return { ...parsed, verdict: 'partial', confidence: Math.min(parsed.confidence, 0.5) }
+  }
+  if (!grounded && parsed.verdict === 'yes') {
+    return { ...parsed, verdict: 'partial', confidence: Math.min(parsed.confidence, 0.4) }
+  }
+  return parsed
 }
 
 function parseSnippetAnswer(raw: string): SnippetAnswer {

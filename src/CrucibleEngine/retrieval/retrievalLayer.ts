@@ -19,6 +19,7 @@ import http from 'http'
 import { readFileSync } from 'fs'
 import type { RouterTask } from '../router/capabilityRouter'
 import { debugBus } from '../debug/bus'
+import { federatedSearch } from './sources'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -295,7 +296,32 @@ export async function search(query: string): Promise<SearchResult[]> {
       try { results = dedupeByUrl([...await searchGithubCode(query), ...await searchGithubRepos(query), ...results]) } catch { /* keep SE */ }
     }
   }
-  // Wikipedia REST — the general/factual catch-all (huge index, structured, keyless).
+  // ── General/factual catch-all: KEYLESS SOURCE FEDERATION (2026-08-03) ──────────
+  // Was a single call to searchWikipediaRest. That made ONE encyclopedia the entire
+  // factual substrate of the assistant, with three measured consequences (see
+  // retrieval/sources.ts header): meta-questions answered with same-titled song
+  // articles, researchDag abstaining on every probe because a 1.2k-char stub cannot
+  // support a claim, and whole categories (weather, papers, definitions, entity facts)
+  // being unanswerable. federatedSearch runs every applicable keyless API concurrently,
+  // returns FULL article bodies, and fails closed per-source so one dead backend can
+  // never blank out retrieval again.
+  if (results.length === 0) {
+    try {
+      const fed = await federatedSearch(query)
+      results = fed.docs.map(d => ({ url: d.url, title: d.title, snippet: d.snippet }))
+      // Seed the page cache with the real bodies the APIs already returned, so a later
+      // fetch(url) serves verifiable text instead of re-fetching (or worse, scraping HTML).
+      for (const d of fed.docs) {
+        if (d.text && d.text.length > 40 && !pageCache.has(d.url)) pageCache.set(d.url, d.text)
+      }
+      debugBus.emit('pipeline', 'federated_search', {
+        query: query.slice(0, 80), intent: fed.intent, docs: fed.docs.length,
+        withBody: fed.docs.filter(d => d.text).length,
+        ran: fed.ran.map(r => `${r.id}:${r.count}`).join(','),
+      }, { severity: 'info' })
+    } catch { results = [] }
+  }
+  // Legacy single-source path, kept as a last resort if federation returns nothing.
   if (results.length === 0) {
     try { results = await searchWikipediaRest(query) } catch { results = [] }
   }

@@ -31,12 +31,14 @@
 
 import path from 'path'
 import { search, fetch as fetchPage, stripBoilerplate, rankByRelevance } from '../retrieval/retrievalLayer'
+import { selectPassages, queryTerms, stemOf } from '../retrieval/passages'
 import { queryLivingCorpus } from '../corpus/query'
 import { writeScratch, buildScratchContext, clearScratch } from '../agent/taskScratchpad'
 import { debugBus } from '../debug/bus'
 import {
   snippetAnswers, decomposeQuestion, groundedSynthesis, buildSearchQuery,
   readReliabilityVote, pingLocalFm, checkPremiseGrounding, isPremiseBearing, type FmCall, defaultFmCall,
+  SNIPPET_BUDGET,
 } from './leafPrimitives'
 import {
   verifyClaim, filterGroundedSentences,
@@ -143,8 +145,31 @@ async function retrieveForLeaf(
     try {
       const query = buildSearchQuery(question)
       const results = await search(query)
-      const ranked = rankByRelevance(results, { goal: question }, r => `${r.title} ${r.snippet}`)
-        .slice(0, Math.min(3, maxWebPages - webPagesUsed.count))
+      // Rank by TITLE term-overlap first, then fall back to the generic ranker.
+      // Measured 2026-08-03 on "what problem does HTTP/3 solve that HTTP/2 does not":
+      // the generic ranker (title+snippet bag-of-words) put HTTP/2, the giant generic "HTTP"
+      // page, and "HTTP persistent connection" in the top 3 — and left the HTTP/3 article,
+      // the only document that answers the question, outside the fetch budget entirely.
+      // A query term appearing in the TITLE is a far stronger signal that the page is ABOUT
+      // that thing than the same term appearing somewhere in a snippet.
+      const qTerms = queryTerms(question)
+      const titleScore = (r: { title: string }) => {
+        const t = (r.title ?? '').toLowerCase()
+        let n = 0
+        for (const term of qTerms) {
+          const stem = stemOf(term)
+          if (t.includes(term)) n += 2
+          else if (stem !== term && t.includes(stem)) n += 1
+        }
+        // Prefer a focused page over a sprawling umbrella article of the same score.
+        return n - Math.min(1, (r.title ?? '').length / 60)
+      }
+      const generic = rankByRelevance(results, { goal: question }, r => `${r.title} ${r.snippet}`)
+        .map(({ item }) => item)
+      const ranked = [...generic]
+        .sort((a, b) => titleScore(b) - titleScore(a))
+        .slice(0, Math.min(4, maxWebPages - webPagesUsed.count))
+        .map(item => ({ item }))
       for (const { item } of ranked) {
         if (webPagesUsed.count >= maxWebPages) break
         const html = await fetchPage(item.url)
@@ -212,13 +237,20 @@ async function executeLeafNode(
 
   for (const src of sources.slice(0, 8)) {
     if (!src.text || src.text.length < 20) continue
+    // Show the model the part of the document that actually bears on the question.
+    // This was `src.text.slice(0, 1500)` — the document HEAD — which for an encyclopedia
+    // article is the lead paragraph and almost never carries the specific fact asked for.
+    // Measured 2026-08-03: every research probe abstained with "no source answered the
+    // question" while the answer sat in the retrieved text, past the cut. Same budget,
+    // chosen by relevance instead of position. See retrieval/passages.ts.
+    const excerpt = selectPassages(src.text, question, { budget: SNIPPET_BUDGET })
     // Layer 1: snippetAnswers
-    const sa = await snippetAnswers(question, src.text.slice(0, 1500), fmCall)
+    const sa = await snippetAnswers(question, excerpt, fmCall)
     if (sa.verdict === 'no' || sa.extractedAnswer === 'none') continue
 
     // Layer 2: read-reliability vote (skip if disabled)
     if (!skipReadReliability && sa.verdict === 'yes') {
-      const reliability = await readReliabilityVote(question, src.text.slice(0, 1500), 2, fmCall)
+      const reliability = await readReliabilityVote(question, excerpt, 2, fmCall)
       if (reliability.reliability < 0.4) continue
     }
 

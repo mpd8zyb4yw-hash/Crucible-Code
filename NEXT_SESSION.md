@@ -17,70 +17,58 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-03a (SCOPE CHANGE: agentic assistant, not a coding agent) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-03b (first assistant number: 2/6; 5 defects fixed) (REPLACE THIS EVERY SESSION)
 
-> **READ `DOCTRINE.md` FIRST — it was rewritten end-to-end on 2026-08-03 and the scope changed.**
-> Crucible is a **broadly capable agentic assistant** (ask anything → exactly that, fast, polished,
-> phone + computer). It is NOT a coding agent. Do not restart general code synthesis. Any doc,
-> comment, benchmark or `[x]` still describing a coding agent is STALE.
+> **READ `DOCTRINE.md` FIRST — scope changed 2026-08-03.** Crucible is a broadly capable agentic
+> assistant, NOT a coding agent. Also read `UI_OVERHAUL.md` (spec only; no UI code written yet).
 >
-> **WHY:** the coding bar was measured at 2/9 (0/3 hard) on 2026-08-02 by `npm run stack:h2h`.
-> The loop thesis was never the problem — the terrain was. Coding = huge artifact per proposal,
-> seconds per verification, low information per call. Assistant work inverts all three.
+> **THE ONE HABIT THAT MATTERS: run `npm run dogfood:assistant` before you write anything.**
+> Every defect fixed on 2026-08-03 was found by RUNNING the product; none by a harness. The
+> baseline was 2/6 on ordinary requests. Re-measure, do not assume.
 >
-> **THE THING THAT CHANGES YOUR PLANNING: the pivot target is ~70% ALREADY BUILT AND WIRED.**
-> Confirmed with `npm run audit:reach`, not by reading docs. Live from `server.ts` right now:
-> ~40 tools (`tools/registry.ts`: web_search, image_search, download_file, `run`, file ops,
-> `open_app` Mac control, `create_tool`), full Google OAuth (Gmail/Calendar/Drive/Contacts/YouTube/
-> Maps), `research/researchDag.ts`, `retrieval/retrievalLayer.ts`, `automations/store.ts` +
-> scheduler, `connections/registry.ts`, GitHub. UI + delivery exist too (AutomationsView,
-> ConnectionsView, AgentMissionControl, EmailReader, mobile.css; PWA manifest + service worker,
-> Electron, `fly.toml`, Cloudflare worker, VS Code extension).
-> **Do not rebuild any of that. Go and RUN it before you write anything.**
+> **FIXED 2026-08-03b** (detail in ROADMAP CHANGE LOG; all have committed benches in `prove:all`):
+> retrieval was a single rate-limited encyclopedia -> keyless federation over 7 sources
+> (`retrieval/sources.ts`, probe 4/8 -> 8/8); Wikipedia `exchars` silently capped every article at
+> 1,200 chars; the DAG read only the first 1,500 chars of each source -> passage selection
+> (`retrieval/passages.ts`); the model's self-reported verdict was trusted over a checkable fact
+> -> `groundVerdict`; `verified:true` was the DEFAULT when nothing checked the answer -> explicit
+> ledger; "What can you do for me?" returned a Utah Saints single -> `matchMeta` filler fix;
+> false "nothing leaves your machine" copy corrected; NEW deterministic schedule solver
+> (`answer/schedule.ts`) — that question went from 27.7s and wrong to 2ms and provably correct.
 >
 > **OPEN ITEMS, in priority order:**
 >
-> 1. **DOGFOOD THE ASSISTANT — this is item 1 and it is not optional.** Run 10 real, varied requests
->    through the live UI (research question, inbox triage, a scheduled automation, a file task) and
->    write down verbatim what is broken. Both live defects found in the 2026-08-02 sessions were
->    found by RUNNING the product; none came from a harness. There is no current honest number for
->    assistant quality — only for the abandoned coding bar. Get one.
-> 2. **Route the mechanical steps on-device (DOCTRINE §3.2).** Intent classify, tool-arg fill, field
->    extract, snippet rerank, done-check are ~80-90% of calls in an agentic run and are well within
->    qwen2.5-1.5b when verified. This is the single biggest cost lever and it changes no user-visible
->    quality. `modelRegistry.ts` already has the driver/worker split to build on.
-> 3. **Decide the fate of ~50k LOC of coding machinery.** `reasoning/` (14.3k, dead),
->    `coding-bench/` + `coding-bench-ext/` (4.9k, 51 files, dead), most of `synth/` (32.2k). Keep
->    only what `create_tool` genuinely needs (bounded, sandboxed, verified tool synthesis — that
->    survives per DOCTRINE §2). Deletion is the one irreversible step; it was deliberately NOT done
->    on 2026-08-03.
-> 4. **Spreadsheets are the one real gap in the stated scope.** Today there is only a Drive CSV
->    export-READ path (`tools/registry.ts` `drive_read`). No create, no write, no formulas. This is
->    also the most mechanically verifiable domain in the product, so it suits the spine best.
-> 5. **Pick the paid cheap-tier provider and read its live terms (DOCTRINE §4).** Free tiers are
->    local/dev only; pooling free keys across paying users is out of bounds. Nothing ships
->    commercially until this is settled, and no remembered summary of provider terms counts.
+> 1. **`server.ts:3051` still hard-pins `requestOffline = 'strict'`** with a comment citing the
+>    REPEALED "on-device models ONLY" north star. BYOK keys are accepted at line 3039 and then
+>    blocked. Until this changes, DOCTRINE §3's tiered routing does not exist in production. The
+>    compliant first step (DOCTRINE §4) is: allow external ONLY when the user supplied their own
+>    key, since that runs under the user's own terms. Do NOT pool bundled free-tier keys.
+> 2. **Route the ~80-90% mechanical steps on-device (DOCTRINE §3.2).** Intent classify, tool-arg
+>    fill, field extract, snippet rerank, done-check. `modelRegistry.ts` already has the
+>    driver/worker split. Biggest cost lever; no user-visible quality change.
+> 3. **Grounding passes on a hallucinated sentence.** The Canberra answer is marked
+>    `verified:true` via the `grounded` check while containing "Canberra is the most populous city
+>    in the state of New South Wales" (false). Sentence-level grounding, not answer-level.
+> 4. **Research source lists carry junk** — a question containing "problem" pulled in "Trolley
+>    problem" and "List of unsolved problems in mathematics". Only cite sources that actually
+>    contributed a claim.
+> 5. **"Current version of X" still abstains** (e.g. Node LTS). Honest, but our keyless sources do
+>    not carry release data. A versions/releases source (GitHub releases, endoflife.date) would
+>    close a whole common question class.
+> 6. **Spreadsheets remain the one untouched capability** in the stated scope — `drive_read` only
+>    exports CSV; no create, no write, no formulas. `UI_OVERHAUL.md` §5 specs the UI side.
 >
-> **STANDING RULES (mechanically enforced inside `prove:all`):**
-> - `audit:reach` — TRANSITIVE SYMBOL liveness from `server.ts`. Read that section, not the
->   file-level percentage, which said `reasoning/` was 100% reachable and was wrong.
-> - ROADMAP phantom check: every `.ts` path cited on a `[x]` status line must exist. Currently 0.
-> - HARNESS FREEZE: `reasoning/__*.ts` frozen at 46. Given the scope change, do not raise it —
->   build tools and verifiers on the spine instead.
+> **STANDING RULES (mechanically enforced in `prove:all`):** `audit:reach` for transitive
+> liveness from `server.ts`; ROADMAP phantom check; harness freeze on `reasoning/__*.ts` at 46 —
+> do not raise it, build tools and verifiers on the spine instead (DOCTRINE §5).
 >
-> **STILL-VALID TRAP:** in a git worktree `.crucible/` does not exist, so `isBonsaiInstalled()` is
-> false and the head silently falls back to `apple-fm`. Export `CRUCIBLE_BONSAI_BIN` +
-> `CRUCIBLE_BONSAI_MODEL`, or point `LOCAL_INFERENCE_URL` at a running llama-server
-> (e.g. `http://127.0.0.1:8080`).
->
-> **PROCESS NOTE — the biggest lever, now doubly true.** `NEXT_SESSION.md` and `ROADMAP.md` are the
-> two most-edited files in the repo, ahead of every source file. Two weeks of benchmarking measured
-> a subsystem no user could reach. The corrective is item 1: run the product, on real requests,
-> and fix what a real person actually hits.
+> **TRAP:** in a worktree `.crucible/` does not exist so the head silently falls back to
+> `apple-fm`. Export `CRUCIBLE_BONSAI_BIN`/`CRUCIBLE_BONSAI_MODEL`, or point
+> `LOCAL_INFERENCE_URL` at a running llama-server (`http://127.0.0.1:8080`).
 
 ---
 
-## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-03a above; see ROADMAP CHANGE LOG 2026-08-02h for the head-to-head)
+## CURRENT STATE — last updated 2026-08-02g (THE BENCHMARKS MEASURED A DISCONNECTED SUBSYSTEM) (superseded by 2026-08-03b above; see ROADMAP CHANGE LOG 2026-08-02h for the head-to-head)
 
 > **START HERE. Run `npm run audit:reach`. Do not run any capability benchmark until you have.**
 >

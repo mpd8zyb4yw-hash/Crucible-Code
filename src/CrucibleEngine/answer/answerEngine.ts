@@ -18,6 +18,7 @@ import { debugBus } from '../debug/bus'
 import { critiqueAnswer, type Issue } from './verify'
 import { solveByConsensus } from './selfConsistency'
 import { applyRecomputation, recomputeMultiStep, recomputeWordProblem, directArithmetic } from './wordProblem'
+import { solveSchedule } from './schedule'
 import { applyDateRecomputation, isDateQuestion, recomputeDate } from './dateTime'
 import { isConversionQuestion, recomputeConversion } from './unitConvert'
 import { checkConstraints } from './constraints'
@@ -39,10 +40,31 @@ export interface AnswerFacets {
   intent: AnswerIntent
 }
 
+/** What actually checked this answer. Empty `passed` means NOTHING checked it. */
+export interface VerificationRecord {
+  /** Checks that RAN and passed, e.g. 'deterministic', 'grounded', 'consensus'. */
+  passed: string[]
+  /** Checks that RAN and failed. Any entry here forces verified=false. */
+  failed: string[]
+}
+
 export interface AnswerResult {
   text: string
-  /** True when the answer passed all critics (possibly after in-place fix / one repair). */
+  /**
+   * True ONLY when at least one verification actually RAN and passed, and none failed.
+   *
+   * FIXED 2026-08-03. This was `!(factChecked && !factChecked.confirmed) && explainFlags === 0`,
+   * which returns TRUE when `factChecked` is null — i.e. when no check ran at all. Absence of
+   * a check was being reported as a passed check. Measured consequence: all four dogfood
+   * probes came back verified=true, including "the longest free block is 7 hours 30 minutes"
+   * (the answer is 2 hours) and an answer about a Utah Saints single. A verification signal
+   * that is true by default is worse than no signal, because the UI and the user trust it —
+   * see UI_OVERHAUL.md §8.1, which now refuses to render a verification chip without a
+   * backing record. DOCTRINE §1 and §6.4.
+   */
   verified: boolean
+  /** Which checks ran, and how they went. Drives the UI's verification chip. */
+  verification: VerificationRecord
   /** True when the engine could not produce a checkable answer and refused honestly. */
   abstained: boolean
   facets: AnswerFacets
@@ -289,7 +311,18 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   const verifyComplete = (msgs: Array<{ role: string; content: string }>, o?: { temperature?: number }) =>
     fmComplete(msgs, { temperature: o?.temperature, timeoutMs: VERIFY_TIMEOUT_MS, priority: 'normal', signal })
   const facets = classifyFacets(message)
-  const base: Omit<AnswerResult, 'text' | 'verified' | 'abstained'> = {
+  // Verification ledger. `verified` is derived from this at every exit, so "nothing ran"
+  // can never masquerade as "passed". Push a name ONLY where a real check executed.
+  const vPassed: string[] = []
+  const vFailed: string[] = []
+  const verdict = (): { verified: boolean; verification: VerificationRecord } => ({
+    verified: vPassed.length > 0 && vFailed.length === 0,
+    verification: { passed: [...vPassed], failed: [...vFailed] },
+  })
+  const NOT_CHECKED: { verified: boolean; verification: VerificationRecord } =
+    { verified: false, verification: { passed: [], failed: [] } }
+
+  const base: Omit<AnswerResult, 'text' | 'verified' | 'abstained' | 'verification'> = {
     facets, usedRetrieval: false, sources: [], corrections: 0, repaired: false,
   }
   debugBus.emit('pipeline', 'facets', { message: message.slice(0, 80), ...facets }, { severity: 'info' })
@@ -301,7 +334,8 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   const meta = matchMeta(message)
   if (meta) {
     debugBus.emit('pipeline', 'meta_response', { kind: meta.kind, message: message.slice(0, 60) }, { severity: 'info' })
-    return { text: meta.text, verified: true, abstained: false, ...base, facets: { ...facets, intent: 'converse' } }
+    // Deterministic canned fact about Crucible itself — no model, nothing to be wrong about.
+    return { text: meta.text, verified: true, verification: { passed: ['deterministic'], failed: [] }, abstained: false, ...base, facets: { ...facets, intent: 'converse' } }
   }
 
   // Direct arithmetic ("what is 17 times 23", "5 * (3+2)") — a machine computes it EXACTLY and
@@ -314,14 +348,35 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     const text = `${arith.expression} = **${val}**`
     emit?.({ type: 'verify', passed: true, report: 'Computed deterministically (exact arithmetic, no model).' })
     debugBus.emit('pipeline', 'direct_arithmetic', { message: message.slice(0, 60), value: arith.value }, { severity: 'info' })
-    return { text, verified: true, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
+    // Exact arithmetic computed by machine — genuinely certified.
+    return { text, verified: true, verification: { passed: ['deterministic-arithmetic'], failed: [] }, abstained: false, ...base, facets: { ...facets, intent: 'reason' } }
+  }
+
+  // Free/busy interval arithmetic ("meetings at 9, 11 and 2, each an hour — when am I free?").
+  // Same rationale as directArithmetic above: a machine computes it exactly, instantly, offline.
+  // Measured 2026-08-03, the FM answered this question class with "7 hours 30 minutes" on one
+  // run and an 11am-1pm block that collided with the 11am meeting on the next. solveSchedule
+  // returns null unless the window, the shared duration and the start times are all
+  // unambiguous, so anything it cannot be certain of still falls through to reasoning.
+  const sched = solveSchedule(message)
+  if (sched) {
+    emit?.({ type: 'verify', passed: true, report: `Computed deterministically (interval arithmetic over ${sched.busy.length} busy block(s), no model).` })
+    debugBus.emit('pipeline', 'schedule_solved', {
+      message: message.slice(0, 60), busy: sched.busy.length, free: sched.free.length,
+      longestMin: sched.longest.length ? sched.longest[0].end - sched.longest[0].start : 0,
+    }, { severity: 'info' })
+    return {
+      text: sched.text, verified: true,
+      verification: { passed: ['deterministic-schedule'], failed: [] },
+      abstained: false, ...base, facets: { ...facets, intent: 'reason' },
+    }
   }
 
   if (!(await checkFmAvailable())) {
-    return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base }
+    return { text: ABSTAIN_TEXT, ...NOT_CHECKED, abstained: true, ...base }
   }
 
-  if (signal?.aborted) return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base }
+  if (signal?.aborted) return { text: ABSTAIN_TEXT, ...NOT_CHECKED, abstained: true, ...base }
 
   // ── Draft: the FM is the messenger; the SYSTEM chose how to think ──────────
   // A genuine external-fact question is handed to the retrieval/tool brain (research DAG →
@@ -460,7 +515,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
   draft = stripAgentScaffold(draft)
 
   if (!draft) {
-    return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, streamed }
+    return { text: ABSTAIN_TEXT, ...NOT_CHECKED, abstained: true, ...base, usedRetrieval, streamed }
   }
 
   // ── Check with deterministic critics ───────────────────────────────────────
@@ -509,7 +564,7 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     const fatal = issues.filter(i => i.kind === 'empty' || i.kind === 'nonanswer' || i.kind === 'rolebleed')
     if (fatal.length) {
       debugBus.emit('pipeline', 'abstain_after_repair', { message: message.slice(0, 80), issues: fatal.map(i => i.kind) }, { severity: 'warn' })
-      return { text: ABSTAIN_TEXT, verified: false, abstained: true, ...base, usedRetrieval, corrections, repaired, streamed }
+      return { text: ABSTAIN_TEXT, ...NOT_CHECKED, abstained: true, ...base, usedRetrieval, corrections, repaired, streamed }
     }
   }
 
@@ -623,8 +678,10 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       if (factChecked) {
         const ens = factChecked.ensembleModels.length ? ` (incl. ${factChecked.ensembleModels.length} independent local model(s))` : ''
         if (factChecked.confirmed) {
+          vPassed.push('consensus')
           emit?.({ type: 'verify', passed: true, report: `Fact corroborated: ${Math.round(factChecked.agreement * 100)}% of ${factChecked.votes} independent answers${ens} agreed on "${factChecked.key}".` })
         } else {
+          vFailed.push('consensus')
           text += UNVERIFIED_NOTE
           emit?.({ type: 'verify', passed: false, report: `Independent answers disagreed (${Math.round(factChecked.agreement * 100)}% of ${factChecked.votes} agreed on "${factChecked.key}") — shipped with an explicit unverified note.` })
         }
@@ -648,6 +705,8 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
       const chk = await checkExplanation(text, { complete: verifyComplete })
       if (chk) {
         explainFlags = chk.flagged.length
+        // chk.checked === 0 means there was nothing checkable — that is NOT a pass.
+        if (chk.checked > 0) (chk.flagged.length === 0 ? vPassed : vFailed).push('spotcheck')
         text = applyExplainCheck(text, chk)
         emit?.({
           type: 'verify', passed: chk.flagged.length === 0,
@@ -664,8 +723,13 @@ export async function answerQuery(message: string, opts: AnswerOpts = {}): Promi
     ...(consensusAgreement !== null ? { consensusAgreement: Number(consensusAgreement.toFixed(2)) } : {}),
   }, { severity: 'info' })
 
+  // Grounding counts as a real check: the answer was reconciled against retrieved sources.
+  if (grounded && groundedSources.length > 0) vPassed.push('grounded')
+  // A machine recomputation of a date/duration is the strongest signal available here.
+  if (recomputed) vPassed.push('recomputed')
+
   return {
-    text, verified: !(factChecked && !factChecked.confirmed) && explainFlags === 0, abstained: false, ...base,
+    text, ...verdict(), abstained: false, ...base,
     usedRetrieval, corrections, repaired, streamed,
     sources: grounded ? groundedSources : base.sources,
   }
