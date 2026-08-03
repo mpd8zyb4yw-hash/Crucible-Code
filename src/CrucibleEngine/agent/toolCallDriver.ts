@@ -32,6 +32,8 @@
 // driver works against the local head, the Apple FM, or any escalated model.
 // ═══════════════════════════════════════════════════════════════════════════════
 
+import fs from 'node:fs'
+import path from 'node:path'
 import { enumGrammar, jsonObjectGrammar } from './grammars'
 import type { ToolDef, ToolCall } from '../tools/protocol'
 
@@ -74,6 +76,49 @@ export function requiredFields(tool: ToolDef): Array<{ key: string; type: 'strin
     .map(k => ({ key: k, type: fieldType((props as Record<string, unknown>)[k]) }))
 }
 
+
+/** Levenshtein distance, bounded — only used to compare short filenames. */
+function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length
+  let prev = Array.from({ length: n + 1 }, (_, j) => j)
+  for (let i = 1; i <= m; i++) {
+    const cur = [i]
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = cur
+  }
+  return prev[n]
+}
+
+/**
+ * Snap a path argument to a file that actually exists.
+ *
+ * MEASURED 2026-08-03: asked to read `prices.csv`, the head emitted `price.csv` — one character
+ * short — and then repeated that exact failing call until the loop stopped it. The grammar can
+ * force a well-formed string; it cannot force a TRUE one. But the filesystem knows the answer,
+ * so the system checks rather than trusting: if the proposed file does not exist and exactly one
+ * sibling in the same directory is within a couple of edits, use the sibling. Ambiguity (two
+ * equally close candidates) is left alone — a wrong confident correction is worse than the
+ * original error, and the failed-repeat exclusion below will move the agent on regardless.
+ *
+ * Only applies to READS. A near-miss filename on a WRITE is a new file the user asked for, and
+ * silently redirecting a write onto an existing file would destroy data.
+ */
+export function snapPathToReality(p: string): string {
+  if (typeof p !== 'string' || !p.startsWith('/') || fs.existsSync(p)) return p
+  const dir = path.dirname(p), base = path.basename(p)
+  let siblings: string[]
+  try { siblings = fs.readdirSync(dir) } catch { return p }
+  const scored = siblings
+    .map(s => ({ s, d: editDistance(base.toLowerCase(), s.toLowerCase()) }))
+    .filter(x => x.d <= 2)
+    .sort((a, b) => a.d - b.d)
+  if (!scored.length) return p
+  if (scored.length > 1 && scored[0].d === scored[1].d) return p
+  return path.join(dir, scored[0].s)
+}
+
 /** Render the tool menu compactly. A 1.5B head reads a short list far better than a schema dump. */
 export function toolMenu(tools: ToolDef[]): string {
   return tools.map(t => {
@@ -94,6 +139,23 @@ export function toolMenu(tools: ToolDef[]): string {
  * and the head must choose the next step. Only exact (name, args) pairs are excluded — reading
  * a DIFFERENT file, or writing a second file, stays available.
  */
+export function attemptedSignatures(messages: Array<Record<string, unknown>>): Map<string, boolean> {
+  const out = new Map<string, boolean>()
+  let pending: string[] = []
+  for (const m of messages) {
+    if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+      pending = (m.tool_calls as Array<Record<string, unknown>>).map(tc => {
+        const fn = (tc.function ?? {}) as { name?: string; arguments?: string }
+        return `${fn.name ?? ''}(${fn.arguments ?? ''})`
+      })
+    } else if (m.role === 'tool') {
+      const sig = pending.shift()
+      if (sig) out.set(sig, String(m.content ?? '').startsWith('(ok)'))
+    }
+  }
+  return out
+}
+
 export function succeededSignatures(messages: Array<Record<string, unknown>>): Set<string> {
   const out = new Set<string>()
   let pending: string[] = []
@@ -176,6 +238,7 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // loop's own guard stops at three identical turns, so two successes is the point where
     // continuing cannot be progress. Reading a different file the first two times still works,
     // and FINISH is never removed.
+    const attempted = attemptedSignatures(messages)
     const succeeded = succeededSignatures(messages)
     const successCount = new Map<string, number>()
     for (const sig of succeeded) {
@@ -259,6 +322,32 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     const missing = fields.filter(f => args[f.key] === undefined || args[f.key] === null || args[f.key] === '')
     if (missing.length) {
       return { text: `Incomplete arguments for ${tool.name} (missing ${missing.map(f => f.key).join(', ')}).`, toolCalls: [] }
+    }
+
+    // Snap read-side path arguments onto a file that actually exists (see snapPathToReality).
+    // Writes are never redirected: a near-miss filename on a write is a NEW file.
+    if (!tool.mutates) {
+      for (const f of fields) {
+        if (f.type === 'string' && /path|file|dir/i.test(f.key) && typeof args[f.key] === 'string') {
+          const snapped = snapPathToReality(args[f.key] as string)
+          if (snapped !== args[f.key]) args[f.key] = snapped
+        }
+      }
+    }
+
+    // An identical call that ALREADY FAILED will fail again. Measured: read_file on a
+    // mistyped path repeated until the loop's stall guard fired, burning the whole run on one
+    // typo. Report it as a failed turn so the loop's error hint pushes the head somewhere new,
+    // rather than re-issuing a call whose outcome is already known.
+    const sig = `${tool.name}(${JSON.stringify(args)})`
+    if (attempted.has(sig)) {
+      // Succeeded OR failed, an identical call cannot advance the goal: a re-read returns the
+      // same bytes, a re-failure returns the same error. Measured both ways -- read_file on a
+      // mistyped path, then read_file on the CORRECT path six times running. The count-based
+      // exclusion at SELECT does not catch this because the tool is legitimately still needed
+      // for other paths; the exact signature is what must be unreachable.
+      const how = attempted.get(sig) ? 'already succeeded' : 'already failed'
+      return { text: `${tool.name} ${how} with exactly these arguments — that result is already in hand; the next step of the goal is what remains.`, toolCalls: [] }
     }
 
     return {
