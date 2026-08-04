@@ -140,6 +140,16 @@ export function resolveSafe(p: string, ctx: ToolCtx, { allowOutside = false } = 
 // them to the user. Set ctx.allowDestructive = true to opt in (e.g. an approved task).
 const DESTRUCTIVE_PATTERNS: Array<{ re: RegExp; why: string }> = [
   { re: /\brm\b[^\n]*\s-\w*[rf]/i,                  why: 'recursive/forced delete (rm -rf)' },
+  // A PLAIN `rm` still deletes. MEASURED 2026-08-03, confirm-before-destroy: the agent ran
+  //   rm /Users/…/confirm-before-destroy/*
+  // with no flags, matched nothing here, sailed past the stakes gate, and destroyed two files
+  // the user had not agreed to lose. The old pattern was written as if the danger lived in the
+  // "-rf" rather than in the "rm". A glob or several targets means the caller does not know
+  // exactly what is being removed, which is precisely when a human should look first.
+  { re: /\brm\b(?![^\n]*\s-\w*[rf])[^\n]*[*?]/i,   why: 'delete matching a wildcard (the exact set is not known up front)' },
+  { re: /\brm\b(?![^\n]*\s-\w*[rf])(?:\s+\S+){2,}\s*$/i, why: 'delete of several files at once' },
+  { re: /\b(?:unlink|shred|srm)\b/i,                why: 'file deletion' },
+  { re: /\bfind\b[^\n]*-delete\b|\bfind\b[^\n]*-exec\s+rm\b/i, why: 'find … -delete (bulk delete)' },
   { re: /\bgit\s+push\b[^\n]*(?:--force|--force-with-lease|\s-f\b)/i, why: 'git force-push' },
   { re: /\bgit\s+reset\s+--hard\b/i,                why: 'git reset --hard (discards work)' },
   { re: /\bgit\s+clean\s+-\w*f/i,                   why: 'git clean -f (deletes untracked files)' },
@@ -437,6 +447,36 @@ registry.register({
   mutates: true,
   async run(args, ctx) {
     const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+
+    // EVIDENCE GUARD. MEASURED 2026-08-03 on research-to-file: the file was written THREE times.
+    // The second write carried the correct looked-up answer ("…is 24.19…"); a third write, from
+    // a different code path that never passes through the tool-call driver, then overwrote it
+    // with "# Node.js LTS Version … is Node.js v14.1.0" — a version invented from parametric
+    // memory, replacing a fact the system had already retrieved and cited.
+    //
+    // Fixing this in the driver only fixes the paths that use the driver. The tool is the one
+    // choke point every writer crosses, so the check lives here: if the system has a retrieved
+    // answer, the goal was to record what was found, and the content shares NONE of the answer's
+    // numbers, the retrieved text wins. The model may phrase the file; it may not contradict the
+    // evidence.
+    // Keyed on SUBJECT, not on ctx.goal: the third writer's context carries no goal at all, so a
+    // goal-gated guard silently skipped exactly the write it existed to catch.
+    const look = LAST_LOOKUP
+    if (look) {
+      const content = String(args.content ?? '')
+      const subject = (look.question.toLowerCase().match(/[a-z][a-z.]{3,}/g) ?? [])
+        .filter(w => !['what', 'this', 'that', 'with', 'from', 'current', 'version', 'long', 'term', 'support', 'find', 'into', 'file', 'then', 'write', 'called'].includes(w))
+      const aboutSameThing = subject.some(w => content.toLowerCase().includes(w))
+      if (aboutSameThing) {
+      const numsOf = (t: string) => new Set(t.match(/\d+(?:\.\d+)*/g) ?? [])
+      const want = numsOf(look.output.split(/Sources?:/i)[0])
+      const got = numsOf(content)
+      if (want.size && ![...want].some(v => got.has(v))) {
+        args = { ...args, content: look.output.replace(/^\[(verified|unverified|abstained)\]\s*/, '').trim() + '\n' }
+      }
+      }
+    }
+
     if (fs.existsSync(abs) && !fs.statSync(abs).isDirectory()) {
       const reason = protectedFileReason(fs.readFileSync(abs, 'utf-8'))
       if (reason) return { ok: false, output: `Refusing to overwrite ${abs} — marked protected ("${reason}"). Write to a different path instead; this file must not change.` }
@@ -667,6 +707,23 @@ registry.register({
   },
 })
 
+/** Answers to fixed factual questions, memoised for the process — see lookup_fact below. */
+const LOOKUP_CACHE = new Map<string, { ok: boolean; output: string }>()
+let LAST_LOOKUP: { question: string; output: string } | null = null
+
+/**
+ * The most recent successful lookup_fact answer, as a cross-subtask scratchpad.
+ *
+ * MEASURED 2026-08-03: the meta-router runs each subtask with its OWN message history, so the
+ * subtask that looked up "current Node LTS" and the subtask that wrote node.md shared nothing.
+ * The writer had never seen the answer and filled the file from parametric memory — "Node.js
+ * v14.1.0" — while the correct answer (24, with its source) sat one subtask away. Evidence that
+ * the system has already retrieved and paid for must not be invisible to the step that needs it.
+ */
+export function lastLookupAnswer(): { question: string; output: string } | null {
+  return LAST_LOOKUP
+}
+
 registry.register({
   name: 'lookup_fact',
   description: 'Answer a factual question (versions, definitions, current values) using Crucible\'s own verified answer engine, with sources. Prefer this over web_search for facts.',
@@ -691,16 +748,34 @@ registry.register({
     // along with it — including its refusal to answer what it cannot ground.
     const question = String(args.question ?? '').trim()
     if (!question) return { ok: false, output: 'lookup_fact needs a question.' }
+    // Memoise. MEASURED 2026-08-03: the meta-router decomposes a goal into subtasks and each
+    // subtask re-ran the IDENTICAL lookup, so research-to-file spent >20 minutes asking the same
+    // question over and over. An answer to a fixed factual question does not change within a
+    // turn, and the answer path behind this is the expensive part of the run.
+    const cached = LOOKUP_CACHE.get(question)
+    if (cached) return cached
     try {
       const { answerQuery } = await import('../answer/answerEngine')
       const r = await answerQuery(question)
       if (!r.text?.trim()) return { ok: false, output: 'No answer could be grounded for that question.' }
       const cites = (r.sources ?? []).slice(0, 3)
       const badge = r.verified ? 'verified' : r.abstained ? 'abstained' : 'unverified'
-      return {
+      const result = {
         ok: !r.abstained,
         output: `[${badge}] ${r.text}` + (cites.length ? `\n\nSources:\n${cites.map(u => `- ${u}`).join('\n')}` : ''),
       }
+      if (result.ok) {
+        // Only a VERIFIED answer becomes the shared scratchpad. MEASURED 2026-08-03: the same
+        // question phrased slightly differently missed the structured release table and came
+        // back UNVERIFIED from Wikipedia saying "Node.js v14" — and because the scratchpad took
+        // any successful answer, that wrong fact then became the evidence the write guard
+        // enforced, overwriting the correct one. A scratchpad that holds unverified claims is a
+        // mechanism for spreading them.
+        if (r.verified) LAST_LOOKUP = { question, output: result.output }
+        LOOKUP_CACHE.set(question, result)
+        if (LOOKUP_CACHE.size > 200) LOOKUP_CACHE.delete(LOOKUP_CACHE.keys().next().value as string)
+      }
+      return result
     } catch (e) {
       return { ok: false, output: `lookup_fact failed: ${(e as Error).message}` }
     }

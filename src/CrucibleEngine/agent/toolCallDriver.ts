@@ -36,6 +36,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { enumGrammar, jsonObjectGrammar } from './grammars'
 import type { ToolDef, ToolCall } from '../tools/protocol'
+import { lastLookupAnswer } from '../tools/registry'
 
 /** Minimal completion contract — (messages, opts) → text. Matches fmComplete. */
 export type Complete = (
@@ -426,7 +427,6 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     let stepIdx = 0
     while (stepIdx < plan.length && (PLAN_TOOLS[plan[stepIdx]] ?? []).some(n => doneNames2.has(n))) stepIdx++
     const planned = attempt === 0 ? plannedTools(tools, goal, stepIdx) : null
-    console.log(`[SEL] attempt=${attempt} succeeded=${succeeded.size} plan=${JSON.stringify(categoryPlan(goal))} offering=${planned?planned.map(t=>t.name).join('/'):'ALL'} ntools=${tools.length} sigs=${JSON.stringify([...succeeded].map(x=>x.slice(0,28)))}`)
     const usable = (planned ?? tools).filter(t => !excluded.has(t.name))
     const choices = [...(usable.length ? usable : tools).map(t => t.name), FINISH]
     const selectSystem = [
@@ -519,6 +519,39 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     if (tool.name === 'write_file' && typeof args.content === 'string') {
       const lit = /\bcontain(?:ing|s)?\s+(?:exactly\s+)?(?:the\s+)?(?:line|text|string)\s*:?\s*["“']?([^"”'\n]{3,200}?)\.?\s*$/i.exec(goal)
       if (lit) args.content = lit[1].trim()
+    }
+
+    // A verified answer already in hand is not re-authored from memory. MEASURED 2026-08-03 on
+    // research-to-file: lookup_fact returned "the current Node.js LTS line is 24" with its
+    // source, and the head then wrote a node.md saying "Node.js is v14.1.0" — a hallucinated
+    // version, written to disk, in a file whose entire purpose was to record the looked-up fact.
+    // The retrieval was right and the transcription invented a different answer, which is the
+    // single most dangerous shape this product has: a confident artifact contradicting its own
+    // evidence. When a lookup succeeded and the model's content does not carry the numbers the
+    // lookup returned, the lookup's text is used instead.
+    if (tool.name === 'write_file' && typeof args.content === 'string') {
+      // Accept ANY lookup_fact result, not just a [verified] one — measured, the same question
+      // asked in a slightly different phrasing came back [unverified] from the research DAG, the
+      // filter skipped it, and the head wrote v14.1.0 "sourced from Wikipedia" regardless. An
+      // unverified retrieved answer is still evidence; an invented one is not. A verified result
+      // wins when both are present.
+      const all = messages
+        .filter(m => m.role === 'tool' && typeof m.content === 'string' && /^\(ok\)\s*\[(verified|unverified|abstained)\]/.test(m.content as string))
+        .map(m => (m.content as string).replace(/^\(ok\)\s*\[(verified|unverified|abstained)\]\s*/, (x) => x))
+      const verified = all.filter(t => /\[verified\]/.test(t))
+      const pool = verified.length ? verified : all
+      let last = pool[pool.length - 1]?.replace(/^\(ok\)\s*\[(verified|unverified|abstained)\]\s*/, '')
+      // Nothing in THIS subtask's history? Fall back to the shared scratchpad — the meta-router
+      // splits a goal across subtasks that cannot see each other's messages, and the answer may
+      // have been retrieved by a sibling.
+      if (!last) last = lastLookupAnswer()?.output.replace(/^\[(verified|unverified|abstained)\]\s*/, '')
+      if (last) {
+        const nums = (n: string) => new Set((n.match(/\d+(?:\.\d+)*/g) ?? []))
+        const want = nums(last.split(/Sources?:/i)[0])
+        const got = nums(args.content)
+        const carried = [...want].some(v => got.has(v))
+        if (!carried) args.content = last.trim()
+      }
     }
 
     // A goal that asks for the SOURCE gets the source. MEASURED 2026-08-03 on research-to-file:

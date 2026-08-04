@@ -95,10 +95,34 @@ function toolCategory(t: ToolDef): string {
 // Return only the tools a given archetype is permitted to use. Enforced at the
 // driveTurn boundary so a 'critic' physically cannot write files and a 'researcher'
 // cannot run shell commands — making the specialist separation real, not cosmetic.
+/**
+ * The tools EVERY specialist keeps, whatever its archetype.
+ *
+ * MEASURED 2026-08-03: the meta-router runs each SUBTASK under its own archetype, so the subtask
+ * "add up the amount column" — which names no producing verb — selected `researcher`, and
+ * write_file disappeared from the tool list PART-WAY THROUGH a goal whose whole point was to
+ * write a file. The driver's plan said WRITE, the menu had nothing to write with, and the run
+ * burned its remaining turns hunting.
+ *
+ * A specialist separation that can make a task impossible mid-flight is not a safety boundary,
+ * it is a bug. The genuinely dangerous operations — delete, empty_trash, destructive `run` — are
+ * now gated centrally in registry.exec against the user's goal, which is the check that actually
+ * protects the user. Ordinary file authorship does not need a second, weaker gate that
+ * mostly just breaks multi-step work.
+ */
+const SPECIALIST_CORE = new Set([
+  'read_file', 'list_dir', 'write_file', 'edit_file', 'apply_patch',
+  'compute', 'sum_column', 'rename_symbol', 'lookup_fact',
+])
+
 export function buildArchetypeTools(id: ArchetypeId, allTools: ToolDef[]): ToolDef[] {
   const a = ARCHETYPES[id]
   const allowed = new Set(a.allowedToolCategories)
   return allTools.filter(t => {
+    // The core wins over deniedTools: those lists were written to keep a critic from editing
+    // code, but they also make a producing SUBTASK impossible, which is the failure measured
+    // above. Nothing in the core is destructive, and everything destructive is gated centrally.
+    if (SPECIALIST_CORE.has(t.name)) return true
     if (a.deniedTools.includes(t.name)) return false
     const cat = toolCategory(t)
     if (cat === 'misc' || cat === 'read') return true   // neutral + read tools available to all
