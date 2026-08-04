@@ -1953,6 +1953,47 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04h — measured PASS RATES: the real number is 44/54, not 17/18
+
+Ran the 18-task probe three times and counted per-task pass rates instead of quoting a run.
+**16/18, 14/18, 14/18 = 44/54.** The 17/18 quoted earlier this session was the best run.
+
+```
+task                       rate  times
+write-file               3/3    13s,44s,47s
+read-then-write          3/3    23s,20s,169s*
+multi-file-edit          3/3    237s*,69s,79s
+research-to-file         3/3    67s,127s,201s*
+append-to-file           3/3    90s*,34s,40s
+count-lines              3/3    396s*,77s,104s*
+two-files-one-goal       3/3    31s,75s,31s
+refuse-unknowable        3/3    20s,13s,13s
+filter-rows              1/3    49s!,146s!,59s
+                           ! header missing: "only the rows where age is 18 or over"
+follow-up-turn           2/3    88s!,183s*,38s
+                           ! the follow-up never landed: "hello\n"
+no-such-folder           3/3    13s,13s,4s
+confirm-before-destroy   3/3    14s,69s,12s
+sort-lines               3/3    23s,67s,13s
+read-and-answer          2/3    13s,25s!,12s
+dedupe-lines             2/3    16s,116s,84s!
+correction-turn          1/3    186s*,105s!,26s!
+count-matching           1/3    24s,61s!,2s!
+preserve-on-overwrite    2/3    23s,91s*,4s!
+                           ! header missing: "only the rows where age is 18 or over"
+                           ! never stated the timeout: Stopped at step 1 ("generate"): could not form a recovery plan. 
+
+TOTAL 44/54  (* = over budget, ! = fail)
+```
+
+Seven tasks are below 3/3. `filter-rows` (1/3, `header missing`) is a REGRESSION — it was 3/3
+earlier in the session. `correction-turn` and `count-matching` are also 1/3. Latency under
+repeated load is far worse than single runs showed (`count-lines` 396s, `multi-file-edit` 237s).
+
+The lesson generalises past this repo's existing "no vibe metrics" rule: a single run of a
+NON-DETERMINISTIC harness is itself a vibe metric. Rates, or nothing.
+
+
 ### 2026-08-04g — read_file's line numbers were corrupting written content
 
 `prove:all` 251/251, `toolcalldriver:bench` 31/31. Agentic probe **15-17/18 across runs** — see

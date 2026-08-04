@@ -1,23 +1,47 @@
-# CURRENT STATE (2026-08-04g — replace this block every session)
+# CURRENT STATE (2026-08-04h — replace this block every session)
 
 ## The numbers
 
-- **Agentic: 15-17/18 across three consecutive full runs** (`npm run agent:workflow`), from
-  **0/5** when this work started. The probe was widened from 12 to 18 tasks on 2026-08-04f and
-  the widening immediately found four real defects. Scored ONLY on what is true on disk.
-- **THE SUITE IS NOT DETERMINISTIC AND A SINGLE RUN IS NOT THE NUMBER.** Different tasks fail on
-  different runs. Run it 3x and record the per-task pass RATE before claiming anything moved; a
-  task that passed once is not fixed. This is now the single biggest open problem — the failures
-  are no longer missing capability, they are variance.
-- **Widening the probe has found real defects EVERY time.** 5 -> 9 -> 12 -> 18 tasks, each step
-  exposing hallucinated file contents or false success claims. 18 is still narrow.
-- **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 0 over budget.
-- `npm run prove:all`: **251 skills, 0 failed**, plus every bench.
+- **Agentic: 44/54 across THREE full runs — 16/18, 14/18, 14/18.** This is the number. Single
+  runs earlier in the session read 17/18 and were quoted as the score; running the suite three
+  times and counting per-task PASS RATES shows that was the best run, not the capability.
 
-**`follow-up-turn` passes, and the turn-one flake is FIXED: 6/6 in isolation** (was 3/5). The
-cause was not "baseline loop reliability" — it was `filter_rows` being offered for
-"create draft.txt containing the word hello", chosen by the head, and erroring `File not found`,
-which killed the run. Specialist tools now require their trigger. See the 2026-08-04d change log.
+```
+task                       rate  times
+write-file               3/3    13s,44s,47s
+read-then-write          3/3    23s,20s,169s*
+multi-file-edit          3/3    237s*,69s,79s
+research-to-file         3/3    67s,127s,201s*
+append-to-file           3/3    90s*,34s,40s
+count-lines              3/3    396s*,77s,104s*
+two-files-one-goal       3/3    31s,75s,31s
+refuse-unknowable        3/3    20s,13s,13s
+filter-rows              1/3    49s!,146s!,59s
+                           ! header missing: "only the rows where age is 18 or over"
+follow-up-turn           2/3    88s!,183s*,38s
+                           ! the follow-up never landed: "hello\n"
+no-such-folder           3/3    13s,13s,4s
+confirm-before-destroy   3/3    14s,69s,12s
+sort-lines               3/3    23s,67s,13s
+read-and-answer          2/3    13s,25s!,12s
+dedupe-lines             2/3    16s,116s,84s!
+correction-turn          1/3    186s*,105s!,26s!
+count-matching           1/3    24s,61s!,2s!
+preserve-on-overwrite    2/3    23s,91s*,4s!
+                           ! header missing: "only the rows where age is 18 or over"
+                           ! never stated the timeout: Stopped at step 1 ("generate"): could not form a recovery plan. 
+
+TOTAL 44/54  (* = over budget, ! = fail)
+```
+
+**Read this table, not a run.** Seven of eighteen tasks are below 3/3 and `filter-rows`,
+`correction-turn` and `count-matching` are at 1/3 — worse than the single-run scores implied.
+`filter-rows` failing with `header missing` is a REGRESSION (it was 3/3 earlier in the session)
+and is the first thing to chase. Latency is also far worse than single runs suggested:
+`count-lines` hit 396s and `multi-file-edit` 237s.
+
+**Never quote a single run again.** Re-run `agg.py` (in the session scratchpad, or rewrite it —
+it just parses `[PASS|FAIL|SLOW]` lines out of three probe outputs) before claiming movement.
 
 ## How it works
 
