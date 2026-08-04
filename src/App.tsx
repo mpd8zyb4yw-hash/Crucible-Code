@@ -6,6 +6,9 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 // so it clamps a runaway measurement without ever truncating legitimate padding.
 const DOCK_HEIGHT_STEP = 8
 const DOCK_HEIGHT_MAX = 320
+/** Height the floating resume banner occupies above the composer, reserved by surfaces
+ *  that must not sit underneath it (Home's deck pager was landing behind it). */
+const RESUME_BANNER_H = 76
 import { API_BASE, apiFetch } from './api'
 import BackgroundBlobs from './BackgroundBlobs'
 import { useEnsemble, type EnsembleState } from './ensemble'
@@ -2431,26 +2434,43 @@ export default function App() {
       {/* Mobile-only now: desktop history lives in the persistent sidebar rail. */}
       {isMobile && tab === 'history' && (
         <>
+          {/* `fixed`, not `absolute`: the drawer must measure against the VIEWPORT.
+              Anchored to the app root it inherited the root's insets, so it started
+              below the status bar and left a hard seam against it. */}
           <div onClick={() => setTab('chat')} style={{
-            position: 'absolute', inset: 0, zIndex: 28,
+            position: 'fixed', inset: 0, zIndex: 28,
             background: 'rgba(0,0,0,0.4)', animation: 'fadeIn 0.2s ease',
           }} />
           <div style={{
-            position: 'absolute', top: 0, left: 0, bottom: inputBarHeight, zIndex: 29,
-            width: 'min(560px, 94vw)',
-            background: 'rgba(14,14,20,0.88)', backdropFilter: 'blur(40px) saturate(1.5)', WebkitBackdropFilter: 'blur(40px) saturate(1.5)',
-            borderRight: '1px solid rgba(255,255,255,0.08)',
-            boxShadow: '24px 0 80px rgba(0,0,0,0.5), inset -1px 0 0 rgba(255,255,255,0.05)',
+            // FULL HEIGHT (2026-08-04b). This was `bottom: inputBarHeight`, which stopped
+            // the panel above the composer and left its bottom edge cut off mid-screen —
+            // the reported "the bottom looks clipped". A drawer is a modal surface: it
+            // runs the whole height of the screen, top edge to bottom edge.
+            position: 'fixed', top: 0, left: 0, bottom: 0, zIndex: 29,
+            width: 'min(560px, 92vw)',
+            // Same tokens as every other surface, so the panel, the status-bar area and
+            // the app behind it are one continuous colour instead of three.
+            background: 'var(--scrim)',
+            backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
+            borderRight: '1px solid var(--glass-edge)',
+            boxShadow: 'var(--glass-shadow-2)',
             animation: 'studioIn 0.24s var(--ease-standard)',
             display: 'flex', flexDirection: 'column', overflow: 'hidden',
+            // The panel paints INTO the safe areas (so there is no seam at the notch or
+            // the home indicator) while its contents stay clear of them.
+            paddingTop: 'env(safe-area-inset-top, 0px)',
+            paddingBottom: 'env(safe-area-inset-bottom, 0px)',
+            boxSizing: 'border-box',
           }}>
             <button
               onClick={() => setTab('chat')}
               title="Back to chat"
               style={{
-                position: 'absolute', top: 14, right: 14, zIndex: 31, width: 28, height: 28, borderRadius: 9,
-                border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)',
-                color: '#9797ab', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                // Offset by the safe area too, or the button sits under the notch.
+                position: 'absolute', top: 'calc(env(safe-area-inset-top, 0px) + 14px)',
+                right: 14, zIndex: 31, width: 28, height: 28, borderRadius: 9,
+                border: '1px solid var(--glass-edge)', background: 'var(--glass-fill-plate)',
+                color: 'var(--glass-text-2)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
@@ -2988,7 +3008,10 @@ export default function App() {
           floating card obscuring whatever was behind it. Seen covering a Connections
           card. It is not dismissed here, only hidden: leave Settings and the offer is
           still waiting where it makes sense. */}
-      {resumeOffer && tab !== 'settings' && !agentsOpen && !automationsOpen && !connectionsOpen && (
+      {/* `tab !== 'history'` added 2026-08-04b: every other full-surface panel already
+          suppressed the banner, but the mobile History drawer did not — so the banner
+          floated on top of the conversation list, covering two rows of it. */}
+      {resumeOffer && tab !== 'settings' && tab !== 'history' && !agentsOpen && !automationsOpen && !connectionsOpen && (
         <div style={{
           position: 'fixed', bottom: inputBarHeight + 10,
           left: railW, right: 0, zIndex: 50,
@@ -3066,7 +3089,11 @@ export default function App() {
           // height the same way the transcript does. Without it the last row of cards is
           // cut off mid-control — the Calendar card's "What's ahead" button was sitting
           // behind the input bar, unreachable, with a sliver of text peeking out below it.
-          bottomInset={dockHeight}
+          // The resume banner FLOATS above the composer, so it is not part of dockHeight
+          // — which meant the board reserved space for the composer only and the banner
+          // sat on top of the deck's pager. Home's content and the chat dock must not
+          // compete for the same pixels, so the banner's own height is reserved too.
+          bottomInset={dockHeight + (resumeOffer ? RESUME_BANNER_H : 0)}
           onAsk={followUpInChat}
           onNewChat={() => setTab('chat')}
           onRoute={route => {

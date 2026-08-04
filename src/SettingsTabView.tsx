@@ -40,12 +40,18 @@ function VoiceSetupSection() {
               <Row label="whisper-cli" ok={st.hasWhisper} hint="not found on PATH / ./bin" />
               <Row label="ffmpeg" ok={st.hasFfmpeg} hint="not found on PATH / ./bin" />
               <Row label="speech model" ok={st.hasModel} hint="ggml-base.en.bin missing" />
-              <div style={{ fontSize: 11, lineHeight: 1.6, color: '#77778c', marginTop: 4, fontFamily: "'SF Mono','Fira Code',monospace", background: 'rgba(0,0,0,0.25)', padding: '8px 10px', borderRadius: 8, whiteSpace: 'pre-wrap' }}>
+              // `pre-wrap` wraps at WHITESPACE only, and the install block contains a
+              // 92-character URL with no spaces in it — so on a phone the line could not
+              // break, pushed the settings column wider than the viewport, and the whole
+              // page gained a horizontal scroll (there must be none, anywhere).
+              // `anywhere` lets an unbroken token wrap; minWidth:0 stops this flex child
+              // from claiming its content width and re-widening the column.
+              <div style={{ fontSize: 11, lineHeight: 1.6, color: '#77778c', marginTop: 4, fontFamily: "'SF Mono','Fira Code',monospace", background: 'rgba(0,0,0,0.25)', padding: '8px 10px', borderRadius: 8, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', wordBreak: 'break-word', minWidth: 0, maxWidth: '100%', boxSizing: 'border-box' }}>
 {`brew install whisper-cpp ffmpeg
 mkdir -p .crucible/whisper && curl -L -o .crucible/whisper/ggml-base.en.bin \\
   https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`}
               </div>
-              <span style={{ fontSize: 10.5, color: '#4a4a5e' }}>Or set WHISPER_BIN / FFMPEG_BIN / WHISPER_MODEL to existing installs. Model path: {st.modelPath}</span>
+              <span style={{ fontSize: 10.5, color: '#4a4a5e', overflowWrap: 'anywhere', minWidth: 0 }}>Or set WHISPER_BIN / FFMPEG_BIN / WHISPER_MODEL to existing installs. Model path: {st.modelPath}</span>
             </>
           )
         ) : <span style={{ fontSize: 11.5, color: '#55556a' }}>Checking voice stack…</span>}
@@ -152,7 +158,7 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
       </div>
       )}
 
-      <div ref={scrollerRef} style={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
+      <div ref={scrollerRef} style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden' }}>
       {narrow && (
         <div style={{
           position: 'sticky', top: 0, zIndex: 2, marginRight: 46,

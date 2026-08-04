@@ -78,11 +78,16 @@ function StepButton({ label, dir, onClick, disabled }: {
   )
 }
 
-export default function CardDeck({ items, labels }: {
+export default function CardDeck({ items, labels, fill = false }: {
   /** One node per card, already rendered. Order is the user's board order. */
   items: React.ReactNode[]
   /** Accessible name per card. Same length as `items`. */
   labels: string[]
+  /** Fill the parent's height instead of using the fixed --card-h box. On the phone the
+   *  deck owns the whole screen between the header and the composer, so a 260px card
+   *  would leave two thirds of the display empty. The parent reserves the composer's
+   *  space, so filling here can never collide with it. */
+  fill?: boolean
 }) {
   const n = items.length
   const [front, setFront] = useState(0)
@@ -98,17 +103,17 @@ export default function CardDeck({ items, labels }: {
 
   useEffect(() => { if (front > n - 1) setFront(Math.max(0, n - 1)) }, [n, front])
 
-  // ── ONE height, measured from the token, not from the content (2026-08-04b) ──────
+  // ── ONE height for every card, never the content's (2026-08-04b) ────────────────
   // This used to measure the FRONT card and animate the frame between per-card heights,
   // on the reasoning that "sizing to the tallest would leave a crater under the short
-  // ones". In practice that produced the opposite of continuity: the same widget was a
-  // different size on the phone than on the desktop board, and a different size again
-  // depending on which card you had swiped to — the frame visibly resized under your
-  // thumb between every swipe. Cards are now exactly --card-h, the SAME token the
-  // desktop grid uses, so a card is one shape everywhere in the app and swiping moves
-  // content without moving the furniture. Cards scroll internally past that height
-  // (HomeBoard gives each body its own overflow), so nothing is truncated.
+  // ones". That produced the opposite of continuity: the frame visibly resized under
+  // your thumb on every swipe, and the same widget was a different size than on the
+  // desktop board. Every card is now the same box — `fill` (the phone, where the deck
+  // owns the screen) or the --card-h token (anywhere else, matching the desktop grid) —
+  // so swiping moves content without moving the furniture. Nothing is truncated: each
+  // card body scrolls internally (HomeBoard gives it its own overflow).
   useLayoutEffect(() => {
+    if (fill) return                        // height comes from the parent box
     const read = () => {
       const raw = getComputedStyle(document.documentElement).getPropertyValue('--card-h')
       const px = parseInt(raw, 10)
@@ -119,7 +124,7 @@ export default function CardDeck({ items, labels }: {
     // never holds a stale height.
     window.addEventListener('resize', read)
     return () => window.removeEventListener('resize', read)
-  }, [])
+  }, [fill])
 
   const go = useCallback((next: number, dir: -1 | 1) => {
     if (next < 0 || next > n - 1) return
@@ -193,7 +198,9 @@ export default function CardDeck({ items, labels }: {
   const progress = Math.min(1, Math.abs(dx) / Math.max(1, w))
 
   return (
-    <div>
+    // In `fill` mode this root must itself be a full-height flex column, or the frame's
+    // `flex: 1` has no height to claim and the deck collapses to a sliver.
+    <div style={fill ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } : undefined}>
       <div
         ref={frameRef}
         tabIndex={0}
@@ -206,8 +213,8 @@ export default function CardDeck({ items, labels }: {
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         style={{
-          position: 'relative', height, minWidth: 0, outline: 'none',
-          transition: 'height 280ms var(--ease-glide)',
+          position: 'relative', minWidth: 0, outline: 'none',
+          ...(fill ? { flex: 1, minHeight: 0 } : { height, transition: 'height 280ms var(--ease-glide)' }),
           // The deck owns horizontal; the page keeps vertical. Without this the browser
           // steals the gesture and the deck feels dead on iOS.
           touchAction: 'pan-y',

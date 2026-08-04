@@ -36,19 +36,12 @@ import CardDeck from './CardDeck'
 import WidgetTaskPanel from './WidgetTaskPanel'
 import type { Round } from './chat/core'
 
-// ── The deck is OFF (2026-08-04b) ──────────────────────────────────────────────
-// Below 700px the board used to become a one-card-at-a-time swipe deck. Two problems,
-// both raised directly as "cards must be the same on mobile and PC, we need continuity
-// across all surfaces":
-//   · It is a different INTERACTION from the desktop board, not a different layout —
-//     you swipe on the phone and scan on the desktop, so the same six widgets are two
-//     different products depending on which screen you opened.
-//   · A fixed-height card in a full-height column left a large dead area under the deck
-//     on any phone, which reads as an unfinished screen.
-// The phone now gets the SAME grid, single column, scrolled — identical cards, identical
-// size, identical behaviour, one surface. CardDeck.tsx is kept (it is still correct, and
-// the height fix in it stands) so this is a one-constant decision, not a deletion.
-const DECK_MAX_WIDTH = 0     // 0 = never deck; restore to 700 to bring the deck back
+// Below this width the board is a swipe DECK — stacked cards you page through, which is
+// the intended phone interaction. (It was briefly disabled in favour of a scrolling
+// single-column grid; that was wrong. "Cards the same size" was a request about the
+// cards being uniform, NOT about replacing the deck with a scroller — the phone is
+// supposed to stack and swipe, and having to scroll a long column was the regression.)
+const DECK_MAX_WIDTH = 700
 
 function fmtWhen(ts: number): string {
   const d = new Date(ts)
@@ -514,15 +507,23 @@ export default function HomeBoard({
   return (
     <div
       ref={measure}
-      style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', position: 'relative' }}
+      // In DECK mode the surface must not scroll: the deck owns the screen between the
+      // greeting and the composer, and a page scrollbar on top of a swipeable stack means
+      // a vertical drag does two things at once. The grid keeps its normal scrolling.
+      style={{ flex: 1, minHeight: 0, overflowY: deck ? 'hidden' : 'auto', overflowX: 'hidden', position: 'relative' }}
     >
       <div style={{
         // The 64px desktop gutter is half the screen on a phone, so the clamp is
         // width-aware: a comfortable margin on a wide board, a tight one on a narrow
         // column. Same rule, one expression — not a mobile fork.
         width: width < 760 ? 'min(1180px, 100% - 28px)' : 'min(1180px, 100% - 64px)',
-        margin: '0 auto', padding: `20px 0 ${bottomInset + 40}px`,
+        margin: '0 auto',
+        // The composer's height is RESERVED as padding, so "fill the screen" for the deck
+        // means fill what is left after the composer — the two can never overlap or
+        // compete for the same pixels.
+        padding: `20px 0 ${bottomInset + (deck ? 12 : 40)}px`,
         display: 'flex', flexDirection: 'column', gap: 16,
+        ...(deck ? { height: '100%', boxSizing: 'border-box' as const } : null),
       }}>
         {/* Greeting + one line of real state. Never a slogan. */}
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '0 2px' }}>
@@ -569,7 +570,7 @@ export default function HomeBoard({
         {cards.length === 0 ? (
           <EmptyBody text="Your board is empty. Add a widget to get started." action={missing.length ? 'Arrange' : undefined} onAction={() => setEditing(true)} />
         ) : deck ? (
-          <CardDeck items={cards} labels={cardLabels} />
+          <CardDeck items={cards} labels={cardLabels} fill />
         ) : (
           // alignItems was 'start', which is what let each card size to its own content.
           // 'stretch' + a fixed row height is the whole uniformity fix: every cell is the
