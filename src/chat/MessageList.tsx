@@ -465,7 +465,19 @@ export const MessageList = memo(function MessageList({
                       grounding, verifying) while the answer hasn't started streaming yet, so the
                       working bubble feels active instead of a static spinner. */}
                   {!round.synthesisDone && round.synthesis.length === 0 && (
-                    <LiveActivity status={round.liveStatus} live={round.id === liveRoundId && thinking} />
+                    round.deliveryError
+                      ? (
+                        <div role="alert" style={{
+                          display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px',
+                          borderRadius: 12, background: 'var(--alarm-fill)', border: '1px solid var(--alarm-edge)',
+                        }}>
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--alarm-ink)', flexShrink: 0, marginTop: 5 }} />
+                          <span style={{ fontSize: 12.5, lineHeight: 1.5, color: 'var(--alarm-ink)', minWidth: 0, overflowWrap: 'anywhere' }}>
+                            {round.deliveryError}
+                          </span>
+                        </div>
+                      )
+                      : <LiveActivity status={round.liveStatus} live={round.id === liveRoundId && thinking} />
                   )}
                   {/* Ensemble chrome (model chips + attribution) renders ONLY on ensemble
                       runs — a local reply is a clean card (v3). */}

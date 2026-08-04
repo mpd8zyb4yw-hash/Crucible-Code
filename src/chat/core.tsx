@@ -244,6 +244,10 @@ export interface Round {
   /** Latest streamed 'thought' — what the brain is doing right now (searching, grounding, …).
    *  Drives the live status line in the working bubble so it doesn't feel static. */
   liveStatus?: string
+  /** The request never reached the server (offline, wrong port, server down). Shown in
+      place of the working line — a connection failure is NOT "still thinking", and
+      conflating them is what makes a dead backend look like a slow one. */
+  deliveryError?: string
 }
 
 export interface LiveSource {

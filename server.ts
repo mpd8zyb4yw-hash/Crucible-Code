@@ -10227,7 +10227,17 @@ function startListening(port: number, attempt = 0) {
   // zero setup. That is the intended cross-device path and it is safe: the LAN is the
   // trust boundary. A TUNNEL is not — see the banner.
   httpServer.listen(port, '0.0.0.0', () => {
-    console.log(`Crucible server running on port ${port}`)
+    // Report the port the SOCKET actually got, not the one we asked for. These can
+    // differ (retry paths, a second instance winning the race), and the mismatch cost a
+    // full debugging session on 2026-08-04: the log said "running on port 3001" while
+    // the process was bound to 3141, so every browser call hit ERR_CONNECTION_REFUSED
+    // and the app looked like a dead backend. A log line that can lie is worse than none.
+    const addr = httpServer.address()
+    const actualPort = typeof addr === 'object' && addr ? addr.port : port
+    if (actualPort !== port) {
+      console.warn(`[Port] REQUESTED ${port} BUT BOUND ${actualPort} — clients configured for ${port} will fail to connect.`)
+    }
+    console.log(`Crucible server running on port ${actualPort}`)
     console.log('[Auth] No login screen — single local identity:', localUser().id)
     console.warn('[Auth] No authentication. Anything that can reach this port is trusted')
     console.warn('[Auth] with your mail, calendar and the agent\'s tools. Safe on localhost')

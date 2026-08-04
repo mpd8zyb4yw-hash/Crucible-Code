@@ -1397,6 +1397,14 @@ export default function App() {
       if (err.name === 'AbortError') { setConvThinking(convId, false); return }
       console.error('[send] fetch failed:', err)
       haptic('heavy')
+      // SAY SO. This used to clear `thinking` and return, leaving the user's message on
+      // screen with no answer, no spinner and no error — indistinguishable from a hang.
+      // A failed fetch here means the server was unreachable (down, or bound to a
+      // different port than API_BASE), which the user can actually act on.
+      setRounds(prev => prev.map(r => r.id === roundId ? {
+        ...r,
+        deliveryError: `Couldn’t reach Crucible at ${API_BASE.replace(/^https?:\/\//, '')}. The server may not be running.`,
+      } : r))
       setConvThinking(convId, false); return
     }
     const reader = res.body!.getReader()
