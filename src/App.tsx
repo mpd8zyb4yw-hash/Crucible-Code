@@ -2285,6 +2285,9 @@ export default function App() {
       {tab === 'settings' && (
         <SettingsTabView
           ensemble={ensemble}
+          // Connections is a Settings SECTION now, not a rail peer. Rendered inline with
+          // no close button — closing is leaving the tab.
+          connections={<ConnectionsView embedded onClose={() => {}} onFollowUp={followUpInChat} />}
           library={<LibraryPage onBuild={text => { setTab('chat'); void send(text) }} />}
           selfRepair={<SelfRepairPage />}
           advanced={

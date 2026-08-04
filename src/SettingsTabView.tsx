@@ -74,6 +74,11 @@ export function SystemRow({ label, desc, children }: { label: string; desc: stri
 }
 
 const SETTINGS_SECTIONS = [
+  // Connections lives here since the rail consolidation (2026-08-04). It used to be a
+  // top-level rail item; without an entry here a user who had ALREADY connected an
+  // account had no route back to manage it — the only remaining door was a widget's
+  // not-connected empty state, which by definition disappears once you connect.
+  { id: 'connections', label: 'Connections' },
   { id: 'keys', label: 'API keys' },
   { id: 'ensemble', label: 'Ensemble' },
   { id: 'voice', label: 'Voice' },
@@ -83,8 +88,10 @@ const SETTINGS_SECTIONS = [
   { id: 'system', label: 'System' },
 ] as const
 
-export default function SettingsTabView({ ensemble, advanced, library, selfRepair }: {
+export default function SettingsTabView({ ensemble, advanced, library, selfRepair, connections }: {
   ensemble: EnsembleState
+  /** The Connections page, rendered inline as this tab's first section. */
+  connections?: React.ReactNode
   /** Remaining system drawers (history/tasks/integrations/…) relocated from the
    *  old chat topbar — rendered as labeled SystemRow entries in the System section. */
   advanced?: React.ReactNode
@@ -165,8 +172,19 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
         </div>
       )}
       <div style={{ width: '100%', maxWidth: 640, margin: '0 auto', padding: narrow ? '20px 16px 44px' : '36px 32px 48px', display: 'flex', flexDirection: 'column', gap: 26 }}>
+        {connections && (
+          <div id="settings-connections" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Connections</span>
+              <span style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--c-dim)' }}>
+                Accounts Crucible can read from. Connect or disconnect at any time — nothing is read until you link it.
+              </span>
+            </div>
+            {connections}
+          </div>
+        )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span id="settings-keys" style={{ fontSize: 12.5, color: '#77778c' }}>Crucible runs fully on-device. External calls only happen through keys you add here.</span>
+          <span id="settings-keys" style={{ fontSize: 12.5, color: 'var(--c-dim)' }}>Crucible runs fully on-device. External calls only happen through keys you add here.</span>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>

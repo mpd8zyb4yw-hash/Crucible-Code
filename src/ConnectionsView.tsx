@@ -149,8 +149,11 @@ const TOOL_VALUE: Record<string, string> = {
   'cli-semgrep': 'Code security scanning the agent can run over a project on request.',
 }
 
-export default function ConnectionsView({ onClose, onFollowUp }: {
+export default function ConnectionsView({ onClose, onFollowUp, embedded }: {
   onClose: () => void
+  /** Rendered inside Settings rather than as a full-page overlay: drop the fixed
+   *  positioning, the page header and the close button, and let Settings own the frame. */
+  embedded?: boolean
   /** Prefill the chat composer and return to chat — wired by App. */
   onFollowUp?: (text: string) => void
 }) {
@@ -175,10 +178,14 @@ export default function ConnectionsView({ onClose, onFollowUp }: {
   const toolbox = list.filter(c => c.kind === 'cli' && c.id !== 'cli-github')
 
   return (
-    <div style={{
+    <div style={embedded ? { display: 'flex', flexDirection: 'column' } : {
       position: 'absolute', inset: 0, zIndex: 30, background: 'var(--c-bg)',
       display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s var(--ease)',
     }}>
+      {/* Embedded in Settings, the page chrome is Settings' job — a second title bar and
+          a Close button inside a tab is exactly the nested-surface clutter the rail
+          consolidation set out to remove. */}
+      {!embedded && (
       <div style={{
         flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12,
         padding: `calc(var(--titlebar-clearance) + 14px) 20px 14px`,
@@ -194,6 +201,7 @@ export default function ConnectionsView({ onClose, onFollowUp }: {
         <div style={{ flex: 1 }} />
         <GhostButton onClick={onClose} title="Back to chat">Close</GhostButton>
       </div>
+      )}
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '18px 22px 24px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 860 }}>
