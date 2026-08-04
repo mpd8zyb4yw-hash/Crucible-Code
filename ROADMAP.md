@@ -1933,6 +1933,94 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04 (cont.126 — agents were broken; six defects, each measured on a live run)
+
+Report: "agents are utterly broken in crucible ... on pc and on phone". Reproduced by driving
+real turns through `/api/chat` and reading the SSE, then through Mission Control at 1280px and
+375px. It was not one bug. Every fix below flipped a bench case fail→pass, and the benches are
+new or extended, not asserted-by-inspection.
+
+**1. The one that made it look random: a boot-time race disabled tools for the whole process.**
+`localInferenceAvailable` was set ONCE at startup by a single 2s health probe fired alongside
+corpus load, the model hunter and the Python prewarm. Two consecutive boots on this machine,
+same healthy daemon:
+
+    boot A  [Local] Apple Foundation Models bridge up — on-device inference active
+    boot B  [Local] FM bridge not running — local inference inactive (external pool only)
+
+That flag gates ALL THREE tool-executing layers (content path, Layer 2 planner, Layer 2.5
+fmReact — the only executor that calls tools). Losing the race turned the agent into a prose
+generator: 0 tool calls, a plan narrated in future tense as the answer, `ok:true`, `✓ verified`.
+Restarting "fixed" it, which is exactly why it read as random breakage — and it is the same
+symptom as NEXT_SESSION's open item 2 ("DONE · 5 steps · 0 tool calls").
+`src/server/localInferenceGate.ts` re-probes while down (rate-limited, concurrent callers share
+one probe) and LATCHES once up, so a boot miss is recoverable and a later blip can never take
+working tools away. It can only ever enable tools that were wrongly disabled. Bench 14/14, and
+confirmed live: the boot probe missed again, and the request-time re-probe recovered it mid-turn.
+
+**2. A one-shot router answered a two-referent question with one call.** "Look at the files in
+~/Desktop/agentprobe and tell me what is in notes.txt" → `statedPath` took the LONGEST path
+token, "files in" set the listing intent, one `list_dir` ran, and the entire answer was
+`notes.txt`. The named-tool resolver has no loop behind it, so a goal naming two distinct
+referents is out of its jurisdiction — it now declines and fmReact (which carries list_dir AND
+read_file) takes the turn. Bench 93→101.
+
+**3. A file operation was built as a folder of fabricated documents.** "Count how many lines are
+in notes.txt ... and write that number into count.txt" matched `isAssetCollectionGoal`: CREATION
+on "write", CONTAINER on "notes" — from the FILENAME — and DESTINATION on "Desktop" — from the
+PATH. The run created `~/Desktop/count-how-many-lines-are-txt-agentprobe-that/` containing a
+README and an overview.md explaining that "a text agent probe ... does not contain lines of
+text", never touched either named file, and reported ok. Now: a goal naming a specific file is
+declined (the guard `specForGoal` already had — the two creation gates disagreed about the same
+message), and the container noun is read from PROSE. A bare directory path still states a
+destination, so real collection goals are untouched. New bench, 21/21.
+
+**4. write_file wrote a promise to compute instead of a value.** It was handed
+`content: "...is: $(cat ~/.../notes.txt | wc -l)"`. Nothing expands that — write_file writes
+bytes — so count.txt got 84 characters of unexecuted shell. Rejected before the bytes land, with
+a message saying to compute the literal. Scoped to data files: `$(` is ordinary in a shell
+script, a Makefile, CI yaml, markdown, and jQuery. New bench 34/34, ten false-reject guards.
+
+**5. Two tools were feeding the model numbers it then reported as answers.**
+ - `Wrote 84 chars to ...` put a bare integer in front of a model mid-count; it answered "The
+   number of lines in notes.txt is 84." The char count had one producer and no parsers. Gone.
+ - The reverse: `read_file` KNEW the line count (`meta.totalLines`, correct) but `meta` never
+   leaves the tool layer — the model got a bare numbered listing and had to count it, and
+   answered "has 4 lines" for a 3-line file whose correct listing was on screen. The output now
+   states `notes.txt — 3 lines.`, and names the range when the view is partial.
+
+**6. Two kinds of scaffolding shipped as the answer.**
+ - `TOOL: search\nquery: count\nTOOL: write_file\npath: ...\ncontent: 3` — the run had WORKED
+   (wrote 3, read it back) and the user was shown the protocol. `stripAgentScaffold` knew about
+   FINAL_ANSWER: and bare labels but not the call syntax the model emits every turn.
+ - On the phone, `exit 0\nalpha\nbeta\ngamma` shipped as the ANSWER card for "how many lines".
+   `isAllToolResidue` needs EVERY line to be residue and three of four were file content. A
+   summary carrying a shell EXIT STATUS is raw joined stdout that nobody composed —
+   `containsExecStatusLine` escalates it. Only the exit-status class, never the acknowledgement
+   class ("Done." is ordinary English and can end a real answer).
+
+**7. An escalation threw away everything the run had learned.** The last live failure, on the
+phone: fmReact ran four tools, `read_file` returned "notes.txt — 3 lines." verbatim, the loop
+failed to COMPOSE a final (its answer was pure `TOOL:` protocol, which now strips to empty), so
+the accept check `!abstained && answer.trim() && toolsUsed.length > 0` failed and the turn
+escalated to a toolless path that replied "The file … has 10 lines." Four correct observations
+were discarded and the number invented. `FmReactResult` now carries `observations` (the calls
+AND their results, not just tool names), and before escalating, the server composes an answer
+from that evidence under "every number in your answer must appear in the tool output". Only if
+that comes back empty does it escalate. A run that LOOKED and a run that did not are no longer
+treated the same.
+
+**Measured end state.** `count.txt` now contains `3`. The phone answer for "how many lines" is now "The file notes.txt has 3 lines."
+Mission Control verified at 1280px and 375px: roster + workspace stack, live tool streaming, DONE state, verify seal, answer card,
+steer box honestly disabled while working, no horizontal page scroll (wide tables scroll inside
+their own container). Bench sweep 660/660 across 19 files (new: writefile 34, assetGoal 21,
+localInferenceGate 14; extended: localtools 101, readfile 15, fmReact 21, plananswer 38).
+
+**Still open.** The head remains unreliable run-to-run — the same brief takes different routes on
+different runs. These fixes remove ways a WRONG answer can be produced or shipped; they do not
+make the small model deterministic. No coding-benchmark harness run this session.
+
+
 ### 2026-08-04 (cont.125 — the swallowed-error bug class, swept; two stuck-state bugs found while verifying)
 
 Follow-on to cont.124. Every item here was found by CHECKING a claim rather than trusting it,

@@ -17,40 +17,67 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-04 (cont.125 — swallowed-error sweep + two stuck-state bugs) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-04 (cont.126 — agents were broken; six measured defects fixed) (REPLACE THIS EVERY SESSION)
 
-> **cont.125 (2026-08-04).** Detail in the ROADMAP CHANGE LOG. Benches all green:
-> captureTune 15/15, pairing 35/35, publicHost 22/22, streamFailure 12/12, jwt 9/9,
-> latency 6/6, textVector 7/7, util 11/11, refactorRoutes 10/10. New npm scripts:
-> `capturetune:bench`, `pairing:bench`, `publichost:bench`, `streamfail:bench`.
+> **cont.126 (2026-08-04).** Report: "agents are utterly broken ... on pc and on phone."
+> Reproduced live (SSE against `/api/chat`, then Mission Control at 1280px and 375px), six
+> distinct defects, each fixed with a bench case that flipped fail→pass. Full detail in the
+> ROADMAP CHANGE LOG. Bench sweep **660/660 across 19 files**.
 >
-> - **Swallowed SSE errors are gone as a CLASS.** One helper (`src/chat/streamFailure.ts`),
->   six call sites, guard count == consumer count == 6. If you add a streaming endpoint,
->   use it — `!res.body` alone is the bug.
-> - **`thinking` can no longer stick true.** All three consume sites are `try/finally`.
->   The symptom was a send button locked on "Stop" with nothing running.
-> - **The transcript now shows `agent.final`** when synthesis was suppressed, and only
->   claims "Stopped without answering" for a round that actually died mid-stream.
-> - **Continue-from-checkpoint navigates to chat**; it used to appear to do nothing.
-> - **Pairing link derives its host from cloudflared ingress.** No env var needed.
-> - **Reduced motion verified both directions** with a forced `matchMedia`.
+> - **The one that made it look random:** `localInferenceAvailable` was latched ONCE at boot by
+>   a 2s health probe racing corpus load / model hunter / python prewarm. It gates ALL THREE
+>   tool-executing layers, so losing that race made the agent a prose generator (0 tool calls,
+>   a future-tense plan as the "answer", `ok:true`, `✓ verified`) for the whole process.
+>   Two consecutive boots on this machine went up / down with the daemon healthy throughout.
+>   `src/server/localInferenceGate.ts` re-probes while down and latches once up.
+>   **This was NEXT_SESSION's old open item 2** ("DONE · 5 steps · 0 tool calls") — closed.
+> - The named-tool shortcut answered two-referent goals with one call ("...what is in
+>   notes.txt" → answer: `notes.txt`). It declines now; fmReact takes them.
+> - `isAssetCollectionGoal` matched a file operation — container noun from the FILENAME
+>   `notes.txt`, destination from the PATH `~/Desktop/...` — and built a folder of fabricated
+>   markdown on the Desktop instead. Now declines a goal naming a specific file.
+> - `write_file` accepted `$(cat ... | wc -l)` as content and wrote it verbatim; rejected now
+>   (data files only — shell/Makefile/yaml/markdown/jQuery keep their `$(`).
+> - Two tools fed the model numbers it reported as answers: `Wrote 84 chars` (→ "has 84 lines")
+>   is gone, and `read_file` now STATES the count it already knew instead of making the head
+>   count rows (it answered "4" for a 3-line file whose correct listing was on screen).
+> - Two kinds of scaffolding shipped as answers: leaked `TOOL:` blocks, and `exit 0\nalpha\n...`
+>   on the phone. Both stripped/escalated.
+> - **An escalation discarded the evidence.** fmReact ran four tools, `read_file` returned
+>   "notes.txt — 3 lines.", the loop composed no final, and the toolless escalation answered
+>   "has 10 lines". `FmReactResult.observations` now carries the calls AND their results, and
+>   the server composes from that evidence ("every number must appear in the tool output")
+>   before escalating. Phone answer is now "The file notes.txt has 3 lines."
 >
 > **STILL OPEN — verified as open, not assumed:**
-> 1. **Nothing across cont.123–125 has run on a real phone.** No touch device is available
->    to Claude; it is all `?forceMobile=1` plus protocol probes. The Remote Brain lag fix
->    (JPEG suppressed once WebRTC is up) was proven with a LOCAL WebSocket viewer, never
->    over a hotspot. This is the single biggest unverified surface.
-> 2. **Agent turns are finishing with no answer.** Several restored rounds read
->    `DONE · 5 steps · 0 tool calls` with no synthesis AND no `agent.final`. cont.125 made
->    the UI honest about it; it did NOT investigate why the agent produces nothing. That is
->    an engine question and probably the highest-value one open.
-> 3. **`npm run lint` is dead** — no `eslint.config.js` exists anywhere in the repo, despite
->    the script and the eslint devDependencies. Adding one is a style-policy decision.
-> 4. The preview pane runs `visibilityState: hidden`, which throttles rAF AND
->    ResizeObserver. Layout verification there MUST interleave screenshots to force a
->    rendering step, or it silently measures frozen values and looks like a pass.
-> 5. `src/agentic/SurfaceRenderer.tsx` external-thumbnail item is DONE (was stale in this
->    file); rail-width and reduced-motion items are DONE. Do not re-open them.
+> 1. **The head is unreliable run-to-run, and nothing CHECKS the final answer.** The SAME brief
+>    took five different routes across five runs (Layer 2 `run`, Layer 2.5 fmReact, the offline
+>    research stack, the asset builder, grounded recovery). cont.126 removed ways a wrong answer
+>    can be produced or shipped, and made the escalation path carry its evidence — but there is
+>    still NO verifier that reads a finished answer back against the tool transcript. The
+>    grounding is a PROMPT ("every number must appear in the tool output"), not a check. A
+>    deterministic post-check — an asserted number that contradicts a tool result is rejected —
+>    is the highest-value engine work left, and `read_file`'s new "N lines" line is a ready
+>    ground truth to test it against.
+> 2. **Nothing across cont.123–126 has run on a real phone.** No touch device is available to
+>    Claude; the 375px verification is `?forceMobile=1` + a resized viewport. The Remote Brain
+>    lag fix (JPEG suppressed once WebRTC is up) is still proven only with a LOCAL WebSocket
+>    viewer, never over a hotspot.
+> 3. **No coding-benchmark harness run since cont.122.** `npm run smoke:code:offline` is the
+>    ONLY valid capability number; cont.126 ran unit benches only, so there is no current
+>    `passedHard/total`.
+> 4. **`npm run lint` is dead** — no `eslint.config.js` exists anywhere in the repo despite the
+>    script and the eslint devDependencies. Adding one is a style-policy decision.
+> 5. **`tsconfig.server.json` is misconfigured** — 504 pre-existing errors, nearly all
+>    TS1343 (`import.meta`) and TS1378 (top-level await), because `module`/`target` predate the
+>    code. Every bench file trips it. Typechecking the server is therefore not a usable signal
+>    today; benches run under `tsx`, which ignores it.
+> 6. The preview pane runs `visibilityState: hidden`, which throttles rAF AND ResizeObserver.
+>    Layout verification there MUST interleave screenshots to force a rendering step. Related:
+>    synthetic clicks/typing into the pane do not always reach React — driving the composer
+>    needed the native value setter plus a dispatched `input` event.
+> 7. Mission Control's roster is per-CONVERSATION: after a reload it shows the empty "Send an
+>    agent on its way" state even though runs exist in history. Scheduled runs still list.
 
 > **cont.124 (2026-08-04).** Four tracks landed; full detail in the ROADMAP CHANGE LOG.
 > Benches: captureTune 15/15, pairing 35/35, and the five pre-existing server benches

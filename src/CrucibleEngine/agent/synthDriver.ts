@@ -49,6 +49,7 @@ import { matchMeta } from '../answer/conversational'
 import { answerWithWebGrounding } from '../answer/groundedAnswer'
 import { runtimeVerifyHtml, runtimeVerifyApp, type AppSpecJudge } from './htmlRuntimeVerify'
 import { classifyHtmlGoal, type HtmlGoalKind } from './htmlGoalKind'
+import { namesSpecificFile } from './goalSpec'
 // (MiniCPM/GGUF proposer removed from the game hot path — see solveHtmlWrite; h2h cont.70.)
 
 // ── UNIVERSAL synthesis grounding (cont.71) ───────────────────────────────────
@@ -551,15 +552,45 @@ export function isWebArtifactGoal(goal: string): boolean {
 const CONTAINER_RX = /\b(folder|directory|collection|set of files|files|notes?|dossiers?|write-?ups?|profiles?)\b/
 const DESTINATION_RX = /\b(desktop|downloads|documents)\b/
 
+/** Path-shaped tokens, stripped before reading NOUNS out of a goal. See `assetProse` below. */
+const ASSET_PATH_TOKEN = /(?:^|\s)(?:~|\.{1,2})?\/[\w.-]+(?:\/[\w.-]+)*|\b[\w-]+\.[a-z0-9]{1,5}\b/gi
+
+/**
+ * The goal with its path tokens removed, for reading the CONTAINER noun.
+ *
+ * MEASURED (2026-08-04): "Count how many lines are in notes.txt … and write that number into
+ * count.txt in the same folder" matched CONTAINER_RX on "notes" — taken from the filename
+ * `notes.txt`, not from anything the user asked for. A directory called `notes` or `files` is
+ * completely ordinary, and letting a path supply the deliverable's SHAPE fails silently. Same
+ * rule, same reason, as namedToolRouter's `prose()`.
+ */
+function assetProse(m: string): string {
+  return m.replace(ASSET_PATH_TOKEN, ' ')
+}
+
 /** Creation goal whose deliverable is a FOLDER OF FILES rather than one code/web file. */
 export function isAssetCollectionGoal(goal: string): boolean {
   const m = (goal || '').toLowerCase()
   if (!CREATION_RX.test(m)) return false
   if (isWebArtifactGoal(goal)) return false
   if (NON_BROWSER_RX.test(m)) return false
+  // A goal that names a SPECIFIC FILE is an operation ON that file, and belongs to the tool
+  // planner. `specForGoal` already declines these for the same reason; this gate did not, so
+  // the two creation gates disagreed about the same message.
+  //
+  // MEASURED (2026-08-04): the file-counting brief above was built as a "collection" —
+  // `~/Desktop/count-how-many-lines-are-txt-agentprobe-that/` with a fabricated README and an
+  // overview.md explaining that "a text agent probe … does not contain lines of text". The
+  // named files were never touched, and the run reported ok.
+  //
+  // Deliberately `namesSpecificFile`, not `referencesFile`: a bare directory path states a
+  // DESTINATION ("a folder in ~/Desktop/collections"), which is a normal part of this request.
+  if (namesSpecificFile(goal)) return false
   // Needs BOTH a container noun and a user-folder destination. Requiring the destination
-  // is what keeps "write a set of tests" and "create a module" out of this path.
-  return CONTAINER_RX.test(m) && DESTINATION_RX.test(m)
+  // is what keeps "write a set of tests" and "create a module" out of this path. The container
+  // noun is read from PROSE; the destination is read from the whole message, because a path
+  // genuinely is a way to state one.
+  return CONTAINER_RX.test(assetProse(m)) && DESTINATION_RX.test(m)
 }
 
 /** Slug for the collection folder, derived from the goal's subject. */

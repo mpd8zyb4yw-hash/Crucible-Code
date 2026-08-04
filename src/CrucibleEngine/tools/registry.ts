@@ -357,13 +357,43 @@ registry.register({
     if (!fs.existsSync(abs)) return { ok: false, output: `File not found: ${abs}` }
     const stat = fs.statSync(abs)
     if (stat.isDirectory()) return { ok: false, output: `${abs} is a directory — use list_dir.` }
-    const lines = fs.readFileSync(abs, 'utf-8').split('\n')
+    // A POSIX file ends WITH a newline; that terminator does not create a further line.
+    // `split('\n')` disagrees, so a 3-line notes.txt came back numbered 1..4 with an empty
+    // 4th, and `totalLines` said 4. MEASURED 2026-08-04: asked to count the lines and write
+    // the count, the agent read that listing and wrote "4". The tool misled it — the model
+    // reasoned correctly from what we showed it. Drop the single terminator-induced empty.
+    const raw = fs.readFileSync(abs, 'utf-8')
+    const lines = raw.split('\n')
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
     const offset = Math.max(1, Number(args.offset ?? 1))
     const limit = Math.min(Number(args.limit ?? 2000), 5000)
     const slice = lines.slice(offset - 1, offset - 1 + limit)
     const numbered = slice.map((l, i) => `${offset + i}\t${l}`).join('\n')
+    // State the count; do not make the model re-derive it.
+    //
+    // MEASURED LIVE (2026-08-04, after the phantom-line fix above landed): asked "tell me
+    // exactly how many lines it has", the agent got a CORRECT 3-line listing and answered
+    // "has 4 lines". `totalLines` was right — but it lives in `meta`, and `meta` never reaches
+    // the model: the executor hands it `(ok) <output>` and nothing else. So the one number this
+    // tool computes exactly was withheld, and the weak head was left to count rows, which it
+    // does unreliably. A tool that knows a fact and shows a derivation instead is spending a
+    // model call to re-discover what it already had.
+    //
+    // The range is named whenever the view is partial — "40 lines" printed above a 3-row
+    // listing would just be the next misleading number (cf. write_file's old "Wrote 84 chars").
+    const shownTo = offset - 1 + slice.length
+    const partial = offset > 1 || shownTo < lines.length
+    const header = lines.length === 1 && raw === ''
+      ? `${path.basename(abs)} is empty (0 lines).`
+      : `${path.basename(abs)} — ${lines.length} line${lines.length === 1 ? '' : 's'}` +
+        (partial ? `, showing ${offset}-${shownTo}.` : '.')
     const { output, truncated } = capOutput(numbered)
-    return { ok: true, output, truncated: truncated || offset - 1 + limit < lines.length, meta: { totalLines: lines.length } }
+    return {
+      ok: true,
+      output: `${header}\n${output}`,
+      truncated: truncated || offset - 1 + limit < lines.length,
+      meta: { totalLines: lines.length },
+    }
   },
 })
 
@@ -437,6 +467,46 @@ registry.register({
   },
 })
 
+// ── Unexecuted shell substitution in a data file ──────────────────────────────────────────
+//
+// MEASURED LIVE (2026-08-04). Asked to count the lines in a 3-line notes.txt and write the
+// count into count.txt, the agent read the file correctly and then called
+//   write_file { path: "…/count.txt", content: "\"…is: $(cat …/notes.txt | wc -l)\"" }
+// write_file writes BYTES — nothing expands that — so count.txt received 84 characters of
+// unexecuted shell instead of "3". The model had shipped a promise to compute rather than a
+// computed value, and every downstream step then read the promise as data.
+//
+// A file whose content still contains the command that was supposed to produce it is
+// mechanically detectable before the bytes land, so this is a verifier, not a guess: reject,
+// say exactly what to do instead, and let the loop backtrack. See __writefile_bench.ts.
+//
+// Scoped to DATA files only. `$(` is ordinary and correct in a shell script, a Makefile, CI
+// yaml, markdown docs, and jQuery (`$(document).ready`) — refusing to write those would be a
+// far worse bug than the one being fixed. An extensionless file is usually a script, so it is
+// exempt too. The allowlist is closed and factual; the exempt set is open, which is why the
+// test runs in this direction.
+const SUBSTITUTION_PRONE_DATA_FILE = /\.(?:txt|csv|tsv|json|jsonl|log|xml)$/i
+/** Commands common enough that seeing one INSIDE `$( )` means a shell was expected to run. */
+const SHELL_COMMAND_HEAD =
+  /^\s*(?:cat|wc|ls|grep|egrep|awk|sed|jq|git|date|echo|head|tail|sort|uniq|find|printf|basename|dirname|pwd|whoami|python3?|node|npm|curl|wget|stat|du|df)\b/
+
+/**
+ * The unexecuted command substitution in `content`, or null.
+ *
+ * Deliberately NOT "contains `$(`": "Total cost: $(approximately) 40 dollars" is prose, and
+ * flagging it would refuse a legitimate write. A substitution is only called out when its BODY
+ * opens with a real command name — a closed, factual class, unlike the open class of things a
+ * parenthetical can say.
+ */
+export function unexecutedSubstitution(content: string, filePath: string): string | null {
+  if (!SUBSTITUTION_PRONE_DATA_FILE.test(filePath)) return null
+  const spans: string[] = []
+  for (const m of content.matchAll(/\$\(([^()]{1,200})\)/g)) spans.push(m[1])
+  for (const m of content.matchAll(/`([^`\n]{1,200})`/g)) spans.push(m[1])
+  for (const body of spans) if (SHELL_COMMAND_HEAD.test(body)) return body.trim()
+  return null
+}
+
 registry.register({
   name: 'write_file',
   description: 'Create or overwrite a file with the given content. Parent dirs are created.',
@@ -455,6 +525,20 @@ registry.register({
       const reason = protectedFileReason(fs.readFileSync(abs, 'utf-8'))
       if (reason) return { ok: false, output: `Refusing to overwrite ${abs} — marked protected ("${reason}"). Write to a different path instead; this file must not change.` }
     }
+    // Verify BEFORE the bytes land — a rejected write must not mutate the disk, or the model
+    // gets told "no" while the wrong file sits there for the next step to read.
+    const unrun = unexecutedSubstitution(String(args.content ?? ''), abs)
+    if (unrun) {
+      return {
+        ok: false,
+        output:
+          `Refusing to write ${abs}: the content still contains the shell command \`${unrun}\` ` +
+          'inside a substitution. Nothing runs it — write_file writes bytes exactly as given, so ' +
+          'the file would contain that text instead of a result. Work out the actual value ' +
+          '(you can use the `run` tool, or compute it from a tool result you already have) and ' +
+          'call write_file again with the literal value as the content.',
+      }
+    }
     fs.mkdirSync(path.dirname(abs), { recursive: true })
     // Deterministic write-time repair: a generated TS/JS module that self-tests with node's
     // `assert` cannot compile in a project without @types/node — measured as the sole gen-path
@@ -466,7 +550,11 @@ registry.register({
     }
     fs.writeFileSync(abs, body, 'utf-8')
     ctx.onFileMutated?.([abs])
-    return { ok: true, output: `Wrote ${body.length} chars to ${abs}` }
+    // No character count. MEASURED 2026-08-04: "Wrote 84 chars to …/count.txt" put a bare
+    // integer in front of a model that was mid-way through counting something, and it answered
+    // "The number of lines in notes.txt is 84." The count has no consumer — one producer, no
+    // parsers — while the path is what the next step needs. Say only what is useful.
+    return { ok: true, output: `Wrote ${abs}` }
   },
 })
 

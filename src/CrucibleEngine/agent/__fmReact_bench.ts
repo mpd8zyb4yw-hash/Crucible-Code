@@ -35,5 +35,54 @@ console.log('== clean text is untouched ==')
   check('idempotent', stripAgentScaffold(stripAgentScaffold('FINAL_ANSWER: x is y and z')) === 'x is y and z')
 }
 
+// ── The tool protocol is not an answer ───────────────────────────────────────
+//
+// MEASURED LIVE (2026-08-04, `on-device FM (desktop)`). The run WORKED — it read notes.txt,
+// wrote "3" into count.txt, and read it back to confirm — and then shipped this as the answer
+// the user reads:
+//
+//     TOOL: search
+//     query: count
+//     TOOL: write_file
+//     path: ~/Desktop/agentprobe/count.txt
+//     content: 3
+//
+// stripAgentScaffold knew about FINAL_ANSWER: and bare labels, but not about the call protocol
+// itself, so the one piece of scaffold the model emits on EVERY turn went straight through.
+// An answer made only of tool calls is not an answer: emptying it makes the caller's
+// `!fmRes.answer.trim()` check escalate, which is the honest outcome.
+console.log('== leaked TOOL: protocol never reaches the user ==')
+{
+  const leaked = 'TOOL: search\nquery: count\nTOOL: write_file\npath: ~/Desktop/agentprobe/count.txt\ncontent: 3'
+  const out = stripAgentScaffold(leaked)
+  check('an all-protocol answer strips to empty', out === '', JSON.stringify(out))
+
+  const mixed = 'I counted the lines and saved the total.\n\nTOOL: write_file\npath: count.txt\ncontent: 3'
+  const outMixed = stripAgentScaffold(mixed)
+  check('prose survives, the call is dropped',
+    outMixed === 'I counted the lines and saved the total.', JSON.stringify(outMixed))
+
+  check('a decorated header is stripped too',
+    stripAgentScaffold('**TOOL: search**\nquery: count') === '', JSON.stringify(stripAgentScaffold('**TOOL: search**\nquery: count')))
+  check('protocol after a FINAL_ANSWER marker is still stripped',
+    stripAgentScaffold('FINAL_ANSWER:\nTOOL: search\nquery: x') === '')
+  check('idempotent on protocol', stripAgentScaffold(stripAgentScaffold(leaked)) === '')
+}
+
+console.log('== prose that merely looks like a call is kept ==')
+{
+  // The false-strip direction. A colon line is ordinary English, and an answer ABOUT tools
+  // must not be gutted — this is the direction that silently destroys good answers.
+  const prose = 'To read a file, call the read_file tool with a path.\nNote: it returns numbered lines.'
+  check('a "Note:" line is not scaffold', stripAgentScaffold(prose) === prose, JSON.stringify(stripAgentScaffold(prose)))
+  const recipe = 'Ingredients:\nflour: 200g\nsugar: 100g'
+  check('a key:value list with no TOOL: header survives', stripAgentScaffold(recipe) === recipe, JSON.stringify(stripAgentScaffold(recipe)))
+  const after = 'TOOL: search\nquery: count\n\nI found three lines in the file.'
+  check('prose after a blank line ends the block',
+    stripAgentScaffold(after) === 'I found three lines in the file.', JSON.stringify(stripAgentScaffold(after)))
+  check('the word "tool" in prose is untouched',
+    stripAgentScaffold('The tool: a hammer.') === 'The tool: a hammer.')
+}
+
 console.log(`\n${pass}/${pass + fail} passed`)
 if (fail > 0) process.exit(1)

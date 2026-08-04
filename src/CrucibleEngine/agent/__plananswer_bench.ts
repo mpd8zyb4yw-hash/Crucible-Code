@@ -12,7 +12,7 @@
 // i.e. the agent's own plan labels in front of the user. `answer` (composeAnswer) is the
 // user-facing text: results only, de-duplicated, never model-generated.
 import { composeAnswer, stripLedgerLabels } from './planner'
-import { isAllToolResidue } from './loop'
+import { isAllToolResidue, containsExecStatusLine } from './loop'
 
 let pass = 0, fail = 0
 function check(name: string, cond: boolean, detail?: string) {
@@ -105,6 +105,42 @@ console.log('\n== the live regression, end to end ==')
   check('no step labels reach the user', !/perform addition|display result/.test(answer), answer)
   check('no ledger arrows reach the user', !/→/.test(answer), answer)
   check('answer is the finding itself', answer === 'The sum of 17 and 4 is 21.', JSON.stringify(answer))
+}
+
+// ── Raw shell output is not an answer, even when it carries real content ─────
+//
+// MEASURED LIVE (2026-08-04, phone layout at 375px, `on-device FM (Layer 2)`). Brief:
+// "Read notes.txt in ~/Desktop/agentprobe and tell me exactly how many lines it has".
+// The plan ran `cat notes.txt`, and the ANSWER card on the phone read, in full:
+//
+//     exit 0
+//     alpha
+//     beta
+//     gamma
+//
+// `isAllToolResidue` did not fire because it requires EVERY line to be residue, and three of
+// these four are file content. But a summary carrying a shell EXIT STATUS is, by construction,
+// raw joined tool output that no one composed into a reply — the fast path had not answered the
+// question (which was "how many lines"), it had dumped the command's stdout.
+//
+// Only the exit-status class counts. The acknowledgement class ("Done.", "OK") is ordinary
+// English that can legitimately end a real answer, and treating it as scaffolding here would
+// escalate good answers — the pre-existing case below pins that direction.
+console.log('\n== a shell exit status means the fast path did not answer ==')
+{
+  check('the live case: exit status + real stdout', containsExecStatusLine('exit 0\nalpha\nbeta\ngamma'))
+  check('a bare exit line', containsExecStatusLine('exit 0'))
+  check('a decorated exit line', containsExecStatusLine('The output was:\n`exit 0`'))
+  check('exit code phrasing', containsExecStatusLine('Exit code: 1\nsomething happened'))
+
+  // The false-escalate direction. These are real answers and must ship.
+  check('a real answer with a "Done." trailer is NOT escalated',
+    !containsExecStatusLine('The sum of 17 and 4 is 21.\nDone.'))
+  check('plain prose is not escalated', !containsExecStatusLine('The file notes.txt has 3 lines.'))
+  check('an answer DISCUSSING an exit code is not escalated',
+    !containsExecStatusLine('The build failed and the process returned exit code 2, so the deploy stopped.'))
+  check('an empty summary is not escalated here', !containsExecStatusLine(''))
+  check('a numbered listing is not escalated', !containsExecStatusLine('1\talpha\n2\tbeta'))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

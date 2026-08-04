@@ -232,11 +232,24 @@ export interface FmReactOpts {
   requireTool?: boolean
 }
 
+/** One executed call and what it returned — the run's EVIDENCE, not just its tool names. */
+export interface FmReactObservation { tool: string; args: Record<string, string>; result: string }
+
 export interface FmReactResult {
   answer: string
   rounds: number
   toolsUsed: string[]
   abstained: boolean
+  /**
+   * Every real tool execution this turn, in order.
+   *
+   * `toolsUsed` carries only NAMES, which is enough to decide "did it look?" but not enough to
+   * answer from. MEASURED LIVE (2026-08-04, phone): a run read notes.txt, got back
+   * "notes.txt — 3 lines", produced no composed answer, and the caller escalated to a toolless
+   * path that replied "has 10 lines". Four real observations were discarded and the answer was
+   * invented. The evidence has to survive the escalation, so the caller can ground on it.
+   */
+  observations: FmReactObservation[]
 }
 
 // ── Built-in tools ────────────────────────────────────────────────────────────
@@ -450,6 +463,57 @@ export function primaryParamLookup(tools: FmReactTool[]): (toolName: string) => 
   return (n) => byName.get(n)
 }
 
+/**
+ * Every `TOOL:` block in a response, in order.
+ *
+ * MEASURED (2026-08-04): asked to count lines in a file and write the count to another file,
+ * the head read the file, then answered with BOTH remaining steps in one completion —
+ * `TOOL: read_file … TOOL: write_file … content: 4`. `parseResponse` takes the FIRST block by
+ * design (a weak head narrates fabricated transcripts, and trusting a later block would execute
+ * fiction), so it re-proposed the read it had already done, hit the repeated-call guard, and
+ * looped until the raw text shipped as the answer. The write it had correctly worked out sat in
+ * the same message, unread, the whole time.
+ *
+ * Taking the first block stays right. But when the first block is a call ALREADY MADE this
+ * turn, a later block is not speculative fiction about the future — it is the model's own next
+ * step, and executing it is strictly better than replaying a duplicate. The loop uses this to
+ * look past a duplicate; nothing else changes.
+ */
+export function parseToolBlocks(
+  text: string,
+  primaryParam?: (name: string) => string | undefined,
+): Array<{ toolName: string; args: Record<string, string> }> {
+  const out: Array<{ toolName: string; args: Record<string, string> }> = []
+  const lines = String(text ?? '').split('\n')
+  let cur: { toolName: string; args: Record<string, string>; positional: string[] } | null = null
+  const flush = () => {
+    if (!cur) return
+    if (!Object.keys(cur.args).length && cur.positional.length) {
+      const key = primaryParam?.(cur.toolName)
+      if (key) cur.args[key] = cur.positional.join(' ')
+    }
+    out.push({ toolName: cur.toolName, args: cur.args })
+    cur = null
+  }
+  for (const line of lines) {
+    // Trailing decoration too: the prompt shows the protocol in backticks, so the model
+    // bolds it — `**TOOL: search**` — and a header anchored to end-of-line missed every one.
+    const head = line.match(/^\s*(?:\*{0,3}|#{1,6}\s*)?TOOL:\s*(\w+)\s*\**\s*$/i)
+    if (head) { flush(); cur = { toolName: head[1], args: {}, positional: [] }; continue }
+    if (/^\s*FINAL_ANSWER:/i.test(line)) { flush(); continue }
+    if (!cur) continue
+    // `https://example.com` is a bare URL, not `key: value` — binding it as
+    // {https: '//example.com'} silently destroyed the argument. A scheme is the only
+    // realistic collision, and it is unambiguous: a real key is never followed by `//`.
+    const kv = line.match(/^(\w+):\s*(.+)$/)
+    if (kv && !/^\/\//.test(kv[2])) { cur.args[kv[1]] = kv[2].trim(); continue }
+    const bare = line.trim().replace(/^["']|["']$/g, '')
+    if (bare) cur.positional.push(bare)
+  }
+  flush()
+  return out
+}
+
 export function parseResponse(
   raw: string,
   /** Maps a tool name to its primary param, so a BARE positional arg can be rescued. */
@@ -627,6 +691,7 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
   ]
 
   const toolsUsed: string[] = []
+  const observations: FmReactObservation[] = []
   /** Tool calls actually executed this turn, keyed by tool + exact args → first result. */
   const attempted = new Map<string, string>()
   let rounds = 0
@@ -678,13 +743,14 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
         rounds,
         toolsUsed,
         abstained: !parsed.answer,
+        observations,
       }
     }
 
     // Execute the tool call
-    const toolName = parsed.toolName!
-    const args = parsed.args ?? {}
-    const tool = toolMap.get(toolName)
+    let toolName = parsed.toolName!
+    let args = parsed.args ?? {}
+    let tool = toolMap.get(toolName)
 
     // Repeated-call guard. The weak head gets stuck re-issuing the SAME call when a tool comes
     // back empty: live 2026-07-21, a run fired the identical `search {"query":"\"sum of 17 and
@@ -693,8 +759,29 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
     // burned re-asking a question that had already failed. Re-running a call whose args are
     // byte-identical cannot produce new information within one turn, so replay the first result
     // and tell the model plainly to change approach or answer.
-    const callKey = `${toolName}:${JSON.stringify(args)}`
-    const priorResult = attempted.get(callKey)
+    let callKey = `${toolName}:${JSON.stringify(args)}`
+    let priorResult = attempted.get(callKey)
+
+    // Before replaying a duplicate, look past it. The head often emits its whole remaining
+    // plan in one completion — the step it just did, then the step it means to do next. The
+    // first block is the duplicate; the NEXT un-run block is the actual next action, and it is
+    // already sitting in this same response. Executing it beats spending a round telling the
+    // model something it can work out from a message it has already written.
+    if (priorResult !== undefined) {
+      const blocks = parseToolBlocks(rawResponse, primaryParam)
+      const fresh = blocks.find(b =>
+        toolMap.has(b.toolName) && attempted.get(`${b.toolName}:${JSON.stringify(b.args)}`) === undefined)
+      if (fresh) {
+        debugBus.emit('agent', 'fm_react_skip_duplicate', {
+          skipped: toolName, took: fresh.toolName, rounds,
+        }, { severity: 'info' })
+        toolName = fresh.toolName
+        args = fresh.args
+        tool = toolMap.get(toolName)
+        callKey = `${toolName}:${JSON.stringify(args)}`
+        priorResult = attempted.get(callKey)
+      }
+    }
 
     let toolResult: string
     if (priorResult !== undefined) {
@@ -734,7 +821,12 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
       }
     }
     // Record only REAL executions, so the replay text above is always a genuine tool result.
-    if (priorResult === undefined) attempted.set(callKey, toolResult)
+    if (priorResult === undefined) {
+      attempted.set(callKey, toolResult)
+      // Keep the EVIDENCE, not just the tool name — the caller needs it to ground an answer
+      // when this loop gathers good results but never composes one. See FmReactObservation.
+      observations.push({ tool: toolName, args, result: toolResult })
+    }
 
     // Feed result back to FM
     messages.push({ role: 'assistant', content: rawResponse })
@@ -758,9 +850,10 @@ export async function fmReact(opts: FmReactOpts): Promise<FmReactResult> {
       rounds,
       toolsUsed,
       abstained: false,
+      observations,
     }
   } catch {
-    return { answer: '', rounds, toolsUsed, abstained: true }
+    return { answer: '', rounds, toolsUsed, abstained: true, observations }
   }
 }
 
@@ -807,6 +900,43 @@ export function historyToMessages(history?: ConvTurn[]): FmMessage[] {
  * keep only that. Then drop any other leading scaffold label and collapse a whole-answer
  * duplication. Idempotent; safe on clean text (returns it unchanged).
  */
+/**
+ * Drop `TOOL:` call blocks from a user-facing answer.
+ *
+ * MEASURED LIVE (2026-08-04): a run that correctly read a file, wrote "3" into count.txt and
+ * read it back to confirm shipped this as the answer —
+ *
+ *     TOOL: search
+ *     query: count
+ *     TOOL: write_file
+ *     path: ~/Desktop/agentprobe/count.txt
+ *     content: 3
+ *
+ * The work was right; the user was shown the protocol. stripAgentScaffold handled FINAL_ANSWER
+ * and bare labels but not the call syntax the model emits on every single turn.
+ *
+ * A block runs from a `TOOL:` header to the first line that is NOT one of its arguments — the
+ * same shape parseToolBlocks reads, so what is stripped here is exactly what would have been
+ * executed there. Scaffold mode ENDS at a blank line or at any line that is not `key: value`,
+ * which is what keeps ordinary prose ("Note: it returns numbered lines", a recipe's
+ * "flour: 200g") intact: with no TOOL: header, nothing is ever stripped.
+ */
+function stripToolProtocol(text: string): string {
+  if (!/^\s*(?:\*{0,3}|#{1,6}\s*)?TOOL:\s*\w+/im.test(text)) return text
+  const out: string[] = []
+  let inCall = false
+  for (const line of text.split('\n')) {
+    if (/^\s*(?:\*{0,3}|#{1,6}\s*)?TOOL:\s*\w+\s*\**\s*$/i.test(line)) { inCall = true; continue }
+    if (inCall) {
+      if (!line.trim()) { inCall = false; continue }         // blank line closes the block
+      if (/^\s*\w+:\s*.+$/.test(line)) continue              // an argument line
+      inCall = false                                          // anything else is prose again
+    }
+    out.push(line)
+  }
+  return out.join('\n').trim()
+}
+
 export function stripAgentScaffold(text: string): string {
   let t = (text ?? '').trim()
   if (!t) return t
@@ -814,6 +944,7 @@ export function stripAgentScaffold(text: string): string {
   let lastIdx = -1, m: RegExpExecArray | null
   while ((m = marker.exec(t)) !== null) lastIdx = m.index + m[0].length
   if (lastIdx !== -1) t = t.slice(lastIdx).trim()
+  t = stripToolProtocol(t)
   // Strip a single leading scaffold label ("THOUGHT:", "ANSWER:", "RESPONSE:", …).
   t = t.replace(/^(?:THOUGHT|ACTION|OBSERVATION|ANSWER|RESPONSE|REASONING|OUTPUT)\s*:\s*/i, '').trim()
   // Collapse a whole-answer duplication: the model printed the same answer twice back-to-back.

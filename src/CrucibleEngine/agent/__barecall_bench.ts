@@ -13,7 +13,7 @@
 // step further out: not decoration AROUND the protocol, but the protocol written as source.
 //
 // The negative cases matter as much: this must never turn an ANSWER into an execution.
-import { parseResponse } from './fmReact'
+import { parseResponse, parseToolBlocks } from './fmReact'
 
 const KNOWN = new Set(['web_open', 'web_act', 'search', 'browse_page'])
 const known = (n: string) => KNOWN.has(n)
@@ -51,6 +51,53 @@ check('the documented protocol still wins', explicit.toolName === 'search' && ex
 // Without the predicate the rescue is inert — callers that cannot vouch for a name get old behaviour.
 const noPredicate = parseResponse('web_open("https://x.com")', primary) as any
 check('inert without a known-tool predicate', noPredicate.toolName == null, JSON.stringify(noPredicate))
+
+// ── MULTI-BLOCK RESPONSES (2026-08-04) ──────────────────────────────────────────
+// THE LIVE CASE, captured from a real agent run. Asked to count the lines in notes.txt and
+// write the count into count.txt, the head read the file and then answered with BOTH steps in
+// one completion:
+//
+//     TOOL: read_file
+//     path: /Users/justin/Documents/probe/notes.txt
+//     TOOL: write_file
+//     path: /Users/justin/Documents/probe/count.txt
+//     content: 4
+//
+// parseResponse takes the FIRST block by design, so it re-proposed the read it had already
+// done, hit the repeated-call guard, and looped until the raw text shipped as the answer. The
+// write — correct path, correct content — sat unread in the same message. parseToolBlocks is
+// what lets the loop look past the duplicate to the step that has not run.
+const MULTI = 'TOOL: read_file\npath: /tmp/p/notes.txt\nTOOL: write_file\npath: /tmp/p/count.txt\ncontent: 4'
+const blocks = parseToolBlocks(MULTI, primary)
+check('both TOOL: blocks are recovered, in order',
+  blocks.length === 2 && blocks[0].toolName === 'read_file' && blocks[1].toolName === 'write_file',
+  JSON.stringify(blocks))
+check('each block keeps its OWN args — no bleed between blocks',
+  blocks[0].args.path === '/tmp/p/notes.txt' &&
+  blocks[1].args.path === '/tmp/p/count.txt' && blocks[1].args.content === '4',
+  JSON.stringify(blocks))
+check('parseResponse still takes the FIRST block (fabricated later blocks stay unexecuted)',
+  (parseResponse(MULTI, primary, () => true) as any).toolName === 'read_file')
+
+// A trailing FINAL_ANSWER must close the last block rather than becoming an arg of it.
+const withFinal = parseToolBlocks('TOOL: search\nquery: cats\nFINAL_ANSWER: done\nextra: junk', primary)
+check('FINAL_ANSWER closes the block and its trailer is not absorbed as args',
+  withFinal.length === 1 && withFinal[0].args.query === 'cats' && withFinal[0].args.extra === undefined,
+  JSON.stringify(withFinal))
+
+check('a response with no TOOL: block yields nothing',
+  parseToolBlocks('FINAL_ANSWER: just an answer', primary).length === 0)
+
+// The bare-positional rescue must work per-block, not only for the first.
+const bare = parseToolBlocks('TOOL: search\ncats\nTOOL: browse_page\nhttps://example.com', primary)
+check('a bare positional binds to each block\'s own primary param',
+  bare.length === 2 && bare[0].args.query === 'cats' && bare[1].args.url === 'https://example.com',
+  JSON.stringify(bare))
+
+// Decorated headers (the model bolds the protocol because the prompt shows it in backticks).
+const decorated = parseToolBlocks('**TOOL: search**\nquery: dogs', primary)
+check('a decorated TOOL: header is still recognised',
+  decorated.length === 1 && decorated[0].toolName === 'search', JSON.stringify(decorated))
 
 console.log(`\nTOTAL: ${pass}/${pass + fail}`)
 if (fail) process.exit(1)

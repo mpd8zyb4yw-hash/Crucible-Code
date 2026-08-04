@@ -42,8 +42,8 @@ import {
 } from './src/CrucibleEngine/agent/proposedAction'
 import { applySignature } from './src/CrucibleEngine/agent/draftSignature'
 import { deloopProse } from './src/CrucibleEngine/answer/deloopProse'
-import { runAgentLoop, isAllToolResidue } from './src/CrucibleEngine/agent/loop'
-import { looksLikeProtocol } from './src/CrucibleEngine/agent/fmReact'
+import { runAgentLoop, isAllToolResidue, containsExecStatusLine } from './src/CrucibleEngine/agent/loop'
+import { looksLikeProtocol, stripAgentScaffold } from './src/CrucibleEngine/agent/fmReact'
 import { suggestReadOnlyTools } from './src/CrucibleEngine/agent/toolRetrieval'
 import { classifyIntent } from './src/CrucibleEngine/agent/intentClassifier'
 import { getOrCreateSession, getSession, startTask, completeTask, abortCurrentTask, buildTaskContext, getSessionMessages, clearAllSessions } from './src/CrucibleEngine/agent/taskSession'
@@ -90,6 +90,7 @@ import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
 import { withTimeout, estimateMessageTokens, conversationTitle } from './src/server/util'
+import { makeLocalInferenceGate } from './src/server/localInferenceGate'
 import {
   nextCaptureTuning, tuningChanged, LinkMonitor, DEFAULT_TUNING, type CaptureTuning,
 } from './src/server/captureTune'
@@ -2126,24 +2127,47 @@ const OPENAI_COMPAT_PROVIDERS: Record<string, { url: string; envVar: string; max
 
 // ── Track S — Local inference (Apple Foundation Models bridge) ───────────────
 const LOCAL_INFERENCE_URL = process.env.LOCAL_INFERENCE_URL ?? 'http://127.0.0.1:11435'
-// Best-effort liveness flag. Set once at startup; local routing is skipped when
-// false so the daemon being down NEVER blocks or breaks the pipeline.
+// Liveness flag. Local routing is skipped when false so the daemon being down NEVER blocks or
+// breaks the pipeline.
+//
+// This used to be set ONCE at startup, and that was a live bug — see localInferenceGate.ts for
+// the two-consecutive-boots evidence. The boot probe is a single 2s fetch racing corpus load,
+// the model hunter and the Python prewarm; losing that race latched `false` for the whole
+// process, which disabled every tool-executing layer in the agent path (content path, Layer 2
+// planner, Layer 2.5 fmReact). The agent then answered by narrating a plan it never ran, with
+// `ok:true` and `✓ verified` on it. Restarting appeared to fix it at random.
+//
+// `localInferenceGate` re-probes while down and latches once up, so a boot-time miss is
+// recoverable and a mid-session blip can never take working tools away.
 let localInferenceAvailable = false
 
-async function checkLocalInference(): Promise<boolean> {
+async function probeLocalInference(): Promise<boolean> {
   try {
     const res = await fetch(`${LOCAL_INFERENCE_URL}/health`, { signal: AbortSignal.timeout(2000) })
     const data = await res.json()
-    if (data?.available === true) {
-      console.log('[Local] Apple Foundation Models bridge up — on-device inference active')
-      return true
-    }
+    if (data?.available === true) return true
     console.log(`[Local] Bridge reachable but model unavailable: ${data?.detail ?? 'unknown'} — local inference inactive`)
     return false
   } catch {
-    console.log('[Local] FM bridge not running — local inference inactive (external pool only)')
     return false
   }
+}
+
+const localInferenceGate = makeLocalInferenceGate({
+  probe: probeLocalInference,
+  onUp: () => console.log('[Local] Apple Foundation Models bridge up — on-device inference active'),
+})
+
+/**
+ * Refresh `localInferenceAvailable` before a decision that depends on it.
+ *
+ * Cheap: a no-op once the bridge is up, and rate-limited to one probe per TTL while it is down.
+ * Call this on the agent path BEFORE the layer gates are evaluated — that is the read whose
+ * wrong answer costs the user their tools.
+ */
+async function refreshLocalInference(): Promise<boolean> {
+  localInferenceAvailable = await localInferenceGate.ready()
+  return localInferenceAvailable
 }
 
 // Item-9 (2026-07-07): local-FM call ceiling. In CRUCIBLE_OFFLINE=strict there is NO external
@@ -4117,6 +4141,13 @@ app.post('/api/chat', async (req, res) => {
       send({ type: 'thought', text: lead })
     }
 
+    // Re-check on-device availability BEFORE the layer gates below read it. All three
+    // tool-executing layers (content path, Layer 2 planner, Layer 2.5 fmReact) are gated on
+    // `localInferenceAvailable`, so a stale `false` from a lost boot-time race is the
+    // difference between an agent that uses tools and one that narrates a plan it never runs.
+    // No-op once the bridge is up; rate-limited while it is down. See localInferenceGate.ts.
+    if (process.platform === 'darwin') await refreshLocalInference()
+
     // Build/update codebase index non-blocking; extract relevant context for this query
     let codebaseContext = ''
     try {
@@ -4493,7 +4524,11 @@ app.post('/api/chat', async (req, res) => {
               problems: layer2Artifact.problems.map(p => p.code),
             }, { severity: 'warn' })
             console.warn(`[Agent] Layer 2 output is not ${goalSpec!.expectation.deliverable} (found ${layer2Artifact.found}/${layer2Artifact.expected}) — escalating`)
-          } else if (ok && isAllToolResidue(summary)) {
+          // `containsExecStatusLine` widens the residue guard for the case isAllToolResidue
+          // structurally cannot see: raw joined stdout that carries REAL content alongside the
+          // shell status. Measured live on the phone — "how many lines does it have" answered
+          // with "exit 0\nalpha\nbeta\ngamma". Content present, question unanswered.
+          } else if (ok && (isAllToolResidue(summary) || containsExecStatusLine(summary))) {
             debugBus.emit('agent', 'layer2_fm_residue', { intent: fmPlan.intent, summary: summary.slice(0, 80) }, { severity: 'warn' })
             console.warn(`[Agent] Layer 2 FM plan returned tool residue ("${summary.slice(0, 40)}") — escalating to full agent loop`)
           } else if (ok) {
@@ -4662,7 +4697,13 @@ app.post('/api/chat', async (req, res) => {
             // Keep the retry only if it is genuinely better — a worse second attempt must not
             // overwrite a closer first one.
             if (retryVerdict.found > verdict.found || (retryVerdict.ok && !verdict.ok)) {
-              fmRes = { ...retry, toolsUsed: [...fmRes.toolsUsed, ...retry.toolsUsed] }
+              // Observations accumulate across the retry too — the grounded recovery below
+              // must see everything the run actually looked at, not just the last attempt.
+              fmRes = {
+                ...retry,
+                toolsUsed: [...fmRes.toolsUsed, ...retry.toolsUsed],
+                observations: [...fmRes.observations, ...retry.observations],
+              }
               verdict = retryVerdict
             }
           }
@@ -4696,8 +4737,50 @@ app.post('/api/chat', async (req, res) => {
           endAgent()
           return
         }
+        // ── Do not throw away what it already found (cont.126) ──────────────────────
+        //
+        // MEASURED LIVE (2026-08-04, phone). "Read notes.txt … and tell me exactly how many
+        // lines it has": fmReact ran FOUR real tools, and read_file returned, verbatim,
+        // "notes.txt — 3 lines." It then failed to compose a final (the answer it emitted was
+        // pure `TOOL:` protocol, which strips to empty), so this fall-through fired and the
+        // toolless path below answered "The file … has 10 lines." Four correct observations
+        // were discarded and the number was invented.
+        //
+        // A run that LOOKED and a run that did not are not the same run. When observations
+        // exist, compose the answer from them — the same "use ONLY this real tool output"
+        // step the named-tools branch already uses — and only escalate if that also comes back
+        // empty. Nothing here is model-authored except the phrasing; every fact is a tool result.
+        if (fmRes.observations.length > 0) {
+          const evidence = fmRes.observations
+            .map(o => `### ${o.tool}(${JSON.stringify(o.args).slice(0, 200)})\n${String(o.result).slice(0, 2000)}`)
+            .join('\n\n')
+          try {
+            const grounded = stripThink(await callLocalModel(
+              'You are a precise assistant. Real tools have already run and their exact output is given. ' +
+              'Answer the user\'s question using ONLY that output. Every number and name in your answer must ' +
+              'appear in the tool output — never estimate, never round, never fill a gap from memory. ' +
+              'If the output does not contain the answer, say plainly what was found and what is missing. ' +
+              'Plain text, one or two sentences, no preamble, no tool syntax.',
+              `Question:\n${message}\n\nTool output (real, already fetched):\n${evidence}`,
+              30000,
+            ))
+            const clean = stripAgentScaffold(grounded)
+            if (clean.trim() && !isAllToolResidue(clean) && !containsExecStatusLine(clean)) {
+              send({ type: 'final', text: clean })
+              patchActiveSessionRound(chatUser, chatRoundId, { synthesis: clean, synthesisDone: true, synthStreaming: false })
+              debugBus.emit('agent', 'layer25_grounded_recovery', {
+                tools: fmRes.toolsUsed, observations: fmRes.observations.length,
+              }, { severity: 'info' })
+              console.log(`[Agent] Layer 2.5 recovered an answer from ${fmRes.observations.length} observation(s) in ${((Date.now() - t0) / 1000).toFixed(2)}s`)
+              endAgent()
+              return
+            }
+          } catch (e: any) {
+            console.warn('[Agent] Grounded recovery failed — escalating:', e?.message ?? e)
+          }
+        }
         console.warn('[Agent] Layer 2.5 FM ReAct fell through (abstained or zero tool calls) — escalating to LLM loop')
-        debugBus.emit('agent', 'layer25_fm_react_fallthrough', { abstained: fmRes.abstained, tools: fmRes.toolsUsed }, { severity: 'warn' })
+        debugBus.emit('agent', 'layer25_fm_react_fallthrough', { abstained: fmRes.abstained, tools: fmRes.toolsUsed, observations: fmRes.observations.length }, { severity: 'warn' })
       } catch (e: any) {
         console.warn('[Agent] Layer 2.5 FM ReAct error (falling through to LLM loop):', e?.message ?? e)
       }
@@ -10444,7 +10527,10 @@ function startListening(port: number, attempt = 0) {
     console.warn('[Auth] and your LAN; NOT safe behind a public tunnel (cloudflared, ngrok,')
     console.warn('[Auth] crucible.cam). Take the tunnel down or expect the internet to have it.')
     // Track S — probe the local Apple FM bridge (macOS only, best-effort)
-    if (process.platform === 'darwin') checkLocalInference().then(ok => { localInferenceAvailable = ok })
+    // Best-effort only. A miss here is no longer terminal — refreshLocalInference() re-probes
+    // on the agent path, so a daemon that is simply slower to start than this server is picked
+    // up on the first request instead of being written off for the life of the process.
+    if (process.platform === 'darwin') void refreshLocalInference()
     initPg().catch(e => console.error('[Postgres] Init failed:', e.message))
     sweepStaleCheckpoints()
     prewarmPython()

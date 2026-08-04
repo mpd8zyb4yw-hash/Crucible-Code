@@ -157,5 +157,43 @@ check('a known set deliverable keeps its count',
   knownDeck.expectation.shape === 'pair' && knownDeck.expectation.count === 20,
   `shape=${knownDeck.expectation.shape} count=${knownDeck.expectation.count}`)
 
+// ── FILE OPERATIONS ARE NOT CONTENT-CREATION GOALS ──────────────────────────────
+// THE LIVE REPRO (2026-08-04, captured from a real /api/chat agent run):
+//   "Count how many lines are in notes.txt in /tmp/… and write that number into count.txt"
+// CREATE_VERB matched "write", deliverableOf() read the object as "that number into count",
+// SUBJECT_CRITICAL did not match, so `subject` defaulted to "a general treatment" and the
+// planner produced the single step:
+//   "Produce that number into count about a general treatment, pitched at a intermediate
+//    level. … write the that number into count from your own knowledge. Do not search the web"
+// The agent then made 0 tool calls, wrote no file, emitted 700 words of filler about
+// "intermediate-level general treatments", and reported ok:true.
+//
+// A message that names a FILE is asking for work ON THAT FILE. It belongs to the tool
+// planner, and specForGoal must decline it so that planner gets it. The bench had no
+// file-shaped case at all, which is why a whole category walked through the document
+// template unchallenged.
+for (const goal of [
+  'Count how many lines are in notes.txt in /tmp/probe and write that number into count.txt in the same folder.',
+  'read people.csv and write a file adults.csv containing only the rows where age is 18 or over',
+  'write the result into output.json',
+  'create a file called report.md in /Users/me/docs summarising the numbers in data.csv',
+  'make notes.txt contain one line per entry',
+  'generate a config.yaml in ./deploy with the staging values',
+]) {
+  check(`file op is NOT a creation goal: ${JSON.stringify(goal.slice(0, 40))}`,
+    specForGoal(goal) === null,
+    `specForGoal returned a spec (deliverable=${specForGoal(goal)?.deliverable})`)
+}
+
+// The other direction — declining file ops must NOT swallow ordinary content goals that
+// merely mention a word with a dot in it, or name a format without naming a file.
+for (const [goal, why] of [
+  ['make me flashcards about node.js', 'a subject containing a dot is not a filename'],
+  ['write a summary of the meeting in markdown', 'naming a format is not naming a file'],
+  ['build me a quiz about U.S. history', 'initialisms are not filenames'],
+] as Array<[string, string]>) {
+  check(`still a creation goal (${why})`, specForGoal(goal) !== null, 'specForGoal returned null')
+}
+
 console.log(`\nTOTAL: ${pass}/${pass + fail}`)
 if (fail) process.exit(1)

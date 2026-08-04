@@ -401,17 +401,23 @@ function prose(msg: string): string {
  */
 const HOSTNAME_LIKE = /^[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|io|co|edu|gov|uk|de|fr|jp|dev|app|ai|so|me|tv|info|biz|xyz)$/i
 
-function statedPath(msg: string): string | null {
+/** Every path-shaped token the user named, DISTINCT, longest first. */
+function statedPaths(msg: string): string[] {
   const candidates = msg.match(PATH_TOKEN) ?? []
-  const best = candidates
+  const qualifying = candidates
     .map(s => s.replace(/[.,;:)]+$/, ''))
     // Require a separator OR a file extension; a bare word is not a path, and "3/4" is caught
     // by the length floor plus the read-intent requirement.
     .filter(s => (s.includes('/') || /\.[a-z0-9]{1,5}$/i.test(s)) && s.length > 1)
     // ...but a bare hostname is a SITE, not a file on this disk.
     .filter(s => s.includes('/') || !HOSTNAME_LIKE.test(s))
-    .sort((a, b) => b.length - a.length)[0]
-  return best ?? null
+  // Naming the same referent twice is still ONE referent — "read src/api.ts, what's in
+  // src/api.ts?" must not read as two. Trailing slashes are noise on a directory.
+  return [...new Set(qualifying.map(s => s.replace(/\/+$/, '')))].sort((a, b) => b.length - a.length)
+}
+
+function statedPath(msg: string): string | null {
+  return statedPaths(msg)[0] ?? null
 }
 
 /**
@@ -430,6 +436,22 @@ export function resolveImplicitLocalTools(message: string): NamedToolResolution 
   if (MUTATION_VERBS.test(text)) return null           // creating/changing needs real planning
   if (!FS_REFERENT.test(msg)) return null
   if (!FS_READ_INTENT.test(text)) return null
+
+  // This resolver fires exactly ONE call and the server ships that call's output as the
+  // answer — there is no loop behind it to take a second step. So a goal naming TWO distinct
+  // referents is out of its jurisdiction, and taking it means answering a question the user
+  // did not ask.
+  //
+  // MEASURED LIVE (2026-08-04): "Look at the files in ~/Desktop/agentprobe and tell me what is
+  // in notes.txt" resolved to one `list_dir(~/Desktop/agentprobe)` — the longest path token won
+  // and "files in" set the listing intent — and the whole answer was "notes.txt". The file the
+  // user asked about was never opened.
+  //
+  // Declining hands the turn to fmReact, which carries list_dir AND read_file and loops, so
+  // both steps are reachable there. This costs latency on a two-file question and buys back the
+  // answer; the single-referent questions this gate exists for are untouched.
+  const paths = statedPaths(msg)
+  if (paths.length > 1) return null
 
   const p = statedPath(msg)
   // A request that names a SITE and no local path is a web request, and must not fall back to

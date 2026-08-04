@@ -299,10 +299,61 @@ const SUBJECT_CRITICAL =
  *
  * Returns null when the message is not a creation goal at all — every other path is untouched.
  */
+/**
+ * Does this message operate on a FILE?
+ *
+ * MEASURED (2026-08-04, real agent run): "Count how many lines are in notes.txt in /tmp/… and
+ * write that number into count.txt" matched CREATE_VERB on "write", `deliverableOf` read the
+ * object as "that number into count", and with no SUBJECT_CRITICAL match the subject defaulted
+ * to "a general treatment". The planner emitted one step — "Produce that number into count
+ * about a general treatment, pitched at a intermediate level … from your own knowledge. Do not
+ * search the web" — and the agent made 0 tool calls, wrote no file, and returned 700 words of
+ * filler about intermediate-level general treatments while reporting ok:true.
+ *
+ * A message that names a file is asking for work ON that file; it belongs to the tool planner,
+ * so this returns true and specForGoal declines it.
+ *
+ * Two deliberate narrowings, both to protect the false-reject direction:
+ *   · A dotted token that directly follows a SUBJECT preposition is a subject, not an operand —
+ *     "flashcards about node.js" names a technology, not a file to edit.
+ *   · `.js`/`.ts` are not in the extension list on their own. Product names ending in them
+ *     ("node.js", "next.js", "three.js") are far more common in a content goal than a bare
+ *     "output.js" with no path, and a real source-file task almost always carries a path, which
+ *     the separator rule catches anyway.
+ */
+const FILE_PATH_RE = /(?:^|\s)(?:~|\.{1,2})?\/[\w.-]+(?:\/[\w.-]+)*/
+const FILE_NAME_RE =
+  /\b[\w-]+\.(?:txt|csv|tsv|json|jsonl|md|markdown|ya?ml|xml|html?|log|ini|toml|cfg|conf|env|pdf|docx?|xlsx?|pptx?|sql|sh|py|rb|go|rs|java|cpp?|hpp?)\b/i
+/** "about node.js" — the dotted token is the SUBJECT, so it is not a file operand. */
+const SUBJECT_DOTTED_RE =
+  /\b(?:about|on|regarding|covering|concerning|of)\s+[\w-]+\.[a-z]{1,5}\b/i
+
+/**
+ * Does this message name a SPECIFIC FILE (a filename with a real extension)?
+ *
+ * The narrower half of referencesFile, split out because a second caller needs exactly this
+ * and NOT the path half: `isAssetCollectionGoal` (synthDriver) must still accept "make a folder
+ * in ~/Desktop/collections with photos of cat breeds" — a bare directory path states a
+ * DESTINATION, which is a normal part of a collection request — while rejecting "write the
+ * count into count.txt", which names an operand.
+ */
+export function namesSpecificFile(msg: string): boolean {
+  if (!FILE_NAME_RE.test(msg)) return false
+  // Strip subject-position dotted tokens, then see whether a filename still remains.
+  return FILE_NAME_RE.test(msg.replace(SUBJECT_DOTTED_RE, ' '))
+}
+
+export function referencesFile(msg: string): boolean {
+  if (FILE_PATH_RE.test(msg)) return true
+  return namesSpecificFile(msg)
+}
+
 export function specForGoal(message: string, ctx: { hasAttachment?: boolean } = {}): GoalSpec | null {
   const msg = (message ?? '').trim()
   if (!msg || msg.length > 2000) return null
   if (!CREATE_VERB.test(msg)) return null
+  // A file operation is not a content-creation goal — see referencesFile().
+  if (referencesFile(msg)) return null
   const deliverable = deliverableOf(msg)
   if (!deliverable) return null
   // A code/app build has its own planner and its own verifiers; this is for content deliverables.

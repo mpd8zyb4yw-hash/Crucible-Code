@@ -103,6 +103,49 @@ for (const msg of MUST_NOT_ROUTE) {
   check(`"${msg.slice(0, 44)}" NOT routed`, r === null, `hijacked to ${r?.calls[0]?.name}`)
 }
 
+// ── 2b. ONE CALL CANNOT ANSWER A TWO-REFERENT QUESTION ───────────────────────
+//
+// MEASURED LIVE (2026-08-04, agent mode, `on-device (named tools)` driver). Brief:
+// "Look at the files in ~/Desktop/agentprobe and tell me what is in notes.txt".
+// This resolver fires exactly ONE call and the server ships that call's output as the
+// answer — there is no loop behind it. `statedPath` takes the LONGEST path token, so
+// `~/Desktop/agentprobe` beat `notes.txt`; "files in" set the listing intent; the run made
+// one `list_dir` call and answered, in full:
+//
+//     notes.txt
+//
+// The file the user actually asked about was never opened. A shortcut that can only cover
+// PART of the goal must decline the turn — fmReact carries list_dir AND read_file and can
+// do both steps. Declining costs latency; answering the wrong question costs the answer.
+console.log('\n== a shortcut that cannot cover the goal declines it ==')
+
+const MULTI_REFERENT = [
+  // The exact live brief.
+  'Look at the files in ~/Desktop/agentprobe and tell me what is in notes.txt',
+  'list the files in src/chat and read src/api.ts',
+  'show me the contents of package.json and tsconfig.json',
+  'read src/a.ts and src/b.ts',
+]
+for (const msg of MULTI_REFERENT) {
+  const r = resolveImplicitLocalTools(msg)
+  check(`"${msg.slice(0, 46)}…" declines (2+ referents)`, r === null,
+    `took the turn with a single ${r?.calls[0]?.name}(${JSON.stringify(r?.calls[0]?.args?.path)}) — the rest of the goal is dropped`)
+}
+
+// The false-reject direction. Naming ONE referent more than once is still one referent, and
+// a single call still answers it — over-declining here would push every ordinary filesystem
+// question back onto the slow path for nothing.
+const REPEATED_REFERENT: Array<[string, string]> = [
+  ['read src/api.ts — what is in src/api.ts?', 'read_file'],
+  ['what files are in ~/Desktop, list ~/Desktop for me', 'list_dir'],
+]
+for (const [msg, expectTool] of REPEATED_REFERENT) {
+  const r = resolveImplicitLocalTools(msg)
+  check(`"${msg.slice(0, 40)}…" still routes (one referent, named twice)`, !!r,
+    'declined — the repeat was miscounted as a second referent')
+  if (r) check(`  …to ${expectTool}`, r.calls[0]?.name === expectTool, `got ${r.calls[0]?.name}`)
+}
+
 // ── 3. THE TWO ROUTERS STAY DISJOINT ─────────────────────────────────────────
 // The local router runs AFTER the personal one in server.ts, so an overlap would silently
 // change which tool answers a mail question.

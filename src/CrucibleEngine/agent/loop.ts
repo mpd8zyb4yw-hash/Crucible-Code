@@ -233,6 +233,32 @@ export function isAllToolResidue(text: string): boolean {
   return lines.every(isToolResidue)
 }
 
+/** A line that is nothing but a shell exit status — `exit 0`, `Exit code: 1`, `rc=2`. */
+const EXEC_STATUS_LINE =
+  /^(exit|exit code|exit status|status|return(ed)?(( exit)? code)?|rc|\$\?)[ :=]*\d+[.!]?$/i
+
+/**
+ * True when ANY line of `text` is a bare shell exit status.
+ *
+ * `isAllToolResidue` requires EVERY line to be residue, which is right for deciding "this final
+ * is empty of content". It is not enough for the Layer 2 fast path, which ships the JOINED raw
+ * tool output as the answer.
+ *
+ * MEASURED LIVE (2026-08-04, phone): "…tell me exactly how many lines it has" ran `cat` and
+ * shipped "exit 0\nalpha\nbeta\ngamma" as the answer card. Three of the four lines are real file
+ * content, so isAllToolResidue said no — but an exit status in a user-facing answer means
+ * nothing composed it, and the question ("how many") was never actually answered.
+ *
+ * Only the EXIT-STATUS class, deliberately — not `isToolResidue`'s acknowledgement class.
+ * "Done." is ordinary English and can legitimately end a real answer; escalating on it would
+ * throw away good answers. Anchored per line, so prose that MENTIONS an exit code is untouched.
+ */
+export function containsExecStatusLine(text: string): boolean {
+  return String(text ?? '')
+    .split('\n')
+    .some(l => EXEC_STATUS_LINE.test(l.replace(/[`*_#>\s]+/g, ' ').trim()))
+}
+
 export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult> {
   const {
     goal, projectPath, driveTurn, emit, signal,
