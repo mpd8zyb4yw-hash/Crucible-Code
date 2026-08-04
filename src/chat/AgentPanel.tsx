@@ -149,8 +149,13 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
       {(() => {
         const failed = !agent.active && !agent.done?.ok && (agent.error || (agent.done && agent.done.stopped !== 'final' && agent.done.stopped !== 'clarification'))
         const headerColor = agent.active ? '#7c7cf8' : failed ? '#f59e0b' : '#7c7cf8'
-        const label = agent.active ? 'agent working'
-          : agent.done?.ok ? 'agent complete'
+        // Asymmetric on purpose. The SUCCESS labels are quiet and plain — "working",
+        // "done" — because on a normal answer this header is a caption, not news, and
+        // "AGENT FINISHED" shouted process jargon over a single sentence of content.
+        // The FAILURE labels keep every word: those are the cases where the user must
+        // know precisely what happened, and vagueness there is the actual dishonesty.
+        const label = agent.active ? 'working'
+          : agent.done?.ok ? 'done'
           : agent.error ? 'agent error'
           : agent.done?.stopped === 'stalled' ? 'agent stopped — could not finish'
           : agent.done?.stopped === 'max_iters' ? 'agent stopped — ran out of attempts'
@@ -158,7 +163,7 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
           : agent.done?.stopped === 'cancelled' ? 'agent cancelled'
           : agent.done?.stopped === 'verify_failed' ? 'agent stopped — checks failing'
           : agent.clarification ? 'agent needs your input'
-          : 'agent finished'
+          : 'done'
         return (
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9.5, letterSpacing: '0.12em', textTransform: 'uppercase' as const, color: headerColor, fontWeight: 700 }}>
         {/* Working animation — three staggered pulse dots while the loop is live. */}
@@ -311,7 +316,12 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
           color: verifyByLatest.passed ? '#86efac' : '#fca5a5',
           border: `1px solid ${verifyByLatest.passed ? 'rgba(74,222,128,0.3)' : 'rgba(248,113,113,0.3)'}`,
         }}>
-          {verifyByLatest.passed ? '✓ verified' : verifyByLatest.escalate ? '✕ unfixable — stopped' : '↻ healing'} · {verifyByLatest.signal}
+          {/* The separator is conditional on there BEING a signal. It was unconditional,
+              so an empty signal — the common case for a plain factual answer — rendered
+              as "verified ·", a dangling connective pointing at nothing. A verification
+              badge is a trust claim; it cannot look like it was cut off mid-sentence. */}
+          {verifyByLatest.passed ? '✓ verified' : verifyByLatest.escalate ? '✕ unfixable — stopped' : '↻ healing'}
+          {verifyByLatest.signal ? ` · ${verifyByLatest.signal}` : ''}
         </div>
       )}
 

@@ -185,6 +185,9 @@ export function CouncilDebateSection({ debate: d }: { debate: LocalDebateSummary
   )
 }
 
+/** How long the 'done' flourish gets to play before the pour canvas unmounts for good. */
+const POUR_SETTLE_MS = 1100
+
 export function PourWrap({ active, phase, progress, children }: {
   active: boolean
   phase: MoltenPhase
@@ -192,6 +195,26 @@ export function PourWrap({ active, phase, progress, children }: {
   children: React.ReactNode
 }) {
   const wrapRef = useRef<HTMLDivElement>(null)
+
+  // ── The pour has to STOP (fixed 2026-08-04) ─────────────────────────────────────
+  // `active` is "is this the live round", and the live round is never un-live: once a
+  // round finishes it stays the newest one, so the vessel and its molten rim kept
+  // animating around the last answer indefinitely. Sitting on a finished reply, the
+  // app looked permanently mid-thought — and it also meant a canvas repainting
+  // forever behind an idle screen, which is the kind of thing that reads as "this app
+  // makes my fan spin".
+  //
+  // The 'done' phase exists to play a settling flourish, so simply cutting the pour at
+  // completion would delete an intended beat. Instead the flourish is given its run and
+  // then the canvas unmounts for good.
+  const [settled, setSettled] = useState(false)
+  useEffect(() => {
+    if (phase !== 'done') { setSettled(false); return }
+    const t = setTimeout(() => setSettled(true), POUR_SETTLE_MS)
+    return () => clearTimeout(t)
+  }, [phase])
+  const pouring = active && !settled
+
   return (
     <div
       ref={wrapRef}
@@ -203,10 +226,10 @@ export function PourWrap({ active, phase, progress, children }: {
         // paints straight over whatever message sits above the live card. Reserve the exact
         // 70px with NO transition (snaps in/out instantly with `active`, no animated push)
         // so it neither collides with the message above nor visibly shoves it.
-        marginTop: active ? 70 : 0,
+        marginTop: pouring ? 70 : 0,
       }}
     >
-      {active && <MoltenPour phase={phase} progress={progress} wrapRef={wrapRef} />}
+      {pouring && <MoltenPour phase={phase} progress={progress} wrapRef={wrapRef} />}
       {children}
     </div>
   )
