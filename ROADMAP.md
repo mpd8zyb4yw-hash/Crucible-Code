@@ -1955,6 +1955,34 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 
 
+
+### 2026-08-03f — agentic reached 5/5 once; the honest state is "not yet reproducible"
+
+Best measured run: **5/5** on `npm run agent:workflow`, from 0/5 at session start, verified by
+reading every artifact rather than the replies. Later runs scored 3/5 and 4/5, and two real
+causes were found AFTER that 5/5:
+
+- **A plain `rm` bypassed the stakes gate.** The agent ran `rm <dir>/*` with no flags;
+  DESTRUCTIVE_PATTERNS only matched `rm` with -r or -f, so two files the user never agreed to
+  lose were destroyed. The pattern was written as if the danger lived in the "-rf" rather than
+  in the "rm". Wildcards and multi-target deletes now require confirmation; a single NAMED file
+  still deletes freely. 6/6 afterwards.
+- **`lookup_fact` had no deadline.** research-to-file ran past 25 minutes on a task that had
+  passed in 88 seconds — server alive, loop guards untriggered, no output. A tool that can hang
+  forever hangs the agent forever. 45s ceiling.
+
+Also fixed: the stakes gate moved from `loop.ts` to `registry.exec`, the one place all four
+execution paths funnel through — `allowDestructive:false` was already set on the desktop path
+and did nothing, because it is consulted by individual tools and `run` executing `rm` is not one
+of them.
+
+A third cause is environmental: the server OOMs under sustained probe load (silent death, no
+stack) and the local head degrades badly after hours of use. Measurements must be taken on a
+freshly started server.
+
+Single-turn unaffected: **12/12 over the HTTP wire**, 23/23 in-process. `prove:all` green.
+
+
 ### 2026-08-03e — AGENTIC 0/5 → 5/5
 
 `__agent_workflow_probe.ts` scores five multi-step tasks on OBSERVABLE SIDE EFFECTS only.
