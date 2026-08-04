@@ -22,6 +22,7 @@ import AutomationsView from './AutomationsView'
 import ConnectionsView from './ConnectionsView'
 import HomeBoard from './HomeBoard'
 import HistoryTabView from './HistoryTabView'
+import ErrorBoundary from './ErrorBoundary'
 import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
 
@@ -30,7 +31,7 @@ import {
   assignColors, emptyRound, agentReducer, AGENT_EVENT_TYPES, copyText, haptic,
   type Round, type Critique,
 } from './chat/core'
-import { ShimmerBg, urlBase64ToUint8Array, applyFixedCode } from './chat/panels'
+import { urlBase64ToUint8Array, applyFixedCode } from './chat/panels'
 import { TasksBinder, HistoryBinder } from './chat/binders'
 import { MessageList } from './chat/MessageList'
 import {
@@ -520,11 +521,39 @@ export default function App() {
   // Resolves TRUE when a stored conversation was actually adopted. Callers that thread into a
   // specific conversation (automation follow-ups) need to know, so they can fall back to a
   // plain prefill rather than stranding the user in an empty thread.
+  // ── Notice: the app's only way to say "that didn't work" ─────────────────────────
+  // Before this there was no transient-message primitive at all, so every non-fatal
+  // failure had exactly two options: throw away the information, or invent a bespoke
+  // banner. Everything chose the first. `restoreConversation` is the clearest case —
+  // it ended in `.catch(() => false)` and every caller ignored the false, so clicking
+  // a chat in the sidebar while the server was down did NOTHING: no transcript, no
+  // error, no spinner. Indistinguishable from a dead click.
+  //
+  // Deliberately minimal: one string, self-clearing, last-one-wins. The timer is held
+  // in a ref and reset on each call so a second notice cannot be cut short by the
+  // first one's expiry.
+  const [notice, setNotice] = useState<string | null>(null)
+  const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showNotice = useCallback((text: string) => {
+    setNotice(text)
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current)
+    noticeTimerRef.current = setTimeout(() => setNotice(null), 5000)
+  }, [])
+  useEffect(() => () => { if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current) }, [])
+
   const restoreConversation = useCallback((summary: { id: string }): Promise<boolean> => {
     return apiFetch(`${API_BASE}/api/conversations/${summary.id}`, { credentials: 'include' })
       .then(r => r.json())
       .then(({ conversation }) => {
-        if (!conversation?.rounds?.length) return false
+        // An empty or missing conversation is a REAL outcome the user has to be told
+        // about. Returning false silently meant clicking a chat in the sidebar did
+        // nothing at all — no transcript, no error, no spinner — which is
+        // indistinguishable from the click not registering, so the natural response is
+        // to click it again and conclude the app is broken.
+        if (!conversation?.rounds?.length) {
+          showNotice('That chat has no messages stored — nothing to reopen.')
+          return false
+        }
         setConversationId(conversation.id)
         setAllRounds(prev => [
           ...prev.filter(r => r.convId !== conversation.id),
@@ -533,8 +562,13 @@ export default function App() {
         setTab('chat')
         return true
       })
-      .catch(() => false)
-  }, [])
+      .catch(() => {
+        // The overwhelmingly common cause, and the one the user hit repeatedly: the
+        // server is unreachable. Name it, rather than swallowing it into `false`.
+        showNotice('Couldn’t open that chat — Crucible isn’t responding.')
+        return false
+      })
+  }, [showNotice])
 
   // ── Active-conversation view (F panels: parallel chats) ────────────────────
   // Everything below App's render path reads these names exactly as before the
@@ -584,6 +618,7 @@ export default function App() {
   // their own explicit entry points.
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
   const [showMinLengthTip, setShowMinLengthTip] = useState(false)
+
   const minLengthTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // N1 — governance panel
   const [govPanelOpen, setGovPanelOpen] = useState(false)
@@ -2329,13 +2364,19 @@ export default function App() {
             </svg>
           </button>
       {tab === 'settings' && (
+        // Every section is boundaried SEPARATELY. Settings renders all of its panels
+        // inline in one scroller, so before this a throw in any one of them (a missing
+        // field in a models response, a null connection) unmounted the entire app —
+        // the reported "Settings black-screens everything, only a refresh fixes it".
+        // Now the broken panel shows a notice and Settings keeps working around it.
+        <ErrorBoundary label="Settings">
         <SettingsTabView
           ensemble={ensemble}
           // Connections is a Settings SECTION now, not a rail peer. Rendered inline with
           // no close button — closing is leaving the tab.
-          connections={<ConnectionsView embedded onClose={() => {}} onFollowUp={followUpInChat} />}
-          library={<LibraryPage onBuild={text => { setTab('chat'); void send(text) }} />}
-          selfRepair={<SelfRepairPage />}
+          connections={<ErrorBoundary label="Connections"><ConnectionsView embedded onClose={() => {}} onFollowUp={followUpInChat} /></ErrorBoundary>}
+          library={<ErrorBoundary label="Library"><LibraryPage onBuild={text => { setTab('chat'); void send(text) }} /></ErrorBoundary>}
+          selfRepair={<ErrorBoundary label="Self-repair"><SelfRepairPage /></ErrorBoundary>}
           advanced={
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {/* System drawers relocated from the old chat topbar — each trigger now sits
@@ -2379,6 +2420,7 @@ export default function App() {
             </div>
           }
         />
+        </ErrorBoundary>
       )}
         </div>
       )}
@@ -2415,7 +2457,7 @@ export default function App() {
                 <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
               </svg>
             </button>
-            <HistoryTabView onRestore={restoreConversation} onDeleted={handleChatDeleted} onDeletedAll={handleAllChatsDeleted} />
+            <ErrorBoundary label="History"><HistoryTabView onRestore={restoreConversation} onDeleted={handleChatDeleted} onDeletedAll={handleAllChatsDeleted} /></ErrorBoundary>
           </div>
         </>
       )}
@@ -2451,7 +2493,15 @@ export default function App() {
       )}
 
       <>
-      <ShimmerBg thinking={thinking} mode={mode} />
+      {/* ShimmerBg REMOVED 2026-08-04b — this was the source of the coloured blobs.
+          It painted three hsla(…,70%,60%) blooms (violet / teal / amber, hue-cycling by
+          mode) onto a fixed full-viewport canvas on a requestAnimationFrame loop that
+          never stopped. Two problems: it is exactly the saturated-blob backdrop the
+          direction rules out, and it is a SECOND ambient field stacked on top of
+          `.cru-ambient` — which already replaced a canvas implementation for these same
+          reasons (see BackgroundBlobs.tsx). One ground, authored in CSS, composited on
+          the GPU, honouring prefers-reduced-motion. Not two, one of them animating
+          forever behind an idle screen. */}
 
       {/* ── Step 9: Remote Brain overlay — canvas only, stops above the normal input bar ── */}
       {/* The regular chat input at the bottom is the command interface — no separate bar. */}
@@ -2903,6 +2953,34 @@ export default function App() {
           ignores the rail and pushed it off the content column's axis. It now sits just
           above the composer and shares its centre line, so it reads as attached to the
           input it is talking about rather than dropped on top of the page. */}
+      {/* ── Notice ──
+          Unlike the resume banner this is NOT scoped to composer surfaces: a failure
+          the user needs to hear about can happen while they are in Settings, and
+          silently dropping it there is the exact behaviour this primitive exists to
+          end. It anchors to the composer when there is one and falls back to a fixed
+          offset when there isn't, so it never lands under a bar that isn't there. */}
+      {notice && (
+        <div style={{
+          position: 'fixed',
+          bottom: (tab === 'settings' || agentsOpen || automationsOpen || connectionsOpen) ? 24 : inputBarHeight + 10,
+          left: railW, right: 0, zIndex: 120,
+          display: 'flex', justifyContent: 'center', pointerEvents: 'none', padding: '0 16px',
+        }}>
+          <div role="status" style={{
+            pointerEvents: 'auto', maxWidth: 520,
+            animation: 'panelUp 0.22s var(--ease-standard)',
+            padding: '10px 16px', borderRadius: 12,
+            background: 'rgba(24,18,22,0.96)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
+            border: '1px solid rgba(248,113,113,0.28)',
+            boxShadow: '0 10px 34px rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'center', gap: 10,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#f87171', flexShrink: 0 }} />
+            <span style={{ fontSize: 12.5, lineHeight: 1.45, color: 'var(--glass-text)', minWidth: 0, overflowWrap: 'anywhere' }}>{notice}</span>
+          </div>
+        </div>
+      )}
+
       {/* Scoped to the surfaces that HAVE a composer. The banner is anchored above the
           input bar and its whole proposition is "resume this in your chat" — on a
           full-page surface (Settings, Agents, Automations, Connections) there is no
@@ -2925,7 +3003,11 @@ export default function App() {
           borderRadius: 14, padding: '14px 18px',
           display: 'flex', alignItems: 'center', gap: 14,
           boxShadow: '0 8px 40px rgba(0,0,0,0.5), 0 0 0 1px rgba(124,124,248,0.08)',
-          maxWidth: 540,
+          // maxWidth ALONE does not constrain a flex item whose content is nowrap: the
+          // banner sized to 540 regardless of viewport, so on a 375px phone its text ran
+          // off BOTH screen edges (house rule 3 — text stays in its box). width:100% +
+          // border-box makes 540 a ceiling rather than a target.
+          maxWidth: 540, width: '100%', boxSizing: 'border-box', minWidth: 0,
         }}>
           {/* Pulse dot */}
           <div style={{
@@ -3002,7 +3084,6 @@ export default function App() {
         <MessageList
           rounds={rounds} setRounds={setRounds} send={sendStable} toggleCritique={toggleCritique}
           inputBarHeight={dockHeight} liveRoundId={liveRoundId} thinking={thinking}
-          onPrefill={followUpInChat}
           scrollRef={scrollRef} bottomRef={bottomRef}
           handleScroll={handleScroll} handleWheel={handleWheel}
           handleTouchStart={handleTouchStart} handleTouchMove={handleTouchMove}

@@ -100,6 +100,14 @@
 
   --radius-card: 24px;    /* phone */
   --radius-card-d: 20px;  /* desktop */
+
+  /* ── ONE card height, every surface (2026-08-04b) ─────────────────────────────
+     The board used auto-height cells, so each card was as tall as whatever data it
+     happened to hold — different on desktop, different again on phone, different
+     between two loads of the same page. Continuity across surfaces means the grid,
+     not the content, decides the box. Cards scroll internally past this height. */
+  --card-h: 260px;
+  --card-min-w: 320px;
   --radius-sheet: 28px;
 
   /* Ambient field (level 0) — self-authored, no external assets.
@@ -108,27 +116,38 @@
      the glass something to sample and to stay out of the way — the CARDS carry the
      colour. Now near-black with one faint cool wash plus a barely-there second stop
      for depth; the amber and cyan blooms are gone. */
-  --amb-base: #070810;
-  --amb-1: rgba(79, 70, 229, 0.20);    /* the one wash — cool indigo */
-  --amb-2: rgba(99, 102, 241, 0.10);   /* depth only, same family */
+  /* RETUNED AGAIN 2026-08-04b: "one faint cool wash" was still two indigo blooms, and
+     against near-black they read as coloured blobs behind the glass — the exact thing
+     the direction rules out. The ground is now a single neutral SLATE lift with no hue
+     of its own. Glass needs something to sample, not something to look at. */
+  --amb-base: #0A0B11;
+  --amb-1: rgba(148, 163, 184, 0.075);  /* neutral slate lift, top-left */
+  --amb-2: rgba(148, 163, 184, 0.045);  /* depth only, same neutral */
   --amb-3: transparent;
   --amb-4: transparent;
 
-  /* Domain tint — encodes WHICH domain, never decoration (§5.1). */
-  --domain-research: 99, 102, 241;   /* indigo 244° */
-  --domain-mail: 45, 212, 191;       /* teal 172° */
-  --domain-time: 251, 191, 36;       /* amber 43° */
-  --domain-watch: 167, 139, 250;     /* violet 265° */
-  --domain-code: 148, 163, 184;      /* slate 215° — repos/PRs */
+  /* ── Domain tint — DELIBERATELY MONOCHROME (2026-08-04b) ────────────────────
+     These used to be five saturated hues (indigo/teal/amber/violet/slate) painted as a
+     gradient wash across each card. On a board of six cards that is six different
+     coloured panels — "colored blobs", and the opposite of one cohesive surface.
+     Domain is still encoded, but by the LABEL TEXT, not by tinting the whole card.
+     Every domain now resolves to the same muted slate so that every card in the app is
+     the same frosted slate panel. Keep them as separate variables (rather than deleting
+     the concept) so a future accent is a five-line change here and nowhere else. */
+  --domain-research: 148, 163, 184;
+  --domain-mail: 148, 163, 184;
+  --domain-time: 148, 163, 184;
+  --domain-watch: 148, 163, 184;
+  --domain-code: 148, 163, 184;
 
-  /* Label colour per domain. These are tokens rather than component literals because
-     the light theme needs a genuinely different value — a pale pastel that reads on
-     dark glass disappears on light glass. */
-  --domain-research-label: rgba(199, 210, 254, 0.95);
-  --domain-mail-label: rgba(153, 246, 228, 0.95);
-  --domain-time-label: rgba(253, 230, 138, 0.95);
-  --domain-watch-label: rgba(221, 214, 254, 0.95);
-  --domain-code-label: rgba(203, 213, 225, 0.95);
+  /* Label colour per domain — one muted slate, tokenised because the light theme needs
+     a genuinely different value (a pale tone that reads on dark glass disappears on
+     light glass). */
+  --domain-research-label: rgba(203, 213, 225, 0.82);
+  --domain-mail-label: rgba(203, 213, 225, 0.82);
+  --domain-time-label: rgba(203, 213, 225, 0.82);
+  --domain-watch-label: rgba(203, 213, 225, 0.82);
+  --domain-code-label: rgba(203, 213, 225, 0.82);
 
   /* Honesty states (§7.1) — three, never collapsed into two. */
   --state-verified: #34D399;
@@ -180,9 +199,9 @@ html[data-theme='light'] {
   --glass-shadow: 0 8px 32px rgba(31, 38, 68, 0.14);
   --glass-shadow-2: 0 16px 64px rgba(31, 38, 68, 0.22);
   --scrim: rgba(238, 240, 248, 0.55);
-  --amb-base: #EEF0F8;
-  --amb-1: rgba(129, 140, 248, 0.26);
-  --amb-2: rgba(139, 145, 250, 0.14);
+  --amb-base: #EEF0F5;
+  --amb-1: rgba(100, 116, 139, 0.10);
+  --amb-2: rgba(100, 116, 139, 0.06);
   --amb-3: transparent;
   --amb-4: transparent;
   --c-bg: #EEF0F8;
@@ -195,12 +214,12 @@ html[data-theme='light'] {
   --glass-text: rgba(16, 18, 32, 0.94);
   --glass-text-2: rgba(16, 18, 32, 0.82);
   --glass-text-3: rgba(16, 18, 32, 0.68);
-  /* Same hues, darkened until they clear 4.5:1 on light glass. */
-  --domain-research-label: rgba(55, 48, 163, 0.92);
-  --domain-mail-label: rgba(15, 106, 94, 0.92);
-  --domain-time-label: rgba(120, 78, 8, 0.92);
-  --domain-watch-label: rgba(76, 46, 156, 0.92);
-  --domain-code-label: rgba(51, 65, 85, 0.92);
+  /* Same single slate, darkened until it clears 4.5:1 on light glass. */
+  --domain-research-label: rgba(51, 65, 85, 0.88);
+  --domain-mail-label: rgba(51, 65, 85, 0.88);
+  --domain-time-label: rgba(51, 65, 85, 0.88);
+  --domain-watch-label: rgba(51, 65, 85, 0.88);
+  --domain-code-label: rgba(51, 65, 85, 0.88);
   --alarm-ink: #9F1239;
   --alarm-fill: rgba(248, 113, 113, 0.14);
   --alarm-edge: rgba(159, 18, 57, 0.28);
@@ -271,6 +290,22 @@ pre code {
   50%  { transform: translate3d(-3%, 2%, 0) scale(1.12); }
   100% { transform: translate3d(0, 0, 0) scale(1.06); }
 }
+/* ── The board grid ────────────────────────────────────────────────────────────
+   One rule, both breakpoints. Fixed rows + stretch is what makes every card the same
+   size; the only thing the phone changes is the column count, never the card shape. */
+.cru-board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min-w), 1fr));
+  grid-auto-rows: var(--card-h);
+  align-items: stretch;
+  gap: 16px;
+}
+@media (max-width: 760px) {
+  /* Single column below 760px: two 320px cards cannot both fit, and auto-fill would
+     otherwise squeeze them under their minimum and reintroduce ragged text. */
+  .cru-board-grid { grid-template-columns: 1fr; }
+}
+
 .cru-ambient {
   position: absolute; inset: -14%; pointer-events: none;
   background:

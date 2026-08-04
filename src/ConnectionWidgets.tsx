@@ -53,14 +53,17 @@ export function GmailWidget({ items, onOpenMessage }: {
             onMouseEnter={clickable ? (e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)' }) : undefined}
             onMouseLeave={clickable ? (e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }) : undefined}
             style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 12px', borderBottom: '1px solid rgba(255,255,255,0.03)', cursor: clickable ? 'pointer' : 'default', transition: 'background 90ms' }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, alignSelf: 'center', background: m.unread ? '#7c7cf8' : 'transparent', border: m.unread ? 'none' : '1px solid var(--c-hairline)' }} />
+            <span style={{ width: 5, height: 5, borderRadius: '50%', flexShrink: 0, alignSelf: 'center', background: m.unread ? 'var(--glass-text-2)' : 'transparent', border: m.unread ? 'none' : '1px solid var(--glass-edge)' }} />
             <span style={{ fontSize: 'var(--t-small)', fontWeight: m.unread ? 650 : 400, color: m.unread ? 'var(--c-text)' : 'var(--c-dim)', width: 108, flexShrink: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.from}</span>
             <span style={{ fontSize: 'var(--t-small)', color: m.unread ? '#c9c9da' : 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.subject}</span>
             {m.important && (
               // Deterministic, labeled suggestion — never fabricated. Tooltip names the exact
               // signals (server-side importance.ts); "Priority?" keeps it a suggestion, not a verdict.
               <span title={`Suggested priority — ${(m.reasons ?? []).join(', ')}`}
-                style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: '#e6b34d', background: 'rgba(230,179,77,0.12)', border: '1px solid rgba(230,179,77,0.35)', borderRadius: 4, padding: '1px 5px', lineHeight: 1.4 }}>
+                // Muted, not amber (2026-08-04b): a suggestion chip repeated down a list
+                // was the brightest thing on the board and pulled the eye away from the
+                // mail itself. It still reads as a distinct chip via weight and edge.
+                style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--glass-text-2)', background: 'var(--glass-fill-plate)', border: '1px solid var(--glass-edge)', borderRadius: 4, padding: '1px 5px', lineHeight: 1.4 }}>
                 Priority?
               </span>
             )}

@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { API_BASE, apiFetch } from './api'
 import { ConfirmModal } from './ui'
+import { glassSurface } from './design/glass'
 
 type HistorySession = { id: string; title: string; mode: string; snippet: string; updatedAt: number; roundCount: number }
 
@@ -25,8 +26,6 @@ function dayBucket(ts: number, now: number): string {
   return 'Earlier'
 }
 const BUCKET_ORDER = ['Today', 'Yesterday', 'This Week', 'Earlier']
-
-const MODE_COLOR: Record<string, string> = { local: '#4db89e', code: '#4db89e', seeker: '#f59e0b', quorum: '#7c7cf8', research: '#38bdf8' }
 
 export default function HistoryTabView({ onRestore, onDeleted, onDeletedAll }: {
   onRestore: (session: HistorySession) => void
@@ -89,47 +88,65 @@ export default function HistoryTabView({ onRestore, onDeleted, onDeletedAll }: {
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', zIndex: 1, overflowY: 'auto' }}>
-      <div style={{ width: '100%', maxWidth: 720, margin: '0 auto', padding: '36px 32px 48px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em', color: '#eef', flex: 1 }}>History</span>
+      <div style={{ width: '100%', maxWidth: 720, margin: '0 auto', padding: '28px 20px 48px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+        {/* The header STACKS (title row, then a full-width field) rather than sitting
+            title-and-field on one line. Two reasons, both measured on the phone pane:
+            the 240px fixed field could not fit beside the title at 94vw and pushed
+            itself under the pane edge, and the pane's floating close X (absolute,
+            top:14 right:14) landed directly on top of it. Reserving the X's corner with
+            paddingRight on the TITLE ROW ONLY — not on the field — is what keeps the
+            search box full-width while guaranteeing the two can never overlap. */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingRight: 44, minHeight: 30 }}>
+            <span style={{
+              fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em',
+              color: 'var(--glass-text)', flex: 1, minWidth: 0,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>History</span>
+            {!loading && sessions.length > 0 && (
+              <span style={{
+                font: '600 10px/1 var(--mono)', letterSpacing: '0.12em', textTransform: 'uppercase',
+                color: 'var(--glass-text-3)', flexShrink: 0,
+              }}>{sessions.length}</span>
+            )}
+          </div>
           <input
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Search conversations…"
+            placeholder="Search conversations"
             style={{
-              background: 'rgba(255,255,255,0.045)', border: '1px solid rgba(255,255,255,0.08)',
-              borderRadius: 12, padding: '8px 14px', fontSize: 12.5, color: '#d0d0e0',
-              outline: 'none', fontFamily: 'inherit', width: 240,
+              background: 'var(--glass-fill-plate)', border: '1px solid var(--glass-edge)',
+              borderRadius: 12, padding: '9px 14px', fontSize: 13, color: 'var(--glass-text)',
+              outline: 'none', fontFamily: 'inherit', width: '100%', boxSizing: 'border-box',
             }}
           />
         </div>
 
-        {loading && <span style={{ fontSize: 12, color: '#55556a' }}>Loading…</span>}
-        {!loading && buckets.length === 0 && <span style={{ fontSize: 12, color: '#55556a' }}>No conversations yet.</span>}
+        {loading && <span style={{ fontSize: 12, color: 'var(--glass-text-3)' }}>Loading…</span>}
+        {!loading && buckets.length === 0 && <span style={{ fontSize: 12, color: 'var(--glass-text-3)' }}>No conversations yet.</span>}
 
         {buckets.map(bucket => (
           <div key={bucket.label} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', color: '#4a4a5e', textTransform: 'uppercase' }}>{bucket.label}</span>
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.12em', color: 'var(--glass-text-3)', textTransform: 'uppercase' }}>{bucket.label}</span>
             {bucket.items.map(s => (
               <div
                 key={s.id}
                 onClick={() => onRestore(s)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 14,
-                  background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer',
+                  // Same glass primitive every other surface uses, instead of a
+                  // hand-rolled rgba box — this pane was the last one still using its
+                  // own panel recipe, which is why it read as a different app.
+                  ...glassSurface(1),
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px',
+                  cursor: 'pointer', minWidth: 0, overflow: 'hidden',
                 }}
               >
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: MODE_COLOR[s.mode] ?? '#66667a', flexShrink: 0 }} />
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--glass-text-3)', flexShrink: 0 }} />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 600, color: '#d8d8e8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
-                  <span style={{ fontSize: 11, color: '#66667a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.snippet}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--glass-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</span>
+                  <span style={{ fontSize: 11.5, color: 'var(--glass-text-3)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.snippet}</span>
                 </div>
-                <span style={{
-                  fontSize: 9, fontWeight: 700, letterSpacing: '0.06em', padding: '2px 8px', borderRadius: 999,
-                  background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)', color: '#66667a',
-                  flexShrink: 0, textTransform: 'uppercase',
-                }}>{s.mode}</span>
-                <span style={{ fontSize: 10.5, color: '#4a4a5e', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                <span style={{ fontSize: 10.5, color: 'var(--glass-text-3)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
                   {new Date(s.updatedAt).toLocaleDateString() === new Date(now).toLocaleDateString()
                     ? new Date(s.updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
                     : new Date(s.updatedAt).toLocaleDateString(undefined, { weekday: 'short' })}

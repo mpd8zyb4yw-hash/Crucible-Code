@@ -5,6 +5,7 @@
 // per-feature accent tints passed in by the caller.
 
 import type { CSSProperties, ReactNode, MouseEvent as ReactMouseEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { glassSurface } from './design/glass'
 
 export function tint(hex: string, alpha: number) {
   const r = parseInt(hex.slice(1, 3), 16)
@@ -13,7 +14,22 @@ export function tint(hex: string, alpha: number) {
   return `rgba(${r},${g},${b},${alpha})`
 }
 
-/** Tier-1 glass surface — the standard container. */
+/**
+ * Tier-1 glass surface — the standard container.
+ *
+ * DELEGATES to glassSurface() as of 2026-08-04b. This component used to carry its OWN
+ * recipe (`--c-glass` fill, `--c-hairline` border, `--c-inset-highlight`) which is a
+ * different fill, a different border and a different radius from the one every newer
+ * surface uses. The app therefore had TWO card systems running side by side, and which
+ * one you got depended only on which file a screen happened to be written in — that is
+ * precisely why Automations and History read as bolted-on next to Home. One primitive,
+ * one recipe: fixing the look in glass.tsx now fixes every legacy call site too.
+ *
+ * `accent` no longer paints a gradient wash (see glass.tsx — coloured washes are what
+ * made a board of cards read as coloured blobs). It is kept as a LEFT EDGE only, which
+ * is how a genuinely exceptional row (a failure) still marks itself without recolouring
+ * the whole panel.
+ */
 export function Card({ children, style, accent, onClick }: { children: ReactNode; style?: CSSProperties; accent?: string; onClick?: (e: ReactMouseEvent) => void }) {
   return (
     <div
@@ -25,10 +41,9 @@ export function Card({ children, style, accent, onClick }: { children: ReactNode
         onKeyDown: (e: ReactKeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); (onClick as (ev: unknown) => void)(e) } },
       } : {})}
       style={{
-      borderRadius: 'var(--c-radius)',
-      background: accent ? `linear-gradient(150deg, ${tint(accent, 0.07)} 0%, var(--c-glass) 60%)` : 'var(--c-glass)',
-      border: '1px solid var(--c-hairline)',
-      boxShadow: 'var(--c-inset-highlight)',
+      ...glassSurface(1),
+      ...(accent ? { borderLeft: `2px solid ${accent}` } : null),
+      minWidth: 0,
       ...style,
     }}>{children}</div>
   )

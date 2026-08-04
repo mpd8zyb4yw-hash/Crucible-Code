@@ -36,7 +36,19 @@ import CardDeck from './CardDeck'
 import WidgetTaskPanel from './WidgetTaskPanel'
 import type { Round } from './chat/core'
 
-const DECK_MAX_WIDTH = 700   // below this the board becomes a deck
+// ── The deck is OFF (2026-08-04b) ──────────────────────────────────────────────
+// Below 700px the board used to become a one-card-at-a-time swipe deck. Two problems,
+// both raised directly as "cards must be the same on mobile and PC, we need continuity
+// across all surfaces":
+//   · It is a different INTERACTION from the desktop board, not a different layout —
+//     you swipe on the phone and scan on the desktop, so the same six widgets are two
+//     different products depending on which screen you opened.
+//   · A fixed-height card in a full-height column left a large dead area under the deck
+//     on any phone, which reads as an unfinished screen.
+// The phone now gets the SAME grid, single column, scrolled — identical cards, identical
+// size, identical behaviour, one surface. CardDeck.tsx is kept (it is still correct, and
+// the height fix in it stands) so this is a one-constant decision, not a deletion.
+const DECK_MAX_WIDTH = 0     // 0 = never deck; restore to 700 to bring the deck back
 
 function fmtWhen(ts: number): string {
   const d = new Date(ts)
@@ -159,7 +171,7 @@ function FrameButton({ label, onClick, danger, disabled, children }: {
       }}
       onMouseEnter={e => {
         if (disabled) return
-        e.currentTarget.style.color = danger ? '#f87171' : 'var(--glass-text)'
+        e.currentTarget.style.color = danger ? 'var(--alarm-ink)' : 'var(--glass-text)'
         e.currentTarget.style.background = danger ? 'rgba(248,113,113,0.12)' : 'rgba(127,127,150,0.16)'
       }}
       onMouseLeave={e => {
@@ -291,7 +303,7 @@ export default function HomeBoard({
                 solver computed this, so the card states it flatly. */}
             {cal?.longestFree && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'rgba(253,230,138,0.9)', flexShrink: 0 }} />
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--glass-text-3)', flexShrink: 0 }} />
                 <span style={{ fontSize: 13, color: 'var(--glass-text-2)', minWidth: 0, overflowWrap: 'anywhere' }}>
                   Longest free block: {fmtClock(cal.longestFree.start)}–{fmtClock(cal.longestFree.end)}
                 </span>
@@ -379,7 +391,7 @@ export default function HomeBoard({
                   onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = 'transparent' }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: e.status === 'ok' ? '#4db89e' : '#f87171', flexShrink: 0 }} />
+                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: e.status === 'ok' ? 'var(--glass-text-3)' : 'var(--alarm-ink)', flexShrink: 0 }} />
                     <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--glass-text)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.name}</span>
                     <span style={{ fontSize: 10.5, color: 'var(--glass-text-2)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtWhen(e.ts)}</span>
                   </div>
@@ -404,6 +416,13 @@ export default function HomeBoard({
         // action) overran the card by 108px under a 3× string test without it.
         padding: 16, minWidth: 0, overflow: 'hidden',
         display: 'flex', flexDirection: 'column', gap: 12,
+        // UNIFORM SIZE (2026-08-04b). The card fills its grid cell rather than sizing to
+        // its content, which is what made every card a different height — a 150px agents
+        // panel beside a 400px inbox. A board of ragged panels is the single loudest
+        // "unfinished" signal in the app, and it differed between phone and desktop
+        // because content, not layout, was deciding. The cell height is now one token
+        // (--card-h) used by every breakpoint, so the board is the same shape everywhere.
+        height: '100%', boxSizing: 'border-box',
       }}>
         {/* Wraps rather than overflowing: a widget with both an ask and an action has
             three header items, which cannot fit on one line at long label lengths. */}
@@ -437,7 +456,13 @@ export default function HomeBoard({
             </>
           )}
         </div>
-        {body(id)}
+        {/* The body is the only part that flexes, and it scrolls INSIDE the card when a
+            feed is longer than the cell. That is what lets every card share one height
+            without truncating anyone's data — the inbox keeps all its rows, they are
+            just reachable by scroll instead of by stretching the card. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}>
+          {body(id)}
+        </div>
         {def.ask && (
           <WidgetTaskPanel
             action={def.ask.label}
@@ -455,11 +480,13 @@ export default function HomeBoard({
   const visible = layout.filter(id => !notConnected(id))
   const disconnected = layout.filter(notConnected)
 
-  const cards: React.ReactNode[] = visible.map(id => <div key={id}>{frame(id, layout.indexOf(id))}</div>)
+  const cards: React.ReactNode[] = visible.map(id => (
+    <div key={id} style={{ minWidth: 0, height: '100%' }}>{frame(id, layout.indexOf(id))}</div>
+  ))
   const cardLabels: string[] = visible.map(id => WIDGETS[id].title)
   if (disconnected.length > 0 && feeds.loaded) {
     cards.push(
-      <div key="__connect" style={{ ...glassSurface(1), padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div key="__connect" style={{ ...glassSurface(1), padding: 16, display: 'flex', flexDirection: 'column', gap: 12, height: '100%', boxSizing: 'border-box', minWidth: 0, overflow: 'hidden' }}>
         <CardLabel>Connect</CardLabel>
         <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--glass-text)' }}>
           {disconnected.map(id => WIDGETS[id].title).join(', ')}
@@ -490,7 +517,10 @@ export default function HomeBoard({
       style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', position: 'relative' }}
     >
       <div style={{
-        width: deck ? 'min(560px, 100% - 32px)' : 'min(1180px, 100% - 64px)',
+        // The 64px desktop gutter is half the screen on a phone, so the clamp is
+        // width-aware: a comfortable margin on a wide board, a tight one on a narrow
+        // column. Same rule, one expression — not a mobile fork.
+        width: width < 760 ? 'min(1180px, 100% - 28px)' : 'min(1180px, 100% - 64px)',
         margin: '0 auto', padding: `20px 0 ${bottomInset + 40}px`,
         display: 'flex', flexDirection: 'column', gap: 16,
       }}>
@@ -541,7 +571,10 @@ export default function HomeBoard({
         ) : deck ? (
           <CardDeck items={cards} labels={cardLabels} />
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16, alignItems: 'start' }}>
+          // alignItems was 'start', which is what let each card size to its own content.
+          // 'stretch' + a fixed row height is the whole uniformity fix: every cell is the
+          // same box, on every breakpoint, and the card fills it.
+          <div className="cru-board-grid">
             {cards}
           </div>
         )}

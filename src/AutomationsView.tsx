@@ -67,17 +67,25 @@ function previewRuns(t: Trigger, n = 3): number[] {
   return out
 }
 
+// Status is INFORMATION, not decoration (2026-08-04b). This used to return five
+// saturated hues — indigo running, green ok, amber failed-last, red failing, grey off —
+// so a roster of six automations was six different colours before you read a word. Now
+// everything that is FINE is the same muted slate and says what it is in words; only a
+// real failure is allowed a hue, which is what makes a failure visible at a glance
+// instead of competing with four other colours for attention.
 function statusOf(a: Automation, running: string | null): { label: string; color: string; pulse?: boolean } {
-  if (running === a.id) return { label: 'running', color: '#7c7cf8', pulse: true }
-  if (!a.enabled) return a.consecutiveFailures >= 3 ? { label: 'paused · failing', color: '#f87171' } : { label: 'off', color: '#55556a' }
+  if (running === a.id) return { label: 'running', color: 'var(--glass-text-2)', pulse: true }
+  if (!a.enabled) return a.consecutiveFailures >= 3
+    ? { label: 'paused · failing', color: 'var(--alarm-ink)' }
+    : { label: 'off', color: 'var(--glass-text-3)' }
   const last = a.lastRuns[0]
-  if (last?.status === 'failed') return { label: 'failed last run', color: '#f59e0b' }
-  return { label: last ? 'ok' : 'scheduled', color: '#4db89e' }
+  if (last?.status === 'failed') return { label: 'failed last run', color: 'var(--alarm-ink)' }
+  return { label: last ? 'ok' : 'scheduled', color: 'var(--glass-text-3)' }
 }
 
 const inputStyle: React.CSSProperties = {
-  background: 'rgba(0,0,0,0.3)', border: '1px solid var(--c-hairline)', borderRadius: 9,
-  color: 'var(--c-text)', fontFamily: 'inherit', fontSize: 'var(--t-ui)', padding: '7px 10px', outline: 'none',
+  background: 'var(--glass-fill-plate)', border: '1px solid var(--glass-edge)', borderRadius: 10,
+  color: 'var(--glass-text)', fontFamily: 'inherit', fontSize: 'var(--t-ui)', padding: '8px 11px', outline: 'none',
 }
 
 // Templates are PREFILLS, not workflow profiles — the planner still infers the
@@ -142,9 +150,9 @@ function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: 
 
   const selStyle = (active: boolean): React.CSSProperties => ({
     ...inputStyle, cursor: 'pointer', padding: '6px 11px',
-    borderColor: active ? 'rgba(124,124,248,0.45)' : 'var(--c-hairline)',
-    background: active ? 'rgba(124,124,248,0.12)' : 'rgba(0,0,0,0.3)',
-    color: active ? '#b0b0f8' : 'var(--c-dim)',
+    borderColor: active ? 'var(--glass-edge-2)' : 'var(--glass-edge)',
+    background: active ? 'var(--glass-fill-2)' : 'var(--glass-fill-plate)',
+    color: active ? 'var(--glass-text)' : 'var(--glass-text-3)',
   })
 
   return (
@@ -248,9 +256,9 @@ function TriggerEditor({ value, onChange }: { value: Trigger; onChange: (t: Trig
 
   const selStyle = (active: boolean): React.CSSProperties => ({
     ...inputStyle, cursor: 'pointer', padding: '5px 10px', fontSize: 'var(--t-small)',
-    borderColor: active ? 'rgba(124,124,248,0.45)' : 'var(--c-hairline)',
-    background: active ? 'rgba(124,124,248,0.12)' : 'rgba(0,0,0,0.3)',
-    color: active ? '#b0b0f8' : 'var(--c-dim)',
+    borderColor: active ? 'var(--glass-edge-2)' : 'var(--glass-edge)',
+    background: active ? 'var(--glass-fill-2)' : 'var(--glass-fill-plate)',
+    color: active ? 'var(--glass-text)' : 'var(--glass-text-3)',
   })
 
   return (
@@ -327,7 +335,13 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
         {a.enabled && a.nextRun != null && (
           <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>next {fmtWhen(a.nextRun)}</span>
         )}
-        <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>▾</span>
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden style={{
+          flexShrink: 0, color: 'var(--glass-text-3)',
+          transform: expanded ? 'rotate(180deg)' : 'none',
+          transition: 'transform var(--dur-fast) var(--ease-standard)',
+        }}>
+          <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
       </div>
 
       {expanded && !editing && (
@@ -366,7 +380,7 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
               onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)' }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
             >
-              <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.status === 'ok' ? '#4db89e' : '#f87171', flexShrink: 0 }} />
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.status === 'ok' ? 'var(--glass-text-3)' : 'var(--alarm-ink)', flexShrink: 0 }} />
               <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtWhen(r.ts)}</span>
               <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.summary}</span>
               <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', flexShrink: 0 }}>open ›</span>
@@ -383,7 +397,7 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
           ? <GhostButton onClick={() => setConfirmDelete(true)} title="Delete this automation">Delete</GhostButton>
           : (
             <>
-              <GhostButton onClick={onDelete} title="This cannot be undone" style={{ color: '#f87171', borderColor: 'rgba(248,113,113,0.4)' }}>Confirm delete</GhostButton>
+              <GhostButton onClick={onDelete} title="This cannot be undone" style={{ color: 'var(--alarm-ink)', borderColor: 'var(--alarm-edge)' }}>Confirm delete</GhostButton>
               <GhostButton onClick={() => setConfirmDelete(false)}>Keep</GhostButton>
             </>
           )}
@@ -456,21 +470,31 @@ export default function AutomationsView({ onClose, onFollowUp }: {
 
   return (
     <div style={{
-      position: 'absolute', inset: 0, zIndex: 30, background: 'var(--c-bg)',
+      // Was an opaque `--c-bg` slab, which is why this page looked like a different app
+      // dropped on top of Crucible: every other surface is frosted over the ambient
+      // field, and this one alone was flat. Same scrim + blur as the rest of the shell.
+      position: 'absolute', inset: 0, zIndex: 30,
+      background: 'var(--scrim)', backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
       display: 'flex', flexDirection: 'column', animation: 'panelUp 0.22s var(--ease)',
     }}>
-      {/* Header */}
+      {/* Header — WRAPS (2026-08-04b). Title + pane toggle + Close could not fit on one
+          375px line, so "Close" was clipped by the screen edge: the way out of the page
+          was literally off it. flexWrap plus a shrinkable title means the controls drop
+          to a second row instead of overflowing, at any width and any label length. */}
       <div style={{
-        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12,
-        padding: `calc(var(--titlebar-clearance) + 14px) 20px 14px`,
-        borderBottom: '1px solid var(--c-hairline)',
+        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        padding: `calc(var(--titlebar-clearance) + 14px) 16px 14px`,
+        borderBottom: '1px solid var(--glass-edge)',
       }}>
-        <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--c-text)' }}>Automations</span>
+        <span style={{
+          fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--glass-text)',
+          minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>Automations</span>
         {/* The status chip yields on narrow — the header must fit title + pane toggle + Close. */}
         {!narrow && (anyRunning
-          ? <StatusChip color="#7c7cf8" pulse>running</StatusChip>
+          ? <StatusChip color="var(--glass-text-2)" pulse>running</StatusChip>
           : list.some(a => a.enabled)
-            ? <StatusChip color="#4db89e">{list.filter(a => a.enabled).length} scheduled</StatusChip>
+            ? <StatusChip color="var(--glass-text-3)">{list.filter(a => a.enabled).length} scheduled</StatusChip>
             : null)}
         <div style={{ flex: 1 }} />
         {narrow && (
@@ -521,7 +545,7 @@ export default function AutomationsView({ onClose, onFollowUp }: {
         {(!narrow || pane === 'digest') && (
         <div style={{
           width: narrow ? '100%' : 380, flexShrink: 0,
-          borderLeft: narrow ? 'none' : '1px solid var(--c-hairline)',
+          borderLeft: narrow ? 'none' : '1px solid var(--glass-edge)',
           overflowY: 'auto', padding: narrow ? '14px 14px 24px' : '18px 18px 24px',
           display: 'flex', flexDirection: 'column', gap: 10,
         }}>
@@ -532,12 +556,12 @@ export default function AutomationsView({ onClose, onFollowUp }: {
           {digest.map((e, i) => (
             <Card
               key={`${e.automationId}:${e.ts}:${i}`}
-              accent={e.status === 'ok' ? '#4db89e' : '#f87171'}
+              accent={e.status === 'ok' ? undefined : 'var(--alarm-ink)'}
               onClick={() => setOpenRun({ automationId: e.automationId, ts: e.ts, name: e.name })}
               style={{ padding: '11px 13px', display: 'flex', flexDirection: 'column', gap: 6, cursor: 'pointer' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: e.status === 'ok' ? '#4db89e' : '#f87171', flexShrink: 0 }} />
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: e.status === 'ok' ? 'var(--glass-text-3)' : 'var(--alarm-ink)', flexShrink: 0 }} />
                 <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text)', overflowWrap: 'anywhere' }}>{e.name}</span>
                 <div style={{ flex: 1 }} />
                 <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{fmtWhen(e.ts)}</span>
@@ -546,7 +570,7 @@ export default function AutomationsView({ onClose, onFollowUp }: {
                 fontSize: 'var(--t-small)', color: 'var(--c-dim)', lineHeight: 1.55, overflowWrap: 'anywhere',
                 display: '-webkit-box', WebkitLineClamp: 6, WebkitBoxOrient: 'vertical', overflow: 'hidden',
               }}>{e.summary}</div>
-              <span style={{ fontSize: 10.5, color: '#9d9dfa' }}>Open full result ›</span>
+              <span style={{ fontSize: 10.5, color: 'var(--glass-text-3)' }}>Open full result</span>
             </Card>
           ))}
         </div>

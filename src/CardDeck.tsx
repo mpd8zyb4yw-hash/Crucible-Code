@@ -98,19 +98,28 @@ export default function CardDeck({ items, labels }: {
 
   useEffect(() => { if (front > n - 1) setFront(Math.max(0, n - 1)) }, [n, front])
 
-  // The deck needs an explicit height so the absolutely-positioned cards have a box,
-  // and it tracks the FRONT card. Card bodies differ wildly (a Gmail list vs a one-line
-  // Watch state), so sizing to the tallest would leave a crater under the short ones;
-  // instead the frame animates between heights on the same glide curve as the swipe.
+  // ── ONE height, measured from the token, not from the content (2026-08-04b) ──────
+  // This used to measure the FRONT card and animate the frame between per-card heights,
+  // on the reasoning that "sizing to the tallest would leave a crater under the short
+  // ones". In practice that produced the opposite of continuity: the same widget was a
+  // different size on the phone than on the desktop board, and a different size again
+  // depending on which card you had swiped to — the frame visibly resized under your
+  // thumb between every swipe. Cards are now exactly --card-h, the SAME token the
+  // desktop grid uses, so a card is one shape everywhere in the app and swiping moves
+  // content without moving the furniture. Cards scroll internally past that height
+  // (HomeBoard gives each body its own overflow), so nothing is truncated.
   useLayoutEffect(() => {
-    const el = cardRef.current
-    if (!el) return
-    const measure = () => setHeight(Math.max(120, el.offsetHeight))
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [front, items])
+    const read = () => {
+      const raw = getComputedStyle(document.documentElement).getPropertyValue('--card-h')
+      const px = parseInt(raw, 10)
+      setHeight(Number.isFinite(px) && px > 0 ? px : 260)
+    }
+    read()
+    // The token can change with the theme/breakpoint; re-read on resize so the deck
+    // never holds a stale height.
+    window.addEventListener('resize', read)
+    return () => window.removeEventListener('resize', read)
+  }, [])
 
   const go = useCallback((next: number, dir: -1 | 1) => {
     if (next < 0 || next > n - 1) return
@@ -253,7 +262,9 @@ export default function CardDeck({ items, labels }: {
           aria-label={`${labels[front] ?? ''}, ${front + 1} of ${n}`}
           className={!reduced && leaving ? (leaving.dir === 1 ? 'cru-deck-in-fwd' : 'cru-deck-in-back') : undefined}
           style={{
-            position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20,
+            // bottom:0 (with top:0) is what makes the card FILL the fixed frame instead
+            // of sizing to its own content — the other half of the uniform-height fix.
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 20,
             transform: reduced ? undefined : `translate3d(${dx}px, 0, 0)`,
             transition: reduced ? 'opacity 120ms var(--ease-standard)' : (settling ? settle : 'none'),
             willChange: 'transform',

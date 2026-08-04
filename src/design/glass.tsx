@@ -55,12 +55,18 @@ export function domainLabelColor(domain: Domain | undefined): string {
  */
 export type Elevation = 1 | 2 | 3 | 4
 
-export function glassSurface(level: Elevation = 1, domain?: Domain): CSSProperties {
+// NOTE (2026-08-04b): `domain` no longer paints the surface. It used to add a
+// `linear-gradient(150deg, tint 0.18 → 0.02)` wash, which is what made every card on the
+// board a different colour — an amber calendar next to a teal inbox next to an indigo
+// agents panel. That is the "coloured blobs" the direction rules out, and it is also why
+// the app never read as one surface. The parameter is KEPT (call sites still pass it, and
+// it still drives the label colour via CardLabel) so domain stays a real concept in the
+// data — it simply no longer has a decorative consequence. Every panel is now the same
+// frosted slate, and hierarchy comes from elevation alone.
+export function glassSurface(level: Elevation = 1, _domain?: Domain): CSSProperties {
   const chrome = level === 4
   const fill = level >= 2 && level !== 4 ? 'var(--glass-fill-2)' : 'var(--glass-fill)'
-  const wash = domain
-    ? `linear-gradient(150deg, ${domainTint(domain, level >= 2 ? 0.20 : 0.18)}, ${domainTint(domain, 0.02)}), `
-    : ''
+  const wash = ''
   return {
     backdropFilter: chrome ? 'var(--glass-blur-light)' : 'var(--glass-blur)',
     WebkitBackdropFilter: chrome ? 'var(--glass-blur-light)' : 'var(--glass-blur)',
