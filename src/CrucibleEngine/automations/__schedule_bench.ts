@@ -22,9 +22,29 @@ const TIMES: Array<[string, string | null]> = [
   ['whenever', null],
 ]
 for (const [input, want] of TIMES) check(`parseTime(${JSON.stringify(input)}) = ${want}`, parseTime(input) === want, String(parseTime(input)))
+// The part-of-day hint, which is what stops "every morning at 7" becoming 19:00.
+check("parseTime('at 7', 'am') = 07:00", parseTime('at 7', 'am') === '07:00', String(parseTime('at 7', 'am')))
+check("parseTime('at 7', 'pm') = 19:00", parseTime('at 7', 'pm') === '19:00', String(parseTime('at 7', 'pm')))
+check("parseTime('at 9', 'pm') = 21:00", parseTime('at 9', 'pm') === '21:00', String(parseTime('at 9', 'pm')))
+
+// ── A quantity in the TASK is not a schedule (2026-08-04c) ─────────────────────
+// parseTime matches any bare number, so these parsed as clock times and the one-shot
+// branch scheduled a real run. A wrong cadence runs forever without being noticed.
+for (const s of ['summarise my top 5 emails', 'list the 10 largest files', 'show me 3 things to do',
+                 'keep an eye on my open pull requests', 'watch for new invoices']) {
+  check(`no false schedule from ${JSON.stringify(s)}`, parseTrigger(s, NOW) === null, JSON.stringify(parseTrigger(s, NOW)))
+}
 
 // ── Trigger parsing ──
 const CASES: Array<[string, string, (t: any) => boolean]> = [
+  // ── Regressions fixed 2026-08-04c, kept so they cannot come back ──────────────
+  // A part-of-day word in the SAME sentence must beat the bare-hour PM heuristic.
+  // This scheduled the evening for a sentence that said "morning".
+  ['summarise my inbox every morning at 7', 'daily', t => t.time === '07:00'],
+  ['check my calendar every evening at 6', 'daily', t => t.time === '18:00'],
+  // Bare "weekly" with no named day used to return null — the caller then had to ask
+  // for a cadence the user had already given.
+  ['clean up downloads weekly', 'weekly', t => t.day === 1 && t.time === '09:00'],
   ['every weekday at 8am', 'weekdays', t => t.time === '08:00'],
   ['on weekdays at 9', 'weekdays', t => t.time === '09:00'],
   ['monday to friday at 7:30am', 'weekdays', t => t.time === '07:30'],

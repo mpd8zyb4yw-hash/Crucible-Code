@@ -8,12 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card, SectionLabel, GhostButton, PrimaryButton, StatusChip } from './ui'
 import { API_BASE, apiFetch } from './api'
 import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
-
-type Trigger =
-  | { kind: 'interval'; minutes: number }
-  | { kind: 'daily'; time: string }
-  | { kind: 'weekly'; day: number; time: string }
-  | { kind: 'once'; at: number }
+import { parseAutomation, describeTrigger, type Trigger } from './design/automationParse'
 
 interface RunRec { ts: number; status: 'ok' | 'failed'; summary: string; ms: number }
 interface Automation {
@@ -24,15 +19,6 @@ interface Automation {
 interface DigestEntry extends RunRec { automationId: string; name: string }
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-
-function describeTrigger(t: Trigger): string {
-  switch (t.kind) {
-    case 'interval': return t.minutes % 60 === 0 ? `every ${t.minutes / 60}h` : `every ${t.minutes}m`
-    case 'daily': return `daily at ${t.time}`
-    case 'weekly': return `${DAYS[t.day]}s at ${t.time}`
-    case 'once': return `once, ${new Date(t.at).toLocaleString()}`
-  }
-}
 
 function fmtWhen(ts: number): string {
   const d = new Date(ts)
@@ -58,6 +44,11 @@ function previewRuns(t: Trigger, n = 3): number[] {
       if (Number.isNaN(h) || Number.isNaN(m)) return out
       const d = new Date(from); d.setHours(h, m, 0, 0)
       if (t.kind === 'daily') { if (d.getTime() <= from) d.setDate(d.getDate() + 1) }
+      else if (t.kind === 'weekdays') {
+        // Mon-Fri: step forward until the next weekday strictly after `from`.
+        if (d.getTime() <= from) d.setDate(d.getDate() + 1)
+        while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1)
+      }
       else { let delta = (t.day - d.getDay() + 7) % 7; if (delta === 0 && d.getTime() <= from) delta = 7; d.setDate(d.getDate() + delta) }
       next = d.getTime()
     }
@@ -88,59 +79,80 @@ const inputStyle: React.CSSProperties = {
   color: 'var(--glass-text)', fontFamily: 'inherit', fontSize: 'var(--t-ui)', padding: '8px 11px', outline: 'none',
 }
 
-// Templates are PREFILLS, not workflow profiles — the planner still infers the
-// workflow from the brief text (standing rule: no predefined profiles).
-const TEMPLATES: Array<{ label: string; name: string; brief: string; kind: 'daily' | 'weekly'; time: string; day?: number }> = [
-  {
-    label: 'Morning brief',
-    name: 'Morning brief',
-    brief: 'Use calendar_list to get today\'s events and gmail_search (query: "newer_than:1d in:inbox") to get the last day\'s inbox. Write a compact morning brief: schedule first, then notable emails (sender — subject — why it matters), then anything that needs a reply today. Plain text, no filler.',
-    kind: 'daily', time: '08:00',
-  },
-  {
-    label: 'Inbox triage',
-    name: 'Inbox triage',
-    brief: 'Use gmail_search (query: "newer_than:1d in:inbox") and gmail_read on anything ambiguous. Group the last day\'s email into: needs a reply, worth reading, ignorable. One line each with sender and subject. Do not send or modify anything.',
-    kind: 'daily', time: '17:30',
-  },
-  {
-    label: 'Weekly cleanup',
-    name: 'Weekly downloads cleanup',
-    brief: 'List the files in ~/Downloads older than 30 days with their sizes. Report the total reclaimable space and the ten largest offenders. Do not delete anything — report only.',
-    kind: 'weekly', time: '10:00', day: 6,
-  },
-]
+// ── Create: one sentence, then a summary you can correct ──────────────────────
+// REBUILT 2026-08-04c. What was here asked for five decisions before you could save:
+// pick one of three templates, type a name, write a multi-sentence "brief", choose one
+// of four trigger kinds and configure it, then decide "digest" vs "digest + push" —
+// terms the app never defined. It read as a config form for a cron daemon.
+//
+// It is now one box and one button. You write the thing you'd say out loud; the schedule,
+// the title and the delivery are DERIVED (design/automationParse.ts, 39/39 bench) and
+// shown back as three chips you can click to correct. Inference without a visible,
+// correctable summary would just be a different kind of opaque — so the chips ARE the
+// design, not decoration. Nothing is hidden and nothing must be filled in twice.
+
+function Chip({ label, value, assumed, onClick, children }: {
+  label: string; value: string; assumed?: boolean
+  onClick?: () => void; children?: React.ReactNode
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
+      <span style={{
+        font: '600 10px/1 var(--mono)', letterSpacing: '0.12em', textTransform: 'uppercase',
+        color: 'var(--glass-text-3)',
+      }}>{label}</span>
+      {children ?? (
+        <button
+          onClick={onClick}
+          title={assumed ? 'Assumed — click to set it yourself' : 'Click to change'}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 7, alignSelf: 'flex-start',
+            maxWidth: '100%', minWidth: 0, cursor: 'pointer', fontFamily: 'inherit',
+            padding: '7px 12px', borderRadius: 10,
+            background: 'var(--glass-fill-plate)',
+            // A dashed edge marks a value nothing in the sentence asked for. It is the
+            // one honest way to show "this is my assumption" without a paragraph of copy.
+            border: assumed ? '1px dashed var(--glass-edge)' : '1px solid var(--glass-edge)',
+            color: assumed ? 'var(--glass-text-2)' : 'var(--glass-text)',
+            fontSize: 13, fontWeight: 600, textAlign: 'left',
+          }}
+        >
+          <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</span>
+          <svg width="9" height="9" viewBox="0 0 16 16" fill="none" aria-hidden style={{ flexShrink: 0, opacity: 0.5 }}>
+            <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
+    </div>
+  )
+}
 
 function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: () => void }) {
-  const [name, setName] = useState('')
-  const [brief, setBrief] = useState('')
-  const [kind, setKind] = useState<Trigger['kind']>('daily')
-  const [time, setTime] = useState('08:00')
-  const [day, setDay] = useState(1)
-  const [minutes, setMinutes] = useState(120)
-  const [onceAt, setOnceAt] = useState('')
-  const [delivery, setDelivery] = useState<'digest' | 'push'>('digest')
+  const [sentence, setSentence] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Overrides start null and only fill in when the user corrects a chip, so edits are
+  // never clobbered by the next keystroke re-parsing the sentence.
+  const [nameOverride, setNameOverride] = useState<string | null>(null)
+  const [triggerOverride, setTriggerOverride] = useState<Trigger | null>(null)
+  const [deliveryOverride, setDeliveryOverride] = useState<'digest' | 'push' | null>(null)
+  const [editing, setEditing] = useState<'name' | 'when' | null>(null)
 
-  const trigger: Trigger | null = useMemo(() => {
-    if (kind === 'interval') return minutes >= 1 ? { kind, minutes } : null
-    if (kind === 'daily') return /^\d{1,2}:\d{2}$/.test(time) ? { kind, time } : null
-    if (kind === 'weekly') return /^\d{1,2}:\d{2}$/.test(time) ? { kind, day, time } : null
-    const at = onceAt ? new Date(onceAt).getTime() : NaN
-    return Number.isFinite(at) && at > Date.now() ? { kind: 'once', at } : null
-  }, [kind, time, day, minutes, onceAt])
-
-  const preview = trigger ? previewRuns(trigger) : []
-  const valid = !!trigger && name.trim().length > 0 && brief.trim().length >= 8
+  const parsed = useMemo(() => parseAutomation(sentence), [sentence])
+  const name = nameOverride ?? parsed.name
+  const trigger = triggerOverride ?? parsed.trigger
+  const delivery = deliveryOverride ?? parsed.delivery
+  const ready = sentence.trim().length >= 8
 
   const create = async () => {
-    if (!valid || saving) return
+    if (!ready || saving) return
     setSaving(true); setErr(null)
     try {
       const res = await apiFetch(`${API_BASE}/api/automations`, {
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), brief: brief.trim(), trigger, delivery }),
+        // The BRIEF is the user's sentence, untouched — the planner still infers the
+        // workflow from it. We only ever derive when it runs and what it is called.
+        body: JSON.stringify({ name: name.trim().slice(0, 80), brief: sentence.trim(), trigger, delivery }),
       })
       if (!res.ok) { setErr((await res.json().catch(() => null))?.error ?? `HTTP ${res.status}`); return }
       onCreated()
@@ -148,81 +160,77 @@ function CreateForm({ onCreated, onCancel }: { onCreated: () => void; onCancel: 
     finally { setSaving(false) }
   }
 
-  const selStyle = (active: boolean): React.CSSProperties => ({
-    ...inputStyle, cursor: 'pointer', padding: '6px 11px',
-    borderColor: active ? 'var(--glass-edge-2)' : 'var(--glass-edge)',
-    background: active ? 'var(--glass-fill-2)' : 'var(--glass-fill-plate)',
-    color: active ? 'var(--glass-text)' : 'var(--glass-text-3)',
-  })
+  const next = previewRuns(trigger, 2)
 
   return (
-    <Card accent="#7c7cf8" style={{ padding: '16px 18px', display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-      {/* Left: what (wraps to a single column on narrow widths — min basis keeps both legible) */}
-      <div style={{ flex: '1.2 1 260px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <SectionLabel>New automation</SectionLabel>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {TEMPLATES.map(t => (
-            <button
-              key={t.label}
-              onClick={() => {
-                setName(t.name); setBrief(t.brief); setKind(t.kind); setTime(t.time)
-                if (t.day != null) setDay(t.day)
-              }}
-              style={{ ...inputStyle, cursor: 'pointer', padding: '5px 11px', color: 'var(--c-dim)', fontSize: 'var(--t-small)' }}
-              title="Prefill — edit anything before creating"
-            >{t.label}</button>
-          ))}
-        </div>
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Name — e.g. Morning brief" maxLength={80} style={inputStyle} />
-        <textarea
-          value={brief} onChange={e => setBrief(e.target.value)} rows={5}
-          placeholder="The brief — exactly what the agent should do each run, as if you typed it into Mission Control."
-          style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.55, minHeight: 96 }}
-        />
-      </div>
-      {/* Right: when + delivery */}
-      <div style={{ flex: '1 1 240px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <SectionLabel>Trigger</SectionLabel>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(['daily', 'weekly', 'interval', 'once'] as const).map(k => (
-            <button key={k} onClick={() => setKind(k)} style={selStyle(kind === k)}>{k}</button>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          {kind === 'weekly' && (
-            <select value={day} onChange={e => setDay(Number(e.target.value))} style={{ ...inputStyle, cursor: 'pointer' }}>
-              {DAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
-            </select>
-          )}
-          {(kind === 'daily' || kind === 'weekly') && (
-            <input type="time" value={time} onChange={e => setTime(e.target.value)} style={inputStyle} />
-          )}
-          {kind === 'interval' && (
-            <>
-              <span style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)' }}>every</span>
-              <input type="number" min={5} max={10080} value={minutes} onChange={e => setMinutes(Number(e.target.value))} style={{ ...inputStyle, width: 76 }} />
-              <span style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)' }}>minutes</span>
-            </>
-          )}
-          {kind === 'once' && (
-            <input type="datetime-local" value={onceAt} onChange={e => setOnceAt(e.target.value)} style={inputStyle} />
-          )}
-        </div>
-        <SectionLabel style={{ marginTop: 2 }}>Delivery</SectionLabel>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={() => setDelivery('digest')} style={selStyle(delivery === 'digest')} title="Results land in the Digest feed only">digest</button>
-          <button onClick={() => setDelivery('push')} style={selStyle(delivery === 'push')} title="Also send a push notification per run">digest + push</button>
-        </div>
-        {preview.length > 0 && (
-          <div style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.6 }}>
-            Next runs: {preview.map(fmtWhen).join(' · ')}
+    <Card style={{ padding: '18px 18px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <textarea
+        value={sentence}
+        onChange={e => setSentence(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) create() }}
+        rows={2}
+        autoFocus
+        placeholder="Tell me what to keep an eye on"
+        style={{
+          ...inputStyle, resize: 'none', width: '100%', boxSizing: 'border-box',
+          fontSize: 16, lineHeight: 1.5, padding: '12px 14px', minHeight: 62,
+        }}
+      />
+
+      {ready && (
+        <>
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            {editing === 'when' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 260px', minWidth: 0 }}>
+                <span style={{ font: '600 10px/1 var(--mono)', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--glass-text-3)' }}>When</span>
+                <TriggerEditor value={trigger} onChange={t => { if (t) setTriggerOverride(t) }} />
+                <button onClick={() => setEditing(null)} style={{ ...inputStyle, cursor: 'pointer', alignSelf: 'flex-start', padding: '5px 12px', fontSize: 12 }}>Done</button>
+              </div>
+            ) : (
+              <Chip
+                label="When"
+                value={describeTrigger(trigger)}
+                assumed={!parsed.scheduleExplicit && !triggerOverride}
+                onClick={() => setEditing('when')}
+              />
+            )}
+
+            {editing === 'name' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: '1 1 200px', minWidth: 0 }}>
+                <span style={{ font: '600 10px/1 var(--mono)', letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--glass-text-3)' }}>Called</span>
+                <input
+                  autoFocus value={name} maxLength={80}
+                  onChange={e => setNameOverride(e.target.value)}
+                  onBlur={() => setEditing(null)}
+                  onKeyDown={e => { if (e.key === 'Enter') setEditing(null) }}
+                  style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }}
+                />
+              </div>
+            ) : (
+              <Chip label="Called" value={name} onClick={() => setEditing('name')} />
+            )}
+
+            <Chip
+              label="Tells me"
+              value={delivery === 'push' ? 'With a notification' : 'In the digest'}
+              assumed={!parsed.deliveryExplicit && !deliveryOverride}
+              onClick={() => setDeliveryOverride(delivery === 'push' ? 'digest' : 'push')}
+            />
           </div>
-        )}
-        {err && <div style={{ fontSize: 'var(--t-small)', color: '#f87171' }}>{err}</div>}
-        <div style={{ display: 'flex', gap: 8, marginTop: 'auto', justifyContent: 'flex-end' }}>
-          <GhostButton onClick={onCancel}>Cancel</GhostButton>
-          <PrimaryButton onClick={create} disabled={!valid || saving}>{saving ? 'Creating…' : 'Create automation'}</PrimaryButton>
-        </div>
+
+          {next.length > 0 && (
+            <div style={{ fontSize: 12.5, color: 'var(--glass-text-3)', fontVariantNumeric: 'tabular-nums' }}>
+              First run {fmtWhen(next[0])}{next[1] ? `, then ${fmtWhen(next[1])}` : ''}
+            </div>
+          )}
+        </>
+      )}
+
+      {err && <div style={{ fontSize: 12.5, color: 'var(--alarm-ink)' }}>{err}</div>}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <PrimaryButton onClick={create} disabled={!ready || saving}>{saving ? 'Saving…' : 'Start watching'}</PrimaryButton>
+        <GhostButton onClick={onCancel}>Cancel</GhostButton>
       </div>
     </Card>
   )

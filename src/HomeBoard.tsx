@@ -500,7 +500,8 @@ export default function HomeBoard({
   const stateLine = [
     live.length > 0 ? `${live.length} agent${live.length === 1 ? '' : 's'} working.` : null,
     cal?.nextStart != null && cal.nextTitle ? `${cal.nextTitle} in ${untilLabel(cal.nextStart, now)}.` : null,
-    obligations > 0 ? `${obligations} message${obligations === 1 ? '' : 's'} need you.` : null,
+    // The VERB has to agree too — "1 message need you" was on the app's first line.
+    obligations > 0 ? `${obligations} message${obligations === 1 ? ' needs' : 's need'} you.` : null,
     watch.moved.length > 0 ? `${watch.moved.length} watch${watch.moved.length === 1 ? '' : 'es'} moved.` : null,
   ].filter(Boolean).join(' ')
 

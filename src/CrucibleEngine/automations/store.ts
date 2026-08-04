@@ -8,12 +8,10 @@
 import fs from 'fs'
 import path from 'path'
 
-export type Trigger =
-  | { kind: 'interval'; minutes: number }
-  | { kind: 'daily'; time: string }                 // 'HH:MM', server-local time
-  | { kind: 'weekly'; day: number; time: string }   // day: 0=Sunday … 6=Saturday
-  | { kind: 'weekdays'; time: string }              // Mon-Fri at 'HH:MM'
-  | { kind: 'once'; at: number }                    // epoch ms
+// Declared in triggerTypes.ts so the browser can import it without dragging `fs` in.
+// Re-exported here so every existing `from './store'` import keeps working.
+export type { Trigger } from './triggerTypes'
+import type { Trigger } from './triggerTypes'
 
 export interface AutomationRun {
   ts: number

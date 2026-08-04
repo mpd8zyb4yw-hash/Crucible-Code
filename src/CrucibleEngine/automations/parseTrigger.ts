@@ -11,7 +11,7 @@
 // deterministically, and the tool takes the user's own words. Pure and injectable-clock, so it is
 // testable without freezing time.
 
-import type { Trigger } from './store'
+import type { Trigger } from './triggerTypes'
 
 export interface ParsedTrigger {
   trigger: Trigger
@@ -26,7 +26,7 @@ const DAY_NAMES: Record<string, number> = {
 }
 
 /** "8am" | "8:30 pm" | "17:00" | "noon" | "midnight" → "HH:MM", or null. */
-export function parseTime(s: string): string | null {
+export function parseTime(s: string, hint?: 'am' | 'pm'): string | null {
   const t = s.toLowerCase().trim()
   if (/\bnoon|midday\b/.test(t)) return '12:00'
   if (/\bmidnight\b/.test(t)) return '00:00'
@@ -36,12 +36,39 @@ export function parseTime(s: string): string | null {
   const min = Number(m[2] ?? 0)
   const ampm = m[3]
   if (h > 23 || min > 59) return null
-  // A bare hour with no am/pm and no colon is ambiguous ("at 8"). Treat 1-7 as PM, because
-  // "remind me at 6" overwhelmingly means the evening, and 8-12 as AM.
   if (ampm === 'pm' && h < 12) h += 12
   else if (ampm === 'am' && h === 12) h = 0
-  else if (!ampm && !m[2] && h >= 1 && h <= 7) h += 12
+  else if (!ampm && h >= 1 && h <= 11) {
+    // Resolution order: explicit am/pm (above) → the sentence's own part-of-day word →
+    // a positional default. Only the last is a guess.
+    // MEASURED BUG (2026-08-04c): without the hint, "every morning at 7" resolved to
+    // 19:00 — the sentence said MORNING in the same breath and the parser scheduled the
+    // evening. Stated context must beat a positional heuristic.
+    if (hint === 'pm') h += 12
+    else if (hint === 'am') { /* keep the morning reading */ }
+    // No context: "remind me at 6" overwhelmingly means the evening; "at 9" means 09:00.
+    else if (!m[2] && h >= 1 && h <= 7) h += 12
+  }
   return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`
+}
+
+/**
+ * Does the text actually POINT AT a time, rather than merely contain a number?
+ *
+ * MEASURED BUG (2026-08-04c): parseTime matches any bare 1-2 digit number, so
+ * "summarise my top 5 emails" parsed as 5 o'clock and the final one-shot branch scheduled
+ * a real run for 17:00. A quantity inside the TASK is not a schedule, and a confidently
+ * wrong cadence runs forever without being noticed — exactly what the note on parseTrigger
+ * warns about. A bare number now needs a cue: an explicit preposition, a colon, a
+ * meridiem, or a named hour.
+ */
+const TIME_CUE = /\b(?:at|by|around|@)\s*\d|\d{1,2}:\d{2}|\d\s*(?:am|pm)\b|\b(?:noon|midday|midnight)\b/
+
+/** Which half of the day the sentence's own words imply, if any. */
+function meridiemHint(s: string): 'am' | 'pm' | undefined {
+  if (/\b(morning|mornings|dawn|breakfast)\b/.test(s)) return 'am'
+  if (/\b(afternoon|evening|evenings|night|nights|tonight|dinner)\b/.test(s)) return 'pm'
+  return undefined
 }
 
 /**
@@ -62,7 +89,7 @@ export function parseTrigger(text: string, now: number): ParsedTrigger | null {
     return { trigger: { kind: 'once', at }, description: `once, ${new Date(at).toLocaleString()}` }
   }
 
-  const time = parseTime(s)
+  const time = TIME_CUE.test(s) ? parseTime(s, meridiemHint(s)) : null
 
   // ── Weekdays: "every weekday", "on weekdays", "monday to friday" ──
   if (/\b(week ?days?|mon(day)?\s*(-|to|through|–)\s*fri(day)?)\b/.test(s) && !/\bweekends?\b/.test(s)) {
@@ -77,6 +104,14 @@ export function parseTrigger(text: string, now: number): ParsedTrigger | null {
     const day = DAY_NAMES[dayHit]
     const label = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][day]
     return { trigger: { kind: 'weekly', day, time: t }, description: `every ${label} at ${t}` }
+  }
+
+  // ── Bare "weekly" / "every week" with no named day (2026-08-04c) ──
+  // "clean up downloads weekly" returned null, so the caller had to ask for a cadence the
+  // user had already given. Monday is the conventional start of the working week.
+  if (/\b(weekly|every week|each week)\b/.test(s)) {
+    const t = time ?? '09:00'
+    return { trigger: { kind: 'weekly', day: 1, time: t }, description: `every Monday at ${t}` }
   }
 
   // ── Interval: "every 30 minutes", "every 2 hours", "hourly" ──

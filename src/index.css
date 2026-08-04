@@ -131,10 +131,13 @@
      something worth sampling, not enough to look at on its own. Colour comes from the
      FIELD, through the glass — never painted onto the cards (see glass.tsx). */
   --amb-base: #090A12;
-  --amb-1: rgba(79, 70, 229, 0.30);    /* indigo, top-left — the anchor */
-  --amb-2: rgba(124, 58, 237, 0.22);   /* violet, top-right — one step round the wheel */
-  --amb-3: rgba(99, 102, 241, 0.14);   /* indigo again, bottom-right (was amber) */
-  --amb-4: rgba(79, 70, 229, 0.10);    /* faintest, bottom-left (was cyan) */
+  /* Roles changed with the topology below — 1 is now the DIRECTIONAL wash, 2 and 3 are
+     off-canvas shoulders, 4 is a corner lift. Alphas rebalanced accordingly: a linear
+     covers far more area than a corner radial, so it carries less. */
+  --amb-1: rgba(79, 70, 229, 0.20);    /* directional wash, top-left → out */
+  --amb-2: rgba(99, 102, 241, 0.30);   /* off-canvas bloom, upper-left shoulder */
+  --amb-3: rgba(124, 58, 237, 0.17);   /* off-canvas counterweight, lower-right */
+  --amb-4: rgba(79, 70, 229, 0.07);    /* faint lift so bottom-left isn't flat black */
 
   /* ── Domain tint — DELIBERATELY MONOCHROME (2026-08-04b) ────────────────────
      These used to be five saturated hues (indigo/teal/amber/violet/slate) painted as a
@@ -212,10 +215,10 @@ html[data-theme='light'] {
   /* Same family, same positions, lower chroma — a light field tints far more readily,
      so matching the dark alphas here would wash the ink out. */
   --amb-base: #EEF0F8;
-  --amb-1: rgba(129, 140, 248, 0.24);
-  --amb-2: rgba(167, 139, 250, 0.17);
-  --amb-3: rgba(129, 140, 248, 0.11);
-  --amb-4: rgba(139, 145, 250, 0.08);
+  --amb-1: rgba(129, 140, 248, 0.17);
+  --amb-2: rgba(129, 140, 248, 0.24);
+  --amb-3: rgba(167, 139, 250, 0.14);
+  --amb-4: rgba(139, 145, 250, 0.06);
   --c-bg: #EEF0F8;
   --c-text: #101222;
   --c-text-soft: rgba(16, 18, 34, 0.90);
@@ -318,13 +321,30 @@ pre code {
   .cru-board-grid { grid-template-columns: 1fr; }
 }
 
+/* ── The field's TOPOLOGY, not just its colour (2026-08-04c) ────────────────────
+   The four blooms used to sit at the four CORNERS (14% 6%, 86% 18%, 74% 96%, 6% 86%),
+   each fading to transparent by ~58%. Four lit corners around an unlit middle is a ring
+   — and on an empty screen, with nothing else to look at, the eye reads that ring as a
+   dark aperture with a bright rim. Recolouring it cannot fix that; the arrangement is
+   the problem, so the arrangement is what changes here.
+
+   Now: one broad DIRECTIONAL wash sets the overall tone (top-left bright → bottom-right
+   deep), and the two blooms are anchored OFF-CANVAS (-18% and 112%), so only the shoulder
+   of each ellipse is ever on screen. An off-canvas origin cannot close into a ring, and
+   the linear keeps the centre lit, so there is no dark hole for a rim to surround. The
+   result reads as depth and direction — light coming from somewhere — rather than a
+   shape sitting in the middle of the screen. */
 .cru-ambient {
   position: absolute; inset: -14%; pointer-events: none;
   background:
-    radial-gradient(120% 90% at 14% 6%,  var(--amb-1) 0%, transparent 58%),
-    radial-gradient(100% 80% at 86% 18%, var(--amb-2) 0%, transparent 55%),
-    radial-gradient(95% 75% at 74% 96%,  var(--amb-3) 0%, transparent 58%),
-    radial-gradient(85% 65% at 6% 86%,   var(--amb-4) 0%, transparent 60%),
+    /* Directional tone. Covers the centre, which is what kills the aperture read. */
+    linear-gradient(154deg, var(--amb-1) 0%, transparent 46%),
+    /* Shoulder of a large bloom whose centre is off the top-left corner. */
+    radial-gradient(135% 105% at -18% -12%, var(--amb-2) 0%, transparent 62%),
+    /* Counterweight, off the right edge and low, so the gradient runs corner-to-corner. */
+    radial-gradient(115% 95% at 112% 78%,  var(--amb-3) 0%, transparent 60%),
+    /* A last, very faint lift so the bottom-left does not fall to flat black. */
+    linear-gradient(18deg, var(--amb-4) 0%, transparent 34%),
     var(--amb-base);
   animation: cru-drift var(--dur-drift) linear infinite;
   will-change: transform;
