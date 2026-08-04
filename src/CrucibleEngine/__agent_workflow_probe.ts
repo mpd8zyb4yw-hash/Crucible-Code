@@ -323,7 +323,19 @@ async function main() {
     for (const [f, c] of Object.entries(t.seed ?? {})) fs.writeFileSync(path.join(dir, f), c)
     const goal = t.goal.replace(/\{DIR\}/g, dir)
     let reply = '', ms = 0
-    const sid = t.followUp ? `probe-${t.id}` : undefined
+    // EVERY task gets its OWN session, not just the follow-up ones.
+    //
+    // MEASURED 2026-08-04h: with `undefined` the server falls back to ONE shared session, so all
+    // 18 tasks ran in a single conversation and a single workspace — the log showed the same
+    // project directory (`colt-noon-glow-crown`) for every unrelated task. That is why tasks pass
+    // 3/3 in ISOLATION (fresh process) and fail in-suite: by task 15 the agent is carrying 14
+    // prior tasks' history, and stale context is what makes it hand-write a file instead of
+    // calling the tool it has. `filter-rows` is correct 3/3 isolated and 1/3 in-suite; that gap
+    // was the harness, not the agent.
+    //
+    // A shared session was never a property of the product being tested — real users get their
+    // own conversations — so this measures what was intended rather than changing the bar.
+    const sid = `probe-${t.id}`
     try {
       ;({ reply, ms } = await run(goal, sid))
       if (t.followUp) {

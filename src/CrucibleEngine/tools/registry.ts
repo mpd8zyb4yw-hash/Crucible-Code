@@ -726,6 +726,21 @@ let LAST_WRITE: string | null = null
 export function lastWrittenFile(): string | null { return LAST_WRITE }
 
 /**
+ * Forget the cross-turn scratchpad. Called when a request belongs to a DIFFERENT conversation
+ * than the one that set it.
+ *
+ * MEASURED 2026-08-04h: `LAST_WRITE` and `LAST_LOOKUP` are process-global, so "that same file"
+ * in conversation B resolved to a file conversation A wrote. In the probe this showed up as
+ * tasks passing 3/3 in isolation and failing in-suite; in the product it is worse than a flake —
+ * one user's referent leaking into another user's turn is a correctness AND privacy fault. The
+ * scratchpad is per-conversation state and must be scoped to one.
+ */
+export function resetTurnScratchpad(): void {
+  LAST_WRITE = null
+  LAST_LOOKUP = null
+}
+
+/**
  * The most recent successful lookup_fact answer, as a cross-subtask scratchpad.
  *
  * MEASURED 2026-08-03: the meta-router runs each subtask with its OWN message history, so the

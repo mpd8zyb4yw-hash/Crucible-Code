@@ -21,7 +21,10 @@ import { WebSocketServer as WsServer } from 'ws'
 import webpush from 'web-push'
 import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-context'
 import { createCheckpoint, rollbackToCheckpoint, getCheckpoints, checkpointScopeFor } from './src/CrucibleEngine/checkpoint'
-import { registry, lastWrittenFile } from './src/CrucibleEngine/tools/registry'
+import { registry, lastWrittenFile, resetTurnScratchpad } from './src/CrucibleEngine/tools/registry'
+
+/** The conversation the cross-turn scratchpad currently belongs to. */
+let LAST_CONVERSATION_ID = ''
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
 import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun, offBriefReason } from './src/CrucibleEngine/automations/store'
 import type { Automation as AutomationRecord, AutomationRun as AutomationRunRecord } from './src/CrucibleEngine/automations/store'
@@ -3228,6 +3231,14 @@ app.post('/api/chat', async (req, res) => {
   // "UNVERIFIED (no checkable condition)". The follow-up turn had no gate at all and passed only
   // when the model happened to get it right. A goal the system rewrites for one consumer and not
   // the other is two different goals.
+  // The cross-turn scratchpad belongs to ONE conversation. MEASURED 2026-08-04h: it is
+  // process-global, so a back-reference in this request could resolve to a file a DIFFERENT
+  // conversation wrote. Clearing it whenever the conversation changes makes "that same file"
+  // mean what the user means, and keeps one user's paths out of another's turn.
+  {
+    const convId = String((req.body?.sessionId ?? req.body?.conversationId ?? chatUser?.id) ?? '')
+    if (convId !== LAST_CONVERSATION_ID) { resetTurnScratchpad(); LAST_CONVERSATION_ID = convId }
+  }
   const agentGoal = resolveBackReference(
     buildTurn.action === 'build' && buildTurn.spec ? buildTurn.spec : (message ?? ''),
     lastWrittenFile(),
