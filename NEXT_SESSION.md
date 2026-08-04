@@ -40,6 +40,16 @@ TOTAL 44/54  (* = over budget, ! = fail)
 and is the first thing to chase. Latency is also far worse than single runs suggested:
 `count-lines` hit 396s and `multi-file-edit` 237s.
 
+**`filter-rows` DIAGNOSED (2026-08-04h), not yet fixed.** Run 3x in ISOLATION it is correct every
+time — the trace shows `filter_rows(...) -> ok Wrote adults.csv: 2 of 4 row(s) where age >= 18,
+header kept` on all three. So the TOOL is not the bug and the `transform_lines`/`SPECIALIST_TRIGGER`
+bisect is probably a dead end. In-suite it fails 2/3 with `header missing`, meaning a DIFFERENT
+path runs under suite conditions and the file gets hand-written instead of filtered — the exact
+profile `dedupe-lines` had before the line-number fix. Next step: capture `[Agent] iter` lines for
+a FAILING in-suite filter-rows and compare the tool actually selected against the isolated run.
+This isolated-passes/in-suite-fails split is the shape of the whole variance problem — chase it
+here, on the task where both traces are cheapest to get.
+
 **Never quote a single run again.** Re-run `agg.py` (in the session scratchpad, or rewrite it —
 it just parses `[PASS|FAIL|SLOW]` lines out of three probe outputs) before claiming movement.
 
