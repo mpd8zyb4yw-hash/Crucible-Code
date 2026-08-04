@@ -37,7 +37,7 @@ import path from 'node:path'
 import { enumGrammar, jsonObjectGrammar } from './grammars'
 import type { ToolDef, ToolCall } from '../tools/protocol'
 import { lastLookupAnswer, lastWrittenFile } from '../tools/registry'
-import { verifyGoal, outstandingPaths, contentForFile, ADD_LITERAL_RX } from './postconditions'
+import { verifyGoal, outstandingPaths, contentForFile, ADD_LITERAL_RX, RENAME_RX } from './postconditions'
 
 /** Minimal completion contract — (messages, opts) → text. Matches fmComplete. */
 export type Complete = (
@@ -128,6 +128,30 @@ export function snapPathToReality(p: string): string {
   return path.join(dir, scored[0].s)
 }
 
+
+/**
+ * The complete argument object for a call the GOAL TEXT already determines, or null.
+ *
+ * Null is the normal answer: this only fires where every required field is a transcription of
+ * something the user wrote, so a partial derivation is treated as no derivation and the model
+ * fills the call as usual. Returning half an argument set would be worse than returning none.
+ */
+export function deriveArgs(
+  tool: ToolDef,
+  goal: string,
+  fields: Array<{ key: string }>,
+): Record<string, unknown> | null {
+  if (tool.name !== 'rename_symbol') return null
+  const m = RENAME_RX.exec(goal)
+  if (!m) return null
+  // The folder the rename applies to. A rename goal states one directory; if it does not, the
+  // model still knows more than we do and the fill proceeds normally.
+  const dir = /((?:\/[\w.@+-]+)+)/.exec(goal)?.[1]?.replace(/[.,;:!?)\]]+$/, '')
+  if (!dir) return null
+  const args: Record<string, unknown> = { path: dir, old: m[1], new: m[2] }
+  // Only claim the derivation when it covers every field the schema requires.
+  return fields.every(f => args[f.key] !== undefined) ? args : null
+}
 
 /**
  * Narrow the tool menu to what this goal could plausibly need.
@@ -624,6 +648,25 @@ export function makeToolCallDriveTurn(complete: Complete, goalSpec: string) {
       `Arguments for ${tool.name}:`,
     ].join('\n')
 
+    // FULLY DERIVABLE ARGUMENTS SKIP THE MODEL ENTIRELY.
+    //
+    // MEASURED 2026-08-04 (`multi-file-edit`): iteration 1 listed the directory, then iterations
+    // 2, 3 and 4 produced NO tool call at all, and iteration 5 emitted exactly the call that was
+    // derivable from the goal text before the run started:
+    //   rename_symbol(path: <the folder the goal names>, old: oldName, new: newName)
+    // Three wasted iterations, each a full FILL generation that failed to parse, and the run
+    // spent most of its time buying nothing. Forcing the values AFTER the parse (below) does not
+    // help, because an unparseable FILL returns before it.
+    //
+    // "rename the function oldName to newName" states old and new verbatim and the goal names
+    // the folder, so there is nothing for the model to decide. Asking a 1.5B head to re-type
+    // three strings it was already given is not proposing, it is a transcription error waiting
+    // to happen — DOCTRINE §1: where the operation is decidable, the machine does it.
+    const derived = deriveArgs(tool, goal, fields)
+    if (derived) {
+      return { text: '', toolCalls: [{ id: nextId(), name: tool.name, args: derived }] }
+    }
+
     const raw = await complete(
       [{ role: 'system', content: fillSystem }, { role: 'user', content: fillUser }],
       { gbnf: jsonObjectGrammar(fields), maxTokens: 900, temperature: 0, signal },
@@ -645,6 +688,25 @@ export function makeToolCallDriveTurn(complete: Complete, goalSpec: string) {
     // NOT DONE HERE, deliberately: cross-turn pronoun resolution. Two attempts patched these
     // arguments and both failed (see resolveBackReference, where it now lives instead — the goal
     // reaching this stage already carries a concrete path).
+
+    // A RENAME's arguments are entirely stated by the goal — nothing to infer.
+    //
+    // MEASURED 2026-08-04 (`multi-file-edit`, 279s): iteration 1 listed the directory, then
+    // iterations 2, 3 and 4 produced NO tool call at all — the FILL stage could not assemble
+    // rename_symbol's three arguments, so each turn returned an incomplete-arguments failure,
+    // the post-condition gate correctly bounced it, and ~200 of those 279 seconds bought
+    // nothing. Iteration 5 finally emitted the same call that was derivable from the goal text
+    // before the run started.
+    //
+    // "rename the function oldName to newName" gives old and new verbatim; the folder is the
+    // directory the goal names. Transcription, not reasoning — the rule this whole file follows.
+    if (tool.name === 'rename_symbol') {
+      const m = RENAME_RX.exec(goal)
+      if (m) { args.old = m[1]; args.new = m[2] }
+      const dir = /((?:\/[\w.@+-]+)+)/.exec(goal)?.[1]?.replace(/[.,;:!?)\]]+$/, '')
+      if (dir) args.path = dir
+    }
+
 
     const missing = fields.filter(f => args[f.key] === undefined || args[f.key] === null || args[f.key] === '')
     if (missing.length) {

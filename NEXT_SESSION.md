@@ -1,10 +1,10 @@
-# CURRENT STATE (2026-08-04d — replace this block every session)
+# CURRENT STATE (2026-08-04e — replace this block every session)
 
 ## The numbers
 
-- **Agentic: 12/12** (`npm run agent:workflow`), from **0/5** when this work started. Twelve
-  multi-step tasks scored ONLY on what is true on disk. Reached 12/12 on three separate full
-  runs; one intervening full run scored 11/12 (see the flake note below).
+- **Agentic: 12/12 with ZERO tasks over budget** (`npm run agent:workflow`), from **0/5** when
+  this work started. Twelve multi-step tasks scored ONLY on what is true on disk; eleven finish
+  under 22s. Artifacts verified individually, not inferred from the score.
 - **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 0 over budget.
 - `npm run prove:all`: **251 skills, 0 failed**, plus every bench.
 
@@ -30,8 +30,11 @@ could be exact: `compute`, `sum_column`, `count_lines`, `filter_rows`, `rename_s
 
 ## Not solved — do not claim otherwise
 
-**`multi-file-edit` is the only task routinely over budget** — 150-345s against a ~20s median.
-It is the one task the meta-router decomposes; nothing else is close.
+**Latency is now structural, not pathological.** `multi-file-edit` was 145-345s because
+iterations 2-4 produced no tool call at all; `deriveArgs()` skips the FILL generation for a call
+the goal fully determines and it now runs in 2 iterations. It is still the slowest task (~144s)
+and the only one over ~22s — the remaining time is NOT the tool loop, so look at the FM planning
+layers above it before touching the driver again.
 
 ## Solved this session (was "not solved")
 

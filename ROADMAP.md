@@ -1953,6 +1953,25 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04e — 12/12 with every task inside its budget
+
+**`npm run agent:workflow`: 12/12, zero `[SLOW]`** — the first run where no task is over budget.
+Eleven of twelve finish under 22s. `prove:all` 251/251.
+
+- **`deriveArgs()` (`agent/toolCallDriver.ts`) — a fully derivable call skips the model.**
+  MEASURED on `multi-file-edit`: iteration 1 listed the directory, iterations 2, 3 and 4 produced
+  NO tool call at all (three failed FILL generations, each bounced by the post-condition gate),
+  and iteration 5 emitted exactly the call derivable from the goal before the run started —
+  `rename_symbol(path: <the folder>, old: oldName, new: newName)`. Forcing the values after the
+  FILL parse does not help, because an unparseable FILL returns first. Now the whole FILL
+  generation is skipped: 5 iterations → 2, and the task moved from `[SLOW]` (145–345s, once 919s
+  under load) to PASS. Partial derivation is treated as none — half an argument set is worse
+  than none.
+- Artifacts re-verified individually: `draft.txt` = `hello\nworld`, `log.txt` keeps both original
+  lines plus `reviewed`, `total.txt` = 292.24, `adults.csv` header + the two adult rows, and
+  zero files anywhere still contain `oldName`.
+
+
 ### 2026-08-04d — the turn-one flake: a CSV row-filter offered for "create a file"
 
 **`follow-up-turn` in isolation: 6/6** (was 3/5). Full suite **12/12**, `prove:all` 251/251.

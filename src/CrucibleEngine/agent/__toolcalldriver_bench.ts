@@ -3,7 +3,7 @@
 // No model and no network: `complete` is a stub that records what it was asked and replays a
 // scripted answer. What is under test is the SHAPE the driver imposes — the grammars it builds,
 // the fields it asks for, and its refusal to call a mutating tool on unreadable arguments.
-import { makeToolCallDriveTurn, requiredFields, toolMenu, resolveBackReference, plannedTools, FINISH, type Complete } from './toolCallDriver'
+import { makeToolCallDriveTurn, requiredFields, toolMenu, resolveBackReference, plannedTools, deriveArgs, FINISH, type Complete } from './toolCallDriver'
 import type { ToolDef } from '../tools/protocol'
 
 let pass = 0, fail = 0
@@ -111,7 +111,7 @@ async function main() {
     { name: 'append_file', description: 'Append to a file.', mutates: true, run: noop,
       params: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
     { name: 'rename_symbol', description: 'Rename a symbol.', mutates: true, run: noop,
-      params: { type: 'object', properties: { target: { type: 'string' }, oldId: { type: 'string' }, newId: { type: 'string' } }, required: ['target', 'oldId', 'newId'] } },
+      params: { type: 'object', properties: { path: { type: 'string' }, old: { type: 'string' }, new: { type: 'string' } }, required: ['path', 'old', 'new'] } },
     { name: 'filter_rows', description: 'Filter CSV rows.', mutates: true, run: noop,
       params: { type: 'object', properties: { path: { type: 'string' }, out: { type: 'string' }, condition: { type: 'string' } }, required: ['path', 'out', 'condition'] } },
   ]
@@ -131,6 +131,20 @@ async function main() {
   check('rename_symbol IS offered at the WRITE step of a rename goal',
     (plannedTools(SPEC, renameGoal, 1) ?? []).map(t => t.name).includes('rename_symbol'),
     JSON.stringify((plannedTools(SPEC, renameGoal, 1) ?? []).map(t => t.name)))
+
+  // A rename's arguments are stated by the goal, so the model is not asked for them at all.
+  // MEASURED (multi-file-edit): three consecutive iterations produced NO tool call because FILL
+  // could not assemble these three strings, and iteration 5 emitted exactly this call.
+  const renameTool = SPEC.find(t => t.name === 'rename_symbol')!
+  const rf = requiredFields(renameTool)
+  const d = deriveArgs(renameTool, 'In the folder /tmp/a, rename the function oldName to newName in the .js files.', rf)
+  check('MEASURED: rename_symbol arguments are derived, not generated',
+    !!d && d.path === '/tmp/a' && d.old === 'oldName' && d.new === 'newName', JSON.stringify(d))
+  check('a rename goal with no folder is NOT derived (partial is treated as none)',
+    deriveArgs(renameTool, 'rename the function oldName to newName', rf) === null)
+  check('a non-rename goal derives nothing',
+    deriveArgs(renameTool, 'In /tmp/a, write notes.md containing hello.', rf) === null)
+  check('other tools are never derived', deriveArgs(TOOLS[0], 'In /tmp/a, rename the function a to b', requiredFields(TOOLS[0])) === null)
 
   console.log(`\nTOOL-CALL DRIVER BENCH: ${pass}/${pass + fail}`)
   if (fail) process.exit(1)

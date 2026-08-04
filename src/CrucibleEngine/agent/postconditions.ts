@@ -101,7 +101,7 @@ const LITERAL_RX = /\bcontain(?:ing|s)?\s+(?:exactly\s+)?(?:the\s+)?(?:line|text
  */
 export const ADD_LITERAL_RX = /\b(?:add|append|insert)\s+(?:the\s+)?(?:word|line|text|string|phrase)\s*:?\s*["“']?([^"”'\n.,]{1,80}?)["”']?\s+(?:to|onto|at|into)\b/i
 /** "rename A to B" — B must be present and A must be gone. */
-const RENAME_RX = /\brename\s+(?:the\s+)?(?:function|method|variable|symbol|constant)?\s*([A-Za-z_$][\w$]*)\s+to\s+([A-Za-z_$][\w$]*)\b/i
+export const RENAME_RX = /\brename\s+(?:the\s+)?(?:function|method|variable|symbol|constant)?\s*([A-Za-z_$][\w$]*)\s+to\s+([A-Za-z_$][\w$]*)\b/i
 /** Destructive intent: the post-condition is that nothing was lost without asking. */
 const DESTROY_RX = /\b(delete|remove|erase|wipe|clear out|empty)\b/i
 
