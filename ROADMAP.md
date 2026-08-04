@@ -1953,6 +1953,30 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04d — the turn-one flake: a CSV row-filter offered for "create a file"
+
+**`follow-up-turn` in isolation: 6/6** (was 3/5). Full suite **12/12**, `prove:all` 251/251.
+
+- **Specialist tools are no longer general offers** (`plannedTools`, `agent/toolCallDriver.ts`).
+  `rename_symbol` and `filter_rows` each have a forcing trigger, but the converse was never
+  enforced — both also sat in the plain WRITE menu. MEASURED: for "create draft.txt containing
+  the word hello", iteration 1 chose `filter_rows(...) -> ERROR File not found` and the run died
+  having created nothing, in 72s. That was the entire ~1-in-4 turn-one flake. A specialist whose
+  trigger has not fired is now removed from the menu rather than left in reach.
+- **The follow-up turn had NO post-condition gate.** `makeGatedVerifier` was built from the RAW
+  message while only the driver saw the resolved goal, so it extracted zero conditions and logged
+  `UNVERIFIED (no checkable condition)` — it passed only when the model happened to be right.
+  `resolveBackReference` now runs once at `agentGoal`, so the driver and all three gates share
+  one goal.
+- **Hollow-completion guard** (`claimsCompletedAction`, `agent/loop.ts`) — a final that asserts
+  completed work while `toolCallCount === 0` is false by construction. The grounding gate that
+  would have caught it is itself gated on `toolCallCount > 0`, so a run that did NOTHING got less
+  scrutiny than one that acted. Bounced once, then stopped honestly.
+- **Instrumentation**: `[Gate]` logs every post-condition decision (VERIFIED / UNVERIFIED /
+  FAILED); `[Agent] iter N: tool(args) -> ok|ERROR` logs every executed call. Both were what
+  finally located this; the server log previously showed only start and end.
+
+
 ### 2026-08-04c — `follow-up-turn` fixed; the post-condition gate had never run
 
 **Agentic probe: 12/12** (`npm run agent:workflow`), from 11/12. `prove:all` 251/251.

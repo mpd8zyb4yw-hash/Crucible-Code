@@ -198,6 +198,23 @@ TYPESCRIPT PROJECTS: When creating a new TypeScript project, always follow these
 }
 
 /**
+ * True when a final answer ASSERTS that an action was carried out.
+ *
+ * Paired with `toolCallCount === 0`, this is a lie detectable without a model or a filesystem:
+ * you cannot have created, written or updated anything without calling a tool. MEASURED
+ * 2026-08-04 (`follow-up-turn`, ~1 run in 4): "Every step of the request has been carried out"
+ * after zero tool calls, against an empty directory.
+ *
+ * Deliberately narrow — it matches CLAIMS about completed work, not descriptions of intent
+ * ("I will create…") or of the world ("the file contains…"), so an honest conversational reply
+ * that happens to use the word "created" is not caught.
+ */
+export function claimsCompletedAction(text: string): boolean {
+  return /\b(carried out|(?:have|has) been (?:created|written|added|updated|saved|completed|done)|successfully (?:created|wrote|written|added|updated|saved|completed)|I(?:'ve| have) (?:created|written|added|updated|saved|completed)|all steps? (?:are |were )?(?:complete|done)|task (?:is )?complete)\b/i
+    .test(text ?? '')
+}
+
+/**
  * True when a candidate final answer is nothing but tool residue — an exit status, a bare
  * acknowledgement, or shell-prompt noise — rather than prose. Deterministic (doctrine:
  * verify, never guess): the small head has been observed shipping "exit 0" as the entire
@@ -352,6 +369,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   // not an answer. Bounded corrections; if the model can't produce prose, stop honestly.
   let residueBounces = 0
   const MAX_RESIDUE_BOUNCES = 2
+  let hollowBounces = 0
 
   // Grounding gate state — bounds how many times a rejected final answer can be
   // bounced back for correction, so a stubborn checker can never loop forever.
@@ -541,6 +559,13 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       })
       const results = await Promise.all(turn.toolCalls.map(c => registry.exec(c, ctx)))
       toolCallCount += results.length
+      // One line per executed call. `debugBus` carries this to the UI but not to the server log,
+      // and diagnosing "the loop burned 112s and produced nothing" from a log that shows only
+      // start and end is guesswork — which cost two reproduction cycles on 2026-08-04.
+      for (let i = 0; i < results.length; i++) {
+        console.log(`[Agent] iter ${iter}: ${turn.toolCalls[i].name}(${JSON.stringify(turn.toolCalls[i].args).slice(0, 120)})` +
+          ` -> ${results[i].ok ? 'ok' : 'ERROR'} ${results[i].output.slice(0, 120).replace(/\s+/g, ' ')}`)
+      }
       turn.toolCalls.forEach((c, i) => {
         debugBus.emit('tool', c.name, { args: c.args, ok: results[i].ok, output: results[i].output.slice(0, 300) }, { severity: results[i].ok ? 'info' : 'error' })
         const compressed = compressObservation(results[i].output)
@@ -619,6 +644,40 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       return done('stalled',
         'The reasoning model declined this task without attempting it, even after a correction. ' +
         'This is a model limitation, not a permissions issue — try rephrasing (e.g. name the app or file directly), or run the request again.', iter)
+    }
+
+    // HOLLOW COMPLETION guard — a claim of completed ACTION after ZERO tool calls.
+    //
+    // MEASURED 2026-08-04 (`follow-up-turn`, ~1 run in 4): the loop ran ~56s, called no tool at
+    // all, left the directory empty, and returned "Every step of the request has been carried
+    // out." Nothing above catches it: the refusal guard wants refusal language and this is the
+    // opposite, and the GROUNDING gate — the thing that audits a claim against tool evidence —
+    // is explicitly gated on `toolCallCount > 0`, so a run that did nothing received LESS
+    // scrutiny than one that did something. The post-condition gate is the backstop, but it can
+    // only fire when the goal yields a checkable condition; when it yields none, an empty run
+    // was accepted verbatim.
+    //
+    // The rule needs no model and no filesystem: you cannot have carried out a step without
+    // calling a tool. A final that asserts a completed action while `toolCallCount === 0` is
+    // false by construction. Bounced once with a correction, then stopped HONESTLY — never
+    // dressed up as an answer, which is the same discipline as the refusal guard below.
+    if (toolCallCount === 0 && claimsCompletedAction(turn.text)) {
+      if (hollowBounces < 1) {
+        hollowBounces++
+        debugBus.emit('agent', 'hollow_completion_bounced', { iter, text: turn.text.slice(0, 160) }, { severity: 'warn' })
+        emit({ type: 'thought', text: '[Claimed the work was done without calling a single tool — requiring it to actually act]', iter })
+        messages.push({ role: 'assistant', content: turn.text })
+        messages.push({
+          role: 'user',
+          content: 'SYSTEM CORRECTION: You reported the task as complete, but you have not called a single tool, so nothing has actually happened. ' +
+            'A file is not created by describing it. Perform the request now with real tool calls, then report what you did.',
+        })
+        continue
+      }
+      debugBus.emit('agent', 'hollow_completion_terminal', { iter }, { severity: 'error' })
+      return done('stalled',
+        'The task was not carried out: the model reported success without performing a single action. ' +
+        'Nothing was changed on disk. Try running the request again, or name the file and folder directly.', iter)
     }
 
     // Tool-residue guard — CONCRETE REPRO 2026-07-21 (cont.91): agent-mode "what is a

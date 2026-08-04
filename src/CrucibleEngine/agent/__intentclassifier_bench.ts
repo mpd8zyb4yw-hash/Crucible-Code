@@ -17,6 +17,7 @@
 // The rule under test is deterministic: mutation verb + something to mutate = task.
 // ═══════════════════════════════════════════════════════════════════════════════
 import { classifyIntent } from './intentClassifier'
+import { claimsCompletedAction } from './loop'
 
 let pass = 0, fail = 0
 function check(name: string, ok: boolean, detail = '') {
@@ -54,6 +55,27 @@ for (const m of ['thanks, that worked', 'what do you think about this approach?'
   check(`plain conversation stays conversational: "${m}"`,
     classifyIntent(m).intent === 'conversational_reply', JSON.stringify(classifyIntent(m)))
 }
+
+// ── HOLLOW COMPLETION: a claim of finished work after ZERO tool calls ────────────────
+// MEASURED (follow-up-turn, ~1 run in 4): the loop called no tool, left the directory empty,
+// and returned "Every step of the request has been carried out." The grounding gate that would
+// have caught it is itself gated on toolCallCount > 0, so a run that did nothing got LESS
+// scrutiny than one that acted.
+for (const t of [
+  'Every step of the request has been carried out.',
+  'The file has been created.',
+  'I have written the file for you.',
+  'Successfully added the line.',
+  'Task complete.',
+]) check(`claims completed action: "${t}"`, claimsCompletedAction(t))
+
+// The guard's other half — intent and description are not claims of completed work.
+for (const t of [
+  'I will create the file next.',
+  'The file contains two lines.',
+  'To do this you would write a small script.',
+  'Which folder should I put it in?',
+]) check(`not a completion claim: "${t}"`, !claimsCompletedAction(t))
 
 console.log(`\nINTENT CLASSIFIER BENCH: ${pass}/${pass + fail}`)
 if (fail) process.exit(1)

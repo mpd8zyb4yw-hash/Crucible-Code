@@ -3,7 +3,7 @@
 // No model and no network: `complete` is a stub that records what it was asked and replays a
 // scripted answer. What is under test is the SHAPE the driver imposes — the grammars it builds,
 // the fields it asks for, and its refusal to call a mutating tool on unreadable arguments.
-import { makeToolCallDriveTurn, requiredFields, toolMenu, resolveBackReference, FINISH, type Complete } from './toolCallDriver'
+import { makeToolCallDriveTurn, requiredFields, toolMenu, resolveBackReference, plannedTools, FINISH, type Complete } from './toolCallDriver'
 import type { ToolDef } from '../tools/protocol'
 
 let pass = 0, fail = 0
@@ -102,6 +102,35 @@ async function main() {
     resolveBackReference('Add world to that same file.', null) === 'Add world to that same file.')
   check('a goal with no back-reference is unchanged',
     resolveBackReference('Create a file called draft.txt containing hello.', LW).includes('draft.txt'))
+
+  // Specialist tools must not be offered when their precondition is absent.
+  // MEASURED (follow-up-turn turn one): filter_rows was chosen for "create draft.txt containing
+  // hello" and errored with File not found, killing the run.
+  const SPEC: ToolDef[] = [
+    ...TOOLS,
+    { name: 'append_file', description: 'Append to a file.', mutates: true, run: noop,
+      params: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } },
+    { name: 'rename_symbol', description: 'Rename a symbol.', mutates: true, run: noop,
+      params: { type: 'object', properties: { target: { type: 'string' }, oldId: { type: 'string' }, newId: { type: 'string' } }, required: ['target', 'oldId', 'newId'] } },
+    { name: 'filter_rows', description: 'Filter CSV rows.', mutates: true, run: noop,
+      params: { type: 'object', properties: { path: { type: 'string' }, out: { type: 'string' }, condition: { type: 'string' } }, required: ['path', 'out', 'condition'] } },
+  ]
+  const offered = (goal: string) => (plannedTools(SPEC, goal, 0) ?? []).map(t => t.name)
+  check('MEASURED: filter_rows is NOT offered for a plain create-a-file goal',
+    !offered('Create a file called draft.txt in /tmp/a containing the word hello.').includes('filter_rows'),
+    JSON.stringify(offered('Create a file called draft.txt in /tmp/a containing the word hello.')))
+  check('rename_symbol is NOT offered for a plain create-a-file goal',
+    !offered('Create a file called draft.txt in /tmp/a containing the word hello.').includes('rename_symbol'))
+  check('write_file IS still offered for a plain create-a-file goal',
+    offered('Create a file called draft.txt in /tmp/a containing the word hello.').includes('write_file'))
+  check('filter_rows IS offered when the goal states a row condition',
+    offered('Write /tmp/a/adults.csv containing only the rows where age is 18 or over.').includes('filter_rows'))
+  // A rename-across-files goal plans READ (which files exist?) then WRITE, so the rename is
+  // step 1 — step 0 is correctly list_dir.
+  const renameGoal = 'In /tmp/a, rename the function oldName to newName in the .js files.'
+  check('rename_symbol IS offered at the WRITE step of a rename goal',
+    (plannedTools(SPEC, renameGoal, 1) ?? []).map(t => t.name).includes('rename_symbol'),
+    JSON.stringify((plannedTools(SPEC, renameGoal, 1) ?? []).map(t => t.name)))
 
   console.log(`\nTOOL-CALL DRIVER BENCH: ${pass}/${pass + fail}`)
   if (fail) process.exit(1)

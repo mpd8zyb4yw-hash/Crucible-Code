@@ -273,6 +273,25 @@ export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number):
   if (cat === 'CALCULATE' && /\bcount\b|\bhow many lines\b/i.test(goal)) list = ['count_lines']
   // Selecting rows out of a CSV is filter_rows, not a hand-retyped file.
   if (cat === 'WRITE' && /\bonly the rows\b|\brows where\b|\bfilter\b[^.]*\brows?\b|\bwhere\s+\w+\s+is\b/i.test(goal)) list = ['filter_rows']
+  // SPECIALIST TOOLS ARE NOT GENERAL OFFERS.
+  //
+  // `rename_symbol` and `filter_rows` each have a forcing trigger above: when the goal states a
+  // rename, or a row condition, they become the ONLY option. The converse was never enforced —
+  // they also sat in the plain WRITE menu, selectable for any write at all.
+  //
+  // MEASURED 2026-08-04 (`follow-up-turn`, the ~1-in-4 turn-one failure): for "Create a file
+  // called draft.txt containing the word hello", iteration 1 chose
+  //   filter_rows(path: .../draft.txt, out: ...) -> ERROR File not found
+  // and the run died there having created nothing, in 72s. A CSV row-filter was offered for a
+  // goal with no CSV, no rows and no source file, and a 1.5B head took it. The precondition is
+  // decidable from the goal text — the same regex that FORCES the tool — so a specialist whose
+  // trigger has not fired is removed rather than left within reach.
+  const SPECIALIST_TRIGGER: Record<string, RegExp> = {
+    rename_symbol: /\brename\b/i,
+    filter_rows: /\bonly the rows\b|\brows where\b|\bfilter\b[^.]*\brows?\b|\bwhere\s+\w+\s+is\b/i,
+  }
+  list = list.filter(n => !SPECIALIST_TRIGGER[n] || SPECIALIST_TRIGGER[n].test(goal))
+
   const names = new Set(list)
   const picked = tools.filter(t => names.has(t.name))
   return picked.length ? picked : null

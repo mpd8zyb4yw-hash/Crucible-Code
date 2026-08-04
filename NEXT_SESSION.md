@@ -1,4 +1,4 @@
-# CURRENT STATE (2026-08-04c — replace this block every session)
+# CURRENT STATE (2026-08-04d — replace this block every session)
 
 ## The numbers
 
@@ -8,9 +8,10 @@
 - **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 0 over budget.
 - `npm run prove:all`: **251 skills, 0 failed**, plus every bench.
 
-**`follow-up-turn` now passes** — the last standing failure. In isolation it passes ~3/4; the
-residual failure is TURN ONE ("create draft.txt containing hello") emitting no tool call in ~56s,
-which is baseline loop reliability, not the follow-up mechanism. Do not read 12/12 as determinism.
+**`follow-up-turn` passes, and the turn-one flake is FIXED: 6/6 in isolation** (was 3/5). The
+cause was not "baseline loop reliability" — it was `filter_rows` being offered for
+"create draft.txt containing the word hello", chosen by the head, and erroring `File not found`,
+which killed the run. Specialist tools now require their trigger. See the 2026-08-04d change log.
 
 ## How it works
 
@@ -29,9 +30,8 @@ could be exact: `compute`, `sum_column`, `count_lines`, `filter_rows`, `rename_s
 
 ## Not solved — do not claim otherwise
 
-**Turn-one flake.** `follow-up-turn` fails ~1 run in 4 on its FIRST turn — no tool call at all in
-~56s, empty directory, and the loop still reports success. `write-file` is the same shape and is
-stable, so this is not goal parsing. Unexplained; it is the single biggest reliability item left.
+**`multi-file-edit` is the only task routinely over budget** — 150-345s against a ~20s median.
+It is the one task the meta-router decomposes; nothing else is close.
 
 ## Solved this session (was "not solved")
 
@@ -54,7 +54,16 @@ Three defects had to be fixed underneath it, each measured:
 2. **An existence post-condition on an append is vacuous.** The file already existed, so FINISH
    was offered on iteration one and the agent stopped in 3.2s reporting success. `ADD_LITERAL_RX`
    asserts the added text is actually IN the file.
-3. **`classifyIntent` had no file-mutation verbs at all** — add/append/save/delete/rename appear
+3. **The gate was built from the RAW message, so the follow-up turn had NO gate at all** —
+   `UNVERIFIED (no checkable condition)`. `resolveBackReference` now runs once at `agentGoal` and
+   every consumer shares one goal. A goal the system rewrites for one consumer and not the other
+   is two different goals.
+4. **Specialist tools were general offers** — `filter_rows`/`rename_symbol` sat in the plain WRITE
+   menu despite each having a forcing trigger; the head picked a CSV row-filter for a plain file
+   creation. This was the whole turn-one flake.
+5. **A run with ZERO tool calls got LESS scrutiny than one that acted** — the grounding gate is
+   gated on `toolCallCount > 0`. `claimsCompletedAction` (`agent/loop.ts`) closes it.
+6. **`classifyIntent` had no file-mutation verbs at all** — add/append/save/delete/rename appear
    in NO action-verb set in that file, so "add the word world to that file" classified as
    `conversational_reply` and a disk mutation was answered as chat. New `intentclassifier:bench`
    (12 cases, wired into `prove:all`) — the classifier that gates every request had no bench.

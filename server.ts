@@ -21,7 +21,7 @@ import { WebSocketServer as WsServer } from 'ws'
 import webpush from 'web-push'
 import { buildIndex, queryIndex, getIndexStats } from './src/CrucibleEngine/rag-context'
 import { createCheckpoint, rollbackToCheckpoint, getCheckpoints, checkpointScopeFor } from './src/CrucibleEngine/checkpoint'
-import { registry } from './src/CrucibleEngine/tools/registry'
+import { registry, lastWrittenFile } from './src/CrucibleEngine/tools/registry'
 import { resolveLocalIntent, runLocalPlan } from './src/CrucibleEngine/agent/localIntentRouter'
 import { loadAutomations, saveAutomations, recordRun as recordAutomationRun, pickDue as pickDueAutomation, validateTrigger as validateAutomationTrigger, computeNextRun as computeAutomationNextRun, offBriefReason } from './src/CrucibleEngine/automations/store'
 import type { Automation as AutomationRecord, AutomationRun as AutomationRunRecord } from './src/CrucibleEngine/automations/store'
@@ -40,7 +40,7 @@ import { foldAttachmentContext } from './src/CrucibleEngine/agent/attachmentCont
 import { synthesizePureCode } from './src/CrucibleEngine/synth/pureCode'
 import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/CrucibleEngine/agent/driver'
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
-import { makeToolCallDriveTurn } from './src/CrucibleEngine/agent/toolCallDriver'
+import { makeToolCallDriveTurn, resolveBackReference } from './src/CrucibleEngine/agent/toolCallDriver'
 import { verifyGoal, correctionFor } from './src/CrucibleEngine/agent/postconditions'
 import { categoryPlan } from './src/CrucibleEngine/agent/toolCallDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
@@ -3116,6 +3116,12 @@ function makeGatedVerifier(goalText: string, verifyCommand?: string) {
   })()
   const verify: typeof verifier.verify = async (finalText, ctx) => {
     const post = verifyGoal(goalText ?? '', seed)
+    // One line per gate decision. Without it, "the agent reported success with an empty
+    // directory" is indistinguishable from "the gate ran and passed" in a server log, which
+    // cost a full diagnosis cycle on 2026-08-04. UNVERIFIED here is the dangerous state: it
+    // means nothing checkable was extracted, so the base verifier decides.
+    console.log(`[Gate] ${post.verified ? 'VERIFIED' : post.unverified ? 'UNVERIFIED (no checkable condition)' : 'FAILED'}` +
+      ` — passed: [${post.passed.join('; ') || '-'}] failed: [${post.failed.join('; ') || '-'}] goal: ${(goalText ?? '').slice(0, 100)}`)
     if (post.failed.length > 0) {
       debugBus.emit('agent', 'postcondition_failed', { goal: (goalText ?? '').slice(0, 80), failed: post.failed }, { severity: 'error' })
       // `report` is the field name the loop reads (loop.ts reads v.report.slice for both the
@@ -3215,7 +3221,17 @@ app.post('/api/chat', async (req, res) => {
   // The goal handed to the agent/builder. Defaults to the user's literal message; the negotiation
   // resolver overrides it with a concrete, buildable spec when it fires. `message` stays intact
   // for history/persistence fidelity.
-  const agentGoal = buildTurn.action === 'build' && buildTurn.spec ? buildTurn.spec : (message ?? '')
+  // A follow-up's pronoun is resolved HERE, once, so the same concrete goal reaches the driver
+  // AND the post-condition gate. MEASURED 2026-08-04: resolving it inside the driver only meant
+  // `makeGatedVerifier` was still built from the raw "Now add the word world to the end of that
+  // same file" — which names no path, so it extracted ZERO conditions and logged
+  // "UNVERIFIED (no checkable condition)". The follow-up turn had no gate at all and passed only
+  // when the model happened to get it right. A goal the system rewrites for one consumer and not
+  // the other is two different goals.
+  const agentGoal = resolveBackReference(
+    buildTurn.action === 'build' && buildTurn.spec ? buildTurn.spec : (message ?? ''),
+    lastWrittenFile(),
+  )
   if (buildTurn.action === 'build') {
     debugBus.emit('agent', 'build_negotiation_resolved', { topic: buildTurn.topic, downscoped: !!buildTurn.note }, { severity: 'info' })
   }
@@ -4444,7 +4460,10 @@ app.post('/api/chat', async (req, res) => {
           ? makeOfflineDriveTurn(projectPath)
           : makeToolCallDriveTurn(
               (msgs, o) => fmComplete(msgs, { gbnf: o?.gbnf, maxTokens: o?.maxTokens, temperature: o?.temperature, signal: o?.signal }),
-              message ?? '',
+              // agentGoal so the driver and the gate see the SAME goal — see the note at its
+              // definition. Resolution is idempotent: an already-resolved goal names a file, and
+              // a goal naming a file is never rewritten.
+              agentGoal,
             )
         const _offlineMode = requestOffline
         const activeDriveTurn = _offlineMode === 'strict'
@@ -4474,7 +4493,9 @@ app.post('/api/chat', async (req, res) => {
           // when no runnable check exists (research/critic), gives the coder real
           // test/compile validation + self-heal. Subtask opts can still override.
           // Post-condition gated, same as the other two paths (see makeGatedVerifier).
-          verify: makeGatedVerifier(message ?? '', req.body.verifyCommand).verify,
+          // agentGoal, not the raw message: a follow-up's pronoun is already resolved there, and
+          // a gate built from an unresolved goal extracts zero conditions and silently passes.
+          verify: makeGatedVerifier(agentGoal, req.body.verifyCommand).verify,
           compressCallModel: (msgs) => {
             const { models: cm } = selectModels('general', SIMPLE_PIPELINE_CONFIG, 'simple', 'quorum')
             const m = cm[0]
