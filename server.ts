@@ -3046,11 +3046,26 @@ function shouldUseMetaRouter(message: string): boolean {
   } catch { return false }
 }
 
+// Runs whose client has disconnected but which are still executing under the grace period.
+// The on-device model is a single serial slot, so these must yield to a live request.
+const abandonedRuns = new Set<AbortController>()
+
+/** Abort every abandoned run. Called when a live request arrives — nobody is reading their output. */
+function reclaimSlotFromAbandonedRuns(): number {
+  const n = abandonedRuns.size
+  for (const ac of abandonedRuns) { try { ac.abort() } catch { /* already gone */ } }
+  abandonedRuns.clear()
+  if (n) console.log(`[Queue] Reclaimed the model slot from ${n} abandoned run(s) — a live request takes precedence.`)
+  return n
+}
+
 app.post('/api/chat', async (req, res) => {
   // v3: the DEFAULT mode is 'code' (Crucible-local). 'quorum' is only ever sent by the
   // client after the explicit per-query ensemble confirm — it is never a fallback.
   // `message` is mutable: a bare "/<tool> natural language" slash whose args can't be
   // mapped mechanically gets rewritten into an agent-loop goal (see the slash block).
+  // A live request outranks anything whose reader has left.
+  reclaimSlotFromAbandonedRuns()
   let { message } = req.body
   const { mode = 'code', prewarmToken, device = 'desktop', history = [], sessionId: reqSessionId, roundId: reqRoundId, conversationId: reqConversationId, byokKeys } = req.body
   // BYOK: scope any user-supplied provider keys to this request's async context so the
@@ -3427,7 +3442,23 @@ app.post('/api/chat', async (req, res) => {
     const DISCONNECT_GRACE_MS = 10 * 60_000
     let graceTimer: ReturnType<typeof setTimeout> | null = null
     res.on('close', () => {
-      graceTimer = setTimeout(() => ac.abort(), DISCONNECT_GRACE_MS)
+      // The run keeps going after a disconnect ON PURPOSE — you walk away, it finishes, and
+      // patchActiveSessionRound writes the answer into your session. But the on-device model is
+      // a SINGLE SERIAL SLOT (fmQueue.ts:33, MAX_CONCURRENT = 1), so an abandoned run and a live
+      // one compete for it as equals.
+      //
+      // MEASURED 2026-08-03: killing a probe mid-run left its agent loop executing for the full
+      // ten minutes, and the NEXT run queued behind it. Two chat requests completed in twenty
+      // minutes, on a machine where the model itself answers in 0.6s and a whole chat turn takes
+      // 2.4s. I misread that as the local model "degrading" — it was not degrading at all, it was
+      // waiting behind work whose reader had gone home. On a shared Mac this is the same bug a
+      // real user hits: close the tab, and the next thing you ask is stuck behind the last thing
+      // you abandoned.
+      //
+      // The grace period stays. What changes is precedence: an abandoned run yields to a live
+      // one. Registered here, aborted when the next request arrives.
+      abandonedRuns.add(ac)
+      graceTimer = setTimeout(() => { abandonedRuns.delete(ac); ac.abort() }, DISCONNECT_GRACE_MS)
     })
 
     const t0 = Date.now()
