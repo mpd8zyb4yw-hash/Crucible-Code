@@ -2903,7 +2903,14 @@ export default function App() {
           ignores the rail and pushed it off the content column's axis. It now sits just
           above the composer and shares its centre line, so it reads as attached to the
           input it is talking about rather than dropped on top of the page. */}
-      {resumeOffer && (
+      {/* Scoped to the surfaces that HAVE a composer. The banner is anchored above the
+          input bar and its whole proposition is "resume this in your chat" — on a
+          full-page surface (Settings, Agents, Automations, Connections) there is no
+          composer under it, so it stopped being an attached affordance and became a
+          floating card obscuring whatever was behind it. Seen covering a Connections
+          card. It is not dismissed here, only hidden: leave Settings and the offer is
+          still waiting where it makes sense. */}
+      {resumeOffer && tab !== 'settings' && !agentsOpen && !automationsOpen && !connectionsOpen && (
         <div style={{
           position: 'fixed', bottom: inputBarHeight + 10,
           left: railW, right: 0, zIndex: 50,

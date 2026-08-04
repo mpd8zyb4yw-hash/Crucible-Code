@@ -243,6 +243,29 @@ export default function ConnectionsView({ onClose, onFollowUp, embedded }: {
               </Card>
             </div>
           )}
+
+          {/* ── Nothing to show is a STATE, not an absence of markup ──────────────────
+              Both sections above are gated on `length > 0`, and there was no third
+              branch — so when the connections request had not landed (or had failed)
+              this view rendered a heading, one paragraph, and a void. Observed live
+              with Gmail, Calendar and GitHub all genuinely connected and visible on
+              Home: Settings still showed an empty Connections section, which reads as
+              "Crucible lost my accounts" rather than "this list has not loaded".
+              Loading and failure are different states and now say different things. */}
+          {!loaded && (
+            <div style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)' }}>
+              Checking what’s connected…
+            </div>
+          )}
+          {loaded && heroes.length === 0 && toolbox.length === 0 && (
+            <Card style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--t-ui)', color: 'var(--c-dim)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                Couldn’t load the connection list. Crucible itself is unaffected — this
+                is the list, not your accounts.
+              </span>
+              <GhostButton onClick={() => void refresh()} title="Try loading connections again">Retry</GhostButton>
+            </Card>
+          )}
         </div>
       </div>
 
