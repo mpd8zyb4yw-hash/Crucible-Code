@@ -75,8 +75,56 @@ export function loginUrl(provider: 'google' | 'github'): string {
   } catch { /* no-op */ }
 })()
 
+// ── Paired-device token ─────────────────────────────────────────────────────
+// Crucible refuses any request whose Host is a public hostname (server.ts's
+// locality guard). A device paired from the Mac gets a token that opens that
+// door from anywhere. It arrives once as `?device=<token>` on the pairing link
+// and is kept in localStorage from then on.
+//
+// It is sent as a CUSTOM HEADER, never a cookie, and that is the point: a custom
+// header forces a CORS preflight, so a hostile page cannot make the browser
+// replay it the way it could with ambient cookie authority.
+const DEVICE_KEY = 'crucible_device_token'
+
+export function deviceToken(): string {
+  try { return localStorage.getItem(DEVICE_KEY) ?? '' } catch { return '' }
+}
+
+export function setDeviceToken(token: string | null): void {
+  try {
+    if (token) localStorage.setItem(DEVICE_KEY, token)
+    else localStorage.removeItem(DEVICE_KEY)
+  } catch { /* no storage — the token simply will not persist */ }
+}
+
+// Capture a token off the pairing link and scrub it from the URL, so it does not
+// sit in history, get screenshotted, or leak through a Referer header.
+;(function captureDeviceToken() {
+  if (typeof window === 'undefined') return
+  try {
+    const params = new URLSearchParams(window.location.search)
+    const t = params.get('device')
+    if (!t) return
+    if (/^[A-Za-z0-9_-]{20,200}$/.test(t)) setDeviceToken(t)
+    params.delete('device')
+    const qs = params.toString()
+    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash)
+  } catch { /* no-op */ }
+})()
+
+/** WebSocket URLs cannot carry custom headers — the token rides as a param there. */
+export function withDeviceParam(url: string): string {
+  const t = deviceToken()
+  if (!t) return url
+  return url + (url.includes('?') ? '&' : '?') + `device=${encodeURIComponent(t)}`
+}
+
 // Credentials-included fetch — used for all /api/* requests so httpOnly cookies
 // are sent automatically. Keeps every call site clean.
 export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
-  return fetch(url, { credentials: 'include', ...init })
+  const token = deviceToken()
+  if (!token) return fetch(url, { credentials: 'include', ...init })
+  const headers = new Headers(init?.headers)
+  headers.set('x-crucible-device', token)
+  return fetch(url, { credentials: 'include', ...init, headers })
 }

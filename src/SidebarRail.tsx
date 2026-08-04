@@ -7,6 +7,7 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { API_BASE, apiFetch } from './api'
 import { ConfirmModal } from './ui'
+import { glassSurface } from './design/glass'
 import type { CrucibleTab } from './NavRail'
 
 export type HistorySession = { id: string; title: string; mode: string; snippet: string; updatedAt: number; roundCount: number }
@@ -59,7 +60,7 @@ function Sliver({ session, active, onClick, onDelete }: { session: HistorySessio
           </svg>
         </button>
       ) : (
-        <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ fontSize: 10, color: 'var(--glass-text-3)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
           {new Date(session.updatedAt).toDateString() === new Date().toDateString()
             ? new Date(session.updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
             : new Date(session.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
@@ -153,9 +154,14 @@ function SidebarRail({ tab, setTab, conversationId, onNewChat, onRestore, onDele
       alignItems: iconOnly ? 'center' : 'stretch',
       // Traffic-light clearance comes from the shared shell token (0 on the web).
       padding: `calc(var(--titlebar-clearance) + 16px) ${iconOnly ? 8 : 10}px 12px`,
-      background: 'rgba(255,255,255,0.025)',
-      backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
-      borderRight: '1px solid var(--c-hairline)',
+      // Level 4 — chrome. The rail is a frame around the app, not a card floating on
+      // it, so it takes the light blur and no drop shadow. The literals here predated
+      // the token set and drifted from every other surface; glassSurface(4) is the
+      // single definition. borderRight overrides the all-round border a card gets.
+      ...glassSurface(4),
+      borderRadius: 0,
+      border: 'none',
+      borderRight: '1px solid var(--glass-edge)',
       transition: 'width var(--dur) var(--ease)',
     }}>
       {/* Wordmark */}
@@ -203,7 +209,7 @@ function SidebarRail({ tab, setTab, conversationId, onNewChat, onRestore, onDele
       ) : (
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', marginTop: 14, display: 'flex', flexDirection: 'column', gap: 2, paddingRight: 2 }}>
         {buckets.length === 0 && (
-          <span style={{ fontSize: 11, color: 'var(--c-dim-deep)', padding: '4px 8px' }}>No conversations yet.</span>
+          <span style={{ fontSize: 11, color: 'var(--glass-text-3)', padding: '4px 8px' }}>No conversations yet.</span>
         )}
         {buckets.map(bucket => (
           <div key={bucket.label} style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 8 }}>

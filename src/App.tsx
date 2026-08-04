@@ -9,7 +9,7 @@ const DOCK_HEIGHT_MAX = 320
 /** Height the floating resume banner occupies above the composer, reserved by surfaces
  *  that must not sit underneath it (Home's deck pager was landing behind it). */
 const RESUME_BANNER_H = 76
-import { API_BASE, apiFetch } from './api'
+import { API_BASE, apiFetch, withDeviceParam } from './api'
 import BackgroundBlobs from './BackgroundBlobs'
 import { useEnsemble, type EnsembleState } from './ensemble'
 import { IntegrationsBinder } from './IntegrationsBinder'
@@ -361,7 +361,7 @@ export default function App() {
 
     // Build WebSocket URL from API_BASE (http→ws, https→wss).
     const wsBase = API_BASE.replace(/^http/, 'ws')
-    let ws = new WebSocket(`${wsBase}/api/screen-stream-ws?t=${Date.now()}`)
+    let ws = new WebSocket(withDeviceParam(`${wsBase}/api/screen-stream-ws?t=${Date.now()}`))
     ws.binaryType = 'blob'
     streamEsRef.current = ws as unknown as EventSource
 
@@ -380,7 +380,7 @@ export default function App() {
         // URL is mixed-content-blocked from an https page, so only auto-switch from http.
         if (lanUrl && !lanUrl.includes(window.location.hostname) && (pageIsHttp || lanUrl.startsWith('wss://'))) {
           ws.close()
-          ws = new WebSocket(`${lanUrl}?t=${Date.now()}`)
+          ws = new WebSocket(withDeviceParam(`${lanUrl}?t=${Date.now()}`))
           ws.binaryType = 'blob'
           streamEsRef.current = ws as unknown as EventSource
           attachHandlers(ws)
@@ -743,6 +743,42 @@ export default function App() {
     () => Math.min(DOCK_HEIGHT_MAX, Math.ceil(inputBarHeight / DOCK_HEIGHT_STEP) * DOCK_HEIGHT_STEP),
     [inputBarHeight],
   )
+
+  // ── Rest height vs live height ──────────────────────────────────────────────
+  // These are two different questions and conflating them is what breaks the
+  // raised dock:
+  //
+  //   dockHeight      — how tall the composer IS right now. The blur veils and the
+  //                     scroll button sit flush against it, so they must track it
+  //                     live or a seam opens.
+  //   dockRestHeight  — how tall the composer is AT REST. The transcript's bottom
+  //                     padding, its fade mask and the history drawer are laid out
+  //                     against this.
+  //
+  // The raised dock grows upward to min(46vh, 420px) as a panel OVER the surface.
+  // If the transcript reserved that height as padding, engaging the composer would
+  // shove the whole conversation up by ~300px and dump it back down on blur. So the
+  // rest height is captured while the composer is at rest and held there.
+  const [dockRestHeight, setDockRestHeight] = useState(100)
+  useEffect(() => {
+    if (!composerRaised) setDockRestHeight(dockHeight)
+  }, [composerRaised, dockHeight])
+
+  /** Ceiling the raised dock grows to before the composer hands off to the chat
+   *  surface. Recomputed on resize: a phone rotating landscape halves the viewport
+   *  height, and a ceiling frozen at mount would let the dock cover the whole screen. */
+  const measureDockMax = () =>
+    typeof window === 'undefined' ? 420 : Math.min(Math.round(window.innerHeight * 0.46), 420)
+  const [dockRaisedMax, setDockRaisedMax] = useState(measureDockMax)
+  useEffect(() => {
+    const onResize = () => setDockRaisedMax(measureDockMax())
+    window.addEventListener('resize', onResize)
+    window.addEventListener('orientationchange', onResize)
+    return () => {
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('orientationchange', onResize)
+    }
+  }, [])
 
   // N1 — poll governance pending count
   useEffect(() => {
@@ -2279,8 +2315,13 @@ export default function App() {
     setInput(val)
     const ta = e.target
     requestAnimationFrame(() => {
+      const ceiling = dockRaisedMax - 96
       ta.style.height = 'auto'
-      ta.style.height = Math.min(ta.scrollHeight, 160) + 'px'
+      ta.style.height = Math.min(ta.scrollHeight, ceiling) + 'px'
+      // Growing PAST the dock ceiling is the hand-off, not a third dock state: what
+      // you are writing has outgrown a docked composer, so the chat surface takes
+      // over. Only from Home — inside chat there is nowhere further to go.
+      if (ta.scrollHeight > ceiling && tab === 'home') setTab('chat')
     })
     if (minLengthTimer.current) clearTimeout(minLengthTimer.current)
     if (val.trim().length > 0 && val.trim().length < 4) {
@@ -3019,7 +3060,7 @@ export default function App() {
       {notice && (
         <div style={{
           position: 'fixed',
-          bottom: (tab === 'settings' || agentsOpen || automationsOpen || connectionsOpen) ? 24 : inputBarHeight + 10,
+          bottom: (tab === 'settings' || agentsOpen || automationsOpen || connectionsOpen) ? 24 : dockRestHeight + 10,
           left: railW, right: 0, zIndex: 120,
           display: 'flex', justifyContent: 'center', pointerEvents: 'none', padding: '0 16px',
         }}>
@@ -3050,7 +3091,7 @@ export default function App() {
           floated on top of the conversation list, covering two rows of it. */}
       {resumeOffer && tab !== 'settings' && tab !== 'history' && !agentsOpen && !automationsOpen && !connectionsOpen && (
         <div style={{
-          position: 'fixed', bottom: inputBarHeight + 10,
+          position: 'fixed', bottom: dockRestHeight + 10,
           left: railW, right: 0, zIndex: 50,
           display: 'flex', justifyContent: 'center', pointerEvents: 'none',
           padding: '0 16px',
@@ -3130,7 +3171,7 @@ export default function App() {
           // — which meant the board reserved space for the composer only and the banner
           // sat on top of the deck's pager. Home's content and the chat dock must not
           // compete for the same pixels, so the banner's own height is reserved too.
-          bottomInset={dockHeight + (resumeOffer ? RESUME_BANNER_H : 0)}
+          bottomInset={dockRestHeight + (resumeOffer ? RESUME_BANNER_H : 0)}
           onAsk={followUpInChat}
           onNewChat={() => setTab('chat')}
           onRoute={route => {
@@ -3147,7 +3188,7 @@ export default function App() {
       {tab === 'chat' && (
         <MessageList
           rounds={rounds} setRounds={setRounds} send={sendStable} toggleCritique={toggleCritique}
-          inputBarHeight={dockHeight} liveRoundId={liveRoundId} thinking={thinking}
+          inputBarHeight={dockRestHeight} liveRoundId={liveRoundId} thinking={thinking}
           scrollRef={scrollRef} bottomRef={bottomRef}
           handleScroll={handleScroll} handleWheel={handleWheel}
           handleTouchStart={handleTouchStart} handleTouchMove={handleTouchMove}
@@ -3201,6 +3242,19 @@ export default function App() {
             <path d="M7 2.5v9M3 7.5l4 4 4-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
         </button>
+      )}
+
+      {/* ── Board dim — a raised dock on Home takes focus off the widgets behind it ──
+          Only on Home: in the transcript the thing behind the composer is the answer
+          you just asked for, and dimming that would be actively hostile. Click-through
+          is deliberate (pointerEvents: none) — the scrim is an emphasis cue, not a
+          modal, so tapping a card still works and simply drops the composer to rest. */}
+      {composerRaised && tab === 'home' && !remoteBrain && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 9, pointerEvents: 'none',
+          background: 'rgba(8,8,14,0.42)',
+          animation: 'fadeIn var(--dur-fast, 0.18s) var(--ease-standard, ease)',
+        }} />
       )}
 
       {/* ── Input bar ── */}
@@ -3560,7 +3614,13 @@ export default function App() {
               style={{
                 flex: 1, background: 'none', border: 'none', color: '#e4e4ee',
                 fontSize: 13.5, resize: 'none', outline: 'none', fontFamily: 'inherit',
-                lineHeight: 1.5, maxHeight: 160, overflowY: 'auto',
+                // At rest the composer is a thin strip. Raised, it grows into a real
+                // writing surface up to the dock ceiling — past that it is no longer a
+                // composer, it is a conversation, and `handleInput` hands off to the
+                // chat surface rather than growing a third state.
+                lineHeight: 1.5, maxHeight: composerRaised ? dockRaisedMax - 96 : 160,
+                overflowY: 'auto',
+                transition: 'max-height var(--dur-fast, 0.18s) var(--ease-standard, ease)',
                 userSelect: 'text', paddingBottom: 2,
               }}
               onFocus={() => setComposerFocused(true)}

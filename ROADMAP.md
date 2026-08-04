@@ -1933,6 +1933,61 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04 (cont.124 — off-LAN pairing, adaptive capture bitrate, the dock height split, glass port)
+
+Four tracks, each measured rather than asserted.
+
+**1. Paired-device tokens — the sanctioned off-LAN door** (`src/server/pairing.ts`, bench 35/35).
+cont.121 recorded that a paired-device token was "the only option that gives remote access off
+Wi-Fi" and deferred it; this builds it WITHOUT widening the locality guard. Nothing is paired by
+default, so an untouched install behaves exactly as before. Only a sha256 is stored (file mode
+0600), comparison is `timingSafeEqual`, `findDevice` deliberately does not early-return so the
+enrolment order cannot be timed, and the token travels in the `x-crucible-device` HEADER (custom
+header ⇒ CORS preflight ⇒ no ambient authority a hostile page can replay) — never a cookie.
+Minting is `requireLocal`, strictly stricter than `requireAuth`: a paired phone cannot enrol more
+devices or read the roster, so a compromised phone does not compound. Verified against a live
+server: no-token+tunnel 403, mint-from-tunnel 403, local mint OK, tunnel+token 200, tunnel+wrong
+token 403, paired-phone create/list 403.
+
+**Also closed a real hole found on the way in.** `attachScreenStreamWs`'s upgrade router had NO
+auth — the comment claimed the endpoint was "LAN-scoped by the router ACL", but the `/api` guard
+is Express middleware and never runs for a WebSocket upgrade, so a forwarded tunnel would have
+served a live video feed of the Mac's screen to anyone who knew the path. Now local-or-paired,
+scoped to the two paths that handler owns so other upgrade handlers are still left alone.
+Verified: local CONNECTED, tunnel-no-token 403, tunnel-wrong-token 403, tunnel-valid-token
+CONNECTED.
+
+**2. Adaptive capture bitrate** (`src/server/captureTune.ts`, bench 15/15). `/_capture`'s fixed
+900px/15fps/q0.42 was a guess about the link, wrong in both directions. `relay()` already knows
+the truth — a viewer whose socket is backed up is a dropped frame — so the drop ratio drives an
+AIMD loop (multiplicative backoff, additive recovery) with an evidence gate that holds when a
+window has under 8 frames. The bench proves it converges to link capacity rather than flapping
+(settled fps spread 0 over the last 20 windows) and respects both bounds under sustained
+pressure. `CRUCIBLE_CAPTURE_*` pins the values and switches the tuner off. Verified live: crept
+900→1020px / 15→17fps / q0.42→0.46 on a clean link and reset to defaults on disconnect.
+
+**3. The dock height split** (ROADMAP open item 1's stated prerequisite). `dockHeight` stays live
+for the blur veils and scroll button; the new `dockRestHeight` — captured only while the composer
+is at rest — drives the transcript's padding and mask, the resume banner and the history drawer.
+Without the split a raised dock would shove the whole conversation up ~170px and drop it back on
+blur. Raised state added: the textarea grows to `min(46vh, 420px) - 96`, the board dims behind it
+on Home only (click-through, it is an emphasis cue not a modal), and growing PAST the ceiling
+hands off to `tab='chat'` rather than inventing a third state. The ceiling recomputes on
+resize/orientationchange — frozen at mount it would have covered a rotated phone entirely.
+Measured with observers actually flushing (the preview pane is `visibilityState: hidden`, which
+throttles rAF AND ResizeObserver — a screenshot forces a rendering step): at rest the composer
+48→176px moved the transcript padding 96→224px; raised, the composer 48→216px left it at 224px.
+
+**4. Glass port.** 38 `--c-dim` body-text colours across SettingsTabView, ConnectionsView,
+AutomationsView, AgentMissionControl and SidebarRail moved to `--glass-text-2` / `--glass-text-3`
+(`--c-dim` measures ~1.35:1 on composited glass). Decorative `--c-dim` DOT BACKGROUNDS were
+deliberately left. AgentMissionControl's two hand-rolled `--c-glass` + hairline cards and
+SidebarRail's literal `rgba(255,255,255,0.025)` + `blur(24px)` now go through `glassSurface()`
+(level 1/2 for cards, level 4 for the rail as chrome); the active roster card keeps its status
+tint as a layer ON TOP of the glass instead of replacing it.
+
+New Settings section: **Devices** — pair, see created/last-used, revoke. Token shown once.
+
 ### 2026-08-04 (cont.123 — mobile send fails loudly; Remote Brain stops sending two video streams)
 
 **1. "Sending anything from mobile does nothing" — the response was never checked for `!res.ok`.**

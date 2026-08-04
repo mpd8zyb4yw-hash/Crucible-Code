@@ -7,6 +7,130 @@
 import { useRef, useEffect, useState } from 'react'
 import { detectKeyProvider, type EnsembleState } from './ensemble'
 import LocalModelsPanel from './LocalModelsPanel'
+import { API_BASE, apiFetch } from './api'
+
+// ── Paired devices ──────────────────────────────────────────────────────────
+// Crucible refuses every request whose Host is a public hostname, which is what
+// makes "no login screen" safe — and is also why a phone off the LAN cannot send
+// anything. Pairing is the explicit way through that door: a device gets a token,
+// and only that device gets in. Nothing is paired by default.
+//
+// Management is local-only on the server (requireLocal), so this panel exists on
+// the Mac and simply 403s on a paired phone — a compromised phone cannot enrol more.
+function PairedDevicesSection() {
+  type Device = { id: string; label: string; createdAt: number; lastSeenAt: number | null }
+  const [devices, setDevices] = useState<Device[] | null>(null)
+  const [minted, setMinted] = useState<{ token: string; url: string | null } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const labelRef = useRef<HTMLInputElement>(null)
+
+  const load = () => {
+    apiFetch(`${API_BASE}/api/pair/list`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+      .then(d => { setDevices(d.devices ?? []); setError(null) })
+      .catch(() => { setDevices([]); setError('Pairing can only be managed from the Mac running Crucible.') })
+  }
+  useEffect(load, [])
+
+  const create = () => {
+    setBusy(true)
+    apiFetch(`${API_BASE}/api/pair/create`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label: labelRef.current?.value?.trim() || 'Paired device' }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        // Shown ONCE — there is no plaintext copy anywhere to show it again.
+        setMinted({ token: d.token, url: d.url })
+        if (labelRef.current) labelRef.current.value = ''
+        load()
+      })
+      .catch(() => setError('Could not create a pairing token.'))
+      .finally(() => setBusy(false))
+  }
+
+  const revoke = (id: string) => {
+    apiFetch(`${API_BASE}/api/pair/revoke`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id }),
+    }).then(r => r.json()).then(d => setDevices(d.devices ?? [])).catch(() => {})
+  }
+
+  const when = (t: number | null) => t ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'never'
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {error && (
+        <div style={{ padding: '10px 14px', borderRadius: 12, background: 'var(--alarm-fill)', border: '1px solid var(--alarm-edge)', fontSize: 11.5, lineHeight: 1.5, color: 'var(--alarm-ink)' }}>
+          {error}
+        </div>
+      )}
+
+      {minted && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '12px 14px', borderRadius: 14, background: 'rgba(124,124,248,0.08)', border: '1px solid rgba(124,124,248,0.28)' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#c8c8f0' }}>Open this on the device — it is shown once</span>
+          <code style={{
+            fontSize: 10.5, fontFamily: 'var(--mono, ui-monospace, monospace)', color: '#b0b0f8',
+            wordBreak: 'break-all', lineHeight: 1.5, userSelect: 'all',
+            padding: '8px 10px', borderRadius: 8, background: 'rgba(0,0,0,0.32)',
+          }}>{minted.url ?? `?device=${minted.token}`}</code>
+          <span style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--glass-text-2, #8a8a9e)' }}>
+            Anyone holding this link can reach Crucible from anywhere. Crucible keeps only a
+            hash of it, so it cannot be shown again — revoke and re-pair if you lose it.
+            {!minted.url && ' Set CRUCIBLE_PUBLIC_HOST to have the full link generated.'}
+          </span>
+          <button onClick={() => setMinted(null)} style={{
+            alignSelf: 'flex-start', padding: '5px 12px', borderRadius: 999, cursor: 'pointer',
+            border: '1px solid rgba(255,255,255,0.12)', background: 'transparent',
+            color: '#b8b8cc', fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+          }}>Done</button>
+        </div>
+      )}
+
+      {devices !== null && devices.length > 0 && devices.map(d => (
+        <div key={d.id} style={{
+          display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderRadius: 12,
+          background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)',
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: '#d8d8e8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.label}</span>
+            <span style={{ fontSize: 11, color: 'var(--glass-text-2, #66667a)' }}>
+              paired {when(d.createdAt)} · last used {when(d.lastSeenAt)}
+            </span>
+          </div>
+          <button onClick={() => revoke(d.id)} style={{
+            flexShrink: 0, padding: '5px 12px', borderRadius: 999, cursor: 'pointer',
+            border: '1px solid var(--alarm-edge)', background: 'transparent',
+            color: 'var(--alarm-ink)', fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+          }}>Revoke</button>
+        </div>
+      ))}
+
+      {devices !== null && devices.length === 0 && !error && (
+        <div style={{ padding: '10px 14px', borderRadius: 12, background: 'rgba(255,255,255,0.02)', border: '1px dashed rgba(255,255,255,0.09)', fontSize: 11.5, lineHeight: 1.5, color: 'var(--glass-text-2, #77778c)' }}>
+          No devices paired. Crucible is reachable only from this Mac and your local network.
+        </div>
+      )}
+
+      {!error && (
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input ref={labelRef} placeholder="Device name (e.g. iPhone)" style={{
+            flex: 1, minWidth: 0, padding: '8px 12px', borderRadius: 10, fontSize: 12,
+            background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.09)',
+            color: '#e4e4ee', outline: 'none', fontFamily: 'inherit',
+          }} />
+          <button onClick={create} disabled={busy} style={{
+            flexShrink: 0, padding: '8px 16px', borderRadius: 10, fontSize: 11.5, fontWeight: 600,
+            cursor: busy ? 'default' : 'pointer', fontFamily: 'inherit',
+            border: '1px solid rgba(124,124,248,0.4)', background: 'rgba(124,124,248,0.15)',
+            color: '#b0b0ff', opacity: busy ? 0.5 : 1,
+          }}>Pair a device</button>
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ── Voice setup — surfaces whether the local whisper.cpp STT stack is installed, so the
 // composer's mic button has a home to point to. On-device by design (no cloud STT). ──
@@ -91,6 +215,7 @@ const SETTINGS_SECTIONS = [
   { id: 'models', label: 'Local models' },
   { id: 'library', label: 'Library' },
   { id: 'repair', label: 'Self-repair' },
+  { id: 'devices', label: 'Devices' },
   { id: 'system', label: 'System' },
 ] as const
 
@@ -182,7 +307,7 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
           <div id="settings-connections" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
               <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Connections</span>
-              <span style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--c-dim)' }}>
+              <span style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--glass-text-2)' }}>
                 Accounts Crucible can read from. Connect or disconnect at any time — nothing is read until you link it.
               </span>
             </div>
@@ -190,7 +315,7 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
           </div>
         )}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <span id="settings-keys" style={{ fontSize: 12.5, color: 'var(--c-dim)' }}>Crucible runs fully on-device. External calls only happen through keys you add here.</span>
+          <span id="settings-keys" style={{ fontSize: 12.5, color: 'var(--glass-text-2)' }}>Crucible runs fully on-device. External calls only happen through keys you add here.</span>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -299,6 +424,17 @@ export default function SettingsTabView({ ensemble, advanced, library, selfRepai
             {selfRepair}
           </div>
         )}
+
+        <div id="settings-devices" style={{ display: 'flex', flexDirection: 'column', gap: 12, scrollMarginTop: 24 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Devices</span>
+            <span style={{ fontSize: 11.5, lineHeight: 1.55, color: 'var(--glass-text-2, #77778c)' }}>
+              Crucible answers only this Mac and your local network. Pair a phone to reach it
+              from anywhere — each device gets its own token, revocable on its own.
+            </span>
+          </div>
+          <PairedDevicesSection />
+        </div>
 
         {advanced && (
           <div id="settings-system" style={{ display: 'flex', flexDirection: 'column', gap: 12, scrollMarginTop: 24 }}>

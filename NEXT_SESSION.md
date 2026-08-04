@@ -17,7 +17,39 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-04 (cont.123 — mobile send fails loudly; Remote Brain stops double-streaming) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-04 (cont.124 — off-LAN pairing, adaptive bitrate, dock split, glass port) (REPLACE THIS EVERY SESSION)
+
+> **cont.124 (2026-08-04).** Four tracks landed; full detail in the ROADMAP CHANGE LOG.
+> Benches: captureTune 15/15, pairing 35/35, and the five pre-existing server benches
+> still green (jwt 9/9, latency 6/6, textVector 7/7, util 11/11, refactorRoutes 10/10).
+>
+> - **Off-LAN access exists now**: Settings → Devices mints a token; `?device=<tok>` on the
+>   link, then `x-crucible-device` header (WS uses `?device=`). Nothing paired by default —
+>   an untouched install is byte-for-byte the old behaviour. Minting is local-only.
+> - **A real hole was closed**: the screen-stream WebSocket upgrade had NO auth (the `/api`
+>   Express guard never runs for an upgrade), so a live feed of the Mac's screen was
+>   reachable over the tunnel by path alone. Now local-or-paired.
+> - **Capture bitrate is adaptive** from the measured drop ratio; `CRUCIBLE_CAPTURE_*` pins it.
+> - **`dockRestHeight` vs `dockHeight` is done** — ROADMAP open item 1's prerequisite. The
+>   raised dock, board dim and past-ceiling hand-off to chat are built.
+> - **Glass port done** for the five surfaces named in the old open item 2.
+>
+> **STILL OPEN / NOT VERIFIED — do not assume these are settled:**
+> 1. **Nothing in cont.123 or cont.124 has been tested on a real phone.** Claude has no touch
+>    device; everything was `?forceMobile=1` + a mouse, plus protocol-level probes. The
+>    Remote Brain lag fix in particular (JPEG suppressed once WebRTC is up) was proven with a
+>    LOCAL WebSocket viewer, never over a hotspot.
+> 2. **The pairing link needs `CRUCIBLE_PUBLIC_HOST`** to render a full URL; without it the
+>    UI shows only the `?device=…` fragment and the user has to build the URL by hand.
+> 3. The preview pane runs `visibilityState: hidden`, which throttles rAF AND ResizeObserver.
+>    Any future layout verification there MUST interleave screenshots to force a rendering
+>    step, or it will silently measure frozen values and look like a pass.
+> 4. `ConnectionsView` is a Settings section already; the old ROADMAP item 3 is stale.
+> 5. Rail width 272 is still hard-coded in the App.tsx blur veils (old open item 4).
+> 6. Reduced motion is still verified by construction only (old open item 5).
+> 7. `src/agentic/SurfaceRenderer.tsx:728` still renders a model-supplied `thumb` URL in an
+>    `<img>` — the last external asset request in `src/` (old open item 6).
+
 
 > **cont.123 (2026-08-04) — what changed, and what is still open.**
 > - **Mobile "send does nothing" was a swallowed error, not a broken button.** `send()` in

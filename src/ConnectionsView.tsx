@@ -83,14 +83,14 @@ function ConnectionCard({ c, onChanged, onTry, onOpenMessage }: { c: Connection;
         <span style={{ fontSize: 'var(--t-body)', fontWeight: 600, color: 'var(--c-text)' }}>{c.name}</span>
         <StatusChip color={st.color}>{st.label}</StatusChip>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{c.kind}</span>
+        <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>{c.kind}</span>
       </div>
-      <div style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)', lineHeight: 1.55, overflowWrap: 'anywhere' }}>{c.detail}</div>
+      <div style={{ fontSize: 'var(--t-ui)', color: 'var(--glass-text-2)', lineHeight: 1.55, overflowWrap: 'anywhere' }}>{c.detail}</div>
       {c.tools.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
           {c.tools.map(t => (
             <span key={t} style={{
-              fontSize: 'var(--t-small)', fontFamily: 'var(--mono)', color: 'var(--c-dim)',
+              fontSize: 'var(--t-small)', fontFamily: 'var(--mono)', color: 'var(--glass-text-2)',
               background: 'rgba(0,0,0,0.35)', border: '1px solid var(--c-hairline)',
               borderRadius: 6, padding: '2px 7px',
             }}>{t}</span>
@@ -103,7 +103,7 @@ function ConnectionCard({ c, onChanged, onTry, onOpenMessage }: { c: Connection;
             <div key={svc} style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 'var(--t-small)' }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: r.ok ? '#4db89e' : '#f87171', flexShrink: 0, alignSelf: 'center' }} />
               <span style={{ color: 'var(--c-text)', fontWeight: 600 }}>{svc}</span>
-              <span style={{ color: 'var(--c-dim)', overflowWrap: 'anywhere' }}>{r.detail}</span>
+              <span style={{ color: 'var(--glass-text-2)', overflowWrap: 'anywhere' }}>{r.detail}</span>
             </div>
           ))}
         </div>
@@ -205,7 +205,7 @@ export default function ConnectionsView({ onClose, onFollowUp, embedded }: {
 
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '18px 22px 24px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 860 }}>
-          <div style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)', lineHeight: 1.6, maxWidth: 620 }}>
+          <div style={{ fontSize: 'var(--t-ui)', color: 'var(--glass-text-2)', lineHeight: 1.6, maxWidth: 620 }}>
             Everything the agent can reach beyond this app. Each connection powers specific agent
             tools — automations and Mission Control runs use them under your account.
           </div>
@@ -221,7 +221,7 @@ export default function ConnectionsView({ onClose, onFollowUp, embedded }: {
           {toolbox.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SectionLabel>Agent toolbox</SectionLabel>
-              <div style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', lineHeight: 1.5, marginTop: -4 }}>
+              <div style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)', lineHeight: 1.5, marginTop: -4 }}>
                 Local command-line tools agents can use during runs. Installed ones light up automatically.
               </div>
               <Card style={{ padding: '4px 0' }}>
@@ -230,11 +230,11 @@ export default function ConnectionsView({ onClose, onFollowUp, embedded }: {
                   return (
                     <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px' }}>
                       <span style={{ width: 6, height: 6, borderRadius: '50%', background: connected ? '#4db89e' : '#55556a', flexShrink: 0 }} />
-                      <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: connected ? 'var(--c-text)' : 'var(--c-dim)', flexShrink: 0 }}>{c.name}</span>
-                      <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: connected ? 'var(--c-text)' : 'var(--glass-text-2)', flexShrink: 0 }}>{c.name}</span>
+                      <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-2)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {TOOL_VALUE[c.id] ?? c.detail}
                       </span>
-                      <span style={{ fontSize: 'var(--t-small)', color: connected ? '#4db89e' : 'var(--c-dim-deep)', flexShrink: 0 }}>
+                      <span style={{ fontSize: 'var(--t-small)', color: connected ? '#4db89e' : 'var(--glass-text-3)', flexShrink: 0 }}>
                         {connected ? 'ready' : 'not installed'}
                       </span>
                     </div>
@@ -253,13 +253,13 @@ export default function ConnectionsView({ onClose, onFollowUp, embedded }: {
               "Crucible lost my accounts" rather than "this list has not loaded".
               Loading and failure are different states and now say different things. */}
           {!loaded && (
-            <div style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)' }}>
+            <div style={{ fontSize: 'var(--t-ui)', color: 'var(--glass-text-2)' }}>
               Checking what’s connected…
             </div>
           )}
           {loaded && heroes.length === 0 && toolbox.length === 0 && (
             <Card style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--t-ui)', color: 'var(--c-dim)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--t-ui)', color: 'var(--glass-text-2)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
                 Couldn’t load the connection list. Crucible itself is unaffected — this
                 is the list, not your accounts.
               </span>

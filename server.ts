@@ -90,6 +90,10 @@ import { signJwt as signJwtCore, verifyJwt as verifyJwtCore, parseCookies } from
 import { vectorize, cosineSim } from './src/server/textVector'
 import { LatencyTracker } from './src/server/latency'
 import { withTimeout, estimateMessageTokens, conversationTitle } from './src/server/util'
+import {
+  nextCaptureTuning, tuningChanged, LinkMonitor, DEFAULT_TUNING, type CaptureTuning,
+} from './src/server/captureTune'
+import { PairingStore, extractToken } from './src/server/pairing'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -881,11 +885,35 @@ function isLocalRequest(req: express.Request): boolean {
   return isLocalHostname(host)
 }
 
+// Paired devices — the explicit second door for off-LAN access. Nothing is paired
+// out of the box, so with an empty store this changes nothing: LAN in, internet
+// out, exactly as before. See src/server/pairing.ts for the threat model.
+const pairingStore = new PairingStore(path.join(CRUCIBLE_DIR, 'paired-devices.json'))
+
+/** A request that carries a valid paired-device token, from anywhere. */
+function isPairedRequest(req: { headers: Record<string, string | string[] | undefined>; url?: string }): boolean {
+  if (pairingStore.isEmpty()) return false
+  return pairingStore.verify(extractToken(req.headers, req.url)) !== null
+}
+
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   if (ALLOW_PUBLIC || isLocalRequest(req)) return next()
+  if (isPairedRequest(req as never)) return next()
   return res.status(403).json({
-    error: 'Crucible is on-device only. Reach it from this Mac or your local network.',
+    error: pairingStore.isEmpty()
+      ? 'Crucible is on-device only. Reach it from this Mac or your local network, or pair this device from Settings on the Mac.'
+      : 'This device is not paired with Crucible. Pair it from Settings on the Mac, or reach Crucible from your local network.',
   })
+}
+
+/**
+ * Device MANAGEMENT is local-only, deliberately stricter than requireAuth: a
+ * paired phone must not be able to enrol further devices or read the roster. If
+ * the phone is compromised, the blast radius stops at that one token.
+ */
+function requireLocal(req: express.Request, res: express.Response, next: express.NextFunction) {
+  if (ALLOW_PUBLIC || isLocalRequest(req)) return next()
+  return res.status(403).json({ error: 'Device pairing can only be managed from the Mac running Crucible.' })
 }
 
 // Auth guard — all /api/* except /api/auth/*, /api/screen-stream, and /api/diag
@@ -897,6 +925,32 @@ function requireAuth(req: express.Request, res: express.Response, next: express.
 app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (req.path === '/diag' || req.path === '/version') return next()   // no user data
   return requireAuth(req, res, next)
+})
+
+// ── Device pairing (local-only management) ──────────────────────────────────
+// The token is returned exactly ONCE, at creation. There is no endpoint that can
+// read it back, because there is nowhere it is stored in plaintext to read it
+// from — losing it means revoking the device and pairing again.
+app.get('/api/pair/list', requireLocal, (_req: express.Request, res: express.Response) => {
+  res.json({ devices: pairingStore.list() })
+})
+
+app.post('/api/pair/create', requireLocal, (req: express.Request, res: express.Response) => {
+  const label = typeof req.body?.label === 'string' ? req.body.label : 'Paired device'
+  const { token, device } = pairingStore.create(label)
+  // The pairing link points at the PUBLIC origin the user reaches from off-LAN —
+  // a LAN URL in the QR would defeat the entire point of pairing.
+  const publicHost = String(process.env.CRUCIBLE_PUBLIC_HOST ?? req.headers['x-forwarded-host'] ?? '')
+  const url = publicHost ? `https://${publicHost.replace(/^https?:\/\//, '')}/?device=${token}` : null
+  console.log(`[Pairing] device "${device.label}" paired (${device.id})`)
+  res.json({ token, device, url })
+})
+
+app.post('/api/pair/revoke', requireLocal, (req: express.Request, res: express.Response) => {
+  const id = String(req.body?.id ?? '')
+  const removed = id === 'all' ? pairingStore.revokeAll() > 0 : pairingStore.revoke(id)
+  console.log(`[Pairing] revoke ${id} → ${removed}`)
+  res.json({ ok: removed, devices: pairingStore.list() })
 })
 
 // Migrate legacy history.json to history-default.json on startup
@@ -8666,8 +8720,13 @@ app.post('/api/corpus/ingest-document', async (req, res) => {
 // Live diagnostics for the screen stream — surfaced by GET /api/screen-diag so we can
 // see which capture path is actually running (fast desktopCapturer vs slow screencapture
 // fallback), the real fps, frame size, and any capture/permission error — without guessing.
+// An explicit CRUCIBLE_CAPTURE_* env var pins encode settings and switches the
+// adaptive tuner off entirely — a hand-set number should stay set.
+const CAPTURE_PINNED = !!(process.env.CRUCIBLE_CAPTURE_MAXW || process.env.CRUCIBLE_CAPTURE_FPS || process.env.CRUCIBLE_CAPTURE_QUALITY)
 const screenDiag = {
   producerConnected: false,   // Electron capture window's WS is connected
+  tuning: { ...DEFAULT_TUNING } as CaptureTuning,   // live adaptive encode settings
+  tuningPinned: CAPTURE_PINNED,
   ingestFlowing: false,       // it's actually delivering frames right now
   liveFps: 0,
   frameKB: 0,
@@ -8697,6 +8756,24 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   httpSrv.on('upgrade', (req, socket, head) => {
     let pathname = ''
     try { pathname = new URL(req.url ?? '', 'http://localhost').pathname } catch { /* ignore */ }
+    // The screen-stream socket carries a live video feed of the user's desktop and
+    // had NO auth at all — the comment claimed it was "LAN-scoped by the router
+    // ACL", but the HTTP guard above never ran for an upgrade, so a forwarded
+    // tunnel would have served the Mac's screen to anyone who knew the path. Apply
+    // the same local-or-paired rule the REST routes get. A browser WebSocket
+    // cannot set headers, hence the `?device=` param (see pairing.ts).
+    // Scoped to the two paths THIS handler owns — an unmatched upgrade is still
+    // left untouched so any other WS handler on this server keeps working.
+    if (pathname === '/api/screen-stream-ws' || pathname === '/api/screen-ingest-ws') {
+      const allowed = ALLOW_PUBLIC
+        || isLocalHostname(String(req.headers['x-forwarded-host'] ?? req.headers.host ?? ''))
+        || isPairedRequest(req as never)
+      if (!allowed) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
+    }
     if (pathname === '/api/screen-stream-ws') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
     } else if (pathname === '/api/screen-ingest-ws') {
@@ -8736,9 +8813,49 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
     for (const [ws, stat] of clients) {
       if (ws.readyState !== 1 /* OPEN */) continue
       if (!stat.wantsJpeg) continue
-      if ((ws as any).bufferedAmount > 0) continue
+      // A backed-up socket IS the congestion signal — record it before skipping.
+      // This is the only input the adaptive tuner needs; no probing, no extra bytes.
+      const backedUp = (ws as any).bufferedAmount > 0
+      linkMonitor.offer(backedUp)
+      if (backedUp) continue
       try { ws.send(frame); stat.framesSent++ } catch { /* cleaned up on 'close' */ }
     }
+  }
+
+  // ── Adaptive capture tuning ─────────────────────────────────────────────────
+  // Fixed encode settings are a guess about the link that is wrong in both
+  // directions: too high and frames queue until latency is seconds, too low and
+  // the picture is soft for no reason. Drive them from the measured drop ratio
+  // instead. Control law + bounds live in src/server/captureTune.ts (bench:
+  // npx tsx src/server/__captureTune_bench.ts).
+  //
+  // An explicit CRUCIBLE_CAPTURE_* env var PINS the setting: someone who set a
+  // number by hand meant it, and having the controller walk away from it would be
+  // an unpleasant surprise.
+  const linkMonitor = new LinkMonitor()
+  let tuning: CaptureTuning = { ...DEFAULT_TUNING }
+  let tuneTimer: ReturnType<typeof setInterval> | null = null
+  function startTuner(): void {
+    if (tuneTimer || CAPTURE_PINNED) return
+    tuneTimer = setInterval(() => {
+      if (clients.size === 0) return
+      const next = nextCaptureTuning(tuning, linkMonitor.take())
+      if (!tuningChanged(tuning, next)) return
+      tuning = next
+      screenDiag.tuning = { ...tuning }
+      if (ingestProducer && ingestProducer.readyState === 1) {
+        try { ingestProducer.send(JSON.stringify({ cmd: 'tune', ...tuning })) } catch { /* noop */ }
+      }
+      debugBus.emit('model', 'screen_capture_tuned', { ...tuning }, { severity: 'info' })
+    }, 2000)
+  }
+  function stopTuner(): void {
+    if (tuneTimer) { clearInterval(tuneTimer); tuneTimer = null }
+    // A new session starts from the defaults rather than inheriting the last
+    // session's floor — the phone may be on a different network entirely.
+    tuning = { ...DEFAULT_TUNING }
+    screenDiag.tuning = { ...tuning }
+    linkMonitor.take()
   }
 
   // ── Real-time ingest (preferred) ────────────────────────────────────────────
@@ -8866,6 +8983,7 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
     debugBus.emit('model', 'screen_stream_start', { totalClients: clients.size }, { severity: 'info' })
     signalProducer()          // wake the Electron capture window
     signalJpegNeed()          // this viewer starts on JPEG until its WebRTC peer is up
+    startTuner()              // begin adapting encode settings to the observed link
     ensureProducing()         // and start the fallback until real frames arrive
     if (!supervisor) supervisor = setInterval(ensureProducing, 700)
     // Tell the producer a new viewer is here so it can open a WebRTC peer connection.
@@ -8897,6 +9015,7 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
       signalJpegNeed()
       debugBus.emit('model', 'screen_stream_stop', { framesSent: stat.framesSent, totalClients: clients.size }, { severity: 'info' })
       if (clients.size === 0) {
+        stopTuner()            // no link to measure; reset to defaults for next time
         signalProducer()       // tell the capture window to stop capturing
         if (supervisor) { clearInterval(supervisor); supervisor = null }
       }
@@ -8949,6 +9068,10 @@ app.get('/api/screen-diag', (_req: express.Request, res: express.Response) => {
     viewerIps: screenDiag.viewerIps,
     producerConnected: screenDiag.producerConnected,
     captureError: screenDiag.captureError,
+    // Live encode settings. If these have walked down toward the floor, the link
+    // is genuinely congested and the tuner is doing its job — not a bug.
+    tuning: screenDiag.tuning,
+    tuningPinned: screenDiag.tuningPinned,
     hint: screenDiag.captureError
       ? 'The Electron capture window connected but getDisplayMedia failed — almost always macOS Screen-Recording permission. System Settings → Privacy & Security → Screen Recording → enable Crucible, then relaunch.'
       : flowing
@@ -10106,9 +10229,12 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
   // sustained; when the link can't keep up, frames buffer below the server's visibility and
   // latency grows to many seconds. Lower defaults (~15fps, 900px, q0.42 ≈ 5 Mbit/s) fit
   // ordinary WiFi with headroom. Tunable live via env without a code change.
-  const capW = Number(process.env.CRUCIBLE_CAPTURE_MAXW) || 900
-  const capFps = Number(process.env.CRUCIBLE_CAPTURE_FPS) || 15
-  const capQ = Number(process.env.CRUCIBLE_CAPTURE_QUALITY) || 0.42
+  // These are only the STARTING point now — the server re-tunes them live from the
+  // measured drop ratio (see src/server/captureTune.ts). An explicit env var pins
+  // them and switches the tuner off (CAPTURE_PINNED).
+  const capW = Number(process.env.CRUCIBLE_CAPTURE_MAXW) || DEFAULT_TUNING.maxW
+  const capFps = Number(process.env.CRUCIBLE_CAPTURE_FPS) || DEFAULT_TUNING.fps
+  const capQ = Number(process.env.CRUCIBLE_CAPTURE_QUALITY) || DEFAULT_TUNING.quality
   res.setHeader('Content-Type', 'text/html; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')
   res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Crucible capture</title></head>
@@ -10164,7 +10290,14 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
     ws.binaryType = 'arraybuffer';
     ws.onmessage = function (e) {
       var msg; try { msg = JSON.parse(e.data) } catch (x) { return }
-      if (msg.cmd === 'jpeg') { jpegWanted = !!msg.on }
+      if (msg.cmd === 'tune') {
+        // Server-side adaptive bitrate. Applied to the next loop tick; the canvas
+        // resizes itself when MAX_W changes (see loop()).
+        if (msg.maxW) MAX_W = msg.maxW;
+        if (msg.fps) FPS = msg.fps;
+        if (typeof msg.quality === 'number') QUALITY = msg.quality;
+      }
+      else if (msg.cmd === 'jpeg') { jpegWanted = !!msg.on }
       else if (msg.cmd === 'start') { wantCapture = true; startCapture() }
       else if (msg.cmd === 'stop') { wantCapture = false; stopCapture() }
       else if (msg.type === 'viewer-join') { wantCapture = true; onViewerJoin(msg.id) }
@@ -10217,7 +10350,7 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
     if (jpegWanted && vw && vh && ws && ws.readyState === 1) {
       var w = Math.min(MAX_W, vw), h = Math.round(vh * (w / vw));
       if (!canvas) { canvas = document.createElement('canvas'); ctx = canvas.getContext('2d', { alpha: false }) }
-      if (canvas.width !== w) { canvas.width = w; canvas.height = h }
+      if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h }
       try { ctx.drawImage(video, 0, 0, w, h) } catch (e) {}
       // Only encode+send when the socket isn't already backed up — this self-throttles
       // to the real network/CPU rate and naturally drops frames instead of piling up.

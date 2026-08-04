@@ -15,6 +15,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Card, SectionLabel, GhostButton, StatusChip, tint } from './ui'
+import { glassSurface } from './design/glass'
 import type { Round } from './chat/core'
 import { STEP_GLYPH, STEP_COLOR, ToolRow, DiffBlock, runSurfaceAction } from './chat/panels'
 import SurfaceRenderer from './agentic/SurfaceRenderer'
@@ -45,17 +46,20 @@ function ScheduledCard({ e, onOpen }: { e: ScheduledRun; onOpen: () => void }) {
       onClick={onOpen} role="button" tabIndex={0}
       onKeyDown={ev => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onOpen() } }}
       style={{
+        // Level 1 — a resting card on the roster. glassSurface() carries the fill,
+        // edge, blur and the inner light edge together; the old hand-rolled
+        // --c-glass + hairline pair had no blur and no inner edge, so it read as a
+        // flat grey box next to every other surface in the redesign.
+        ...glassSurface(1),
         display: 'flex', flexDirection: 'column', gap: 5, padding: '10px 14px', cursor: 'pointer',
-        borderRadius: 'var(--c-radius)', background: 'var(--c-glass)',
-        border: '1px solid var(--c-hairline)', boxShadow: 'var(--c-inset-highlight)',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: color, flexShrink: 0 }} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.name}</span>
-        <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtShort(e.ts)}</span>
+        <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtShort(e.ts)}</span>
       </div>
-      <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', lineHeight: 1.45, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-2)', lineHeight: 1.45, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {e.status === 'failed' ? `failed — ${e.summary}` : e.summary}
       </span>
     </div>
@@ -89,11 +93,15 @@ function AgentCard({ r, title, turns, active, onSelect }: { r: Round; title: str
       tabIndex={0}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } }}
       style={{
+        // Selected lifts to level 2; the status tint rides ON TOP of the glass rather
+        // than replacing it, so an active card is still the same material.
+        ...glassSurface(active ? 2 : 1),
         display: 'flex', flexDirection: 'column', gap: 7, padding: '12px 14px', cursor: 'pointer',
-        borderRadius: 'var(--c-radius)',
-        background: active ? tint(st.color, 0.08) : 'var(--c-glass)',
-        border: `1px solid ${active ? tint(st.color, 0.35) : 'var(--c-hairline)'}`,
-        boxShadow: st.live ? `0 0 24px ${tint(st.color, 0.12)}` : 'var(--c-inset-highlight)',
+        ...(active ? {
+          background: `linear-gradient(0deg, ${tint(st.color, 0.08)}, ${tint(st.color, 0.08)}), var(--glass-fill-2)`,
+          border: `1px solid ${tint(st.color, 0.35)}`,
+        } : {}),
+        ...(st.live ? { boxShadow: `0 0 24px ${tint(st.color, 0.12)}, var(--glass-inner-light)` } : {}),
         transition: 'background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease)',
       }}
     >
@@ -112,7 +120,7 @@ function AgentCard({ r, title, turns, active, onSelect }: { r: Round; title: str
       </div>
       {(thought || meta) && (
         <span key={thought} style={{
-          fontSize: 'var(--t-small)', color: 'var(--c-dim)', lineHeight: 1.45,
+          fontSize: 'var(--t-small)', color: 'var(--glass-text-2)', lineHeight: 1.45,
           fontStyle: thought ? 'italic' : 'normal',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           animation: thought ? 'fadeIn 0.3s ease' : undefined,
@@ -275,7 +283,7 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
           width: 34, height: 34, borderRadius: 11, flexShrink: 0, cursor: brief.trim() ? 'pointer' : 'default',
           border: '1px solid rgba(124,124,248,0.4)',
           background: brief.trim() ? 'rgba(124,124,248,0.18)' : 'rgba(124,124,248,0.06)',
-          color: brief.trim() ? '#b0b0f8' : 'var(--c-dim-deep)',
+          color: brief.trim() ? '#b0b0f8' : 'var(--glass-text-3)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           transition: 'background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)',
         }}
@@ -329,7 +337,7 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
             <div style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.01em', color: 'var(--c-text)', marginBottom: 6 }}>
               Send an agent on its way
             </div>
-            <div style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)', marginBottom: 22, textAlign: 'center', lineHeight: 1.55 }}>
+            <div style={{ fontSize: 'var(--t-ui)', color: 'var(--glass-text-2)', marginBottom: 22, textAlign: 'center', lineHeight: 1.55 }}>
               Describe the outcome — building, researching, testing, deciding.
               The agent works out its own plan and you watch it happen here.
             </div>
@@ -387,7 +395,7 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
                     <div key={pt.id} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                         <span style={{ flexShrink: 0, marginTop: 3, width: 6, height: 6, borderRadius: '50%', background: 'var(--c-dim-deep)' }} />
-                        <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-dim)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+                        <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--glass-text-2)', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
                           {pt.userMessage}
                         </span>
                       </div>
@@ -409,10 +417,10 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
                   {/* Run header */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                     {status && <StatusChip color={status.color} pulse={status.live}>{status.label}</StatusChip>}
-                    {a.driver && <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)' }}>{a.driver}</span>}
+                    {a.driver && <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)' }}>{a.driver}</span>}
                     <div style={{ flex: 1 }} />
                     {a.done?.ms != null && (
-                      <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums' }}>
+                      <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)', fontVariantNumeric: 'tabular-nums' }}>
                         {/* The observed tool rows are the ground truth. `toolCallCount` comes
                             from loop.ts, which the fmReact path bypasses — so it reports 0 while
                             the panel below shows "TOOLS · 1". Take whichever is larger rather

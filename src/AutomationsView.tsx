@@ -287,9 +287,9 @@ function TriggerEditor({ value, onChange }: { value: Trigger; onChange: (t: Trig
         )}
         {kind === 'interval' && (
           <>
-            <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)' }}>every</span>
+            <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-2)' }}>every</span>
             <input type="number" min={5} max={10080} value={minutes} onChange={e => setMinutes(Number(e.target.value))} style={{ ...inputStyle, width: 70 }} />
-            <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)' }}>minutes</span>
+            <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-2)' }}>minutes</span>
           </>
         )}
         {kind === 'once' && (
@@ -339,9 +339,9 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
         <span style={{ fontSize: 'var(--t-body)', fontWeight: 600, color: 'var(--c-text)', overflowWrap: 'anywhere' }}>{a.name}</span>
         <StatusChip color={st.color} pulse={st.pulse}>{st.label}</StatusChip>
         <div style={{ flex: 1 }} />
-        <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', whiteSpace: 'nowrap' }}>{describeTrigger(a.trigger)}</span>
+        <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-2)', whiteSpace: 'nowrap' }}>{describeTrigger(a.trigger)}</span>
         {a.enabled && a.nextRun != null && (
-          <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>next {fmtWhen(a.nextRun)}</span>
+          <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>next {fmtWhen(a.nextRun)}</span>
         )}
         <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden style={{
           flexShrink: 0, color: 'var(--glass-text-3)',
@@ -353,7 +353,7 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
       </div>
 
       {expanded && !editing && (
-        <div style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)', lineHeight: 1.6, overflowWrap: 'anywhere', paddingLeft: 19 }}>
+        <div style={{ fontSize: 'var(--t-ui)', color: 'var(--glass-text-2)', lineHeight: 1.6, overflowWrap: 'anywhere', paddingLeft: 19 }}>
           {a.brief}
         </div>
       )}
@@ -389,9 +389,9 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'transparent' }}
             >
               <span style={{ width: 5, height: 5, borderRadius: '50%', background: r.status === 'ok' ? 'var(--glass-text-3)' : 'var(--alarm-ink)', flexShrink: 0 }} />
-              <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtWhen(r.ts)}</span>
-              <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.summary}</span>
-              <span style={{ fontSize: 10, color: 'var(--c-dim-deep)', flexShrink: 0 }}>open ›</span>
+              <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-2)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{fmtWhen(r.ts)}</span>
+              <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-2)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.summary}</span>
+              <span style={{ fontSize: 10, color: 'var(--glass-text-3)', flexShrink: 0 }}>open ›</span>
             </div>
           ))}
         </div>
@@ -411,7 +411,7 @@ function Row({ a, running, onToggle, onRunNow, onDelete, onSave, onOpenRun }: {
           )}
         <div style={{ flex: 1 }} />
         {a.lastRuns[0] && (
-          <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums' }}>
+          <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)', fontVariantNumeric: 'tabular-nums' }}>
             last {fmtWhen(a.lastRuns[0].ts)} · {(a.lastRuns[0].ms / 1000).toFixed(0)}s
           </span>
         )}
@@ -524,7 +524,7 @@ export default function AutomationsView({ onClose, onFollowUp }: {
             {loaded && list.length === 0 && !creating && (
               <Card style={{ padding: '28px 24px', display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'flex-start' }}>
                 <span style={{ fontSize: 'var(--t-body)', fontWeight: 600, color: 'var(--c-text)' }}>No standing tasks yet</span>
-                <span style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim)', lineHeight: 1.6, maxWidth: 520 }}>
+                <span style={{ fontSize: 'var(--t-ui)', color: 'var(--glass-text-2)', lineHeight: 1.6, maxWidth: 520 }}>
                   An automation is a brief the agent runs on a schedule — a daily summary, a weekly folder
                   cleanup, a site check every few hours. Results land in the Digest; failures are surfaced,
                   never silent.
@@ -559,7 +559,7 @@ export default function AutomationsView({ onClose, onFollowUp }: {
         }}>
           <SectionLabel>Digest</SectionLabel>
           {digest.length === 0 && (
-            <span style={{ fontSize: 'var(--t-ui)', color: 'var(--c-dim-deep)' }}>Run results will appear here.</span>
+            <span style={{ fontSize: 'var(--t-ui)', color: 'var(--glass-text-3)' }}>Run results will appear here.</span>
           )}
           {digest.map((e, i) => (
             <Card
@@ -572,10 +572,10 @@ export default function AutomationsView({ onClose, onFollowUp }: {
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: e.status === 'ok' ? 'var(--glass-text-3)' : 'var(--alarm-ink)', flexShrink: 0 }} />
                 <span style={{ fontSize: 'var(--t-ui)', fontWeight: 600, color: 'var(--c-text)', overflowWrap: 'anywhere' }}>{e.name}</span>
                 <div style={{ flex: 1 }} />
-                <span style={{ fontSize: 'var(--t-small)', color: 'var(--c-dim-deep)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{fmtWhen(e.ts)}</span>
+                <span style={{ fontSize: 'var(--t-small)', color: 'var(--glass-text-3)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>{fmtWhen(e.ts)}</span>
               </div>
               <div style={{
-                fontSize: 'var(--t-small)', color: 'var(--c-dim)', lineHeight: 1.55, overflowWrap: 'anywhere',
+                fontSize: 'var(--t-small)', color: 'var(--glass-text-2)', lineHeight: 1.55, overflowWrap: 'anywhere',
                 display: '-webkit-box', WebkitLineClamp: 6, WebkitBoxOrient: 'vertical', overflow: 'hidden',
               }}>{e.summary}</div>
               <span style={{ fontSize: 10.5, color: 'var(--glass-text-3)' }}>Open full result</span>
