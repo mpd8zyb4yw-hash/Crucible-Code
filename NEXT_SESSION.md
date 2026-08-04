@@ -1,14 +1,16 @@
-# CURRENT STATE (2026-08-04b — replace this block every session)
+# CURRENT STATE (2026-08-04c — replace this block every session)
 
 ## The numbers
 
-- **Agentic: 11/12, three consecutive runs** (`npm run agent:workflow`), from **0/5** when this
-  work started. Twelve multi-step tasks scored ONLY on what is true on disk.
+- **Agentic: 12/12** (`npm run agent:workflow`), from **0/5** when this work started. Twelve
+  multi-step tasks scored ONLY on what is true on disk. Reached 12/12 on three separate full
+  runs; one intervening full run scored 11/12 (see the flake note below).
 - **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 0 over budget.
 - `npm run prove:all`: **251 skills, 0 failed**, plus every bench.
 
-The one failure is honest and left in the probe: **`follow-up-turn`** — a second turn saying
-"now add the word world to the end of that same file". See "Not solved" below.
+**`follow-up-turn` now passes** — the last standing failure. In isolation it passes ~3/4; the
+residual failure is TURN ONE ("create draft.txt containing hello") emitting no tool call in ~56s,
+which is baseline loop reliability, not the follow-up mechanism. Do not read 12/12 as determinism.
 
 ## How it works
 
@@ -27,11 +29,35 @@ could be exact: `compute`, `sum_column`, `count_lines`, `filter_rows`, `rename_s
 
 ## Not solved — do not claim otherwise
 
-**Cross-turn pronoun resolution.** "That same file" in a follow-up turn. Resolving it to
-`lastWrittenFile()` was tried twice: placed after the completeness check it never ran (an empty
-path is rejected as incomplete first, which is exactly the case it fills); moved before it, it
-broke append-to-file and two-files-one-goal, 11/12 → 10/12. The function is exported and the
-probe task stays failing rather than being quietly dropped.
+**Turn-one flake.** `follow-up-turn` fails ~1 run in 4 on its FIRST turn — no tool call at all in
+~56s, empty directory, and the loop still reports success. `write-file` is the same shape and is
+stable, so this is not goal parsing. Unexplained; it is the single biggest reliability item left.
+
+## Solved this session (was "not solved")
+
+**Cross-turn pronoun resolution** — "that same file". THE LAYER WAS THE BUG. Two earlier attempts
+rewrote the FILL stage's tool ARGUMENTS; after the completeness check that code never ran (an
+empty path is rejected as incomplete before it can be filled), and before it, it redirected writes
+in append-to-file and two-files-one-goal (11/12 → 10/12). Both were reverted, correctly.
+It now lives in `resolveBackReference()` (`agent/toolCallDriver.ts`), which substitutes the path
+into the GOAL TEXT once, before planning — so the plan, the post-conditions and FILL all see a
+concrete path and no argument is ever overridden. The guard is the load-bearing half: a goal
+naming ANY file of its own is not a back-reference, which excludes every other probe task by
+construction. Both regressions are pinned in `toolcalldriver:bench`.
+
+Three defects had to be fixed underneath it, each measured:
+1. **The post-condition gate crashed instead of gating.** `makeGatedVerifier` returned `reason`
+   where `loop.ts` reads `report`, so EVERY gated failure threw "Cannot read properties of
+   undefined (reading 'slice')" and the user got an empty reply. It killed read-then-write,
+   multi-file-edit and filter-rows. An `as Awaited<...>` cast hid it from the typechecker; the
+   cast is gone, so that object must now satisfy the real return type. The gate had never worked.
+2. **An existence post-condition on an append is vacuous.** The file already existed, so FINISH
+   was offered on iteration one and the agent stopped in 3.2s reporting success. `ADD_LITERAL_RX`
+   asserts the added text is actually IN the file.
+3. **`classifyIntent` had no file-mutation verbs at all** — add/append/save/delete/rename appear
+   in NO action-verb set in that file, so "add the word world to that file" classified as
+   `conversational_reply` and a disk mutation was answered as chat. New `intentclassifier:bench`
+   (12 cases, wired into `prove:all`) — the classifier that gates every request had no bench.
 
 ## Open
 

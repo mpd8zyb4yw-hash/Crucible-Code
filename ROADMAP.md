@@ -1953,6 +1953,32 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04c — `follow-up-turn` fixed; the post-condition gate had never run
+
+**Agentic probe: 12/12** (`npm run agent:workflow`), from 11/12. `prove:all` 251/251.
+
+- **`resolveBackReference()` (`agent/toolCallDriver.ts`)** — "that same file" is substituted into
+  the GOAL TEXT before planning, not into tool arguments. The two previous attempts patched the
+  FILL stage's arguments and were reverted (11/12 → 10/12); the layer was the bug. Guard: a goal
+  naming any file of its own is never rewritten. Regressions pinned in `toolcalldriver:bench`.
+- **`makeGatedVerifier` returned `reason`, not `report`** (`server.ts`) — `loop.ts` reads
+  `v.report.slice(...)`, so every gated post-condition failure threw and returned an EMPTY reply
+  instead of healing. read-then-write, multi-file-edit and filter-rows all died on it. The
+  `as Awaited<...>` cast that hid it from the typechecker is removed. The gate had never worked.
+- **`ADD_LITERAL_RX` (`agent/postconditions.ts`)** — an append's existence check is vacuous
+  (the file already exists), so FINISH was offered immediately; the asserted condition is now that
+  the added text is present. Also drives `append_file`'s content, which was re-writing the file's
+  existing contents alongside the new word ("hello\nhello world").
+- **`classifyIntent` had no file-mutation verbs** — add/append/save/delete/rename were absent from
+  every action-verb set, so a disk mutation classified as `conversational_reply`. New
+  **`intentclassifier:bench`** (12 cases) wired into `prove:all`; the classifier that gates every
+  request previously had no bench at all.
+- **`[Agent] Fatal error` now logs the stack**, not just the message.
+
+Known flake: `follow-up-turn`'s FIRST turn emits no tool call in ~1 run of 4 (~56s, empty dir,
+loop still reports success). Unexplained; biggest reliability item left.
+
+
 
 
 

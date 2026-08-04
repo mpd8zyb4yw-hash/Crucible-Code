@@ -116,6 +116,21 @@ export function classifyIntent(
     }
   }
 
+  // A FILE OPERATION is an action, never chat.
+  //
+  // MEASURED 2026-08-04 (`follow-up-turn`): "Now add the word world to the end of that same file"
+  // classified as conversational_reply, so a request to modify a file on disk was answered as
+  // conversation. The cause is that NO file-mutation verb — add, append, save, delete, rename,
+  // edit — appears in ANY of the action-verb sets in this file; they cover launching apps and
+  // browsing ("open", "play", "click"), which is the surface this classifier was written for.
+  // The test is decidable: a mutation verb plus something to mutate (a named file, or a
+  // back-reference to one the conversation already established) is a task by definition.
+  const MUTATION_VERB = /\b(add|append|insert|write|create|save|store|record|delete|remove|rename|edit|update|replace|copy|move)\b/i
+  const HAS_OBJECT = /\b[\w-]+\.[a-z]{1,5}\b|(?:\/[\w.@+-]+){2,}|\b(?:that|the) same (?:file|one)\b|\bthat file\b/i
+  if (MUTATION_VERB.test(msg) && HAS_OBJECT.test(msg)) {
+    return { intent: 'complex_task', confidence: 'high' }
+  }
+
   // Pure conversational?
   for (const pat of CONVERSATIONAL_PATTERNS) {
     if (pat.test(msg)) {

@@ -3118,7 +3118,14 @@ function makeGatedVerifier(goalText: string, verifyCommand?: string) {
     const post = verifyGoal(goalText ?? '', seed)
     if (post.failed.length > 0) {
       debugBus.emit('agent', 'postcondition_failed', { goal: (goalText ?? '').slice(0, 80), failed: post.failed }, { severity: 'error' })
-      return { passed: false, signal: 'postcondition', reason: correctionFor(post) } as Awaited<ReturnType<typeof verifier.verify>>
+      // `report` is the field name the loop reads (loop.ts reads v.report.slice for both the
+      // verify event and the healing message). MEASURED 2026-08-04: this returned `reason`
+      // instead, so every gated failure crashed the agent with "Cannot read properties of
+      // undefined (reading 'slice')" and the user got an empty reply — read-then-write,
+      // multi-file-edit and filter-rows all died here. The `as Awaited<...>` cast is what hid
+      // it from the typechecker, so the cast is gone too: this object must satisfy the real
+      // return type or fail the build.
+      return { passed: false, signal: 'postcondition' as const, report: correctionFor(post) }
     }
     const base = await verifier.verify(finalText, ctx)
     // A post-condition that actually RAN and passed is a genuine check, so it retires the
@@ -4658,7 +4665,9 @@ app.post('/api/chat', async (req, res) => {
     }
     console.log(`[Agent] End-to-end latency: ${((Date.now() - t0) / 1000).toFixed(1)}s`)
     } catch (agentErr: any) {
-      console.error('[Agent] Fatal error:', agentErr?.message ?? agentErr)
+      // The stack, not just the message: a bare "Cannot read properties of undefined" costs a
+      // full 12-task suite run to localise, and this is the handler for every agent crash.
+      console.error('[Agent] Fatal error:', agentErr?.stack ?? agentErr?.message ?? agentErr)
       try { send({ type: 'error', message: `Agent task failed: ${agentErr?.message ?? 'unknown error'}` }) } catch {}
     } finally {
       unsubProgress()

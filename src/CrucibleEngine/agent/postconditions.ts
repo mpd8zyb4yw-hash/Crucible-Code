@@ -89,6 +89,17 @@ function resolveTargets(goal: string): { dir: string | null; files: string[] } {
 
 /** The literal a goal says the file must contain: "containing exactly the line: X" / "the line: X". */
 const LITERAL_RX = /\bcontain(?:ing|s)?\s+(?:exactly\s+)?(?:the\s+)?(?:line|text|string|words?)\s*:?\s*["“']?([^"”'\n.]{3,120})/i
+/**
+ * "add/append the word world to <file>" — the literal that must end up IN the file.
+ *
+ * MEASURED 2026-08-04 (`follow-up-turn`): the second turn resolved to a real path, `add` counted
+ * as a creation verb, and the only post-condition raised was "draft.txt exists" — which was
+ * ALREADY TRUE, because turn one created it. So FINISH was offered on the first iteration and
+ * the agent stopped in 3.2s having done nothing, reporting "every step has been carried out".
+ * An existence check on a file that already exists is not a check. The goal names the exact
+ * text to add, so the condition worth asserting is that the text is now there.
+ */
+export const ADD_LITERAL_RX = /\b(?:add|append|insert)\s+(?:the\s+)?(?:word|line|text|string|phrase)\s*:?\s*["“']?([^"”'\n.,]{1,80}?)["”']?\s+(?:to|onto|at|into)\b/i
 /** "rename A to B" — B must be present and A must be gone. */
 const RENAME_RX = /\brename\s+(?:the\s+)?(?:function|method|variable|symbol|constant)?\s*([A-Za-z_$][\w$]*)\s+to\s+([A-Za-z_$][\w$]*)\b/i
 /** Destructive intent: the post-condition is that nothing was lost without asking. */
@@ -149,7 +160,10 @@ export function extractPostconditions(goal: string, seedNames: string[] = []): P
     // asserts it of the wrong file. Matching a literal per target needs a parse this does not
     // have, so multi-target goals assert existence only — conservative, per the rule at the top
     // of this file that an unreadable condition is simply not asserted.
-    const lit = targets.length > 1 ? null : LITERAL_RX.exec(g)
+    // An ADD/APPEND names its literal in a different shape than a CREATE does ("add the word
+    // world TO x" vs "create x CONTAINING the word world"), and for an append the existence
+    // check is vacuous — see ADD_LITERAL_RX.
+    const lit = targets.length > 1 ? null : (LITERAL_RX.exec(g) ?? ADD_LITERAL_RX.exec(g))
     if (lit) {
       const text = lit[1].trim()
       out.push({

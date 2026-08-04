@@ -3,7 +3,7 @@
 // No model and no network: `complete` is a stub that records what it was asked and replays a
 // scripted answer. What is under test is the SHAPE the driver imposes — the grammars it builds,
 // the fields it asks for, and its refusal to call a mutating tool on unreadable arguments.
-import { makeToolCallDriveTurn, requiredFields, toolMenu, FINISH, type Complete } from './toolCallDriver'
+import { makeToolCallDriveTurn, requiredFields, toolMenu, resolveBackReference, FINISH, type Complete } from './toolCallDriver'
 import type { ToolDef } from '../tools/protocol'
 
 let pass = 0, fail = 0
@@ -87,6 +87,21 @@ async function main() {
   drive = makeToolCallDriveTurn(stub(['write_file']), 'x')
   r = await drive([], [])
   check('empty tool list is handled without throwing', r.toolCalls.length === 0)
+
+  // Cross-turn pronoun resolution. The GUARD is the load-bearing half: two earlier attempts at
+  // this broke goals that name their own file, so those cases are pinned here.
+  const LW = '/tmp/a/draft.txt'
+  check('a bare back-reference resolves to the last written file',
+    resolveBackReference('Now add the word world to the end of that same file.', LW).includes(LW))
+  check('a goal naming its own file is NEVER redirected (append-to-file regression)',
+    resolveBackReference('Append the line reviewed to log.txt, keeping what is already there.', LW)
+      === 'Append the line reviewed to log.txt, keeping what is already there.')
+  check('a goal naming two files of its own is untouched (two-files-one-goal regression)',
+    !resolveBackReference('Create first.txt containing alpha and second.txt containing bravo.', LW).includes(LW))
+  check('with nothing written yet the goal is unchanged',
+    resolveBackReference('Add world to that same file.', null) === 'Add world to that same file.')
+  check('a goal with no back-reference is unchanged',
+    resolveBackReference('Create a file called draft.txt containing hello.', LW).includes('draft.txt'))
 
   console.log(`\nTOOL-CALL DRIVER BENCH: ${pass}/${pass + fail}`)
   if (fail) process.exit(1)

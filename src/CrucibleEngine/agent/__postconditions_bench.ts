@@ -97,5 +97,18 @@ fs.writeFileSync(path.join(D4, 'total.txt'), '1')
 check('read-one-write-one still asserts only the OUTPUT file',
   verifyGoal(`Read the file prices.csv in ${D4}, add up the amount column, and write the total into total.txt in that same folder.`).verified)
 
+// ── An APPEND to a file that ALREADY EXISTS ──────────────────────────────────────────
+// The whole point: existence is already true here, so only a content check can fail.
+const D5 = fs.mkdtempSync(path.join(os.tmpdir(), 'crucible-post5-'))
+const draft = path.join(D5, 'draft.txt')
+fs.writeFileSync(draft, 'hello')
+const g5 = `Now add the word world to the end of ${draft}.`
+r = verifyGoal(g5)
+check('MEASURED (follow-up-turn): an append whose text is NOT in the file is not verified',
+  !r.verified && r.failed.some(f => /world/i.test(f)), JSON.stringify(r))
+fs.writeFileSync(draft, 'hello\nworld')
+check('once the appended word is present it verifies', verifyGoal(g5).verified, JSON.stringify(verifyGoal(g5)))
+check('the original content is not what satisfied it', /world/i.test(fs.readFileSync(draft, 'utf8')))
+
 console.log(`\nPOSTCONDITIONS BENCH (with multi-target): ${pass}/${pass + fail}`)
 if (fail) process.exit(1)

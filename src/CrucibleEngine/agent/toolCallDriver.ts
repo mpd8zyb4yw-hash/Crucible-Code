@@ -37,7 +37,7 @@ import path from 'node:path'
 import { enumGrammar, jsonObjectGrammar } from './grammars'
 import type { ToolDef, ToolCall } from '../tools/protocol'
 import { lastLookupAnswer, lastWrittenFile } from '../tools/registry'
-import { verifyGoal, outstandingPaths, contentForFile } from './postconditions'
+import { verifyGoal, outstandingPaths, contentForFile, ADD_LITERAL_RX } from './postconditions'
 
 /** Minimal completion contract — (messages, opts) → text. Matches fmComplete. */
 export type Complete = (
@@ -371,13 +371,39 @@ function recentContext(messages: Array<Record<string, unknown>>, n = 8): string 
 let seq = 0
 const nextId = () => `tc_${Date.now().toString(36)}_${(seq++).toString(36)}`
 
+/** Phrases that point at a file the CONVERSATION established rather than one the goal names. */
+const BACK_REF = /\b(?:that|the) same (?:file|one)\b|\bthat file\b|\bthe file you (?:just )?(?:wrote|created|made)\b|\bit\b(?=\s*$)/i
+
+/**
+ * Rewrite a follow-up goal's pronoun into the path the system itself last wrote.
+ *
+ * MEASURED 2026-08-04: "now add the word world to the end of that same file" produced a plan,
+ * a tool selection, and a FILL stage that between them never had a filename — the goal names no
+ * file, so every downstream stage was guessing. Two earlier attempts patched the FILL stage's
+ * ARGUMENTS instead; placed after the completeness check the fill never ran (an empty path is
+ * rejected as incomplete before it can be filled), and placed before it, it redirected writes in
+ * `append-to-file` and `two-files-one-goal` (11/12 -> 10/12). Both are reverted.
+ *
+ * The layer was wrong, not the idea. Substituting into the GOAL happens once, before planning,
+ * so the plan, the post-conditions and FILL all see a concrete path and no argument is ever
+ * overridden. The guard is what keeps it safe: a goal that names ANY file of its own is not a
+ * back-reference, so every task in the probe except this one is untouched by construction.
+ */
+export function resolveBackReference(goal: string, lastWrite: string | null): string {
+  if (!lastWrite) return goal
+  if (!BACK_REF.test(goal)) return goal
+  // Names a file of its own — extension or absolute path — so the referent is already stated.
+  if (/\b[\w-]+\.[a-z]{1,5}\b/i.test(goal) || /(?:\/[\w.@+-]+){2,}/.test(goal)) return goal
+  return goal.replace(BACK_REF, lastWrite)
+}
+
 /**
  * Build a DriveTurn that proposes ONE tool call per turn, with both stages grammar-constrained.
  *
  * Returns `{text, toolCalls: []}` when the model selects FINISH — the loop treats a turn with
  * no tool calls as a final answer, which is exactly the intended handoff.
  */
-export function makeToolCallDriveTurn(complete: Complete, goal: string) {
+export function makeToolCallDriveTurn(complete: Complete, goalSpec: string) {
   return async function toolCallDriveTurn(
     messages: Array<Record<string, unknown>>,
     tools: ToolDef[],
@@ -385,6 +411,10 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
   ): Promise<DriveTurnResult> {
     if (signal?.aborted) throw new Error('Aborted')
     if (!tools.length) return { text: 'No tools are available for this task.', toolCalls: [] }
+
+    // Resolved per turn, not per factory: the referent is whatever the system had written by the
+    // time this turn starts. A goal naming its own file is returned unchanged.
+    const goal = resolveBackReference(goalSpec, lastWrittenFile())
 
     // A goal that asks to READ a named file which DOES NOT EXIST has one honest answer, and it
     // is available before any tool runs. MEASURED 2026-08-03: asked to read
@@ -593,13 +623,9 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     } catch {
       return { text: `Could not read arguments for ${tool.name}.`, toolCalls: [] }
     }
-    // NOT DONE HERE: resolving "that same file" in a follow-up turn to the file the system last
-    // wrote. Tried twice, measured both times. Placed after the completeness check it never ran
-    // (an empty path is rejected as incomplete first, which is exactly the case it exists to
-    // fill); moved before it, it broke append-to-file and two-files-one-goal — 11/12 down to
-    // 10/12 — even with a guard requiring the goal to name no file of its own. lastWrittenFile()
-    // is kept and exported for the next attempt. The honest position is that cross-turn pronoun
-    // resolution is not solved here, and `follow-up-turn` in the probe records that.
+    // NOT DONE HERE, deliberately: cross-turn pronoun resolution. Two attempts patched these
+    // arguments and both failed (see resolveBackReference, where it now lives instead — the goal
+    // reaching this stage already carries a concrete path).
 
     const missing = fields.filter(f => args[f.key] === undefined || args[f.key] === null || args[f.key] === '')
     if (missing.length) {
@@ -620,6 +646,16 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     if (tool.name === 'write_file' && typeof args.content === 'string') {
       const lit = /\bcontain(?:ing|s)?\s+(?:exactly\s+)?(?:the\s+)?(?:line|text|string)\s*:?\s*["“']?([^"”'\n]{3,200}?)\.?\s*$/i.exec(goal)
       if (lit) args.content = lit[1].trim()
+    }
+
+    // The same transcription rule for an APPEND. MEASURED 2026-08-04 (`follow-up-turn`): asked to
+    // "add the word world to the end of draft.txt", the head passed content "hello world" — it
+    // had re-typed the file's EXISTING contents alongside the new word, leaving "hello\nhello
+    // world" on disk. The check passed and the artifact was still wrong, which is the shape of
+    // bug that erodes trust fastest. What to append is stated in the goal verbatim.
+    if (tool.name === 'append_file' && typeof args.content === 'string') {
+      const add = ADD_LITERAL_RX.exec(goal)
+      if (add) args.content = add[1].trim()
     }
 
     // A verified answer already in hand is not re-authored from memory. MEASURED 2026-08-03 on
