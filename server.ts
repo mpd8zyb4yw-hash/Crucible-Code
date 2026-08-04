@@ -3547,7 +3547,7 @@ app.post('/api/chat', async (req, res) => {
         send({ type: 'agent_start', driver: 'on-device (no LLM)', projectPath, resumed: false })
         const toolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
-          allowMutation: true, allowDestructive: false, onFileMutated,
+          allowMutation: true, allowDestructive: false, goal: message ?? '', onFileMutated,
         }
         try {
           const { ok, summary, corrections } = await runLocalPlan(
@@ -3610,7 +3610,7 @@ app.post('/api/chat', async (req, res) => {
         send({ type: 'agent_start', driver: 'on-device (named tools)', projectPath, resumed: false })
         const toolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
-          allowMutation: false, allowDestructive: false, onFileMutated,
+          allowMutation: false, allowDestructive: false, goal: message ?? '', onFileMutated,
         }
         const outputs: Array<{ tool: string; ok: boolean; output: string }> = []
         for (const call of named.calls) {
@@ -3706,7 +3706,7 @@ app.post('/api/chat', async (req, res) => {
           send({ type: 'agent_start', driver: 'on-device FM (Layer 2)', projectPath, resumed: false })
           const toolCtx: ToolCtx = {
             projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
-            allowMutation: true, allowDestructive: false, onFileMutated,
+            allowMutation: true, allowDestructive: false, goal: message ?? '', onFileMutated,
           }
           let fmStepIdx = 0
           const { ok, summary } = await runFmPlan(fmPlan, (call) => registry.exec(fmStepToToolCall(call, fmStepIdx++), toolCtx))
@@ -3755,7 +3755,7 @@ app.post('/api/chat', async (req, res) => {
         const DESKTOP_TOOL_NAMES = ['open_app', 'control_mac', 'get_ui_tree', 'click_element', 'run', 'list_dir', 'move_file', 'search_youtube']
         const fmToolCtx: ToolCtx = {
           projectPath, userId: chatUser?.id, emit: send, signal: ac.signal,
-          allowMutation: true, allowDestructive: false, onFileMutated,
+          allowMutation: true, allowDestructive: false, goal: message ?? '', onFileMutated,
         }
         let fmrIdx = 0
         const desktopTools = DESKTOP_TOOL_NAMES.flatMap(n => {

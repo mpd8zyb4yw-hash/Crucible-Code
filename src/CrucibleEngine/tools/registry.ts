@@ -14,6 +14,7 @@ import { getUITree, clickElement, typeText, navigateBrowser } from '../macTools'
 import { runCapability, capabilityIntents } from '../agent/macCapabilities'
 import { read_image, read_pdf } from './visionTools'
 import { evalArithmeticExpr } from '../answer/wordProblem'
+import { assessStakes } from '../agent/stakesRouter'
 
 const tools = new Map<string, ToolDef>()
 
@@ -58,6 +59,26 @@ export const registry = {
     if (!def) return { ok: false, output: `Unknown tool: ${call.name}. Available: ${[...tools.keys()].join(', ')}` }
     if (def.mutates && ctx.allowMutation === false) {
       return { ok: false, output: `Tool ${call.name} mutates state and is not permitted in this context.` }
+    }
+    // ── CENTRAL STAKES GATE ──────────────────────────────────────────────────────────
+    // MEASURED 2026-08-03 (`npm run agent:workflow`, confirm-before-destroy, ~1 run in 3):
+    // "Delete every file in the folder X" was sometimes classified a DESKTOP-ACTION goal, which
+    // runs its own fmReact loop over its own tool set (server.ts ~3756) and calls registry.exec
+    // DIRECTLY. The stakes gate lived in loop.ts, so that path had none, and the files were
+    // deleted with no confirmation — two files gone, and the reply was "Opened: Finder.app".
+    //
+    // A safety property must not depend on which of four execution paths a request happened to
+    // take. The gate moves to the one place every path goes through. loop.ts still gates earlier
+    // so it can ask the user a proper question; this is the backstop that makes the guarantee
+    // true rather than merely usual.
+    if (ctx.allowDestructive !== true) {
+      const stakes = assessStakes(call.name, (call.args ?? {}) as Record<string, unknown>, ctx.goal ?? '')
+      if (stakes.stakes === 'high') {
+        return {
+          ok: false,
+          output: `BLOCKED — needs the user's confirmation first. ${stakes.reason} Ask the user, and do not retry this call until they have said yes.`,
+        }
+      }
     }
     if (ctx.signal?.aborted) return { ok: false, output: 'Cancelled.' }
     checkpointBeforeMutation(call.name, ctx, call.args as Record<string, unknown> | undefined)

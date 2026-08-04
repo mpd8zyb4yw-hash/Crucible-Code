@@ -21,6 +21,10 @@ export interface ToolCtx {
    *  outside-root deletes, etc.). Defaults to false — destructive ops are blocked and the agent
    *  is told to surface them to the user (Section 8 — destructive op confirmation). */
   allowDestructive?: boolean
+  /** The user's goal text, used by the CENTRAL stakes gate in registry.exec to decide whether a
+   *  destructive call was explicitly authorised. Absent ⇒ treated as unauthorised, which is the
+   *  safe direction. */
+  goal?: string
   /** Called after a successful mutating tool call with the abs paths that were written.
    *  Used by the codebase indexer to stay fresh without coupling registry to codebaseIndex. */
   onFileMutated?: (absPaths: string[]) => void

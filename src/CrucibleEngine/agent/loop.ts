@@ -244,6 +244,9 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
     emit,
     signal,
     allowMutation: opts.allowMutation ?? true,
+    // The central stakes gate in registry.exec needs the goal to tell an explicitly-authorised
+    // delete from an unbounded one; without it every destructive call is treated as unauthorised.
+    goal,
     budget: { remainingTokens: budgetTokens },
     onFileMutated: opts.onFileMutated,
     consultSpecialist: opts.consultSpecialist,
