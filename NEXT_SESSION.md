@@ -1,78 +1,78 @@
-# CURRENT STATE (2026-08-04 — replace this block every session)
+# CURRENT STATE (2026-08-04b — replace this block every session)
 
 ## The numbers
 
-- **Agentic: 9/9, four consecutive runs** (`npm run agent:workflow`), from **0/5** at the start
-  of this work. Nine multi-step tasks scored ONLY on what is true on disk. Whole suite ~90s.
-- **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 23/23 in-process.
-- `npm run prove:all` green: **251 skills, 0 failed**, plus every bench.
+- **Agentic: 11/12, three consecutive runs** (`npm run agent:workflow`), from **0/5** when this
+  work started. Twelve multi-step tasks scored ONLY on what is true on disk.
+- **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 0 over budget.
+- `npm run prove:all`: **251 skills, 0 failed**, plus every bench.
 
-Artifacts verified individually, never from the reply: notes.md holds exactly "Crucible agent
-test"; total.txt 292.24; log.txt keeps its original two lines AND gains "reviewed"; count.txt 5;
-first.txt "alpha" and second.txt "bravo"; zero files still contain oldName; node.md carries
-version 24 with its source URL; both files the destroy task was told to delete survive; and the
-unknowable-file task creates nothing.
+The one failure is honest and left in the probe: **`follow-up-turn`** — a second turn saying
+"now add the word world to the end of that same file". See "Not solved" below.
 
 ## How it works
 
 `agent/toolCallDriver.ts` — derive a CATEGORY PLAN from the goal's verbs (READ → CALCULATE →
 WRITE), scope the tool menu to the current step, SELECT under an `enumGrammar` so refusal prose
 is unsamplable, FILL under a `jsonObjectGrammar` from that tool's own schema. **FINISH is only
-on the menu when post-conditions hold** — asking a 1.5B model "is the goal complete?" gets an
-optimistic answer; asking the filesystem gets the truth.
+offered when post-conditions hold**, and the outstanding failures go to BOTH stages — SELECT
+needs to know the goal is not done, FILL needs to know WHICH file.
 
-`agent/postconditions.ts` — conditions extracted from the goal text, checked against the real
-filesystem, covering EVERY deliverable of a multi-file goal. Zero extractable conditions reports
-UNVERIFIED, never verified.
+`agent/postconditions.ts` — extracted from the goal text, checked against the real filesystem,
+covering EVERY deliverable of a multi-file goal. Zero conditions ⇒ UNVERIFIED, never verified.
 
-Deterministic tools, each replacing a measured guess: `compute`, `sum_column`, `count_lines`,
-`rename_symbol`, `append_file`, `lookup_fact`.
+Deterministic tools, each added because a measured run showed the model guessing where a machine
+could be exact: `compute`, `sum_column`, `count_lines`, `filter_rows`, `rename_symbol`,
+`append_file`, `lookup_fact`.
 
-**The rule: where an operation is decidable, the machine does it and the model only chooses
-WHICH.**
+## Not solved — do not claim otherwise
+
+**Cross-turn pronoun resolution.** "That same file" in a follow-up turn. Resolving it to
+`lastWrittenFile()` was tried twice: placed after the completeness check it never ran (an empty
+path is rejected as incomplete first, which is exactly the case it fills); moved before it, it
+broke append-to-file and two-files-one-goal, 11/12 → 10/12. The function is exported and the
+probe task stays failing rather than being quietly dropped.
 
 ## Open
 
-1. **Latency.** two-files-one-goal runs 20–90s; the suite is ~90s. Correct, not yet delightful.
-2. **Nine tasks is still narrow** — all filesystem. Email/calendar/spreadsheets need OAuth and
-   are unmeasured; `gmail_*`/`calendar_*` exist in `tools/registry.ts`.
+1. **Latency** — the 12-task suite is ~2–3 min; several tasks are 10–20s.
+2. **All twelve tasks are filesystem work.** Email/calendar/spreadsheets need OAuth and are
+   entirely unmeasured; `gmail_*`/`calendar_*` exist in `tools/registry.ts`.
 3. **UI unstarted.** `UI_OVERHAUL.md` Part II is the implementation handoff written against
-   shipped code. Part I §8.1 is superseded.
-4. **`relevantTools()` in toolCallDriver.ts is dead code**, kept with its measurement (lexical
-   narrowing took the probe 2/5 → 1/5).
-5. **1,004 legacy folders remain on the user's Desktop** from the old one-folder-per-request bug.
-   They are the user's data and were deliberately not deleted; ask before cleaning.
+   shipped code; Part I §8.1 is superseded.
+4. **1,004 legacy folders on the user's Desktop** from the old one-folder-per-request bug.
+   Deliberately not deleted — they are the user's. Ask first.
+5. **`relevantTools()` is dead code**, kept with its measurement (lexical narrowing: 2/5 → 1/5).
 
-## Traps — read these before debugging anything
+## Traps — read before debugging anything
 
 - **Do not blame the environment without measuring it.** Twice this session an environmental
   artefact was nearly written up as a product defect: "the local model degrades under load" (it
-  answers in 0.6s — the real cause was killed probes holding the single serial inference slot)
-  and "the server OOMs" (it was FIFTEEN leftover node processes on a machine with ~64MB free;
-  live-server RSS is 4–13MB and does not grow).
-- **Kill stray servers between measurement batches**, and use a modest
-  `--max-old-space-size=3072`. Raising it makes a memory-tight machine worse.
-- `isCodingQuery("…notes.md in /var/folders/…")` is **true**. Not a code-goal gate.
-- **`selectArchetype` defaults to `researcher`, which is READ-ONLY** — and the meta-router
-  applies it PER SUBTASK, so it can strike mid-task.
-- **Four execution paths call tools.** A gate in `loop.ts` protects one of them; that is why the
-  stakes gate lives in `registry.exec` and the post-condition gate in `makeGatedVerifier`.
-- Paths and filenames are **not verbs**: a scratch dir named `read-then-write` and a target named
-  `count.txt` both polluted the plan before they were stripped.
+  answers in 0.6s — the cause was killed probes holding the single serial inference slot) and
+  "the server OOMs" (fifteen leftover node processes on a machine with ~64MB free; live RSS is
+  4–13MB and does not grow).
+- **Kill stray servers between batches**; use `--max-old-space-size=3072`, not more.
+- **Four execution paths call tools.** A gate in `loop.ts` protects one — which is why the stakes
+  gate lives in `registry.exec` and the post-condition gate in `makeGatedVerifier`.
+- **`selectArchetype` defaults to `researcher`, which is READ-ONLY**, and the meta-router applies
+  it PER SUBTASK, so it can strike mid-task.
+- Paths and filenames are **not verbs** (`read-then-write` as a directory name; `count.txt`),
+  and `isCodingQuery("…notes.md in /var/folders/…")` is **true**.
+- A RELATIVE output path resolves to the process workspace, not beside the source.
 - The file tools refuse `os.tmpdir()` — a harness writing to /tmp measures the sandbox.
 
 ## Run commands
 
-    npm run agent:workflow       # 9 multi-step, scored on side effects (needs the server)
+    npm run agent:workflow       # 12 multi-step, scored on side effects (needs the server)
     npm run e2e:http             # 12 over the real SSE wire (needs the server)
     npm run daily:probe          # 23 single-turn, in-process
     npm run prove:all            # everything hermetic
 
-Server for the probes — FRESH per batch, and kill strays first:
+Server — FRESH per batch, kill strays first:
 
     pkill -f "tsx server.ts"
     NODE_OPTIONS=--max-old-space-size=3072 CRUCIBLE_OFFLINE=strict CRUCIBLE_VGR=0 \
-      JWT_SECRET=demo-poc-secret PORT=3251 LOCAL_INFERENCE_URL=http://127.0.0.1:8080 \
+      JWT_SECRET=demo-poc-secret PORT=3371 LOCAL_INFERENCE_URL=http://127.0.0.1:8080 \
       npx tsx server.ts
 
 # Crucible — Open Problems & Next Build Priorities

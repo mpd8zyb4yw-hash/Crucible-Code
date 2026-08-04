@@ -1957,6 +1957,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 
 
+
+### 2026-08-04b — probe widened to 12; agentic 11/12, three consecutive runs
+
+Three harder tasks (filter CSV rows, a two-turn conversation, a folder that does not exist) took
+the probe to 8/12; it is now **11/12 three runs running**, artifacts verified file by file.
+
+`filter_rows` — the registry could not select rows, so a filter goal offered only `write_file`,
+i.e. the head RETYPING the data. Two corrections after that: five required arguments were more
+than the FILL stage ever completed (57s of a working tool unreachable behind a form too long to
+fill — it takes three now), and a RELATIVE `out` resolved to the process workspace instead of
+beside the source.
+
+`ambiguity.ts` — a directory is a target. "List the files in <dir>/does-not-exist" was answered
+with "Which file or symbol should this change target?" because only paths carrying a file
+extension counted.
+
+**Not solved, and left failing in the probe:** cross-turn pronoun resolution ("that same file").
+Attempted twice and reverted both times, with the measurements recorded at the call site.
+
+Single-turn 12/12 over the wire, 0 over budget. `prove:all` 251/251.
+
+
 ### 2026-08-04 — agentic 0/5 → 9/9, four consecutive runs
 
 The probe was widened from 5 tasks to 9 (append, count, two-deliverables, and refusing a file
