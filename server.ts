@@ -9515,6 +9515,20 @@ function startListening(port: number, attempt = 0) {
         const [pid, ppid, cmd] = [Number(m[1]), Number(m[2]), m[3] as unknown as string] as [number, number, string]
         if (pid === process.pid || pid === process.ppid || /\bwatch\b/.test(cmd)) continue
         if (ppid !== 1) continue // only clearly-orphaned processes; live supervised trees are left alone
+        // Patched from the main checkout 2026-08-04. This sweep had no listener check and
+        // no checkout check, so it SIGKILLed the Crucible serving the desktop app from the
+        // main repo — repeatedly, leaving a log that just stopped with no stack trace.
+        // A server from a different repo root is never ours to kill.
+        let theirRoot = null
+        try {
+          for (const l of execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null || true`, { encoding: 'utf8' }).split('\n')) {
+            if (l.startsWith('n')) { theirRoot = l.slice(1); break }
+          }
+        } catch { /* unknowable */ }
+        if (theirRoot && theirRoot !== process.cwd()) {
+          console.warn(`[OrphanSweep] Left server.ts ${pid} alone — different checkout (${theirRoot})`)
+          continue
+        }
         try { process.kill(pid, 'SIGKILL'); console.warn(`[OrphanSweep] Killed lingering server.ts orphan ${pid}`) } catch { /* already gone */ }
       }
     } catch { /* sweep is best-effort */ }

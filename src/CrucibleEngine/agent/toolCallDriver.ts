@@ -707,6 +707,21 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // fix is for post-conditions to represent EVERY creation target; until they do, this stays
     // out. outstandingPaths() is kept and tested for that work.
 
+    // An APPEND targets a file that must already exist, so a path that does not resolve is
+    // simply wrong — and snapPathToReality only looks in the SAME directory, which cannot help
+    // when the head put the file in the wrong one. MEASURED 2026-08-03: append_file was handed
+    // <scratch-root>/log.txt while the user's log.txt sat in <scratch-root>/append-to-file/,
+    // so the append created an empty file at the top level and the real file was never touched.
+    // Nothing corrected it, because the goal's file DOES exist and therefore produced no
+    // outstanding post-condition. The goal names the directory; the machine can look there.
+    if (tool.name === 'append_file' && typeof args.path === 'string' && !fs.existsSync(args.path)) {
+      const base = path.basename(args.path)
+      for (const d of (goal.match(/(?:\/[\w.@+-]+)+/g) ?? []).map(x => x.replace(/[.,;:!?)\]]+$/, ''))) {
+        const cand = path.join(d, base)
+        if (cand !== args.path && fs.existsSync(cand)) { args.path = cand; break }
+      }
+    }
+
     const snapThis = !tool.mutates || tool.name === 'append_file'
     if (snapThis) {
       for (const f of fields) {
