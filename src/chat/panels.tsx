@@ -122,7 +122,7 @@ export function ModelTheaterCard({ model, round }: { model: DynamicModel; round:
         }} />
         <span style={{ fontSize: 11, fontWeight: 700, color: model.color, letterSpacing: '0.04em', flex: 1 }}>
           {model.label}
-          {model.isWildcard && <span style={{ fontSize: 8, color: '#555', marginLeft: 3 }}>✦</span>}
+          {model.isWildcard && <span style={{ fontSize: 8, color: 'var(--glass-text-3)', marginLeft: 3 }}>✦</span>}
         </span>
         {round.stage2Done && score !== undefined && (
           <span style={{
@@ -343,7 +343,7 @@ export function ToolRow({ t }: { t: AgentTool }) {
         <span style={{ color }}>{t.done ? (t.ok ? '✓' : '✕') : (TOOL_GLYPH[t.tool] ?? '·')}</span>
         <span style={{ fontWeight: 600, color: '#ddd' }}>{t.tool}</span>
         <span style={{ color: '#777', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, flex: 1 }}>{String(label)}</span>
-        {t.output && <span style={{ color: '#555', fontSize: 9 }}>{open ? '▾' : '▸'}</span>}
+        {t.output && <span style={{ color: 'var(--glass-text-3)', fontSize: 9 }}>{open ? '▾' : '▸'}</span>}
       </div>
       {/* cont.118 — when the tool returned THINGS, the derived surface IS the result, so it renders
           inline rather than behind the expander. The prose stays available underneath for tools

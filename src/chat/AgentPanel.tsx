@@ -178,9 +178,9 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
           </span>
         )}
         <span>{label}</span>
-        {agent.driver && <span style={{ color: '#555', textTransform: 'none' as const, letterSpacing: 0 }}>· {agent.driver}</span>}
+        {agent.driver && <span style={{ color: 'var(--glass-text-3)', textTransform: 'none' as const, letterSpacing: 0 }}>· {agent.driver}</span>}
         <div style={{ flex: 1 }} />
-        {agent.done?.ms != null && <span style={{ color: '#555', textTransform: 'none' as const, letterSpacing: 0 }}>{(agent.done.ms / 1000).toFixed(1)}s</span>}
+        {agent.done?.ms != null && <span style={{ color: 'var(--glass-text-3)', textTransform: 'none' as const, letterSpacing: 0 }}>{(agent.done.ms / 1000).toFixed(1)}s</span>}
       </div>
         )
       })()}
@@ -236,7 +236,7 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
       {/* Tool timeline */}
       {agent.tools.length > 0 && (
         <div>
-          <div style={{ fontSize: 9, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>tools · {agent.tools.length}</div>
+          <div style={{ fontSize: 9, color: 'var(--glass-text-3)', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>tools · {agent.tools.length}</div>
           <div style={{
             maxHeight: 180, overflowY: 'auto', overflowX: 'hidden',
             background: 'rgba(0,0,0,0.5)', borderRadius: 6,
@@ -251,7 +251,7 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
       {/* Diffs */}
       {agent.diffs.length > 0 && (
         <div>
-          <div style={{ fontSize: 9, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>changes · {agent.diffs.length}</div>
+          <div style={{ fontSize: 9, color: 'var(--glass-text-3)', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>changes · {agent.diffs.length}</div>
           <div style={{ maxHeight: 280, overflowY: 'auto', overflowX: 'hidden', paddingRight: 2 }}>
             {agent.diffs.slice(-4).map((d, i) => <DiffBlock key={i} d={d} />)}
           </div>
@@ -261,7 +261,7 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
       {/* Terminal */}
       {agent.terminal.length > 0 && (
         <div>
-          <div style={{ fontSize: 9, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>terminal</div>
+          <div style={{ fontSize: 9, color: 'var(--glass-text-3)', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>terminal</div>
           <div style={{ position: 'relative' }}>
             <CopyButton text={agent.terminal.join('\n')} />
             <pre className="crucible-terminal-pre" style={{
@@ -276,7 +276,7 @@ export function AgentPanel({ agent, onReply }: { agent: AgentState; onReply: (te
       {/* Thought trail — streamed progress lines, previously accumulated but never shown. */}
       {!agent.active && agent.thoughts.length > 0 && (
         <div>
-          <div style={{ fontSize: 9, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>process · {agent.thoughts.length}</div>
+          <div style={{ fontSize: 9, color: 'var(--glass-text-3)', letterSpacing: '0.1em', textTransform: 'uppercase' as const, marginBottom: 4 }}>process · {agent.thoughts.length}</div>
           <div style={{
             maxHeight: 140, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3,
             background: 'rgba(0,0,0,0.3)', borderRadius: 6, border: '1px solid rgba(255,255,255,0.05)', padding: 8,

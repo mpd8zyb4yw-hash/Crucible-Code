@@ -60,6 +60,34 @@ function untilLabel(ts: number, now: number): string {
   return mins % 60 === 0 ? `${h}h` : `${h}h ${mins % 60}m`
 }
 
+/**
+ * Flatten model-authored markdown into one line of prose for a clamped preview.
+ *
+ * Watch and run summaries come back as markdown, and these cards render them as plain
+ * text inside a two-line clamp — so a real morning brief showed up on Home as
+ * "**Morning Brief:** - **Schedule:** No upcoming events. - **Notable Emails:** …",
+ * asterisks and all. Rendering full markdown is the wrong fix: this is a preview line,
+ * not a document, and a clamped heading/list tree looks worse than the raw text does.
+ *
+ * So: drop the syntax, keep the words. List markers become sentence breaks rather than
+ * vanishing, because "Schedule: No upcoming events. Notable Emails: None found." reads
+ * as prose while the same text with the separators removed runs together into mush.
+ */
+export function flattenMarkdown(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, ' ')        // fenced code — never meaningful in one line
+    .replace(/`([^`]*)`/g, '$1')            // inline code
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1') // links/images → their text
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')     // headings
+    .replace(/\*\*([^*]+)\*\*/g, '$1')      // bold
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2') // italic, without eating bold leftovers
+    .replace(/^\s*[-*+]\s+/gm, ' ')         // list markers → a break, not a deletion
+    .replace(/\s+-\s+/g, ' ')               // inline dashes left by flattened lists
+    .replace(/\s*\n+\s*/g, ' ')             // newlines → spaces
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+}
+
 function greeting(h: number): string {
   return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
 }
@@ -153,10 +181,12 @@ function RowList({ children }: { children: React.ReactNode }) {
 }
 
 export default function HomeBoard({
-  allRounds, greetingName, onAsk, onRoute, onNewChat,
+  allRounds, greetingName, onAsk, onRoute, onNewChat, bottomInset = 0,
 }: {
   allRounds: Round[]
   greetingName?: string
+  /** Height of the fixed composer Home scrolls beneath, so the last row clears it. */
+  bottomInset?: number
   /** Prefill the composer. NEVER auto-send — the confirm contract is the whole point. */
   onAsk: (prompt: string) => void
   onRoute: (r: WidgetRoute) => void
@@ -313,7 +343,7 @@ export default function HomeBoard({
                       marginTop: 3, fontSize: 12.5, lineHeight: 1.45, color: 'var(--glass-text-2)',
                       display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const,
                       overflow: 'hidden', overflowWrap: 'anywhere',
-                    }}>{m.summary}</div>
+                    }}>{flattenMarkdown(m.summary)}</div>
                   </div>
                 ))}
               </RowList>
@@ -356,7 +386,7 @@ export default function HomeBoard({
                   <span style={{
                     fontSize: 12.5, color: 'var(--glass-text-2)', lineHeight: 1.5,
                     overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflowWrap: 'anywhere',
-                  }}>{e.status === 'failed' ? `failed — ${e.summary}` : e.summary}</span>
+                  }}>{e.status === 'failed' ? `failed — ${flattenMarkdown(e.summary)}` : flattenMarkdown(e.summary)}</span>
                 </div>
               ))}
             </RowList>
@@ -461,7 +491,7 @@ export default function HomeBoard({
     >
       <div style={{
         width: deck ? 'min(560px, 100% - 32px)' : 'min(1180px, 100% - 64px)',
-        margin: '0 auto', padding: '20px 0 40px',
+        margin: '0 auto', padding: `20px 0 ${bottomInset + 40}px`,
         display: 'flex', flexDirection: 'column', gap: 16,
       }}>
         {/* Greeting + one line of real state. Never a slogan. */}

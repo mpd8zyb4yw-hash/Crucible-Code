@@ -2881,11 +2881,23 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Resume offer banner ── */}
+      {/* ── Resume offer banner ──
+          Anchored to the composer, not to a magic number. `bottom: 155` assumed one
+          particular composer height, so the banner floated in the middle of the board
+          covering a row of content; and `left: 50%` centred it on the VIEWPORT, which
+          ignores the rail and pushed it off the content column's axis. It now sits just
+          above the composer and shares its centre line, so it reads as attached to the
+          input it is talking about rather than dropped on top of the page. */}
       {resumeOffer && (
+        <div style={{
+          position: 'fixed', bottom: inputBarHeight + 10,
+          left: railW, right: 0, zIndex: 50,
+          display: 'flex', justifyContent: 'center', pointerEvents: 'none',
+          padding: '0 16px',
+        }}>
         <div className="crucible-resume-banner" style={{
-          position: 'fixed', bottom: 155, left: '50%', transform: 'translateX(-50%)',
-          zIndex: 50, animation: 'panelUp 0.3s var(--ease-standard)',
+          pointerEvents: 'auto',
+          animation: 'panelUp 0.3s var(--ease-standard)',
           background: 'rgba(18,18,28,0.96)', backdropFilter: 'blur(20px)',
           border: '1px solid rgba(124,124,248,0.25)',
           borderRadius: 14, padding: '14px 18px',
@@ -2905,7 +2917,10 @@ export default function App() {
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
               Paused at step {resumeOffer.stepIndex + 1}/{resumeOffer.stepTotal}, iteration {resumeOffer.iter}/{resumeOffer.maxIters}
             </div>
-            <div style={{ fontSize: 10, color: '#444', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+            {/* #444 on a #12121c surface is roughly 1.5:1 — the line was there but
+                unreadable. This is the resumed task's own description, the one piece of
+                information that tells you WHAT you would be continuing. */}
+            <div style={{ fontSize: 10.5, color: 'var(--glass-text-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
               {resumeOffer.stepIntent || resumeOffer.goal.slice(0, 80)}
             </div>
           </div>
@@ -2922,10 +2937,13 @@ export default function App() {
             onClick={dismissResume}
             style={{
               padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)',
-              background: 'transparent', color: '#333',
+              // Dismiss is the secondary choice, not an invisible one. #333 made it
+              // look disabled next to Continue; quiet is fine, unreadable is not.
+              background: 'transparent', color: 'var(--glass-text-2)',
               fontSize: 11, cursor: 'pointer', flexShrink: 0, outline: 'none',
             }}
           >Dismiss</button>
+        </div>
         </div>
       )}
 
@@ -2940,6 +2958,11 @@ export default function App() {
       {(tab === 'home' || (isMobile && tab === 'history')) && (
         <HomeBoard
           allRounds={allRounds}
+          // Home scrolls UNDER the fixed composer, so it has to reserve the composer's
+          // height the same way the transcript does. Without it the last row of cards is
+          // cut off mid-control — the Calendar card's "What's ahead" button was sitting
+          // behind the input bar, unreachable, with a sliver of text peeking out below it.
+          bottomInset={dockHeight}
           onAsk={followUpInChat}
           onNewChat={() => setTab('chat')}
           onRoute={route => {
@@ -2957,6 +2980,7 @@ export default function App() {
         <MessageList
           rounds={rounds} setRounds={setRounds} send={sendStable} toggleCritique={toggleCritique}
           inputBarHeight={dockHeight} liveRoundId={liveRoundId} thinking={thinking}
+          onPrefill={followUpInChat}
           scrollRef={scrollRef} bottomRef={bottomRef}
           handleScroll={handleScroll} handleWheel={handleWheel}
           handleTouchStart={handleTouchStart} handleTouchMove={handleTouchMove}

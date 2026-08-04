@@ -212,7 +212,7 @@ export function TasksBinder({ onResume }: { onResume: (goal: string) => void }) 
           {/* List */}
           <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, WebkitOverflowScrolling: 'touch' }}>
             {loading && (
-              <div style={{ textAlign: 'center', color: '#333', fontSize: 12, padding: '32px 0' }}>loading…</div>
+              <div style={{ textAlign: 'center', color: 'var(--glass-text-2)', fontSize: 12, padding: '32px 0' }}>loading…</div>
             )}
             {!loading && graphs.length === 0 && (
               <div style={{
@@ -555,7 +555,7 @@ export function HistoryBinder({ onRestore }: { onRestore: (session: HistorySessi
           {/* List */}
           <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, WebkitOverflowScrolling: 'touch' }}>
             {loading && (
-              <div style={{ textAlign: 'center', color: '#333', fontSize: 12, padding: '32px 0' }}>loading…</div>
+              <div style={{ textAlign: 'center', color: 'var(--glass-text-2)', fontSize: 12, padding: '32px 0' }}>loading…</div>
             )}
             {!loading && filtered.length === 0 && (
               <div style={{

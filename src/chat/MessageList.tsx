@@ -188,6 +188,67 @@ export function CouncilDebateSection({ debate: d }: { debate: LocalDebateSummary
 /** How long the 'done' flourish gets to play before the pour canvas unmounts for good. */
 const POUR_SETTLE_MS = 1100
 
+// ── Empty transcript ─────────────────────────────────────────────────────────────
+// Opening Chat with no conversation used to render literally nothing: a blank field
+// above a composer, which tells a new user neither what this is nor what it can do.
+// Home already solved this problem for itself — every empty card names the next move —
+// and this is the same problem one surface over.
+//
+// The openers are chosen to show RANGE rather than to flatter the model: something
+// local and private, something that needs the web and therefore citations, something
+// with a verifiable answer, something about the machine itself. They PREFILL the
+// composer and never send. That is the same confirm contract the Home widgets keep,
+// and it matters more here — a suggestion that fires a request on click teaches the
+// user that clicking things in this app costs them something unpredictable.
+const OPENERS: { label: string; prompt: string }[] = [
+  { label: 'Explain something', prompt: 'Explain how public-key cryptography works, in a paragraph a curious non-expert would follow.' },
+  { label: 'Check a fact', prompt: 'What is the current Node.js LTS version? Cite where you got it.' },
+  { label: 'Write code', prompt: 'Write a function that merges overlapping intervals, and show me the edge cases it handles.' },
+  { label: 'Ask about this app', prompt: 'What can you actually do on this machine — which tools do you have access to?' },
+]
+
+function EmptyTranscript({ onPrefill }: { onPrefill: (text: string) => void }) {
+  return (
+    <div style={{
+      flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center',
+      width: 'var(--chat-measure)', maxWidth: '100%', gap: 18, padding: '0 2px',
+      animation: 'fadeIn 0.4s var(--ease-standard)',
+    }}>
+      <div>
+        <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--glass-text)' }}>
+          Ask Crucible anything
+        </div>
+        <div style={{ fontSize: 13.5, lineHeight: 1.5, color: 'var(--glass-text-2)', marginTop: 6, overflowWrap: 'anywhere' }}>
+          It runs on this device, checks its own answers, and tells you when it could not.
+        </div>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {OPENERS.map(o => (
+          <button
+            key={o.label}
+            onClick={() => onPrefill(o.prompt)}
+            title={o.prompt}
+            style={{
+              padding: '8px 14px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit',
+              fontSize: 12.5, fontWeight: 600, color: 'var(--glass-text-2)',
+              background: 'var(--glass-fill-plate)', border: '1px solid var(--glass-edge)',
+              transition: 'background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard)',
+            }}
+            onMouseEnter={e => {
+              e.currentTarget.style.color = 'var(--glass-text)'
+              e.currentTarget.style.borderColor = 'rgba(124,124,248,0.35)'
+            }}
+            onMouseLeave={e => {
+              e.currentTarget.style.color = 'var(--glass-text-2)'
+              e.currentTarget.style.borderColor = 'var(--glass-edge)'
+            }}
+          >{o.label}</button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function PourWrap({ active, phase, progress, children }: {
   active: boolean
   phase: MoltenPhase
@@ -298,8 +359,11 @@ function LiveActivity({ status, live = true }: { status?: string; live?: boolean
 export const MessageList = memo(function MessageList({
   rounds, setRounds, send, toggleCritique, inputBarHeight, liveRoundId, thinking,
   scrollRef, bottomRef, handleScroll, handleWheel, handleTouchStart, handleTouchMove,
+  onPrefill,
 }: {
   rounds: Round[]
+  /** Drops text into the composer without sending — the empty-state openers. */
+  onPrefill: (text: string) => void
   setRounds: React.Dispatch<React.SetStateAction<Round[]>>
   send: (text?: string) => void
   toggleCritique: (roundId: string, critic: string, target: string) => void
@@ -333,6 +397,7 @@ export const MessageList = memo(function MessageList({
         WebkitMaskImage: `linear-gradient(to bottom, black 0%, black calc(100% - ${inputBarHeight - 8}px), rgba(0,0,0,0.92) calc(100% - ${inputBarHeight - 32}px), rgba(0,0,0,0.55) calc(100% - ${inputBarHeight - 68}px), rgba(0,0,0,0.18) calc(100% - ${Math.max(20, inputBarHeight - 103)}px), transparent 100%)`,
         maskImage: `linear-gradient(to bottom, black 0%, black calc(100% - ${inputBarHeight - 8}px), rgba(0,0,0,0.92) calc(100% - ${inputBarHeight - 32}px), rgba(0,0,0,0.55) calc(100% - ${inputBarHeight - 68}px), rgba(0,0,0,0.18) calc(100% - ${Math.max(20, inputBarHeight - 103)}px), transparent 100%)`,
       }}>
+        {rounds.length === 0 && <EmptyTranscript onPrefill={onPrefill} />}
         {rounds.map(round => {
           const models = round.models
           return (

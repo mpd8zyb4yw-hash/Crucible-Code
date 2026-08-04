@@ -261,7 +261,7 @@ export function IntegrationsBinder({ draft }: { draft: string }) {
 
             {/* All integrations */}
             {loading && items.length === 0 && (
-              <div style={{ textAlign: 'center', color: '#333', fontSize: 12, padding: '32px 0' }}>loading…</div>
+              <div style={{ textAlign: 'center', color: 'var(--glass-text-2)', fontSize: 12, padding: '32px 0' }}>loading…</div>
             )}
             {items.map(i => (
               <div key={i.id} style={{
