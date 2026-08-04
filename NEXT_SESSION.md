@@ -19,6 +19,22 @@
 
 ## CURRENT STATE — last updated 2026-08-04 (cont.122 — Home leads; the dead-card bug is fixed and proven) (REPLACE THIS EVERY SESSION)
 
+
+> **UI / MOBILE TRACK — cont.121 (2026-08-04).** `9445c60`, `7b3752d`, `c970966`.
+> - **Phone URL is `http://<LAN-IP>:3001`** (was `172.20.10.9` — a personal-hotspot subnet,
+>   so it CHANGES; re-check `ipconfig getifaddr en0`). "Everything broken on mobile" was ONE
+>   bug: the locality guard from `80c89a4` 403s every `/api/*` when the Host is the
+>   crucible.cam tunnel. Guard deliberately UNCHANGED (it closed a real public-exposure
+>   hole); user chose the LAN route over a paired-device token. A paired-device token is
+>   still the only option that gives remote access off Wi-Fi — revisit if wanted.
+> - `:3001` serves the BUILT `app/` bundle. A stale build is indistinguishable from "still
+>   broken" — `npm run build` before diagnosing anything on the phone.
+> - Automations create flow rebuilt: one sentence → derived schedule/name/delivery shown as
+>   correctable chips. Delegates to the ENGINE parser; two live bugs fixed there
+>   (quantity-as-time, part-of-day vs bare hour). Schedule bench 56/56 → 70/70, UI 27/27.
+> - OPEN: the `once`-trigger branch of the new chip editor is untested live; the Digest
+>   column has no empty state on a fresh install; `deriveName` is English-only.
+
 > Full detail in the ROADMAP CHANGE LOG entry for 2026-08-04. Approved plan:
 > `/Users/justin/.claude/plans/memoized-sprouting-book.md`.
 >
