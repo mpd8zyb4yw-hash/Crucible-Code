@@ -1956,6 +1956,35 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 
 
+
+### 2026-08-04 — agentic 0/5 → 9/9, four consecutive runs
+
+The probe was widened from 5 tasks to 9 (append, count, two-deliverables, and refusing a file
+that does not exist) and immediately failed 4/9 — including **data loss**: "add a line KEEPING
+WHAT IS ALREADY THERE" left the file containing only the new line.
+
+Now **9/9 four times running**, whole suite ~90s, artifacts verified file by file.
+
+The load-bearing change is the **FINISH gate**: four tasks were making ONE tool call and
+stopping, because a turn with no tool calls IS the final answer and the head kept choosing
+FINISH over a half-done job. FINISH is now only on the menu when post-conditions hold, and the
+outstanding failures are given to BOTH stages — SELECT needs to know the goal is not done, FILL
+needs to know WHICH file.
+
+Also: `append_file` and `count_lines` (the menu had nothing that could do either); post-conditions
+covering every deliverable of a multi-file goal; per-file content parsing; an honest 2.4s "that
+file does not exist" instead of 56s of hunting for a number it was one step from inventing; one
+workspace per CONVERSATION instead of **1,017 folders on the user's Desktop**, one per request,
+each with its own git repo.
+
+**Two environmental artefacts were nearly shipped as product defects.** "The local model degrades
+under load" — it answers in 0.6s; the real cause was killed probes holding the single serial
+inference slot, now fixed so a live request reclaims it. "The server OOMs" — it was fifteen
+leftover node processes on a machine with ~64MB free; live RSS is 4–13MB and does not grow.
+
+Single-turn unaffected: 12/12 over the wire. `prove:all` 251/251.
+
+
 ### 2026-08-03f — agentic reached 5/5 once; the honest state is "not yet reproducible"
 
 Best measured run: **5/5** on `npm run agent:workflow`, from 0/5 at session start, verified by

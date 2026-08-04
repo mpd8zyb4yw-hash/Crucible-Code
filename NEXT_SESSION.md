@@ -1,76 +1,78 @@
-# CURRENT STATE (2026-08-03f — replace this block every session)
+# CURRENT STATE (2026-08-04 — replace this block every session)
 
-## The numbers, with their honesty caveats
+## The numbers
 
-- **Agentic: best measured 5/5** (`npm run agent:workflow`), from 0/5 at the start of the
-  session. That run was verified by reading every artifact, not the replies: notes.md contained
-  exactly "Crucible agent test"; total.txt contained 292.24; a.js and b.js were both renamed
-  with `oldNameSuffix` left untouched; node.md carried version 24 AND
-  https://endoflife.date/nodejs; and the two files the destroy task was told to delete were both
-  still there.
-- **It is NOT yet reproducibly 5/5.** Later runs scored 3/5 and 4/5. Two distinct causes were
-  found and fixed after that 5/5 (a plain `rm` bypassing the stakes gate; lookup_fact hanging
-  with no deadline), and a third — the local head degrading badly under hours of load — is
-  environmental. **Re-run the probe on a freshly started server before quoting any number.**
-- **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 23/23 in-process, median 63ms.
-- `npm run prove:all` green: 251 skills, 0 failed. Every bench green.
+- **Agentic: 9/9, four consecutive runs** (`npm run agent:workflow`), from **0/5** at the start
+  of this work. Nine multi-step tasks scored ONLY on what is true on disk. Whole suite ~90s.
+- **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 23/23 in-process.
+- `npm run prove:all` green: **251 skills, 0 failed**, plus every bench.
 
-## What the agentic path does now
+Artifacts verified individually, never from the reply: notes.md holds exactly "Crucible agent
+test"; total.txt 292.24; log.txt keeps its original two lines AND gains "reviewed"; count.txt 5;
+first.txt "alpha" and second.txt "bravo"; zero files still contain oldName; node.md carries
+version 24 with its source URL; both files the destroy task was told to delete survive; and the
+unknowable-file task creates nothing.
+
+## How it works
 
 `agent/toolCallDriver.ts` — derive a CATEGORY PLAN from the goal's verbs (READ → CALCULATE →
 WRITE), scope the tool menu to the current step, SELECT under an `enumGrammar` so refusal prose
-is unsamplable, FILL under a `jsonObjectGrammar` from the chosen tool's own schema.
+is unsamplable, FILL under a `jsonObjectGrammar` from that tool's own schema. **FINISH is only
+on the menu when post-conditions hold** — asking a 1.5B model "is the goal complete?" gets an
+optimistic answer; asking the filesystem gets the truth.
 
 `agent/postconditions.ts` — conditions extracted from the goal text, checked against the real
-filesystem. Zero extractable conditions reports UNVERIFIED, never verified.
+filesystem, covering EVERY deliverable of a multi-file goal. Zero extractable conditions reports
+UNVERIFIED, never verified.
 
-New deterministic tools, each replacing a measured guess: `compute`, `sum_column`,
-`rename_symbol`, `lookup_fact`.
+Deterministic tools, each replacing a measured guess: `compute`, `sum_column`, `count_lines`,
+`rename_symbol`, `append_file`, `lookup_fact`.
 
-**The rule behind every fix: where an operation is decidable, the machine does it and the model
-only chooses WHICH.** Summing a column by hand gave 242.25 instead of 292.24; rebuilding a file
-to rename a symbol destroyed it; a quoted literal was replaced by the directory's name; a
-retrieved-and-cited version 24 was overwritten with an invented v14.1.0.
+**The rule: where an operation is decidable, the machine does it and the model only chooses
+WHICH.**
 
-## Open, in priority order
+## Open
 
-1. **Reproducibility.** Get three consecutive clean-server runs at 5/5 before claiming it.
-2. **The server OOMs** under sustained probe load (silent death, no stack). Start it with
-   `NODE_OPTIONS=--max-old-space-size=8192` and restart between measurement batches.
-3. **Latency.** read-then-write is 40–100s and research-to-file 60–150s on a healthy server.
-   Correct but not shippable. The driver makes 2 model calls per turn and the meta-router
-   re-runs subtasks.
-4. **`loop.ts:65` still defaults `verify` to accepting.** `gatedVerify` only wraps the
-   single-loop path in server.ts; the meta-router and planned-task paths have no post-condition
-   gate.
-5. **UI unstarted.** `UI_OVERHAUL.md` Part II is the implementation handoff, written against
+1. **Latency.** two-files-one-goal runs 20–90s; the suite is ~90s. Correct, not yet delightful.
+2. **Nine tasks is still narrow** — all filesystem. Email/calendar/spreadsheets need OAuth and
+   are unmeasured; `gmail_*`/`calendar_*` exist in `tools/registry.ts`.
+3. **UI unstarted.** `UI_OVERHAUL.md` Part II is the implementation handoff written against
    shipped code. Part I §8.1 is superseded.
+4. **`relevantTools()` in toolCallDriver.ts is dead code**, kept with its measurement (lexical
+   narrowing took the probe 2/5 → 1/5).
+5. **1,004 legacy folders remain on the user's Desktop** from the old one-folder-per-request bug.
+   They are the user's data and were deliberately not deleted; ask before cleaning.
 
-## Traps that cost real time this session
+## Traps — read these before debugging anything
 
+- **Do not blame the environment without measuring it.** Twice this session an environmental
+  artefact was nearly written up as a product defect: "the local model degrades under load" (it
+  answers in 0.6s — the real cause was killed probes holding the single serial inference slot)
+  and "the server OOMs" (it was FIFTEEN leftover node processes on a machine with ~64MB free;
+  live-server RSS is 4–13MB and does not grow).
+- **Kill stray servers between measurement batches**, and use a modest
+  `--max-old-space-size=3072`. Raising it makes a memory-tight machine worse.
 - `isCodingQuery("…notes.md in /var/folders/…")` is **true**. Not a code-goal gate.
-- **`selectArchetype` defaults to `researcher`, which is READ-ONLY** — an unrecognised goal was
-  handed a tool list with `write_file` removed and was unwinnable by construction. The
-  meta-router applies this PER SUBTASK, so it can also strike mid-task.
-- The **meta-router builds its own driver instance** (server.ts ~4326), separate from the
-  single-loop path (~4424). Patch both.
-- **`CRUCIBLE_OFFLINE` had no effect** after `requestOffline` was un-pinned; the box escalated to
-  the external free pool, whose garbage reads as "the reasoning model declined this task".
-- The scratch dir was named `read-then-write`, and the **path was parsed as verbs**.
-- The file tools refuse `os.tmpdir()` — a harness that writes to /tmp measures the sandbox.
-- **Four separate execution paths call tools**; a gate in `loop.ts` protects only one of them.
+- **`selectArchetype` defaults to `researcher`, which is READ-ONLY** — and the meta-router
+  applies it PER SUBTASK, so it can strike mid-task.
+- **Four execution paths call tools.** A gate in `loop.ts` protects one of them; that is why the
+  stakes gate lives in `registry.exec` and the post-condition gate in `makeGatedVerifier`.
+- Paths and filenames are **not verbs**: a scratch dir named `read-then-write` and a target named
+  `count.txt` both polluted the plan before they were stripped.
+- The file tools refuse `os.tmpdir()` — a harness writing to /tmp measures the sandbox.
 
 ## Run commands
 
-    npm run agent:workflow       # 5 multi-step, scored on side effects (needs the server)
+    npm run agent:workflow       # 9 multi-step, scored on side effects (needs the server)
     npm run e2e:http             # 12 over the real SSE wire (needs the server)
     npm run daily:probe          # 23 single-turn, in-process
     npm run prove:all            # everything hermetic
 
-Server for the probes — use a FRESH one per batch:
+Server for the probes — FRESH per batch, and kill strays first:
 
-    NODE_OPTIONS=--max-old-space-size=8192 CRUCIBLE_OFFLINE=strict CRUCIBLE_VGR=0 \
-      JWT_SECRET=demo-poc-secret PORT=3031 LOCAL_INFERENCE_URL=http://127.0.0.1:8080 \
+    pkill -f "tsx server.ts"
+    NODE_OPTIONS=--max-old-space-size=3072 CRUCIBLE_OFFLINE=strict CRUCIBLE_VGR=0 \
+      JWT_SECRET=demo-poc-secret PORT=3251 LOCAL_INFERENCE_URL=http://127.0.0.1:8080 \
       npx tsx server.ts
 
 # Crucible — Open Problems & Next Build Priorities
