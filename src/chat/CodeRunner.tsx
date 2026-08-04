@@ -92,7 +92,7 @@ export function CodeRunBar({ language, code }: { language: string; code: string 
             onClick={run}
             disabled={running}
             title={caps.run
-              ? 'Run this code on your Mac in a safe sandbox (no network access) and show the output below.'
+              ? 'Run this code in a safe sandbox (no network access) and show the output below.'
               : 'Check this code compiles/parses correctly — compiled languages are verified rather than executed.'}
             style={{ ...btnStyle('#7c7cf8'), opacity: running ? 0.5 : 1 }}
           >{running ? '⋯ running' : caps.run ? '⌁ Run' : '✓ Check'}</button>

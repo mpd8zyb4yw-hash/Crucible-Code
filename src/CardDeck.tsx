@@ -223,12 +223,24 @@ export default function CardDeck({ items, labels }: {
           )
         })}
 
-        {/* The card leaving — kept mounted so the swipe reads as continuous. */}
+        {/* The card leaving. It must visibly go TO THE BACK OF THE DECK, not fly off
+            the screen — that motion is what makes the stack read as a stack rather than
+            as a horizontal filmstrip. Going forward, the old front tucks in behind the
+            new one: it scales down into the deepest sliver slot and drops BELOW the new
+            front in z. Going back, it does the reverse and slides out to the right,
+            because that card is returning to the position it came from. */}
         {leaving && !reduced && (
           <div aria-hidden style={{
-            position: 'absolute', top: 0, left: 0, right: 0, zIndex: 30,
-            transform: `translate3d(${leaving.dir === 1 ? -w * 1.1 : w * 1.1}px, 0, 0)`,
-            opacity: 0,
+            position: 'absolute', top: 0, left: 0, right: 0,
+            // Forward: behind the new front (z below 20). Back: above it, sliding away.
+            zIndex: leaving.dir === 1 ? 5 : 30,
+            transform: leaving.dir === 1
+              // Tuck to the back: settle into the deepest sliver's geometry.
+              ? `translate3d(${SLIVERS * PEEK}px, ${SLIVERS * DEPTH_Y}px, 0) scale(${1 - SLIVERS * 0.045})`
+              // Return: back out to where a "next" card lives.
+              : `translate3d(${w * 1.05}px, 0, 0) scale(0.96)`,
+            transformOrigin: 'center left',
+            opacity: leaving.dir === 1 ? 0.55 : 0,
             transition: settle,
             pointerEvents: 'none',
           }}>{items[leaving.index]}</div>
@@ -236,8 +248,10 @@ export default function CardDeck({ items, labels }: {
 
         {/* The front card — the only one with content. */}
         <div
+          key={front}
           ref={cardRef}
           aria-label={`${labels[front] ?? ''}, ${front + 1} of ${n}`}
+          className={!reduced && leaving ? (leaving.dir === 1 ? 'cru-deck-in-fwd' : 'cru-deck-in-back') : undefined}
           style={{
             position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20,
             transform: reduced ? undefined : `translate3d(${dx}px, 0, 0)`,

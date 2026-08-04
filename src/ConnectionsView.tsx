@@ -31,7 +31,7 @@ const STATE_META: Record<Connection['authState'], { label: string; color: string
 const TRY_PROMPTS: Record<string, { label: string; prompt: string }> = {
   'google': { label: 'Brief me', prompt: 'Summarize today\'s calendar and any inbox email from the last day that needs a reply.' },
   'cli-github': { label: 'Check my PRs', prompt: 'List my open GitHub PRs and flag any that look stalled or are waiting on review.' },
-  'mac': { label: 'Check this Mac', prompt: 'How much free disk space and memory does this Mac have right now? Anything worth cleaning up?' },
+  'mac': { label: 'Check this device', prompt: 'How much free disk space and memory are available right now? Anything worth cleaning up?' },
 }
 
 function ConnectionCard({ c, onChanged, onTry, onOpenMessage }: { c: Connection; onChanged: () => void; onTry?: (prompt: string) => void; onOpenMessage?: (m: NonNullable<GooglePreview['gmail']>[number]) => void }) {

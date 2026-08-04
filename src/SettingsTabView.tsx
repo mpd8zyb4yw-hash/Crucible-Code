@@ -27,7 +27,7 @@ function VoiceSetupSection() {
         <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: '#b8b8cc', textTransform: 'uppercase' }}>Voice</span>
         <span style={{ fontSize: 11.5, lineHeight: 1.55, color: '#77778c' }}>
           Dictate into the composer and hear replies spoken back — fully on-device via whisper.cpp,
-          no audio ever leaves this Mac. The mic button appears in the composer; right-click it to
+          no audio ever leaves this device. The mic button appears in the composer; right-click it to
           toggle the full voice loop (spoken replies).
         </span>
       </div>

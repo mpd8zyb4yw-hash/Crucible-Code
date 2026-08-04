@@ -2420,7 +2420,7 @@ export default function App() {
                         origin — loading the app straight from the Mac fixes it for good. */}
                     {remoteLanOrigin && (
                       <span style={{ fontSize: 9.5, color: 'rgba(255,255,255,0.3)', textAlign: 'center', maxWidth: 200, lineHeight: 1.5 }}>
-                        On the same Wi-Fi as your Mac? Open Crucible locally:
+                        On the same Wi-Fi? Open Crucible locally:
                       </span>
                     )}
                     <div style={{ display: 'flex', gap: 8 }}>
@@ -2960,7 +2960,7 @@ export default function App() {
         )}
         {/* ── Active-model cards — above the chat bar, dynamic width ── */}
         {activeModels.length > 0 && (
-          <div className="crucible-model-cards" style={{ display: 'flex', gap: 5, width: '100%', maxWidth: 680, marginBottom: 8, paddingLeft: 14, paddingRight: 10, boxSizing: 'border-box' }}>
+          <div className="crucible-model-cards" style={{ display: 'flex', gap: 5, width: 'var(--chat-measure)', maxWidth: '100%', marginBottom: 8, paddingLeft: 14, paddingRight: 10, boxSizing: 'border-box' }}>
             {activeModels.map(model => {
               const isDone       = latestRound ? latestRound.done[model.id] : false
 
@@ -3027,7 +3027,7 @@ export default function App() {
         {/* ── Per-query ensemble confirm — inline card above the composer (v3), not a modal ── */}
         {ensembleConfirm && !ensembleConfirm.noKeys && (
           <div style={{
-            width: '100%', maxWidth: 680, marginBottom: 10, padding: '14px 16px', borderRadius: 16,
+            width: 'var(--chat-measure)', maxWidth: '100%', marginBottom: 10, padding: '14px 16px', borderRadius: 16,
             background: 'rgba(124,124,248,0.07)', border: '1px solid rgba(124,124,248,0.25)',
             backdropFilter: 'blur(28px)', WebkitBackdropFilter: 'blur(28px)',
             display: 'flex', flexDirection: 'column', gap: 10, animation: 'slideUp 0.25s ease',
@@ -3062,7 +3062,7 @@ export default function App() {
         )}
         {ensembleConfirm?.noKeys && (
           <div style={{
-            width: '100%', maxWidth: 680, marginBottom: 10, padding: '14px 16px', borderRadius: 16,
+            width: 'var(--chat-measure)', maxWidth: '100%', marginBottom: 10, padding: '14px 16px', borderRadius: 16,
             background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
             backdropFilter: 'blur(28px)', WebkitBackdropFilter: 'blur(28px)',
             display: 'flex', alignItems: 'center', gap: 12, animation: 'slideUp 0.25s ease',
@@ -3093,7 +3093,7 @@ export default function App() {
           border: '1px solid rgba(255,255,255,0.09)',
           // Thin strip by default (single row); grows vertically as the textarea grows.
           borderRadius: 22, padding: '7px 10px',
-          width: '100%', maxWidth: 680,
+          width: 'var(--chat-measure)', maxWidth: '100%',
           backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
           boxShadow: '0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)',
           position: 'relative',
@@ -3440,7 +3440,7 @@ export default function App() {
                 {isMobile && (
                   <button
                     onClick={() => { setComposerExpandOpen(false); setRemoteBrain(r => !r) }}
-                    title="Remote Brain — control your Mac from this phone"
+                    title="Remote Brain — control the machine running Crucible"
                     style={{
                       display: 'flex', alignItems: 'center', gap: 4,
                       padding: '4px 9px', borderRadius: 8, border: 'none', cursor: 'pointer',

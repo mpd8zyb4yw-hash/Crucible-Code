@@ -276,7 +276,7 @@ export default function HomeBoard({
       case 'github':
         return feeds.github?.prs
           ? <GithubWidget items={feeds.github.prs} />
-          : <EmptyBody text="GitHub isn't connected on this Mac." action="Connect" onAction={() => onRoute('connections')} />
+          : <EmptyBody text="GitHub isn't connected." action="Connect" onAction={() => onRoute('connections')} />
 
       case 'watch':
         return (

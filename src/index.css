@@ -81,6 +81,13 @@
   --glass-text-2: rgba(255, 255, 255, 0.86);
   --glass-text-3: rgba(255, 255, 255, 0.78);
 
+  /* ── The chat measure ───────────────────────────────────────────────────────
+     ONE width for the transcript and the composer. They were 720 and 680 with
+     independent mobile overrides, so the reply column and the box you type into
+     never lined up, and on a wide window both sat as a narrow strip in an ocean of
+     empty space. Generous but still readable: prose past ~90ch is hard to track. */
+  --chat-measure: min(920px, 100% - 32px);
+
   --radius-card: 24px;    /* phone */
   --radius-card-d: 20px;  /* desktop */
   --radius-sheet: 28px;
@@ -348,3 +355,19 @@ pre code {
 .crucible-shows-work > summary::marker { content: ''; }
 .crucible-shows-work > summary:hover { background: rgba(255, 255, 255, 0.045) !important; border-color: rgba(255, 255, 255, 0.1) !important; }
 .crucible-shows-work[open] > summary .crucible-sw-caret { transform: rotate(90deg); }
+
+/* ── Card deck: the incoming card rises out of the stack ───────────────────────
+   Paired with CardDeck's outgoing "tuck to the back" transform. Without these the
+   deck reads as a filmstrip sliding sideways instead of a stack of cards being
+   dealt — the motion IS the metaphor, so it is not decoration. Keyframes rather
+   than a transition because the element is keyed and remounts on every step. */
+@keyframes cru-deck-in-fwd {
+  from { transform: translate3d(13px, 7px, 0) scale(0.955); opacity: 0.5; }
+  to   { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+}
+@keyframes cru-deck-in-back {
+  from { transform: translate3d(-8%, 0, 0) scale(0.97); opacity: 0.4; }
+  to   { transform: translate3d(0, 0, 0) scale(1); opacity: 1; }
+}
+.cru-deck-in-fwd  { animation: cru-deck-in-fwd 280ms var(--ease-glide); }
+.cru-deck-in-back { animation: cru-deck-in-back 280ms var(--ease-glide); }

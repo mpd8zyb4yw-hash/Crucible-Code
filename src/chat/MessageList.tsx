@@ -1,5 +1,5 @@
 // ── chat/MessageList — the memoized rounds renderer + molten-pour wrapper ──
-import { useRef, memo } from 'react'
+import { useRef, useState, useEffect, memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import MoltenPour, { type MoltenPhase } from '../MoltenPour'
 import { CopyButton, FeedbackButtons, type DynamicModel, type Round, type LocalDebateSummary, type LiveSource } from './core'
@@ -217,6 +217,58 @@ export function PourWrap({ active, phase, progress, children }: {
 // the WHOLE App component tree, including this large rounds.map(...) render — even though
 // nothing in it reads `input`. Extracting it into its own component wrapped in React.memo
 // means React only re-renders this subtree when its own props actually change (rounds,
+/**
+ * The working indicator. NON-NEGOTIABLE RULE (user, 2026-08-04): while a request is in
+ * flight there must ALWAYS be a specific, visible statement of what is happening. A
+ * silent bubble on a long request is indistinguishable from a broken one, and that
+ * ambiguity is worse than a slow answer.
+ *
+ * This used to render only `if (round.liveStatus)`, so before the first status event —
+ * which is exactly the longest, most anxious part of the wait — the user got three
+ * pulsing dots and nothing else. Now the line always renders, with a truthful staged
+ * fallback, and an elapsed counter appears once the wait is long enough to worry about.
+ * The counter is the proof-of-life: a frozen number means genuinely stuck, a climbing
+ * one means working.
+ */
+function LiveActivity({ status, live = true }: { status?: string; live?: boolean }) {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    const t0 = Date.now()
+    const iv = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000)
+    return () => clearInterval(iv)
+  }, [])
+  // Never claim more than we know: without a server status these are the honest
+  // descriptions of what the request is actually doing at that stage.
+  // `live` false means nothing is streaming for this round — say so plainly instead of
+  // implying work is happening.
+  const stalled = !live && elapsed >= 3
+  const fallback = elapsed < 3 ? 'Sending your request'
+    : elapsed < 10 ? 'Thinking'
+    : 'Still working'
+  const label = stalled ? 'Stopped without answering — send again to retry' : (status || fallback)
+  return (
+    <div
+      role="status" aria-live="polite"
+      style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0 4px', minWidth: 0 }}
+    >
+      <span style={{ display: 'inline-flex', gap: 3, flexShrink: 0, opacity: stalled ? 0.3 : 1 }}>
+        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out infinite' }} />
+        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.2s infinite' }} />
+        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.4s infinite' }} />
+      </span>
+      <span style={{
+        fontSize: 12, color: stalled ? 'var(--alarm-ink)' : 'rgba(255,255,255,0.72)', animation: 'fadeIn 0.3s ease',
+        minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      }}>{label}</span>
+      {elapsed >= 4 && !stalled && (
+        <span style={{
+          fontSize: 11, color: 'rgba(255,255,255,0.45)', fontVariantNumeric: 'tabular-nums', flexShrink: 0,
+        }}>{elapsed}s</span>
+      )}
+    </div>
+  )
+}
+
 // inputBarHeight, liveRoundId, thinking) — not on every keystroke. The callbacks passed in
 // are all stable references (useCallback / ref-forwarded wrappers in App), so memoization
 // isn't defeated by fresh closures each render.
@@ -262,7 +314,7 @@ export const MessageList = memo(function MessageList({
           const models = round.models
           return (
             <div key={round.id} className="crucible-msg-width" style={{
-              width: '100%', maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 12,
+              width: 'var(--chat-measure)', maxWidth: '100%', display: 'flex', flexDirection: 'column', gap: 12,
             }}>
 
               {/* User bubble */}
@@ -376,7 +428,15 @@ export const MessageList = memo(function MessageList({
 
               {/* Synthesis — the live round shows its card immediately on send (empty shell
                   during 'thinking' so the crucible vessel has something to pour into). */}
-              {(round.synthesis.length > 0 || (round.id === liveRoundId && thinking)) && (
+              {/* NON-NEGOTIABLE: a round that has asked but not answered ALWAYS shows a
+                  card with a live activity line. The gate used to also require the
+                  global `thinking` flag, so a request that never actually started —
+                  or one whose thinking flag was cleared by another round finishing —
+                  rendered the user's message and then NOTHING: no answer, no spinner,
+                  no error. That silent dead round is indistinguishable from a hang, and
+                  it is the exact failure this rule exists to prevent. Reproduced live
+                  2026-08-04 before this change. */}
+              {(round.synthesis.length > 0 || (round.id === liveRoundId && thinking) || (!round.synthesisDone && round.synthesis.length === 0)) && (
                 <PourWrap
                   active={round.id === liveRoundId}
                   phase={round.synthesisDone ? 'done' : round.synthesis.length > 0 ? 'pouring' : 'thinking'}
@@ -404,15 +464,8 @@ export const MessageList = memo(function MessageList({
                   {/* Live status line — narrates what the brain is doing (searching, reading,
                       grounding, verifying) while the answer hasn't started streaming yet, so the
                       working bubble feels active instead of a static spinner. */}
-                  {round.id === liveRoundId && !round.synthesisDone && round.synthesis.length === 0 && round.liveStatus && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0 4px' }}>
-                      <span style={{ display: 'inline-flex', gap: 3 }}>
-                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out infinite' }} />
-                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.2s infinite' }} />
-                        <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.4s infinite' }} />
-                      </span>
-                      <span style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', animation: 'fadeIn 0.3s ease' }}>{round.liveStatus}</span>
-                    </div>
+                  {!round.synthesisDone && round.synthesis.length === 0 && (
+                    <LiveActivity status={round.liveStatus} live={round.id === liveRoundId && thinking} />
                   )}
                   {/* Ensemble chrome (model chips + attribution) renders ONLY on ensemble
                       runs — a local reply is a clean card (v3). */}
