@@ -48,6 +48,65 @@ function extractVerifiableCode(answer: string): { code: string; language: string
   return null
 }
 
+/**
+ * Turn any stream event into a SPECIFIC statement of what is happening right now.
+ *
+ * NON-NEGOTIABLE (user, 2026-08-04): the UI must always say what the model/agent is
+ * doing. Before this, `liveStatus` was set ONLY by `thought` events — which most
+ * requests never emit — so the common path showed pulsing dots and no words for the
+ * entire wait. Measured against a real /api/chat stream: the events that actually
+ * arrive first are `thinking`, `contract` and `stage`, none of which carried text.
+ *
+ * Rules for anything added here:
+ *   · Be specific. "Working" is what we are replacing, not an acceptable answer.
+ *   · Never claim something we did not observe — each label describes the event that
+ *     produced it, so it cannot drift into fiction.
+ *   · Return null only for events that are not progress (they leave the previous,
+ *     still-true label in place rather than blanking it).
+ */
+function describeStreamEvent(ev: Record<string, any>): string | null {
+  const t = ev?.type
+  switch (t) {
+    case 'connected': return 'Connected'
+    case 'thinking': return 'Thinking'
+    case 'contract': return 'Working out what a good answer looks like'
+    case 'semantic_cache': return 'Checking what it already knows'
+    case 'stage': {
+      const n = ev.stage
+      if (ev.status === 'done') return n === 1 ? 'Drafted — reviewing it' : 'Reviewed — improving the answer'
+      return n === 1 ? 'Drafting the answer' : n === 2 ? 'Critiquing the draft' : 'Refining the answer'
+    }
+    case 'local_debate': return 'Comparing on-device models'
+    case 'critic': case 'critique': return 'Checking the draft for mistakes'
+    case 'linter': return 'Checking the code'
+    case 'contract_check': return 'Verifying the answer against the request'
+    case 'confidence': return 'Scoring how sure it is'
+    case 'research_step': return typeof ev.label === 'string' && ev.label ? ev.label : 'Researching'
+    case 'research_done': return 'Finished researching'
+    case 'search': case 'web_search':
+      return typeof ev.query === 'string' && ev.query ? `Searching the web for “${ev.query}”` : 'Searching the web'
+    case 'source': case 'live_source':
+      return typeof ev.host === 'string' && ev.host ? `Reading ${ev.host}` : 'Reading a source'
+    case 'tool_start':
+      return typeof ev.tool === 'string' && ev.tool ? `Running ${ev.tool}` : 'Using a tool'
+    case 'tool_end':
+      return typeof ev.tool === 'string' && ev.tool ? `Finished ${ev.tool}` : null
+    case 'agent_step': case 'iter_progress':
+      return typeof ev.label === 'string' && ev.label ? ev.label
+        : typeof ev.iter === 'number' ? `Step ${ev.iter}${typeof ev.maxIters === 'number' ? ` of ${ev.maxIters}` : ''}` : 'Working through the task'
+    case 'analysis_start': return 'Analysing'
+    case 'analysis_deepening': return 'Digging deeper'
+    case 'analysis_fixed': return 'Fixed a problem it found'
+    case 'thought':
+      return typeof ev.text === 'string' && ev.text.trim() ? ev.text.trim() : null
+    case 'keepalive': case 'synthesis': case 'final': case 'done': return null
+    default:
+      // An unrecognised event is still evidence of life — say something true about it
+      // rather than leaving the user staring at nothing.
+      return typeof ev.step === 'string' && ev.step ? ev.step : null
+  }
+}
+
 export default function App() {
   // F panels — parallel chats: rounds from EVERY open conversation live in this one
   // array (each tagged with convId). Streaming updaters are keyed by unique round id,
@@ -1374,6 +1433,16 @@ export default function App() {
         if (raw === '[DONE]') break
         try {
           const parsed = JSON.parse(raw)
+
+          // Universal narrator: every event updates the "what is it doing" line, so the
+          // user is never looking at a silent bubble. Specific handlers below still own
+          // their own state; this only touches liveStatus.
+          {
+            const narrated = describeStreamEvent(parsed)
+            if (narrated) {
+              setRounds(prev => prev.map(r => (r.id === roundId && !r.synthesisDone) ? { ...r, liveStatus: narrated } : r))
+            }
+          }
 
           // ── Agent loop events (Section 7) — fold through one reducer ────────
           if (AGENT_EVENT_TYPES.has(parsed.type)) {
