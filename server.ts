@@ -335,11 +335,34 @@ function generateSlug(): string {
   const pick = () => SLUG_WORDS[Math.floor(Math.random() * SLUG_WORDS.length)]
   return `${pick()}-${pick()}-${pick()}-${pick()}`
 }
-function newDesktopProjectPath(): string {
+/**
+ * The working directory for an agent run.
+ *
+ * MEASURED 2026-08-03: **1,017 folders** on the user's Desktop, each with its own initialised
+ * git repo, because this minted a fresh slug on EVERY /api/chat request and the handler
+ * mkdir'd it unconditionally — including for requests that never write a file at all. A day of
+ * ordinary use would bury someone's Desktop, and every one of those repos is a checkpoint store
+ * the checkpoint system then has to reason about.
+ *
+ * A conversation is one workspace. Same session id ⇒ same folder, so a follow-up turn can see
+ * what the previous turn produced — which is what a user expects from "and now add a column to
+ * that file" and which a fresh slug per request made impossible. Sessionless requests share one
+ * scratch workspace rather than each claiming their own.
+ */
+function newDesktopProjectPath(sessionId?: string): string {
   const base = path.join(process.env.HOME ?? '/Users/' + process.env.USER, 'Desktop', 'Crucible')
-  const slug = generateSlug()
-  return path.join(base, slug)
+  if (!sessionId) return path.join(base, 'workspace')
+  const existing = sessionWorkspaces.get(sessionId)
+  if (existing) return existing
+  const dir = path.join(base, generateSlug())
+  sessionWorkspaces.set(sessionId, dir)
+  // Bounded: a long-lived server must not accumulate one entry per conversation forever.
+  if (sessionWorkspaces.size > 500) sessionWorkspaces.delete(sessionWorkspaces.keys().next().value as string)
+  return dir
 }
+
+/** chatSessionId → its workspace directory, so one conversation keeps one folder. */
+const sessionWorkspaces = new Map<string, string>()
 
 function loadCircuitState() {
   try {
@@ -3292,7 +3315,7 @@ app.post('/api/chat', async (req, res) => {
       res.write('data: [DONE]\n\n')
       res.end()
     }
-    const projectPath = req.body.projectPath ? path.resolve(req.body.projectPath) : newDesktopProjectPath()
+    const projectPath = req.body.projectPath ? path.resolve(req.body.projectPath) : newDesktopProjectPath(chatSessionId || undefined)
     fs.mkdirSync(projectPath, { recursive: true })
 
     if (slashKind === 'skill') {
@@ -3473,7 +3496,7 @@ app.post('/api/chat', async (req, res) => {
 
     const projectPath = req.body.projectPath
       ? path.resolve(req.body.projectPath)
-      : newDesktopProjectPath()
+      : newDesktopProjectPath(chatSessionId || undefined)
     fs.mkdirSync(projectPath, { recursive: true })
 
     // Register task with the stateful session (also provides the AbortController)
@@ -9770,6 +9793,18 @@ function startListening(port: number, attempt = 0) {
       // Find the PID holding the port
       const lsof = execSync(`lsof -ti tcp:${port} 2>/dev/null`, { encoding: 'utf8' }).trim()
       if (!lsof) { console.error('[Port] Cannot identify occupant. Exiting.'); process.exit(1) }
+      // Patched from the main checkout 2026-08-04: this block was last-launcher-wins,
+      // so every boot here kill -9'd the Crucible serving the desktop app from the main
+      // repo. A peer server.ts process is never ours to execute — stand down instead.
+      const firstPid = lsof.split('\n').filter(Boolean)[0]
+      let occupantIsPeer = false
+      try {
+        occupantIsPeer = /server\.ts/.test(execSync(`ps -p ${firstPid} -o command= 2>/dev/null`, { encoding: 'utf8' }))
+      } catch { /* unknowable */ }
+      if (occupantIsPeer) {
+        console.error(`[Port] Another Crucible already owns port ${port} (PID ${firstPid}). Leaving it alone and exiting.`)
+        process.exit(0)
+      }
       const pids = lsof.split('\n').filter(Boolean)
       for (const pid of pids) {
         try {

@@ -76,3 +76,26 @@ check('extraction is conservative on prose', extractPostconditions('Summarize my
 
 console.log(`\nPOSTCONDITIONS BENCH: ${pass}/${pass + fail}`)
 if (fail) process.exit(1)
+
+// ── 6. Several deliverables in one goal ──────────────────────────────────────────────
+const D3 = fs.mkdtempSync(path.join(os.tmpdir(), 'crucible-post3-'))
+const g6 = `In ${D3}, create two files: first.txt containing the word alpha, and second.txt containing the word bravo.`
+let r6 = verifyGoal(g6)
+check('two-file goal fails while BOTH are missing', !r6.verified && r6.failed.length >= 2, JSON.stringify(r6.failed))
+fs.writeFileSync(path.join(D3, 'second.txt'), 'bravo')
+r6 = verifyGoal(g6)
+check('two-file goal STILL fails with only the second written — half a job is not done',
+  !r6.verified && r6.failed.some(f => f.includes('first.txt')), JSON.stringify(r6.failed))
+fs.writeFileSync(path.join(D3, 'first.txt'), 'alpha')
+r6 = verifyGoal(g6)
+check('two-file goal passes once both exist', r6.verified, JSON.stringify(r6))
+
+// A single-target goal must NOT start asserting its INPUT file.
+const D4 = fs.mkdtempSync(path.join(os.tmpdir(), 'crucible-post4-'))
+fs.writeFileSync(path.join(D4, 'prices.csv'), 'item,amount\nx,1\n')
+fs.writeFileSync(path.join(D4, 'total.txt'), '1')
+check('read-one-write-one still asserts only the OUTPUT file',
+  verifyGoal(`Read the file prices.csv in ${D4}, add up the amount column, and write the total into total.txt in that same folder.`).verified)
+
+console.log(`\nPOSTCONDITIONS BENCH (with multi-target): ${pass}/${pass + fail}`)
+if (fail) process.exit(1)

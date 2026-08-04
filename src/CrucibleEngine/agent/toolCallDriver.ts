@@ -37,7 +37,7 @@ import path from 'node:path'
 import { enumGrammar, jsonObjectGrammar } from './grammars'
 import type { ToolDef, ToolCall } from '../tools/protocol'
 import { lastLookupAnswer } from '../tools/registry'
-import { verifyGoal } from './postconditions'
+import { verifyGoal, outstandingPaths, contentForFile } from './postconditions'
 
 /** Minimal completion contract — (messages, opts) → text. Matches fmComplete. */
 export type Complete = (
@@ -679,7 +679,27 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // path was already known to the system and was merely being DESCRIBED to the model in the
     // prompt. Naming the target is not reasoning; it is the machine's job. Only for a single
     // unambiguous outstanding file, and only when the tool actually takes a path.
-    // NOT DONE HERE, deliberately: forcing a write's path to the single outstanding file.
+    // Point a WRITE at the file the filesystem says is still missing. This was tried and reverted
+    // twice before it was correct: applied to every tool with a `path` it sent the READ step
+    // after the OUTPUT file (8.3/9 -> 5/9), and restricted to writers it still stranded the first
+    // of two deliverables — because extractPostconditions asserted only the LAST file, so
+    // "outstanding" never named the one that was missing. With multi-target post-conditions in
+    // place, "create two files" leaves exactly ONE outstanding path after the first write, and
+    // naming it is the machine's job rather than a hint in a prompt the head keeps ignoring.
+    const WRITERS = new Set(['write_file', 'append_file'])
+    if (WRITERS.has(tool.name) && typeof args.path === 'string') {
+      const missing = outstandingPaths(goal)
+      if (missing.length === 1 && args.path !== missing[0]) {
+        args.path = missing[0]
+        // Correcting the path alone wrote the previous file's content into the new file —
+        // measured, second.txt came out containing "alpha". If the goal states the content for
+        // this specific file, take it.
+        const want = contentForFile(goal, missing[0])
+        if (want && typeof args.content === 'string') args.content = want
+      }
+    }
+
+    // NOT DONE for readers, deliberately: forcing a read's path to the outstanding file.
     // Measured 2026-08-03 both ways — applied to every tool with a `path` it took the probe from
     // 8.3/9 to 5/9 (the READ step went looking for the OUTPUT file), and restricted to writers it
     // still only reached 7/9 and 8/9, because extractPostconditions asserts just the LAST file of

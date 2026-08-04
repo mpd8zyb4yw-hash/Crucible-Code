@@ -131,10 +131,25 @@ export function extractPostconditions(goal: string, seedNames: string[] = []): P
   // "read prices.csv and write total.txt" must not assert that prices.csv was created.
   const creating = /\b(create|write|save|produce|generate|put|output|add)\b/i.test(g)
   if (creating && files.length) {
-    // Prefer a file that appears AFTER a creation verb; fall back to the last mentioned.
-    const target = files[files.length - 1]
-    out.push({ kind: 'file-exists', file: target })
-    const lit = LITERAL_RX.exec(g)
+    // A goal can name SEVERAL deliverables. MEASURED 2026-08-03: "create two files: first.txt
+    // containing alpha, and second.txt containing bravo" asserted only second.txt, so the FINISH
+    // gate was satisfied with half the job — and an attempt to steer writes by the outstanding
+    // path forced the second file and stranded the first. When the goal announces a count
+    // ("two files") or lists targets with a colon/comma, every file named after the creation
+    // verb is a deliverable. Otherwise the last-mentioned file remains the single target, which
+    // is what keeps "read prices.csv and write total.txt" from asserting prices.csv.
+    const multi = /\b(two|three|four|both|several|each)\b[^.]{0,40}\bfiles?\b/i.test(g)
+    const verbIdx = g.search(/\b(create|write|save|produce|generate|put|output|add)\b/i)
+    const afterVerb = files.filter(f => g.indexOf(path.basename(f)) > verbIdx)
+    const targets = multi && afterVerb.length > 1 ? afterVerb : [files[files.length - 1]]
+    for (const t of targets) out.push({ kind: 'file-exists', file: t })
+    const target = targets[targets.length - 1]
+    // The literal check assumes ONE deliverable: with several, "containing the word alpha, and
+    // second.txt containing the word bravo" reads as a single literal "alpha, and second" and
+    // asserts it of the wrong file. Matching a literal per target needs a parse this does not
+    // have, so multi-target goals assert existence only — conservative, per the rule at the top
+    // of this file that an unreadable condition is simply not asserted.
+    const lit = targets.length > 1 ? null : LITERAL_RX.exec(g)
     if (lit) {
       const text = lit[1].trim()
       out.push({
@@ -214,6 +229,23 @@ export function outstandingPaths(goal: string, seedNames: string[] = []): string
     }
   }
   return Array.from(new Set(out))
+}
+
+/**
+ * The content a goal states for a SPECIFIC file — "second.txt containing the word bravo".
+ *
+ * MEASURED 2026-08-03: once the driver started pointing a write at the outstanding file, it
+ * wrote the RIGHT path with the WRONG content — second.txt got "alpha", the first file's word,
+ * because only the path was being corrected. A goal that names the content per file states it
+ * unambiguously; reading it is a parse, not a judgement.
+ */
+export function contentForFile(goal: string, file: string): string | null {
+  const base = path.basename(file)
+  const i = (goal ?? '').indexOf(base)
+  if (i < 0) return null
+  const after = goal.slice(i + base.length)
+  const m = /^[^.]{0,20}?\bcontain(?:ing|s)?\s+(?:exactly\s+)?(?:the\s+)?(?:word|line|text|string)?\s*:?\s*["“']?([^"”'\n,;]{1,120}?)["”']?\s*(?:,|;|\.|and\b|$)/i.exec(after)
+  return m ? m[1].trim() || null : null
 }
 
 /** One-shot: extract from the goal, check against the world. */
