@@ -1954,6 +1954,41 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
 
+
+### 2026-08-03e — AGENTIC 0/5 → 5/5
+
+`__agent_workflow_probe.ts` scores five multi-step tasks on OBSERVABLE SIDE EFFECTS only.
+Baseline at the start of the session: **0/5**, three tasks emitting zero tool calls, one
+reporting *"successfully read and added"* over an empty directory. Now **5/5**, verified by
+reading the artifacts rather than the replies.
+
+**One rule produced every fix: where an operation is decidable, the machine does it and the
+model only chooses WHICH.** Each was a measured failure first —
+
+- `agent/toolCallDriver.ts`: a CATEGORY PLAN derived from the goal's verbs (READ → CALCULATE →
+  WRITE) scopes the menu per step; SELECT under `enumGrammar`, FILL under `jsonObjectGrammar`.
+  Narrowing the flat 47-tool menu by lexical overlap made it WORSE (2/5 → 1/5) and asking the
+  head to pick a category first was no better — it chose the 27-tool OTHER bucket. The goal
+  already states the order.
+- `sum_column`: the head hand-built "229.50 + 12.75" and wrote 242.25; the answer is 292.24. A
+  calculator only moves the guess from the arithmetic to the transcription.
+- `rename_symbol`: `edit_file` requires the old string exactly once and a rename hits every
+  occurrence, so the head fell back to `write_file` and OVERWROTE the file with invented
+  content — real data loss.
+- `lookup_fact`: `web_search` is the dead DDG scraper; the answer path answers the same question
+  in ~300ms with a source URL. One spine (DOCTRINE §5), not two retrieval stacks.
+- `selectArchetype` defaulted to `researcher` — READ-ONLY — so any unrecognised goal was handed
+  a tool list with `write_file` REMOVED and was unwinnable by construction.
+- `isCodeImplementationTask` had the "Node.js" `.js` bug already fixed in `detectAgentTask`.
+- Destructive scope: "delete EVERY file" was LOW stakes because it contains "delete". Saying
+  "delete" authorises the action class, not unbounded scope.
+
+Single-turn unaffected: **12/12 over the HTTP wire**, 23/23 in-process, median 63ms.
+`prove:all` green (251 skills, 0 failed).
+
+Known cost: two of the five tasks take ~240s. Correct but not yet shippable on latency.
+
+
 ### 2026-08-03d — the agentic path starts executing, and the first honest number for it
 
 **Measured first, as always.** `__agent_workflow_probe.ts` scores five multi-step tasks on

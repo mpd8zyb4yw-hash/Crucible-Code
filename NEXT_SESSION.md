@@ -1,69 +1,71 @@
-# CURRENT STATE (2026-08-03d — replace this block every session)
+# CURRENT STATE (2026-08-03e — replace this block every session)
 
-## The two numbers that matter
+## The two numbers
 
-- **Single-turn: 23/23** (`npm run daily:probe`), median 63ms. **12/12 over the real HTTP wire**
-  (`npm run e2e:http`), 0 over budget, max 822ms. This surface is solid.
-- **Agentic: 1/5** (`npm run agent:workflow`), up from 0/5. This is the product, and it is not
-  finished.
+- **Agentic: 5/5** (`npm run agent:workflow`) — up from 0/5 at the start of the session. Five
+  multi-step tasks scored ONLY on what is true on disk afterwards.
+- **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 23/23 in-process
+  (`npm run daily:probe`), median 63ms.
 
-`npm run prove:all` green (251 skills, 0 failed) plus every bench below.
+`npm run prove:all` green: 251 skills, 0 failed, plus every bench below.
 
-## What runs the agentic path now
+## How the agentic path works now
 
-`agent/toolCallDriver.ts` — a general grammar-constrained tool-call driver. The offline path had
-none: `makeOfflineDriveTurn` is a code-synthesis state machine for the abandoned coding scope.
-SELECT is an `enumGrammar` over literal tool names (refusal prose is unsamplable), FILL is a
-`jsonObjectGrammar` from the chosen tool's own schema. 15/15.
+`agent/toolCallDriver.ts` — the offline path had NO general tool-calling driver;
+`makeOfflineDriveTurn` is a code-synthesis state machine for the abandoned coding scope. A turn
+is now: derive the CATEGORY PLAN from the goal's verbs (READ → CALCULATE → WRITE), scope the
+menu to that step, SELECT under an `enumGrammar` (refusal prose is unsamplable), FILL under a
+`jsonObjectGrammar` from the chosen tool's schema. 15/15.
 
-`agent/postconditions.ts` — post-conditions extracted from goal text, checked against the real
-filesystem. `loop.ts:65` still makes verification optional and defaults to accepting; `gatedVerify`
-in server.ts wraps it so a failed post-condition returns `{passed:false, signal:'postcondition'}`.
-Zero extractable conditions reports UNVERIFIED, never verified. 17/17.
+`agent/postconditions.ts` — conditions extracted from goal text, checked against the real
+filesystem. Zero extractable conditions reports UNVERIFIED, never verified. 17/17.
 
-## Open, in priority order
+New deterministic tools, each replacing a place the model was guessing: `compute`, `sum_column`,
+`rename_symbol`, `lookup_fact` (delegates to the answer engine — the SERP scraper is dead).
 
-1. **`read-then-write` stops at "Calling read_file"** — the second verb never runs, and
-   `succeededSignatures` never arms, which means `read_file` is not returning `(ok)`. Instrument
-   `registry.exec` for that call before touching the driver again. This one task blocks the whole
-   multi-step claim.
-2. **`research-to-file` is routed to the CODE state machine** and dies with "no oracle-passing
-   code for Node.js". `isCodeImplementationTask` still matches goals that merely write a file.
-   The gate needs to key on producing a PROGRAM, not on the presence of a write verb.
-3. **`confirm-before-destroy` never asks.** The stakes gate in `loop.ts:505` only fires when
-   `ctx.allowDestructive` is false; the run reached "Calling delete_file" with no clarification.
-   Verify what `allowDestructive` is set to on the chat path — this is a safety property, not a
-   quality one.
-4. **`multi-file-edit` calls `edit_file` and the symbol survives.** Likely the exact-match
-   contract (old string must appear exactly once) failing silently across two files.
-5. **UI is unstarted.** `UI_OVERHAUL.md` Part II is the implementation handoff, written against
-   shipped code — it names the three verification states, the provenance tokens, and the
-   fixtures to record. Part I §8.1 is superseded. No UI code may be written outside that doc's
-   direction.
+## The rule that produced every fix
 
-## Traps that already cost time this session
+Where an operation is decidable, the machine does it and the model only chooses WHICH. Each one
+below was a measured failure first: summing a column by hand (242.25 vs 292.24), rebuilding a
+file to rename a symbol (data loss), reading a glob path, transcribing a quoted literal,
+dropping a source URL that was already in hand.
 
-- `isCodingQuery("…notes.md in /var/folders/…")` is **true**. It is not a code-goal gate.
-- The **meta-router builds its own driver instance** (server.ts ~4326) separately from the
-  single-loop path (~4424). Patch both or you are patching a branch that never runs.
-- `CRUCIBLE_OFFLINE` had **no effect** after `requestOffline` was un-pinned; a box with bundled
-  env keys escalated to the external free pool, whose garbage reads as "the reasoning model
-  declined this task". Fixed, but the failure mode is very convincing.
-- The file tools refuse `os.tmpdir()` — "outside permitted locations. Allowed: project folder,
-  Desktop, Downloads, Documents." A harness that writes to /tmp measures the sandbox.
+## Open
+
+1. **Latency.** read-then-write and research-to-file both run ~240s. Correct but far too slow to
+   ship. The driver makes 2 model calls per turn and the loop takes many turns.
+2. **`loop.ts:65` still defaults `verify` to accepting.** `gatedVerify` in server.ts only wraps
+   the single-loop path; the meta-router and planned-task paths do not get the post-condition gate.
+3. **The probe is 5 tasks.** It covers file work. Nothing yet measures email, calendar or
+   spreadsheets — `gmail_*`/`calendar_*` exist in `tools/registry.ts` but need the user's OAuth.
+4. **UI unstarted.** `UI_OVERHAUL.md` Part II is the implementation handoff, written against
+   shipped code; Part I §8.1 is superseded.
+5. **`relevantTools()` in toolCallDriver.ts is dead code**, kept with its measurement — lexical
+   narrowing took the probe 2/5 → 1/5 and is NOT wired in.
+
+## Traps that cost real time this session
+
+- `isCodingQuery("…notes.md in /var/folders/…")` is **true**. Not a code-goal gate.
+- **`selectArchetype` defaults to `researcher`, which is READ-ONLY** — any unrecognised goal was
+  handed a tool list with `write_file` removed, making it unwinnable by construction.
+- The **meta-router builds its own driver instance** (server.ts ~4326), separate from the
+  single-loop path (~4424). Patch both.
+- **`CRUCIBLE_OFFLINE` had no effect** after `requestOffline` was un-pinned; the box escalated to
+  the external free pool, whose garbage reads as "the reasoning model declined this task".
+- The scratch dir was named `read-then-write`, and the **path was parsed as verbs**.
+- The file tools refuse `os.tmpdir()` — a harness that writes to /tmp measures the sandbox.
 
 ## Run commands
 
-    npm run daily:probe          # 23 single-turn, in-process
-    npm run e2e:http             # 12 over the real SSE wire (needs the server)
     npm run agent:workflow       # 5 multi-step, scored on side effects (needs the server)
+    npm run e2e:http             # 12 over the real SSE wire (needs the server)
+    npm run daily:probe          # 23 single-turn, in-process
     npm run prove:all            # everything hermetic
 
-The probes that need a server want it started as:
+Server for the probes:
 
     CRUCIBLE_OFFLINE=strict CRUCIBLE_VGR=0 JWT_SECRET=demo-poc-secret PORT=3021 \
       LOCAL_INFERENCE_URL=http://127.0.0.1:8080 npx tsx server.ts
-
 
 # Crucible — Open Problems & Next Build Priorities
 
