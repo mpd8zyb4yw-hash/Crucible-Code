@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react'
 import { API_BASE, apiFetch } from './api'
 import { PrimaryButton, GhostButton } from './ui'
+import WidgetTaskPanel from './WidgetTaskPanel'
 import ReplyComposer from './ReplyComposer'
 
 export interface MessageStub { id: string; from: string; subject: string; date: string; unread: boolean }
@@ -117,21 +118,29 @@ export default function EmailReader({ stub, onClose, onDraftReply }: {
           />
         )}
 
-        {/* Actions — reply-here (composer), draft-with-agent (chat handoff), open in Gmail. None auto-send. */}
+        {/* Actions. Drafting happens HERE (2026-08-04): it used to hand a scripted
+            prompt to the chat composer and close this reader, which showed the user the
+            prompt engineering and made them press Enter on it. Now the draft appears
+            below with tone controls. Nothing auto-sends — sending is still the
+            explicit "Reply here" composer, per the confirm-gate rule. */}
         {!composing && (
-          <div style={{ padding: '12px 18px', borderTop: '1px solid var(--c-hairline)', display: 'flex', alignItems: 'center', gap: 10 }}>
-            <PrimaryButton accent="#6fd08a" onClick={() => setComposing(true)} title="Write a reply and send it from here">
-              Reply here
-            </PrimaryButton>
-            {onDraftReply && (
-              <GhostButton onClick={() => { onDraftReply(draftPrompt); onClose() }} title="Have the agent draft a reply in chat for review">
-                Draft with agent
-              </GhostButton>
-            )}
-            <div style={{ flex: 1 }} />
-            <a href={gmailUrl} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-              <GhostButton title="Open the full thread in Gmail">Open in Gmail</GhostButton>
-            </a>
+          <div style={{ padding: '12px 18px', borderTop: '1px solid var(--c-hairline)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <PrimaryButton accent="#6fd08a" onClick={() => setComposing(true)} title="Write a reply and send it from here">
+                Reply here
+              </PrimaryButton>
+              <div style={{ flex: 1 }} />
+              <a href={gmailUrl} target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
+                <GhostButton title="Open the full thread in Gmail">Open in Gmail</GhostButton>
+              </a>
+            </div>
+            <WidgetTaskPanel
+              action="Draft reply"
+              prompt={draftPrompt}
+              agent
+              resultLabel="Draft"
+              onOpenInChat={onDraftReply}
+            />
           </div>
         )}
       </div>

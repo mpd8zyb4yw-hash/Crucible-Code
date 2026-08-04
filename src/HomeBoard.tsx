@@ -33,6 +33,7 @@ import { GmailWidget, CalendarWidget, GithubWidget } from './ConnectionWidgets'
 import EmailReader, { type MessageStub } from './EmailReader'
 import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
 import CardDeck from './CardDeck'
+import WidgetTaskPanel from './WidgetTaskPanel'
 import type { Round } from './chat/core'
 
 const DECK_MAX_WIDTH = 700   // below this the board becomes a deck
@@ -377,19 +378,8 @@ export default function HomeBoard({
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
           <CardLabel domain={def.domain}>{def.title}</CardLabel>
           <div style={{ flex: 1, minWidth: 0 }} />
-          {def.ask && (
-            <button
-              onClick={() => onAsk(def.ask!.prompt)}
-              title="Ask about this in chat"
-              style={{
-                fontSize: 11, fontWeight: 600, fontFamily: 'inherit', cursor: 'pointer',
-                padding: '4px 10px', borderRadius: 999, flexShrink: 0,
-                background: 'rgba(127,127,150,0.16)', border: '1px solid var(--glass-edge)',
-                color: 'var(--glass-text)',
-                transition: 'background var(--dur-fast) var(--ease-standard)',
-              }}
-            >{def.ask.label}</button>
-          )}
+          {/* The action runs IN THE CARD (see the panel below the body). No prefill,
+              no navigation, nothing to press Enter on. */}
           {def.action && (
             <button
               onClick={() => onRoute(def.action!.route)}
@@ -416,6 +406,14 @@ export default function HomeBoard({
           )}
         </div>
         {body(id)}
+        {def.ask && (
+          <WidgetTaskPanel
+            action={def.ask.label}
+            prompt={def.ask.prompt}
+            resultLabel={def.title}
+            onOpenInChat={onAsk}
+          />
+        )}
       </div>
     )
   }
