@@ -756,7 +756,15 @@ registry.register({
     if (cached) return cached
     try {
       const { answerQuery } = await import('../answer/answerEngine')
-      const r = await answerQuery(question)
+      // HARD TIMEOUT. MEASURED 2026-08-03: research-to-file started and never finished — over 25
+      // minutes on a run that had passed in 88s — because this call had no deadline. answerQuery
+      // reaches the network, and a tool that can hang forever hangs the whole agent turn forever,
+      // with no output and nothing for the loop's own guards to react to. A tool that cannot
+      // answer in time must FAIL, so the agent can try something else.
+      const r = await Promise.race([
+        answerQuery(question),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('lookup timed out after 45s')), 45_000)),
+      ])
       if (!r.text?.trim()) return { ok: false, output: 'No answer could be grounded for that question.' }
       const cites = (r.sources ?? []).slice(0, 3)
       const badge = r.verified ? 'verified' : r.abstained ? 'abstained' : 'unverified'
