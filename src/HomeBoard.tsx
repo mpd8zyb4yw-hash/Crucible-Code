@@ -215,7 +215,7 @@ export default function HomeBoard({
     switch (id) {
       case 'runs':
         return live.length === 0
-          ? <EmptyBody text="No agents working right now." action="New task" onAction={onNewChat} />
+          ? <EmptyBody text="Hand Crucible a job and it works here in the background." action="New task" onAction={onNewChat} />
           : (
             <RowList>
               {live.slice(0, 4).map(r => (
@@ -236,7 +236,7 @@ export default function HomeBoard({
           )
 
       case 'inbox': {
-        if (!feeds.google?.gmail) return <EmptyBody text="Gmail isn't connected." action="Connect" onAction={() => onRoute('connections')} />
+        if (!feeds.google?.gmail) return <EmptyBody text="Connect Gmail to see what actually needs a reply today." action="Connect" onAction={() => onRoute('connections')} />
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {/* The headline is the deterministic verdict, not an unread count — unread
@@ -251,7 +251,7 @@ export default function HomeBoard({
       }
 
       case 'calendar': {
-        if (!feeds.google?.calendar) return <EmptyBody text="Google Calendar isn't connected." action="Connect" onAction={() => onRoute('connections')} />
+        if (!feeds.google?.calendar) return <EmptyBody text="Connect Calendar to see what's ahead without opening it." action="Connect" onAction={() => onRoute('connections')} />
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             {cal?.nextStart != null && cal.nextTitle
@@ -276,7 +276,7 @@ export default function HomeBoard({
       case 'github':
         return feeds.github?.prs
           ? <GithubWidget items={feeds.github.prs} />
-          : <EmptyBody text="GitHub isn't connected." action="Connect" onAction={() => onRoute('connections')} />
+          : <EmptyBody text="Connect GitHub to catch PRs that have gone quiet." action="Connect" onAction={() => onRoute('connections')} />
 
       case 'watch':
         return (
@@ -297,7 +297,7 @@ export default function HomeBoard({
               </div>
             )}
             {watch.total === 0 ? (
-              <EmptyBody text="Nothing being watched. Any answer can become a standing question." action="Add a watch" onAction={() => onRoute('automations')} />
+              <EmptyBody text="Turn any answer into a standing question and Crucible re-checks it for you." action="Add a watch" onAction={() => onRoute('automations')} />
             ) : watch.moved.length > 0 ? (
               <RowList>
                 {watch.moved.map(m => (
@@ -333,7 +333,9 @@ export default function HomeBoard({
 
       case 'digest':
         return feeds.digest.length === 0
-          ? <EmptyBody text="No automation runs yet." />
+          // Was a dead end: a card that reported an absence and offered no way out of
+          // it. Every empty state on Home now names the next move.
+          ? <EmptyBody text="Once something is on a schedule, each run and what it changed lands here." action="Set one up" onAction={() => onRoute('automations')} />
           : (
             <RowList>
               {feeds.digest.map((e, i) => (

@@ -2,6 +2,17 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "crucible-server",
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "runtimeArgs": [
+        "/Users/justin/crucible-local/crucible-local/node_modules/.bin/tsx",
+        "server.ts"
+      ],
+      "cwd": "/Users/justin/crucible-local/crucible-local",
+      "env": { "PORT": "3001" },
+      "port": 3001
+    },
+    {
       "name": "crucible-vite",
       "runtimeExecutable": "/opt/homebrew/bin/node",
       "runtimeArgs": [

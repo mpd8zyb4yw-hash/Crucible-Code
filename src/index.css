@@ -297,6 +297,10 @@ pre code {
   /* Opacity-only liveness (a "working" pulse) is permitted under reduced motion —
      it carries state, moves nothing, and is the honest alternative to a spinner. */
   .cru-pulse { animation-duration: 1.6s !important; animation-iteration-count: infinite !important; }
+  /* The composer's raised state is carried by fill, edge and shadow as well as a 2px
+     lift. Drop only the lift: the state stays fully legible without anything moving,
+     which is exactly the trade this media query asks for. */
+  .crucible-inputbox { transform: none !important; }
 }
 @keyframes cru-pulse-kf { 0%, 100% { opacity: 0.45; } 50% { opacity: 1; } }
 .cru-pulse { animation: cru-pulse-kf 1.6s var(--ease-standard) infinite; }

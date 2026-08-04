@@ -109,25 +109,40 @@ export function useHomeFeeds(): { feeds: HomeFeeds; refresh: () => void } {
 
     const patch = (p: Partial<HomeFeeds>) => setFeeds(prev => ({ ...prev, ...p, loaded: true }))
 
-    apiFetch(`${API_BASE}/api/connections/google/preview`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null).then(g => { if (g) patch({ google: g }) }).catch(() => {})
-    apiFetch(`${API_BASE}/api/connections/github/preview`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null).then(gh => { if (gh) patch({ github: gh }) }).catch(() => {})
-    apiFetch(`${API_BASE}/api/automations/digest`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null).then(d => { if (d) patch({ digest: (d.entries ?? []).slice(0, 6) }) }).catch(() => {})
-    apiFetch(`${API_BASE}/api/automations`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(a => {
-        if (!a) return
-        const list: AutomationLite[] = a.automations ?? []
-        patch({
-          automations: list,
-          upcoming: list
-            .filter(x => x.enabled && x.nextRun != null)
-            .sort((x, y) => x.nextRun! - y.nextRun!)
-            .slice(0, 5),
-        })
-      }).catch(() => {})
+    // ── `loaded` marks a SETTLED cycle, not a successful one (fixed 2026-08-04) ─────
+    // It used to be set only inside `patch`, and `patch` only ran when a request came
+    // back with data. For the user who has nothing connected and no automations yet —
+    // that is to say, EVERY user on first run — all four requests correctly return
+    // nothing, so `loaded` never flipped. Home then sat on "Checking what needs you…"
+    // permanently, and the "Connect your accounts" card, which is gated on `loaded`,
+    // never appeared. The one screen whose entire job is to invite a new user in was
+    // the one screen a new user could never get past.
+    //
+    // "Every request finished" and "some request had data" are different questions.
+    // allSettled answers the first, which is the one `loaded` is actually asking.
+    const settle = () => setFeeds(prev => (prev.loaded ? prev : { ...prev, loaded: true }))
+
+    void Promise.allSettled([
+      apiFetch(`${API_BASE}/api/connections/google/preview`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null).then(g => { if (g) patch({ google: g }) }),
+      apiFetch(`${API_BASE}/api/connections/github/preview`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null).then(gh => { if (gh) patch({ github: gh }) }),
+      apiFetch(`${API_BASE}/api/automations/digest`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null).then(d => { if (d) patch({ digest: (d.entries ?? []).slice(0, 6) }) }),
+      apiFetch(`${API_BASE}/api/automations`, { credentials: 'include' })
+        .then(r => r.ok ? r.json() : null)
+        .then(a => {
+          if (!a) return
+          const list: AutomationLite[] = a.automations ?? []
+          patch({
+            automations: list,
+            upcoming: list
+              .filter(x => x.enabled && x.nextRun != null)
+              .sort((x, y) => x.nextRun! - y.nextRun!)
+              .slice(0, 5),
+          })
+        }),
+    ]).then(settle)
   }, [demo])
 
   // Poll while mounted. A home that loads once goes stale on the wall; 45s matches the

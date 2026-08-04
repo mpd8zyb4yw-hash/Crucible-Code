@@ -48,7 +48,10 @@ export const WIDGETS: Record<WidgetId, WidgetDef> = {
   },
   digest: {
     id: 'digest', title: 'Recent runs', domain: 'watch',
-    action: { label: 'All watches', route: 'automations' },
+    // "All runs", not "All watches" — this card lists RUNS. Sharing the copy with the
+    // Watch card put two identically-labelled buttons on Home pointing at different
+    // readings of the same view, which reads as a duplicate rather than a destination.
+    action: { label: 'All runs', route: 'automations' },
   },
   runs: {
     id: 'runs', title: 'Agents', domain: 'research',
