@@ -673,6 +673,20 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // append_file dutifully created an empty file there while the user's log.txt sat untouched
     // one directory down — the append silently went nowhere. write_file is still never
     // redirected: there, a near-miss name IS a new file the user asked for.
+    // If the filesystem says exactly which file is still missing, SET it. MEASURED 2026-08-03:
+    // "create two files: first.txt … and second.txt …" wrote first.txt and then kept proposing
+    // first.txt again, and an append put log.txt in the wrong directory — both times the correct
+    // path was already known to the system and was merely being DESCRIBED to the model in the
+    // prompt. Naming the target is not reasoning; it is the machine's job. Only for a single
+    // unambiguous outstanding file, and only when the tool actually takes a path.
+    // NOT DONE HERE, deliberately: forcing a write's path to the single outstanding file.
+    // Measured 2026-08-03 both ways — applied to every tool with a `path` it took the probe from
+    // 8.3/9 to 5/9 (the READ step went looking for the OUTPUT file), and restricted to writers it
+    // still only reached 7/9 and 8/9, because extractPostconditions asserts just the LAST file of
+    // a creating goal, so "create two files" forced the second and stranded the first. The honest
+    // fix is for post-conditions to represent EVERY creation target; until they do, this stays
+    // out. outstandingPaths() is kept and tested for that work.
+
     const snapThis = !tool.mutates || tool.name === 'append_file'
     if (snapThis) {
       for (const f of fields) {

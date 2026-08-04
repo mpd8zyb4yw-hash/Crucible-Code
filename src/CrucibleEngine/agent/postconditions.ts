@@ -197,6 +197,25 @@ export function checkPostconditions(conds: Postcondition[]): PostconditionResult
   }
 }
 
+/**
+ * The absolute paths a goal requires but which are not satisfied yet, in goal order.
+ *
+ * The failure MESSAGES are for humans; a caller that needs to ACT on them needs the path itself.
+ * Used by the tool-call driver to set a write's target directly instead of describing it and
+ * hoping the model reads the description.
+ */
+export function outstandingPaths(goal: string, seedNames: string[] = []): string[] {
+  const out: string[] = []
+  for (const c of extractPostconditions(goal, seedNames)) {
+    if (c.kind === 'file-exists' && !fs.existsSync(c.file)) out.push(c.file)
+    else if (c.kind === 'file-contains') {
+      const t = readSafe(c.file)
+      if (t === null || !c.pattern.test(t)) out.push(c.file)
+    }
+  }
+  return Array.from(new Set(out))
+}
+
 /** One-shot: extract from the goal, check against the world. */
 export function verifyGoal(goal: string, seedNames: string[] = []): PostconditionResult {
   return checkPostconditions(extractPostconditions(goal, seedNames))
