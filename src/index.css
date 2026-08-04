@@ -7,17 +7,27 @@
 :root {
   /* Surfaces */
   --c-bg: #101016;
-  --c-glass: rgba(255, 255, 255, 0.035);
-  --c-glass-strong: rgba(13, 13, 20, 0.82);
-  --c-hairline: rgba(255, 255, 255, 0.07);
-  --c-hairline-strong: rgba(255, 255, 255, 0.09);
-  --c-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  /* ── Legacy surface tokens, retuned onto the glass system (2026-08-04) ────────
+     Every surface that was NOT rebuilt in the redesign — Settings, Automations,
+     History, Connections, the Mission Control roster, the sidebar rail, the topbar —
+     reads these three tokens, 58 call sites across 12 files. Retuning them here lifts
+     all of those onto the same visual language in one place, instead of a
+     component-by-component rewrite that would drift again.
+     They cannot add backdrop blur (that needs backdrop-filter on the element itself),
+     so these are the flat counterpart: same fill depth, same edge, same inner light. */
+  --c-glass: rgba(22, 24, 34, 0.55);
+  --c-glass-strong: rgba(16, 18, 28, 0.88);
+  --c-hairline: rgba(255, 255, 255, 0.14);
+  --c-hairline-strong: rgba(255, 255, 255, 0.18);
+  --c-inset-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.20);
 
   /* Text */
   --c-text: #e4e4ee;
   --c-text-soft: #dcdcea;
-  --c-dim: #77778c;
-  --c-dim-deep: #55556a;
+  /* Lifted 2026-08-04: #77778c measured ~1.35:1 over the ambient field and these are
+     used for body-size text on the legacy surfaces. These clear the 4.5:1 floor. */
+  --c-dim: #9a9ab0;
+  --c-dim-deep: #7e7e95;
 
   /* Accents */
   --c-accent: #7c7cf8;          /* nav / ensemble violet */

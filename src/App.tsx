@@ -2201,6 +2201,12 @@ export default function App() {
     }))
   }, [])
 
+  // Rail width, computed ONCE. SidebarRail renders `collapsed ? 64 : 272` and three
+  // position:fixed elements below (two blur veils + the composer) need to start where it
+  // ends. They each hard-coded 272, so a collapsed rail left them indented by 208px of
+  // empty space. Collapse state is the same expression SidebarRail is given.
+  const railCollapsed = agentsOpen || automationsOpen || connectionsOpen
+  const railW = isMobile ? 0 : (railCollapsed ? 64 : 272)
   const latestRound = rounds[rounds.length - 1] ?? null
   const activeModels = latestRound?.models ?? []
 
@@ -2246,7 +2252,7 @@ export default function App() {
             refreshKey={histRefresh}
             // Mission Control has its own run list — collapse to an icon rail so the
             // workspace gets the screen instead of a redundant history column.
-            collapsed={agentsOpen || automationsOpen || connectionsOpen}
+            collapsed={railCollapsed}
           />
         )}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
@@ -2931,7 +2937,7 @@ export default function App() {
           solid background, so it never reads as a dark bar; the blobs stay visible. */}
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 272),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : railW,
         right: 0,
         height: inputBarHeight - 4, pointerEvents: 'none', zIndex: 8, background: remoteBrain && isMobile ? 'rgba(13,13,21,0.55)' : 'transparent',
         backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)',
@@ -2940,7 +2946,7 @@ export default function App() {
       }} />
       <div style={{
         position: 'fixed', bottom: 0,
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 272),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : railW,
         right: 0,
         height: inputBarHeight - 28, pointerEvents: 'none', zIndex: 9,
         backdropFilter: 'blur(44px)', WebkitBackdropFilter: 'blur(44px)',
@@ -2984,7 +2990,7 @@ export default function App() {
         // In landscape Remote Brain: anchor to the right 38% panel so it sits below chat.
         // In portrait Remote Brain: full width, above the canvas (zIndex 60).
         // Normal: full width, normal stacking.
-        left: remoteBrain && isMobile && isLandscape ? '62%' : (isMobile ? 0 : 272),
+        left: remoteBrain && isMobile && isLandscape ? '62%' : railW,
         right: 0,
         zIndex: remoteBrain && isMobile ? 60 : 10,
         // Remote Brain portrait: frosted glass so the stream bleeds through.
