@@ -649,6 +649,11 @@ export default function App() {
   const prewarmDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const inputBarRef = useRef<HTMLDivElement>(null)
   const [composerFocused, setComposerFocused] = useState(false)
+  // Raised = you are engaged with the composer. Focus is the obvious trigger; held text
+  // is the less obvious one, and it matters — a half-typed message you clicked away from
+  // is still live work, and letting the composer sink back to rest under it would make
+  // the app look like it had discarded what you wrote.
+  const composerRaised = composerFocused || input.trim().length > 0
   const [inputBarHeight, setInputBarHeight] = useState(100)
   // ── Dock height: the transcript's copy of the composer height ────────────────────
   // The composer grows by a pixel or two on almost every keystroke as the textarea
