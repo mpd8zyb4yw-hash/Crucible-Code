@@ -273,37 +273,56 @@ export function PourWrap({ active, phase, progress, children }: {
  * The counter is the proof-of-life: a frozen number means genuinely stuck, a climbing
  * one means working.
  */
-function LiveActivity({ status, live = true }: { status?: string; live?: boolean }) {
+function LiveActivity({ status, live = true, settled = false }: { status?: string; live?: boolean; settled?: boolean }) {
   const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
+    // No ticking on a settled round: nothing is being timed, and a per-second setState
+    // on every finished answer-less turn in a long transcript is pure re-render churn.
+    if (settled) return
     const t0 = Date.now()
     const iv = setInterval(() => setElapsed(Math.floor((Date.now() - t0) / 1000)), 1000)
     return () => clearInterval(iv)
-  }, [])
+  }, [settled])
   // Never claim more than we know: without a server status these are the honest
   // descriptions of what the request is actually doing at that stage.
   // `live` false means nothing is streaming for this round — say so plainly instead of
   // implying work is happening.
-  const stalled = !live && elapsed >= 3
+  // `stalled` must mean "this was streaming and stopped", not merely "nothing is
+  // streaming right now". `settled` marks a round that is finished and not the live
+  // one — a restored history turn — where the honest statement is that no answer was
+  // recorded, NOT an invitation to retry something that is not currently broken.
+  const stalled = !settled && !live && elapsed >= 3
   const fallback = elapsed < 3 ? 'Sending your request'
     : elapsed < 10 ? 'Thinking'
     : 'Still working'
-  const label = stalled ? 'Stopped without answering — send again to retry' : (status || fallback)
+  const label = settled ? 'This turn finished without an answer.'
+    : stalled ? 'Stopped without answering — send again to retry'
+    : (status || fallback)
   return (
     <div
       role="status" aria-live="polite"
       style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0 4px', minWidth: 0 }}
     >
+      {/* A settled round is not working, so it gets a static marker — pulsing dots and
+          a climbing counter on a finished turn are a claim that something is still
+          happening, which is the opposite of what this line is for. */}
+      {settled ? (
+        <span style={{
+          width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
+          background: 'rgba(255,255,255,0.28)',
+        }} />
+      ) : (
       <span style={{ display: 'inline-flex', gap: 3, flexShrink: 0, opacity: stalled ? 0.3 : 1 }}>
         <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out infinite' }} />
         <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.2s infinite' }} />
         <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'rgba(157,157,250,0.85)', animation: 'dotpulse 1s ease-in-out 0.4s infinite' }} />
       </span>
+      )}
       <span style={{
         fontSize: 12, color: stalled ? 'var(--alarm-ink)' : 'rgba(255,255,255,0.72)', animation: 'fadeIn 0.3s ease',
         minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>{label}</span>
-      {elapsed >= 4 && !stalled && (
+      {elapsed >= 4 && !stalled && !settled && (
         <span style={{
           fontSize: 11, color: 'rgba(255,255,255,0.45)', fontVariantNumeric: 'tabular-nums', flexShrink: 0,
         }}>{elapsed}s</span>
@@ -521,7 +540,29 @@ export const MessageList = memo(function MessageList({
                           </span>
                         </div>
                       )
-                      : <LiveActivity status={round.liveStatus} live={round.id === liveRoundId && thinking} />
+                      : round.agent?.final
+                        // An agent turn whose synthesis was suppressed keeps its answer in
+                        // agent.final. The transcript was not looking there, so a turn that
+                        // HAD answered rendered the stalled notice and the answer stayed
+                        // hidden behind "show work". send() already reads this field when
+                        // building history — the transcript must agree with it.
+                        ? (
+                          <div style={{
+                            fontSize: 13.5, lineHeight: 1.65, color: 'var(--glass-text)',
+                            overflowWrap: 'anywhere', userSelect: 'text',
+                          }}>{round.agent.final}</div>
+                        )
+                        : <LiveActivity
+                            status={round.liveStatus}
+                            live={round.id === liveRoundId && thinking}
+                            // A round that is not the LIVE round has nothing streaming into
+                            // it, so it cannot be stalling — whatever the conversation-wide
+                            // `thinking` flag says. Keying this on `thinking` too meant a
+                            // restored history turn (or any turn left behind by a stuck
+                            // thinking flag) accused itself of having broken, three seconds
+                            // after you opened the chat.
+                            settled={round.id !== liveRoundId}
+                          />
                   )}
                   {/* Ensemble chrome (model chips + attribution) renders ONLY on ensemble
                       runs — a local reply is a clean card (v3). */}

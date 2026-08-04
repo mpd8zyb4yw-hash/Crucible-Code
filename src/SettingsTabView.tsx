@@ -78,7 +78,9 @@ function PairedDevicesSection() {
           <span style={{ fontSize: 10.5, lineHeight: 1.5, color: 'var(--glass-text-2, #8a8a9e)' }}>
             Anyone holding this link can reach Crucible from anywhere. Crucible keeps only a
             hash of it, so it cannot be shown again — revoke and re-pair if you lose it.
-            {!minted.url && ' Set CRUCIBLE_PUBLIC_HOST to have the full link generated.'}
+            {!minted.url && ' No public hostname found — Crucible reads one from your cloudflared'
+              + ' ingress config, or set CRUCIBLE_PUBLIC_HOST. Until then, put this ?device=…'
+              + ' on the end of whatever URL reaches Crucible from outside.'}
           </span>
           <button onClick={() => setMinted(null)} style={{
             alignSelf: 'flex-start', padding: '5px 12px', borderRadius: 999, cursor: 'pointer',

@@ -17,7 +17,40 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-04 (cont.124 — off-LAN pairing, adaptive bitrate, dock split, glass port) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-04 (cont.125 — swallowed-error sweep + two stuck-state bugs) (REPLACE THIS EVERY SESSION)
+
+> **cont.125 (2026-08-04).** Detail in the ROADMAP CHANGE LOG. Benches all green:
+> captureTune 15/15, pairing 35/35, publicHost 22/22, streamFailure 12/12, jwt 9/9,
+> latency 6/6, textVector 7/7, util 11/11, refactorRoutes 10/10. New npm scripts:
+> `capturetune:bench`, `pairing:bench`, `publichost:bench`, `streamfail:bench`.
+>
+> - **Swallowed SSE errors are gone as a CLASS.** One helper (`src/chat/streamFailure.ts`),
+>   six call sites, guard count == consumer count == 6. If you add a streaming endpoint,
+>   use it — `!res.body` alone is the bug.
+> - **`thinking` can no longer stick true.** All three consume sites are `try/finally`.
+>   The symptom was a send button locked on "Stop" with nothing running.
+> - **The transcript now shows `agent.final`** when synthesis was suppressed, and only
+>   claims "Stopped without answering" for a round that actually died mid-stream.
+> - **Continue-from-checkpoint navigates to chat**; it used to appear to do nothing.
+> - **Pairing link derives its host from cloudflared ingress.** No env var needed.
+> - **Reduced motion verified both directions** with a forced `matchMedia`.
+>
+> **STILL OPEN — verified as open, not assumed:**
+> 1. **Nothing across cont.123–125 has run on a real phone.** No touch device is available
+>    to Claude; it is all `?forceMobile=1` plus protocol probes. The Remote Brain lag fix
+>    (JPEG suppressed once WebRTC is up) was proven with a LOCAL WebSocket viewer, never
+>    over a hotspot. This is the single biggest unverified surface.
+> 2. **Agent turns are finishing with no answer.** Several restored rounds read
+>    `DONE · 5 steps · 0 tool calls` with no synthesis AND no `agent.final`. cont.125 made
+>    the UI honest about it; it did NOT investigate why the agent produces nothing. That is
+>    an engine question and probably the highest-value one open.
+> 3. **`npm run lint` is dead** — no `eslint.config.js` exists anywhere in the repo, despite
+>    the script and the eslint devDependencies. Adding one is a style-policy decision.
+> 4. The preview pane runs `visibilityState: hidden`, which throttles rAF AND
+>    ResizeObserver. Layout verification there MUST interleave screenshots to force a
+>    rendering step, or it silently measures frozen values and looks like a pass.
+> 5. `src/agentic/SurfaceRenderer.tsx` external-thumbnail item is DONE (was stale in this
+>    file); rail-width and reduced-motion items are DONE. Do not re-open them.
 
 > **cont.124 (2026-08-04).** Four tracks landed; full detail in the ROADMAP CHANGE LOG.
 > Benches: captureTune 15/15, pairing 35/35, and the five pre-existing server benches

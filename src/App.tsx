@@ -9,7 +9,9 @@ const DOCK_HEIGHT_MAX = 320
 /** Height the floating resume banner occupies above the composer, reserved by surfaces
  *  that must not sit underneath it (Home's deck pager was landing behind it). */
 const RESUME_BANNER_H = 76
+
 import { API_BASE, apiFetch, withDeviceParam } from './api'
+import { streamFailure } from './chat/streamFailure'
 import BackgroundBlobs from './BackgroundBlobs'
 import { useEnsemble, type EnsembleState } from './ensemble'
 import { IntegrationsBinder } from './IntegrationsBinder'
@@ -17,7 +19,7 @@ import { LibraryPage } from './LibraryBinder'
 import { SelfRepairPage } from './SelfRepairBinder'
 import { SelfPatcherBinder } from './SelfPatcherBinder'
 import NavRail, { type CrucibleTab } from './NavRail'
-import SidebarRail from './SidebarRail'
+import SidebarRail, { railWidth } from './SidebarRail'
 import DebugCapture from './DebugCapture'
 import { AGENT_WORKFLOWS } from './AgentsTabView'
 import AgentMissionControl from './AgentMissionControl'
@@ -1213,8 +1215,12 @@ export default function App() {
       if (e?.name !== 'AbortError') setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: 'Research failed to start.', synthesisDone: true } : r))
       return
     }
-    if (!res.body) return
-    const reader = res.body.getReader()
+    const researchErr = await streamFailure(res, API_BASE)
+    if (researchErr) {
+      setRounds(prev => prev.map(r => r.id === roundId ? { ...r, deliveryError: researchErr } : r))
+      return
+    }
+    const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
     try {
@@ -1544,31 +1550,29 @@ export default function App() {
       } : r))
       setConvThinking(convId, false); return
     }
-    // A non-OK response is NOT a stream. Feeding a JSON error body to the SSE consumer
-    // finds no `data:` lines, ends silently, and the round renders the generic
-    // "Stopped without answering" — which is how the locality guard's 403 (the phone
-    // reaching Crucible over the public tunnel instead of the LAN) presented as
-    // "sending from mobile just doesn't work", with the server's actual explanation
-    // thrown away. Surface the server's own message instead.
-    if (!res.ok) {
-      let detail = ''
-      try { detail = String((await res.json())?.error ?? '') } catch { /* not JSON */ }
+    // A non-OK response is NOT a stream — see streamFailure(). Surface the server's
+    // own message instead of letting the SSE parser consume a JSON error and stop.
+    const sendErr = await streamFailure(res, API_BASE)
+    if (sendErr) {
       haptic('heavy')
-      setRounds(prev => prev.map(r => r.id === roundId ? {
-        ...r,
-        deliveryError: detail
-          ? `${detail} (HTTP ${res.status})`
-          : `Crucible answered HTTP ${res.status} at ${API_BASE.replace(/^https?:\/\//, '')}.`,
-      } : r))
+      setRounds(prev => prev.map(r => r.id === roundId ? { ...r, deliveryError: sendErr } : r))
       setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
       try { localStorage.removeItem('crucible_active_task') } catch {}
       return
     }
     const reader = res.body!.getReader()
-    await consumeStream(reader, roundId, userMessage, convId)
-    setConvThinking(convId, false)
-    setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
-    try { localStorage.removeItem('crucible_active_task') } catch {}
+    // finally, NOT a plain sequence. Anything that throws inside consumeStream — a
+    // dropped connection mid-stream, a malformed event, a crash in one of the reducers
+    // — used to skip these resets, leaving `thinking` true for this conversation
+    // FOREVER: the send button stays locked on "Stop" and the composer can never send
+    // again without a reload. Observed live, with no task actually running.
+    try {
+      await consumeStream(reader, roundId, userMessage, convId)
+    } finally {
+      setConvThinking(convId, false)
+      setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
+      try { localStorage.removeItem('crucible_active_task') } catch {}
+    }
   }
 
   // Item 5: `send` closes over `input` and other per-keystroke state, so it's a fresh
@@ -2078,8 +2082,12 @@ export default function App() {
       console.error('[runVerify] fetch FAILED:', fetchErr)
       return
     }
-    if (!res.body) { console.error('[runVerify] no body'); return }
-    const reader = res.body.getReader()
+    const verifyErr = await streamFailure(res, API_BASE)
+    if (verifyErr) {
+      setRounds(prev => prev.map(r => r.id === roundId ? { ...r, verifyStatus: 'failed', verifyMessage: verifyErr } : r))
+      return
+    }
+    const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
     while (true) {
@@ -2139,8 +2147,12 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: surgicalPrompt, isSurgical: true }),
     })
-    if (!res.body) return
-    const reader = res.body.getReader()
+    const fixErr = await streamFailure(res, API_BASE)
+    if (fixErr) {
+      setRounds(prev => prev.map(r => r.id === roundId ? { ...r, verifyStatus: 'failed', verifyMessage: fixErr } : r))
+      return
+    }
+    const reader = res.body!.getReader()
     const decoder = new TextDecoder()
     let buf = ''
     let newSynthesis = ''
@@ -2204,6 +2216,11 @@ export default function App() {
     setResumeOffer(null)
     const roundId = Date.now().toString()
     const convId = conversationIdRef.current
+    // Resuming streams into the TRANSCRIPT, so go there — exactly as send() does.
+    // The resume banner floats over Home, so pressing Continue from Home pushed the
+    // round (and, once errors were surfaced, the error itself) into a surface the user
+    // was not looking at: the button appeared to do nothing at all.
+    setTab('chat')
     setConvThinking(convId, true)
     setConvAgentStart(convId, Date.now()); setAgentElapsed(0)
     setRounds(prev => [...prev, emptyRound(roundId, offer.goal, convId)])
@@ -2222,34 +2239,44 @@ export default function App() {
         }),
       })
     } catch { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
-    if (!res.body) { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n'); buf = lines.pop() ?? ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') break
-        try {
-          const parsed = JSON.parse(raw)
-          if (parsed.type === 'final') {
-            setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: parsed.text ?? '', synthesisDone: true } : r))
-          }
-          if (parsed.type === 'agent_done') {
-            setRounds(prev => prev.map(r => r.id === roundId ? { ...r, agent: { ...r.agent, active: false } as any } : r))
-          }
-          if (AGENT_EVENT_TYPES.has(parsed.type)) {
-            setRounds(prev => prev.map(r => r.id !== roundId ? r : { ...r, agent: agentReducer(r.agent, parsed) }))
-          }
-        } catch {}
-      }
+    const resumeErr = await streamFailure(res, API_BASE)
+    if (resumeErr) {
+      setRounds(prev => prev.map(r => r.id === roundId ? { ...r, deliveryError: resumeErr } : r))
+      setConvThinking(convId, false); setConvAgentStart(convId, null); return
     }
-    setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
+    const reader = res.body!.getReader()
+    // finally, NOT a plain sequence — a throw anywhere in the read loop would otherwise
+    // leave `thinking` true for this conversation forever, locking the send button on
+    // "Stop". Same defect as send(); same fix.
+    try {
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n'); buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6).trim()
+          if (raw === '[DONE]') break
+          try {
+            const parsed = JSON.parse(raw)
+            if (parsed.type === 'final') {
+              setRounds(prev => prev.map(r => r.id === roundId ? { ...r, synthesis: parsed.text ?? '', synthesisDone: true } : r))
+            }
+            if (parsed.type === 'agent_done') {
+              setRounds(prev => prev.map(r => r.id === roundId ? { ...r, agent: { ...r.agent, active: false } as any } : r))
+            }
+            if (AGENT_EVENT_TYPES.has(parsed.type)) {
+              setRounds(prev => prev.map(r => r.id !== roundId ? r : { ...r, agent: agentReducer(r.agent, parsed) }))
+            }
+          } catch {}
+        }
+      }
+    } finally {
+      setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
+    }
   }
 
   const continueFromCheckpoint = async () => {
@@ -2258,6 +2285,11 @@ export default function App() {
     setResumeOffer(null)
     const roundId = Date.now().toString()
     const convId = conversationIdRef.current
+    // Resuming streams into the TRANSCRIPT, so go there — exactly as send() does.
+    // The resume banner floats over Home, so pressing Continue from Home pushed the
+    // round (and, once errors were surfaced, the error itself) into a surface the user
+    // was not looking at: the button appeared to do nothing at all.
+    setTab('chat')
     setConvThinking(convId, true)
     setConvAgentStart(convId, Date.now()); setAgentElapsed(0)
     setRounds(prev => [...prev, emptyRound(roundId, offer.goal, convId)])
@@ -2278,36 +2310,46 @@ export default function App() {
     } catch { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
     // Reuse the same SSE parse loop that `send()` uses — delegate by calling send
     // with the pre-built res. Not worth duplicating; just set up the stream directly.
-    if (!res.body) { setConvThinking(convId, false); setConvAgentStart(convId, null); return }
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      const lines = buf.split('\n')
-      buf = lines.pop() ?? ''
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (raw === '[DONE]') break
-        try {
-          const parsed = JSON.parse(raw)
-          if (parsed.type === 'final') {
-            setRounds(prev => prev.map(r => r.id === roundId
-              ? { ...r, synthesis: parsed.text ?? '', synthesisDone: true }
-              : r))
-          }
-          if (parsed.type === 'agent_done') {
-            setRounds(prev => prev.map(r => r.id === roundId
-              ? { ...r, agent: { ...r.agent, active: false } as any }
-              : r))
-          }
-        } catch {}
-      }
+    const followErr = await streamFailure(res, API_BASE)
+    if (followErr) {
+      setRounds(prev => prev.map(r => r.id === roundId ? { ...r, deliveryError: followErr } : r))
+      setConvThinking(convId, false); setConvAgentStart(convId, null); return
     }
-    setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
+    const reader = res.body!.getReader()
+    // finally, NOT a plain sequence — a throw anywhere in the read loop would otherwise
+    // leave `thinking` true for this conversation forever, locking the send button on
+    // "Stop". Same defect as send(); same fix.
+    try {
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const raw = line.slice(6).trim()
+          if (raw === '[DONE]') break
+          try {
+            const parsed = JSON.parse(raw)
+            if (parsed.type === 'final') {
+              setRounds(prev => prev.map(r => r.id === roundId
+                ? { ...r, synthesis: parsed.text ?? '', synthesisDone: true }
+                : r))
+            }
+            if (parsed.type === 'agent_done') {
+              setRounds(prev => prev.map(r => r.id === roundId
+                ? { ...r, agent: { ...r.agent, active: false } as any }
+                : r))
+            }
+          } catch {}
+        }
+      }
+    } finally {
+      setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
+    }
   }
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -2368,7 +2410,7 @@ export default function App() {
   // ends. They each hard-coded 272, so a collapsed rail left them indented by 208px of
   // empty space. Collapse state is the same expression SidebarRail is given.
   const railCollapsed = agentsOpen || automationsOpen || connectionsOpen
-  const railW = isMobile ? 0 : (railCollapsed ? 64 : 272)
+  const railW = isMobile ? 0 : railWidth(railCollapsed)
   const latestRound = rounds[rounds.length - 1] ?? null
   const activeModels = latestRound?.models ?? []
 

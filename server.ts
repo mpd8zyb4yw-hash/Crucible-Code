@@ -94,6 +94,7 @@ import {
   nextCaptureTuning, tuningChanged, LinkMonitor, DEFAULT_TUNING, type CaptureTuning,
 } from './src/server/captureTune'
 import { PairingStore, extractToken } from './src/server/pairing'
+import { ingressHostForPort, pairingUrl } from './src/server/publicHost'
 import { verifyMultiFileCode } from './src/CrucibleEngine/reasoning/codeVerifier'
 import { detectRequestedFiles as detectRequestedFilesMF, isMultiFileRequest, mergeCertifiedFileSet, solveMultiFileRequest } from './src/CrucibleEngine/reasoning/multiFile'
 import { enqueueFm, fmQueueStats, beginForeground, endForeground, isForegroundActive } from './src/CrucibleEngine/agent/fmQueue'
@@ -928,6 +929,28 @@ app.use('/api', (req: express.Request, res: express.Response, next: express.Next
 })
 
 // ── Device pairing (local-only management) ──────────────────────────────────
+/**
+ * The origin a paired device should use, most explicit source first. Cached after
+ * the first read: the cloudflared config does not change while we are running, and
+ * pairing is rare enough that a stale cache would be a worse failure than a reread.
+ */
+let cachedPublicHost: string | null | undefined
+function resolvePublicHost(req: express.Request): string | null {
+  const explicit = process.env.CRUCIBLE_PUBLIC_HOST
+  if (explicit) return explicit
+  // If this very request arrived through the tunnel, it is telling us the answer.
+  const fwd = req.headers['x-forwarded-host']
+  if (fwd) return String(Array.isArray(fwd) ? fwd[0] : fwd)
+  if (cachedPublicHost !== undefined) return cachedPublicHost
+  cachedPublicHost = null
+  try {
+    const cfg = fs.readFileSync(path.join(os.homedir(), '.cloudflared', 'config.yml'), 'utf8')
+    cachedPublicHost = ingressHostForPort(cfg, Number(process.env.PORT) || 3001)
+    if (cachedPublicHost) console.log(`[Pairing] public host from cloudflared ingress: ${cachedPublicHost}`)
+  } catch { /* no tunnel configured — the UI says so rather than inventing a URL */ }
+  return cachedPublicHost
+}
+
 // The token is returned exactly ONCE, at creation. There is no endpoint that can
 // read it back, because there is nowhere it is stored in plaintext to read it
 // from — losing it means revoking the device and pairing again.
@@ -938,10 +961,12 @@ app.get('/api/pair/list', requireLocal, (_req: express.Request, res: express.Res
 app.post('/api/pair/create', requireLocal, (req: express.Request, res: express.Response) => {
   const label = typeof req.body?.label === 'string' ? req.body.label : 'Paired device'
   const { token, device } = pairingStore.create(label)
-  // The pairing link points at the PUBLIC origin the user reaches from off-LAN —
-  // a LAN URL in the QR would defeat the entire point of pairing.
-  const publicHost = String(process.env.CRUCIBLE_PUBLIC_HOST ?? req.headers['x-forwarded-host'] ?? '')
-  const url = publicHost ? `https://${publicHost.replace(/^https?:\/\//, '')}/?device=${token}` : null
+  // The pairing link must point at the PUBLIC origin the user will reach from
+  // off-LAN — a LAN URL here would defeat the entire point of pairing. Requiring a
+  // hand-set env var was a footgun: the moment you need this link is the moment you
+  // are NOT at the Mac to discover the variable exists. cloudflared already wrote
+  // the answer down, so read it. See src/server/publicHost.ts.
+  const url = pairingUrl(resolvePublicHost(req), token)
   console.log(`[Pairing] device "${device.label}" paired (${device.id})`)
   res.json({ token, device, url })
 })

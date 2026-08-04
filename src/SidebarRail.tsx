@@ -8,7 +8,17 @@ import { memo, useEffect, useMemo, useState } from 'react'
 import { API_BASE, apiFetch } from './api'
 import { ConfirmModal } from './ui'
 import { glassSurface } from './design/glass'
+
 import type { CrucibleTab } from './NavRail'
+
+/** THE rail width, in one place.
+ *  App.tsx lays three fixed-position elements (the blur veils and the composer wrap)
+ *  flush against this rail's right edge, so its width is not a private detail of this
+ *  component — it is a layout contract. It used to be the literal `64 : 272` in both
+ *  files, which is exactly the kind of pair that drifts silently. */
+export const RAIL_W_FULL = 272
+export const RAIL_W_ICON = 64
+export const railWidth = (iconOnly: boolean): number => (iconOnly ? RAIL_W_ICON : RAIL_W_FULL)
 
 export type HistorySession = { id: string; title: string; mode: string; snippet: string; updatedAt: number; roundCount: number }
 
@@ -149,7 +159,7 @@ function SidebarRail({ tab, setTab, conversationId, onNewChat, onRestore, onDele
 
   return (
     <div style={{
-      width: iconOnly ? 64 : 272, flexShrink: 0, zIndex: 20, height: '100%',
+      width: railWidth(iconOnly), flexShrink: 0, zIndex: 20, height: '100%',
       display: 'flex', flexDirection: 'column',
       alignItems: iconOnly ? 'center' : 'stretch',
       // Traffic-light clearance comes from the shared shell token (0 on the web).

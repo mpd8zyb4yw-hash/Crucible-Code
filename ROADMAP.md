@@ -1933,6 +1933,63 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04 (cont.125 — the swallowed-error bug class, swept; two stuck-state bugs found while verifying)
+
+Follow-on to cont.124. Every item here was found by CHECKING a claim rather than trusting it,
+and three of them were bugs nobody had reported.
+
+**1. The swallowed-SSE-error bug class, swept.** cont.124 fixed `send()`'s missing `!res.ok`
+check. There were FIVE more streaming call sites with exactly the same shape — research,
+verify, surgical-fix, and both checkpoint-resume paths — each testing `!res.body` and nothing
+else. An error response HAS a body, so all five fed a JSON error to the SSE parser, which found
+no `data:` lines, ended cleanly, and showed a generic stall. The check now lives once in
+`src/chat/streamFailure.ts` (bench 12/12) and all six sites use it; guard count and consumer
+count are both 6.
+
+**2. `thinking` could stick true forever, locking the composer on "Stop".** Observed live: send
+button reading "Stop", `crucible_active_task` null, nothing streaming. `await consumeStream(...)`
+was followed by the reset calls as a plain sequence, so ANY throw inside the stream — dropped
+connection, malformed event, a crash in a reducer — skipped them and left that conversation
+unable to send again without a reload. All three consume sites are now `try/finally`. Verified
+by stubbing a 200 SSE stream that errors mid-flight: the composer returns to "Send".
+
+**3. Two answer-visibility bugs in the transcript.**
+ - An agent turn whose synthesis is suppressed keeps its answer in `agent.final`. `send()`
+   already reads that field when building history, but the TRANSCRIPT did not, so a turn that
+   HAD answered rendered the stalled notice with its answer hidden behind "show work".
+ - `LiveActivity`'s `stalled` was `!live && elapsed >= 3` — keyed on "nothing is streaming right
+   now", not "this round was streaming and stopped". Every restored history turn with no answer
+   therefore accused itself of having broken, three seconds after you opened the chat, complete
+   with pulsing dots and a climbing counter. `settled` (= not the live round) now yields a static
+   marker, no timer, and the honest line "This turn finished without an answer." The retry
+   wording is reserved for a round that really did die mid-stream — verified in both directions.
+
+**4. Continue-from-checkpoint went nowhere.** Both resume functions pushed the round into the
+transcript without `setTab('chat')`, so pressing Continue on the floating resume banner (which
+lives over Home) appeared to do nothing at all. Matches `send()` now.
+
+**5. The pairing link derives its own host** (`src/server/publicHost.ts`, bench 22/22).
+Requiring `CRUCIBLE_PUBLIC_HOST` by hand was a footgun: the moment you need the link is the
+moment you are not at the Mac to discover the variable exists. cloudflared already declares the
+hostname routed to this port, so read it. The bench caught a real bug in the first draft —
+`http_status:404` was being parsed as port 404, making the catch-all entry answer for any
+lookup. Verified end to end: minting on the live server returns
+`https://crucible.cam/?device=…`. Test device revoked; the store is empty.
+
+**6. Rail width has one definition** (`railWidth()` in `SidebarRail.tsx`), consumed by App's
+`railW`. It was the literal `64 : 272` in both files — the layout contract three fixed-position
+elements depend on.
+
+**7. Reduced motion is verified, not assumed** (old ROADMAP open item 5). Exercised by mounting
+the real `CardDeck` with `matchMedia` forced, both ways, rather than changing a system setting.
+With reduce ON a synthetic drag leaves the transform untouched and the card unchanged, while
+arrows and ←/→ both still step; with reduce OFF the same drag tracks the finger and commits.
+
+**Not a change, but recorded:** the last external-asset item in NEXT_SESSION was already fixed —
+`SurfaceRenderer` draws a local monogram and no `<img>` in `src/` takes a remote URL. The doc was
+stale. Separately, `npm run lint` has never worked: there is no ESLint config in the repo at all,
+and inventing a style regime was left as the user's call.
+
 ### 2026-08-04 (cont.124 — off-LAN pairing, adaptive capture bitrate, the dock height split, glass port)
 
 Four tracks, each measured rather than asserted.
