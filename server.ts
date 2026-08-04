@@ -3059,6 +3059,44 @@ function reclaimSlotFromAbandonedRuns(): number {
   return n
 }
 
+/**
+ * A verifier whose post-conditions are checked against the REAL FILESYSTEM before the base
+ * verifier is consulted.
+ *
+ * `loop.ts:65` makes verification optional and DEFAULTS TO ACCEPTING the final answer, so the
+ * only thing between "I did it" and "it is done" was a system-prompt instruction addressed to a
+ * 1.5B model. MEASURED: "The file prices.csv has been successfully read and added. No problems
+ * were flagged" — with total.txt never created.
+ *
+ * Hoisted to module scope 2026-08-03 because it was wired into ONE of the three agent paths.
+ * The meta-router builds a fresh verifier PER SUBTASK (server.ts, `runLoop`) and the planned-task
+ * path has its own, and neither had the gate — so exactly the multi-step goals most likely to
+ * claim work they had not done were the ones running unguarded. A gate on one of three paths is
+ * not a gate.
+ */
+function makeGatedVerifier(goalText: string, verifyCommand?: string) {
+  const verifier = makeVerifier({ command: verifyCommand, goal: goalText })
+  // Files present BEFORE the run — needed only by the preservation check, whose truth depends
+  // on the prior state.
+  const seed = ((): string[] => {
+    const m = /((?:\/[\w.@+-]+)+)/.exec(goalText ?? '')
+    try { return m ? fs.readdirSync(m[1].replace(/[.,;:!?)\]]+$/, '')) : [] } catch { return [] }
+  })()
+  const verify: typeof verifier.verify = async (finalText, ctx) => {
+    const post = verifyGoal(goalText ?? '', seed)
+    if (post.failed.length > 0) {
+      debugBus.emit('agent', 'postcondition_failed', { goal: (goalText ?? '').slice(0, 80), failed: post.failed }, { severity: 'error' })
+      return { passed: false, signal: 'postcondition', reason: correctionFor(post) } as Awaited<ReturnType<typeof verifier.verify>>
+    }
+    const base = await verifier.verify(finalText, ctx)
+    // A post-condition that actually RAN and passed is a genuine check, so it retires the
+    // "unverified" flag the base verifier sets when it had nothing runnable to run.
+    if (post.verified && base.passed) return { ...base, unverified: false, signal: base.signal ?? 'postcondition' }
+    return base
+  }
+  return { ...verifier, verify }
+}
+
 app.post('/api/chat', async (req, res) => {
   // v3: the DEFAULT mode is 'code' (Crucible-local). 'quorum' is only ever sent by the
   // client after the explicit per-query ensemble confirm — it is never a fallback.
@@ -4396,7 +4434,8 @@ app.post('/api/chat', async (req, res) => {
           // C2 — default-on verification: a fresh verifier per subtask. Auto-passes
           // when no runnable check exists (research/critic), gives the coder real
           // test/compile validation + self-heal. Subtask opts can still override.
-          verify: makeVerifier({ command: req.body.verifyCommand }).verify,
+          // Post-condition gated, same as the other two paths (see makeGatedVerifier).
+          verify: makeGatedVerifier(message ?? '', req.body.verifyCommand).verify,
           compressCallModel: (msgs) => {
             const { models: cm } = selectModels('general', SIMPLE_PIPELINE_CONFIG, 'simple', 'quorum')
             const m = cm[0]
@@ -4492,7 +4531,8 @@ app.post('/api/chat', async (req, res) => {
         planModel: planModelFn,
         emit: send,
         signal: ac.signal,
-        makeVerify: () => makeVerifier({ command: req.body.verifyCommand, goal }).verify,
+        // Third and last path — post-condition gated like the other two (see makeGatedVerifier).
+        makeVerify: () => makeGatedVerifier(goal, req.body.verifyCommand).verify,
         memoryDigest: [memoryDigest, codebaseContext].filter(Boolean).join('\n\n'),
         onPersist: persist,
         resume: resumable ? { steps: resumable.steps, completedSummaries: resumable.completedSummaries } : undefined,
@@ -4520,30 +4560,8 @@ app.post('/api/chat', async (req, res) => {
       send({ type: 'final', text: finalText })
       patchActiveSessionRound(chatUser, chatRoundId, { synthesis: finalText, synthesisDone: true, synthStreaming: false })
     } else {
-      const verifier = makeVerifier({ command: req.body.verifyCommand, goal: agentGoal })
-      // POST-CONDITION GATE. loop.ts:65 makes verification optional and DEFAULTS TO ACCEPTING
-      // the final answer, so the only thing standing between "I did it" and "it is done" was a
-      // system-prompt instruction addressed to a 1.5B model. MEASURED: "The file prices.csv has
-      // been successfully read and added. No problems were flagged" -- with total.txt never
-      // created. Post-conditions are extracted from the GOAL TEXT and checked against the real
-      // filesystem; a goal we cannot read yields zero conditions and defers to the existing
-      // verifier rather than inventing a pass (absence of a check is never a check).
-      const _postSeed = ((): string[] => {
-        const m = /((?:\/[\w.@+-]+)+)/.exec(agentGoal)
-        try { return m ? fs.readdirSync(m[1].replace(/[.,;:!?)\]]+$/, '')) : [] } catch { return [] }
-      })()
-      const gatedVerify: typeof verifier.verify = async (finalText, ctx) => {
-        const post = verifyGoal(agentGoal, _postSeed)
-        if (post.failed.length > 0) {
-          debugBus.emit('agent', 'postcondition_failed', { goal: agentGoal.slice(0, 80), failed: post.failed }, { severity: 'error' })
-          return { passed: false, signal: 'postcondition', reason: correctionFor(post) } as Awaited<ReturnType<typeof verifier.verify>>
-        }
-        const base = await verifier.verify(finalText, ctx)
-        // A real post-condition that PASSED is a genuine check, so it can retire the
-        // "unverified" flag the base verifier sets when it had nothing runnable to run.
-        if (post.verified && base.passed) return { ...base, unverified: false, signal: base.signal ?? 'postcondition' }
-        return base
-      }
+      const verifier = makeGatedVerifier(agentGoal, req.body.verifyCommand)
+      const gatedVerify = verifier.verify
       loopEntry('loop', 'entered')
       const result = await runAgentLoop({
         goal: agentGoal,
