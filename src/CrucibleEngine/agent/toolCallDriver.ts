@@ -736,6 +736,30 @@ export function makeToolCallDriveTurn(complete: Complete, goalSpec: string) {
       if (lit) args.content = lit[1].trim()
     }
 
+    // STRIP read_file's LINE NUMBERS out of content the model is about to write.
+    //
+    // `read_file` returns "N<TAB>line" (its description says so, and the numbers are genuinely
+    // useful for edits). But when the head TRANSCRIBES what it read into a write, it copies the
+    // numbers with it. MEASURED 2026-08-04 (`dedupe-lines`): the observation was
+    // "1\ta@x.com 2\tb@x.com 3\ta@x.com …" and the file it wrote came out as
+    // "1 a@x.com, 2 b@x.com, 3 a@x.com" — the deduplication silently failed because every line
+    // now had a unique prefix. This corrupts any copy-through, not just this task.
+    //
+    // Only fires when EVERY non-empty line carries the prefix and the numbers actually ascend —
+    // real content where each line happens to begin with a number and a tab is vanishingly rare,
+    // and requiring the sequence makes a false positive rarer still.
+    if ((tool.name === 'write_file' || tool.name === 'append_file') && typeof args.content === 'string') {
+      const ls = args.content.split('\n').filter(l => l.trim() !== '')
+      // Tab OR spaces: read_file emits "N\tline", but MEASURED 2026-08-04 the head re-emits it
+      // as "N line" — it normalises the whitespace while copying, so matching only the tab
+      // missed every real occurrence.
+      const nums = ls.map(l => /^(\d+)[ \t]+\S/.exec(l)?.[1])
+      if (ls.length > 1 && nums.every(n => n !== undefined) &&
+          nums.every((n, i) => i === 0 || Number(n) === Number(nums[i - 1]) + 1)) {
+        args.content = args.content.split('\n').map(l => l.replace(/^\d+[ \t]+/, '')).join('\n')
+      }
+    }
+
     // The same transcription rule for an APPEND. MEASURED 2026-08-04 (`follow-up-turn`): asked to
     // "add the word world to the end of draft.txt", the head passed content "hello world" — it
     // had re-typed the file's EXISTING contents alongside the new word, leaving "hello\nhello

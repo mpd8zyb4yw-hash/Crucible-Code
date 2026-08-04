@@ -1953,6 +1953,28 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04g — read_file's line numbers were corrupting written content
+
+`prove:all` 251/251, `toolcalldriver:bench` 31/31. Agentic probe **15-17/18 across runs** — see
+the honesty note below.
+
+- **Line-number strip** (`agent/toolCallDriver.ts`). `read_file` returns `N<TAB>line` (documented,
+  and useful for edits), but when the head TRANSCRIBES what it read into a write it copies the
+  numbers — and normalises the tab to a space on the way, which is why matching only `\t` missed
+  every real occurrence. MEASURED on `dedupe-lines`: the written file came out as
+  `1 a@x.com / 2 b@x.com / 3 a@x.com` and the deduplication silently failed, because every line
+  now carried a unique prefix. This corrupts ANY copy-through, not just dedupe. Stripped only
+  when every non-empty line is numbered AND the numbers ascend by one, so a genuine numbered list
+  is left alone (both cases benched).
+
+**HONESTY NOTE — the probe is not deterministic.** Recent full runs scored 17/18, 17/18, 15/18
+with DIFFERENT tasks failing each time (`read-then-write` wrote `100.0` instead of `292.24`;
+`read-and-answer` returned `Opened: <path>`; `correction-turn` asked a clarifying question
+instead of acting). Do not quote a single run as the capability number, and do not treat a task
+that passed once as fixed. The next session's first job is to run the suite 3x and record the
+per-task pass RATE, not the best run.
+
+
 ### 2026-08-04f — probe widened to 18 tasks; 12/18 -> 17/18
 
 Twelve-out-of-twelve was a signal to WIDEN, not to stop. Six harder tasks were added

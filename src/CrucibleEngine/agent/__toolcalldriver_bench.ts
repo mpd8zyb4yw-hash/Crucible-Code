@@ -146,6 +146,23 @@ async function main() {
     deriveArgs(renameTool, 'In /tmp/a, write notes.md containing hello.', rf) === null)
   check('other tools are never derived', deriveArgs(TOOLS[0], 'In /tmp/a, rename the function a to b', requiredFields(TOOLS[0])) === null)
 
+  // read_file returns "N<TAB>line"; the head copies the numbers into what it writes, and
+  // normalises the tab to a space on the way. MEASURED (dedupe-lines): the written file came out
+  // as "1 a@x.com / 2 b@x.com / 3 a@x.com" and the dedupe silently failed — every line now had a
+  // unique prefix.
+  const numbered = '1 a@x.com\n2 b@x.com\n3 c@x.com'
+  drive = makeToolCallDriveTurn(stub(['write_file', JSON.stringify({ path: '/tmp/a/u.txt', content: numbered })]), 'Write /tmp/a/u.txt')
+  r = await drive([], TOOLS)
+  check('MEASURED: read_file line numbers are stripped from written content',
+    r.toolCalls[0]?.args.content === 'a@x.com\nb@x.com\nc@x.com', JSON.stringify(r.toolCalls[0]?.args.content))
+
+  // The guard: genuinely numbered content is not mangled. These do not ascend by one.
+  const realList = '1 buy milk\n5 call bank\n9 write report'
+  drive = makeToolCallDriveTurn(stub(['write_file', JSON.stringify({ path: '/tmp/a/t.txt', content: realList })]), 'Write /tmp/a/t.txt')
+  r = await drive([], TOOLS)
+  check('a non-sequential numbered list is left alone', r.toolCalls[0]?.args.content === realList,
+    JSON.stringify(r.toolCalls[0]?.args.content))
+
   console.log(`\nTOOL-CALL DRIVER BENCH: ${pass}/${pass + fail}`)
   if (fail) process.exit(1)
 }

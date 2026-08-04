@@ -1,10 +1,14 @@
-# CURRENT STATE (2026-08-04f — replace this block every session)
+# CURRENT STATE (2026-08-04g — replace this block every session)
 
 ## The numbers
 
-- **Agentic: 17/18** (`npm run agent:workflow`), from **0/5** when this work started. The probe
-  was widened from 12 to 18 tasks on 2026-08-04f; the widening immediately found four real
-  defects (12/18) which are now fixed. Scored ONLY on what is true on disk.
+- **Agentic: 15-17/18 across three consecutive full runs** (`npm run agent:workflow`), from
+  **0/5** when this work started. The probe was widened from 12 to 18 tasks on 2026-08-04f and
+  the widening immediately found four real defects. Scored ONLY on what is true on disk.
+- **THE SUITE IS NOT DETERMINISTIC AND A SINGLE RUN IS NOT THE NUMBER.** Different tasks fail on
+  different runs. Run it 3x and record the per-task pass RATE before claiming anything moved; a
+  task that passed once is not fixed. This is now the single biggest open problem — the failures
+  are no longer missing capability, they are variance.
 - **Widening the probe has found real defects EVERY time.** 5 -> 9 -> 12 -> 18 tasks, each step
   exposing hallucinated file contents or false success claims. 18 is still narrow.
 - **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 0 over budget.
