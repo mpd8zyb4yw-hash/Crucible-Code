@@ -599,10 +599,25 @@ export default function App() {
   const followUpInChat = useCallback((text: string, convId?: string) => {
     setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false)
     setTab('chat')
-    const focus = () => requestAnimationFrame(() => {
+    // Focus has to survive a BACKGROUNDED window, which the rAF-only version did not:
+    // requestAnimationFrame is not scheduled at all while the page is hidden, so the
+    // callback simply never ran and the composer was prefilled with the caret left on
+    // whatever the user had clicked. That is not a theoretical case — anything that
+    // prefills from a background tab (a finished run offering "continue in chat", a
+    // notification) lands exactly there, and the user returns to a filled box that
+    // ignores their keystrokes.
+    //
+    // Two frames when visible (one lands before React commits), and a timer as the
+    // fallback that fires regardless of visibility. Whichever arrives first wins; the
+    // other is a no-op because focusing an already-focused element does nothing.
+    const focusNow = () => {
       const el = textareaRef.current
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length) }
-    })
+    }
+    const focus = () => {
+      requestAnimationFrame(() => requestAnimationFrame(focusNow))
+      setTimeout(focusNow, 60)
+    }
     // Threaded follow-up: adopt the run's OWN conversation so the next message continues it
     // with real history, instead of pasting the answer back in as pseudo-context. The composer
     // then starts EMPTY — the transcript above it already shows the run, so re-pasting it would
