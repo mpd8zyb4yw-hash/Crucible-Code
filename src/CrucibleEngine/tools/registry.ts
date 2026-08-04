@@ -486,6 +486,7 @@ registry.register({
     fs.mkdirSync(path.dirname(abs), { recursive: true })
     fs.writeFileSync(abs, String(args.content ?? ''), 'utf-8')
     ctx.onFileMutated?.([abs])
+    LAST_WRITE = abs
     return { ok: true, output: `Wrote ${String(args.content ?? '').length} chars to ${abs}` }
   },
 })
@@ -714,6 +715,17 @@ const LOOKUP_CACHE = new Map<string, { ok: boolean; output: string }>()
 let LAST_LOOKUP: { question: string; output: string } | null = null
 
 /**
+ * The file most recently written by a tool — the referent of "that file" in a follow-up turn.
+ *
+ * MEASURED 2026-08-04: turn one created draft.txt; turn two said "now add the word world to the
+ * end of that same file" and landed nowhere, because the second goal names no file and the head
+ * had nothing to put in the path. The system had just written that file and knew exactly where
+ * it was. Resolving a pronoun against work the machine itself did is bookkeeping, not inference.
+ */
+let LAST_WRITE: string | null = null
+export function lastWrittenFile(): string | null { return LAST_WRITE }
+
+/**
  * The most recent successful lookup_fact answer, as a cross-subtask scratchpad.
  *
  * MEASURED 2026-08-03: the meta-router runs each subtask with its OWN message history, so the
@@ -819,6 +831,7 @@ registry.register({
     fs.mkdirSync(path.dirname(abs), { recursive: true })
     fs.writeFileSync(abs, existing + sep + add + (add.endsWith('\n') ? '' : '\n'), 'utf-8')
     ctx.onFileMutated?.([abs])
+    LAST_WRITE = abs
     return { ok: true, output: `Appended ${add.length} chars to ${abs} (kept ${existing.length} existing chars)` }
   },
 })
@@ -842,6 +855,84 @@ registry.register({
     // Trailing newline does not make an extra line, which is what a person means by "how many".
     const n = text.length === 0 ? 0 : text.replace(/\n$/, '').split('\n').length
     return { ok: true, output: `${abs} has ${n} line(s)` }
+  },
+})
+
+registry.register({
+  name: 'filter_rows',
+  description: 'Write a new CSV containing only the rows of an existing CSV that match a condition on one column. Keeps the header. Use this instead of rewriting the rows yourself.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path to the source CSV.' },
+      out: { type: 'string', description: 'Absolute path to write the filtered CSV to.' },
+      where: { type: 'string', description: 'One condition, e.g. "age >= 18" or "city == Rome" or "name contains a".' },
+    },
+    // THREE fields, not five. MEASURED 2026-08-04: with (path, out, column, op, value) the FILL
+    // stage never produced a complete argument object, so the call was correctly refused as
+    // incomplete every time and adults.csv was never written — 57s of a capable tool sitting
+    // unreachable behind a form too long to fill. The condition is one phrase in the user's own
+    // words; splitting it into three fields was the machine's convenience, not the model's.
+    required: ['path', 'out', 'where'],
+  },
+  mutates: true,
+  async run(args, ctx) {
+    // MEASURED 2026-08-04: "write adults.csv containing only the rows where age is 18 or over,
+    // keeping the header" produced no file at all — nothing in the registry could select rows,
+    // so the WRITE step had only write_file, which would mean the head retyping the data from
+    // memory. Retyping data is how rows get silently dropped and values quietly altered; it is
+    // the same class of error as summing a column by hand. Selecting rows is decidable.
+    const src = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    // A RELATIVE `out` belongs beside the SOURCE, not in the process workspace. MEASURED
+    // 2026-08-04: the agent called filter_rows with the right source, the right condition, and
+    // out="adults.csv" — and resolveSafe put adults.csv in the Desktop workspace, so the task
+    // folder never got it and the run looked like a total failure. "In the same folder" is what
+    // the goal said and what the source path already encodes.
+    const rawOut = String(args.out ?? '')
+    const dst = rawOut.startsWith('/')
+      ? resolveSafe(rawOut, ctx, { allowOutside: true })
+      : resolveSafe(path.join(path.dirname(src), rawOut), ctx, { allowOutside: true })
+    let text: string
+    try { text = fs.readFileSync(src, 'utf-8') } catch { return { ok: false, output: `File not found: ${src}` } }
+    const lines = text.split(/\r?\n/).filter(l => l.trim())
+    if (lines.length < 2) return { ok: false, output: `${src} has no data rows.` }
+    const header = lines[0].split(',').map(h => h.trim())
+    const want = (/^\s*([A-Za-z0-9_ ]+?)\s*(?:>=|<=|!=|==|=|>|<|contains)/i.exec(String(args.where ?? ''))?.[1] ?? '').trim().toLowerCase()
+    let idx = header.findIndex(h => h.toLowerCase() === want)
+    if (idx < 0) {
+      const near = header.map((h, i) => ({ h, i })).filter(x => x.h.toLowerCase().startsWith(want) || want.startsWith(x.h.toLowerCase()))
+      if (near.length === 1) idx = near[0].i
+    }
+    if (idx < 0) return { ok: false, output: `No column "${want}" in ${src}. Columns: ${header.join(', ')}` }
+
+    const cond = /^\s*([A-Za-z0-9_ ]+?)\s*(>=|<=|!=|==|=|>|<|contains)\s*(.+?)\s*$/i.exec(String(args.where ?? ''))
+    if (!cond) return { ok: false, output: `Could not read the condition "${args.where}". Use the form "age >= 18".` }
+    const op = cond[2].trim()
+    const rhs = cond[3].trim().replace(/^["']|["']$/g, '')
+    const rhsNum = Number(rhs)
+    const keep = (cell: string): boolean => {
+      const c = cell.trim()
+      const n = Number(c)
+      const numeric = isFinite(n) && isFinite(rhsNum) && c !== ''
+      switch (op) {
+        case '>=': return numeric && n >= rhsNum
+        case '>': return numeric && n > rhsNum
+        case '<=': return numeric && n <= rhsNum
+        case '<': return numeric && n < rhsNum
+        case '==': case '=': return numeric ? n === rhsNum : c.toLowerCase() === rhs.toLowerCase()
+        case '!=': return numeric ? n !== rhsNum : c.toLowerCase() !== rhs.toLowerCase()
+        case 'contains': return c.toLowerCase().includes(rhs.toLowerCase())
+        default: return false
+      }
+    }
+    if (!['>=', '>', '<=', '<', '==', '=', '!=', 'contains'].includes(op)) {
+      return { ok: false, output: `Unsupported op "${op}". Use one of: >= > <= < == != contains` }
+    }
+    const kept = lines.slice(1).filter(l => keep(l.split(',')[idx] ?? ''))
+    fs.mkdirSync(path.dirname(dst), { recursive: true })
+    fs.writeFileSync(dst, [lines[0], ...kept].join('\n') + '\n', 'utf-8')
+    ctx.onFileMutated?.([dst])
+    return { ok: true, output: `Wrote ${dst}: ${kept.length} of ${lines.length - 1} row(s) where ${header[idx]} ${op} ${rhs}, header kept` }
   },
 })
 

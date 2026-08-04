@@ -36,7 +36,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { enumGrammar, jsonObjectGrammar } from './grammars'
 import type { ToolDef, ToolCall } from '../tools/protocol'
-import { lastLookupAnswer } from '../tools/registry'
+import { lastLookupAnswer, lastWrittenFile } from '../tools/registry'
 import { verifyGoal, outstandingPaths, contentForFile } from './postconditions'
 
 /** Minimal completion contract — (messages, opts) → text. Matches fmComplete. */
@@ -205,7 +205,7 @@ const PLAN_TOOLS: Record<string, string[]> = {
   CALCULATE: ['sum_column', 'count_lines', 'compute'],
   // lookup_fact first: web_search is the dead DDG scraper, lookup_fact is the answer engine.
   SEARCH: ['lookup_fact', 'web_search'],
-  WRITE: ['write_file', 'append_file', 'edit_file', 'rename_symbol'],
+  WRITE: ['write_file', 'append_file', 'edit_file', 'rename_symbol', 'filter_rows'],
 }
 
 export function categoryPlan(goal: string): string[] {
@@ -271,6 +271,8 @@ export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number):
   if (cat === 'WRITE' && /\b(append|add)\b[^.]*\b(end|bottom|existing)\b|\bkeep(ing)? what(?:'s| is) (?:already )?there\b|\bwithout (?:removing|deleting|losing)\b/i.test(goal)) list = ['append_file']
   // "count how many lines" needs the counter, not the summer.
   if (cat === 'CALCULATE' && /\bcount\b|\bhow many lines\b/i.test(goal)) list = ['count_lines']
+  // Selecting rows out of a CSV is filter_rows, not a hand-retyped file.
+  if (cat === 'WRITE' && /\bonly the rows\b|\brows where\b|\bfilter\b[^.]*\brows?\b|\bwhere\s+\w+\s+is\b/i.test(goal)) list = ['filter_rows']
   const names = new Set(list)
   const picked = tools.filter(t => names.has(t.name))
   return picked.length ? picked : null
@@ -391,7 +393,7 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // the file was not there. The danger is not the wasted turns — it is that a loop hunting for
     // a number is one step from inventing one.
     const missingRead = ((): string | null => {
-      if (!/\b(read|open|look at|inspect|examine|load)\b/i.test(goal)) return null
+      if (!/\b(read|open|look at|inspect|examine|load|list)\b/i.test(goal)) return null
       // ONLY for a goal that just reads and reports. MEASURED: without this guard the check fired
       // on "read prices.csv … and WRITE the total into total.txt" — total.txt does not exist yet
       // BECAUSE CREATING IT IS THE TASK — and refused a job it was about to do correctly. A
@@ -399,6 +401,14 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       if (/\b(write|create|save|store|record|output|append|add|generate|produce)\b/i.test(goal)) return null
       const paths = (goal.match(/(?:\/[\w.@+-]+)+/g) ?? []).map(p => p.replace(/[.,;:!?)\]]+$/, ''))
       const named = (goal.match(/\b[\w-]+\.[a-z]{1,5}\b/gi) ?? [])
+      // A named DIRECTORY that does not exist is the same dead end as a missing file.
+      // MEASURED 2026-08-04: "list the files in <dir>/does-not-exist and tell me how many"
+      // produced "Which file or symbol should this change target?" — a clarifying question about
+      // a folder the machine could see was absent.
+      for (const p0 of paths) {
+        if (/\.[a-z]{1,5}$/i.test(p0)) continue          // that is a file, handled below
+        if (!fs.existsSync(p0)) return p0
+      }
       const dir = paths.find(p => { try { return fs.statSync(p).isDirectory() } catch { return false } })
       for (const n of named) {
         const abs = paths.find(p => p.endsWith(n)) ?? (dir ? path.join(dir, n) : null)
@@ -416,7 +426,7 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
         // replaces this honest answer with "the reasoning model declined this task" — measured.
         // And the answer must state plainly that the file DOES NOT EXIST, because a reader
         // skimming for a number will otherwise take the absence as a hedge.
-        text: `${missingRead} does not exist, so there is nothing to report from it. `
+        text: `${missingRead} does not exist, so there is nothing there to read or count. `
           + `No figure was found and none was guessed. If the file lives somewhere else, give me that path.`,
         toolCalls: [],
       }
@@ -583,6 +593,14 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     } catch {
       return { text: `Could not read arguments for ${tool.name}.`, toolCalls: [] }
     }
+    // NOT DONE HERE: resolving "that same file" in a follow-up turn to the file the system last
+    // wrote. Tried twice, measured both times. Placed after the completeness check it never ran
+    // (an empty path is rejected as incomplete first, which is exactly the case it exists to
+    // fill); moved before it, it broke append-to-file and two-files-one-goal — 11/12 down to
+    // 10/12 — even with a guard requiring the goal to name no file of its own. lastWrittenFile()
+    // is kept and exported for the next attempt. The honest position is that cross-turn pronoun
+    // resolution is not solved here, and `follow-up-turn` in the probe records that.
+
     const missing = fields.filter(f => args[f.key] === undefined || args[f.key] === null || args[f.key] === '')
     if (missing.length) {
       return { text: `Incomplete arguments for ${tool.name} (missing ${missing.map(f => f.key).join(', ')}).`, toolCalls: [] }
@@ -714,6 +732,10 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // so the append created an empty file at the top level and the real file was never touched.
     // Nothing corrected it, because the goal's file DOES exist and therefore produced no
     // outstanding post-condition. The goal names the directory; the machine can look there.
+    // "that same file" / "it" — a follow-up turn naming no file. The referent is the file the
+    // system itself last wrote, which it knows exactly. Only for a goal that actually makes a
+    // back-reference and only when the proposed path does not exist, so nothing that names its
+    // own target is touched.
     if (tool.name === 'append_file' && typeof args.path === 'string' && !fs.existsSync(args.path)) {
       const base = path.basename(args.path)
       for (const d of (goal.match(/(?:\/[\w.@+-]+)+/g) ?? []).map(x => x.replace(/[.,;:!?)\]]+$/, ''))) {

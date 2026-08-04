@@ -168,7 +168,14 @@ export function resolveAmbiguity(goal: string, opts: { index?: SemanticIndex } =
   // early (was section 2) so this gate can use it; auto-resolution (single index match)
   // still runs unconditionally since it's purely additive/harmless goal enrichment, never
   // a source of a false "ambiguous" verdict.
-  const namesAFile = FILE_TOKEN.test(goal)
+  // An absolute PATH names a target whether or not it carries a file extension. MEASURED
+  // 2026-08-04: "List the files in /Users/…/does-not-exist and tell me how many there are"
+  // matched no FILE_TOKEN (the last segment has no dot), so the goal was judged to have no
+  // target and the agent answered a concrete request with "Which file or symbol should this
+  // change target?" — a clarifying question about a folder whose absence the machine could
+  // simply have checked. A directory is a target.
+  const ABS_PATH = /(?:^|\s)\/[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)+/
+  const namesAFile = FILE_TOKEN.test(goal) || ABS_PATH.test(goal)
   // Two more structural bypasses for the which-file interrogation (2026-07-07, both from
   // the live "Build this for me: a snake game" failure — agent finished in 0.0s asking
   // which file "for" refers to):
