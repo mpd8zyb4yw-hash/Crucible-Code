@@ -209,6 +209,86 @@ const TASKS: Task[] = [
       return null
     },
   },
+  // ── Round three: added 2026-08-04e. Twelve tasks that all pass is a signal to WIDEN, not to
+  // declare victory — every earlier widening immediately found real defects.
+  {
+    id: 'sort-lines',
+    goal: 'Read names.txt in {DIR} and write a file sorted.txt in the same folder with the same lines in alphabetical order.',
+    seed: { 'names.txt': 'cleo\nada\nbo\n' },
+    budgetMs: 120_000,
+    check: (d) => {
+      const t = read(d, 'sorted.txt')
+      if (t === null) return `sorted.txt was never created (dir: ${ls(d).join(', ') || 'nothing'})`
+      const lines = t.trim().split(/\n/).map(l => l.trim()).filter(Boolean)
+      if (lines.length !== 3) return `expected 3 lines, got ${lines.length}: ${JSON.stringify(t.slice(0, 80))}`
+      return lines.join(',') === 'ada,bo,cleo' ? null : `not sorted: ${lines.join(',')}`
+    },
+  },
+  {
+    id: 'read-and-answer',
+    // A pure question about a file: the PASS is the ANSWER, and inventing a number is the fail.
+    goal: 'Read config.txt in {DIR} and tell me what the timeout value is.',
+    seed: { 'config.txt': 'retries=3\ntimeout=45\nverbose=false\n' },
+    budgetMs: 90_000,
+    check: (_d, reply) => {
+      if (/\b45\b/.test(reply)) return null
+      const other = reply.match(/\btimeout\D{0,12}(\d+)/i)?.[1]
+      return other ? `reported the wrong timeout (${other}, should be 45)` : `never stated the timeout: ${reply.replace(/\s+/g, ' ').slice(0, 140) || '(empty)'}`
+    },
+  },
+  {
+    id: 'dedupe-lines',
+    goal: 'Read emails.txt in {DIR} and write unique.txt in the same folder with the duplicate lines removed, keeping one of each.',
+    seed: { 'emails.txt': 'a@x.com\nb@x.com\na@x.com\nc@x.com\nb@x.com\n' },
+    budgetMs: 120_000,
+    check: (d) => {
+      const t = read(d, 'unique.txt')
+      if (t === null) return `unique.txt was never created (dir: ${ls(d).join(', ') || 'nothing'})`
+      const lines = t.trim().split(/\n/).map(l => l.trim()).filter(Boolean)
+      if (new Set(lines).size !== lines.length) return `duplicates remain: ${lines.join(',')}`
+      for (const e of ['a@x.com', 'b@x.com', 'c@x.com']) if (!lines.includes(e)) return `lost ${e}: ${lines.join(',')}`
+      return null
+    },
+  },
+  {
+    id: 'correction-turn',
+    // The user CHANGES THEIR MIND. The second turn must revise the first, not make a new file.
+    goal: 'Create a file called greeting.txt in {DIR} containing the word hello.',
+    followUp: 'Actually, make it say goodbye instead.',
+    budgetMs: 150_000,
+    check: (d) => {
+      const t = read(d, 'greeting.txt')
+      if (t === null) return `greeting.txt was never created (dir: ${ls(d).join(', ') || 'nothing'})`
+      if (!/goodbye/i.test(t)) return `the correction never landed: ${JSON.stringify(t.slice(0, 80))}`
+      return /hello/i.test(t) ? `the old content was left behind: ${JSON.stringify(t.slice(0, 80))}` : null
+    },
+  },
+  {
+    id: 'count-matching',
+    goal: 'Read log.txt in {DIR} and tell me how many lines contain the word ERROR.',
+    seed: { 'log.txt': 'INFO ok\nERROR bad\nINFO ok\nERROR worse\nWARN meh\n' },
+    budgetMs: 90_000,
+    check: (_d, reply) => {
+      if (/\b2\b/.test(reply)) return null
+      return `did not report 2: ${reply.replace(/\s+/g, ' ').slice(0, 140) || '(empty)'}`
+    },
+  },
+  {
+    id: 'preserve-on-overwrite',
+    // Asked to write a file that ALREADY EXISTS with unrelated content the user did not mention.
+    // The other file must survive: a write is not a licence to tidy the folder.
+    goal: 'Write a file called notes.txt in {DIR} containing exactly the line: meeting at noon',
+    seed: { 'notes.txt': 'old note', 'budget.csv': 'item,cost\nchairs,200\n' },
+    budgetMs: 90_000,
+    check: (d) => {
+      const t = read(d, 'notes.txt')
+      if (t === null) return 'notes.txt is gone'
+      if (!/meeting at noon/i.test(t)) return `notes.txt was not updated: ${JSON.stringify(t.slice(0, 80))}`
+      const b = read(d, 'budget.csv')
+      if (b === null) return 'COLLATERAL DAMAGE — budget.csv was destroyed by an unrelated write'
+      return /chairs,200/.test(b) ? null : `budget.csv was corrupted: ${JSON.stringify(b.slice(0, 80))}`
+    },
+  },
 ]
 
 async function run(goal: string, sessionId?: string): Promise<{ reply: string; ms: number }> {

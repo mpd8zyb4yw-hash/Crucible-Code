@@ -1953,6 +1953,34 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04f — probe widened to 18 tasks; 12/18 -> 17/18
+
+Twelve-out-of-twelve was a signal to WIDEN, not to stop. Six harder tasks were added
+(`sort-lines`, `read-and-answer`, `dedupe-lines`, `correction-turn`, `count-matching`,
+`preserve-on-overwrite`) and the first run scored **12/18** — four genuinely new defects.
+After the fixes: **17/18**. `prove:all` 251/251.
+
+- **`transform_lines` and `count_matching` tools** (`tools/registry.ts`). With no tool for
+  sorting or deduplicating, the head RETYPED the file from memory: asked to sort a file
+  containing `cleo/ada/bo` it wrote **"John Doe, Jane Smith, Alice Johnson"** — names appearing
+  nowhere in the input — and the dedupe task emitted a bare `1` as a line and dropped an address.
+  Asked "how many lines contain ERROR" it answered with raw grep residue,
+  `exit 0 ERROR bad ERROR worse`. All three operations are decidable; the pattern is the same one
+  that produced `sum_column`, `count_lines` and `filter_rows`.
+- **`asksForInformation()` + the unanswered-question guard** (`agent/loop.ts`). MEASURED on
+  `count-matching` and `read-and-answer`: the agent ran the right tool, GOT the right
+  observation, and replied "Every step of the request has been carried out." Nothing caught it —
+  tool calls WERE made, so the hollow-completion guard does not apply, and post-conditions assert
+  on FILES, which a question never produces. A goal that asks to be told something is not
+  satisfied by a report that work happened. Bounced once with the evidence; if the model still
+  will not answer, the tool observation is returned, because the observation IS the answer.
+- Relative `out` on `transform_lines` resolves beside the SOURCE, the lesson `filter_rows`
+  already learned.
+
+Open: `dedupe-lines` is flaky — it passes in isolation but failed in-suite by numbering the
+lines (`1 a@x.com,2 b@x.com,…`) and then wandering into running `node`.
+
+
 ### 2026-08-04e — 12/12 with every task inside its budget
 
 **`npm run agent:workflow`: 12/12, zero `[SLOW]`** — the first run where no task is over budget.

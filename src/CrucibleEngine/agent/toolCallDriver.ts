@@ -226,10 +226,10 @@ const CATEGORY_VERBS: Array<{ cat: string; rx: RegExp }> = [
 /** Tools per plan category. Deliberately small and non-destructive. */
 const PLAN_TOOLS: Record<string, string[]> = {
   READ: ['read_file', 'list_dir'],
-  CALCULATE: ['sum_column', 'count_lines', 'compute'],
+  CALCULATE: ['sum_column', 'count_lines', 'count_matching', 'compute'],
   // lookup_fact first: web_search is the dead DDG scraper, lookup_fact is the answer engine.
   SEARCH: ['lookup_fact', 'web_search'],
-  WRITE: ['write_file', 'append_file', 'edit_file', 'rename_symbol', 'filter_rows'],
+  WRITE: ['write_file', 'append_file', 'edit_file', 'rename_symbol', 'filter_rows', 'transform_lines'],
 }
 
 export function categoryPlan(goal: string): string[] {
@@ -295,6 +295,11 @@ export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number):
   if (cat === 'WRITE' && /\b(append|add)\b[^.]*\b(end|bottom|existing)\b|\bkeep(ing)? what(?:'s| is) (?:already )?there\b|\bwithout (?:removing|deleting|losing)\b/i.test(goal)) list = ['append_file']
   // "count how many lines" needs the counter, not the summer.
   if (cat === 'CALCULATE' && /\bcount\b|\bhow many lines\b/i.test(goal)) list = ['count_lines']
+  // Sorting or deduplicating LINES is transform_lines, never a hand-retyped file. MEASURED
+  // 2026-08-04: asked to sort a file of three names the head emitted three DIFFERENT names.
+  if (cat === 'WRITE' && /\b(sort|alphabetical|alphabetise|alphabetize|dedupe|duplicate|unique)\b/i.test(goal)) list = ['transform_lines']
+  // "how many lines contain X" is a match count, not a line count.
+  if (cat === 'CALCULATE' && /\bhow many lines\b[^.]*\bcontain\b|\blines? (?:that )?contain\b/i.test(goal)) list = ['count_matching']
   // Selecting rows out of a CSV is filter_rows, not a hand-retyped file.
   if (cat === 'WRITE' && /\bonly the rows\b|\brows where\b|\bfilter\b[^.]*\brows?\b|\bwhere\s+\w+\s+is\b/i.test(goal)) list = ['filter_rows']
   // SPECIALIST TOOLS ARE NOT GENERAL OFFERS.
@@ -313,6 +318,8 @@ export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number):
   const SPECIALIST_TRIGGER: Record<string, RegExp> = {
     rename_symbol: /\brename\b/i,
     filter_rows: /\bonly the rows\b|\brows where\b|\bfilter\b[^.]*\brows?\b|\bwhere\s+\w+\s+is\b/i,
+    transform_lines: /\b(sort|alphabetical|alphabetise|alphabetize|dedupe|duplicate|unique)\b/i,
+    count_matching: /\bcontain\b/i,
   }
   list = list.filter(n => !SPECIALIST_TRIGGER[n] || SPECIALIST_TRIGGER[n].test(goal))
 

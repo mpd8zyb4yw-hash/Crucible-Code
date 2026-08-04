@@ -198,6 +198,19 @@ TYPESCRIPT PROJECTS: When creating a new TypeScript project, always follow these
 }
 
 /**
+ * True when the goal asks the user to be TOLD something, rather than asking for work to be done.
+ *
+ * Such a goal is satisfied by an ANSWER, and post-conditions cannot help: they assert on files,
+ * and a question produces none. Deliberately requires an explicit information verb or question
+ * word — "write the total into total.txt" is work, not a question, even though it involves a
+ * number.
+ */
+export function asksForInformation(goal: string): boolean {
+  return /\b(tell me|let me know|how many|how much|what is|what's|what are|which|report (?:back|the)|show me|find out|do you know)\b/i
+    .test(goal ?? '')
+}
+
+/**
  * True when a final answer ASSERTS that an action was carried out.
  *
  * Paired with `toolCallCount === 0`, this is a lie detectable without a model or a filesystem:
@@ -370,6 +383,7 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
   let residueBounces = 0
   const MAX_RESIDUE_BOUNCES = 2
   let hollowBounces = 0
+  let unansweredBounces = 0
 
   // Grounding gate state — bounds how many times a rejected final answer can be
   // bounced back for correction, so a stubborn checker can never loop forever.
@@ -644,6 +658,38 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
       return done('stalled',
         'The reasoning model declined this task without attempting it, even after a correction. ' +
         'This is a model limitation, not a permissions issue — try rephrasing (e.g. name the app or file directly), or run the request again.', iter)
+    }
+
+    // UNANSWERED QUESTION guard — the goal asked for information and the final is a status line.
+    //
+    // MEASURED 2026-08-04 (`count-matching`, `read-and-answer`): asked "how many lines contain
+    // ERROR" and "what is the timeout value", the agent ran the right tool, GOT the right
+    // observation, and then replied "Every step of the request has been carried out." The work
+    // was done and the answer was thrown away at the last step. Nothing caught it: tool calls
+    // were made, so the hollow-completion guard does not apply, and post-conditions assert on
+    // FILES — a question that produces no file has nothing for them to check.
+    //
+    // A goal that asks for information is not satisfied by a report that work happened. Bounced
+    // once with the evidence; if the model still will not answer, the tool observation itself is
+    // returned, because the observation IS the answer and boilerplate is strictly worse.
+    if (asksForInformation(goal) && claimsCompletedAction(turn.text) && toolCallCount > 0) {
+      const lastObs = [...messages].reverse().find(m => m.role === 'tool' && typeof m.content === 'string')?.content as string | undefined
+      if (unansweredBounces < 1 && lastObs) {
+        unansweredBounces++
+        debugBus.emit('agent', 'unanswered_question_bounced', { iter, text: turn.text.slice(0, 120) }, { severity: 'warn' })
+        emit({ type: 'thought', text: '[Reported status instead of answering the question — asking for the answer]', iter })
+        messages.push({ role: 'assistant', content: turn.text })
+        messages.push({
+          role: 'user',
+          content: `SYSTEM CORRECTION: You were asked a QUESTION, not to perform a task, and "${turn.text.trim().slice(0, 80)}" is not an answer. ` +
+            `The information you gathered is:\n${lastObs.slice(0, 600)}\n\nAnswer the question directly, stating the actual value. The request was: ${goal.slice(0, 300)}`,
+        })
+        continue
+      }
+      if (lastObs) {
+        debugBus.emit('agent', 'unanswered_question_fallback', { iter }, { severity: 'warn' })
+        turn.text = String(lastObs).replace(/^\(ok\)\s*/, '').trim()
+      }
     }
 
     // HOLLOW COMPLETION guard — a claim of completed ACTION after ZERO tool calls.

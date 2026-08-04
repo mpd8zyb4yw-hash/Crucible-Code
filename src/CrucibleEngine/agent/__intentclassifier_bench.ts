@@ -17,7 +17,7 @@
 // The rule under test is deterministic: mutation verb + something to mutate = task.
 // ═══════════════════════════════════════════════════════════════════════════════
 import { classifyIntent } from './intentClassifier'
-import { claimsCompletedAction } from './loop'
+import { claimsCompletedAction, asksForInformation } from './loop'
 
 let pass = 0, fail = 0
 function check(name: string, ok: boolean, detail = '') {
@@ -76,6 +76,24 @@ for (const t of [
   'To do this you would write a small script.',
   'Which folder should I put it in?',
 ]) check(`not a completion claim: "${t}"`, !claimsCompletedAction(t))
+
+// ── UNANSWERED QUESTION: the goal asks to be TOLD something ─────────────────────────
+// MEASURED (count-matching, read-and-answer): the agent ran the right tool, got the right
+// observation, then replied "Every step of the request has been carried out." Post-conditions
+// cannot catch this — they assert on files, and a question produces none.
+for (const g of [
+  'Read log.txt and tell me how many lines contain the word ERROR.',
+  'Read config.txt in /tmp/a and tell me what the timeout value is.',
+  'List the files in /tmp/a and tell me how many there are.',
+  'Which of these files is the largest?',
+]) check(`asks for information: "${g.slice(0, 40)}..."`, asksForInformation(g))
+
+// Work is not a question, even when it involves a number.
+for (const g of [
+  'Read prices.csv, add up the amount column, and write the total into total.txt.',
+  'Create a file called draft.txt containing the word hello.',
+  'Append the line reviewed to log.txt.',
+]) check(`is work, not a question: "${g.slice(0, 40)}..."`, !asksForInformation(g))
 
 console.log(`\nINTENT CLASSIFIER BENCH: ${pass}/${pass + fail}`)
 if (fail) process.exit(1)

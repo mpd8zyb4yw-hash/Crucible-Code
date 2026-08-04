@@ -1,10 +1,12 @@
-# CURRENT STATE (2026-08-04e — replace this block every session)
+# CURRENT STATE (2026-08-04f — replace this block every session)
 
 ## The numbers
 
-- **Agentic: 12/12 with ZERO tasks over budget** (`npm run agent:workflow`), from **0/5** when
-  this work started. Twelve multi-step tasks scored ONLY on what is true on disk; eleven finish
-  under 22s. Artifacts verified individually, not inferred from the score.
+- **Agentic: 17/18** (`npm run agent:workflow`), from **0/5** when this work started. The probe
+  was widened from 12 to 18 tasks on 2026-08-04f; the widening immediately found four real
+  defects (12/18) which are now fixed. Scored ONLY on what is true on disk.
+- **Widening the probe has found real defects EVERY time.** 5 -> 9 -> 12 -> 18 tasks, each step
+  exposing hallucinated file contents or false success claims. 18 is still narrow.
 - **Single-turn: 12/12 over the real HTTP wire** (`npm run e2e:http`), 0 over budget.
 - `npm run prove:all`: **251 skills, 0 failed**, plus every bench.
 

@@ -859,6 +859,77 @@ registry.register({
 })
 
 registry.register({
+  name: 'transform_lines',
+  description: 'Write a new file containing the lines of an existing file, sorted alphabetically and/or with duplicates removed. Use this instead of retyping the lines yourself.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path to the source text file.' },
+      out: { type: 'string', description: 'Absolute path to write the result to.' },
+      mode: { type: 'string', description: 'One of: sort, dedupe, sort+dedupe.' },
+    },
+    required: ['path', 'out', 'mode'],
+  },
+  mutates: true,
+  async run(args, ctx) {
+    // MEASURED 2026-08-04 (`sort-lines`, `dedupe-lines`): with no tool for either operation the
+    // head retyped the file from memory. Asked to sort a file containing "cleo/ada/bo" it wrote
+    // "John Doe, Jane Smith, Alice Johnson" — names that appear NOWHERE in the input — and the
+    // dedupe task emitted a bare "1" as a line and dropped an address entirely. Sorting and
+    // deduplicating are decidable, so they get a tool; handing a 1.5B model a text file and
+    // asking it to re-emit the lines in order is asking it to hallucinate.
+    const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    let text: string
+    try { text = fs.readFileSync(abs, 'utf-8') } catch { return { ok: false, output: `File not found: ${abs}` } }
+    const mode = String(args.mode ?? '').toLowerCase()
+    // Blank lines are formatting, not data, and a trailing newline is not a line.
+    let lines = text.replace(/\n$/, '').split('\n').filter(l => l.trim() !== '')
+    const before = lines.length
+    if (/dedupe|uniq|duplicate/.test(mode)) lines = Array.from(new Set(lines))
+    // localeCompare so "Ada" and "ada" sort where a person expects, not by code point.
+    if (/sort|alpha|order/.test(mode)) lines = [...lines].sort((a, b) => a.localeCompare(b))
+    if (!/dedupe|uniq|duplicate|sort|alpha|order/.test(mode)) {
+      return { ok: false, output: `Unknown mode "${args.mode}" — use sort, dedupe, or sort+dedupe` }
+    }
+    // A RELATIVE `out` belongs beside the SOURCE, not in the process workspace — the same
+    // lesson filter_rows learned: "in the same folder" is the source's folder.
+    const rawOut = String(args.out ?? '')
+    const outAbs = rawOut.startsWith('/')
+      ? resolveSafe(rawOut, ctx, { allowOutside: true })
+      : resolveSafe(path.join(path.dirname(abs), rawOut), ctx, { allowOutside: true })
+    fs.writeFileSync(outAbs, lines.join('\n') + '\n', 'utf-8')
+    LAST_WRITE = outAbs
+    ctx.onFileMutated?.([outAbs])
+    return { ok: true, output: `Wrote ${lines.length} line(s) to ${outAbs} (from ${before}, mode: ${mode})` }
+  },
+})
+
+registry.register({
+  name: 'count_matching',
+  description: 'Count how many lines of a file contain a given word or phrase. Use this instead of counting them yourself.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path to the file.' },
+      needle: { type: 'string', description: 'The word or phrase to look for.' },
+    },
+    required: ['path', 'needle'],
+  },
+  async run(args, ctx) {
+    // MEASURED 2026-08-04 (`count-matching`): asked how many lines contain ERROR, the agent
+    // answered with the raw grep residue "exit 0 ERROR bad ERROR worse" — it had found the
+    // lines and then failed to produce the number. Counting matches is decidable.
+    const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    let text: string
+    try { text = fs.readFileSync(abs, 'utf-8') } catch { return { ok: false, output: `File not found: ${abs}` } }
+    const needle = String(args.needle ?? '')
+    if (!needle) return { ok: false, output: 'No word or phrase given to count' }
+    const n = text.replace(/\n$/, '').split('\n').filter(l => l.toLowerCase().includes(needle.toLowerCase())).length
+    return { ok: true, output: `${n} line(s) in ${abs} contain "${needle}"` }
+  },
+})
+
+registry.register({
   name: 'filter_rows',
   description: 'Write a new CSV containing only the rows of an existing CSV that match a condition on one column. Keeps the header. Use this instead of rewriting the rows yourself.',
   params: {
