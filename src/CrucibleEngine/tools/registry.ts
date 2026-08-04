@@ -647,6 +647,46 @@ registry.register({
 })
 
 registry.register({
+  name: 'lookup_fact',
+  description: 'Answer a factual question (versions, definitions, current values) using Crucible\'s own verified answer engine, with sources. Prefer this over web_search for facts.',
+  params: {
+    type: 'object',
+    properties: {
+      question: { type: 'string', description: 'The question, in plain English.' },
+    },
+    required: ['question'],
+  },
+  async run(args) {
+    // MEASURED 2026-08-03 (`npm run agent:workflow`, research-to-file): the agent correctly
+    // chose to search, called web_search, and got "No results found. DDG may have changed their
+    // markup or blocked the request." The SERP scraper is dead — retrieval/retrievalLayer.ts
+    // says so in its own comments. Meanwhile the ANSWER path answers "what is the current Node
+    // LTS" in ~300ms from a structured release table, with the source URL attached, and scores
+    // 23/23 on the daily probe.
+    //
+    // So the agent stops having a second, worse retrieval stack and delegates to the one that
+    // works. This is DOCTRINE §5 (one spine): a capability is a TOOL over the existing
+    // pipeline, never a parallel pipeline. The verification the answer path performs comes
+    // along with it — including its refusal to answer what it cannot ground.
+    const question = String(args.question ?? '').trim()
+    if (!question) return { ok: false, output: 'lookup_fact needs a question.' }
+    try {
+      const { answerQuery } = await import('../answer/answerEngine')
+      const r = await answerQuery(question)
+      if (!r.text?.trim()) return { ok: false, output: 'No answer could be grounded for that question.' }
+      const cites = (r.sources ?? []).slice(0, 3)
+      const badge = r.verified ? 'verified' : r.abstained ? 'abstained' : 'unverified'
+      return {
+        ok: !r.abstained,
+        output: `[${badge}] ${r.text}` + (cites.length ? `\n\nSources:\n${cites.map(u => `- ${u}`).join('\n')}` : ''),
+      }
+    } catch (e) {
+      return { ok: false, output: `lookup_fact failed: ${(e as Error).message}` }
+    }
+  },
+})
+
+registry.register({
   name: 'search',
   description: 'Search file contents in the project for a pattern (regex). Returns file:line: matches.',
   params: {

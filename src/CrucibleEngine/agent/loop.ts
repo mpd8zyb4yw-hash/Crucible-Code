@@ -537,7 +537,6 @@ export async function runAgentLoop(opts: AgentLoopOpts): Promise<AgentLoopResult
         })),
       })
       const results = await Promise.all(turn.toolCalls.map(c => registry.exec(c, ctx)))
-      results.forEach((r,i)=>console.log(`[TX] ${turn.toolCalls[i].name} ${JSON.stringify(turn.toolCalls[i].args).slice(0,170)} ok=${r.ok} :: ${String(r.output).slice(0,110)}`))
       toolCallCount += results.length
       turn.toolCalls.forEach((c, i) => {
         debugBus.emit('tool', c.name, { args: c.args, ok: results[i].ok, output: results[i].output.slice(0, 300) }, { severity: results[i].ok ? 'info' : 'error' })

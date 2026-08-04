@@ -2982,7 +2982,17 @@ function buildAssumptionNote(message: string): string | null {
 // file). The single/planned coding loop still has web_search if it needs to look something
 // up, and actually writes + runs the code.
 function isCodeImplementationTask(message: string): boolean {
-  const m = message ?? ''
+  // "Node.js" is a product name, not a filename — the SAME defect already fixed in
+  // detectAgentTask. MEASURED 2026-08-03 (`npm run agent:workflow`, research-to-file): "Find out
+  // the current LTS version of Node.js, then write it into node.md" matched hasCodePath on the
+  // ".js" in "Node.js", was classified a code-implementation task, and died in the code state
+  // machine with "no oracle-passing code for Node.js: identical tsc failure shape across 3
+  // consecutive rounds". Nothing about that goal is code. Strip the closed set of .js-suffixed
+  // product names before asking whether a filename is present.
+  const m = (message ?? '').replace(
+    /\b(node|next|nuxt|vue|react|express|nest|three|d3|p5|ember|backbone|angular|socket|chart|discord|video|alpine|solid|svelte|electron)\.js\b/gi,
+    (x) => x.replace(/\.js$/i, 'js'),
+  )
   const buildVerb = /\b(implement|build|write|create|develop|code|scaffold|refactor)\b/i.test(m)
   const hasCodePath = /\b[\w./-]+\.(ts|tsx|js|jsx|py|go|rs|java|cpp|cc|c|rb|php|swift|kt)\b/.test(m)
   const codeNoun = /\b(function|class|module|interface|api|endpoint|algorithm|parser|engine|component|library|package|cli|data structure|test suite|self-test)\b/i.test(m)

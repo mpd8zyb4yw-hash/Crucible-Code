@@ -198,7 +198,8 @@ const CATEGORY_VERBS: Array<{ cat: string; rx: RegExp }> = [
 const PLAN_TOOLS: Record<string, string[]> = {
   READ: ['read_file', 'list_dir'],
   CALCULATE: ['sum_column', 'compute'],
-  SEARCH: ['web_search'],
+  // lookup_fact first: web_search is the dead DDG scraper, lookup_fact is the answer engine.
+  SEARCH: ['lookup_fact', 'web_search'],
   WRITE: ['write_file', 'edit_file', 'rename_symbol'],
 }
 
@@ -408,11 +409,23 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     // spent, and postconditions.ts is what decides whether the result is actually good — the
     // driver's job is only to stop proposing.
     const plan = categoryPlan(goal)
-    if (plan.length > 0 && succeeded.size >= plan.length) {
-      return { text: 'Every step of the request has been carried out.', toolCalls: [] }
+    if (plan.length > 0) {
+      // A step counts as done only when a tool BELONGING TO IT succeeded. Counting raw successes
+      // let an off-plan call consume a step: on read-then-write the agent did read_file,
+      // sum_column and then an incidental compute, hit three successes against a three-step
+      // plan, and stopped before ever writing total.txt — reporting "every step has been
+      // carried out" over an empty output file.
+      const doneNames = new Set([...succeeded].map(sig => sig.slice(0, sig.indexOf('('))))
+      const allStepsDone = plan.every(cat => (PLAN_TOOLS[cat] ?? []).some(n => doneNames.has(n)))
+      if (allStepsDone) return { text: 'Every step of the request has been carried out.', toolCalls: [] }
     }
 
-    const planned = attempt === 0 ? plannedTools(tools, goal, succeeded.size) : null
+    // Which plan step we are on = how many leading categories have a successful call of their
+    // own. Raw success count drifts as soon as the agent makes any off-plan call.
+    const doneNames2 = new Set([...succeeded].map(sig => sig.slice(0, sig.indexOf('('))))
+    let stepIdx = 0
+    while (stepIdx < plan.length && (PLAN_TOOLS[plan[stepIdx]] ?? []).some(n => doneNames2.has(n))) stepIdx++
+    const planned = attempt === 0 ? plannedTools(tools, goal, stepIdx) : null
     console.log(`[SEL] attempt=${attempt} succeeded=${succeeded.size} plan=${JSON.stringify(categoryPlan(goal))} offering=${planned?planned.map(t=>t.name).join('/'):'ALL'} ntools=${tools.length} sigs=${JSON.stringify([...succeeded].map(x=>x.slice(0,28)))}`)
     const usable = (planned ?? tools).filter(t => !excluded.has(t.name))
     const choices = [...(usable.length ? usable : tools).map(t => t.name), FINISH]
@@ -506,6 +519,22 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     if (tool.name === 'write_file' && typeof args.content === 'string') {
       const lit = /\bcontain(?:ing|s)?\s+(?:exactly\s+)?(?:the\s+)?(?:line|text|string)\s*:?\s*["“']?([^"”'\n]{3,200}?)\.?\s*$/i.exec(goal)
       if (lit) args.content = lit[1].trim()
+    }
+
+    // A goal that asks for the SOURCE gets the source. MEASURED 2026-08-03 on research-to-file:
+    // lookup_fact returned the answer WITH "Source: https://endoflife.date/nodejs" in the tool
+    // result, and the head then wrote a node.md carrying the version but not the URL — dropping
+    // the one thing that makes the claim checkable. The URL is already in hand; keeping it is
+    // copying, not reasoning, so the machine appends it rather than hoping.
+    if (tool.name === 'write_file' && typeof args.content === 'string'
+        && /\bsource|\bcite|\breference/i.test(goal) && !/https?:\/\//.test(args.content)) {
+      // Scan the RAW messages: ledger() truncates each tool result to 200 chars and the URL
+      // sits past that cut, so searching the ledger found nothing.
+      const hay = messages.map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '')).join(' ')
+      const urls = Array.from(new Set(
+        (hay.match(/https?:\/\/[^\s)\]",]+/g) ?? []).map(u => u.replace(/[.,;]+$/, '')),
+      ))
+      if (urls.length) args.content = `${args.content.replace(/\s+$/, '')}\n\nSource: ${urls[0]}\n`
     }
 
     if (tool.name === 'rename_symbol' && /\bfolder\b|\bfiles\b|\beverywhere\b|\ball\b/i.test(goal)) {
