@@ -25,7 +25,6 @@ import {
 } from './chat/core'
 import { ShimmerBg, urlBase64ToUint8Array, applyFixedCode } from './chat/panels'
 import { TasksBinder, HistoryBinder } from './chat/binders'
-import { AuthScreen } from './chat/AuthScreen'
 import { MessageList } from './chat/MessageList'
 import {
   initialFollowState, onScroll, onReadBackGesture, onResumeFollow, followTarget,
@@ -2129,8 +2128,10 @@ export default function App() {
   const activeModels = latestRound?.models ?? []
 
   // Show auth screen while loading or not authenticated
-  if (authUser === 'loading') return null
-  if (!authUser) return <AuthScreen onAuth={user => setAuthUser(user)} />
+  // NO LOGIN SCREEN (2026-08-04). Crucible is a standalone on-device app: the server
+  // resolves a single stable local identity for every request, so /api/auth/me always
+  // succeeds and there is nothing to gate on. `authUser` is still read for the effects
+  // below that need the id, but it never blocks the UI. Do not reintroduce a gate here.
 
   return (
     <div className="crucible-root" style={{

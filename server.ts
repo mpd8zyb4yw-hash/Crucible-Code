@@ -650,6 +650,10 @@ function refreshScoringConfig() {
 }
 
 const app = express()
+// Behind cloudflared/crucible.cam the real scheme and host arrive as X-Forwarded-*.
+// Without this Express reports the internal http/localhost view, which is what broke
+// the OAuth redirect_uri for phone connections (see serverBase).
+app.set('trust proxy', true)
 app.use(cors({
   // Security: reflect only trusted origins — never reflect an arbitrary Origin alongside
   // credentials:true (that lets any site make credentialed cross-origin calls). LAN +
@@ -766,25 +770,132 @@ async function upsertUser(provider: string, providerId: string, email: string): 
 function signJwt(payload: object): string { return signJwtCore(payload, JWT_SECRET) }
 function verifyJwt(token: string): { id: string; email: string; exp: number } | null { return verifyJwtCore(token, JWT_SECRET) }
 
-function getAuthUser(req: express.Request): { id: string; email: string } | null {
-  const cookies = parseCookies(req.headers.cookie ?? '')
-  const token = cookies['crucible_session']
-  if (!token) return null
-  return verifyJwt(token)
+// ── Single local identity — NO LOGIN, ANYWHERE (2026-08-04) ───────────────────
+// Crucible is a standalone on-device app. A login screen on a single-user local app is
+// pure ceremony: reaching this process already means you are on the machine (or on a
+// network the operator deliberately exposed it to). So there is no auth screen, no
+// pairing step, and no token to carry between devices — every request resolves to one
+// stable local user.
+//
+// SAFETY NOW LIVES IN THE NETWORK BINDING, NOT IN A PASSWORD. Because any client that
+// can reach this port is fully trusted, the port must not be reachable from the public
+// internet unless the operator says so. See the startup banner in startListening()
+// — that warning is the only thing left, so do not quietly drop it.
+//
+// The identity is STABLE and reuses the pre-existing account id where one exists. That
+// id keys real data on disk — google-tokens-<id>.json, history-<id>.json, and every
+// automation's userId — so minting a fresh uuid would silently orphan the user's
+// connected Google account, their chat history, and their standing tasks.
+const LOCAL_USER_FILE = path.join(CRUCIBLE_DIR, 'local-user.json')
+
+function resolveLocalUser(): { id: string; email: string } {
+  try {
+    const saved = JSON.parse(fs.readFileSync(LOCAL_USER_FILE, 'utf8'))
+    if (saved && typeof saved.id === 'string') return { id: saved.id, email: saved.email ?? 'local@crucible' }
+  } catch { /* first run, or unreadable — adopt below */ }
+
+  // ADOPT the existing account rather than starting clean. This id keys real data on
+  // disk (google-tokens-<id>.json, history-<id>.json, conversations-<id>.json, and each
+  // automation's userId), so minting a fresh uuid would silently orphan the user's
+  // connected Google account, their chat history and their standing tasks.
+  //
+  // Several ids can exist from earlier OAuth logins. Rank by TOTAL BYTES of real data
+  // plus a strong bonus for having Google tokens — "most recently modified" alone is a
+  // bad tiebreak, because a background refresh touches a token file without the account
+  // being the one in use. The chosen id is logged, and `.crucible/local-user.json` is
+  // written so the decision is visible and hand-editable if it ever picks wrong.
+  const score = new Map<string, number>()
+  const bump = (id: string, n: number) => score.set(id, (score.get(id) ?? 0) + n)
+  try {
+    for (const f of fs.readdirSync(CRUCIBLE_DIR)) {
+      const m = /^(google-tokens|history|conversations)-(.+)\.json$/.exec(f)
+      if (!m) continue
+      const [, kind, id] = m
+      const size = (() => { try { return fs.statSync(path.join(CRUCIBLE_DIR, f)).size } catch { return 0 } })()
+      bump(id, kind === 'google-tokens' ? 1_000_000 : size)
+    }
+  } catch { /* no dir yet */ }
+  try {
+    for (const a of loadAutomations()) bump(a.userId, 250_000)
+  } catch { /* none */ }
+
+  const ranked = [...score.entries()].sort((a, b) => b[1] - a[1])
+  const adopted = ranked[0]?.[0] ?? null
+  const user = { id: adopted ?? crypto.randomUUID(), email: 'local@crucible' }
+  try {
+    fs.mkdirSync(CRUCIBLE_DIR, { recursive: true })
+    fs.writeFileSync(LOCAL_USER_FILE, JSON.stringify(user, null, 2))
+  } catch { /* in-memory for this run is fine */ }
+  if (adopted) {
+    console.log(`[Auth] Adopted existing local identity ${adopted}`)
+    if (ranked.length > 1) {
+      console.log(`[Auth] Other identities on disk: ${ranked.slice(1).map(r => r[0]).join(', ')}`)
+      console.log('[Auth] Wrong one? Edit .crucible/local-user.json and restart.')
+    }
+  } else {
+    console.log(`[Auth] Created local identity ${user.id}`)
+  }
+  return user
+}
+
+let _localUser: { id: string; email: string } | null = null
+function localUser(): { id: string; email: string } {
+  if (!_localUser) _localUser = resolveLocalUser()
+  return _localUser
+}
+
+function getAuthUser(_req: express.Request): { id: string; email: string } | null {
+  return localUser()
+}
+
+/**
+ * The ONLY access rule left, and it is a network rule, not a login.
+ *
+ * "Local" is decided by the HOST the client asked for, not by the socket address —
+ * a tunnel (cloudflared, crucible.cam) runs ON this Mac and connects to 127.0.0.1, so
+ * the socket looks local for internet traffic. The Host header does not lie about it.
+ *
+ *   localhost / 127.0.0.1 / ::1 / *.local / RFC1918 LAN IP  → allowed, no login, ever
+ *   anything else (i.e. a public hostname)                  → refused
+ *
+ * This is what makes "no login screen" safe. Your Mac, and every device on your own
+ * network, get in with zero ceremony. The open internet does not. Verified 2026-08-04:
+ * with the guard removed and the crucible.cam tunnel up, an unauthenticated request
+ * from outside returned this account's identity and conversations.
+ *
+ * CRUCIBLE_ALLOW_PUBLIC=1 disables this. It means anyone who reaches the URL has the
+ * mail, calendar and agent tools of whoever runs this process. Do not set it casually.
+ */
+const ALLOW_PUBLIC = process.env.CRUCIBLE_ALLOW_PUBLIC === '1'
+
+function isLocalHostname(host: string): boolean {
+  const h = host.replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase()
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.endsWith('.local')) return true
+  if (/^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true
+  if (/^169\.254\./.test(h)) return true          // link-local
+  return false
+}
+
+function isLocalRequest(req: express.Request): boolean {
+  const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '')
+  return isLocalHostname(host)
 }
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!getAuthUser(req)) return res.status(401).json({ error: 'Unauthorized' })
-  next()
+  if (ALLOW_PUBLIC || isLocalRequest(req)) return next()
+  return res.status(403).json({
+    error: 'Crucible is on-device only. Reach it from this Mac or your local network.',
+  })
 }
 
 // Auth guard — all /api/* except /api/auth/*, /api/screen-stream, and /api/diag
+// Locality guard on every /api/* route. The old cookie-era exemptions are GONE: with
+// no login there is nothing to log in to, and leaving /api/auth/* open meant
+// /api/auth/me cheerfully told the public internet whose machine this is (measured
+// 2026-08-04 against the live crucible.cam tunnel). Only the two routes that carry no
+// user data stay open, so a health check still works from anywhere.
 app.use('/api', (req: express.Request, res: express.Response, next: express.NextFunction) => {
-  if (req.path.startsWith('/auth/')) return next()
-  if (req.path === '/screen-stream') return next()   // no cookie on phone; LAN-only stream
-  if (req.path === '/screen-diag') return next()     // LAN diagnostic — no cookie (curl'd on the Mac)
-  if (req.path === '/diag') return next()            // diagnostic endpoint — no auth needed
-  if (req.path === '/version') return next()         // build stamp — no auth needed
+  if (req.path === '/diag' || req.path === '/version') return next()   // no user data
   return requireAuth(req, res, next)
 })
 
@@ -1598,6 +1709,18 @@ function isLocal(): boolean {
 
 function serverBase(req: express.Request): string {
   if (OAUTH_BASE_URL && !isLocal()) return OAUTH_BASE_URL
+  // Behind a tunnel/reverse proxy (cloudflared, crucible.cam) the request arrives on
+  // 443 over https, but req.hostname alone told us nothing about that — this used to
+  // hard-code `http://<host>:3001`, which produced
+  //   redirect_uri=http://crucible.cam:3001/api/auth/callback/google
+  // Google rejects that as a redirect_uri_mismatch, the callback never lands, and
+  // connecting an account from a phone failed silently forever (found 2026-08-04).
+  // Trust the forwarded headers the proxy sets, and only fall back to :3001 for a
+  // genuinely direct local/LAN hit.
+  const fwdProto = String(req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim()
+  const fwdHost = String(req.headers['x-forwarded-host'] ?? '').split(',')[0].trim()
+  const host = fwdHost || req.get('host') || `${req.hostname}:3001`
+  if (fwdProto || fwdHost) return `${fwdProto || 'https'}://${host}`
   return `http://${req.hostname}:3001`
 }
 
@@ -10093,9 +10216,23 @@ if (process.platform === 'darwin') attachScreenStreamWs(httpServer)
 // If occupied by something else (another app), bail with a clear message.
 import { execSync } from 'child_process'
 
+// ── Network reachability IS the security boundary (2026-08-04) ────────────────
+// There is no login and no token, by design: every client that can reach this port is
+// fully trusted with the user's mail, calendar, files and the agent's code execution.
+// On localhost and the LAN that is correct — reaching it means you are on the machine
+// or on the user's own network. Behind a PUBLIC TUNNEL it is not: the URL becomes the
+// only secret, and URLs leak. That is the entire remaining trade-off.
 function startListening(port: number, attempt = 0) {
+  // 0.0.0.0 so other devices on the LAN (the user's phone at home) can reach it with
+  // zero setup. That is the intended cross-device path and it is safe: the LAN is the
+  // trust boundary. A TUNNEL is not — see the banner.
   httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Crucible server running on port ${port}`)
+    console.log('[Auth] No login screen — single local identity:', localUser().id)
+    console.warn('[Auth] No authentication. Anything that can reach this port is trusted')
+    console.warn('[Auth] with your mail, calendar and the agent\'s tools. Safe on localhost')
+    console.warn('[Auth] and your LAN; NOT safe behind a public tunnel (cloudflared, ngrok,')
+    console.warn('[Auth] crucible.cam). Take the tunnel down or expect the internet to have it.')
     // Track S — probe the local Apple FM bridge (macOS only, best-effort)
     if (process.platform === 'darwin') checkLocalInference().then(ok => { localInferenceAvailable = ok })
     initPg().catch(e => console.error('[Postgres] Init failed:', e.message))
