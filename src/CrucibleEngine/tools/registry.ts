@@ -793,6 +793,59 @@ registry.register({
 })
 
 registry.register({
+  name: 'append_file',
+  description: 'Add text to the END of an existing file, keeping everything already in it. Use this whenever the request says add/append/at the end — write_file would destroy the existing content.',
+  params: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path to the file.' },
+      content: { type: 'string', description: 'Text to add at the end.' },
+    },
+    required: ['path', 'content'],
+  },
+  mutates: true,
+  async run(args, ctx) {
+    // MEASURED 2026-08-03: "Add a line saying reviewed to the end of log.txt, keeping what is
+    // already there" -> log.txt contained exactly "reviewed". Two lines of the user's data
+    // gone, because the only writing tool available OVERWRITES and the head used it. Appending
+    // is not a variation on writing; it is a different operation, and the one the request named.
+    const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    let existing = ''
+    try { existing = fs.readFileSync(abs, 'utf-8') } catch { /* creating is fine */ }
+    const reason = existing ? protectedFileReason(existing) : null
+    if (reason) return { ok: false, output: `Refusing to append to ${abs} — marked protected ("${reason}").` }
+    const add = String(args.content ?? '')
+    const sep = existing && !existing.endsWith('\n') ? '\n' : ''
+    fs.mkdirSync(path.dirname(abs), { recursive: true })
+    fs.writeFileSync(abs, existing + sep + add + (add.endsWith('\n') ? '' : '\n'), 'utf-8')
+    ctx.onFileMutated?.([abs])
+    return { ok: true, output: `Appended ${add.length} chars to ${abs} (kept ${existing.length} existing chars)` }
+  },
+})
+
+registry.register({
+  name: 'count_lines',
+  description: 'Count the lines in a text file exactly. Use this instead of counting them yourself.',
+  params: {
+    type: 'object',
+    properties: { path: { type: 'string', description: 'Absolute path to the file.' } },
+    required: ['path'],
+  },
+  async run(args, ctx) {
+    // MEASURED 2026-08-03: "count how many lines are in notes.txt and write that number into
+    // count.txt" produced no file at all — the CALCULATE step offered only sum_column and
+    // compute, and neither counts lines, so the head had nothing to reach for. Counting is
+    // decidable; it gets a tool rather than an estimate.
+    const abs = resolveSafe(String(args.path ?? ''), ctx, { allowOutside: true })
+    let text: string
+    try { text = fs.readFileSync(abs, 'utf-8') } catch { return { ok: false, output: `File not found: ${abs}` } }
+    // Trailing newline does not make an extra line, which is what a person means by "how many".
+    const n = text.length === 0 ? 0 : text.replace(/\n$/, '').split('\n').length
+    return { ok: true, output: `${abs} has ${n} line(s)` }
+  },
+})
+
+registry.register({
   name: 'search',
   description: 'Search file contents in the project for a pattern (regex). Returns file:line: matches.',
   params: {

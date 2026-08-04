@@ -37,6 +37,7 @@ import path from 'node:path'
 import { enumGrammar, jsonObjectGrammar } from './grammars'
 import type { ToolDef, ToolCall } from '../tools/protocol'
 import { lastLookupAnswer } from '../tools/registry'
+import { verifyGoal } from './postconditions'
 
 /** Minimal completion contract — (messages, opts) → text. Matches fmComplete. */
 export type Complete = (
@@ -188,20 +189,23 @@ const CATEGORY_VERBS: Array<{ cat: string; rx: RegExp }> = [
   // total.txt" contributed a phantom fourth CALCULATE step, so after read -> sum -> compute the
   // plan pointed at CALCULATE again and the agent never reached the write. A noun is not an
   // instruction.
-  { cat: 'CALCULATE', rx: /\b(add up|sum|calculate|compute|work out|average)\b|\btotal(?:s|ling|ing)?\s+(?:up\s+)?the\b/gi },
+  { cat: 'CALCULATE', rx: /\b(add up|sum|calculate|compute|work out|average|count)\b|\btotal(?:s|ling|ing)?\s+(?:up\s+)?the\b/gi },
   { cat: 'SEARCH', rx: /\b(search|find out|look up|research)\b/gi },
   // Edit-in-place verbs are WRITE verbs — renaming a symbol changes the file. They also trigger
   // the READ prepend below, because edit_file's contract needs the exact existing string.
-  { cat: 'WRITE', rx: /\b(write|create|save|record|output|store|rename|replace|edit|update|modify)\b/gi },
+  // "add" is a WRITE verb ("add a line to the end of log.txt") EXCEPT in "add up", which is
+  // arithmetic. Measured: without it, an append goal produced an EMPTY plan and fell through to
+  // the unscoped menu, where the head reached for write_file and destroyed the file.
+  { cat: 'WRITE', rx: /\b(write|create|save|record|output|store|rename|replace|edit|update|modify)\b|\badd\b(?!\s+up\b)/gi },
 ]
 
 /** Tools per plan category. Deliberately small and non-destructive. */
 const PLAN_TOOLS: Record<string, string[]> = {
   READ: ['read_file', 'list_dir'],
-  CALCULATE: ['sum_column', 'compute'],
+  CALCULATE: ['sum_column', 'count_lines', 'compute'],
   // lookup_fact first: web_search is the dead DDG scraper, lookup_fact is the answer engine.
   SEARCH: ['lookup_fact', 'web_search'],
-  WRITE: ['write_file', 'edit_file', 'rename_symbol'],
+  WRITE: ['write_file', 'append_file', 'edit_file', 'rename_symbol'],
 }
 
 export function categoryPlan(goal: string): string[] {
@@ -210,7 +214,12 @@ export function categoryPlan(goal: string): string[] {
   // spurious WRITE and the plan came out READ, WRITE, CALCULATE — putting the write step before
   // the total had been computed. A path is a NAME, not an instruction; only the prose the user
   // wrote states the order.
-  const prose = (goal ?? '').replace(/(?:\/[\w.@+-]+)+/g, ' ')
+  // Strip paths AND bare filenames. Measured twice: the scratch directory "read-then-write"
+  // contributed a spurious WRITE, and "write that number into count.txt" contributed a spurious
+  // trailing CALCULATE from the word "count" inside the FILENAME. A name is not an instruction.
+  const prose = (goal ?? '')
+    .replace(/(?:\/[\w.@+-]+)+/g, ' ')
+    .replace(/\b[\w-]+\.[a-z]{1,5}\b/gi, ' ')
   const hits: Array<{ at: number; cat: string }> = []
   for (const { cat, rx } of CATEGORY_VERBS) {
     for (const m of prose.matchAll(rx)) hits.push({ at: m.index ?? 0, cat })
@@ -257,6 +266,11 @@ export function plannedTools(tools: ToolDef[], goal: string, stepsDone: number):
   // menu for a rename is leaving a loaded data-loss path in reach of a model that has not read
   // the file. rename_symbol does the whole operation exactly, so it is the only offer.
   if (cat === 'WRITE' && /\brename\b/i.test(goal)) list = ['rename_symbol']
+  // "add … to the end", "keeping what is already there" — an APPEND. write_file is removed
+  // entirely: measured, leaving it reachable cost the user two lines of their own file.
+  if (cat === 'WRITE' && /\b(append|add)\b[^.]*\b(end|bottom|existing)\b|\bkeep(ing)? what(?:'s| is) (?:already )?there\b|\bwithout (?:removing|deleting|losing)\b/i.test(goal)) list = ['append_file']
+  // "count how many lines" needs the counter, not the summer.
+  if (cat === 'CALCULATE' && /\bcount\b|\bhow many lines\b/i.test(goal)) list = ['count_lines']
   const names = new Set(list)
   const picked = tools.filter(t => names.has(t.name))
   return picked.length ? picked : null
@@ -370,6 +384,44 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     if (signal?.aborted) throw new Error('Aborted')
     if (!tools.length) return { text: 'No tools are available for this task.', toolCalls: [] }
 
+    // A goal that asks to READ a named file which DOES NOT EXIST has one honest answer, and it
+    // is available before any tool runs. MEASURED 2026-08-03: asked to read
+    // quarterly-results-2027.csv and report the total revenue, the agent tried read_file, then
+    // read_pdf, then read_image on the same absent path, burned 56 seconds, and never once said
+    // the file was not there. The danger is not the wasted turns — it is that a loop hunting for
+    // a number is one step from inventing one.
+    const missingRead = ((): string | null => {
+      if (!/\b(read|open|look at|inspect|examine|load)\b/i.test(goal)) return null
+      // ONLY for a goal that just reads and reports. MEASURED: without this guard the check fired
+      // on "read prices.csv … and WRITE the total into total.txt" — total.txt does not exist yet
+      // BECAUSE CREATING IT IS THE TASK — and refused a job it was about to do correctly. A
+      // missing output file is a to-do; a missing input file is a dead end.
+      if (/\b(write|create|save|store|record|output|append|add|generate|produce)\b/i.test(goal)) return null
+      const paths = (goal.match(/(?:\/[\w.@+-]+)+/g) ?? []).map(p => p.replace(/[.,;:!?)\]]+$/, ''))
+      const named = (goal.match(/\b[\w-]+\.[a-z]{1,5}\b/gi) ?? [])
+      const dir = paths.find(p => { try { return fs.statSync(p).isDirectory() } catch { return false } })
+      for (const n of named) {
+        const abs = paths.find(p => p.endsWith(n)) ?? (dir ? path.join(dir, n) : null)
+        if (!abs) continue
+        // snapPathToReality covers a typo'd name; only a genuinely absent file gets here.
+        if (!fs.existsSync(snapPathToReality(abs))) return abs
+      }
+      return null
+    })()
+    // Fire while nothing has succeeded yet — the file is absent now and will stay absent.
+    if (missingRead && succeededSignatures(messages).size === 0) {
+      return {
+        // Wording matters twice over. "I can't …" trips loop.ts's refusal-bounce regex, which
+        // treats a zero-tool-call turn containing that phrase as a capability hallucination and
+        // replaces this honest answer with "the reasoning model declined this task" — measured.
+        // And the answer must state plainly that the file DOES NOT EXIST, because a reader
+        // skimming for a number will otherwise take the absence as a hedge.
+        text: `${missingRead} does not exist, so there is nothing to report from it. `
+          + `No figure was found and none was guessed. If the file lives somewhere else, give me that path.`,
+        toolCalls: [],
+      }
+    }
+
     const byName = new Map(tools.map(t => [t.name, t]))
     const ctx = recentContext(messages)
     const done = ledger(messages)
@@ -418,7 +470,15 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       // carried out" over an empty output file.
       const doneNames = new Set([...succeeded].map(sig => sig.slice(0, sig.indexOf('('))))
       const allStepsDone = plan.every(cat => (PLAN_TOOLS[cat] ?? []).some(n => doneNames.has(n)))
-      if (allStepsDone) return { text: 'Every step of the request has been carried out.', toolCalls: [] }
+      // …and the post-conditions actually hold. MEASURED 2026-08-03: "create two files:
+      // first.txt containing alpha and second.txt containing bravo" wrote ONE file, satisfied
+      // its one-entry WRITE plan, and stopped — reporting every step carried out with second.txt
+      // missing. The plan counts VERBS; the goal can name several objects per verb. The
+      // filesystem is what knows whether the goal is met, so it gets the final say.
+      const post = verifyGoal(goal)
+      if (allStepsDone && post.failed.length === 0) {
+        return { text: 'Every step of the request has been carried out.', toolCalls: [] }
+      }
     }
 
     // Which plan step we are on = how many leading categories have a successful call of their
@@ -428,7 +488,18 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     while (stepIdx < plan.length && (PLAN_TOOLS[plan[stepIdx]] ?? []).some(n => doneNames2.has(n))) stepIdx++
     const planned = attempt === 0 ? plannedTools(tools, goal, stepIdx) : null
     const usable = (planned ?? tools).filter(t => !excluded.has(t.name))
-    const choices = [...(usable.length ? usable : tools).map(t => t.name), FINISH]
+    // FINISH is only on the menu when the FILESYSTEM agrees the goal is met. MEASURED
+    // 2026-08-03: after ONE tool call the head chose FINISH on four separate tasks — one of two
+    // requested files written, a lookup done but never written down, a count taken but never
+    // saved — and the loop dutifully ended, because a turn with no tool calls IS the final
+    // answer. Asking a 1.5B model "is the goal complete?" gets an optimistic answer; asking the
+    // filesystem gets the truth. Where post-conditions are unreadable `outstanding` is empty and
+    // this is a no-op, so nothing that used to finish loses the ability to.
+    const outstanding = verifyGoal(goal).failed
+    const choices = [
+      ...(usable.length ? usable : tools).map(t => t.name),
+      ...(outstanding.length ? [] : [FINISH]),
+    ]
     const selectSystem = [
       'You are the executor of a task. You act by choosing ONE tool to call next.',
       '',
@@ -436,7 +507,11 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       toolMenu(usable.length ? usable : tools),
       '',
       `Reply with EXACTLY ONE of these words and nothing else: ${choices.join(', ')}`,
-      `Choose ${FINISH} only when the goal is already fully achieved by the work shown below.`,
+      ...(outstanding.length
+        ? ['STILL OUTSTANDING (checked against the real filesystem — the goal is NOT done):',
+           ...outstanding.map(f => `  - ${f}`),
+           'Choose the tool that makes one of these true.']
+        : [`Choose ${FINISH} only when the goal is already fully achieved by the work shown below.`]),
       'Never explain. Never apologise. Never say you cannot — choose the closest useful tool.',
       'Do NOT repeat a call that already succeeded. Look at STEPS ALREADY DONE and choose the NEXT',
       'step of the goal. A goal with several verbs ("read X … write Y") needs one call per verb.',
@@ -478,6 +553,14 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
     const fillUser = [
       `GOAL: ${goal}`, '',
       'STEPS ALREADY DONE:', done, '',
+      // The SELECT stage was told what is still missing; FILL was not, and FILL is where the
+      // PATH is chosen. MEASURED 2026-08-03: "create two files: first.txt containing alpha and
+      // second.txt containing bravo" wrote first.txt, then kept re-proposing first.txt — the
+      // same call, blocked as a repeat — because nothing in this prompt said which file was
+      // outstanding. Knowing the goal is not done is useless to the step that has to name the
+      // file.
+      ...(outstanding.length ? ['STILL MISSING (fill the arguments so one of these becomes true):',
+                                ...outstanding.map(f => `  - ${f}`), ''] : []),
       'RECENT CONTEXT:', ctx || '(nothing yet)', '',
       `Arguments for ${tool.name}:`,
     ].join('\n')
@@ -584,7 +667,14 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       }
     }
 
-    if (!tool.mutates) {
+    // append_file is snapped like a READ even though it mutates: it targets a file that must
+    // ALREADY EXIST, so a path that does not resolve is a mistake, not a new file. MEASURED
+    // 2026-08-03: the FILL stage put log.txt at the scratch ROOT instead of the task folder, and
+    // append_file dutifully created an empty file there while the user's log.txt sat untouched
+    // one directory down — the append silently went nowhere. write_file is still never
+    // redirected: there, a near-miss name IS a new file the user asked for.
+    const snapThis = !tool.mutates || tool.name === 'append_file'
+    if (snapThis) {
       for (const f of fields) {
         if (f.type === 'string' && /path|file|dir/i.test(f.key) && typeof args[f.key] === 'string') {
           const snapped = snapPathToReality(args[f.key] as string)

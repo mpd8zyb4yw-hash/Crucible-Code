@@ -76,7 +76,14 @@ function resolveTargets(goal: string): { dir: string | null; files: string[] } {
     if (dir && tok === dir) continue                   // the directory itself is not a target
     raw.push(tok)
   }
-  const files = Array.from(new Set(raw)).map(f => (f.startsWith('/') ? f : dir ? path.join(dir, f) : f))
+  // Only ABSOLUTE targets become post-conditions. A bare "notes.md" with no directory in the
+  // goal cannot be resolved to a real location, so asserting on it would fail forever against
+  // the process cwd — and once the FINISH gate consults these, a permanently-failing condition
+  // means an agent that can never declare itself done. Unresolvable is UNVERIFIED, not FAILED,
+  // which is the same three-state discipline the rest of this file follows.
+  const files = Array.from(new Set(raw))
+    .map(f => (f.startsWith('/') ? f : dir ? path.join(dir, f) : null))
+    .filter((f): f is string => f !== null)
   return { dir, files }
 }
 
