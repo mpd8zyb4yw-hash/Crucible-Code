@@ -116,15 +116,25 @@
      the glass something to sample and to stay out of the way — the CARDS carry the
      colour. Now near-black with one faint cool wash plus a barely-there second stop
      for depth; the amber and cyan blooms are gone. */
-  /* RETUNED AGAIN 2026-08-04b: "one faint cool wash" was still two indigo blooms, and
-     against near-black they read as coloured blobs behind the glass — the exact thing
-     the direction rules out. The ground is now a single neutral SLATE lift with no hue
-     of its own. Glass needs something to sample, not something to look at. */
-  --amb-base: #0A0B11;
-  --amb-1: rgba(148, 163, 184, 0.075);  /* neutral slate lift, top-left */
-  --amb-2: rgba(148, 163, 184, 0.045);  /* depth only, same neutral */
-  --amb-3: transparent;
-  --amb-4: transparent;
+  /* ── The sweet spot (2026-08-04c) ─────────────────────────────────────────────
+     Third tuning, and the reasoning is worth keeping because both previous ones were
+     wrong in opposite directions.
+       · The design handoff's field is four blobs at indigo .55, violet .48, AMBER .30,
+         CYAN .22. Four hues spread across the wheel is what makes it read as a rainbow.
+       · Stripping it to a neutral slate lift at .075 killed it the other way: glass with
+         nothing behind it is not glass, it is grey plastic, and the whole app went dead.
+     What actually causes "rainbow" is HUE SPREAD, not saturation. So the fix keeps the
+     design's spatial structure — four positioned blooms, the 52s drift, the same
+     coordinates — and collapses them onto ONE ANALOGOUS FAMILY (indigo → violet). The
+     amber and the cyan, the two hues that were fighting the other two, are gone. Alpha
+     lands about half the handoff's: enough chroma for `saturate(180%)` glass to have
+     something worth sampling, not enough to look at on its own. Colour comes from the
+     FIELD, through the glass — never painted onto the cards (see glass.tsx). */
+  --amb-base: #090A12;
+  --amb-1: rgba(79, 70, 229, 0.30);    /* indigo, top-left — the anchor */
+  --amb-2: rgba(124, 58, 237, 0.22);   /* violet, top-right — one step round the wheel */
+  --amb-3: rgba(99, 102, 241, 0.14);   /* indigo again, bottom-right (was amber) */
+  --amb-4: rgba(79, 70, 229, 0.10);    /* faintest, bottom-left (was cyan) */
 
   /* ── Domain tint — DELIBERATELY MONOCHROME (2026-08-04b) ────────────────────
      These used to be five saturated hues (indigo/teal/amber/violet/slate) painted as a
@@ -199,11 +209,13 @@ html[data-theme='light'] {
   --glass-shadow: 0 8px 32px rgba(31, 38, 68, 0.14);
   --glass-shadow-2: 0 16px 64px rgba(31, 38, 68, 0.22);
   --scrim: rgba(238, 240, 248, 0.55);
-  --amb-base: #EEF0F5;
-  --amb-1: rgba(100, 116, 139, 0.10);
-  --amb-2: rgba(100, 116, 139, 0.06);
-  --amb-3: transparent;
-  --amb-4: transparent;
+  /* Same family, same positions, lower chroma — a light field tints far more readily,
+     so matching the dark alphas here would wash the ink out. */
+  --amb-base: #EEF0F8;
+  --amb-1: rgba(129, 140, 248, 0.24);
+  --amb-2: rgba(167, 139, 250, 0.17);
+  --amb-3: rgba(129, 140, 248, 0.11);
+  --amb-4: rgba(139, 145, 250, 0.08);
   --c-bg: #EEF0F8;
   --c-text: #101222;
   --c-text-soft: rgba(16, 18, 34, 0.90);
