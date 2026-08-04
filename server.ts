@@ -8705,7 +8705,11 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   })
 
   // Phone viewers.
-  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number; ip: string; id: number }>()
+  // `wantsJpeg` goes false once that viewer's WebRTC peer connection is carrying the
+  // video. Without it every WebRTC viewer ALSO downloaded the full JPEG stream
+  // (~15fps × 45KB ≈ 5 Mbit/s measured) and threw it away — two copies of the screen
+  // competing for one phone link, which is what made Remote Brain feel laggy.
+  const clients = new Map<import('ws').WebSocket, { framesSent: number; captureT0: number; ip: string; id: number; wantsJpeg: boolean }>()
   const refreshViewerIps = () => { screenDiag.viewerIps = [...clients.values()].map(s => s.ip) }
 
   // ── WebRTC signaling relay ────────────────────────────────────────────────────
@@ -8731,6 +8735,7 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   function relay(frame: Buffer): void {
     for (const [ws, stat] of clients) {
       if (ws.readyState !== 1 /* OPEN */) continue
+      if (!stat.wantsJpeg) continue
       if ((ws as any).bufferedAmount > 0) continue
       try { ws.send(frame); stat.framesSent++ } catch { /* cleaned up on 'close' */ }
     }
@@ -8744,11 +8749,25 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   // Gating on actual frames (not just a connected socket) means a producer that
   // connects but can't capture (permission denied) does NOT suppress the fallback.
   const ingestFlowing = () => !!ingestProducer && ingestProducer.readyState === 1 && (Date.now() - lastIngestFrameAt < 1500)
+  // Any viewer still on the JPEG path? When every viewer is on WebRTC the producer stops
+  // sending ingest frames on purpose, which makes ingestFlowing() go false — without this
+  // guard the supervisor would read that as "the fast feed died" and start the slow
+  // `screencapture` fallback, spawning a process every 80ms for frames nobody wants.
+  const anyoneNeedsJpeg = () => [...clients.values()].some(s => s.wantsJpeg)
   // Tell the capture window to start/stop the (CPU-costing) MediaStream based on
   // whether anyone is actually watching.
   function signalProducer(): void {
     if (ingestProducer && ingestProducer.readyState === 1) {
       try { ingestProducer.send(JSON.stringify({ cmd: clients.size > 0 ? 'start' : 'stop' })) } catch { /* noop */ }
+    }
+  }
+  // When every viewer is on WebRTC, nobody needs the JPEG fallback — stop the capture
+  // window encoding it at all. That reclaims a canvas draw + JPEG encode per frame on
+  // the Mac, which was competing with the WebRTC video encoder for the same CPU.
+  function signalJpegNeed(): void {
+    const on = [...clients.values()].some(s => s.wantsJpeg)
+    if (ingestProducer && ingestProducer.readyState === 1) {
+      try { ingestProducer.send(JSON.stringify({ cmd: 'jpeg', on })) } catch { /* noop */ }
     }
   }
   ingestWss.on('connection', (ws: import('ws').WebSocket, req) => {
@@ -8804,14 +8823,14 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
 
   function broadcastLoop() {
     // Stop if nobody is watching, or the real-time feed has taken over.
-    if (clients.size === 0 || ingestFlowing()) { loopRunning = false; screenDiag.fallbackActive = false; return }
+    if (clients.size === 0 || !anyoneNeedsJpeg() || ingestFlowing()) { loopRunning = false; screenDiag.fallbackActive = false; return }
     screenDiag.fallbackActive = true
     const loopStart = Date.now()
     exec(captureCmd, { timeout: 5000 }, (err) => {
-      if (clients.size === 0 || ingestFlowing()) { loopRunning = false; return }
+      if (clients.size === 0 || !anyoneNeedsJpeg() || ingestFlowing()) { loopRunning = false; screenDiag.fallbackActive = false; return }
       if (err) { setTimeout(broadcastLoop, FRAME_INTERVAL_MS); return }
       fs.readFile(outFile, (readErr, frame) => {
-        if (clients.size === 0 || ingestFlowing()) { loopRunning = false; return }
+        if (clients.size === 0 || !anyoneNeedsJpeg() || ingestFlowing()) { loopRunning = false; screenDiag.fallbackActive = false; return }
         if (readErr || !frame?.length) { setTimeout(broadcastLoop, FRAME_INTERVAL_MS); return }
         const captureMs = Date.now() - loopStart
         totalBroadcasts++
@@ -8830,7 +8849,7 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
   // the fallback within ~1s if the Electron feed drops mid-session.
   let supervisor: ReturnType<typeof setInterval> | null = null
   function ensureProducing() {
-    if (clients.size > 0 && !ingestFlowing() && !loopRunning) { loopRunning = true; broadcastLoop() }
+    if (clients.size > 0 && anyoneNeedsJpeg() && !ingestFlowing() && !loopRunning) { loopRunning = true; broadcastLoop() }
   }
 
   wss.on('connection', (ws: import('ws').WebSocket, req?: import('http').IncomingMessage) => {
@@ -8839,13 +8858,14 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
     const rawIp = (req?.socket?.remoteAddress || '').replace('::ffff:', '')
     const ip = rawIp === '::1' ? '127.0.0.1' : (rawIp || 'unknown')
     const id = ++viewerSeq
-    const stat = { framesSent: 0, captureT0: Date.now(), ip, id }
+    const stat = { framesSent: 0, captureT0: Date.now(), ip, id, wantsJpeg: true }
     clients.set(ws, stat)
     viewersById.set(id, ws)
     screenDiag.viewers = clients.size
     refreshViewerIps()
     debugBus.emit('model', 'screen_stream_start', { totalClients: clients.size }, { severity: 'info' })
     signalProducer()          // wake the Electron capture window
+    signalJpegNeed()          // this viewer starts on JPEG until its WebRTC peer is up
     ensureProducing()         // and start the fallback until real frames arrive
     if (!supervisor) supervisor = setInterval(ensureProducing, 700)
     // Tell the producer a new viewer is here so it can open a WebRTC peer connection.
@@ -8860,6 +8880,10 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
         const msg = JSON.parse(data.toString())
         if (msg?.type === 'webrtc-answer' || msg?.type === 'webrtc-ice') {
           sendToProducer({ ...msg, from: id })
+        } else if (msg?.type === 'jpeg-stream') {
+          // The viewer's WebRTC peer came up (want:false) or dropped (want:true).
+          stat.wantsJpeg = msg.want !== false
+          signalJpegNeed()
         }
       } catch { /* ignore */ }
     })
@@ -8870,6 +8894,7 @@ function attachScreenStreamWs(httpSrv: import('http').Server) {
       screenDiag.viewers = clients.size
       refreshViewerIps()
       sendToProducer({ type: 'viewer-leave', id })
+      signalJpegNeed()
       debugBus.emit('model', 'screen_stream_stop', { framesSent: stat.framesSent, totalClients: clients.size }, { severity: 'info' })
       if (clients.size === 0) {
         signalProducer()       // tell the capture window to stop capturing
@@ -10093,6 +10118,10 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
   var MAX_W = ${capW}, FPS = ${capFps}, QUALITY = ${capQ};
   var ws = null, stream = null, video = null, canvas = null, ctx = null;
   var capturing = false, wantCapture = false, timer = 0, reconnectT = 0;
+  // The server flips this off once every viewer is on WebRTC, so the JPEG encode
+  // stops competing with the WebRTC encoder. Starts true: a viewer is on JPEG until
+  // its peer connection is actually up.
+  var jpegWanted = true;
 
   // WebRTC publisher state: one RTCPeerConnection per viewer id. The screen MediaStream
   // track is published peer-to-peer (Mac ↔ phone), so media never crosses the tunnel.
@@ -10135,7 +10164,8 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
     ws.binaryType = 'arraybuffer';
     ws.onmessage = function (e) {
       var msg; try { msg = JSON.parse(e.data) } catch (x) { return }
-      if (msg.cmd === 'start') { wantCapture = true; startCapture() }
+      if (msg.cmd === 'jpeg') { jpegWanted = !!msg.on }
+      else if (msg.cmd === 'start') { wantCapture = true; startCapture() }
       else if (msg.cmd === 'stop') { wantCapture = false; stopCapture() }
       else if (msg.type === 'viewer-join') { wantCapture = true; onViewerJoin(msg.id) }
       else if (msg.type === 'viewer-leave') { closePeer(msg.id) }
@@ -10184,7 +10214,7 @@ app.get('/_capture', (_req: express.Request, res: express.Response) => {
   function loop() {
     if (!capturing) return;
     var vw = video && video.videoWidth, vh = video && video.videoHeight;
-    if (vw && vh && ws && ws.readyState === 1) {
+    if (jpegWanted && vw && vh && ws && ws.readyState === 1) {
       var w = Math.min(MAX_W, vw), h = Math.round(vh * (w / vw));
       if (!canvas) { canvas = document.createElement('canvas'); ctx = canvas.getContext('2d', { alpha: false }) }
       if (canvas.width !== w) { canvas.width = w; canvas.height = h }

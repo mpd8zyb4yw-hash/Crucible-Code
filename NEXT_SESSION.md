@@ -17,7 +17,28 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-04 (cont.122 — Home leads; the dead-card bug is fixed and proven) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-04 (cont.123 — mobile send fails loudly; Remote Brain stops double-streaming) (REPLACE THIS EVERY SESSION)
+
+> **cont.123 (2026-08-04) — what changed, and what is still open.**
+> - **Mobile "send does nothing" was a swallowed error, not a broken button.** `send()` in
+>   `App.tsx` never checked `!res.ok`, so the locality guard's 403 (phone on the crucible.cam
+>   tunnel instead of the LAN) rendered as the generic "Stopped without answering". It now
+>   shows the server's own message. **The 403 itself is still there by design** — off-LAN
+>   phone access STILL requires the paired-device token that cont.121 deferred. If the user
+>   says mobile is broken again, first check `curl -s -i -X POST http://localhost:3001/api/chat
+>   -H "Host: crucible.cam"` and the phone's actual URL (LAN IP changes on a hotspot:
+>   `ipconfig getifaddr en0`).
+> - **Remote Brain lag: WebRTC viewers were also pulling the JPEG stream** (~5 Mbit/s measured,
+>   decoded into a `display:none` canvas). Suppressed at both ends via `{type:'jpeg-stream'}`;
+>   the `screencapture` fallback is now gated on `anyoneNeedsJpeg()` so it cannot wake up.
+>   NOT yet measured on a real phone over the hotspot — the probe was a local WS viewer.
+> - **Composer (+) expander** pills wrap and popups are clamped to the pane; verified by
+>   measuring rects at 375px, not by eye.
+> - OPEN from this session: no real-device verification of either fix (no touch device
+>   available to Claude); `/_capture` FPS/quality knobs are still fixed defaults with no
+>   adaptation to the observed link.
+
+
 
 
 > **UI / MOBILE TRACK — cont.121 (2026-08-04).** `9445c60`, `7b3752d`, `c970966`.

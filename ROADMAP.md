@@ -1933,6 +1933,41 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04 (cont.123 — mobile send fails loudly; Remote Brain stops sending two video streams)
+
+**1. "Sending anything from mobile does nothing" — the response was never checked for `!res.ok`.**
+`App.tsx` `send()` passed EVERY `/api/chat` response straight to the SSE consumer. A JSON
+error body contains no `data:` lines, so the consumer read it, found nothing, and ended —
+leaving the generic "Stopped without answering" and discarding the server's actual
+explanation. The locality guard (`server.ts:isLocalRequest`) 403s every `/api/*` when the
+Host is the crucible.cam tunnel, which is exactly the phone's failure mode, and the UI
+turned that into a silent mystery. `send()` now reads the error body and renders it
+(`Crucible is on-device only. Reach it from this Mac or your local network. (HTTP 403)`).
+Verified live at phone width by stubbing a 403 — screenshotted, message renders in full.
+The guard itself is UNCHANGED: it closed a real public-exposure hole. Reaching Crucible
+off-LAN still needs the paired-device token that cont.121 deferred.
+
+**2. Remote Brain lag: every WebRTC viewer was ALSO downloading the JPEG fallback.**
+Measured with a WS viewer probe against the live server: `desktopCapturer (fast, real-time)`,
+13 fps, 45 KB/frame ≈ 5 Mbit/s. Once `pc.ontrack` fired, `App.tsx` hid the canvas with
+`display:none` but kept receiving, `createImageBitmap`-decoding and painting every JPEG
+frame — a second full copy of the screen competing with the WebRTC media for one phone link.
+Now the viewer sends `{type:'jpeg-stream', want:false}` on `ontrack` and `want:true` when ICE
+drops; the server skips that client in `relay()` and tells the capture window to stop
+encoding JPEG entirely when no viewer needs it. Guarded against the obvious regression: no
+ingest frames makes `ingestFlowing()` false, which would have woken the slow `screencapture`
+fallback (a process spawn every 80ms) — every fallback check is now also gated on
+`anyoneNeedsJpeg()`. Verified on an isolated server: frames/4s = 4 (on) → 0 (off) → 12 (on).
+
+**3. The (+) composer expander overflowed the chat pane.** Four fixed-width pills in a
+nowrap row with a 36px indent pushed "Brain" off the right edge at phone width, and the
+Models/Agents popups (`minWidth` 260–320, `left:36`) could exceed the composer too. The pill
+strip now wraps, the popups anchor to the composer's own edges with `maxWidth:100%`, and
+`mobile.css` drops the desktop indent at ≤640px. Measured after the fix: all four pills
+inside [28,347] with zero overflow; popup 39→336 inside a 28→347 box. The composer wrap also
+lifts to zIndex 55 while open so the floating resume banner (zIndex 50) stops painting across
+the model list.
+
 ### 2026-08-04 (cont.122 — UI PHASE 2: the dead-card bug, and Home becomes the leading surface)
 
 Follow-up to cont.121 after user review. Four complaints: cards don't respond, only the

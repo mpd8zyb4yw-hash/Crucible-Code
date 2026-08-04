@@ -429,6 +429,14 @@ export default function App() {
     // tunnel entirely. Until/unless that connects, the JPEG frames below keep painting,
     // so a WebRTC failure silently falls back to the existing path.
     let pc: RTCPeerConnection | null = null
+    // Once WebRTC carries the video, the JPEG frames are pure waste — measured at
+    // ~15fps × 45KB ≈ 5 Mbit/s that the phone downloaded, GPU-decoded via
+    // createImageBitmap and painted into a canvas that `display:none` already hid.
+    // On a hotspot that second stream is competing with the WebRTC media for the same
+    // link, which is most of why Remote Brain felt slow and laggy. Suppress it at the
+    // SERVER (so the bytes are never sent) and locally (so a frame in flight is not
+    // decoded), and turn it back on the moment the peer connection drops.
+    let jpegOff = false
     const sig = (sock: WebSocket, obj: unknown) => { try { if (sock.readyState === 1) sock.send(JSON.stringify(obj)) } catch { /* noop */ } }
 
     async function handleSignaling(sock: WebSocket, msg: any) {
@@ -440,11 +448,17 @@ export default function App() {
           if (v && ev.streams[0]) { v.srcObject = ev.streams[0]; v.play().catch(() => {}) }
           setWebrtcActive(true)
           setStreamStatus('live')
+          jpegOff = true
+          sig(sock, { type: 'jpeg-stream', want: false })
         }
         pc.onicecandidate = (ev) => { if (ev.candidate) sig(sock, { type: 'webrtc-ice', candidate: ev.candidate }) }
         pc.oniceconnectionstatechange = () => {
           const st = pc?.iceConnectionState
-          if (st === 'failed' || st === 'disconnected' || st === 'closed') setWebrtcActive(false)
+          if (st === 'failed' || st === 'disconnected' || st === 'closed') {
+            setWebrtcActive(false)
+            jpegOff = false
+            sig(sock, { type: 'jpeg-stream', want: true })
+          }
         }
         try {
           await pc.setRemoteDescription(msg.sdp)
@@ -468,6 +482,9 @@ export default function App() {
           return
         }
         setStreamStatus('live')
+        // WebRTC is carrying the picture — do not spend the phone's GPU decoding a
+        // frame that would be painted into a hidden canvas.
+        if (jpegOff) return
         const seq = ++frameSeq
         // e.data is already a Blob (binaryType='blob') — pass directly to GPU decoder.
         createImageBitmap(e.data as Blob).then(bmp => {
@@ -1490,6 +1507,26 @@ export default function App() {
         deliveryError: `Couldn’t reach Crucible at ${API_BASE.replace(/^https?:\/\//, '')}. The server may not be running.`,
       } : r))
       setConvThinking(convId, false); return
+    }
+    // A non-OK response is NOT a stream. Feeding a JSON error body to the SSE consumer
+    // finds no `data:` lines, ends silently, and the round renders the generic
+    // "Stopped without answering" — which is how the locality guard's 403 (the phone
+    // reaching Crucible over the public tunnel instead of the LAN) presented as
+    // "sending from mobile just doesn't work", with the server's actual explanation
+    // thrown away. Surface the server's own message instead.
+    if (!res.ok) {
+      let detail = ''
+      try { detail = String((await res.json())?.error ?? '') } catch { /* not JSON */ }
+      haptic('heavy')
+      setRounds(prev => prev.map(r => r.id === roundId ? {
+        ...r,
+        deliveryError: detail
+          ? `${detail} (HTTP ${res.status})`
+          : `Crucible answered HTTP ${res.status} at ${API_BASE.replace(/^https?:\/\//, '')}.`,
+      } : r))
+      setConvThinking(convId, false); setConvAgentStart(convId, null); setConvAgentProgress(convId, null)
+      try { localStorage.removeItem('crucible_active_task') } catch {}
+      return
     }
     const reader = res.body!.getReader()
     await consumeStream(reader, roundId, userMessage, convId)
@@ -3180,7 +3217,10 @@ export default function App() {
         // Normal: full width, normal stacking.
         left: remoteBrain && isMobile && isLandscape ? '62%' : railW,
         right: 0,
-        zIndex: remoteBrain && isMobile ? 60 : 10,
+        // While the (+) expander is open its popups belong to an active interaction and
+        // must clear the floating resume banner (zIndex 50), which otherwise painted
+        // straight across the Models / Agents list.
+        zIndex: remoteBrain && isMobile ? 60 : composerExpandOpen ? 55 : 10,
         // Remote Brain portrait: frosted glass so the stream bleeds through.
         background: remoteBrain && isMobile && !isLandscape
           ? 'rgba(13,13,21,0.55)'
@@ -3562,13 +3602,15 @@ export default function App() {
               and rotates into an "×" while open. */}
           {/* Expander content — only rendered while open, so the resting bar stays one thin row. */}
           {composerExpandOpen && (
-            <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 2px 36px' }}>
+            <div className="crucible-composer-expand" style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 2px 36px', minWidth: 0 }}>
               {/* ── Model-switch popup — pins one on-device model (server honors it via
                   localModelRouter's pinned-id override); Auto restores normal routing. */}
               {expanderPopup === 'models' && (
                 <div style={{
-                  position: 'absolute', bottom: 'calc(100% + 8px)', left: 36, zIndex: 40,
-                  minWidth: 230, maxWidth: 300, padding: 6, borderRadius: 12,
+                  // Anchored to the composer's own left edge with a right stop, so the panel
+                  // can never extend past the chat pane on a narrow screen.
+                  position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 40,
+                  minWidth: 0, width: 300, maxWidth: '100%', padding: 6, borderRadius: 12,
                   background: 'rgba(22,22,30,0.98)', border: '1px solid rgba(255,255,255,0.1)',
                   boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
                   animation: 'panelUp 0.18s var(--ease-standard)',
@@ -3621,8 +3663,8 @@ export default function App() {
                   runnable on whatever is typed in the composer without leaving it. */}
               {expanderPopup === 'agents' && (
                 <div style={{
-                  position: 'absolute', bottom: 'calc(100% + 8px)', left: 36, zIndex: 40,
-                  minWidth: 260, maxWidth: 320, padding: 6, borderRadius: 12,
+                  position: 'absolute', bottom: 'calc(100% + 8px)', left: 0, zIndex: 40,
+                  minWidth: 0, width: 320, maxWidth: '100%', padding: 6, borderRadius: 12,
                   background: 'rgba(22,22,30,0.98)', border: '1px solid rgba(255,255,255,0.1)',
                   boxShadow: '0 12px 32px rgba(0,0,0,0.5)',
                   animation: 'panelUp 0.18s var(--ease-standard)',
@@ -3659,7 +3701,15 @@ export default function App() {
                   })}
                 </div>
               )}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, animation: 'panelUp 0.18s var(--ease-standard)' }}>
+              {/* The pill strip WRAPS. Four fixed-width pills in a nowrap row overflowed the
+                  composer at phone width — "Brain" hung off the right edge of the chat pane
+                  instead of nesting inside it. Wrapping keeps every pill inside the box at any
+                  width, and `minWidth: 0` lets the row actually shrink to its container. */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' as const,
+                rowGap: 6, minWidth: 0, flex: 1,
+                animation: 'panelUp 0.18s var(--ease-standard)',
+              }}>
                 <button
                   onClick={() => {
                     if (mode === 'quorum') { setMode('code'); ensemble.setOn(false); return }

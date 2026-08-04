@@ -142,6 +142,14 @@ html, body, #root {
     font-size: 16px !important;
   }
 
+  /* (+) expander row: the 36px indent that lines the pills up under the textarea on
+     desktop is dead space on a phone — it pushed the Ensemble/Models/Agents/Brain strip
+     off-centre and shoved "Brain" past the right edge of the chat pane. */
+  .crucible-composer-expand {
+    padding-left: 4px !important;
+    padding-right: 4px !important;
+  }
+
   /* Send/stop button: same height as pills in toolbar row */
   .crucible-send-btn {
     width: 26px !important;
