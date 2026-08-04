@@ -544,7 +544,14 @@ export function makeToolCallDriveTurn(complete: Complete, goal: string) {
       // Nothing in THIS subtask's history? Fall back to the shared scratchpad — the meta-router
       // splits a goal across subtasks that cannot see each other's messages, and the answer may
       // have been retrieved by a sibling.
-      if (!last) last = lastLookupAnswer()?.output.replace(/^\[(verified|unverified|abstained)\]\s*/, '')
+      // Only for a goal that ACTUALLY ASKED for a lookup. MEASURED 2026-08-03: the scratchpad is
+      // process-global, so after one research task every later write_file — including "create
+      // notes.md containing exactly the line: Crucible agent test" — had its content replaced by
+      // the stale Node LTS answer. Three consecutive runs, two tasks broken each time, by the
+      // guard meant to protect them. A goal with no SEARCH step has no lookup to be faithful to.
+      if (!last && categoryPlan(goal).includes('SEARCH')) {
+        last = lastLookupAnswer()?.output.replace(/^\[(verified|unverified|abstained)\]\s*/, '')
+      }
       if (last) {
         const nums = (n: string) => new Set((n.match(/\d+(?:\.\d+)*/g) ?? []))
         const want = nums(last.split(/Sources?:/i)[0])

@@ -42,6 +42,7 @@ import { nativeDriveTurn, driverComplete, currentDriverLabel } from './src/Cruci
 import { makeOfflineDriveTurn, withOfflineFallback, solveNonCodeTurn } from './src/CrucibleEngine/agent/synthDriver'
 import { makeToolCallDriveTurn } from './src/CrucibleEngine/agent/toolCallDriver'
 import { verifyGoal, correctionFor } from './src/CrucibleEngine/agent/postconditions'
+import { categoryPlan } from './src/CrucibleEngine/agent/toolCallDriver'
 import { answerQuery } from './src/CrucibleEngine/answer/answerEngine'
 import { clarifyBuild } from './src/CrucibleEngine/answer/conversational'
 import { resolveBuildTurn } from './src/CrucibleEngine/answer/buildNegotiation'
@@ -3038,6 +3039,14 @@ function shouldUseMetaRouter(message: string): boolean {
   try {
     // Pure code-implementation goals bypass the meta-router (see above) → coding loop.
     if (isCodeImplementationTask(message)) return false
+    // A goal whose VERBS already spell out an ordered plan does not need decomposing: the
+    // tool-call driver sequences it in ONE loop (READ → CALCULATE → WRITE), scoping the menu per
+    // step. Sending it to the meta-router instead splits it across subtasks that cannot see each
+    // other's messages — which is what made the writer of node.md invent a version the sibling
+    // subtask had already looked up — and re-runs the same expensive work per subtask.
+    // MEASURED 2026-08-03: "read prices.csv, add up the amount column, write total.txt" took
+    // ~64s through the meta-router for what is three tool calls.
+    if (categoryPlan(message ?? '').length >= 2) return false
     const subs = decompose(message ?? '').nodes.filter(n => n.depth > 0)
     if (subs.length < 2) return false
     const archetypes = new Set(subs.map(n => selectArchetype(n.goal)))

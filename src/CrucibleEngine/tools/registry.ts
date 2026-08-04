@@ -461,7 +461,9 @@ registry.register({
     // evidence.
     // Keyed on SUBJECT, not on ctx.goal: the third writer's context carries no goal at all, so a
     // goal-gated guard silently skipped exactly the write it existed to catch.
-    const look = LAST_LOOKUP
+    // Same containment as the driver: the scratchpad is process-global, and a goal that never
+    // asked for a lookup must not have its file rewritten from one.
+    const look = ctx.goal && /\b(find out|look up|research|search|current|latest|version)\b/i.test(ctx.goal) ? LAST_LOOKUP : null
     if (look) {
       const content = String(args.content ?? '')
       const subject = (look.question.toLowerCase().match(/[a-z][a-z.]{3,}/g) ?? [])
