@@ -1053,6 +1053,18 @@ async function notifyUser(userId: string | null, payload: { title: string; body:
   if (dead.length) await savePushSubs(subs.filter(s => !dead.includes(s.sub?.endpoint)))
 }
 
+// ── Liveness probe ───────────────────────────────────────────────────────────────
+// Deliberately the cheapest route in the server: no auth, no I/O, no model touch, so
+// it answers even while the process is busy streaming. Its consumer is the port-
+// conflict path in `startListening` — a booting instance asks whoever holds the port
+// whether it is a live Crucible, and stands down if the answer comes back. Without
+// this route that probe fails open and the newcomer kills a healthy server, which is
+// exactly the bug it exists to prevent. Also useful to the UI for "can't reach
+// Crucible" detection, which is why it reports the commit and uptime too.
+app.get('/api/health', (_req: express.Request, res: express.Response) => {
+  res.json({ status: 'ok', service: 'crucible', pid: process.pid, uptimeSec: Math.round(process.uptime()) })
+})
+
 app.get('/api/push/vapid-public', (_req: express.Request, res: express.Response) => {
   res.json({ key: pushEnabled ? VAPID_PUBLIC : null })
 })
@@ -10294,16 +10306,58 @@ function startListening(port: number, attempt = 0) {
           if (l.startsWith('p')) listeningPids.add(Number(l.slice(1)))
         }
       } catch { /* if lsof is unavailable, fall through to the conservative checks below */ }
-      const rows = execSync(`ps -eo pid=,ppid=,command= | grep 'server\\.ts' | grep node | grep -v grep`, { encoding: 'utf8' })
+      // FOUND 2026-08-04: the listener check above is necessary but NOT sufficient, because a
+      // server that is still BOOTING has not bound its socket yet — it is indistinguishable from
+      // a never-won-the-port orphan for the whole of its startup window. Two Crucible checkouts
+      // (the repo and a `.claude/worktrees/*` agent worktree) each swept the other during that
+      // window, so neither ever reached `listen()`: the desktop app saw ERR_CONNECTION_REFUSED,
+      // every chat round came back blank, and each log ended cleanly mid-run with no stack trace.
+      // Cost: a full session of misdiagnosis as a UI bug. Two extra discriminators close it.
+      //
+      //   1. AGE. A process younger than the boot grace period may simply not have bound yet.
+      //      Nothing is lost by waiting — a genuine orphan is still swept on the next tick.
+      //   2. CHECKOUT. A process running from a different repo root is somebody else's server by
+      //      definition (an agent worktree, a second clone). It is never ours to kill, listening
+      //      or not. This is the discriminator that actually ends the mutual-kill loop, since a
+      //      cross-checkout pair can otherwise race each other forever inside the grace window.
+      const BOOT_GRACE_MS = 90_000
+      const ourRoot = process.cwd()
+      const cwdOf = (pid: number): string | null => {
+        try {
+          for (const l of execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null || true`, { encoding: 'utf8' }).split('\n')) {
+            if (l.startsWith('n')) return l.slice(1)
+          }
+        } catch { /* unknowable */ }
+        return null
+      }
+      // `etimes` (seconds, GNU) does not exist on BSD/macOS ps — asking for it makes the WHOLE
+      // command fail, which inside this best-effort try/catch disables the entire sweep in
+      // silence. Use portable `etime` and parse its [[DD-]HH:]MM:SS form ourselves.
+      const parseEtime = (s: string): number => {
+        const [dPart, clock] = s.includes('-') ? s.split('-') : ['0', s]
+        const parts = clock.split(':').map(Number)
+        while (parts.length < 3) parts.unshift(0)
+        return ((Number(dPart) * 24 + parts[0]) * 60 + parts[1]) * 60 + parts[2]
+      }
+      const rows = execSync(`ps -eo pid=,ppid=,etime=,command= | grep 'server\\.ts' | grep node | grep -v grep`, { encoding: 'utf8' })
         .split('\n').map(l => l.trim()).filter(Boolean)
       for (const row of rows) {
-        const m = /^(\d+)\s+(\d+)\s+(.*)$/.exec(row)
+        const m = /^(\d+)\s+(\d+)\s+([\d:-]+)\s+(.*)$/.exec(row)
         if (!m) continue
-        const [pid, ppid, cmd] = [Number(m[1]), Number(m[2]), m[3] as unknown as string] as [number, number, string]
+        const pid = Number(m[1]), ppid = Number(m[2]), ageMs = parseEtime(m[3]) * 1000, cmd = m[4] as string
         if (pid === process.pid || pid === process.ppid || /\bwatch\b/.test(cmd)) continue
         if (ppid !== 1) continue // only clearly-orphaned processes; live supervised trees are left alone
         if (listeningPids.has(pid)) {
           console.warn(`[OrphanSweep] Left server.ts ${pid} alone — it is LISTENING, so it is a live instance on another port, not a lingering orphan`)
+          continue
+        }
+        if (ageMs < BOOT_GRACE_MS) {
+          console.warn(`[OrphanSweep] Left server.ts ${pid} alone — only ${Math.round(ageMs / 1000)}s old, so it may still be binding its port`)
+          continue
+        }
+        const theirRoot = cwdOf(pid)
+        if (theirRoot && theirRoot !== ourRoot) {
+          console.warn(`[OrphanSweep] Left server.ts ${pid} alone — it runs from a different checkout (${theirRoot}), so it is not ours to kill`)
           continue
         }
         try { process.kill(pid, 'SIGKILL'); console.warn(`[OrphanSweep] Killed lingering server.ts orphan ${pid}`) } catch { /* already gone */ }
@@ -10598,13 +10652,63 @@ function startListening(port: number, attempt = 0) {
       // Find the PID holding the port
       const lsof = execSync(`lsof -ti tcp:${port} 2>/dev/null`, { encoding: 'utf8' }).trim()
       if (!lsof) { console.error('[Port] Cannot identify occupant. Exiting.'); process.exit(1) }
+      // ── THE INCUMBENT WINS IF IT IS HEALTHY (2026-08-04) ──────────────────────────
+      // This block used to be unconditional last-launcher-wins: whoever booted most
+      // recently `kill -9`d whoever held the port. That is backwards. The process
+      // holding the port is, by construction, the one that WORKS — it has a bound
+      // socket, warm caches, an FM bridge, and quite possibly a chat stream open to
+      // the user right now. The newcomer has none of that and no claim to the port.
+      //
+      // The cost of the old policy was severe and invisible: every relaunch (desktop
+      // app restart, a stray script, a second checkout) silently executed the running
+      // server mid-request. SIGKILL leaves no stack trace, so the log just STOPPED —
+      // which reads as a crash, and was misdiagnosed as one for an entire session. The
+      // user-visible symptoms were ERR_CONNECTION_REFUSED, blank chat bubbles, and
+      // tasks that "did not complete", none of which point back here.
+      //
+      // New policy: ask the occupant if it is a live Crucible. If it answers, it keeps
+      // the port and WE exit — loudly, saying exactly what happened and what to do. We
+      // only reclaim a port from something that holds the socket but cannot answer,
+      // which is the actual "stale process" this code was written for.
+      // The probe must tolerate a BUSY incumbent, not just a fast one. Crucible blocks
+      // its event loop for ~13s during boot (corpus warmup, model probing), so a single
+      // short curl fails against a perfectly healthy server that is merely mid-startup —
+      // and a probe that fails open here kills exactly the server it was added to save.
+      // Three attempts at 6s each clears that window with room to spare.
+      const occupantIsHealthy = (): boolean => {
+        for (let i = 0; i < 3; i++) {
+          try {
+            const body = execSync(`curl -sS -m 6 http://127.0.0.1:${port}/api/health 2>/dev/null || true`, { encoding: 'utf8' })
+            if (/"service"\s*:\s*"crucible"/i.test(body)) return true
+          } catch { /* keep trying */ }
+        }
+        return false
+      }
+      // Even an UNRESPONSIVE peer Crucible is not ours to execute. A wedged server is a
+      // bug to look at, not a process to silently destroy — and "unresponsive" has
+      // already proven to be an unreliable reading of "busy". We reclaim the port only
+      // from node processes that are not Crucible servers at all.
+      const occupantIsCrucible = (pid: string): boolean => {
+        try {
+          const cmd = execSync(`ps -p ${pid} -o command= 2>/dev/null`, { encoding: 'utf8' })
+          return /server\.ts/.test(cmd)
+        } catch { return false }
+      }
+      const firstPid = lsof.split('\n').filter(Boolean)[0]
+      if (occupantIsHealthy() || occupantIsCrucible(firstPid)) {
+        console.error(`[Port] Another Crucible already owns port ${port} (PID ${firstPid}).`)
+        console.error(`[Port] Leaving it alone and exiting — it is serving the app right now, and`)
+        console.error(`[Port] killing it is what used to make the UI go blank mid-answer. Use the`)
+        console.error(`[Port] running server, or stop it yourself first if you meant to replace it.`)
+        process.exit(0)
+      }
       const pids = lsof.split('\n').filter(Boolean)
       for (const pid of pids) {
         try {
           // Only kill if it's a tsx/node process (safety check)
           const cmd = execSync(`ps -p ${pid} -o comm= 2>/dev/null`, { encoding: 'utf8' }).trim()
           if (/node|tsx/.test(cmd)) {
-            console.warn(`[Port] Killing stale process ${pid} (${cmd})`)
+            console.warn(`[Port] Reclaiming ${port} from unresponsive process ${pid} (${cmd}) — it holds the socket but failed the health probe`)
             execSync(`kill -9 ${pid}`)
           } else {
             console.error(`[Port] Port ${port} held by non-Crucible process "${cmd}" (PID ${pid}). Exiting.`)

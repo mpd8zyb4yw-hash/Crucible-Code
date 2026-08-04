@@ -1,4 +1,11 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+
+// Quantization for the transcript's copy of the composer height — see `dockHeight`.
+// STEP is one text line, the smallest growth the transcript should react to. MAX is a
+// sanity ceiling above any real composer height (the textarea itself caps at 160px),
+// so it clamps a runaway measurement without ever truncating legitimate padding.
+const DOCK_HEIGHT_STEP = 8
+const DOCK_HEIGHT_MAX = 320
 import { API_BASE, apiFetch } from './api'
 import BackgroundBlobs from './BackgroundBlobs'
 import { useEnsemble, type EnsembleState } from './ensemble'
@@ -641,7 +648,26 @@ export default function App() {
   const prewarmTokenRef = useRef<string | null>(null)
   const prewarmDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const inputBarRef = useRef<HTMLDivElement>(null)
+  const [composerFocused, setComposerFocused] = useState(false)
   const [inputBarHeight, setInputBarHeight] = useState(100)
+  // ── Dock height: the transcript's copy of the composer height ────────────────────
+  // The composer grows by a pixel or two on almost every keystroke as the textarea
+  // reflows. `inputBarHeight` follows that exactly, which is right for the composer's
+  // own chrome (the veils and the scroll button sit flush against it, so a 2px error
+  // shows as a seam). It is WRONG for the transcript: MessageList is memoized on this
+  // number, so each keystroke re-rendered every round in the history and rebuilt a
+  // five-stop mask gradient — the scroll jank you feel while typing into a long chat.
+  //
+  // The transcript only needs the height to be approximately right: it uses it for
+  // bottom padding and for where the fade begins, neither of which is perceptible at
+  // 8px resolution. Quantizing up to an 8px step means the transcript re-renders when
+  // the composer grows a LINE, not a pixel — roughly one re-render per twenty
+  // keystrokes instead of twenty — while still never letting content hide behind the
+  // bar (rounding UP guarantees the padding is never short).
+  const dockHeight = useMemo(
+    () => Math.min(DOCK_HEIGHT_MAX, Math.ceil(inputBarHeight / DOCK_HEIGHT_STEP) * DOCK_HEIGHT_STEP),
+    [inputBarHeight],
+  )
 
   // N1 — poll governance pending count
   useEffect(() => {
@@ -2925,7 +2951,7 @@ export default function App() {
       {tab === 'chat' && (
         <MessageList
           rounds={rounds} setRounds={setRounds} send={sendStable} toggleCritique={toggleCritique}
-          inputBarHeight={inputBarHeight} liveRoundId={liveRoundId} thinking={thinking}
+          inputBarHeight={dockHeight} liveRoundId={liveRoundId} thinking={thinking}
           scrollRef={scrollRef} bottomRef={bottomRef}
           handleScroll={handleScroll} handleWheel={handleWheel}
           handleTouchStart={handleTouchStart} handleTouchMove={handleTouchMove}
@@ -3173,15 +3199,27 @@ export default function App() {
           </div>
         )}
 
-        <div className="crucible-inputbox" style={{
+        {/* ── Composer: two states, `rest` and `raised` ────────────────────────────
+            At REST the composer is furniture — it sits low and quiet so the answer
+            above it is the thing you look at. Once you engage it (focus, or any text
+            held in it) it RAISES: it lifts a hair off the page, the glass brightens,
+            the edge picks up the accent, and the shadow spreads to sell the lift.
+            Both states share one transition so the change reads as a single motion
+            rather than four properties animating independently. The state is derived,
+            never stored, so it cannot desync from the thing it describes. */}
+        <div className="crucible-inputbox" data-state={composerRaised ? 'raised' : 'rest'} style={{
           display: 'flex', flexDirection: 'column',
-          background: 'rgba(255,255,255,0.045)',
-          border: '1px solid rgba(255,255,255,0.09)',
+          background: composerRaised ? 'rgba(255,255,255,0.062)' : 'rgba(255,255,255,0.035)',
+          border: `1px solid ${composerRaised ? 'rgba(124,124,248,0.30)' : 'rgba(255,255,255,0.075)'}`,
           // Thin strip by default (single row); grows vertically as the textarea grows.
           borderRadius: 22, padding: '7px 10px',
           width: 'var(--chat-measure)', maxWidth: '100%',
           backdropFilter: 'blur(32px)', WebkitBackdropFilter: 'blur(32px)',
-          boxShadow: '0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)',
+          boxShadow: composerRaised
+            ? '0 14px 48px rgba(0,0,0,0.46), 0 0 0 3px rgba(124,124,248,0.07), inset 0 1px 0 rgba(255,255,255,0.09)'
+            : '0 6px 26px rgba(0,0,0,0.30), inset 0 1px 0 rgba(255,255,255,0.05)',
+          transform: composerRaised ? 'translateY(-2px)' : 'none',
+          transition: 'background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard), transform var(--dur-fast) var(--ease-standard)',
           position: 'relative',
         }}>
           {showMinLengthTip && (
@@ -3326,6 +3364,8 @@ export default function App() {
                 lineHeight: 1.5, maxHeight: 160, overflowY: 'auto',
                 userSelect: 'text', paddingBottom: 2,
               }}
+              onFocus={() => setComposerFocused(true)}
+              onBlur={() => setComposerFocused(false)}
             />
             {mode === 'quorum' && (
               <span style={{ fontSize: 9.5, fontWeight: 600, letterSpacing: '0.05em', color: '#7c7cf8', flexShrink: 0 }}>ENSEMBLE ON</span>
