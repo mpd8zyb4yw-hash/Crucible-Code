@@ -6,14 +6,14 @@ import { IntegrationsBinder } from './IntegrationsBinder'
 import { LibraryPage } from './LibraryBinder'
 import { SelfRepairPage } from './SelfRepairBinder'
 import { SelfPatcherBinder } from './SelfPatcherBinder'
-import NavRail from './NavRail'
+import NavRail, { type CrucibleTab } from './NavRail'
 import SidebarRail from './SidebarRail'
 import DebugCapture from './DebugCapture'
 import { AGENT_WORKFLOWS } from './AgentsTabView'
 import AgentMissionControl from './AgentMissionControl'
 import AutomationsView from './AutomationsView'
 import ConnectionsView from './ConnectionsView'
-import HomeSurface from './HomeSurface'
+import HomeBoard from './HomeBoard'
 import HistoryTabView from './HistoryTabView'
 import SettingsTabView, { SystemRow } from './SettingsTabView'
 import './modelData'
@@ -85,15 +85,15 @@ export default function App() {
   // The round currently streaming live in THIS session — the only round that gets the
   // molten pour overlay (a restored/historical round must never replay the animation).
   const [liveRoundByConv, setLiveRoundByConv] = useState<Record<string, string | null>>({})
-  // ── v3 left-rail tab shell — Chat is the existing full view; History/Settings are
-  // dedicated full-page views (see NavRail.tsx / HistoryTabView.tsx / SettingsTabView.tsx).
-  // The system drawers (Library/SelfRepair/etc.) live in Settings.
-  const [tab, setTab] = useState<'chat' | 'history' | 'settings'>('chat')
-  // Items 18/19: Agents & capabilities is an inline overlay anchored to the chat panel,
-  // not a tab — toggling it never unmounts the conversation underneath (see AgentsTabView.tsx).
+  // ── Tab shell. HOME LEADS (2026-08-04): the app opens on the card board, not on an
+  // empty chat. Chat is a peer surface reached from the rail or by sending from the dock.
+  // Automations and Connections used to be rail peers; they are now detail routes
+  // (Watch widget → automations, Settings → connections), which is what removed the
+  // "five tabs, three of them overlays" redundancy.
+  const [tab, setTab] = useState<CrucibleTab>('home')
+  // Mission Control's ROSTER only — its old "overview" board was the widget grid, which
+  // now lives on Home. One surface owns widgets, and it is Home.
   const [agentsOpen, setAgentsOpen] = useState(false)
-  // Automations page — standing tasks (Assistant layer step 1). Same overlay pattern
-  // as Mission Control: chat stays mounted and streaming underneath.
   const [automationsOpen, setAutomationsOpen] = useState(false)
   const [connectionsOpen, setConnectionsOpen] = useState(false)
   const [composerExpandOpen, setComposerExpandOpen] = useState(false)
@@ -1240,6 +1240,10 @@ export default function App() {
     const convId = conversationIdRef.current
     setConvLiveRound(convId, roundId)
     localStorage.setItem('crucible_has_sent', '1')
+    // Sending is an unambiguous "show me the answer": Home is the resting surface, but the
+    // reply lands in the transcript, so sending navigates there. Without this the dock
+    // would stream into a surface the user is not looking at.
+    setTab('chat')
     // Sending a message is an unambiguous "show me the new answer" — follow resumes, and the
     // reference offset resets so the first commit of the new round is not measured against a
     // position from the previous one.
@@ -2150,13 +2154,7 @@ export default function App() {
         {!isMobile && (
           <SidebarRail
             tab={tab}
-            setTab={t => { if (t !== 'chat') { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false) } setTab(t) }}
-            agentsOpen={agentsOpen}
-            onToggleAgents={() => { setAutomationsOpen(false); setConnectionsOpen(false); setAgentsOpen(o => { if (!o) setTab('chat'); return !o }) }}
-            automationsOpen={automationsOpen}
-            onToggleAutomations={() => { setAgentsOpen(false); setConnectionsOpen(false); setAutomationsOpen(o => { if (!o) setTab('chat'); return !o }) }}
-            connectionsOpen={connectionsOpen}
-            onToggleConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            setTab={t => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false); setTab(t) }}
             conversationId={conversationId}
             onNewChat={() => {
               // F panels: a new chat is a new PANEL — the previous conversation stays
@@ -2306,8 +2304,6 @@ export default function App() {
           onReply={(text, anchorRoundId) => { void send(text, 'agent', false, undefined, anchorRoundId ? { followUpOf: anchorRoundId } : undefined) }}
           onClose={() => setAgentsOpen(false)}
           onFollowUp={followUpInChat}
-          onAsk={followUpInChat}
-          onOpenConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(true) }}
         />
       )}
 
@@ -2542,13 +2538,7 @@ export default function App() {
           <NavRail
             orientation="horizontal"
             tab={tab}
-            setTab={t => { if (t !== 'chat') { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false) } setTab(t) }}
-            agentsOpen={agentsOpen}
-            onToggleAgents={() => { setAutomationsOpen(false); setConnectionsOpen(false); setAgentsOpen(o => { if (!o) setTab('chat'); return !o }) }}
-            automationsOpen={automationsOpen}
-            onToggleAutomations={() => { setAgentsOpen(false); setConnectionsOpen(false); setAutomationsOpen(o => { if (!o) setTab('chat'); return !o }) }}
-            connectionsOpen={connectionsOpen}
-            onToggleConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(o => { if (!o) setTab('chat'); return !o }) }}
+            setTab={t => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(false); setTab(t) }}
           />
         )}
         {/* Top-bar overlap fix: on mobile widths this pill's full label plus the New Chat
@@ -2821,63 +2811,39 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Welcome empty state — quiet, capability-forward, one tap to try things.
-          Replaced by the conversation the moment the first round exists. ── */}
-      {rounds.length === 0 && !thinking && (
-        <div style={{
-          position: 'absolute', top: 56, left: 0, right: 0, bottom: 0, zIndex: 1,
-          // The wrapper stays pointer-transparent (composer/topbar underneath must keep
-          // working); HomeSurface re-enables pointer events on its own content column.
-          pointerEvents: 'none',
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          paddingBottom: Math.min(inputBarHeight + 24, 120), animation: 'fadeIn 0.5s ease', overflow: 'hidden auto',
-        }}>
-          {/* Home is a CARD SURFACE (DESIGN_HANDOFF §4.1), not an empty chat box: the
-              pinned region the user controls, then the region Crucible ranks. The
-              identity mark below is still the first-run header. */}
-          <HomeSurface
-            allRounds={allRounds}
-            onOpenAgents={() => setAgentsOpen(true)}
-            onOpenAutomations={() => { setAgentsOpen(false); setConnectionsOpen(false); setAutomationsOpen(true) }}
-            onOpenConnections={() => { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(true) }}
-            splash={
-          <div style={{ margin: 'auto 0', display: 'flex', flexDirection: 'column', alignItems: 'center', minHeight: 0 }}>
-          {/* Quiet branded splash: the vessel mark over a slow ember glow — the product's
-              identity (forged on-device) instead of a question. Self-authored SVG only. */}
-          <div style={{ position: 'relative', width: 84, height: 84, marginBottom: 18, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <div className="splash-ember" />
-            <svg width="52" height="52" viewBox="0 0 48 48" fill="none" style={{ position: 'relative' }}>
-              <defs>
-                <linearGradient id="splashMelt" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor="var(--c-text)" stopOpacity="0.9" />
-                  <stop offset="1" stopColor="#ff9e5e" stopOpacity="0.85" />
-                </linearGradient>
-              </defs>
-              <path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0"
-                stroke="url(#splashMelt)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-          <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--c-text)', marginBottom: 7, textAlign: 'center', padding: '0 24px' }}>
-            Crucible
-          </div>
-          {/* No suggestion chips, no hand-holding — the mark, the promise, the composer. */}
-          <div style={{ fontSize: 12.5, color: 'var(--c-dim)', textAlign: 'center', padding: '0 24px' }}>
-            Private, on-device. Nothing leaves this Mac.
-          </div>
-          </div>
-            }
-          />
-        </div>
+      {/* ── HOME — the leading surface (2026-08-04) ───────────────────────────────
+          A plain flow child, NOT an overlay. The previous version was
+          `position:absolute; top:56; pointerEvents:'none'` layered inside the chat
+          tab, which caused two bugs at once: it could not scroll (a
+          pointer-events:none element receives no wheel or touch events even though it
+          was the scroll container), and it lost every click to MessageList's stacking
+          context. Both are structural, and both are gone by making Home a real sibling
+          that owns its own box. Do not reintroduce the overlay. */}
+      {(tab === 'home' || (isMobile && tab === 'history')) && (
+        <HomeBoard
+          allRounds={allRounds}
+          onAsk={followUpInChat}
+          onNewChat={() => setTab('chat')}
+          onRoute={route => {
+            if (route === 'agents') { setAutomationsOpen(false); setConnectionsOpen(false); setAgentsOpen(true) }
+            else if (route === 'automations') { setAgentsOpen(false); setConnectionsOpen(false); setAutomationsOpen(true) }
+            else { setAgentsOpen(false); setAutomationsOpen(false); setConnectionsOpen(true) }
+          }}
+        />
       )}
 
-      {/* ── Message history ── */}
-      <MessageList
-        rounds={rounds} setRounds={setRounds} send={sendStable} toggleCritique={toggleCritique}
-        inputBarHeight={inputBarHeight} liveRoundId={liveRoundId} thinking={thinking}
-        scrollRef={scrollRef} bottomRef={bottomRef}
-        handleScroll={handleScroll} handleWheel={handleWheel}
-        handleTouchStart={handleTouchStart} handleTouchMove={handleTouchMove}
-      />
+      {/* ── Message history — the chat surface, now a peer of Home rather than the
+          always-mounted background. Guarding it is what lets Home be a flow child in
+          the same column instead of an overlay stacked on top of it. ── */}
+      {tab === 'chat' && (
+        <MessageList
+          rounds={rounds} setRounds={setRounds} send={sendStable} toggleCritique={toggleCritique}
+          inputBarHeight={inputBarHeight} liveRoundId={liveRoundId} thinking={thinking}
+          scrollRef={scrollRef} bottomRef={bottomRef}
+          handleScroll={handleScroll} handleWheel={handleWheel}
+          handleTouchStart={handleTouchStart} handleTouchMove={handleTouchMove}
+        />
+      )}
 
 
       {/* ── Progressive blur veil — frosted glass that deepens toward the bottom ──

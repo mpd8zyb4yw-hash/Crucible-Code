@@ -85,15 +85,9 @@ function NavRow({ active, label, onClick, children, title, iconOnly }: {
   )
 }
 
-function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen, onToggleAutomations, connectionsOpen, onToggleConnections, conversationId, onNewChat, onRestore, onDeleted, onDeletedAll, refreshKey, collapsed }: {
+function SidebarRail({ tab, setTab, conversationId, onNewChat, onRestore, onDeleted, onDeletedAll, refreshKey, collapsed }: {
   tab: CrucibleTab
   setTab: (t: CrucibleTab) => void
-  agentsOpen: boolean
-  onToggleAgents: () => void
-  automationsOpen: boolean
-  onToggleAutomations: () => void
-  connectionsOpen: boolean
-  onToggleConnections: () => void
   conversationId: string
   onNewChat: () => void
   onRestore: (session: HistorySession) => void
@@ -185,30 +179,21 @@ function SidebarRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen,
         {!iconOnly && <span style={{ fontSize: 12.5, fontWeight: 600 }}>New chat</span>}
       </button>
 
-      {/* Mode rows */}
-      <NavRow active={tab === 'chat' && !agentsOpen} label={iconOnly ? '' : 'Chat'} title="Chat" iconOnly={iconOnly} onClick={() => { if (agentsOpen) onToggleAgents(); setTab('chat') }}>
+      {/* Mode rows. Consolidated 2026-08-04 to Home / Chat (+ Settings at the bottom):
+          Agents' widget board moved to Home, Automations is reached from the Watch
+          widget, and Connections is a Settings section. Five peers where three were
+          overlays read as redundancy — because it was. */}
+      <NavRow active={tab === 'home'} label={iconOnly ? '' : 'Home'} title="Home" iconOnly={iconOnly} onClick={() => setTab('home')}>
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
+          <rect x="2.2" y="2.2" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+          <rect x="8.8" y="2.2" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+          <rect x="2.2" y="8.8" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+          <rect x="8.8" y="8.8" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+        </svg>
+      </NavRow>
+      <NavRow active={tab === 'chat'} label={iconOnly ? '' : 'Chat'} title="Chat" iconOnly={iconOnly} onClick={() => setTab('chat')}>
         <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
           <path d="M14 8a6 6 0 0 1-8.7 5.4L2 14l0.7-3A6 6 0 1 1 14 8Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-        </svg>
-      </NavRow>
-      <NavRow active={agentsOpen} label={iconOnly ? '' : 'Agents'} title="Agents" iconOnly={iconOnly} onClick={onToggleAgents}>
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-          <rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M8 5V2.8M6 9h.01M10 9h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          <circle cx="8" cy="2.2" r="0.9" fill="currentColor" />
-        </svg>
-      </NavRow>
-      <NavRow active={automationsOpen} label={iconOnly ? '' : 'Automations'} title="Automations" iconOnly={iconOnly} onClick={onToggleAutomations}>
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-          <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M8 4.8V8l2.3 1.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </NavRow>
-      <NavRow active={connectionsOpen} label={iconOnly ? '' : 'Connections'} title="Connections" iconOnly={iconOnly} onClick={onToggleConnections}>
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none">
-          <circle cx="4.5" cy="4.5" r="2.2" stroke="currentColor" strokeWidth="1.4" />
-          <circle cx="11.5" cy="11.5" r="2.2" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M6.2 6.2l3.6 3.6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
         </svg>
       </NavRow>
 

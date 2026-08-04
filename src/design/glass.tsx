@@ -16,7 +16,7 @@
 import type { CSSProperties, ReactNode } from 'react'
 
 /** The four domains a card can belong to. The tint encodes WHICH, never decoration. */
-export type Domain = 'research' | 'mail' | 'time' | 'watch'
+export type Domain = 'research' | 'mail' | 'time' | 'watch' | 'code'
 
 /** rgb triplet tokens, so a tint can be composed at any alpha. */
 const DOMAIN_RGB: Record<Domain, string> = {
@@ -24,6 +24,7 @@ const DOMAIN_RGB: Record<Domain, string> = {
   mail: 'var(--domain-mail)',
   time: 'var(--domain-time)',
   watch: 'var(--domain-watch)',
+  code: 'var(--domain-code)',
 }
 
 /**
@@ -36,6 +37,7 @@ const DOMAIN_LABEL: Record<Domain, string> = {
   mail: 'var(--domain-mail-label)',
   time: 'var(--domain-time-label)',
   watch: 'var(--domain-watch-label)',
+  code: 'var(--domain-code-label)',
 }
 
 export function domainTint(domain: Domain | undefined, alpha: number): string {

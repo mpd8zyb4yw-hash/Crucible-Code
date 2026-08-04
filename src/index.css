@@ -85,18 +85,24 @@
   --radius-card-d: 20px;  /* desktop */
   --radius-sheet: 28px;
 
-  /* Ambient field (level 0) — self-authored, no external assets. */
-  --amb-base: #0B0D17;
-  --amb-1: rgba(79, 70, 229, 0.55);    /* indigo */
-  --amb-2: rgba(124, 58, 237, 0.48);   /* violet */
-  --amb-3: rgba(245, 158, 11, 0.30);   /* warm bloom */
-  --amb-4: rgba(34, 211, 238, 0.22);   /* cyan */
+  /* Ambient field (level 0) — self-authored, no external assets.
+     RETUNED 2026-08-04: the first pass ran four saturated blooms (indigo, violet,
+     amber, cyan) and read as a rainbow behind the glass. The ground's job is to give
+     the glass something to sample and to stay out of the way — the CARDS carry the
+     colour. Now near-black with one faint cool wash plus a barely-there second stop
+     for depth; the amber and cyan blooms are gone. */
+  --amb-base: #070810;
+  --amb-1: rgba(79, 70, 229, 0.20);    /* the one wash — cool indigo */
+  --amb-2: rgba(99, 102, 241, 0.10);   /* depth only, same family */
+  --amb-3: transparent;
+  --amb-4: transparent;
 
   /* Domain tint — encodes WHICH domain, never decoration (§5.1). */
   --domain-research: 99, 102, 241;   /* indigo 244° */
   --domain-mail: 45, 212, 191;       /* teal 172° */
   --domain-time: 251, 191, 36;       /* amber 43° */
   --domain-watch: 167, 139, 250;     /* violet 265° */
+  --domain-code: 148, 163, 184;      /* slate 215° — repos/PRs */
 
   /* Label colour per domain. These are tokens rather than component literals because
      the light theme needs a genuinely different value — a pale pastel that reads on
@@ -105,6 +111,7 @@
   --domain-mail-label: rgba(153, 246, 228, 0.95);
   --domain-time-label: rgba(253, 230, 138, 0.95);
   --domain-watch-label: rgba(221, 214, 254, 0.95);
+  --domain-code-label: rgba(203, 213, 225, 0.95);
 
   /* Honesty states (§7.1) — three, never collapsed into two. */
   --state-verified: #34D399;
@@ -157,10 +164,10 @@ html[data-theme='light'] {
   --glass-shadow-2: 0 16px 64px rgba(31, 38, 68, 0.22);
   --scrim: rgba(238, 240, 248, 0.55);
   --amb-base: #EEF0F8;
-  --amb-1: rgba(129, 140, 248, 0.42);
-  --amb-2: rgba(167, 139, 250, 0.38);
-  --amb-3: rgba(251, 191, 36, 0.30);
-  --amb-4: rgba(103, 232, 249, 0.26);
+  --amb-1: rgba(129, 140, 248, 0.26);
+  --amb-2: rgba(139, 145, 250, 0.14);
+  --amb-3: transparent;
+  --amb-4: transparent;
   --c-bg: #EEF0F8;
   --c-text: #101222;
   --c-text-soft: rgba(16, 18, 34, 0.90);
@@ -176,6 +183,7 @@ html[data-theme='light'] {
   --domain-mail-label: rgba(15, 106, 94, 0.92);
   --domain-time-label: rgba(120, 78, 8, 0.92);
   --domain-watch-label: rgba(76, 46, 156, 0.92);
+  --domain-code-label: rgba(51, 65, 85, 0.92);
   --alarm-ink: #9F1239;
   --alarm-fill: rgba(248, 113, 113, 0.14);
   --alarm-edge: rgba(159, 18, 57, 0.28);

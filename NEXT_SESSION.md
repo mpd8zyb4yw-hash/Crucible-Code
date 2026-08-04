@@ -17,62 +17,65 @@
 
 ---
 
-## CURRENT STATE — last updated 2026-08-03 (cont.121 — UI overhaul phase 1: tokens, ambient field, glass primitives, card home) (REPLACE THIS EVERY SESSION)
+## CURRENT STATE — last updated 2026-08-04 (cont.122 — Home leads; the dead-card bug is fixed and proven) (REPLACE THIS EVERY SESSION)
 
-> **What landed.** The Claude Design response to `DESIGN_HANDOFF.md` (design project
-> `fb3287e3`, file `Crucible UI.dc.html`), implemented at the scope the user agreed:
-> **foundations + the home surface**. Full detail in the ROADMAP CHANGE LOG entry for
-> 2026-08-03. Summary:
+> Full detail in the ROADMAP CHANGE LOG entry for 2026-08-04. Approved plan:
+> `/Users/justin/.claude/plans/memoized-sprouting-book.md`.
 >
->  - `src/index.css` — the full frosted-glass token set, light theme, reduce-transparency,
->    two named easing curves, and the FIRST `prefers-reduced-motion` support in the codebase
->    (it was at zero occurrences). The ad-hoc `cubic-bezier(0.22,1,0.36,1)` is gone from all
->    10 files that carried it.
->  - `src/BackgroundBlobs.tsx` — canvas rAF loop REPLACED by one CSS ambient field.
->  - `src/chat/MessageList.tsx` — the Google favicon call is GONE (privacy leak + house-rule-2
->    violation). Self-authored monogram tiles instead.
->  - `src/design/glass.tsx` — glass primitives + the verification chip that renders `null`
->    without a ledger record.
->  - `src/HomeSurface.tsx` + `src/design/{homeLayout,homeData}.ts` — cards are home: pinned
->    vs suggested, snapshot ranking, pin/hide/resize, all cards backed by real endpoints.
+> **What landed.**
+>  - **The dead-card bug is fixed** (`42b5e0d`, shipped alone). `MessageList.tsx:244` had
+>    `zIndex:1` on a FLEX ITEM — z-index applies to flex items regardless of position, so it
+>    made an empty full-height scroll container that painted over Home and ate every click.
+>    Proven with `elementFromPoint`, not inferred. Not Electron-specific.
+>  - **Home is the leading surface.** `tab === 'home'` is the default and Home is a real flow
+>    child, not an overlay. Rail consolidated from five items to **Home / Chat / Settings**.
+>  - **One widget system.** `HomeBoard` + `design/widgets.ts` + `design/homeFeeds.ts` replace
+>    `HomeSurface.tsx`, `design/homeLayout.ts` and `MissionWidgets.tsx` (all deleted), plus
+>    Mission Control's overview branch. localStorage migrates from the two legacy keys.
+>  - **Phone deck** (`CardDeck.tsx`) with a real 1:1 swipe; desktop keeps a column board.
+>  - **Background retuned** to near-black + one cool wash.
 >
-> **A standing decision was repealed.** The 2026-07-21 note in `HomeSurface.tsx` ("NOTHING else
-> on the splash… permanent") is superseded by `DESIGN_HANDOFF.md` §4.1, confirmed by the user
-> on 2026-08-03. The new file documents the repeal in its header so this does not get re-litigated.
+> **Two deliberate overrides of DESIGN_HANDOFF §4.1 — do NOT "fix" these back:**
+> cards are ALWAYS present with honest empty states (the handoff's "show fewer cards" is
+> wrong for an assistant), and the user's order is the order (no adaptive ranking). Both are
+> the product owner's direction, recorded in `HomeBoard.tsx`'s header and the CHANGE LOG.
 
 ### Open, in priority order
 
-1. **The email flow end to end is NOT built** — handoff deliverable 7 and the best test of the
-   whole system: triage item deck → open item → drafted reply → **confirm gate** → sent. The
-   confirm gate (§7.3) is a HARD requirement: nothing outward-facing may send without an
-   explicit accept showing the exact recipient and body. `src/ReplyComposer.tsx` and
-   `src/EmailReader.tsx` exist and are where this goes.
-2. **Three of the four card kinds are unbuilt** (handoff §5.2–§5.4): the item card (deck,
-   swipe = next item, "3 of 12" counter, next card peeks 12px), the facet card (fixed frame,
-   segmented control, 180ms cross-fade in place), and the run card (timeline, monospace).
-   `src/design/glass.tsx` has the surface primitives they build on.
-3. **The Watch diff screen** (§5.5.4, deliverable 8) — old value → new value, when it changed,
-   and what source proved it. The home card shows the *summary*; the diff itself is the most
-   distinctive screen in the product and is currently a list row.
-4. **The chat dock** (§4.3) — collapsed / active / full. Today the composer is still the old
-   input bar; the handoff wants a level-4 glass dock that expands upward over a dimmed home,
-   and says what it is doing in words rather than showing a spinner.
-5. **No UI toggle for light theme or reduce-transparency.** Both work as token swaps
-   (`data-theme="light"`, `data-transparency="reduce"` on `<html>`) but nothing sets them.
-   Reduce-transparency is an accessibility requirement, not a nicety (§3.4) — it needs a
-   settings control and an OS-preference read.
-6. **Desktop adaptation at 1280px** (deliverable 9) — lanes become a 2–3 column board, radius
-   tightens to `--radius-card-d`, and the design's position is a right-hand chat rail (380–420px)
-   rather than a bottom dock. The home surface is currently phone-width on every viewport.
-7. **One external asset request remains**: `src/agentic/SurfaceRenderer.tsx:728` renders a
-   model-supplied `thumb` URL in an `<img>`. Same class of violation as the favicon leak that
-   was fixed this session, but it is card data from the surface protocol, so it needs a
-   decision (proxy, strip, or self-authored placeholder) rather than a mechanical replacement.
+1. **The chat dock is NOT built.** The composer (`App.tsx`, the `crucible-inputbar-wrap`
+   block) is still the old fixed input bar. The design wants a level-4 glass dock with
+   `rest` / `raised` states — raised grows a glass panel upward to `min(46vh, 420px)` over a
+   dimmed board, and dragging past the ceiling navigates to `tab='chat'` rather than adding a
+   third state. Requires splitting `inputBarHeight` into `dockRestHeight` (clamped — for the
+   MessageList mask, the history drawer's `bottom`) and `dockHeight` (live — for the blur
+   veils and the scroll button), or the raised dock will break the message mask.
+2. **Most surfaces are still unstyled.** `SettingsTabView`, `ConnectionsView`,
+   `AutomationsView`, `HistoryTabView`, `AgentMissionControl`'s roster, `SidebarRail` and the
+   topbar still use `var(--c-glass)` + hairline. Port them to `glassSurface()` and replace
+   `--c-dim` body text with `--glass-text-2` (`--c-dim` measures ~1.35:1 on glass).
+3. **`ConnectionsView` should become a Settings section.** The rail no longer links to it;
+   it is currently reachable only via a widget empty-state action, which is a dead end for a
+   user who wants to manage a connection they already made.
+4. **Rail width 272 is hard-coded in three places** (`App.tsx` blur veils ×2 and the composer
+   wrap) while `SidebarRail` computes `iconOnly ? 64 : 272`. Already a latent bug when the
+   rail collapses; lift it to one `railW` value.
+5. **Reduced motion is verified by construction only.** The `CardDeck` drag is gated on
+   `prefers-reduced-motion` in JS (index.css only clamps CSS transitions, and finger-tracking
+   is an inline transform). Nobody has run the app with macOS Reduce Motion actually on.
+6. **One external asset request remains**: `src/agentic/SurfaceRenderer.tsx:728` renders a
+   model-supplied `thumb` URL in an `<img>`. Same class as the favicon leak fixed in cont.121;
+   needs a decision (proxy / strip / self-authored placeholder), not a mechanical swap.
+
+### Verification notes for whoever picks this up
+
+The live Home needs Google OAuth and **Claude cannot sign in on the user's behalf**, so the
+surface was verified by mounting the real `HomeBoard` in a throwaway harness against the
+`?home=demo` fixture path in `design/homeFeeds.ts` (`&state=empty|partial|full|disconnected`).
+That fixture path is real, shipped, and view-only — use it. Do NOT add an auth bypass flag.
 
 ### Capability
 
-No benchmark run in cont.121 — the session was UI-only. The last offline capability figure is
-whatever cont.117 recorded; do NOT quote a number that was not produced by a run.
+No benchmark run in cont.122 — UI only. Do not quote a number that was not produced by a run.
 
 ---
 

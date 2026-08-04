@@ -1933,6 +1933,88 @@ failures. Save results to `.crucible/benchmarks/neuromorphic-<date>.json`.
 
 ## CHANGE LOG  *(newest first — append a dated entry per working session)*
 
+### 2026-08-04 (cont.122 — UI PHASE 2: the dead-card bug, and Home becomes the leading surface)
+
+Follow-up to cont.121 after user review. Four complaints: cards don't respond, only the
+chat tab was restyled, the tabs look redundant, and it's too rainbowy. Plan approved
+before implementation (`/Users/justin/.claude/plans/memoized-sprouting-book.md`).
+
+**THE DEAD-CARD BUG — root-caused and PROVEN, not guessed.** `MessageList.tsx:244` set
+`zIndex: 1` on its scroll container. That element is `position: static`, but it is a FLEX
+ITEM, and per the Flexbox spec z-index applies to flex items regardless of position — so it
+established a stacking context at z=1. The Home overlay was also z=1 and came EARLIER in DOM
+order (App.tsx:2826 vs :2874), so MessageList won the tie and painted on top. It renders only
+when `rounds.length === 0`, which is exactly when Home showed, so it was an empty, invisible,
+full-height `overflow:auto` container laid over the entire home surface, eating every click.
+Verified with a minimal in-browser repro: with the token, `elementFromPoint` over the Arrange
+button returns the message-list div; without it, the button. NOT Electron-specific.
+Shipped alone as `42b5e0d` so it could be confirmed independently.
+Second bug at the same site: the wrapper was simultaneously `pointerEvents:'none'` AND the
+`overflow:'hidden auto'` scroll container, so Home could not scroll either. Both are gone by
+construction now that Home is a real flow child.
+
+**I HAD DUPLICATED MISSION CONTROL.** `MissionWidgets.tsx` already implemented a customizable
+board of always-present widgets with honest empty states, interactable rows and a per-widget
+"ask" action. cont.121 shipped a second, weaker system beside it: two localStorage layout keys
+and two fetchers hitting three of the same four endpoints. Merged into one:
+- NEW `src/design/widgets.ts` — the registry (`WidgetId`, `WIDGETS`, `ALL_WIDGETS`) plus the
+  layout store `crucible_home_widgets_v2` and a one-time migration that reads the legacy
+  `crucible_mc_widgets` order and `crucible_home_arrangement_v1` hidden set, appends any new
+  ids, and removes both legacy keys. A curated Mission Control board survives the move.
+- NEW `src/design/homeFeeds.ts` — `useHomeFeeds()`, the single I/O owner (4 endpoints, 45s,
+  best-effort per source). Halves the request rate.
+- `src/design/homeData.ts` reduced to PURE transforms (`longestFreeBlock`, `deriveMail`,
+  `deriveCalendar`, `deriveWatch`) — unit-testable without a server.
+- DELETED: `src/HomeSurface.tsx`, `src/design/homeLayout.ts`, `src/MissionWidgets.tsx`, and
+  Mission Control's entire `view: overview|agents` segment + overview branch.
+
+**Shell restructure — Home leads.** `CrucibleTab` gains `'home'` and it is the default. Home
+is a plain flow child with its own scrolling, NOT an overlay inside the chat tab; MessageList
+is now guarded by `tab === 'chat'`. The rail went from five items (three of which were
+overlays) to **Home / Chat / Settings** plus the session list: Agents' board moved to Home,
+Automations is reached from the Watch widget, Connections from Settings. Sending navigates to
+the transcript, and the phone history drawer now renders over Home.
+
+**`HomeBoard` — two layout policies, one component tree.** Policy is chosen by CONTAINER
+WIDTH (<700px = deck), deliberately NOT by `isMobile`, which is a `pointer: coarse` test that
+would give an iPad in landscape the deck and a narrow desktop window the board.
+- Desktop: `repeat(auto-fill, minmax(320px, 1fr))` board.
+- Phone: `src/CardDeck.tsx` — a book-pages deck. **The cards behind are BLANK SLIVERS, not
+  real cards at reduced opacity.** The first implementation stacked real cards; because these
+  are frosted GLASS you read straight through the front one and the deck became a pile of
+  overlapping text. Measured and fixed. Pointer Events (mouse-draggable), 1:1 finger tracking,
+  axis lock, asymptotic rubber-band, 280ms ease-glide settle, animated frame height, dots ≤7 /
+  counter beyond, arrows rendered ON PHONE too, ←/→ keys, aria-live. Under reduced motion the
+  drag is not attached at all.
+
+**Two DELIBERATE overrides of DESIGN_HANDOFF §4.1, at the user's direction, recorded so a
+later session does not "fix" them back:**
+ 1. *Cards are ALWAYS present with honest empty states.* The handoff says "show fewer cards —
+    never filler". That is wrong for an assistant: hiding Calendar because today is empty
+    reads as broken, not honest. ONE exception, added to protect the intent — consecutive
+    NOT-CONNECTED widgets collapse into a single "Connect your accounts" card, so a fresh
+    install is an invitation rather than six identical apologies. Empty-but-CONNECTED always
+    renders in full.
+ 2. *The user's order is the order.* No adaptive ranking; `rankSuggested` is deleted.
+
+**Background retuned.** The four saturated blooms (indigo, violet, amber, cyan) read as a
+rainbow. Now near-black `#070810` with one faint cool indigo wash; amber and cyan are gone.
+Cards keep their domain tint — the ground's job is to give the glass something to sample.
+
+**Verified in-browser** (the live Home needs Google OAuth, which Claude cannot complete, so a
+throwaway harness mounted the REAL HomeBoard against the new `?home=demo` fixture path, then
+was deleted): desktop board and phone deck both render; deck stepping, 1:1 drag
+(`translate3d(-120px)` for a 120px drag), commit-on-release, and rubber-band (300px drag →
+75px of travel at the end stop, no wrap) all confirmed; the disconnected state collapses three
+widgets into one Connect card while Watch and Recent runs still render honest empties; the 3×
+string test passes on BOTH layouts with 0px page overflow — it found and fixed a 108px
+overflow in the Watch card header. Fresh-tab console clean. `tsc` and `vite build` clean.
+
+**Still open:** the chat dock (rest/raised) and restyling Settings / Connections / Automations
+/ History / the roster / SidebarRail / topbar onto `glassSurface()`. See NEXT_SESSION.md.
+
+**No benchmark run this turn** — UI only.
+
 ### 2026-08-04 (cont.122 — the last external asset request in `src/` is gone)
 
 Closed the item the 2026-08-03 entry left open: the model-supplied `thumbnail` URL rendered

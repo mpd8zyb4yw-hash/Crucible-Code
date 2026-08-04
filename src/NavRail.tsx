@@ -1,11 +1,12 @@
-// Left-rail tab navigation — Crucible v3 design (ported from the reference
-// implementation's NavRail.tsx). Chat/Agents/History/Settings replace the old
-// topbar-drawer-only navigation; the drawers themselves (Library/SelfRepair/etc.)
-// still live inside the Chat tab, untouched.
+// Mobile top-bar navigation. Consolidated 2026-08-04: the rail used to carry five
+// peers (Chat, Agents, Automations, Connections, Settings), three of which were
+// overlays rather than tabs. Home now leads and absorbs the agent board; Automations
+// is reached from the Watch widget and Connections from Settings, so this is
+// Home / Chat / History / Settings.
 
 import { memo } from 'react'
 
-export type CrucibleTab = 'chat' | 'history' | 'settings'
+export type CrucibleTab = 'home' | 'chat' | 'history' | 'settings'
 
 function NavButton({ active, title, onClick, size = 38, children }: {
   active: boolean
@@ -37,18 +38,9 @@ function NavButton({ active, title, onClick, size = 38, children }: {
 // every keystroke anyway because it's a child of the same App component tree that owns
 // `input`. React.memo keeps it from re-rendering unless `tab`/`setTab` actually change —
 // a small, safe piece of the "typing latency" fix without touching the input wiring itself.
-function NavRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen, onToggleAutomations, connectionsOpen, onToggleConnections, orientation = 'vertical' }: {
+function NavRail({ tab, setTab, orientation = 'vertical' }: {
   tab: CrucibleTab
   setTab: (t: CrucibleTab) => void
-  agentsOpen: boolean
-  onToggleAgents: () => void
-  // Automations + Connections are overlay surfaces (like Agents). On desktop they live in
-  // SidebarRail; on mobile the top-bar NavRail is the ONLY nav, so without these two the pages
-  // were simply unreachable on a phone. Optional so the desktop vertical rail is unchanged.
-  automationsOpen?: boolean
-  onToggleAutomations?: () => void
-  connectionsOpen?: boolean
-  onToggleConnections?: () => void
   // 'vertical' = the desktop 56px left rail. 'horizontal' = a compact icon row
   // embedded in the mobile top bar (no full-height chrome, no logo/spacer), so
   // phones get edge-to-edge chat with navigation up top instead of a left bar.
@@ -79,37 +71,20 @@ function NavRail({ tab, setTab, agentsOpen, onToggleAgents, automationsOpen, onT
         </div>
       )}
 
+      {/* Home leads: the card board is the assistant surface, not a chat splash. */}
+      <NavButton size={btn} active={tab === 'home'} title="Home" onClick={go('home')}>
+        <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
+          <rect x="2.2" y="2.2" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+          <rect x="8.8" y="2.2" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+          <rect x="2.2" y="8.8" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+          <rect x="8.8" y="8.8" width="5" height="5" rx="1.4" stroke="currentColor" strokeWidth="1.4" />
+        </svg>
+      </NavButton>
       <NavButton size={btn} active={tab === 'chat'} title="Chat" onClick={go('chat')}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
           <path d="M14 8a6 6 0 0 1-8.7 5.4L2 14l0.7-3A6 6 0 1 1 14 8Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
         </svg>
       </NavButton>
-      {/* Items 18/19: Agents no longer navigates away from chat — it toggles an inline
-          overlay drawer anchored to the chat panel (see AgentsTabView.tsx / App.tsx),
-          so the conversation underneath stays mounted and in place. */}
-      <NavButton size={btn} active={agentsOpen} title="Agents & capabilities" onClick={onToggleAgents}>
-        <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
-          <rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" strokeWidth="1.4" />
-          <path d="M8 5V2.8M6 9h.01M10 9h.01" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          <circle cx="8" cy="2.2" r="0.9" fill="currentColor" />
-        </svg>
-      </NavButton>
-      {onToggleAutomations && (
-        <NavButton size={btn} active={!!automationsOpen} title="Automations" onClick={onToggleAutomations}>
-          <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
-            <path d="M8.5 1.5 3 9h4l-.5 5.5L13 7H9l-.5-5.5Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" />
-          </svg>
-        </NavButton>
-      )}
-      {onToggleConnections && (
-        <NavButton size={btn} active={!!connectionsOpen} title="Connections" onClick={onToggleConnections}>
-          <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
-            <circle cx="4" cy="4" r="2" stroke="currentColor" strokeWidth="1.4" />
-            <circle cx="12" cy="12" r="2" stroke="currentColor" strokeWidth="1.4" />
-            <path d="M5.5 5.5 10.5 10.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          </svg>
-        </NavButton>
-      )}
       <NavButton size={btn} active={tab === 'history'} title="History" onClick={go('history')}>
         <svg width="17" height="17" viewBox="0 0 16 16" fill="none">
           <circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.4" />

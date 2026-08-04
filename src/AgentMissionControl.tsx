@@ -22,7 +22,6 @@ import { deriveRunSurface } from './agentic/runSurface'
 import { ClarificationCard } from './chat/AgentPanel'
 import { ArtifactPreviewBar } from './chat/CodeRunner'
 import RunDetailOverlay, { type RunRef } from './RunDetailOverlay'
-import MissionWidgets from './MissionWidgets'
 import { API_BASE, apiFetch } from './api'
 
 interface ScheduledRun { automationId: string; name: string; ts: number; status: 'ok' | 'failed'; summary: string; ms: number }
@@ -123,7 +122,7 @@ function AgentCard({ r, title, turns, active, onSelect }: { r: Round; title: str
   )
 }
 
-export default function AgentMissionControl({ rounds: rawRounds, thinking, liveRoundId, onLaunch, onReply, onClose, onFollowUp, onAsk, onOpenConnections }: {
+export default function AgentMissionControl({ rounds: rawRounds, thinking, liveRoundId, onLaunch, onReply, onClose, onFollowUp }: {
   rounds: Round[]
   thinking: boolean
   liveRoundId: string | null
@@ -137,10 +136,6 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
   onClose: () => void
   /** Prefill the chat composer (run-detail “Continue in chat”) — wired by App. */
   onFollowUp?: (text: string, convId?: string) => void
-  /** Widget-board ask action — prefill the chat composer with a grounded prompt. */
-  onAsk?: (prompt: string) => void
-  /** Widget empty states point here when a source isn't connected. */
-  onOpenConnections?: () => void
 }) {
   // Same defensive close as MessageList: a driver that ends its stream without a terminal
   // agent event would leave active=true forever — the round no longer being the live
@@ -174,10 +169,9 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
     return [...groups.entries()].map(([rootId, items]) => ({ rootId, items }))
   }, [rounds, agentRounds])
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  // Overview (the customizable widget board) vs Agents (roster + workspace). The page
-  // lands on the board — the mission-control glance — and jumps to Agents whenever a
-  // run goes live so work is never invisible.
-  const [view, setView] = useState<'overview' | 'agents'>('overview')
+  // This page is the ROSTER + WORKSPACE only. It used to also carry an "Overview" tab
+  // holding the customizable widget board; that board is Home now (2026-08-04), and
+  // keeping a second copy here is what made Agents read as a redundant nested tab.
   const [brief, setBrief] = useState('')
   const [steer, setSteer] = useState('')
   const workScrollRef = useRef<HTMLDivElement>(null)
@@ -228,8 +222,6 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
   const runSurface = useMemo(() => deriveRunSurface(a), [a])
   const anyLive = agentRounds.some(r => r.agent?.active)
   const hasRuns = agentRounds.length > 0
-  // A live run pulls the page to Agents — never let work stream invisibly behind the board.
-  useEffect(() => { if (anyLive) setView('agents') }, [anyLive])
 
   // Keep the workspace pinned to the newest activity while a run streams.
   useEffect(() => {
@@ -242,7 +234,6 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
     if (!d) return
     setBrief('')
     setSelectedId(null) // re-arm auto-follow so the new run takes the workspace
-    setView('agents')   // watch the run you just sent
     onLaunch(d)
   }
 
@@ -316,22 +307,6 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
           : hasRuns
             ? <StatusChip color="#4db89e">all quiet</StatusChip>
             : null}
-        {/* Overview | Agents segment — the board and the workspace are both first-class. */}
-        <div style={{ display: 'flex', gap: 2, marginLeft: 6, padding: 2, borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid var(--c-hairline)' }}>
-          {(['overview', 'agents'] as const).map(v => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              style={{
-                fontSize: 10.5, fontWeight: 700, letterSpacing: '0.02em', fontFamily: 'inherit',
-                padding: '4px 11px', borderRadius: 8, cursor: 'pointer', border: 'none',
-                background: view === v ? 'rgba(124,124,248,0.16)' : 'transparent',
-                color: view === v ? '#b0b0f8' : 'var(--c-dim)',
-                transition: 'background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease)',
-              }}
-            >{v === 'overview' ? 'Overview' : 'Agents'}</button>
-          ))}
-        </div>
         <div style={{ flex: 1 }} />
         <button onClick={onClose} aria-label="Close" title="Back to chat" style={{
           width: 30, height: 30, borderRadius: 9, border: '1px solid var(--c-hairline-strong)',
@@ -344,19 +319,7 @@ export default function AgentMissionControl({ rounds: rawRounds, thinking, liveR
         </button>
       </div>
 
-      {/* ── Overview: the customizable widget board + a launch box ── */}
-      {view === 'overview' ? (
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-          <div style={{ maxWidth: 940, margin: '0 auto', padding: '20px 22px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {briefBox(true)}
-            <MissionWidgets
-              onAsk={p => (onAsk ?? onFollowUp)?.(p)}
-              onOpenRun={setOpenRun}
-              onOpenConnections={() => onOpenConnections?.()}
-            />
-          </div>
-        </div>
-      ) : !hasRuns ? (
+      {!hasRuns ? (
         /* ── Agents, no runs yet: hero composer ── */
         <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '0 24px' }}>
           <div style={{ width: 'min(560px, 92%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
