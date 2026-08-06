@@ -2,7 +2,9 @@ import { setKeyStore, kvKeyStore, setKey, deleteKey } from '../server/secrets.js
 import { notify, type PushSub } from '../server/push.js'
 import { setWorldStore, kvWorldStore } from '../server/store.js'
 import { setModelPrefs, setRouterStore, kvRouterStore, wake } from '../server/router.js'
-import { setRegistryStore, kvRegistryStore } from '../server/models.js'
+import { setRegistryStore, kvRegistryStore, hunt, ensureVerified, snapshot } from '../server/models.js'
+import { budgets } from '../server/router.js'
+import { searchPlaces, routeBetween } from '../server/maps.js'
 import { readWorld, writeWorld, addObservations } from '../server/world.js'
 import { think } from '../server/think.js'
 import { sourcePanes, noticePane } from '../server/panes.js'
@@ -13,6 +15,7 @@ import { providers, byId, listModels, chat, probe } from '../server/providers.js
 import { getKey } from '../server/secrets.js'
 import {
   authUrl, exchangeCode, pullObservations, GOOGLE_SOURCES, callbackPath,
+  gmailModify, gmailReply, calendarRsvp, calendarCreate,
   type Tokens,
 } from '../server/google.js'
 
@@ -346,16 +349,31 @@ async function api(req: Request, env: Env, path: string, origin: string): Promis
   const body = method === 'POST' || method === 'PUT' || method === 'PATCH'
     ? await req.json().catch(() => ({} as any))
     : ({} as any)
+  // Query parameters, for the GET endpoints that take them (map search/route).
+  const url = new URL(req.url)
 
   if (path === '/api/providers' && method === 'GET') {
     const list = await Promise.all(
       providers.map(async (p) => {
         const key = await getKey(p.id)
-        const live = key ? await listModels(p.id, key).catch(() => null) : null
+        // Same rule as the Mac: only models that have actually answered are
+        // offered. The hosted app is where a picker full of dead models does
+        // the most damage, because it is the one he uses from his phone with
+        // no terminal to diagnose from.
+        const verified = key ? await ensureVerified(p.id).catch(() => []) : []
+        const all = key ? (await snapshot().catch(() => ({ models: [] }))).models.filter((m) => m.providerId === p.id) : []
+        const now = Date.now()
         return {
           id: p.id, label: p.label, hint: p.hint, free: p.free,
-          models: live?.length ? live : p.models,
-          model: p.defaultModel,
+          models: verified.map((m) => m.model),
+          detail: verified.map((m) => ({
+            model: m.model, label: m.label, quality: m.quality,
+            measured: m.measured, latencyMs: m.latencyMs, aptitude: m.aptitude ?? null,
+          })),
+          quarantined: all
+            .filter((m) => m.verdict === 'quarantined' && (m.until ?? 0) > now)
+            .map((m) => ({ model: m.model, reason: m.reason ?? 'would not answer', until: m.until ?? 0 })),
+          model: verified[0]?.model ?? p.defaultModel,
           configured: key !== null,
         }
       })
@@ -591,10 +609,108 @@ async function api(req: Request, env: Env, path: string, origin: string): Promis
     return json({ added: observations.length, errors, bySource: observations.reduce((a: Record<string, number>, o) => ({ ...a, [o.source]: (a[o.source] ?? 0) + 1 }), {}) })
   }
 
+  if (path === '/api/budgets' && method === 'GET') return json({ budgets: await budgets() })
+
+  if (path === '/api/models/hunt' && method === 'POST') {
+    return json(await hunt({ providerId: body?.provider, force: true }))
+  }
+
+  if (path === '/api/map/search' && method === 'GET') {
+    try {
+      const near = parsePoint(url.searchParams.get('near') ?? '')
+      return json({ places: await searchPlaces(url.searchParams.get('q') ?? '', near ?? undefined) })
+    } catch (e) {
+      return json({ error: (e as Error).message }, 502)
+    }
+  }
+
+  if (path === '/api/map/route' && method === 'GET') {
+    const from = parsePoint(url.searchParams.get('from') ?? '')
+    const to = parsePoint(url.searchParams.get('to') ?? '')
+    if (!from || !to) return json({ error: 'I need two points to route between.' }, 400)
+    try {
+      return json(await routeBetween(from, to, url.searchParams.get('mode') ?? 'walk'))
+    } catch (e) {
+      return json({ error: (e as Error).message }, 502)
+    }
+  }
+
+  /**
+   * Widget actions on the edge.
+   *
+   * Deliberately the same named-intent table as the Mac rather than a thinner
+   * version: crucible.cam is the copy he actually uses, from the phone, so a
+   * card that can be acted on locally and not here would be the bug this whole
+   * change set exists to remove.
+   */
+  if (path === '/api/act' && method === 'POST') {
+    const kind = String(body?.kind ?? '')
+    const params = (body?.params ?? {}) as Record<string, unknown>
+    const str = (k: string) => (typeof params[k] === 'string' ? (params[k] as string) : '')
+    const google = async () => {
+      const t = await googleToken(env)
+      if (!t) throw new Error('Google is not connected.')
+      return t
+    }
+    try {
+      switch (kind) {
+        case 'mail.archive':
+          await gmailModify(await google(), str('messageId'), { removeLabelIds: ['INBOX'] })
+          return json({ ok: true })
+        case 'mail.read':
+          await gmailModify(await google(), str('messageId'), { removeLabelIds: ['UNREAD'] })
+          return json({ ok: true })
+        case 'mail.unread':
+          await gmailModify(await google(), str('messageId'), { addLabelIds: ['UNREAD'] })
+          return json({ ok: true })
+        case 'mail.send':
+          await gmailReply(await google(), str('messageId'), str('text'))
+          return json({ ok: true })
+        case 'calendar.rsvp':
+          await calendarRsvp(await google(), str('eventId'), str('response'))
+          return json({ ok: true })
+        case 'calendar.create': {
+          const made = await calendarCreate(await google(), {
+            summary: str('summary') || str('text'),
+            start: str('start') || new Date().toISOString(),
+            end: str('end') || undefined,
+            location: str('location') || undefined,
+          })
+          return json({ ok: true, id: made.id })
+        }
+        case 'world.tell':
+          await addObservations([
+            { id: `act-${Date.now()}`, source: 'user', at: new Date().toISOString().slice(0, 10), text: str('text') || String(body?.card ?? 'acted on a card') },
+          ])
+          return json({ ok: true })
+        case 'mail.open':
+        case 'calendar.open':
+        case 'media.open':
+        case 'map.route':
+        case 'map.search':
+          return json({ ok: true, refresh: false })
+        default:
+          return json({ error: `I don't know how to do "${kind}" yet.` }, 400)
+      }
+    } catch (e) {
+      return json({ error: (e as Error).message }, 502)
+    }
+  }
+
   if (path === '/api/google/disconnect' && method === 'POST') {
     await env.CRUCIBLE.delete(TOKENS_KEY)
     return json({ ok: true })
   }
 
   return json({ error: 'Not found' }, 404)
+}
+
+/** "44.13,11.11" → a point, or null if it is not one. */
+function parsePoint(s: string): { lat: number; lon: number } | null {
+  const [a, b] = s.split(',')
+  const lat = Number(a)
+  const lon = Number(b)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null
+  return { lat, lon }
 }

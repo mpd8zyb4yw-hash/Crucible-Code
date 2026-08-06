@@ -165,7 +165,7 @@ function widgetFor(source: string, obs: Observation[]): WidgetPane[] {
       return [{
         id: d.eventId,
         title: d.summary,
-        sub: [d.location, d.attendees?.length ? `${d.attendees.length} people` : null].filter(Boolean).join(' · ') || undefined,
+        sub: [d.location, d.attendees?.length ? `${d.attendees.length} ${d.attendees.length === 1 ? 'person' : 'people'}` : null].filter(Boolean).join(' · ') || undefined,
         body: d.description,
         meta: d.allDay ? 'all day' : clockOf(d.start),
         at: d.start,
