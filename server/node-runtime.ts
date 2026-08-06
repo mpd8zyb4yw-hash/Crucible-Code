@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { setKeyStore } from './secrets.js'
 import { setWorldStore } from './store.js'
 import { setRouterStore, type RouterState } from './router.js'
+import { setRegistryStore, type Registry } from './models.js'
 import * as keychain from './keychain.js'
 import type { World } from './world.js'
 
@@ -17,6 +18,7 @@ import type { World } from './world.js'
 const DIR = join(homedir(), '.crucible')
 const PATH = join(DIR, 'world.json')
 const ROUTER_PATH = join(DIR, 'router.json')
+const MODELS_PATH = join(DIR, 'models.json')
 
 export function installNodeRuntime(): void {
   setKeyStore({
@@ -54,6 +56,23 @@ export function installNodeRuntime(): void {
     async write(s) {
       await mkdir(DIR, { recursive: true })
       await writeFile(ROUTER_PATH, JSON.stringify(s, null, 2) + '\n')
+    },
+  })
+
+  // Which models have actually answered, and which are quarantined and why.
+  // Readable by hand like the other two: when the app says it cannot think,
+  // this file is where the reason is written down.
+  setRegistryStore({
+    async read(): Promise<Registry | null> {
+      try {
+        return JSON.parse(await readFile(MODELS_PATH, 'utf8')) as Registry
+      } catch {
+        return null
+      }
+    },
+    async write(r) {
+      await mkdir(DIR, { recursive: true })
+      await writeFile(MODELS_PATH, JSON.stringify(r, null, 2) + '\n')
     },
   })
 }

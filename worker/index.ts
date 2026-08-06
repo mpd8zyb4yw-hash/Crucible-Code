@@ -2,6 +2,7 @@ import { setKeyStore, kvKeyStore, setKey, deleteKey } from '../server/secrets.js
 import { notify, type PushSub } from '../server/push.js'
 import { setWorldStore, kvWorldStore } from '../server/store.js'
 import { setModelPrefs, setRouterStore, kvRouterStore, wake } from '../server/router.js'
+import { setRegistryStore, kvRegistryStore } from '../server/models.js'
 import { readWorld, writeWorld, addObservations } from '../server/world.js'
 import { think } from '../server/think.js'
 import { sourcePanes, noticePane } from '../server/panes.js'
@@ -236,6 +237,7 @@ export default {
     setWorldStore(kvWorldStore(env.CRUCIBLE))
     setModelPrefs(async () => JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}'))
     setRouterStore(kvRouterStore(env.CRUCIBLE))
+    setRegistryStore(kvRegistryStore(env.CRUCIBLE))
     ctx.waitUntil(gather(env))
   },
 
@@ -246,6 +248,7 @@ export default {
     setWorldStore(kvWorldStore(env.CRUCIBLE))
     setModelPrefs(async () => JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}'))
     setRouterStore(kvRouterStore(env.CRUCIBLE))
+    setRegistryStore(kvRegistryStore(env.CRUCIBLE))
 
     const url = new URL(req.url)
     const path = url.pathname

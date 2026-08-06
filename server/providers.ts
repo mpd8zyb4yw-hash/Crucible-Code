@@ -149,7 +149,16 @@ export const byId = (id: string) => providers.find((p) => p.id === id)
  */
 export async function probe(id: string, model: string, key: string): Promise<string | null> {
   try {
-    const out = await chat({ providerId: id, model, key, prompt: 'Reply with: ok', maxTokens: 4 })
+    /**
+     * The ceiling has to clear the model's thinking budget, not just its answer.
+     *
+     * This asked for four tokens until it was measured: gemini-3.6-flash spends
+     * ~75 tokens thinking before emitting the single token "ok", so a four-token
+     * ceiling returns MAX_TOKENS and empty text. Every current Gemini model
+     * failed this check, which meant pasting a perfectly good key was rejected
+     * with "that model answered with nothing".
+     */
+    const out = await chat({ providerId: id, model, key, prompt: 'Reply with: ok', maxTokens: 512 })
     return out.text.trim() ? null : 'That model answered with nothing.'
   } catch (e) {
     return (e as Error).message || 'That model would not answer.'

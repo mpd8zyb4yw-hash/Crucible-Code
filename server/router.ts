@@ -1,5 +1,6 @@
 import { chat, byId, canChat, listModels, type ChatRequest, type ChatResult, type Quota, type ProviderError } from './providers.js'
 import { getKey } from './secrets.js'
+import { usable as usableModels, noteLiveCall, noteLiveFailure } from './models.js'
 
 /**
  * The curator.
@@ -42,20 +43,18 @@ const SKILL: Record<string, Partial<Record<Task, number>>> = {
 }
 
 /**
- * Preferred model per provider for heavy vs cheap work — a wish, not a promise.
- * Every name here is filtered against what the key can actually reach before it
- * is tried, because these lists go stale the moment a provider ships a model
- * and a wish for a model that isn't on the plan is just a wasted 429. Gemini's
- * heavy slot used to name a pro preview that free keys cannot touch; it was the
- * first candidate for synthesis, so the home feed failed before it started.
+ * There is deliberately no table of preferred model names here any more.
+ *
+ * There used to be: `PICK`, a hand-written heavy/cheap pair per provider. It
+ * was the bug. It named two Gemini models that Google lists to every key and
+ * runs for none of them on the free tier, so synthesis picked a dead model
+ * first, every time, and the home feed failed before it started. A name written
+ * by hand is a guess that goes stale silently — the provider ships a model, or
+ * moves one between tiers, and nothing in the app notices.
+ *
+ * Model names now come from `server/models.ts`, which only lists what has
+ * answered. See the tier selection in `candidates`.
  */
-const PICK: Record<string, { heavy?: string; cheap?: string }> = {
-  gemini: { heavy: 'gemini-2.5-pro', cheap: 'gemini-2.5-flash' },
-  anthropic: { heavy: 'claude-opus-5', cheap: 'claude-haiku-4-5-20251001' },
-  openai: { heavy: 'gpt-4o', cheap: 'gpt-4o-mini' },
-  groq: { heavy: 'llama-3.3-70b-versatile', cheap: 'llama-3.1-8b-instant' },
-  xai: { heavy: 'grok-4', cheap: 'grok-3-mini' },
-}
 
 const HEAVY: Task[] = ['synthesis', 'curiosity']
 
@@ -273,20 +272,82 @@ export async function candidates(task: Task, preferred?: string): Promise<Candid
     if (!key) continue
     const def = byId(p)
     if (!def) continue
-    const pick = PICK[p] ?? {}
     const st = get(state, p)
     const base = (SKILL[p]?.[task] ?? 5) + (p === favourite ? nudge : 0)
-
-    // Both tiers are offered as separate candidates. On a free plan the big
-    // model is often the one that is rate limited while the small one on the
-    // SAME key still answers — stepping down a tier keeps the work with the
-    // better provider instead of abandoning it for a weaker one.
-    const heavy = pick.heavy ?? def.defaultModel
-    const cheap = pick.cheap ?? def.defaultModel
     const wantHeavy = HEAVY.includes(task)
+
+    /**
+     * The two tiers, chosen from models that have actually answered.
+     *
+     * This used to read a hand-written `PICK` table, and that table is what
+     * broke the app: it named `gemini-2.5-pro` and `gemini-2.5-flash`, Google
+     * lists both to a free key and refuses to run either, and the catalogue
+     * filter below could not tell the difference because listing and running
+     * are separate facts. Now the names come from the registry, where a model
+     * only appears once it has answered a real call or a probe.
+     *
+     * A cold registry falls back to the provider's declared default rather than
+     * refusing to work — the first hunt has not run yet, and a brand-new key
+     * must be able to think before it can be measured.
+     */
+    const verified = await usableModels(p)
+
+    /**
+     * The battery gates out broken models; it does not rank good ones.
+     *
+     * Four questions with known answers saturate — six Gemini models pass all
+     * four — so quality alone leaves the heavy slot decided by whatever the
+     * next sort key happens to be, and sorting on latency would hand whole-life
+     * synthesis to the smallest, fastest model in the tie. That is the wrong
+     * default for the one task where size is the whole point: the measured
+     * difference between a model that chains five observations into a
+     * conclusion and one that restates a single fact does not show up in a
+     * trivia probe at all.
+     *
+     * So ties break toward capacity for heavy work — a full model over a
+     * `-lite` or `-nano` variant of it — and toward latency for everything
+     * else, where the work is short and waiting is the real cost.
+     */
+    const small = (m: { model: string }) => /lite|mini|nano|tiny|small|flash-8b/i.test(m.model)
+    const byQuality = [...verified].sort(
+      (a, b) =>
+        b.quality - a.quality ||
+        Number(small(a)) - Number(small(b)) ||
+        (b.params ?? 0) - (a.params ?? 0) ||
+        (a.latencyMs ?? 9e9) - (b.latencyMs ?? 9e9)
+    )
+    const bySpeed = [...verified].sort((a, b) => (a.latencyMs ?? 9e9) - (b.latencyMs ?? 9e9))
+
+    const heavy = byQuality[0]?.model ?? def.defaultModel
+    // The quickest model that is still worth asking. Falling straight to the
+    // fastest would hand bulk extraction to whatever tiny model answers first,
+    // which is fine, but hand CHAT to it too, where it reads as the app getting
+    // stupider the moment it gets busy.
+    const cheap =
+      bySpeed.find((m) => m.quality >= 5 && m.model !== heavy)?.model ??
+      bySpeed.find((m) => m.model !== heavy)?.model ??
+      heavy
+
     const tiers: [string, number][] = wantHeavy
       ? [[heavy, base], [cheap, base - 1]]
       : [[cheap, base], [heavy, base - 2]]
+
+    /**
+     * Measured aptitude outranks the hand-set SKILL numbers.
+     *
+     * SKILL is a coarse preference order written by hand, and the standing note
+     * on it is that evidence should replace it. This is that evidence: a model
+     * that passed the reasoning probe is a better bet for synthesis than one
+     * that did not, whatever its provider's reputation, and the bonus only
+     * applies where a battery actually ran.
+     */
+    const aptBonus = (model: string): number => {
+      const rec = verified.find((m) => m.model === model)
+      if (!rec?.measured || !rec.aptitude) return 0
+      if (wantHeavy) return rec.aptitude.reasoning ? 1.5 : -1.5
+      return rec.aptitude.instruction ? 1 : -0.5
+    }
+    for (const t of tiers) t[1] += aptBonus(t[0])
 
     // Pinned: his model leads everything, and the tiers become the safety net
     // for when it will not answer. Auto: his model is one good candidate among
@@ -418,8 +479,13 @@ export async function route(
     const key = await getKey(c.providerId)
     if (!key) continue
     try {
+      const t0 = Date.now()
       const out = await chat({ ...req, providerId: c.providerId, model: c.model, key })
       await note(c.providerId, c.model, { ok: true, usage: out.usage, size })
+      // Free evidence. A model that just did real work needs no probe to prove
+      // it works, and this is why the registry can stay accurate on a budget
+      // that could never afford to probe everything on a schedule.
+      await noteLiveCall(c.providerId, c.model, Date.now() - t0)
       return { ...out, providerId: c.providerId, model: c.model, fellBackFrom }
     } catch (err) {
       const e = err as Error
@@ -430,6 +496,10 @@ export async function route(
       const permanent = NEVER_ALLOWED.test(e.message) || (!limited && !oversize && PERMANENT.test(e.message))
       const why = explain(e, quota)
       await note(c.providerId, c.model, { ok: false, limited, permanent, quota, why, oversize: oversize ? size : undefined })
+      // Only a refusal that is ABOUT the model quarantines it. A rate limit or
+      // an oversized prompt says nothing about whether the model works, and
+      // counting either would quarantine the best model on the busiest key.
+      if (!limited && !oversize) await noteLiveFailure(c.providerId, c.model, e)
       // The provider's actual reason, not the word "rate limited" for all of
       // them: a per-minute burst and a spent daily budget need different
       // answers from him, and lumping them together hid which one this was.

@@ -97,6 +97,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260804.1",
     "@electron/rebuild": "^4.2.0",
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.13",

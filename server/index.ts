@@ -12,6 +12,7 @@ import { say } from './say.js'
 import { proposeGaps, researchGap } from './research.js'
 import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks } from './tracks.js'
 import { route, health, candidates, setModelPrefs, wake } from './router.js'
+import { hunt, ensureVerified, snapshot, usable as usableModels } from './models.js'
 import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES } from './google.js'
 
 const PORT = Number(process.env.PORT ?? 3001)
@@ -52,25 +53,74 @@ app.use(express.json({ limit: '4mb' }))
  * Provider list with configured-state. Deliberately never returns key
  * material — the renderer only ever learns WHETHER a provider is set up.
  */
+/**
+ * What the picker is allowed to offer.
+ *
+ * This used to hand back the provider's raw catalogue, which is how the app
+ * came to list a hundred models of which most could not be thought with — a
+ * paid tier a free key cannot touch, a withdrawn preview, and in one case a
+ * prompt-injection classifier that was actually selected and made every pass
+ * fail. Offering something broken is worse than offering less: he cannot tell
+ * from the name which is which, and the app only finds out at the moment it
+ * needed to think.
+ *
+ * So the picker sees the verified set and nothing else. Quarantined models are
+ * still returned, separately and with the provider's own reason attached, but
+ * nothing in the UI lists them — they are there so the assistant can answer for
+ * them when asked (see /api/self).
+ */
 app.get('/api/providers', async (_req, res) => {
   const cfg = await readConfig()
   const list = await Promise.all(
     providers.map(async (p) => {
       const key = await getKey(p.id)
-      // Only ask a provider what it offers if we hold a key for it.
-      const live = key ? await listModels(p.id, key) : null
+      // A key with an empty registry has never been hunted. Do it now, once,
+      // rather than showing him an empty picker and no way to fill it.
+      const verified = key ? await ensureVerified(p.id) : []
+      const all = key ? (await snapshot()).models.filter((m) => m.providerId === p.id) : []
+      const now = Date.now()
       return {
         id: p.id,
         label: p.label,
         hint: p.hint,
         free: p.free,
-        models: live?.length ? live : p.models,
-        model: cfg.models?.[p.id] ?? p.defaultModel,
+        models: verified.map((m) => m.model),
+        // Enough for the picker to say WHY one model is a better choice than
+        // another, instead of presenting a flat list of opaque names.
+        detail: verified.map((m) => ({
+          model: m.model,
+          label: m.label,
+          quality: m.quality,
+          measured: m.measured,
+          latencyMs: m.latencyMs,
+          aptitude: m.aptitude ?? null,
+        })),
+        quarantined: all
+          .filter((m) => m.verdict === 'quarantined' && (m.until ?? 0) > now)
+          .map((m) => ({ model: m.model, reason: m.reason ?? 'would not answer', until: m.until ?? 0 })),
+        model: cfg.models?.[p.id] ?? verified[0]?.model ?? p.defaultModel,
         configured: key !== null,
       }
     })
   )
   res.json({ providers: list, active: cfg.activeProvider ?? null, routing: cfg.routing ?? 'auto' })
+})
+
+/**
+ * Go looking for models that work, on demand.
+ *
+ * Hunting is otherwise lazy — it happens when a provider has never been looked
+ * at, and production traffic keeps the registry honest for free after that.
+ * This is the manual pull for when a provider has plainly changed underneath
+ * us and waiting six hours for the next window is not acceptable.
+ */
+app.post('/api/models/hunt', async (req, res) => {
+  try {
+    const report = await hunt({ providerId: req.body?.provider, force: true })
+    res.json(report)
+  } catch (e) {
+    res.status(500).json({ error: (e as Error).message })
+  }
 })
 
 /** Store a key, then immediately prove it works. A key that fails is rejected. */
