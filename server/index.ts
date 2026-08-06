@@ -13,7 +13,8 @@ import { proposeGaps, researchGap } from './research.js'
 import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks } from './tracks.js'
 import { route, health, candidates, setModelPrefs, wake, budgets } from './router.js'
 import { hunt, ensureVerified, snapshot, usable as usableModels } from './models.js'
-import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES, gmailModify, calendarRsvp } from './google.js'
+import { searchPlaces, routeBetween } from './maps.js'
+import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES, gmailModify, calendarRsvp, gmailReply, calendarCreate } from './google.js'
 
 const PORT = Number(process.env.PORT ?? 3001)
 const CONFIG_DIR = join(homedir(), '.crucible')
@@ -141,6 +142,45 @@ app.get('/api/budgets', async (_req, res) => {
  * (see MODEL_SAFE_ACTIONS in widgets.ts) — only panes the server built from
  * real records can offer one.
  */
+/**
+ * Place search and routing, proxied rather than called from the page.
+ *
+ * The browser could hit Nominatim directly, but then the rate limiting and the
+ * User-Agent both live on the client, where a re-render can turn one search
+ * into ten and a volunteer service gets hammered from his phone. Going through
+ * the server means one polite caller and one cache for both hosts.
+ */
+app.get('/api/map/search', async (req, res) => {
+  try {
+    const near = parsePoint(String(req.query.near ?? ''))
+    const places = await searchPlaces(String(req.query.q ?? ''), near ?? undefined)
+    res.json({ places })
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message })
+  }
+})
+
+app.get('/api/map/route', async (req, res) => {
+  const from = parsePoint(String(req.query.from ?? ''))
+  const to = parsePoint(String(req.query.to ?? ''))
+  if (!from || !to) return res.status(400).json({ error: 'I need two points to route between.' })
+  try {
+    res.json(await routeBetween(from, to, String(req.query.mode ?? 'walk')))
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message })
+  }
+})
+
+/** "44.13,11.11" → a point, or null if it is not one. */
+function parsePoint(s: string): { lat: number; lon: number } | null {
+  const [a, b] = s.split(',')
+  const lat = Number(a)
+  const lon = Number(b)
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null
+  return { lat, lon }
+}
+
 app.post('/api/act', async (req, res) => {
   const kind = String(req.body?.kind ?? '')
   const params = (req.body?.params ?? {}) as Record<string, unknown>
@@ -164,7 +204,28 @@ app.post('/api/act', async (req, res) => {
         await gmailModify(await google(), str('messageId'), { addLabelIds: ['UNREAD'] })
         return res.json({ ok: true })
 
+      /**
+       * Sending. The only outbound action in the app.
+       *
+       * It is reachable exactly one way: he typed the text and confirmed the
+       * send in the composer. No model-authored widget can name this intent —
+       * `mail.send` is not in the model-safe grammar — and there is no
+       * scheduled or automatic caller.
+       */
+      case 'mail.send':
+        await gmailReply(await google(), str('messageId'), str('text'))
+        return res.json({ ok: true })
+
       // ── Calendar.
+      case 'calendar.create': {
+        const made = await calendarCreate(await google(), {
+          summary: str('summary') || str('text'),
+          start: str('start') || new Date().toISOString(),
+          end: str('end') || undefined,
+          location: str('location') || undefined,
+        })
+        return res.json({ ok: true, id: made.id })
+      }
       case 'calendar.rsvp':
         await calendarRsvp(await google(), str('eventId'), str('response'))
         return res.json({ ok: true })

@@ -398,3 +398,90 @@ export async function calendarRsvp(token: string, eventId: string, response: str
     { attendees }
   )
 }
+
+/**
+ * Send a reply, from inside Crucible.
+ *
+ * Gmail wants a whole RFC 5322 message, base64url encoded. Threading is the
+ * fiddly part and the part that matters: without In-Reply-To and References,
+ * and a subject that keeps its "Re:", the reply arrives as a brand-new
+ * conversation and the person on the other end has no idea what it answers.
+ * So the original's Message-ID header is read first and quoted back.
+ *
+ * There is no path to this function that does not begin with him typing a
+ * message and confirming it. Nothing in the app calls it on its own.
+ */
+export async function gmailReply(
+  token: string,
+  messageId: string,
+  body: string
+): Promise<void> {
+  if (!messageId) throw new Error('No message to reply to.')
+  if (!body.trim()) throw new Error('Nothing to send.')
+
+  const orig = await gFetch(
+    token,
+    `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Message-ID&metadataHeaders=References`
+  )
+  const h = Object.fromEntries((orig.payload?.headers ?? []).map((x: any) => [String(x.name).toLowerCase(), x.value]))
+  const to = String(h.from ?? '')
+  if (!to) throw new Error('I could not tell who that message was from.')
+
+  const subject = String(h.subject ?? '')
+  const re = /^re:/i.test(subject) ? subject : `Re: ${subject}`
+  const parentId = String(h['message-id'] ?? '')
+  const references = [String(h.references ?? ''), parentId].filter(Boolean).join(' ')
+
+  // Non-ASCII subjects must be encoded or Gmail mangles them — "Domenica al
+  // mercato?" is fine, but an accented Italian subject is not, and this app is
+  // used in Italy.
+  const encodedSubject = /^[\x20-\x7E]*$/.test(re)
+    ? re
+    : `=?UTF-8?B?${Buffer.from(re, 'utf8').toString('base64')}?=`
+
+  const mime = [
+    `To: ${to}`,
+    `Subject: ${encodedSubject}`,
+    ...(parentId ? [`In-Reply-To: ${parentId}`] : []),
+    ...(references ? [`References: ${references}`] : []),
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    body,
+  ].join('\r\n')
+
+  const raw = Buffer.from(mime, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  await gWrite(token, 'https://gmail.googleapis.com/gmail/v1/users/me/messages/send', 'POST', {
+    raw,
+    threadId: orig.threadId,
+  })
+}
+
+/** Put something on the calendar without leaving the app. */
+export async function calendarCreate(
+  token: string,
+  event: { summary: string; start: string; end?: string; location?: string; description?: string }
+): Promise<{ id: string }> {
+  if (!event.summary?.trim()) throw new Error('An event needs a name.')
+  if (!event.start) throw new Error('An event needs a time.')
+
+  // All-day when given a bare date, timed when given a datetime — Google needs
+  // different fields for the two and rejects the wrong one.
+  const allDay = /^\d{4}-\d{2}-\d{2}$/.test(event.start)
+  const startAt = allDay ? { date: event.start } : { dateTime: new Date(event.start).toISOString() }
+  const endAt = event.end
+    ? (allDay ? { date: event.end } : { dateTime: new Date(event.end).toISOString() })
+    : allDay
+      ? { date: event.start }
+      : { dateTime: new Date(new Date(event.start).getTime() + 3_600_000).toISOString() }
+
+  const made = await gWrite(token, 'https://www.googleapis.com/calendar/v3/calendars/primary/events', 'POST', {
+    summary: event.summary.slice(0, 300),
+    location: event.location?.slice(0, 300),
+    description: event.description?.slice(0, 2000),
+    start: startAt,
+    end: endAt,
+  })
+  return { id: String(made.id ?? '') }
+}

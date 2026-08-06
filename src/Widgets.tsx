@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { css, cssv } from './css'
 import { accentOf } from './heat'
 import type { Widget, WidgetAction, WidgetItem, WidgetPane } from './api'
@@ -67,8 +67,83 @@ function Body({ widget, heat, onAction }: { widget: Widget; heat: string; onActi
     case 'chart': return <ChartWidget w={widget} heat={heat} />
     case 'media': return <MediaWidget w={widget} onAction={onAction} />
     case 'detail': return <DetailWidget w={widget} heat={heat} />
+    case 'compose': return <ComposeWidget w={widget} onAction={onAction} />
+    case 'map': return <MapWidget w={widget} heat={heat} />
     default: return null
   }
+}
+
+// ── compose ──────────────────────────────────────────────────────────────────
+
+/**
+ * The one primitive that produces text rather than showing it.
+ *
+ * A reply lives here rather than in Gmail, which is the whole point of the
+ * exercise — but sending is irreversible and visible to someone else, so the
+ * send button confirms before it fires and the text it will send is on screen
+ * while it does. Nothing auto-sends: there is no path from a model deciding
+ * something to a message leaving, only from his thumb.
+ */
+function ComposeWidget({ w, onAction }: { w: Extract<Widget, { kind: 'compose' }>; onAction: Props['onAction'] }) {
+  const [text, setText] = useState(w.value ?? '')
+  const [sending, setSending] = useState(false)
+  const [sure, setSure] = useState(false)
+  const [done, setDone] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!text.trim() || sending) return
+    if (w.submit.irreversible !== false && !sure) { setSure(true); return }
+    setSending(true)
+    setFailed(null)
+    try {
+      await onAction({ ...w.submit, params: { ...(w.submit.params ?? {}), text } })
+      setDone(true)
+      setText('')
+    } catch (e) {
+      setFailed((e as Error).message)
+    } finally {
+      setSending(false)
+      setSure(false)
+    }
+  }
+
+  if (done) {
+    return (
+      <div style={cssv`padding:14px; text-align:center; font-size:12.5px; color:rgba(237,238,241,.6); ${CARD}`}>
+        Sent.
+      </div>
+    )
+  }
+
+  return (
+    <div style={cssv`padding:12px 13px; display:flex; flex-direction:column; gap:10px; ${CARD}`}>
+      {w.to && (
+        <div style={css('font-size:11.5px; color:rgba(237,238,241,.45);')}>
+          To <span style={css('color:rgba(237,238,241,.75);')}>{w.to}</span>
+        </div>
+      )}
+      <textarea
+        value={text}
+        rows={w.multiline === false ? 1 : 4}
+        placeholder={w.placeholder ?? 'Write a reply…'}
+        onChange={(e) => { setText(e.target.value); setSure(false) }}
+        style={css('width:100%; box-sizing:border-box; resize:vertical; background:rgba(0,0,0,.22); border:0; outline:0; border-radius:11px; padding:10px 12px; font-family:inherit; font-size:13px; line-height:1.5; color:rgba(237,238,241,.92); box-shadow:inset 0 0 0 1px rgba(255,255,255,.08);')}
+      />
+      <div style={css('display:flex; align-items:center; gap:9px;')}>
+        <div
+          onClick={() => void submit()}
+          style={cssv`padding:8px 16px; border-radius:999px; background:rgba(237,238,241,${text.trim() && !sending ? '.9' : '.35'}); color:#101012; font-size:12.5px; font-weight:600; cursor:pointer;`}
+        >
+          {sending ? (w.submit.busy ?? 'Sending…') : sure ? 'Tap again to send' : w.submit.label}
+        </div>
+        {sure && (
+          <div style={css('font-size:11.5px; color:rgba(237,238,241,.5);')}>this leaves your account</div>
+        )}
+      </div>
+      {failed && <div style={css('font-size:11.5px; color:rgba(255,170,170,.8); line-height:1.45;')}>{failed}</div>}
+    </div>
+  )
 }
 
 // ── Shared furniture ─────────────────────────────────────────────────────────
@@ -91,13 +166,23 @@ function Empty({ text }: { text: string }) {
  * and a mis-tap on a phone is not a decision. The confirmation is the same
  * button turning into "sure?" rather than a modal, so it stays inside the card.
  */
-function Actions({ actions, onAction }: { actions: WidgetAction[]; onAction: Props['onAction'] }) {
+function Actions({
+  actions,
+  onAction,
+  intercept,
+}: {
+  actions: WidgetAction[]
+  onAction: Props['onAction']
+  /** Handle an action in the client instead of sending it. True = handled. */
+  intercept?: (a: WidgetAction) => boolean
+}) {
   const [busy, setBusy] = useState<number | null>(null)
   const [confirming, setConfirming] = useState<number | null>(null)
   const [failed, setFailed] = useState<string | null>(null)
 
   const run = async (a: WidgetAction, i: number) => {
     if (busy !== null) return
+    if (intercept?.(a)) return
     if (a.irreversible && confirming !== i) { setConfirming(i); return }
     setConfirming(null)
     setBusy(i)
@@ -138,6 +223,16 @@ function Actions({ actions, onAction }: { actions: WidgetAction[]; onAction: Pro
 function ListWidget({ w, heat, onAction }: { w: Extract<Widget, { kind: 'list' }>; heat: string; onAction: Props['onAction'] }) {
   const [open, setOpen] = useState<string | null>(null)
   const [filter, setFilter] = useState<string | null>(null)
+  /**
+   * Which row is being replied to.
+   *
+   * Reply is the one action that does not simply happen — it needs him to write
+   * something first. Rather than a separate screen, the composer unfolds under
+   * the message it answers, so the thing being replied to stays on screen while
+   * the reply is written. Intercepted here rather than sent to the server,
+   * because there is nothing yet to send.
+   */
+  const [replying, setReplying] = useState<string | null>(null)
 
   const items = useMemo(
     () => (filter ? w.items.filter((i) => i.tags?.includes(filter)) : w.items),
@@ -193,7 +288,37 @@ function ListWidget({ w, heat, onAction }: { w: Extract<Widget, { kind: 'list' }
                     {it.body}
                   </div>
                 )}
-                {it.actions?.length ? <Actions actions={it.actions} onAction={onAction} /> : null}
+                {it.actions?.length ? (
+                  <Actions
+                    actions={it.actions}
+                    onAction={onAction}
+                    intercept={(a) => {
+                      if (a.kind !== 'mail.reply') return false
+                      setReplying(replying === it.id ? null : it.id)
+                      return true
+                    }}
+                  />
+                ) : null}
+
+                {replying === it.id && (
+                  <ComposeWidget
+                    w={{
+                      kind: 'compose',
+                      to: it.sub,
+                      placeholder: `Reply to ${it.sub ?? 'this'}…`,
+                      submit: {
+                        kind: 'mail.send',
+                        label: 'Send reply',
+                        busy: 'Sending…',
+                        // Sending is visible to someone else and cannot be
+                        // taken back, so the composer confirms before it fires.
+                        irreversible: true,
+                        params: { messageId: it.id },
+                      },
+                    }}
+                    onAction={onAction}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -370,6 +495,240 @@ function DetailWidget({ w, heat }: { w: Extract<Widget, { kind: 'detail' }>; hea
           {w.body}
         </div>
       )}
+    </div>
+  )
+}
+
+// ── map ──────────────────────────────────────────────────────────────────────
+
+/**
+ * A map, built from tile images rather than a mapping library.
+ *
+ * Leaflet or MapLibre would be the obvious choice and both are the wrong one
+ * here: the hosted app runs under a strict CSP with no external scripts, and
+ * pulling a mapping stack into the bundle to draw a dozen pins is a lot of
+ * weight for a phone on a mountain connection. A slippy map is a grid of 256px
+ * PNGs at computed coordinates — that part is arithmetic, and the arithmetic is
+ * below.
+ *
+ * Everything is keyless: OpenStreetMap tiles, Nominatim for search, OSRM for
+ * routing. No billing account, nothing to expire, and no API key that could
+ * leak from a phone. Google's Directions and Places APIs are billable and would
+ * have meant putting a payment method behind a card he taps.
+ */
+const TILE = 256
+
+const lonToX = (lon: number, z: number) => ((lon + 180) / 360) * Math.pow(2, z)
+const latToY = (lat: number, z: number) => {
+  const r = (lat * Math.PI) / 180
+  return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * Math.pow(2, z)
+}
+
+function MapWidget({ w, heat }: { w: Extract<Widget, { kind: 'map' }>; heat: string }) {
+  const [places, setPlaces] = useState(w.places)
+  const [me, setMe] = useState<{ lat: number; lon: number } | null>(null)
+  const [route, setRoute] = useState<{ lat: number; lon: number }[] | null>(null)
+  const [summary, setSummary] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [failed, setFailed] = useState<string | null>(null)
+
+  const W = 343
+  const H = 210
+
+  /**
+   * His own position, asked for only when the widget says it needs it.
+   *
+   * The browser prompts once and the phone is the device that actually knows —
+   * which is the whole reason this works at all, since the life data is on the
+   * phone and not the Mac.
+   */
+  useEffect(() => {
+    if (!w.follow || !navigator.geolocation) return
+    const id = navigator.geolocation.watchPosition(
+      (p) => setMe({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      () => setFailed('I could not get your location — the browser refused it.'),
+      { enableHighAccuracy: true, maximumAge: 15_000, timeout: 12_000 }
+    )
+    return () => navigator.geolocation.clearWatch(id)
+  }, [w.follow])
+
+  const pins = useMemo(
+    () => (me ? [...places, { id: 'me', label: 'You', lat: me.lat, lon: me.lon, self: true }] : places),
+    [places, me]
+  )
+
+  // Frame everything worth seeing, rather than trusting a hardcoded centre:
+  // a route the user cannot see the end of is not a route.
+  const view = useMemo(() => {
+    const pts = [...pins, ...(route ?? []).map((p, i) => ({ id: `r${i}`, label: '', ...p }))]
+    if (!pts.length) return { z: w.zoom ?? 13, cx: 0.5, cy: 0.5, lat: 0, lon: 0 }
+    const lats = pts.map((p) => p.lat)
+    const lons = pts.map((p) => p.lon)
+    const lat = (Math.min(...lats) + Math.max(...lats)) / 2
+    const lon = (Math.min(...lons) + Math.max(...lons)) / 2
+    let z = w.zoom ?? 13
+    if (pts.length > 1) {
+      const spanLon = Math.max(...lons) - Math.min(...lons) || 1e-4
+      const spanLat = Math.max(...lats) - Math.min(...lats) || 1e-4
+      // Fit the wider of the two spans, then back off one level for margin.
+      const zx = Math.log2((360 * W) / (TILE * spanLon))
+      const zy = Math.log2((180 * H) / (TILE * spanLat))
+      z = Math.max(2, Math.min(17, Math.floor(Math.min(zx, zy)) - 1))
+    }
+    return { z, lat, lon }
+  }, [pins, route, w.zoom])
+
+  const z = view.z
+  const centreX = lonToX(view.lon, z)
+  const centreY = latToY(view.lat, z)
+  const originX = centreX * TILE - W / 2
+  const originY = centreY * TILE - H / 2
+  const toPx = (lat: number, lon: number) => ({
+    x: lonToX(lon, z) * TILE - originX,
+    y: latToY(lat, z) * TILE - originY,
+  })
+
+  const tiles = useMemo(() => {
+    const out: { key: string; url: string; left: number; top: number }[] = []
+    const n = Math.pow(2, z)
+    const x0 = Math.floor(originX / TILE)
+    const y0 = Math.floor(originY / TILE)
+    for (let x = x0; x <= Math.floor((originX + W) / TILE); x++) {
+      for (let y = y0; y <= Math.floor((originY + H) / TILE); y++) {
+        if (y < 0 || y >= n) continue
+        const wx = ((x % n) + n) % n
+        out.push({
+          key: `${z}/${wx}/${y}`,
+          url: `https://tile.openstreetmap.org/${z}/${wx}/${y}.png`,
+          left: x * TILE - originX,
+          top: y * TILE - originY,
+        })
+      }
+    }
+    return out
+  }, [z, originX, originY])
+
+  const search = async () => {
+    if (!query.trim() || busy) return
+    setBusy('Searching…')
+    setFailed(null)
+    try {
+      const r = await fetch(`/api/map/search?q=${encodeURIComponent(query)}`)
+      const b = await r.json()
+      if (!r.ok) throw new Error(b?.error ?? 'Search failed')
+      if (!b.places?.length) { setFailed(`Nothing found for "${query}".`); return }
+      setPlaces(b.places)
+      setRoute(null)
+      setSummary(null)
+    } catch (e) {
+      setFailed((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const draw = async (mode: 'walk' | 'drive' | 'cycle') => {
+    const from = me ?? places[0]
+    const to = places[places.length - 1]
+    if (!from || !to || from === to) { setFailed('I need two places to draw a route between.'); return }
+    setBusy('Routing…')
+    setFailed(null)
+    try {
+      const r = await fetch(`/api/map/route?from=${from.lat},${from.lon}&to=${to.lat},${to.lon}&mode=${mode}`)
+      const b = await r.json()
+      if (!r.ok) throw new Error(b?.error ?? 'Routing failed')
+      setRoute(b.points ?? [])
+      setSummary(b.summary ?? null)
+    } catch (e) {
+      setFailed((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div style={css('display:flex; flex-direction:column; gap:9px;')}>
+      {w.searchable && (
+        <div style={cssv`display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; ${CARD}`}>
+          <input
+            value={query}
+            placeholder="Search for a place…"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void search() }}
+            style={css('flex:1; min-width:0; background:transparent; border:0; outline:0; font-family:inherit; font-size:13px; color:rgba(237,238,241,.9);')}
+          />
+          <div onClick={() => void search()} style={css('flex:none; font-size:12px; color:rgba(237,238,241,.55); cursor:pointer;')}>
+            {busy === 'Searching…' ? '…' : 'Go'}
+          </div>
+        </div>
+      )}
+
+      <div style={cssv`position:relative; height:${H}px; border-radius:15px; overflow:hidden; background:#1b1d22; box-shadow:inset 0 0 0 1px rgba(255,255,255,.07);`}>
+        {tiles.map((t) => (
+          <img
+            key={t.key}
+            src={t.url}
+            alt=""
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            style={cssv`position:absolute; width:${TILE}px; height:${TILE}px; left:${t.left}px; top:${t.top}px; filter:grayscale(.7) brightness(.62) contrast(1.08);`}
+          />
+        ))}
+
+        {/* The route, drawn over the tiles as one SVG path. */}
+        {route && route.length > 1 && (
+          <svg width={W} height={H} style={css('position:absolute; left:0; top:0; pointer-events:none;')}>
+            <path
+              d={route.map((p, i) => { const q = toPx(p.lat, p.lon); return `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}` }).join(' ')}
+              fill="none"
+              stroke={accentOf('teal', heat)}
+              strokeWidth="3.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity="0.95"
+            />
+          </svg>
+        )}
+
+        {pins.map((p) => {
+          const q = toPx(p.lat, p.lon)
+          if (q.x < -20 || q.x > W + 20 || q.y < -20 || q.y > H + 20) return null
+          return (
+            <div key={p.id} style={cssv`position:absolute; left:${q.x}px; top:${q.y}px; transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center; gap:3px; pointer-events:none;`}>
+              <div style={cssv`width:${p.self ? '13' : '11'}px; height:${p.self ? '13' : '11'}px; border-radius:999px; background:${p.self ? '#7CD9C0' : accentOf('rose', heat)}; box-shadow:0 0 0 3px rgba(11,11,13,.65), 0 1px 5px rgba(0,0,0,.5);`} />
+              {!p.self && (
+                <div style={css('max-width:96px; padding:2px 6px; border-radius:6px; background:rgba(11,11,13,.78); font-size:9.5px; line-height:1.3; color:rgba(237,238,241,.9); text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;')}>
+                  {p.label}
+                </div>
+              )}
+            </div>
+          )
+        })}
+
+        {/* OpenStreetMap's licence requires attribution wherever its tiles are shown. */}
+        <div style={css('position:absolute; right:5px; bottom:4px; font-size:8.5px; color:rgba(237,238,241,.42); background:rgba(11,11,13,.5); padding:1px 5px; border-radius:4px;')}>
+          © OpenStreetMap
+        </div>
+      </div>
+
+      {summary && (
+        <div style={css('font-size:12px; color:rgba(237,238,241,.6);')}>{summary}</div>
+      )}
+
+      <div style={css('display:flex; gap:7px; flex-wrap:wrap;')}>
+        {(['walk', 'cycle', 'drive'] as const).map((m) => (
+          <div
+            key={m}
+            onClick={() => void draw(m)}
+            style={cssv`padding:7px 13px; border-radius:999px; background:rgba(255,255,255,${w.route === m ? '.14' : '.05'}); box-shadow:inset 0 0 0 1px rgba(255,255,255,.1); font-size:12px; color:rgba(237,238,241,${busy ? '.4' : '.78'}); cursor:pointer;`}
+          >
+            {busy === 'Routing…' ? '…' : m === 'walk' ? 'Walk' : m === 'cycle' ? 'Cycle' : 'Drive'}
+          </div>
+        ))}
+      </div>
+
+      {failed && <div style={css('font-size:11.5px; color:rgba(255,170,170,.8); line-height:1.45;')}>{failed}</div>}
     </div>
   )
 }

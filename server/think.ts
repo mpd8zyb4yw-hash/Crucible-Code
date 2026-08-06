@@ -1,6 +1,6 @@
 import { route } from './router.js'
 import { renderWorld, staleBeliefs, type World, type Belief } from './world.js'
-import type { WidgetPane } from './widgets.js'
+import { sanitisePane, type WidgetPane } from './widgets.js'
 
 /**
  * The synthesis pass.
@@ -137,6 +137,19 @@ Rules:
 - chips are things HE might say, written in his voice, not yours. Tapping one sends it to you exactly as if he had typed it — you answer it live, so never write a chip whose answer you have already given. Exactly 3 per card.
 - "ask" is the composer, not a card: what you open with when he taps it with nothing particular in mind, plus 3 things he might plausibly want right now. Draw on what you actually know about him — a generic "how can I help?" wastes the one place he goes to start a conversation.
 
+A CARD OPENS INTO THE THING, NOT A DESCRIPTION OF IT. "panes" is what he sees when he taps the card, above the conversation. If a card is about anything he could look at, compare, scroll or act on, give it a pane — a card about three flights he could take is a LIST of the three, not a paragraph describing them. Leave "panes" out entirely when the card is genuinely just a thought; a pane containing one restated sentence is worse than none.
+
+You have exactly these widgets, and you may not invent another:
+- {"kind":"list","items":[{"id","title","sub","body","meta","at","tags":[],"unread":false}],"filters":["tag"],"empty":"…"} — anything enumerable. "body" shows when he expands the row.
+- {"kind":"agenda","items":[…same as list…],"days":7} — things on days. Group by "at"; use this over a list whenever WHICH DAY matters.
+- {"kind":"chart","points":[{"label":"Mon","value":6100}],"unit":"steps","target":6000,"compareLabel":"average"} — a quantity across periods. "target" draws a line across the bars.
+- {"kind":"media","items":[{"id","title","sub","image","body"}],"columns":2} — when the picture is the point.
+- {"kind":"map","places":[{"id","label","lat","lon","sub"}],"route":"walk|drive|cycle","searchable":true,"follow":false} — anywhere geography is the point. Only give lat/lon you are actually confident of; a coordinate you guessed puts a pin in a field.
+- {"kind":"detail","rows":[{"label":"Amount","value":"€84.20"}],"body":"optional prose"} — the particulars of ONE thing.
+- {"kind":"compose","to":"who","placeholder":"…","value":"optional draft","submit":{"kind":"world.tell","label":"Save"}} — when the useful next step is him writing something.
+
+Items may carry "actions", but ONLY from this list: world.tell (record something he told you), track.add, card.act, map.route, map.search, mail.open, calendar.open, media.open. You cannot send, delete, archive or cancel anything — those exist in the app but are not yours to offer, and anything you emit naming one is discarded. Never put a real message id, event id or URL in an action you invented; if you did not read it from an observation, you do not have it.
+
 SHOW THE QUANTITY, DON'T JUST SAY IT. Three small ornaments exist; use one when the card is genuinely about a level, and leave it out otherwise. An ornament with nothing to measure is noise.
 - "gauges" (hero cards only, max 2): things running out, drawn as vessels. "fill" is 0–1 of how much REMAINS. Use when the card is about a supply hitting empty.
 - "meter" (ember cards only): one bar for a quantity being consumed over time, plus "left" and "right" — a short now-value and a short teaser (e.g. "€4,180 · now" and "3 ways through it ›"). Both max 22 chars.
@@ -168,7 +181,8 @@ function shape(): string {
     "accent": "violet",
     "proposes": {"what": "the flight status for his Thursday flight", "why": "he has to leave for the airport on time", "question": "searchable question, or null", "everyHours": 6},
     "basis": ["obs-id", "belief-id"],
-    "asks": false
+    "asks": false,
+    "panes": [{"title": "optional heading", "widget": {"kind": "list|agenda|chart|media|map|detail|compose", "...": "fields for that kind"}}]
   }],
   "ask": {
     "opening": "what you say when he opens the composer with nothing specific in mind",
@@ -313,6 +327,20 @@ export function validate(raw: any, world: World): ThinkResult {
           : null,
       basis,
       asks: n?.asks === true || basis.includes('cold-start'),
+      /**
+       * What the card opens into, rebuilt field by field from what the model
+       * emitted rather than passed through.
+       *
+       * `sanitisePane` is the boundary: it drops any widget kind that does not
+       * exist, any action outside the model-safe grammar, any image from a host
+       * we do not already deal with, and any coordinate off the globe. A pane
+       * that does not survive is dropped rather than repaired — a half
+       * understood widget is worse than the chat thread it would replace, and
+       * the card still works without it.
+       */
+      panes: Array.isArray(n?.panes)
+        ? n.panes.slice(0, 3).map(sanitisePane).filter((p: WidgetPane | null): p is WidgetPane => p !== null)
+        : undefined,
       gauges: gauges.length ? gauges : null,
       meter,
       glyph: glyph && glyph.values.length ? glyph : null,
