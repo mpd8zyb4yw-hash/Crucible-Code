@@ -219,6 +219,34 @@ function widgetFor(source: string, obs: Observation[]): WidgetPane[] {
     return [{ widget: { kind: 'media', items, columns: 2, empty: 'Nothing watched recently.' } }]
   }
 
+  /**
+   * Anything with coordinates gets a map, whatever source it came from.
+   *
+   * Checked last and by SHAPE rather than by source name, so a connector nobody
+   * has written a branch for — a bank that geocodes card purchases, a track
+   * that files a trailhead — gets a real map the day it lands. The source list
+   * above is an optimisation for the four we can describe better by hand, not
+   * the set of things allowed to have a widget.
+   */
+  const places = newestFirst.flatMap((o) => (o.data?.kind === 'place' ? [{ o, d: o.data }] : []))
+  if (places.length) {
+    return [{
+      widget: {
+        kind: 'map',
+        places: places.slice(0, 20).map(({ o, d }) => ({
+          id: o.id,
+          label: d.label,
+          lat: d.lat,
+          lon: d.lon,
+          sub: d.address,
+        })),
+        searchable: true,
+        follow: true,
+        route: 'walk',
+      },
+    }]
+  }
+
   return fallbackList(newestFirst, 'Nothing here yet.')
 }
 

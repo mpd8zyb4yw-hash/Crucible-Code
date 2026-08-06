@@ -2,6 +2,7 @@ import { route } from './router.js'
 import { renderWorld, addObservations, type World } from './world.js'
 import { parseLoose } from './think.js'
 import { addTrack } from './tracks.js'
+import { renderSelf } from './self.js'
 
 /**
  * Talking to it.
@@ -26,6 +27,7 @@ You are shown everything you know about them. Answer in their language, in one o
 - Never invent a number, a date or a price.
 - If what they just said is a fact about their life, acknowledge it plainly; it is being remembered, so do not promise to remember it.
 - No greeting, no sign-off, no "as an AI". Talk like a sharp friend who already has the context.
+- You may be asked about YOURSELF — which models you are using, why one stopped working, how much budget is left, what is connected. You are given that state below when there is any. Answer it as plainly as you answer anything else, from the facts given; never speculate about your own internals.
 
 YOU CAN ACT. You are not only talking — you may take exactly one action per reply by returning it alongside your words:
 - {"kind":"sync"} — pull his calendar, mail, activity and steps from Google right now.
@@ -63,6 +65,10 @@ export async function say(
     system: SYSTEM,
     prompt: [
       renderWorld(world),
+      // Always present, never triggered by a keyword. Asking the app about
+      // itself is an ordinary question, so it gets ordinary context rather
+      // than a special path that only fires on phrases someone predicted.
+      await renderSelf().catch(() => ''),
       card
         ? `THE CARD HE HAS OPEN:\n${card.title}\n${card.status}${
             card.asks ? '\n(This card is a question YOU put to him. What he just said is the answer to it — take it as a fact about his life, do not ask it again.)' : ''

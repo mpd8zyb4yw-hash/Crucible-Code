@@ -672,7 +672,7 @@ function MapWidget({ w, heat }: { w: Extract<Widget, { kind: 'map' }>; heat: str
             alt=""
             loading="lazy"
             referrerPolicy="no-referrer"
-            style={cssv`position:absolute; width:${TILE}px; height:${TILE}px; left:${t.left}px; top:${t.top}px; filter:grayscale(.7) brightness(.62) contrast(1.08);`}
+            style={cssv`position:absolute; width:${TILE}px; height:${TILE}px; left:${t.left}px; top:${t.top}px; filter:grayscale(.82) brightness(.44) contrast(1.12) saturate(.7);`}
           />
         ))}
 
