@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Observation } from './world.js'
+import { fromSubscriptions, rememberChannels, rememberVideos } from './youtube.js'
 
 /**
  * Google connector.
@@ -295,40 +296,44 @@ export async function pullObservations(
     errors.push(`fit: ${(e as Error).message}`)
   }
 
-  // YouTube — what he has been watching, with timestamps so day and night
-  // viewing can be told apart.
+  /**
+   * YouTube — what the channels he follows have just put out.
+   *
+   * This used to call `activities?mine=true`, which returns HIS OWN channel's
+   * activity: his uploads, his posts. Not one thing he watches. The pane was
+   * answering a question nobody had asked, correctly, and nothing about the
+   * code said so.
+   *
+   * What it reads now is his subscriptions, and every video is hydrated through
+   * `videos.list`, so the title, the channel and the thumbnail all come off one
+   * record and cannot be paired wrongly. Watch history is deliberately absent:
+   * the API does not have it, and `takeout.ts` is the only honest route to it.
+   */
   if (on('youtube')) try {
-    const b = await gFetch(token, 'https://www.googleapis.com/youtube/v3/activities?part=snippet,contentDetails&mine=true&maxResults=20')
-    const items = (b.items ?? []).filter((i: any) => i.snippet?.type === 'upload' || i.contentDetails)
+    const { videos, channels } = await fromSubscriptions(token, { maxChannels: 20, perChannel: 2, limit: 12 })
+    await rememberChannels(channels, 'subscriptions')
+    const objs = await rememberVideos(videos, 'subscriptions')
 
-    /**
-     * One observation per video, not one per sync.
-     *
-     * This used to concatenate ten titles into a single sentence. That is fine
-     * for the model, which reads prose anyway, and useless for everything else:
-     * a thumbnail grid needs ten items with ten ids and ten image URLs, and
-     * none of that can be recovered from a semicolon-separated string. The
-     * summary line is still produced, as its own observation, so the brain sees
-     * exactly what it saw before.
-     */
-    for (const i of items.slice(0, 12)) {
-      const videoId = i.contentDetails?.upload?.videoId ?? i.contentDetails?.playlistItem?.resourceId?.videoId
-      const s = i.snippet ?? {}
-      if (!videoId || !s.title) continue
-      const thumb = s.thumbnails?.medium?.url ?? s.thumbnails?.default?.url
+    for (const [i, v] of videos.entries()) {
+      const mins = v.durationSec ? `, ${Math.round(v.durationSec / 60)} min` : ''
       out.push({
-        id: `yt-v-${videoId}`.slice(0, 60),
+        id: `yt-v-${v.videoId}`.slice(0, 60),
         source: 'youtube',
-        at: s.publishedAt ? iso(new Date(s.publishedAt)) : iso(now),
-        text: `YouTube: "${s.title}"${s.channelTitle ? ` from ${s.channelTitle}` : ''}`,
+        at: v.publishedAt ? iso(new Date(v.publishedAt)) : iso(now),
+        /**
+         * The object id is in the sentence on purpose. It is the only way the
+         * model learns a ref it is allowed to cite — everything it can put a
+         * picture on has to have been read out of a real observation first.
+         */
+        text: `YouTube: "${v.title}"${v.channel ? ` from ${v.channel}` : ''}${mins} — posted by a channel he subscribes to [${objs[i]?.id}]`,
         data: {
           kind: 'video',
-          videoId: String(videoId),
-          title: String(s.title),
-          channel: s.channelTitle ? String(s.channelTitle) : undefined,
-          thumbnail: thumb ? String(thumb) : undefined,
-          publishedAt: s.publishedAt ? String(s.publishedAt) : undefined,
-          description: s.description ? String(s.description).slice(0, 1000) : undefined,
+          videoId: v.videoId,
+          title: v.title,
+          channel: v.channel,
+          thumbnail: v.thumbnail,
+          publishedAt: v.publishedAt,
+          description: v.description ? v.description.slice(0, 1000) : undefined,
         },
       })
     }

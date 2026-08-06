@@ -5,6 +5,7 @@ import { setKeyStore } from './secrets.js'
 import { setWorldStore } from './store.js'
 import { setRouterStore, type RouterState } from './router.js'
 import { setRegistryStore, type Registry } from './models.js'
+import { setObjectStore, type RetrievedObject } from './objects.js'
 import * as keychain from './keychain.js'
 import type { World } from './world.js'
 
@@ -19,6 +20,7 @@ const DIR = join(homedir(), '.crucible')
 const PATH = join(DIR, 'world.json')
 const ROUTER_PATH = join(DIR, 'router.json')
 const MODELS_PATH = join(DIR, 'models.json')
+const OBJECTS_PATH = join(DIR, 'objects.json')
 
 export function installNodeRuntime(): void {
   setKeyStore({
@@ -56,6 +58,28 @@ export function installNodeRuntime(): void {
     async write(s) {
       await mkdir(DIR, { recursive: true })
       await writeFile(ROUTER_PATH, JSON.stringify(s, null, 2) + '\n')
+    },
+  })
+
+  /**
+   * The things connectors fetched, as opposed to what they mean.
+   *
+   * Not pretty-printed and not meant to be read by hand — it is a cache of a
+   * few thousand records, and the file that IS meant to be read is world.json
+   * next to it. Losing this one costs thumbnails until the next sync, nothing
+   * more, which is why it lives outside the world model rather than in it.
+   */
+  setObjectStore({
+    async read(): Promise<RetrievedObject[] | null> {
+      try {
+        return JSON.parse(await readFile(OBJECTS_PATH, 'utf8')) as RetrievedObject[]
+      } catch {
+        return null
+      }
+    },
+    async write(objects) {
+      await mkdir(DIR, { recursive: true })
+      await writeFile(OBJECTS_PATH, JSON.stringify(objects) + '\n')
     },
   })
 

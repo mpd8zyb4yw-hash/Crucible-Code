@@ -432,6 +432,28 @@ function ChartWidget({ w, heat }: { w: Extract<Widget, { kind: 'chart' }>; heat:
 
 // ── media ────────────────────────────────────────────────────────────────────
 
+/**
+ * Where this row came from, in one dim line.
+ *
+ * The distinction it draws is the whole reason the provenance layer exists: a
+ * title read out of an account thirty seconds ago and a title the model worked
+ * out from three other things look identical once they are both text on a card.
+ * Retrieved data gets the ordinary muted treatment and says nothing loud;
+ * anything inferred, stale or missing is set in italic so the eye catches it
+ * without a badge shouting on every row.
+ */
+function Provenance({ item }: { item: WidgetItem }) {
+  if (!item.provenance) return null
+  const soft = item.origin === 'retrieved'
+  return (
+    <div
+      style={cssv`margin-top:3px; font-size:10.5px; letter-spacing:.01em; color:rgba(237,238,241,${soft ? '.3' : '.42'}); ${soft ? '' : 'font-style:italic;'}`}
+    >
+      {item.provenance}
+    </div>
+  )
+}
+
 function MediaWidget({ w, onAction }: { w: Extract<Widget, { kind: 'media' }>; onAction: Props['onAction'] }) {
   const [open, setOpen] = useState<string | null>(null)
   if (!w.items.length) return <Empty text={w.empty ?? 'Nothing here.'} />
@@ -459,6 +481,7 @@ function MediaWidget({ w, onAction }: { w: Extract<Widget, { kind: 'media' }>; o
                   {it.title}
                 </div>
                 {it.sub && <div style={css('margin-top:4px; font-size:11px; color:rgba(237,238,241,.45);')}>{it.sub}</div>}
+                <Provenance item={it} />
               </div>
             </div>
             {isOpen && (

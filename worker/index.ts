@@ -3,6 +3,7 @@ import { notify, type PushSub } from '../server/push.js'
 import { setWorldStore, kvWorldStore } from '../server/store.js'
 import { setModelPrefs, setRouterStore, kvRouterStore, wake } from '../server/router.js'
 import { setRegistryStore, kvRegistryStore, hunt, ensureVerified, snapshot } from '../server/models.js'
+import { setObjectStore, kvObjectStore } from '../server/objects.js'
 import { budgets } from '../server/router.js'
 import { searchPlaces, routeBetween } from '../server/maps.js'
 import { readWorld, writeWorld, addObservations } from '../server/world.js'
@@ -241,6 +242,7 @@ export default {
     setModelPrefs(async () => JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}'))
     setRouterStore(kvRouterStore(env.CRUCIBLE))
     setRegistryStore(kvRegistryStore(env.CRUCIBLE))
+    setObjectStore(kvObjectStore(env.CRUCIBLE))
     ctx.waitUntil(gather(env))
   },
 
@@ -252,6 +254,7 @@ export default {
     setModelPrefs(async () => JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}'))
     setRouterStore(kvRouterStore(env.CRUCIBLE))
     setRegistryStore(kvRegistryStore(env.CRUCIBLE))
+    setObjectStore(kvObjectStore(env.CRUCIBLE))
 
     const url = new URL(req.url)
     const path = url.pathname

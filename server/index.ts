@@ -14,6 +14,10 @@ import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks } from './
 import { route, health, candidates, setModelPrefs, wake, budgets } from './router.js'
 import { hunt, ensureVerified, snapshot, usable as usableModels } from './models.js'
 import { searchPlaces, routeBetween } from './maps.js'
+import { forgetSource } from './objects.js'
+import { resolveRefs } from './widgets.js'
+import { quotaLedger } from './youtube.js'
+import { parseWatchHistory, rememberWatchHistory, channelsByWatchCount } from './takeout.js'
 import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES, gmailModify, calendarRsvp, gmailReply, calendarCreate } from './google.js'
 
 const PORT = Number(process.env.PORT ?? 3001)
@@ -494,8 +498,44 @@ app.put('/api/sources', async (req, res) => {
 
 app.post('/api/google/disconnect', async (_req, res) => {
   await clearTokens()
+  // Disconnecting an account means the app stops holding its data, not just
+  // that it stops asking for more.
+  await forgetSource('youtube')
   res.json({ ok: true })
 })
+
+/**
+ * Import a Google Takeout watch history.
+ *
+ * The only route to what he has actually watched — YouTube's API has never
+ * served it. Everything imported is marked `historical` and stamped with the
+ * export's own newest event, so a file from March says March however long it
+ * sits here, and nothing in the app can quietly present it as current.
+ *
+ * The body is the raw `watch-history.json`, which runs to tens of megabytes;
+ * the JSON body limit is raised for this route alone rather than globally.
+ */
+app.post('/api/youtube/takeout', express.json({ limit: '256mb' }), async (req, res) => {
+  try {
+    const history = parseWatchHistory(Array.isArray(req.body) ? req.body : String(req.body ?? ''))
+    const stored = await rememberWatchHistory(history)
+    const { tallies, since, until } = channelsByWatchCount(history, 15)
+    res.json({
+      imported: stored.length,
+      events: history.events.length,
+      skipped: history.skipped,
+      covers: { since, until },
+      // Labelled at the point of production: this is a count, not something
+      // YouTube asserted, and it is only true for the window above.
+      topChannels: tallies.map((t) => ({ ...t, basis: 'counted from watch events' })),
+    })
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message })
+  }
+})
+
+/** What the YouTube quota has cost us today. Modelled from our own calls. */
+app.get('/api/youtube/quota', (_req, res) => res.json(quotaLedger()))
 
 /** Search-API keys (Brave / Tavily), stored like any other key. */
 app.put('/api/search-key/:id', async (req, res) => {
@@ -614,6 +654,10 @@ app.post('/api/think', async (req, res) => {
     // Synthesis leads; the connected sources sit under it. Merged rather than
     // replaced, and de-duplicated by id so a re-think never doubles a pane.
     const panes = sourcePanes(world)
+    // Deterministic panes carry refs too, so they pick up the same "where this
+    // came from, and how old" line the model-authored ones get. Their images
+    // are already their own and are left alone.
+    await resolveRefs(panes.flatMap((p) => p.panes ?? []))
     const have = new Set(result.needs.map((n) => n.id))
     res.json({ ...result, needs: [...result.needs, ...panes.filter((p) => !have.has(p.id))] })
   } catch (err) {
@@ -621,6 +665,7 @@ app.post('/api/think', async (req, res) => {
     // is still true and still worth showing, so the feed renders from the world
     // model alone, with one card saying what is wrong and how to fix it.
     const panes = sourcePanes(world)
+    await resolveRefs(panes.flatMap((p) => p.panes ?? []))
     const message = (err as Error).message
     res.status(200).json({
       dateLabel: new Date().toLocaleDateString(),

@@ -1,6 +1,6 @@
 import { route } from './router.js'
 import { renderWorld, staleBeliefs, type World, type Belief } from './world.js'
-import { sanitisePane, type WidgetPane } from './widgets.js'
+import { resolveRefs, sanitisePane, type WidgetPane } from './widgets.js'
 
 /**
  * The synthesis pass.
@@ -143,10 +143,14 @@ You have exactly these widgets, and you may not invent another:
 - {"kind":"list","items":[{"id","title","sub","body","meta","at","tags":[],"unread":false}],"filters":["tag"],"empty":"…"} — anything enumerable. "body" shows when he expands the row.
 - {"kind":"agenda","items":[…same as list…],"days":7} — things on days. Group by "at"; use this over a list whenever WHICH DAY matters.
 - {"kind":"chart","points":[{"label":"Mon","value":6100}],"unit":"steps","target":6000,"compareLabel":"average"} — a quantity across periods. "target" draws a line across the bars.
-- {"kind":"media","items":[{"id","title","sub","image","body"}],"columns":2} — when the picture is the point.
+- {"kind":"media","items":[{"id","title","sub","ref","body"}],"columns":2} — when the picture is the point.
 - {"kind":"map","places":[{"id","label","lat","lon","sub"}],"route":"walk|drive|cycle","searchable":true,"follow":false} — anywhere geography is the point. Only give lat/lon you are actually confident of; a coordinate you guessed puts a pin in a field.
 - {"kind":"detail","rows":[{"label":"Amount","value":"€84.20"}],"body":"optional prose"} — the particulars of ONE thing.
 - {"kind":"compose","to":"who","placeholder":"…","value":"optional draft","submit":{"kind":"world.tell","label":"Save"}} — when the useful next step is him writing something.
+
+PICTURES ARE CITED, NEVER WRITTEN. You cannot put an image URL in a widget; the field does not survive. Instead give an item "ref": the id of a thing that was actually retrieved, exactly as it appears in the observation you are drawing on (they look like "youtube:video:dQw4w9WgXcQ"). The app looks that id up and fills in the real picture, along with a line saying where it came from and how old it is. A ref you invented resolves to nothing and the item renders plain — which is the correct outcome, because a title over someone else's thumbnail is a lie the user cannot detect.
+
+SAY WHICH KIND OF KNOWING IT IS. Never present something you worked out as something a source told you. If you counted, ranked, guessed or inferred it, the card has to read that way ("going by what you've liked" — not "your most watched"). If a source cannot answer at all, say so plainly instead of substituting the nearest thing you can get.
 
 Items may carry "actions", but ONLY from this list: world.tell (record something he told you), track.add, card.act, map.route, map.search, mail.open, calendar.open, media.open. You cannot send, delete, archive or cancel anything — those exist in the app but are not yours to offer, and anything you emit naming one is discarded. Never put a real message id, event id or URL in an action you invented; if you did not read it from an observation, you do not have it.
 
@@ -419,8 +423,19 @@ export async function think(
   })
 
   const parsed = parseLoose(out.text)
+  const result = validate(parsed, world)
+
+  /**
+   * Turn the model's citations into pictures.
+   *
+   * `validate` has already stripped every image URL the model wrote; this is
+   * what puts images back, taken from the records the connectors fetched. It
+   * runs once over every pane in the reply — one store read, not one per card.
+   */
+  await resolveRefs(result.needs.flatMap((n) => n.panes ?? []))
+
   return {
-    ...validate(parsed, world),
+    ...result,
     provider: out.providerId,
     model: out.model,
     usage: out.usage,

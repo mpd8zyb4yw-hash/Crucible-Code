@@ -33,6 +33,9 @@
  * older app and a newer brain degrade to the chat thread rather than crashing.
  */
 
+import { lookupMany } from './objects.js'
+import { effectiveOrigin, provenanceLabel, type Origin } from './provenance.js'
+
 // ── Primitives ───────────────────────────────────────────────────────────────
 
 /**
@@ -75,8 +78,30 @@ export interface WidgetItem {
   meta?: string
   /** ISO timestamp, for grouping and ordering. */
   at?: string
-  /** Square image — an avatar, a thumbnail. */
+  /**
+   * Square image — an avatar, a thumbnail.
+   *
+   * Set by the SERVER, never accepted from a model. See `ref` below.
+   */
   image?: string
+  /**
+   * `source:kind:id` of the retrieved object this item stands for.
+   *
+   * This is how a model-authored card gets a real picture. It names an object
+   * the server fetched; the server fills in the image from its own record. It
+   * cannot supply a URL, so it cannot pair a title with the wrong picture —
+   * which was not a hypothetical: the host allowlist passed any `ytimg.com`
+   * URL, so an invented video id rendered a real thumbnail of a real video
+   * that had nothing to do with the title above it.
+   *
+   * A ref that matches nothing yields no image. Blank is a correct answer;
+   * a confident wrong one is not.
+   */
+  ref?: string
+  /** Where this came from, ready to render. From `provenanceLabel`. */
+  provenance?: string
+  /** retrieved | historical | inferred | stale | unavailable. */
+  origin?: Origin
   /** Small coloured tags. */
   tags?: string[]
   /** True renders it as unread: brighter, with a dot. */
@@ -255,7 +280,15 @@ const numOr = (v: unknown, fallback: number): number =>
  * field is therefore rebuilt here from scratch rather than passed through, so
  * an unexpected key cannot survive into the renderer.
  */
-export function sanitiseWidget(raw: unknown): Widget | null {
+export interface SanitiseOptions {
+  /**
+   * The producer built this from data it fetched, so its image URLs are its
+   * own. True only for `panes.ts`. Model output must never set it.
+   */
+  trusted?: boolean
+}
+
+export function sanitiseWidget(raw: unknown, opts: SanitiseOptions = {}): Widget | null {
   if (!raw || typeof raw !== 'object') return null
   const w = raw as Record<string, unknown>
   const kind = str(w.kind, 20)
@@ -274,7 +307,14 @@ export function sanitiseWidget(raw: unknown): Widget | null {
             body: str(o.body, 4000),
             meta: str(o.meta, 60),
             at: str(o.at, 40),
-            image: safeImage(o.image),
+            /**
+             * A URL survives only from a trusted producer — `panes.ts`, which
+             * built it out of a record it fetched itself. From a model, the
+             * field is dropped whatever it contains and only `ref` can put a
+             * picture on screen.
+             */
+            image: opts.trusted ? safeImage(o.image) : undefined,
+            ref: str(o.ref, 120),
             tags: Array.isArray(o.tags) ? o.tags.flatMap((t) => str(t, 40) ?? []).slice(0, 6) : undefined,
             unread: o.unread === true,
             accent: str(o.accent, 20),
@@ -424,10 +464,66 @@ function actions(v: unknown): WidgetAction[] | undefined {
 }
 
 /** Sanitise a whole pane the model produced. */
-export function sanitisePane(raw: unknown): WidgetPane | null {
+export function sanitisePane(raw: unknown, opts: SanitiseOptions = {}): WidgetPane | null {
   if (!raw || typeof raw !== 'object') return null
   const p = raw as Record<string, unknown>
-  const widget = sanitiseWidget(p.widget ?? p)
+  const widget = sanitiseWidget(p.widget ?? p, opts)
   if (!widget) return null
   return { title: str(p.title, 80), widget, actions: actions(p.actions) }
+}
+
+// ── Citation ─────────────────────────────────────────────────────────────────
+
+/** Every item in a widget, whatever shape the widget is. */
+function widgetItems(w: Widget): WidgetItem[] {
+  return 'items' in w && Array.isArray(w.items) ? (w.items as WidgetItem[]) : []
+}
+
+/**
+ * Fill in what a model may only cite.
+ *
+ * Runs after sanitising, against the store of things connectors actually
+ * fetched. For each item naming a `ref`, the image, the missing subtitle and
+ * the provenance label are taken from that record — so what is on screen is
+ * what was retrieved, and an item whose ref resolves to nothing is left plain
+ * rather than decorated with a guess.
+ *
+ * It is one store read per pane regardless of item count, and it is the same
+ * call for every connector: nothing here knows what a video is.
+ */
+export async function resolveRefs(panes: WidgetPane[]): Promise<WidgetPane[]> {
+  const refs = panes.flatMap((p) => widgetItems(p.widget).flatMap((i) => (i.ref ? [i.ref] : [])))
+  if (!refs.length) return panes
+
+  const found = await lookupMany(refs)
+  const now = Date.now()
+
+  for (const pane of panes) {
+    for (const item of widgetItems(pane.widget)) {
+      if (!item.ref) continue
+      const obj = found.get(item.ref)
+      if (!obj) {
+        /**
+         * A ref resolving to nothing means one of two very different things.
+         *
+         * If the item already has an image, a TRUSTED producer built it from a
+         * record it fetched itself and simply predates the object cache — it is
+         * as real as anything here and must not be labelled otherwise. If it
+         * has no image, the ref is the only claim being made and nothing backs
+         * it, which is worth saying out loud.
+         */
+        if (!item.image) {
+          item.origin = 'unavailable'
+          item.provenance = 'not in anything I retrieved'
+        }
+        continue
+      }
+      item.image = obj.image
+      item.sub ??= obj.sub
+      item.at ??= obj.at
+      item.origin = effectiveOrigin(obj.prov, now)
+      item.provenance = provenanceLabel(obj.prov, now)
+    }
+  }
+  return panes
 }

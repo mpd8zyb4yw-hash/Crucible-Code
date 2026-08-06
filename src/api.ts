@@ -91,6 +91,12 @@ export interface WidgetItem {
   meta?: string
   at?: string
   image?: string
+  /** Object this item stands for; the server resolved the image from it. */
+  ref?: string
+  /** "youtube · subscriptions · 4 min ago". Rendered under the item. */
+  provenance?: string
+  /** What kind of knowing this is, which decides how it is drawn. */
+  origin?: 'retrieved' | 'historical' | 'inferred' | 'stale' | 'unavailable'
   tags?: string[]
   unread?: boolean
   accent?: string

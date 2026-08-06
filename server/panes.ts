@@ -211,7 +211,14 @@ function widgetFor(source: string, obs: Observation[]): WidgetPane[] {
         body: d.description,
         meta: shortWhen(o.at),
         at: o.at,
+        /**
+         * Title and picture come from the same `videos.list` record, carried
+         * together from the fetch. The `ref` is set too, so if this pane is
+         * ever rebuilt from the object store instead of from observations it
+         * resolves to the same record rather than needing a second path.
+         */
         image: d.thumbnail,
+        ref: `youtube:video:${d.videoId}`,
         actions: [{ kind: 'media.open', label: 'Watch', params: { videoId: d.videoId }, primary: true }],
       }]
     })
