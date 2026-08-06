@@ -1,130 +1,216 @@
-// Backend base URL — resolved at runtime from the page's own hostname.
-//
-// On the Mac:        page is http://localhost:5173   → API = http://localhost:3001
-// On a phone (LAN):  page is http://192.168.x.x:5173 → API = http://192.168.x.x:3001
-// Through a tunnel:  page is https://foo.trycloudflare.com → API = same origin (see below)
-//
-// This means the device that loads the UI always talks to the backend at the SAME
-// host it loaded the page from — never a bare "localhost", which on a phone would
-// point at the phone itself.
+export interface ProviderInfo {
+  id: string
+  label: string
+  hint: string
+  free: boolean
+  models: string[]
+  model: string
+  configured: boolean
+}
 
-function resolveApiBase(): string {
-  const { protocol, hostname } = window.location
+export interface ProvidersResponse {
+  providers: ProviderInfo[]
+  active: string | null
+  /** Who chooses the model: Crucible per task, or the one he pinned. */
+  routing: 'auto' | 'pinned'
+}
 
-  // Allow an explicit override (e.g. a tunnel URL) via localStorage for advanced use.
-  const override = (() => {
-    try { return localStorage.getItem('crucible_api_base') } catch { return null }
-  })()
-  if (override) return override.replace(/\/$/, '')
+async function j<T>(res: Response): Promise<T> {
+  const body = await res.json().catch(() => null)
+  if (!res.ok) throw new Error((body as any)?.error ?? `HTTP ${res.status}`)
+  return body as T
+}
 
-  // Through a tunnel or any non-localhost host: API is same origin, proxied by Vite.
-  if (hostname !== 'localhost' && hostname !== '127.0.0.1' && !hostname.match(/^192\.168\.|^10\.|^172\.(1[6-9]|2\d|3[01])\./)) {
-    return `${protocol}//${hostname}`
+export const listProviders = () => fetch('/api/providers').then(j<ProvidersResponse>)
+
+export const saveKey = (id: string, key: string) =>
+  fetch(`/api/providers/${id}/key`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ key }),
+  }).then(j<{ ok: true; active: string }>)
+
+export const removeKey = (id: string) =>
+  fetch(`/api/providers/${id}/key`, { method: 'DELETE' }).then(j<{ ok: true; active: string | null }>)
+
+export const setRouting = (routing: 'auto' | 'pinned') =>
+  fetch('/api/routing', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ routing }),
+  }).then(j<{ ok: true; routing: 'auto' | 'pinned' }>)
+
+export interface Rested {
+  model: string
+  why: string
+  backInMs: number
+}
+
+export interface ProviderHealth {
+  providerId: string
+  callsToday: number
+  tokensIn: number
+  tokensOut: number
+  restingModels: string[]
+  rested: Rested[]
+}
+
+/** What the router currently knows: who is answering, who is resting and why. */
+export const getHealth = () =>
+  fetch('/api/health').then(j<{ providers: ProviderHealth[]; synthesis: unknown[] }>)
+
+export const setActive = (providerId: string, model?: string) =>
+  fetch('/api/active', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ providerId, model }),
+  }).then(j<{ ok: true; active: string; model: string }>)
+
+
+export interface Need {
+  id: string
+  tier: 'hero' | 'ember' | 'quiet'
+  heat: 'hot' | 'warm' | 'quiet' | 'handled'
+  heatLabel: string
+  title: string
+  sub: string
+  status: string
+  opening: string
+  stats: { l: string; v: string; accent?: string }[] | null
+  chips: string[]
+  /** Hero card: up to two supply vessels, 0–1 full. */
+  gauges: { fill: number; accent?: string }[] | null
+  /** Ember card: the progress track and the line under it. */
+  meter: { fill: number; left: string; right: string } | null
+  /** Quiet row: the 40px glyph tile. */
+  glyph: { kind: 'dots' | 'lines' | 'bars'; values: number[] } | null
+  accent: string | null
+  action: { label: string; done: string } | null
+  /** A standing interest the card offers to start watching. */
+  proposes: { what: string; why: string; question: string | null; everyHours: number } | null
+  basis: string[]
+  asks: boolean
+}
+
+export interface ThinkResult {
+  dateLabel: string
+  clock: '12h' | '24h'
+  place: string | null
+  readLine: string
+  needs: Need[]
+  ask: { opening: string; chips: string[] }
+  quietLog: string[]
+  provider: string
+  model: string
+  fellBackFrom: string[]
+}
+
+export const think = () =>
+  fetch('/api/think', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then(j<ThinkResult>)
+
+export const tell = (text: string, inReplyTo?: string) =>
+  fetch('/api/world/tell', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text, inReplyTo }),
+  }).then(j<{ ok: true }>)
+
+export interface Track {
+  id: string
+  what: string
+  why: string
+  question: string | null
+  everyHours: number
+  lastRunAt: string | null
+  active: boolean
+  by: 'user' | 'agent'
+}
+
+export const listTracks = () => fetch('/api/tracks').then(j<{ tracks: Track[] }>)
+
+export const addTrack = (t: Partial<Track> & { by?: 'user' | 'agent' }) =>
+  fetch('/api/tracks', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(t),
+  }).then(j<{ ok: true; track: Track }>)
+
+export const removeTrack = (id: string) =>
+  fetch(`/api/tracks/${id}`, { method: 'DELETE' }).then(j<{ ok: true }>)
+
+export const googleStatus = () =>
+  fetch('/api/google/status').then(j<{ configured: boolean; connected: boolean; scopes: string[] }>)
+
+export const googleSync = () =>
+  fetch('/api/google/sync', { method: 'POST' }).then(j<{ added: number; bySource: Record<string, number>; errors: string[] }>)
+
+export const googleDisconnect = () =>
+  fetch('/api/google/disconnect', { method: 'POST' }).then(j<{ ok: true }>)
+
+export interface SourcesResponse {
+  sources: { id: string; on: boolean }[]
+  curation: 'auto' | 'manual'
+}
+
+export const getSources = () => fetch('/api/sources').then(j<SourcesResponse>)
+
+export const putSources = (body: { sources?: Record<string, boolean>; curation?: 'auto' | 'manual' }) =>
+  fetch('/api/sources', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(j<{ ok: true }>)
+
+export const say = (
+  text: string,
+  card?: { title: string; status: string; asks?: boolean } | null,
+  thread?: { who: 'me' | 'ai'; text: string }[]
+) =>
+  fetch('/api/say', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text, card, thread }),
+  }).then(j<{ reply: string; learned: boolean; did: string | null }>)
+
+export const learn = () =>
+  fetch('/api/learn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+    .then(j<{ asked: string[]; learned: string[]; unanswered: number; forHim: unknown[] }>)
+
+/**
+ * Turn on notifications. Safe to call on every load: the browser returns the
+ * existing subscription if there is one, and the server de-dupes by endpoint.
+ * Every step is allowed to fail quietly — push is a nicety, and a browser
+ * without it (or a permission he declined) must not break the app.
+ */
+export async function enablePush(): Promise<'on' | 'denied' | 'unsupported'> {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return 'unsupported'
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js')
+    const { key } = await fetch('/api/push/vapid-public').then(j<{ key: string | null }>)
+    if (!key) return 'unsupported'
+    // Only ask once the app is worth notifying about — never on first paint.
+    if (Notification.permission === 'default' && (await Notification.requestPermission()) !== 'granted') return 'denied'
+    if (Notification.permission !== 'granted') return 'denied'
+
+    const sub =
+      (await reg.pushManager.getSubscription()) ??
+      (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToBytes(key) }))
+
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ subscription: sub.toJSON() }),
+    })
+    return 'on'
+  } catch {
+    return 'unsupported'
   }
-
-  // Standard local-network case: same host, backend on port 3001.
-  return `${protocol}//${hostname}:3001`
 }
 
-export const API_BASE = resolveApiBase()
-
-// Cloudflare Worker base (Session A proxy + Session B OAuth). When set, login goes
-// through the Worker instead of the server's /api/auth/* routes — which is what lets
-// Fly be shut down. Resolve order: localStorage override → build-time VITE_PROXY_URL →
-// empty (fall back to the server's own auth routes, pre-migration behaviour).
-function resolveProxyBase(): string {
-  try {
-    const override = localStorage.getItem('crucible_proxy_base')
-    if (override) return override.replace(/\/$/, '')
-  } catch { /* no storage */ }
-  const envUrl = (import.meta as any).env?.VITE_PROXY_URL as string | undefined
-  return envUrl ? envUrl.replace(/\/$/, '') : ''
-}
-
-export const PROXY_BASE = resolveProxyBase()
-
-// URL that starts an OAuth login for the given provider. Prefers the Worker (post-
-// migration); falls back to the server's own route when no proxy base is configured.
-export function loginUrl(provider: 'google' | 'github'): string {
-  return PROXY_BASE ? `${PROXY_BASE}/auth/login/${provider}` : `${API_BASE}/api/auth/${provider}`
-}
-
-// After a Worker login, the browser lands on `${FRONTEND_URL}/?token=<jwt>`. Promote the
-// token to the `crucible_session` cookie the server reads, then scrub it from the URL.
-// Runs at import time so the cookie exists before the first /api/auth/me check.
-// (Non-httpOnly is fine — the server only reads the cookie's value, not its flags.)
-;(function captureLoginToken() {
-  if (typeof window === 'undefined') return
-  try {
-    const params = new URLSearchParams(window.location.search)
-    const token = params.get('token')
-    if (!token) return
-    // Only accept a strict 3-segment base64url JWT — prevents a crafted ?token=...;attr
-    // link from injecting extra cookie attributes (the value is written unencoded below).
-    if (!/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token)) {
-      params.delete('token')
-      const clean = params.toString()
-      window.history.replaceState({}, '', window.location.pathname + (clean ? `?${clean}` : '') + window.location.hash)
-      return
-    }
-    const secure = window.location.protocol === 'https:' ? '; Secure' : ''
-    document.cookie = `crucible_session=${token}; path=/; max-age=${30 * 86400}; SameSite=Lax${secure}`
-    params.delete('token')
-    const qs = params.toString()
-    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash)
-  } catch { /* no-op */ }
-})()
-
-// ── Paired-device token ─────────────────────────────────────────────────────
-// Crucible refuses any request whose Host is a public hostname (server.ts's
-// locality guard). A device paired from the Mac gets a token that opens that
-// door from anywhere. It arrives once as `?device=<token>` on the pairing link
-// and is kept in localStorage from then on.
-//
-// It is sent as a CUSTOM HEADER, never a cookie, and that is the point: a custom
-// header forces a CORS preflight, so a hostile page cannot make the browser
-// replay it the way it could with ambient cookie authority.
-const DEVICE_KEY = 'crucible_device_token'
-
-export function deviceToken(): string {
-  try { return localStorage.getItem(DEVICE_KEY) ?? '' } catch { return '' }
-}
-
-export function setDeviceToken(token: string | null): void {
-  try {
-    if (token) localStorage.setItem(DEVICE_KEY, token)
-    else localStorage.removeItem(DEVICE_KEY)
-  } catch { /* no storage — the token simply will not persist */ }
-}
-
-// Capture a token off the pairing link and scrub it from the URL, so it does not
-// sit in history, get screenshotted, or leak through a Referer header.
-;(function captureDeviceToken() {
-  if (typeof window === 'undefined') return
-  try {
-    const params = new URLSearchParams(window.location.search)
-    const t = params.get('device')
-    if (!t) return
-    if (/^[A-Za-z0-9_-]{20,200}$/.test(t)) setDeviceToken(t)
-    params.delete('device')
-    const qs = params.toString()
-    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash)
-  } catch { /* no-op */ }
-})()
-
-/** WebSocket URLs cannot carry custom headers — the token rides as a param there. */
-export function withDeviceParam(url: string): string {
-  const t = deviceToken()
-  if (!t) return url
-  return url + (url.includes('?') ? '&' : '?') + `device=${encodeURIComponent(t)}`
-}
-
-// Credentials-included fetch — used for all /api/* requests so httpOnly cookies
-// are sent automatically. Keeps every call site clean.
-export function apiFetch(url: string, init?: RequestInit): Promise<Response> {
-  const token = deviceToken()
-  if (!token) return fetch(url, { credentials: 'include', ...init })
-  const headers = new Headers(init?.headers)
-  headers.set('x-crucible-device', token)
-  return fetch(url, { credentials: 'include', ...init, headers })
+function urlB64ToBytes(s: string): ArrayBuffer {
+  const pad = s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)
+  const bin = atob(pad)
+  const out = new Uint8Array(new ArrayBuffer(bin.length))
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out.buffer
 }

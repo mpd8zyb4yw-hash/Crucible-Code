@@ -1,0 +1,1582 @@
+// Internet Retrieval Layer — Tier 1.3 (mission). The PRIMARY grounding mechanism
+// for the local FM's knowledge gaps.
+//
+// The internet is fully permitted, but accessed DIRECTLY by Crucible's own tooling
+// (node `https`, the same way webGrounding/academicRetrieval already work) — never
+// routed through an external model, never a paid API. The FM never sees a raw
+// search-result dump: retrieved content runs through a pre-processing pipeline
+// (strip boilerplate → extract code blocks + type signatures → rank by relevance →
+// fit to a hard context budget) before it reaches the spec window.
+//
+// This directly attacks hallucinated imports, wrong API signatures, stale type
+// knowledge, and framework-entangled specs the FM was previously flying blind on.
+//
+// Failure is always graceful: every network path is wrapped so a timeout or a dead
+// host yields empty results, never a thrown error into the synthesis pipeline.
+
+import https from 'https'
+import http from 'http'
+import dns from 'dns'
+import { readFileSync } from 'fs'
+// Salvaged from _storage/src/CrucibleEngine/retrieval/. RouterTask belonged to
+// the old coding-agent router; the coding-specific helpers below are unused
+// here, so it is stubbed rather than dragging that subsystem across.
+type RouterTask = any
+import { debugBus } from './bus.js'
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface SearchResult {
+  url: string
+  title: string
+  snippet: string
+}
+
+export interface CodeBlock {
+  code: string
+  lang?: string
+  source?: string
+}
+
+export interface RankedResult<T> {
+  item: T
+  /** Relevance score in [0, 1] against the task. */
+  score: number
+}
+
+/** Everything retrieval surfaces for one task, pre-processed and budget-fit. */
+export interface RetrievalBundle {
+  /** Clean block ready to prepend to the FM spec. Empty if nothing useful found. */
+  block: string
+  /** URLs consulted, for the audit trail / honest sourcing. */
+  sources: string[]
+  codeBlocks: CodeBlock[]
+  typeSignatures: string[]
+}
+
+// ── Session cache ────────────────────────────────────────────────────────────────
+// Process-lifetime cache keyed by request, so repeated fetches within a session
+// (common: the same package's d.ts referenced by several DAG nodes) hit memory.
+
+const pageCache = new Map<string, string>()
+// A search result is cached with a TTL and ONLY when non-empty. Both properties are
+// load-bearing (audit cont.89):
+//   - This was a plain Map with no TTL, so a cached entry lived for the whole PROCESS.
+//   - It cached EMPTY results unconditionally (`searchCache.set(key, results)`).
+// Open-web SERP backends return a 202 anti-bot challenge / JS shell on burst, which parses
+// to zero results. One throttled moment therefore poisoned that query FOREVER on a
+// long-running server: grounding returned null and the answer path fabricated, silently.
+// An empty search is cheap to retry and catastrophic to cache — so we never cache one.
+const SEARCH_TTL_MS = 10 * 60_000
+const searchCache = new Map<string, { at: number; results: SearchResult[] }>()
+const typeDefCache = new Map<string, string>()
+// Positive results only — a negative is never cached (see fetchLibraryApiDocs).
+const libraryApiCache = new Map<string, LibraryApiDocs>()
+
+/** Clear all caches (test isolation / long-running sessions). */
+export function clearCache(): void {
+  pageCache.clear(); searchCache.clear(); typeDefCache.clear()
+}
+
+// ── Low-level fetch (direct https/http, redirect-following, timeout) ─────────────
+
+const UA = 'Crucible/1.0 (+offline-first grounding)'
+// Search engines and many docs sites reject non-browser User-Agents (this is why the
+// DuckDuckGo HTML endpoint returned nothing on burst requests — the "Crucible/1.0" UA
+// got challenged/blocked). Web search + page fetch present as a real browser; internal
+// keyless APIs (unpkg, wikipedia) keep the honest Crucible UA.
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36'
+const MAX_BODY = 1_500_000  // 1.5 MB cap per page — defends against pathological dumps
+
+function hostOf(url: string): string {
+  try { return new URL(url).hostname } catch { return '' }
+}
+
+// ── SSRF guard ───────────────────────────────────────────────────────────────────
+// rawGet fetches URLs derived from search results / registries, so a poisoned result could
+// point at an internal address (cloud metadata 169.254.169.254, localhost, RFC-1918) and turn
+// the server into an SSRF pivot — on a cloud deploy that can leak instance credentials. We can't
+// trust the hostname string: it may be an IP literal OR a public name that RESOLVES to a private
+// IP (DNS-rebinding). The robust fix is a custom `lookup` hook: it sees the ACTUAL address the
+// socket is about to connect to (no TOCTOU), covers IP literals and hostnames alike, and — because
+// rawGet re-enters itself for each redirect — covers every redirect hop too. Escape hatch:
+// CRUCIBLE_ALLOW_PRIVATE_FETCH=1 (e.g. pointing retrieval at a LAN mirror on purpose).
+const SSRF_GUARD = process.env.CRUCIBLE_ALLOW_PRIVATE_FETCH !== '1'
+function isPrivateAddr(ip: string): boolean {
+  const s = ip.toLowerCase().replace(/^\[|\]$/g, '')
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/)
+  if (m) {
+    const a = +m[1], b = +m[2]
+    return a === 0 || a === 10 || a === 127 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||          // link-local incl. cloud metadata
+      (a === 100 && b >= 64 && b <= 127)   // CGNAT (100.64/10)
+  }
+  const mapped = s.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (mapped) return isPrivateAddr(mapped[1])
+  return s === '::1' || s === '::' || s.startsWith('fe80') || s.startsWith('fc') || s.startsWith('fd')
+}
+function guardedLookup(hostname: string, options: any, cb: any): void {
+  dns.lookup(hostname, options, (err: any, addr: any, fam?: any) => {
+    if (err) return cb(err, addr, fam)
+    const addrs = Array.isArray(addr) ? addr.map((a: any) => a.address) : [addr]
+    const bad = addrs.find((a: string) => isPrivateAddr(a))
+    if (bad) return cb(new Error(`SSRF blocked: ${hostname} resolves to private address ${bad}`))
+    cb(null, addr, fam)
+  })
+}
+
+function rawGet(url: string, timeout = 6000, redirectsLeft = 4, ua = UA): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let mod: typeof https | typeof http
+    try { mod = url.startsWith('http://') ? http : https } catch { reject(new Error('bad url')); return }
+    // Node's http.get SKIPS the `lookup` hook when the host is already an IP literal, so the
+    // guardedLookup below only covers hostnames. Catch private IP literals (e.g. the direct
+    // 169.254.169.254 metadata payload) synchronously here. Hostnames — incl. "localhost" and
+    // any public name that resolves to a private IP — are still caught by guardedLookup.
+    if (SSRF_GUARD) {
+      const h = hostOf(url).replace(/^\[|\]$/g, '')
+      const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.includes(':')
+      if (h === 'localhost' || h.endsWith('.localhost') || (isIpLiteral && isPrivateAddr(h))) {
+        reject(new Error(`SSRF blocked: ${h || url}`)); return
+      }
+    }
+    const headers: Record<string, string> = {
+      'User-Agent': ua,
+      'Accept': 'text/html,application/xhtml+xml,application/json,*/*',
+      'Accept-Language': 'en-US,en;q=0.9',
+    }
+    // GitHub's unauthenticated limits (10 search req/min, 60 core req/hr) are the live
+    // bottleneck for the RetrievalProposer. A GITHUB_TOKEN lifts search→30/min and
+    // core→5000/hr. Scope the header to GitHub hosts so we never leak the token elsewhere.
+    const ghToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+    if (ghToken && /(^|\.)github(usercontent)?\.com$/i.test(hostOf(url))) {
+      headers['Authorization'] = `Bearer ${ghToken}`
+      headers['X-GitHub-Api-Version'] = '2022-11-28'
+    }
+    const req = mod.get(url, { headers, lookup: SSRF_GUARD ? guardedLookup : undefined }, res => {
+      const status = res.statusCode ?? 0
+      // Follow redirects (npm/unpkg/DefinitelyTyped all redirect heavily).
+      if (status >= 300 && status < 400 && res.headers.location && redirectsLeft > 0) {
+        res.resume()
+        const next = new URL(res.headers.location, url).toString()
+        resolve(rawGet(next, timeout, redirectsLeft - 1, ua))
+        return
+      }
+      if (status < 200 || status >= 300) { res.resume(); reject(new Error(`HTTP ${status}`)); return }
+      let body = ''
+      res.setEncoding('utf-8')
+      res.on('data', chunk => {
+        body += chunk
+        if (body.length > MAX_BODY) { req.destroy(); resolve(body.slice(0, MAX_BODY)) }
+      })
+      res.on('end', () => resolve(body))
+    })
+    req.on('error', reject)
+    req.setTimeout(timeout, () => { req.destroy(); reject(new Error('timeout')) })
+  })
+}
+
+// ── Capability: web search ───────────────────────────────────────────────────────
+// Multi-backend, keyless, graceful. The single-backend DDG-HTML design blocked on
+// burst (non-browser UA) and fell back to Wikipedia — which returns off-topic garbage
+// for non-encyclopedic queries (a React question surfaced "Firefighting"). This engine:
+//   1. presents a real browser UA (unblocks DDG),
+//   2. tries several independent backends until one yields RELEVANT results,
+//   3. relevance-gates every backend (drops a whole backend whose results share no
+//      salient query token — the firefighting case),
+//   4. only falls to Wikipedia for NON-coding factual queries (right corpus).
+
+// Coding / docs queries — Wikipedia is the wrong corpus for these; keep them on the
+// general web backends (which surface MDN / StackOverflow / official docs).
+const CODING_QUERY = /\b(function|method|class(?:es)?|api|sdk|library|framework|npm|yarn|pnpm|package|import|export|module|usestate|useeffect|hook|component|prop|jsx|tsx|async|await|promise|callback|regex|regexp|array|string|object|integer|boolean|typescript|javascript|python|rust|go(?:lang)?|java|kotlin|swift|c\+\+|c#|react|vue|angular|svelte|next\.?js|node|deno|express|django|flask|css|scss|html|dom|sql|query|schema|migration|error|exception|stack ?trace|traceback|compile|syntax|variable|const|let|var|def|lambda|closure|iterator|generator|decorator|annotation|type ?hint|interface|enum|struct|pointer|null|undefined|nan|git|docker|kubernetes|webpack|vite|eslint|pytest|jest)\b/i
+
+export function isCodingQuery(q: string): boolean {
+  return CODING_QUERY.test(q)
+}
+
+// ── Library-shaped vs algorithmic code requests ───────────────────────────────
+// The distinction that decides whether a CODE request needs the web (audit cont.81).
+//
+// Code generation legitimately opts out of grounding because it has a better oracle:
+// VGR proposes candidates and EXECUTES them against a spec — checked, not memorized.
+// But that argument only holds for ALGORITHMIC work, where the answer is derivable and
+// a spec exists to check it against. It collapses when the request names an external
+// LIBRARY: an API surface is an arbitrary fact about the world, not something a model
+// can derive or a verifier can discover. `z.ipv4()` cannot be reasoned out from first
+// principles — it can only be looked up. Reversing a linked list can.
+//
+// So: "write a Zod schema that validates an IPv4 address" MUST hit the web (the FM
+// bluffed JSON Schema — wrong library entirely). "write a function to reverse a linked
+// list" must NOT (VGR certifies it, and a lookup only adds latency).
+//
+// Signals are grammatical/structural, never a list of known package names — a memorized
+// library table would rot on contact with the next release and is exactly what the
+// no-templates rule forbids. Language names ARE enumerated, but as a closed grammatical
+// class (like FUNCTION_WORDS), so "TypeScript" doesn't read as a third-party library.
+
+const LANGUAGE_NAMES = new Set(
+  ('javascript typescript python java kotlin swift rust go golang ruby php perl scala haskell ' +
+   'elixir erlang clojure lua dart c c++ c# f# objective-c bash shell zsh sql html css scss sass ' +
+   'json yaml toml xml markdown regex regexp ' +
+   // Runtimes are the same closed grammatical class as languages: "a rate limiter in Node"
+   // names WHERE the code runs, not a package to look up. Without these, "in Node" alone
+   // opened the library lane and proposed the (typeless, irrelevant) `node` npm package
+   // (live false-match, cont.94).
+   'node nodejs deno bun').split(/\s+/),
+)
+
+/**
+ * True when a code request references an external library/package whose API must be
+ * looked up rather than derived. Structural signals only:
+ *   1. an explicit package/library noun ("the X library", "npm package X")
+ *   2. an import/require of a named module
+ *   3. a namespaced call (`z.string()`, `np.array()`) — implies a library surface
+ *   4. a capitalized proper-noun token that is not a language name or sentence-initial
+ */
+export function namesExternalLibrary(q: string): boolean {
+  const msg = q ?? ''
+  // 1. explicit package/library nouns
+  if (/\b(librar(?:y|ies)|packages?|frameworks?|sdks?|modules?|npm|pypi|pip|cargo|gem|maven|nuget|crate)\b/i.test(msg)) return true
+  // 2. import / require of a named module
+  if (/\b(?:import|require|from)\b[^.?!\n]{0,40}['"`][\w@/.-]+['"`]/.test(msg)) return true
+  if (/\bimport\s+\{[^}]*\}\s*from\b/.test(msg)) return true
+  // 3. namespaced call — a dotted lowercase identifier invoked as a function
+  if (/\b[a-z][\w$]*\.[a-z][\w$]*\s*\(/i.test(msg)) return true
+  // 4. capitalized proper noun that isn't a language or sentence-initial
+  //
+  // "Sentence-initial" means the start of ANY sentence or line, not just token 0 of the string.
+  // Tracking only index 0 held for one-line questions and collapsed on everything else: in
+  // multi-sentence text every sentence's first word is capitalized by grammar, and each one read
+  // as a library name. Live cost (cont.119) — the flashcard brief
+  //
+  //     Build: quizlet flashcard set.
+  //     Subject: simple grammatical italian terms.
+  //     ...
+  //     Fill in every remaining detail yourself. Do not ask the user for anything else.
+  //
+  // tripped on "Subject", "Format", "Level" and "Do", so a request for Italian flashcards was
+  // routed to the library-grounding path and answered with TypeScript declarations for the
+  // `abstract-level` npm package. Iterating per LINE makes index 0 line-initial, and a preceding
+  // token ending in sentence punctuation marks the rest.
+  for (const line of msg.split('\n')) {
+  const tokens = line.match(/\S+/g) ?? []
+  for (let i = 1; i < tokens.length; i++) {           // skip index 0 — line-initial
+    if (/[.!?:;]$/.test(tokens[i - 1])) continue      // previous token ended a sentence
+    const bare = tokens[i].replace(/[^\w+#.-]/g, '')
+    if (!bare || bare.length < 2) continue
+    if (!/^[A-Z]/.test(bare)) continue
+    if (/^[A-Z0-9+#.-]+$/.test(bare) && bare.length <= 5) continue   // acronyms: API, JSON, HTTP, HTML
+    // Standards/protocols/encodings carry a version or width digit (IPv4, IPv6, UTF8, SHA256,
+    // Base64). Library names essentially never do. Without this, "write a regex to match an
+    // IPv4 address" — pure algorithmic work VGR can certify — was misread as a library ask and
+    // steered onto a slower, weaker path. Cost asymmetry favours the skip: a missed lookup on a
+    // library ask is one bad answer, but a needless lookup on algorithmic work diverts it away
+    // from the verifier that would have CERTIFIED it.
+    if (/\d/.test(bare)) continue
+    const low = bare.toLowerCase()
+    if (LANGUAGE_NAMES.has(low)) continue
+    // A capitalized, non-language, non-acronym token in a coding request is a library name
+    // far more often than not ("Zod", "React", "Pandas", "Express").
+    return true
+  }
+  }
+  return false
+}
+
+// Salient tokens = query words that carry topic meaning (drop interrogatives/stopwords).
+const REL_STOP = new Set(
+  ('what is are how does do did why who whom when where the of for a an in on at to with ' +
+   'was were be been being and or vs versus than then explain describe tell me about give ' +
+   'show list which that this it its their there here can could would should will may might ' +
+   'must do i you we they he she into from as by not no yes some any all more most much many ' +
+   'good best better right now please help need want get make use using used one two').split(/\s+/),
+)
+function salientTokens(query: string): string[] {
+  const toks = (query.toLowerCase().match(/[a-z0-9][a-z0-9.+#_-]{1,}/g) ?? [])
+    .filter(t => t.length >= 3 && !REL_STOP.has(t))
+  return [...new Set(toks)]
+}
+
+// Reject an entire backend result set that shares no salient token with the query
+// (off-topic garbage). Keep every result carrying ≥1 salient token; if none carry any
+// but SOME backend token overlap exists, keep the set (broad/entity queries score low).
+function relevanceGate(results: SearchResult[], query: string): SearchResult[] {
+  const sal = salientTokens(query)
+  if (sal.length === 0 || results.length === 0) return results
+  const scored = results.map(r => {
+    const hay = `${r.title} ${r.snippet} ${r.url}`.toLowerCase()
+    return { r, hits: sal.filter(t => hay.includes(t)).length }
+  })
+  const maxHits = Math.max(...scored.map(s => s.hits))
+  if (maxHits === 0) return []            // whole backend is off-topic → discard it
+  return scored.filter(s => s.hits >= 1).map(s => s.r)
+}
+
+// A backend that returned an anti-scrape challenge / empty shell should be treated as a
+// miss so the next backend gets a turn.
+async function ddgHtml(query: string): Promise<SearchResult[]> {
+  const html = await rawGet(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, 8000, 4, BROWSER_UA)
+  return parseDuckResults(html)
+}
+async function ddgLite(query: string): Promise<SearchResult[]> {
+  const html = await rawGet(`https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`, 8000, 4, BROWSER_UA)
+  return parseDuckLite(html)
+}
+async function bing(query: string): Promise<SearchResult[]> {
+  const html = await rawGet(`https://www.bing.com/search?q=${encodeURIComponent(query)}&setlang=en&count=10`, 8000, 4, BROWSER_UA)
+  return parseBing(html)
+}
+
+function isPackageQuery(q: string): boolean {
+  return /\b(npm|yarn|pnpm|package|library|module|install|dependency|dependencies)\b/i.test(q)
+}
+
+export async function search(query: string): Promise<SearchResult[]> {
+  // Fault injection: SERP backends are blocked to a server IP most of the time (DDG → 202
+  // challenge, Bing → JS shell), so "search returned nothing" is the COMMON case, not an edge
+  // one. This seam makes that case reproducible on demand instead of waiting to be throttled.
+  if (process.env.CRUCIBLE_FORCE_SEARCH_EMPTY) return []
+  const key = query.trim().toLowerCase()
+  const cached = searchCache.get(key)
+  if (cached && Date.now() - cached.at < SEARCH_TTL_MS) return cached.results
+
+  const coding = isCodingQuery(query)
+  let results: SearchResult[] = []
+
+  // Domain-routed structured APIs FIRST (keyless, reliable, structured — SERP scraping
+  // is dead: DDG/Bing/Mojeek/SearXNG all return 202/403/429/JS-shells to a server IP).
+  if (coding) {
+    try { results = await searchStackExchange(query) } catch { results = [] }
+    if (isPackageQuery(query)) {
+      try { results = dedupeByUrl([...results, ...await searchNpm(query)]) } catch { /* keep SE */ }
+    }
+    // Implementation-shaped queries ("build/clone/game/example X") want a WORKING codebase, not a
+    // Q&A snippet. GitHub's repo-search API is a keyless, star-ranked, deterministic code corpus —
+    // far more reliable than SERP scraping (which returns 202/JS-shells to a server IP) and the
+    // only source that consistently surfaces full reference implementations. Repos lead so that
+    // fetchGithubCode (raw file bodies) grounds the proposer with real code. See fetchGithubCode.
+    if (wantsImplementation(query) || wantsFunctionImpl(query)) {
+      // Code search (token-gated) leads: it returns individual files that CONTAIN the kernel def
+      // — the highest-yield source — ahead of repo search and the SE Q&A snippets.
+      try { results = dedupeByUrl([...await searchGithubCode(query), ...await searchGithubRepos(query), ...results]) } catch { /* keep SE */ }
+    }
+  }
+  // Wikipedia REST — the general/factual catch-all (huge index, structured, keyless).
+  if (results.length === 0) {
+    try { results = await searchWikipediaRest(query) } catch { results = [] }
+  }
+  // Best-effort open-web scrapers LAST — usually blocked, but free when they work. The
+  // relevance gate discards anti-bot challenge shells (202 pages with no result markup).
+  if (results.length === 0) {
+    for (const backend of [ddgHtml, bing, ddgLite]) {
+      try {
+        const rel = relevanceGate(await backend(query), query)
+        if (rel.length > 0) { results = rel; break }
+      } catch { /* next backend */ }
+    }
+  }
+
+  results = relevanceGate(results, query)
+  // NEVER cache an empty result — see SEARCH_TTL_MS above. Zero results almost always means
+  // "every backend was blocked/throttled", not "the web has no answer"; caching that turns a
+  // transient failure into a permanent one.
+  if (results.length > 0) searchCache.set(key, { at: Date.now(), results })
+  else debugBus.emit('pipeline', 'search_all_backends_empty', { query: query.slice(0, 80) }, { severity: 'warn' })
+  return results
+}
+
+function dedupeByUrl(results: SearchResult[]): SearchResult[] {
+  const seen = new Set<string>()
+  return results.filter(r => (seen.has(r.url) ? false : (seen.add(r.url), true)))
+}
+
+/** Whether a coding query wants a full working codebase (a repo) rather than a Q&A answer. */
+function wantsImplementation(query: string): boolean {
+  return /\b(build|make|create|implement|clone|game|full|example|project|app|boilerplate|starter|from scratch|demo)\b/i.test(query)
+}
+
+/**
+ * Whether a coding query is a self-contained FUNCTION KERNEL ("convert hex to rgb",
+ * "slugify a string", "parse a 12-hour clock") — the RetrievalProposer's target class.
+ * These want a real function BODY, not a Q&A prose answer, so they should also route to
+ * GitHub repo search → fetchGithubCode (raw file bodies), the only source that reliably
+ * yields complete, extractable function definitions. The `wantsImplementation` gate misses
+ * them because they name no build/clone/game keyword — yet a bare "convert X to Y" needs an
+ * executable impl just as much. Measured cont.75b: these queries returned tutorial-host
+ * <pre> fragments (extractFunctions=0) precisely because repo search never fired.
+ */
+function wantsFunctionImpl(query: string): boolean {
+  // Utility verbs that name a single-function transform, plus the "X to Y" conversion shape.
+  const KERNEL_VERB = /\b(convert|parse|format|encode|decode|transform|compute|calculate|generate|validate|normalize|serialize|deserialize|slugify|escape|unescape|tokenize|sanitize|round|clamp|interpolate|flatten|chunk|debounce|throttle)\b/i
+  const CONVERSION_SHAPE = /\b\w+\s+to\s+\w+\b/i
+  return KERNEL_VERB.test(query) || CONVERSION_SHAPE.test(query)
+}
+
+// GitHub repository-search API — a keyless, star-ranked, deterministic code corpus. For
+// implementation-shaped queries this reliably surfaces real reference codebases that SERP
+// scraping misses; fetchGithubCode then pulls their raw file bodies for grounding.
+async function searchGithubRepos(query: string): Promise<SearchResult[]> {
+  // Distill first — a verbose NL sentence matches no repo name/description (cont.76: total 0).
+  const q = distillCodeQuery(query) || query
+  const api = `https://api.github.com/search/repositories?q=${encodeURIComponent(q)}&sort=stars&order=desc&per_page=6`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const data = JSON.parse(raw) as any
+  const items: any[] = data?.items ?? []
+  return items.slice(0, 6).map(r => ({
+    url: r.html_url,
+    title: r.full_name ?? '',
+    snippet: stripTags(r.description ?? '').slice(0, 300),
+  }))
+}
+
+// Distill a verbose natural-language kernel query ("javascript convert hex color code to rgb
+// array") down to the salient, identifier-ish keywords GitHub's code/repo search actually
+// matches on. The full sentence matches ZERO repos (measured cont.76: repo search on the raw
+// NL query → total_count 0) because repo search scores name/description/readme, not prose.
+// Drop language names and generic programming filler; keep the distinctive kernel tokens.
+const QUERY_STOP = new Set([
+  'javascript', 'js', 'typescript', 'ts', 'python', 'py', 'code', 'function', 'method',
+  'implementation', 'implement', 'example', 'snippet', 'how', 'to', 'a', 'an', 'the', 'in',
+  'of', 'and', 'or', 'with', 'for', 'using', 'use', 'from', 'into', 'string', 'value', 'given',
+  'return', 'returns', 'array', 'number', 'object', 'that', 'get', 'set', 'is', 'my', 'this',
+])
+function distillCodeQuery(query: string): string {
+  const toks = query.toLowerCase().split(/[^a-z0-9]+/).filter(t => t && !QUERY_STOP.has(t))
+  // Keep the first ~5 distinctive tokens — enough to pin the kernel, short enough that GitHub
+  // search treats them as an AND over meaningful terms rather than diluting into noise.
+  return toks.slice(0, 5).join(' ')
+}
+
+// GitHub CODE-search API — token-gated (search/code requires auth), but the single strongest
+// source for a self-contained function kernel: it returns individual FILES whose body contains
+// the target term, which fetchGithubCode pulls raw and extractFunctions lifts the def from. A
+// valid GITHUB_TOKEN unlocks it; without one we skip (returns []) and fall back to repo search.
+// Measured cont.76: `slugify language:javascript` → 61k files incl. real slug impls, vs repo
+// search on the raw NL query → 0. Results are blob URLs (html_url) — fetchGithubCode's blob
+// branch fetches them directly, no directory walk.
+async function searchGithubCode(query: string): Promise<SearchResult[]> {
+  if (!(process.env.GITHUB_TOKEN || process.env.GH_TOKEN)) return []   // code search needs auth
+  const distilled = distillCodeQuery(query)
+  if (!distilled) return []
+  const api = `https://api.github.com/search/code?q=${encodeURIComponent(distilled + ' language:javascript')}&per_page=6`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const items: any[] = (JSON.parse(raw) as any)?.items ?? []
+  return items.slice(0, 6).map(r => ({
+    url: r.html_url ?? '',
+    title: `${r.repository?.full_name ?? ''}/${r.name ?? ''}`,
+    snippet: '',
+  })).filter(r => r.url)
+}
+
+// StackExchange (StackOverflow) API — the right corpus for programming questions.
+// Keyless; returns structured Q&A. We eager-fetch the highest-voted answer bodies for
+// the top questions and cache them under the question URL so downstream fetch() returns
+// the actual answer text, not a scraped (and often bot-blocked) SO page.
+async function searchStackExchange(query: string): Promise<SearchResult[]> {
+  const api = `https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(query)}&site=stackoverflow&pagesize=6&filter=withbody`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const data = JSON.parse(raw) as any
+  const items: any[] = data?.items ?? []
+  if (items.length === 0) return []
+  const results: SearchResult[] = items.slice(0, 6).map(it => ({
+    url: it.link,
+    title: decodeEntities(it.title ?? ''),
+    snippet: stripTags(it.body ?? '').slice(0, 300),
+  }))
+  // Eager-cache top answers so fetch() has real content.
+  const answerable = items.filter(i => (i.answer_count ?? 0) > 0).slice(0, 3)
+  if (answerable.length) {
+    try {
+      const ids = answerable.map(i => i.question_id).join(';')
+      const ansRaw = await rawGet(`https://api.stackexchange.com/2.3/questions/${ids}/answers?order=desc&sort=votes&site=stackoverflow&pagesize=6&filter=withbody`, 8000, 4, BROWSER_UA)
+      const ansItems: any[] = (JSON.parse(ansRaw) as any)?.items ?? []
+      const topByQ = new Map<number, string>()
+      for (const a of ansItems) {
+        if (!topByQ.has(a.question_id)) topByQ.set(a.question_id, stripBoilerplate(a.body ?? ''))
+      }
+      for (const it of answerable) {
+        const ans = topByQ.get(it.question_id)
+        if (ans && !pageCache.has(it.link)) {
+          pageCache.set(it.link, `${decodeEntities(it.title ?? '')}\n\n${ans}`.slice(0, 8000))
+        }
+      }
+    } catch { /* answers are a bonus; question excerpts already populate snippets */ }
+  }
+  return results
+}
+
+// npm registry search — for "what package does X" / dependency questions.
+async function searchNpm(query: string): Promise<SearchResult[]> {
+  const text = query.replace(/\b(npm|package|library|module|install|for|the|a|an|best|good)\b/gi, ' ').replace(/\s+/g, ' ').trim()
+  const api = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(text || query)}&size=5`
+  const raw = await rawGet(api, 8000, 4, BROWSER_UA)
+  const objs: any[] = (JSON.parse(raw) as any)?.objects ?? []
+  return objs.slice(0, 5).map(o => {
+    const p = o.package ?? {}
+    return {
+      url: p.links?.npm ?? `https://www.npmjs.com/package/${p.name}`,
+      title: `${p.name}${p.version ? ` @${p.version}` : ''}`,
+      snippet: `${p.description ?? ''}${p.keywords?.length ? ` (${p.keywords.slice(0, 6).join(', ')})` : ''}`.slice(0, 300),
+    }
+  })
+}
+
+function parseDuckResults(html: string): SearchResult[] {
+  const out: SearchResult[] = []
+  const anchorRe = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
+  const snippetRe = /<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g
+  const snippets: string[] = []
+  let s: RegExpExecArray | null
+  while ((s = snippetRe.exec(html)) !== null) snippets.push(stripTags(s[1]))
+  let m: RegExpExecArray | null
+  let i = 0
+  while ((m = anchorRe.exec(html)) !== null && out.length < 10) {
+    out.push({ url: decodeDuckUrl(m[1]), title: stripTags(m[2]), snippet: snippets[i] ?? '' })
+    i++
+  }
+  return out
+}
+
+// DuckDuckGo Lite — a stripped table layout with a different result markup than the
+// HTML endpoint, so it survives markup changes / blocks on the primary.
+function parseDuckLite(html: string): SearchResult[] {
+  const out: SearchResult[] = []
+  const linkRe = /<a[^>]*class="result-link"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g
+  const snipRe = /<td[^>]*class="result-snippet"[^>]*>([\s\S]*?)<\/td>/g
+  const snips: string[] = []
+  let s: RegExpExecArray | null
+  while ((s = snipRe.exec(html)) !== null) snips.push(stripTags(s[1]))
+  let m: RegExpExecArray | null
+  let i = 0
+  while ((m = linkRe.exec(html)) !== null && out.length < 10) {
+    const url = decodeDuckUrl(m[1])
+    if (/^https?:/.test(url)) { out.push({ url, title: stripTags(m[2]), snippet: snips[i] ?? '' }); i++ }
+  }
+  return out
+}
+
+// Bing organic results — independent index, more lenient to scraping than DDG on burst.
+function parseBing(html: string): SearchResult[] {
+  const out: SearchResult[] = []
+  const blockRe = /<li class="b_algo"[\s\S]*?<h2>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h2>([\s\S]*?)<\/li>/g
+  let m: RegExpExecArray | null
+  while ((m = blockRe.exec(html)) !== null && out.length < 10) {
+    const url = m[1]
+    if (!/^https?:/.test(url)) continue
+    const snipM = m[3].match(/<p[^>]*>([\s\S]*?)<\/p>/)
+    out.push({ url, title: stripTags(m[2]), snippet: snipM ? stripTags(snipM[1]) : '' })
+  }
+  return out
+}
+
+// DDG wraps real URLs in a redirect (/l/?uddg=<encoded>). Unwrap when present.
+function decodeDuckUrl(href: string): string {
+  const m = href.match(/[?&]uddg=([^&]+)/)
+  if (m) { try { return decodeURIComponent(m[1]) } catch { /* fall through */ } }
+  return href.startsWith('//') ? `https:${href}` : href
+}
+
+// Wikipedia REST search — keyless, structured JSON. The REST search/page endpoint ranks
+// on relevance far better than the legacy list=search full-text API (which returned
+// "Air cycle machine" for "water cycle"). We eager-fetch a fuller plaintext extract for
+// the top result so downstream fetch() returns real article content, not just an intro.
+// Interrogative preamble ("how does … work", "what is …") dilutes Wikipedia's ranker so
+// it matches on the wrong noun ("how does the water cycle WORK" ranked "Air cycle
+// machine" over "Water cycle"). Reduce to the topical noun phrase for the encyclopedia
+// lookup; StackOverflow (natural-language ranked) keeps the full query.
+function encyclopedicQuery(q: string): string {
+  const reduced = q
+    .replace(/^\s*(how (?:do(?:es)?|did|can|would)|what(?:'s| is| are| was| were)|why (?:do(?:es)?|did|is|are|was|were)|when (?:did|does|do|is|was|were)|where (?:is|are|was|were)|who (?:is|was|are|were)|explain|describe|tell me about|give me|define|overview of)\b/i, '')
+    .replace(/\b(work|works|working|happen|happens|explained|basics|exactly|actually|really)\b\s*\??\s*$/i, '')
+    .replace(/\?+/g, ' ')
+    .replace(/\b(the|a|an)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return reduced.length >= 3 ? reduced : q
+}
+
+async function searchWikipediaRest(query: string): Promise<SearchResult[]> {
+  const q = encyclopedicQuery(query)
+  const searchUrl = `https://en.wikipedia.org/w/rest.php/v1/search/page?q=${encodeURIComponent(q)}&limit=6`
+  const raw = await rawGet(searchUrl, 7000)
+  const data = JSON.parse(raw) as any
+  const pages: any[] = data?.pages ?? []
+  if (pages.length === 0) return []
+
+  const results: SearchResult[] = pages.slice(0, 6).map(p => {
+    const title = p.title ?? ''
+    const key = p.key ?? title.replace(/ /g, '_')
+    return {
+      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(key)}`,
+      title,
+      snippet: stripTags(p.excerpt ?? p.description ?? ''),
+    }
+  })
+
+  if (results[0]) {
+    try {
+      // FULL plaintext article, NOT `exchars=6000`. The char cap was a lede-only extractor by
+      // another name: it kept the first ~6KB and threw the rest away BEFORE any question-aware
+      // selection could run, so an answer living deeper in the article was structurally
+      // unreachable. MEASURED: the Constitution's preamble ("We the People…") sits at char
+      // 28,935 of a 79,093-char article — the evidence block could never contain it, and the
+      // grounded answer abstained honestly but uselessly. Downstream `selectRelevantPassages`
+      // is the thing that trims to budget, and it scores windows against the question; giving
+      // it the whole article is what makes it able to find the answering passage.
+      const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext&titles=${encodeURIComponent(pages[0].title)}&format=json&redirects=1`
+      const extractRaw = await rawGet(extractUrl, 7000)
+      const extractData = JSON.parse(extractRaw) as any
+      const pageObjs = extractData?.query?.pages ?? {}
+      const page = Object.values(pageObjs)[0] as any
+      if (page?.extract) {
+        // Cap only against pathological articles (memory, not relevance) — well above the
+        // point where the answering passage plausibly lives.
+        const text = stripTags(page.extract).slice(0, 200_000)
+        if (!pageCache.has(results[0].url)) pageCache.set(results[0].url, text)
+        results[0].snippet = text.slice(0, 300)
+      }
+    } catch { /* graceful */ }
+  }
+  return results
+}
+
+// ── Capability: page fetch ───────────────────────────────────────────────────────
+
+export async function fetch(url: string): Promise<string> {
+  const cached = pageCache.get(url)
+  if (cached !== undefined) return cached
+  let body = ''
+  try { body = await rawGet(url, 8000, 4, BROWSER_UA) } catch { body = '' }
+  pageCache.set(url, body)
+  return body
+}
+
+// ── Capability: parse / extract ─────────────────────────────────────────────────
+
+const ENTITIES: Record<string, string> = {
+  '&lt;': '<', '&gt;': '>', '&amp;': '&', '&quot;': '"', '&#39;': "'", '&#x27;': "'", '&nbsp;': ' ',
+}
+function decodeEntities(s: string): string {
+  return s.replace(/&(?:lt|gt|amp|quot|nbsp|#39|#x27);/g, e => ENTITIES[e] ?? e)
+}
+function stripTags(s: string): string {
+  return decodeEntities(s.replace(/<[^>]+>/g, '')).replace(/\s+/g, ' ').trim()
+}
+
+/** stripTags, but newlines survive as line breaks (intra-line whitespace still collapses). */
+function stripTagsKeepLines(s: string): string {
+  return decodeEntities(s.replace(/<[^>]+>/g, ''))
+    .replace(/[^\S\n]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .trim()
+}
+
+/**
+ * Insert boundaries at BLOCK-level tags before they are deleted.
+ *
+ * stripTags removes `<[^>]+>` with no separator, so adjacent cells concatenate: a docs table
+ * `<td>ipv4()</td><td>regexes.ipv4</td>` collapses to `ipv4()regexes.ipv4`. Measured on
+ * deepwiki's zod page (cont.82): the whole validator table arrived as the single run-on token
+ * `ValidatorRegexipv4()regexes.ipv4ipv6()regexes.ipv6mac()regexes.mac()` — the answer was
+ * present but illegible, and unsplittable back into cells by any downstream stage.
+ *
+ * Cells join with " | " and rows/blocks with a newline, so a table survives as readable rows.
+ * Applied ONLY on the prose path: stripTags stays separator-free for extractCodeBlocks, where
+ * injecting delimiters would corrupt the code it is lifting.
+ */
+function markBlockBoundaries(html: string): string {
+  return html
+    .replace(/<\/(td|th)\s*>/gi, ' | ')
+    .replace(/<\/(tr|table|thead|tbody|p|div|li|ul|ol|h[1-6]|section|article|pre|blockquote)\s*>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+}
+
+/** Remove boilerplate (script/style/nav/header/footer) and return readable text. */
+export function stripBoilerplate(html: string): string {
+  const cleaned = html
+    .replace(/<(script|style|noscript|svg)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+  // Collapse the trailing " | " a row's last cell leaves, and squeeze runs of blank lines,
+  // without touching intra-line whitespace (stripTags already normalizes that per line).
+  return stripTagsKeepLines(markBlockBoundaries(cleaned))
+    .replace(/ *\| *(?=\n|$)/g, '')
+    .replace(/\n{2,}/g, '\n')
+    .trim()
+}
+
+/** Extract code blocks from fetched HTML, boilerplate stripped, lang detected. */
+export function extractCodeBlocks(html: string, source?: string): CodeBlock[] {
+  const blocks: CodeBlock[] = []
+  // <pre>…<code class="language-ts">…</code></pre> and bare <pre>/<code>.
+  const preRe = /<pre[^>]*>([\s\S]*?)<\/pre>/gi
+  let m: RegExpExecArray | null
+  while ((m = preRe.exec(html)) !== null) {
+    const inner = m[1]
+    const langMatch = inner.match(/class="[^"]*language-([a-z0-9]+)/i) || m[0].match(/class="[^"]*language-([a-z0-9]+)/i)
+    const code = stripTags(inner.replace(/<\/?code[^>]*>/gi, ''))
+    if (code.length >= 12) blocks.push({ code, lang: langMatch?.[1]?.toLowerCase(), source })
+  }
+  return blocks
+}
+
+const EXT_LANG: Record<string, string> = { js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript', html: 'html', css: 'css', py: 'python' }
+
+/**
+ * GitHub-aware code extraction. A github.com repo/blob URL renders its code in a JS-built file
+ * tree, so extractCodeBlocks (which only sees <pre>) gets NOTHING from the fetched shell — the
+ * exact reason reference-implementation grounding was silently inert for "space invaders" (a repo)
+ * and every other query whose best source is a repo. This resolves the URL to RAW file content
+ * instead: a /blob/ URL maps directly to raw.githubusercontent.com; a repo root goes through the
+ * keyless contents API, picks the largest real source files (skipping min/config/vendor noise),
+ * and fetches their raw bodies. Best-effort — any failure returns []. Keyless GitHub API is
+ * rate-limited (~60/hr/IP); results ride the same pageCache so repeats are free.
+ */
+export async function fetchGithubCode(url: string, maxFiles = 2): Promise<CodeBlock[]> {
+  const langOf = (name: string) => EXT_LANG[(name.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase()]
+  const blob = url.match(/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+?)(?:[?#].*)?$/i)
+  if (blob) {
+    const raw = `https://raw.githubusercontent.com/${blob[1]}/${blob[2]}/${blob[3]}/${blob[4]}`
+    const code = await fetch(raw)
+    return code && code.length >= 40 ? [{ code, lang: langOf(blob[4]), source: url }] : []
+  }
+  const repo = url.match(/github\.com\/([^/]+)\/([^/?#]+)/i)
+  if (!repo) return []
+  const owner = repo[1], name = repo[2].replace(/\.git$/i, '')
+
+  type Entry = { type: string; name: string; size?: number; download_url?: string; url?: string }
+  const listDir = async (apiUrl: string): Promise<Entry[]> => {
+    try { const p = JSON.parse(await fetch(apiUrl)); return Array.isArray(p) ? p : [] } catch { return [] }
+  }
+  const sourceFiles = (items: Entry[]) => items
+    .filter(f => f.type === 'file' && /\.(js|ts|jsx|tsx|html|py)$/i.test(f.name) && !/\.min\.|webpack|rollup|\.config\.|package(-lock)?\.json|vite/i.test(f.name))
+    .sort((a, b) => (b.size ?? 0) - (a.size ?? 0))
+
+  const root = await listDir(`https://api.github.com/repos/${owner}/${name}/contents/`)
+  let files = sourceFiles(root)
+  // Many repos keep the real game in a source subdir (src/js/game/…), so a root listing yields
+  // only a tiny loader or nothing. When root is thin, descend ONE level into the first common
+  // source directory (one extra API call, best-effort) rather than grounding on a stub.
+  const rootBest = files[0]?.size ?? 0
+  if (rootBest < 1200) {
+    const dir = root.find(f => f.type === 'dir' && /^(src|js|scripts|game|public|app|assets)$/i.test(f.name) && f.url)
+    if (dir?.url) {
+      const sub = sourceFiles(await listDir(dir.url))
+      if ((sub[0]?.size ?? 0) > rootBest) files = sub
+    }
+  }
+
+  const out: CodeBlock[] = []
+  // Scan down the ranked list (not just the top maxFiles) SKIPPING minified/bundled blobs.
+  // Size-desc ranking floats a repo's built `dist/index.js` UMD bundle to the top; that code is
+  // a single mangled line extractFunctions can lift nothing from (measured cont.75b: 6 blocks →
+  // 0 fns, all bundles). Reject by CONTENT shape so non-`.min`-named bundles are caught too, and
+  // keep reading until we have maxFiles of genuine, readable source.
+  for (const f of files) {
+    if (out.length >= maxFiles) break
+    if (!f.download_url) continue
+    const code = await fetch(f.download_url)
+    if (code && code.length >= 40 && !looksMinified(code)) out.push({ code, lang: langOf(f.name), source: `${url}/${f.name}` })
+  }
+  return out
+}
+
+/**
+ * Whether a source blob is minified/bundled — a built artifact (webpack/rollup/browserify UMD)
+ * rather than hand-written source. Such code is a wall of mangled single lines that yields no
+ * extractable `function name(...)` definitions, so it is worse than useless as reference: it
+ * crowds out real source in the ranked list. Detected by mean line length and telltale bundle
+ * bootstraps, not by filename (many bundles aren't named `*.min.js`).
+ */
+export function looksMinified(code: string): boolean {
+  const lines = code.split('\n')
+  const meanLen = code.length / Math.max(1, lines.length)
+  if (meanLen > 200) return true                                  // few, enormous lines
+  if (/typeof exports==="object"|typeof define==="function"|\bwebpackJsonp\b|__webpack_require__|!function\(/.test(code.slice(0, 400))) return true
+  // a very long single physical line anywhere is a reliable minification tell
+  if (lines.some(l => l.length > 2000)) return true
+  return false
+}
+
+/**
+ * Extract TypeScript-style type signatures from text/d.ts content. These are the
+ * highest-value grounding for fixing wrong API signatures — interfaces, type
+ * aliases, function/declare signatures, exported class shapes.
+ */
+export function extractTypeSignatures(text: string): string[] {
+  const sigs = new Set<string>()
+  const patterns = [
+    /export\s+(?:declare\s+)?interface\s+\w+[^{]*\{[^}]{0,400}\}/g,
+    /export\s+(?:declare\s+)?type\s+\w+\s*=\s*[^;]{0,300};/g,
+    /export\s+declare\s+function\s+\w+\s*\([^)]{0,300}\)\s*:\s*[^;{]{0,120}/g,
+    /export\s+(?:declare\s+)?(?:abstract\s+)?class\s+\w+[^{]{0,200}/g,
+    /declare\s+function\s+\w+\s*\([^)]{0,300}\)\s*:\s*[^;{]{0,120}/g,
+  ]
+  for (const p of patterns) {
+    for (const m of text.matchAll(p)) {
+      const sig = m[0].replace(/\s+/g, ' ').trim()
+      if (sig.length >= 12) sigs.add(sig)
+      if (sigs.size >= 40) break
+    }
+  }
+  return [...sigs]
+}
+
+// ── Capability: npm / DefinitelyTyped type-definition pulling ────────────────────
+// For any project dependency, pull its .d.ts so the FM sees real signatures. Tries
+// the package's own bundled types first, then @types/<pkg> (DefinitelyTyped), via
+// unpkg (keyless CDN, redirects to the latest version). Returns the raw d.ts text.
+
+export async function fetchTypeDefs(pkg: string): Promise<string> {
+  const cached = typeDefCache.get(pkg)
+  if (cached !== undefined) return cached
+  let dts = ''
+  try {
+    // 1. Package's own types: read package.json for the "types"/"typings" entry.
+    const metaRaw = await rawGet(`https://unpkg.com/${pkg}/package.json`, 6000)
+    let typesPath: string | null = null
+    try { const meta = JSON.parse(metaRaw); typesPath = meta.types || meta.typings || null } catch { /* ignore */ }
+    if (typesPath) {
+      dts = await rawGet(`https://unpkg.com/${pkg}/${typesPath.replace(/^\.\//, '')}`, 6000).catch(() => '')
+    }
+    // 2. Fall back to DefinitelyTyped @types/<pkg>.
+    if (!dts) {
+      const scoped = pkg.startsWith('@') ? pkg.slice(1).replace('/', '__') : pkg
+      dts = await rawGet(`https://unpkg.com/@types/${scoped}/index.d.ts`, 6000).catch(() => '')
+    }
+  } catch { dts = '' }
+  typeDefCache.set(pkg, dts)
+  return dts
+}
+
+// ── Capability: authoritative library API surface (blocker #1 fix, cont.89) ──────
+//
+// THE PROBLEM this solves. Grounding a LIBRARY question on web search is a gamble we lose:
+// measured live, every open-web SERP backend is dead to a server IP (DDG → HTTP 202 anti-bot
+// challenge, Bing → HTTP 200 with a JS/consent shell containing zero result markup), so
+// `search()` returns 0 results and the answer path falls back to fabrication. When a SERP
+// does answer, its ranking drifts between sessions — which is why the "retrieval fetches the
+// wrong docs" diagnosis kept changing shape and never reproduced twice the same way.
+//
+// THE FIX. A package's own published type definitions ARE its API surface — the same fact the
+// question is asking about, from the registry rather than a search engine. That makes it:
+//   - deterministic (a version-pinned file, not a ranked guess)
+//   - authoritative (`z.ipv4()` is IN zod's .d.ts; no SERP needed to discover it)
+//   - keyless and unthrottled (jsDelivr/unpkg CDN, not a scraped SERP)
+//   - UNIVERSAL — works for ANY npm package. No package list, no per-library mapping, so it
+//     cannot rot on the next release (the no-templates rule).
+//
+// WHY reachable-from-entry, not just largest-file: zod ships its OLD v3 API alongside v4
+// (`/v3/types.d.ts`, 52KB — the 2nd largest .d.ts in the package). Ranking purely by size
+// pulls v3 types into evidence for a v4 question and teaches the model a deprecated API —
+// evidence poisoning that would look exactly like a model failure. So we read the declared
+// entry point, take the subtree it actually imports from, and rank within that.
+
+export interface LibraryApiDocs {
+  pkg: string
+  version: string
+  url: string
+  title: string
+  text: string
+  files: string[]
+}
+
+const JSDELIVR_DATA = 'https://data.jsdelivr.com/v1/packages/npm'
+const JSDELIVR_CDN = 'https://cdn.jsdelivr.net/npm'
+const UNPKG = 'https://unpkg.com'
+
+type PkgFiles = { version: string; files: Array<{ path: string; size: number }> }
+
+/** First promise to deliver a non-null value wins; null only if every one fails. */
+async function firstSuccess<T>(tasks: Array<Promise<T | null>>): Promise<T | null> {
+  return new Promise(resolve => {
+    let left = tasks.length
+    if (!left) return resolve(null)
+    for (const t of tasks) {
+      t.then(v => { if (v !== null && v !== undefined) resolve(v); else if (--left === 0) resolve(null) })
+       .catch(() => { if (--left === 0) resolve(null) })
+    }
+  })
+}
+
+/**
+ * Resolve a package to {version, files} by RACING two independent registries.
+ *
+ * Parallel, not sequential fallback. Measured under congestion: jsDelivr's listing endpoint took
+ * **16.6s** while unpkg answered the same question in **843ms**. A sequential chain waits for the
+ * slow one to fail before even starting the fast one, so it blew the lane's 10s deadline and the
+ * answer dropped back to fabrication — the fallback made us more robust and simultaneously too
+ * slow to use it. Racing costs one extra cheap GET and returns at the speed of whichever CDN is
+ * healthy right now.
+ */
+async function resolvePackageFiles(pkg: string): Promise<PkgFiles | null> {
+  const viaJsDelivr = async (): Promise<PkgFiles | null> => {
+    const resolved = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}/resolved`, 5000))
+    const version: string = resolved?.version
+    if (!version) return null
+    const listing = JSON.parse(await rawGet(`${JSDELIVR_DATA}/${pkg}@${version}`, 6000))
+    const files = flattenJsDelivr(listing?.files)
+    return files.length ? { version, files } : null
+  }
+  const viaUnpkg = async (): Promise<PkgFiles | null> => {
+    // unpkg redirects `pkg` → the concrete version and returns a FLAT list already.
+    const meta = JSON.parse(await rawGet(`${UNPKG}/${pkg}/?meta`, 8000))
+    const version: string = meta?.version
+    const files = (meta?.files ?? []).map((f: any) => ({ path: f.path as string, size: (f.size ?? 0) as number }))
+    return version && files.length ? { version, files } : null
+  }
+  return firstSuccess([viaJsDelivr(), viaUnpkg()])
+}
+
+/** Fetch one package file from whichever CDN answers first (same reason as resolvePackageFiles). */
+async function raceFile(pkg: string, version: string, path: string): Promise<string> {
+  const one = async (base: string) => {
+    const t = await rawGet(`${base}/${pkg}@${version}${path}`, 8000)
+    return t && t.length >= 40 ? t : null
+  }
+  return (await firstSuccess([one(JSDELIVR_CDN), one(UNPKG)])) ?? ''
+}
+
+/** Flatten a jsDelivr file tree into `{path, size}`, paths rooted at `/`. */
+function flattenJsDelivr(nodes: any[], prefix = ''): Array<{ path: string; size: number }> {
+  const out: Array<{ path: string; size: number }> = []
+  for (const f of nodes ?? []) {
+    const p = `${prefix}/${f.name}`
+    if (f.type === 'directory') out.push(...flattenJsDelivr(f.files, p))
+    else out.push({ path: p, size: f.size ?? 0 })
+  }
+  return out
+}
+
+/**
+ * Extract candidate package names from a query using STRUCTURAL signals only — the same
+ * grammar `namesExternalLibrary` uses to decide a lookup is needed at all. No name list.
+ * Candidates are verified against the registry by `fetchLibraryApiDocs` (a real 200 from the
+ * CDN is the ground truth that a token is a package), so over-generating here is safe.
+ */
+export function extractPackageCandidates(q: string): string[] {
+  return extractPackageCandidatesRanked(q).map(c => c.name)
+}
+
+export interface PackageCandidate {
+  name: string
+  /**
+   * `named` — a structural signal identified it as a package (quoted import, "the X library",
+   * a capitalized proper noun). Trusted on its own.
+   * `token`  — a bare lowercase word from a coding query. NOT trusted on its own: npm publishes
+   * a package for nearly every English word, so these must be corroborated (see NPM_MIN_WEEKLY).
+   */
+  confidence: 'named' | 'token'
+}
+
+export function extractPackageCandidatesRanked(q: string): PackageCandidate[] {
+  const msg = q ?? ''
+  const out: PackageCandidate[] = []
+  const push = (s: string | undefined | null, confidence: 'named' | 'token' = 'named') => {
+    const v = (s ?? '').trim().replace(/^['"`]|['"`]$/g, '')
+    if (!v || v.length < 2 || LANGUAGE_NAMES.has(v.toLowerCase())) return
+    if (out.some(c => c.name === v)) return
+    out.push({ name: v, confidence })
+  }
+  // 1. quoted module specifier: import { z } from 'zod'  /  require("express")
+  for (const m of msg.matchAll(/(?:import|require|from)\s*\(?\s*['"`]([\w@/.-]+)['"`]/g)) {
+    push(m[1].startsWith('@') ? m[1].split('/').slice(0, 2).join('/') : m[1].split('/')[0])
+  }
+  // 2. explicit package noun: "the zod library", "npm package express"
+  for (const m of msg.matchAll(/\b(?:npm|pypi|pip)?\s*(?:packages?|librar(?:y|ies)|modules?|frameworks?)\s+(?:called\s+|named\s+)?([\w@/.-]{2,})/gi)) push(m[1])
+  // "X library/module" is ambiguous between naming a package ("the zod library") and ordinary
+  // noun-compound prose ("a rate limiter module" — live false-match on limiter@3.0.0, cont.94).
+  // Only a package-SHAPED name (scoped, dashed, dotted) earns trust from this pattern; a plain
+  // English word here is 'token' confidence, so the popularity + relevance corroboration built
+  // for exactly this ambiguity gets to arbitrate.
+  for (const m of msg.matchAll(/\b(?:the\s+)?([\w@/.-]{2,})\s+(?:packages?|librar(?:y|ies)|modules?|frameworks?)\b/gi)) {
+    if (/[@/.-]/.test(m[1])) { push(m[1], 'named'); continue }
+    // Same compound-head grammar as the bare-token path below: "a rate limiter module" is a
+    // noun compound naming the deliverable ("limiter" head, "module" container), not a package.
+    const prev = msg.slice(0, m.index).toLowerCase().match(/([a-z][a-z0-9.-]*)\W*$/)?.[1]
+    if (isEnglishWord(m[1].toLowerCase()) && prev !== undefined && isContentWord(prev)) continue
+    push(m[1], 'token')
+  }
+  // 3. capitalized proper-noun tokens (same rule as namesExternalLibrary #4), lowercased —
+  //    "Zod" → zod. Sentence-initial tokens are held back to LAST rather than dropped: in
+  //    "Write a Zod schema…", "Write" is only capitalized because it starts the sentence, and
+  //    trying it first cost ~4s of dead registry lookups (npm really does publish a `write`
+  //    package). But "Zod schema for an IP" legitimately starts with the library name, so it
+  //    stays a candidate — just a last-resort one.
+  const tokens = msg.match(/\S+/g) ?? []
+  const initial: string[] = []
+  for (let i = 0; i < tokens.length; i++) {
+    const bare = tokens[i].replace(/[^\w@/+#.-]/g, '')
+    if (!bare || bare.length < 2 || !/^[A-Z]/.test(bare)) continue
+    if (/^[A-Z0-9+#.-]+$/.test(bare) && bare.length <= 5) continue  // acronyms
+    if (/\d/.test(bare)) continue                                    // IPv4/SHA256 = standards
+    if (i === 0) initial.push(bare.toLowerCase())
+    else push(bare.toLowerCase())
+  }
+  // A sentence-initial capital is a grammatical accident, not a naming signal ("Walk me
+  // through…" grounded on walk@2.3.4 live, cont.94) — so beyond being tried LAST, it is only
+  // 'token' confidence: it must clear the download floor + relevance gate like any bare word.
+  initial.forEach(n => push(n, 'token'))
+  // 4. BARE LOWERCASE TOKENS — what users actually type.
+  //
+  // MEASURED (cont.89): with signals 1-3 alone, only 1 of 10 realistic library asks grounded.
+  // "zod schema to validate an ipv4 address", "express middleware for error handling", "make an
+  // http request with axios" — all skipped, because the ONLY thing that fired was capitalization.
+  // The entire authoritative-docs lane was gated behind the user pressing shift.
+  //
+  // These are emitted as 'token' confidence and are NOT trusted on their own: npm publishes a
+  // package for nearly every English word ("sort", "list", "number" all resolve). They are
+  // corroborated downstream by popularity + relevance — see fetchLibraryApiForQuery.
+  if (isCodingQuery(msg) || namesInstrument(msg)) {
+    // Keep SHORT words ("a", "an", "me") in the array: they don't become candidates, but they
+    // matter for the compound-head rule below — "build an express server" must see "an" as the
+    // word before "express" (article → attributive → keep), not the verb "build".
+    const words = msg.toLowerCase().match(/[a-z][a-z0-9.-]*/g) ?? []
+    for (let i = 0; i < words.length; i++) {
+      const t = words[i]
+      if (t.length < 3 || REL_STOP.has(t) || LANGUAGE_NAMES.has(t) || GENERIC_CODE_NOUNS.has(t)) continue
+      // COMPOUND-HEAD rule (live false-match, cont.94): popularity cannot arbitrate a candidate
+      // like "limiter" — the npm package really does clear the download floor (14M/wk), and its
+      // docs really do mention rate/token/bucket, so relevance passes too. The discriminating
+      // signal is GRAMMAR: in "build a rate limiter", the word is the HEAD of a noun compound —
+      // the deliverable being implemented — while a library name in the same position is an
+      // attributive MODIFIER ("zod schema", "express middleware", "react app": each preceded by
+      // an article, each modifying the noun after it). So: a common-English dictionary word
+      // (system wordlist — a closed linguistic fact, not a package list) preceded by another
+      // content word is a compound head, not a package name — unless it sits in explicit
+      // instrument position ("with/using/via X"), which overrides everything.
+      if (i > 0 && isEnglishWord(t) && isContentWord(words[i - 1]) &&
+          !new RegExp(`\\b(?:with|using|via)\\s+${t.replace(/[.-]/g, '\\$&')}\\b`).test(msg.toLowerCase())) continue
+      // The digit rule, same as the proper-noun path above: a token carrying a version/width
+      // digit is a STANDARD (IPv4, IPv6, UTF8, SHA256, Base64), not a library. Library names
+      // essentially never do. Omitting it here regressed the bench's 6b guard — the rule has to
+      // hold on EVERY path that proposes a package name, not just the capitalized one.
+      if (/\d/.test(t)) continue
+      push(t, 'token')
+    }
+  }
+  return out.slice(0, 8)
+}
+
+/**
+ * "…with axios", "…using yup", "…via prisma" — a prepositional phrase naming the INSTRUMENT the
+ * work should be done with. That is a library position, and it is GRAMMATICAL rather than a
+ * keyword list, so it does not rot.
+ *
+ * Needed because `isCodingQuery` is a keyword regex and misses obvious library asks that happen
+ * to use none of its words: "parse a csv file with papaparse", "make an http request with axios"
+ * and "validate a form with yup" all scored isCodingQuery=false, so the docs lane never ran.
+ * The named token is still only 'token' confidence — popularity + relevance still have to agree.
+ */
+/**
+ * True when the message is SHAPED like a request for code — an imperative build/use verb, a fenced
+ * block, or a "how do I …" ask. Needed because the library signals are only meaningful INSIDE a
+ * code request: `namesExternalLibrary`'s strongest signal is a bare capitalized proper noun, so on
+ * ordinary prose questions ("Who painted the Mona Lisa?", "Who is the CEO of Nvidia?") it fires on
+ * the ENTITY. Measured 2026-07-25: every proper-noun factual question was therefore marked
+ * `codeRequested` by the grounded path, so the single oracle judged a correct prose answer
+ * "no code block → violations" and burned up to 6 repair model calls before shipping the draft
+ * unverified. `isCodingQuery` (keyword) stays sufficient on its own; this gates the two
+ * name/preposition-shaped signals behind an actual request to produce code.
+ */
+export function isCodeRequestShaped(q: string): boolean {
+  const m = q ?? ''
+  if (/```|\b(?:def|function|class|const|let|var)\s+\w/.test(m)) return true
+  if (/^\s*(?:can you |could you |please |i want (?:you )?to |i need (?:you )?to )?(write|create|build|implement|generate|refactor|debug|optimi[sz]e|fix|convert|rewrite|port|parse|validate|render|serialize|deserialize|scrape|plot|query|call|connect|upload|download|make|fetch|send|post|load|save|install|configure|mock|format|extract|filter|sort)\b/i.test(m)) return true
+  return /\b(how (?:do|can|would) i|show me how to|example of how to|sample code|snippet|code (?:for|to|that)|script (?:for|to|that))\b/i.test(m)
+}
+
+export function namesInstrument(q: string): boolean {
+  return /\b(?:with|using|via)\s+[a-z][\w.-]{2,}/i.test(q ?? '')
+}
+
+/**
+ * Words that are common in coding questions and also happen to be npm packages. Skipping them
+ * is pure latency saving — the popularity + relevance gates would reject them anyway — but a
+ * dead registry lookup costs ~1-4s each on the answer's critical path. Closed class, no library
+ * names (the no-templates rule): these are English/CS nouns, not a package list.
+ */
+// System wordlist, loaded lazily and once. FAIL-OPEN: if the host has no dictionary (some
+// minimal Linux images), the compound-head rule simply never fires — the download floor and
+// relevance gate remain, which is exactly the pre-rule behavior. A missing wordlist must never
+// invent a rejection.
+let englishWords: Set<string> | null = null
+function isEnglishWord(w: string): boolean {
+  if (englishWords === null) {
+    englishWords = new Set<string>()
+    try {
+      for (const line of readFileSync('/usr/share/dict/words', 'utf-8').split('\n')) {
+        if (line.length >= 3) englishWords.add(line.toLowerCase())
+      }
+    } catch { /* fail-open */ }
+  }
+  return englishWords.has(w)
+}
+
+/** A word that carries topic meaning in modifier position (not an article/preposition/stopword). */
+function isContentWord(w: string): boolean {
+  return /^[a-z]{3,}/.test(w) && !REL_STOP.has(w)
+}
+
+const GENERIC_CODE_NOUNS = new Set(
+  ('function functions method methods class classes object objects array arrays string strings ' +
+   'number numbers value values type types schema schemas file files code example examples ' +
+   'error errors test tests data list lists map set sort filter parse validate validation ' +
+   'write read create make build implement convert handle handling request response server ' +
+   'client api apis library package module component components hook hooks state props ' +
+   'address addresses user users form forms field fields input output result results').split(/\s+/),
+)
+
+/**
+ * Fetch a package's real API surface from the registry CDN. Returns null when `pkg` is not a
+ * published package (the registry 404 IS the verification) or ships no type definitions.
+ */
+export async function fetchLibraryApiDocs(pkg: string, budgetChars = 60_000): Promise<LibraryApiDocs | null> {
+  const cacheKey = `${pkg}:${budgetChars}`
+  const hit = libraryApiCache.get(cacheKey)
+  if (hit) return hit
+  // NEGATIVE RESULTS ARE NOT CACHED — the same trap that made `searchCache` poison a query for
+  // the whole process (see SEARCH_TTL_MS). "No API docs" here is usually TRANSIENT: a congested
+  // CDN blowing the deadline, not a package that doesn't exist. Measured: the lane resolved
+  // zod@4.4.3 in 1.1s, then returned null on the next run when jsDelivr was slow — caching that
+  // would have killed the lane for every later request in the process. A real 404 costs one
+  // cheap re-check; a cached false negative costs every answer.
+  const miss = (): null => null
+  if (!/^(@[\w.-]+\/)?[\w.-]+$/.test(pkg)) return miss()
+  try {
+    // 1+2. Resolve the version (pins every later URL to one immutable snapshot) and the full
+    // file listing with sizes — from either CDN, so one being down does not kill the lane.
+    const resolved = await resolvePackageFiles(pkg)
+    if (!resolved) return miss()
+    const { version, files: all } = resolved
+    let dts = all.filter(f => /\.d\.(ts|cts|mts)$/.test(f.path))
+    if (!dts.length) return miss()
+    // 3. Follow the declared entry point to the subtree it actually re-exports, and keep only
+    //    that. Two distinct hazards this defuses, both measured on zod:
+    //      - zod ships its OLD v3 API alongside v4 (`/v3/types.d.ts`, the 2nd-largest .d.ts).
+    //        Size-ranking alone pulls v3 into evidence for a v4 question.
+    //      - zod's PUBLIC surface is `/v4/classic/` while `/v4/core/` holds bigger internal
+    //        types ($ZodIPv4Def, $ZodIPv4Internals). Ranking on size alone grounds the model
+    //        on internals and invites `$ZodIPv4` instead of `z.ipv4()`.
+    //    So prefer the entry's exact directory, widening only if it yields nothing.
+    const roots: string[] = []
+    try {
+      // Raced across both CDNs like every other fetch here — an unraced hop inside the deadline
+      // is what blew it: package.json + entry cost ~6s on a slow jsDelivr, and combined with the
+      // listing that pushed the lane past 10s and returned NULL despite both CDNs being up.
+      const meta = JSON.parse(await raceFile(pkg, version, '/package.json'))
+      const entry: string | undefined = meta?.types || meta?.typings || meta?.exports?.['.']?.types
+      if (entry) {
+        const entryPath = '/' + entry.replace(/^\.\//, '')
+        const entryText = await raceFile(pkg, version, entryPath)
+        const rel = entryText.match(/from\s*['"]\.\/([\w.\-/]+)['"]/)
+        if (rel) {
+          const segs = rel[1].split('/').slice(0, -1)          // drop the filename
+          for (let i = segs.length; i > 0; i--) roots.push(`/${segs.slice(0, i).join('/')}/`)  // narrow → wide
+        }
+      }
+    } catch { /* no entry info — fall through to whole-package ranking */ }
+    for (const root of roots) {
+      const scoped = dts.filter(f => f.path.startsWith(root))
+      if (scoped.length) { dts = scoped; break }
+    }
+    // 4. Drop `.d.cts`/`.d.mts` twins of a `.d.ts` — byte-identical declarations under a second
+    //    module format. Keeping both spent the whole budget printing the same file twice.
+    const stem = (p: string) => p.replace(/\.d\.(ts|cts|mts)$/, '')
+    const haveTs = new Set(dts.filter(f => /\.d\.ts$/.test(f.path)).map(f => stem(f.path)))
+    dts = dts.filter(f => /\.d\.ts$/.test(f.path) || !haveTs.has(stem(f.path)))
+    // 5. Largest-first: the biggest declaration files carry the API surface; tiny barrels are
+    //    just re-exports. Bounded by budget so evidence assembly stays fast.
+    dts.sort((a, b) => b.size - a.size)
+    // Fetch the top files in PARALLEL. Sequentially these cost ~1.1s of round-trips against a
+    // ~14s grounding budget, and the CDN serves them concurrently for ~0.24s.
+    const picked = dts.slice(0, 3)
+    const bodies = await Promise.all(picked.map(f => raceFile(pkg, version, f.path)))
+    const parts: string[] = []
+    const files: string[] = []
+    let total = 0
+    for (let i = 0; i < picked.length; i++) {
+      if (total >= budgetChars) break
+      const text = bodies[i]
+      if (text.length < 40) continue
+      const slice = text.slice(0, Math.max(0, budgetChars - total))
+      parts.push(`// ${pkg}@${version}${picked[i].path}\n${slice}`)
+      files.push(picked[i].path)
+      total += slice.length
+    }
+    if (!parts.length) return miss()
+    const docs: LibraryApiDocs = {
+      pkg, version,
+      url: `https://www.npmjs.com/package/${pkg}/v/${version}`,
+      title: `${pkg}@${version} — published type definitions (authoritative API surface)`,
+      text: parts.join('\n\n'),
+      files,
+    }
+    libraryApiCache.set(cacheKey, docs)
+    return docs
+  } catch { return miss() }
+}
+
+/**
+ * Weekly-download floor for a BARE LOWERCASE token to be believed as a library name.
+ *
+ * MEASURED — npm's own download counts separate libraries from English words cleanly:
+ *   zod 210M · lodash 121M · express 107M · axios 85M · prisma 13M · papaparse 9.8M · yup 9.2M
+ *   write 2.7M · list 9.9k · fraction 428 · number 276 · sort 28 · handling 0
+ * A floor at 5M admits every real library measured and rejects every English word — including
+ * `write`, the one genuinely popular English-word package, which would otherwise be fetched for
+ * "Write a Zod schema…".
+ *
+ * This is a THRESHOLD over live registry data, not a list of known packages: it cannot rot on
+ * the next release, and a library crossing 5M starts working with no code change. A niche
+ * library below the floor is a MISS, not a wrong answer — it falls through to search, which is
+ * the safe direction. Structural signals ('named' confidence) bypass this entirely, so
+ * `import 'my-tiny-pkg'` still resolves.
+ */
+const NPM_MIN_WEEKLY = Number(process.env.CRUCIBLE_NPM_MIN_WEEKLY ?? 5_000_000)
+const downloadsCache = new Map<string, number>()
+
+/** Weekly downloads for a package; 0 when unknown/unpublished. Positive results cached only. */
+async function weeklyDownloads(pkg: string): Promise<number> {
+  const hit = downloadsCache.get(pkg)
+  if (hit !== undefined) return hit
+  try {
+    const j = JSON.parse(await rawGet(`https://api.npmjs.org/downloads/point/last-week/${pkg}`, 5000))
+    const n = Number(j?.downloads ?? 0)
+    if (n > 0) downloadsCache.set(pkg, n)
+    return n
+  } catch { return 0 }
+}
+
+const existenceCache = new Map<string, 'exists' | 'absent'>()
+
+/**
+ * Does this package exist on npm at all? TRI-STATE on purpose.
+ *
+ * `weeklyDownloads` answers 0 for "unpublished" AND for "the request failed", which is fine for
+ * RANKING candidates but fatal as a rejection oracle: one network hiccup would flag every real
+ * import in an answer as fabricated. Only a registry 404 is proof of absence; anything else
+ * (timeout, DNS, 5xx, rate-limit) is 'unknown' and the caller must stay silent.
+ *
+ * Motivating case (cont.97, live): an answer imported `express-ratelimit` — the real package is
+ * `express-rate-limit` — and nothing in the pipeline noticed, because grounding validates the
+ * API surface of a package it RESOLVED and never asks whether the name resolves at all.
+ */
+export async function packageExistence(pkg: string): Promise<'exists' | 'absent' | 'unknown'> {
+  const name = pkg.trim()
+  // Bare specifiers only: relative/absolute paths and subpath imports are not registry names.
+  if (!name || /^[./]/.test(name)) return 'unknown'
+  const root = name.startsWith('@') ? name.split('/').slice(0, 2).join('/') : name.split('/')[0]
+  const hit = existenceCache.get(root)
+  if (hit) return hit
+  try {
+    await rawGet(`https://registry.npmjs.org/${root.replace('/', '%2F')}`, 5000)
+    existenceCache.set(root, 'exists')
+    return 'exists'
+  } catch (e: any) {
+    if (/HTTP 404/.test(String(e?.message ?? e))) {
+      existenceCache.set(root, 'absent')
+      return 'absent'
+    }
+    return 'unknown' // transport failure — never a rejection
+  }
+}
+
+const TS_PRIMITIVES = new Set(
+  ('string number boolean object array void null undefined any unknown never symbol bigint ' +
+   'promise record partial readonly return type interface export import declare const').split(/\s+/),
+)
+
+/**
+ * Do these docs actually answer THIS query? The last line of defence for a lowercase token.
+ *
+ * A package can be real, popular, and utterly irrelevant ("express a number as a fraction" →
+ * the `express` package). Grounding on irrelevant docs is WORSE than not grounding: the
+ * faithfulness verifier would see an answer touching none of the documented APIs, call it a
+ * violation, and "repair" correct algorithmic code into using a library it never needed.
+ *
+ * Language primitives are excluded because every .d.ts mentions `string`/`number` — matching on
+ * those would make this gate vacuous.
+ */
+function docsAreRelevant(docs: LibraryApiDocs, query: string): boolean {
+  const terms = salientTokens(query).filter(
+    t => t !== docs.pkg.toLowerCase() && !LANGUAGE_NAMES.has(t) && !TS_PRIMITIVES.has(t),
+  )
+  if (!terms.length) return true          // nothing to test against — don't invent a rejection
+  const hay = docs.text.toLowerCase()
+  return terms.some(t => hay.includes(t))
+}
+
+/**
+ * Resolve the first query-named package that actually exists and publishes types.
+ * Falls back to DefinitelyTyped: react/express/lodash bundle NO types of their own — the API
+ * surface lives in `@types/<pkg>` — so without this the whole lane misses the most common
+ * packages in the ecosystem (measured: `fetchLibraryApiDocs('react')` → null).
+ */
+export async function fetchLibraryApiForQuery(
+  query: string, budgetChars = 60_000, deadlineMs = 10_000,
+): Promise<LibraryApiDocs | null> {
+  // A hard wall-clock deadline. This lane is an ENHANCEMENT to grounding, never a stall: the
+  // CDN is normally ~1s, but a congested moment measured 43s — long enough to eat the whole
+  // grounding budget and leave the answer with nothing. Losing the lane costs one weaker
+  // answer; blocking on it costs the answer entirely.
+  const started = Date.now()
+  const left = () => deadlineMs - (Date.now() - started)
+  const ranked = extractPackageCandidatesRanked(query)
+
+  // Structural signals are trusted as-is. Bare tokens must EARN their place: npm publishes a
+  // package for nearly every English word, so each is corroborated against live download counts
+  // (in parallel — a serial probe of 8 tokens would eat the whole deadline) and the survivors
+  // are tried most-popular-first, which is the one the user almost certainly meant.
+  const named = ranked.filter(c => c.confidence === 'named').map(c => c.name)
+  const tokens = ranked.filter(c => c.confidence === 'token').map(c => c.name)
+  let corroborated: string[] = []
+  if (tokens.length) {
+    const counts = await Promise.all(tokens.map(async t => [t, await weeklyDownloads(t)] as const))
+    corroborated = counts
+      .filter(([, n]) => n >= NPM_MIN_WEEKLY)
+      .sort((a, b) => b[1] - a[1])
+      .map(([t]) => t)
+  }
+
+  for (const cand of [...named, ...corroborated]) {
+    if (left() <= 0) break
+    const race = async (p: string): Promise<LibraryApiDocs | null> => Promise.race([
+      fetchLibraryApiDocs(p, budgetChars),
+      new Promise<null>(r => setTimeout(() => r(null), Math.max(0, left()))),
+    ])
+    let docs = await race(cand)
+    if (!docs && left() > 0) {
+      const scoped = cand.startsWith('@') ? cand.slice(1).replace('/', '__') : cand
+      const dt = await race(`@types/${scoped}`)
+      if (dt) docs = { ...dt, pkg: cand, title: `${cand} — @types/${scoped}@${dt.version} type definitions (authoritative API surface)` }
+    }
+    if (!docs) continue
+    // Real, popular, and still possibly the wrong package for THIS question.
+    if (!docsAreRelevant(docs, query)) {
+      debugBus.emit('pipeline', 'library_api_irrelevant', { pkg: docs.pkg, query: query.slice(0, 60) }, { severity: 'info' })
+      continue
+    }
+    return docs
+  }
+  return null
+}
+
+// ── Pre-processing: relevance ranking ────────────────────────────────────────────
+
+function tokenize(text: string): Map<string, number> {
+  const vec = new Map<string, number>()
+  const toks = (text.toLowerCase().match(/[a-z0-9]{2,}/g) ?? [])
+  for (const t of toks) vec.set(t, (vec.get(t) ?? 0) + 1)
+  return vec
+}
+function cosine(a: Map<string, number>, b: Map<string, number>): number {
+  let dot = 0, na = 0, nb = 0
+  for (const [k, w] of a) { na += w * w; const bw = b.get(k); if (bw) dot += w * bw }
+  for (const w of b.values()) nb += w * w
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0
+}
+
+/**
+ * Structural-quality score for a code snippet in [0, 1], independent of task relevance.
+ * Pure token-cosine can rank a one-line import or a console-echo fragment above a real
+ * function body (short strings share the query's few tokens densely). This rewards a
+ * snippet that actually looks like a usable implementation: real definition structure,
+ * a body, a sane length; it penalises fragments, prose-in-<pre>, and giant dumps.
+ */
+export function snippetQuality(code: string, lang?: string): number {
+  const c = (code ?? '').trim()
+  if (!c) return 0
+  let q = 0
+  // Definition structure — the strongest signal of a usable reference.
+  if (/\b(function|const|let|var|class|def|async|export|public|private|fn)\b/.test(c)) q += 0.30
+  if (/=>|\bfunction\b|\bdef\b/.test(c)) q += 0.15               // has a callable
+  if (/\breturn\b|\byield\b/.test(c)) q += 0.15                  // produces a value
+  if (/[{}();]/.test(c)) q += 0.10                               // code punctuation, not prose
+  // Length sweet spot: enough to be a real impl, not a page dump. Peak ~40–1200 chars.
+  const n = c.length
+  if (n >= 40 && n <= 1200) q += 0.20
+  else if (n < 40) q += n / 40 * 0.10                            // tiny fragment → partial
+  else q += Math.max(0, 0.20 - (n - 1200) / 6000)               // decay past 1200
+  // Language bonus: the code-editing path wants TS/JS references.
+  if (lang && /^(ts|tsx|js|jsx|javascript|typescript)$/.test(lang)) q += 0.10
+  // Prose-in-<pre> penalty: mostly words with sentence punctuation, little code.
+  const wordish = (c.match(/\b[a-z]{3,}\b/gi) ?? []).length
+  const symbolish = (c.match(/[{}();=<>[\]]/g) ?? []).length
+  if (wordish > 8 && symbolish < wordish / 4) q -= 0.35
+  // Stub penalty: a definition keyword with no body (no call, arrow, or block) is a
+  // declaration/import line, not a usable reference — don't let the keyword bonus carry it.
+  if (/\b(function|const|let|var|class|def)\b/.test(c) && !/[({]|=>/.test(c)) q -= 0.30
+  return Math.max(0, Math.min(1, q))
+}
+
+/**
+ * Pick the single most useful reference snippet for a task: combined task-relevance
+ * (token cosine) and structural quality. Returns null when nothing clears a minimum
+ * usefulness bar (so grounding leads with a real reference or none — never noise).
+ */
+export function selectBestSnippet(blocks: CodeBlock[], task: RouterTask): CodeBlock | null {
+  if (!blocks.length) return null
+  const ranked = rankByRelevance(blocks, task, b => b.code)
+  let best: CodeBlock | null = null
+  let bestScore = 0
+  for (const { item, score } of ranked) {
+    // Relevance and quality both matter; multiply so a snippet must be BOTH on-topic and
+    // well-formed. A relevant fragment (high cosine, low quality) loses to a relevant impl.
+    const combined = (0.35 + 0.65 * score) * snippetQuality(item.code, item.lang)
+    if (combined > bestScore) { bestScore = combined; best = item }
+  }
+  return bestScore >= 0.12 ? best : null
+}
+
+/** Rank candidates by relevance to the task, highest first. Never throws. */
+export function rankByRelevance<T>(
+  results: T[],
+  task: RouterTask,
+  textOf: (item: T) => string = String,
+): RankedResult<T>[] {
+  const q = tokenize(`${task.goal} ${(task.targetFiles ?? []).join(' ')}`)
+  return results
+    .map(item => ({ item, score: cosine(q, tokenize(textOf(item))) }))
+    .sort((a, b) => b.score - a.score)
+}
+
+// ── Orchestration: retrieve for a task, budget-fit, ready to inject ──────────────
+
+export interface RetrieveOptions {
+  /** Hard ceiling on the injected block size (chars). Default 3000. */
+  budget?: number
+  /** Max pages to fetch+parse. Default 3. */
+  maxPages?: number
+  /** Project dependencies whose type defs should be pulled (npm/DefinitelyTyped). */
+  dependencies?: string[]
+}
+
+/**
+ * Full retrieval for one task: search → fetch top pages → extract code blocks +
+ * type signatures → pull dependency type defs → rank against the task → fit to the
+ * FM context budget. Returns a clean, sourced block. The FM never sees a raw dump.
+ */
+export async function retrieveForTask(task: RouterTask, opts: RetrieveOptions = {}): Promise<RetrievalBundle> {
+  const budget = opts.budget ?? 3000
+  const maxPages = opts.maxPages ?? 3
+  const empty: RetrievalBundle = { block: '', sources: [], codeBlocks: [], typeSignatures: [] }
+
+  const hits = await search(task.goal)
+  const sources: string[] = []
+  let codeBlocks: CodeBlock[] = []
+  let typeSignatures: string[] = []
+
+  // Fetch + parse the top pages (ranked by snippet relevance to the task), but FETCH-PRIORITIZE
+  // hosts we can reliably extract code from. Relevance ranking alone floats JS-gated tutorial
+  // hosts (codepen, dev.to) whose fetched HTML is an empty shell to the top — so with a small
+  // maxPages the GitHub repos that DO yield raw code never get fetched. A stable partition keeps
+  // relevance order within each group while pulling extractable sources forward.
+  const EXTRACTABLE_HOST = /github\.com\/|githubusercontent\.com\/|gist\.github\.com\/|stackoverflow\.com\/|api\.stackexchange/i
+  const relevanceRanked = rankByRelevance(hits, task, h => `${h.title} ${h.snippet}`).map(r => r.item)
+  const ranked = [
+    ...relevanceRanked.filter(u => EXTRACTABLE_HOST.test(u.url)),
+    ...relevanceRanked.filter(u => !EXTRACTABLE_HOST.test(u.url)),
+  ].slice(0, maxPages).map(item => ({ item }))
+  for (const { item } of ranked) {
+    // GitHub repo/blob URLs render their code in a JS file tree, invisible to <pre> extraction —
+    // resolve them to raw file bodies instead (the highest-signal reference source for "build X").
+    if (/github\.com\//i.test(item.url)) {
+      const gh = await fetchGithubCode(item.url)
+      if (gh.length) { sources.push(item.url); codeBlocks.push(...gh); continue }
+    }
+    const html = await fetch(item.url)
+    if (!html) continue
+    sources.push(item.url)
+    codeBlocks.push(...extractCodeBlocks(html, item.url))
+    typeSignatures.push(...extractTypeSignatures(stripBoilerplate(html)))
+  }
+
+  // Pull dependency type defs directly (highest-signal grounding).
+  for (const dep of opts.dependencies ?? []) {
+    const dts = await fetchTypeDefs(dep)
+    if (dts) {
+      typeSignatures.push(...extractTypeSignatures(dts))
+      sources.push(`npm:${dep}`)
+    }
+  }
+
+  // Rank extracted artifacts against the task by COMBINED relevance × structural quality, so a
+  // real function body leads over a same-token one-line fragment. The single best snippet is
+  // surfaced first (weak proposers do best with one sharp reference, not a top-6 dump).
+  codeBlocks = rankByRelevance(codeBlocks, task, c => c.code)
+    .map(r => ({ item: r.item, score: (0.35 + 0.65 * r.score) * snippetQuality(r.item.code, r.item.lang) }))
+    .sort((a, b) => b.score - a.score)
+    .map(r => r.item)
+    .slice(0, 6)
+  typeSignatures = [...new Set(rankByRelevance(typeSignatures.map(s => ({ s })), task, x => x.s).map(r => r.item.s))].slice(0, 12)
+
+  if (!codeBlocks.length && !typeSignatures.length) return { ...empty, sources }
+
+  const block = budgetFit(buildRetrievalBlock({ sources, codeBlocks, typeSignatures }), budget)
+  return { block, sources: [...new Set(sources)], codeBlocks, typeSignatures }
+}
+
+/** Compose a structured, FM-ready block from pre-processed artifacts. */
+export function buildRetrievalBlock(bundle: Omit<RetrievalBundle, 'block'>): string {
+  const lines: string[] = ['RETRIEVED CONTEXT (fetched directly from the internet, pre-processed — not a raw dump):']
+  if (bundle.typeSignatures.length) {
+    lines.push('Type signatures:')
+    for (const s of bundle.typeSignatures) lines.push(`  ${s}`)
+  }
+  if (bundle.codeBlocks.length) {
+    lines.push('Reference code (most relevant first — adapt the primary reference, do not copy blindly):')
+    bundle.codeBlocks.forEach((c, i) => {
+      const label = i === 0 ? 'PRIMARY REFERENCE' : 'additional'
+      lines.push(`  // [${label}] ${c.lang ? `[${c.lang}] ` : ''}${c.source ?? ''}`)
+      lines.push(c.code.split('\n').map(l => `  ${l}`).join('\n'))
+    })
+  }
+  if (bundle.sources.length) lines.push(`Sources: ${[...new Set(bundle.sources)].join(', ')}`)
+  return lines.join('\n')
+}
+
+function budgetFit(block: string, budget: number): string {
+  if (block.length <= budget) return block
+  return block.slice(0, budget).replace(/\n[^\n]*$/, '') + '\n  … (truncated to context budget)'
+}
+
+/**
+ * The library the QUESTION names, when the answer must actually use it.
+ *
+ * cont.97 live: "Write a zod schema that validates an IPv4 address string" came back as a
+ * ```json fence of raw JSON Schema — not zod, no `z.` anywhere — and shipped CLEAN. Every gate
+ * missed it for the same reason: the type checker skips json, library grounding had no import to
+ * ground, and the contract battery found no family. Nothing anywhere asked the one question that
+ * matters — did the answer use the technology it was asked about?
+ *
+ * Deliberately weak, because a strong version would false-reject. The corroboration is the same
+ * one the grounding lane trusts (structurally named, or a bare token with real download volume),
+ * and the answer only has to MENTION the name somewhere in its code — `JSON.parse` satisfies a
+ * "json" token, `z.string()` alone would not satisfy "zod" but `import ... from 'zod'` does.
+ * Returns the names that are named-and-missing; [] whenever the check cannot be trusted.
+ */
+export async function namedLibrariesMissingFromCode(question: string, code: string): Promise<string[]> {
+  if (!code.trim()) return []
+  const ranked = extractPackageCandidatesRanked(question)
+  const named = ranked.filter(c => c.confidence === 'named').map(c => c.name)
+  const tokens = ranked.filter(c => c.confidence === 'token').map(c => c.name)
+  // A bare token must clear the SAME popularity bar the grounding lane uses before it can
+  // accuse an answer of ignoring it — npm publishes a package for nearly every English word.
+  const corroborated = tokens.length
+    ? (await Promise.all(tokens.map(async t => [t, await weeklyDownloads(t)] as const)))
+        .filter(([, n]) => n >= NPM_MIN_WEEKLY).map(([t]) => t)
+    : []
+  const missing: string[] = []
+  for (const cand of [...new Set([...named, ...corroborated])]) {
+    // Only accuse over a package that demonstrably exists — a 404 is the phantom-package gate's
+    // finding, and an 'unknown' (transport failure) must never produce an accusation.
+    if (await packageExistence(cand) !== 'exists') continue
+    const bare = cand.startsWith('@') ? cand.split('/')[1] ?? cand : cand
+    const re = new RegExp(`\\b${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+    if (!re.test(code)) missing.push(cand)
+  }
+  return missing
+}

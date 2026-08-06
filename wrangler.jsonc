@@ -1,0 +1,48 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "crucible",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-07-29",
+  // The brain reuses server/* verbatim; those modules lean on Node built-ins
+  // for nothing at runtime, but the flag keeps `Buffer`-shaped helpers in any
+  // transitive dependency working rather than failing at the edge.
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The built frontend is served by this same Worker, so there is one origin,
+  // one deploy, and no CORS between the app and its API.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    // A single-page app: unknown paths are routes, not 404s.
+    "not_found_handling": "single-page-application",
+    // /api/* and /auth/* must reach the Worker even though assets exist.
+    "run_worker_first": ["/api/*", "/auth/*"]
+  },
+
+  // The world model, and the Google refresh token. One user, one document.
+  "kv_namespaces": [
+    { "binding": "CRUCIBLE", "id": "7288f617e7904a0fa9a96bda11dd6540" }
+  ],
+
+  // A route, not a custom domain: crucible.cam already has proxied DNS records
+  // pointing at an older origin, and a custom domain would have required
+  // deleting them. A route attaches this Worker to the existing hostname
+  // without touching DNS, and detaching it puts the old origin back.
+  "routes": [
+    { "pattern": "crucible.cam/*", "zone_name": "crucible.cam" }
+  ],
+
+  // Unattended gathering. Every three hours rather than every few minutes:
+  // the sources it pulls do not change faster than that, and the free tier's
+  // daily allowance is better spent on synthesis he actually reads.
+  "triggers": { "crons": ["0 */3 * * *"] },
+
+  "observability": { "enabled": true }
+
+  // Secrets — set each with `wrangler secret put <NAME>`:
+  //   JWT_SECRET            signs the session cookie
+  //   GOOGLE_CLIENT_ID      /  GOOGLE_CLIENT_SECRET
+  //   ALLOWED_EMAIL         the one Google account allowed to sign in
+  //   GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, …  the brain
+  //   BRAVE_API_KEY, TAVILY_API_KEY                        optional search
+}

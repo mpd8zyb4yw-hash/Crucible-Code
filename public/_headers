@@ -1,0 +1,10 @@
+# The SPA shell must never be edge-cached: it carries the hashed bundle name,
+# so a stale copy pins the app to an old build. The hashed assets it points to
+# are immutable and cache hard.
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

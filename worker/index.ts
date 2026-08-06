@@ -1,416 +1,597 @@
-// Crucible API proxy — stateless Cloudflare Worker.
-//
-// Single job: receive a normalised model-call request from the Crucible server,
-// validate the internal JWT, attach the correct provider API key (held only here
-// as a Worker secret), forward to the provider, and stream the response straight
-// back. No pipeline, no corpus, no state — a transparent key pipe.
-//
-// This is what removes the need for API keys to live on an always-on server, which
-// is what lets Crucible run off the Fly box. Cloudflare's free tier is 100k
-// requests/day with no idle clock between requests.
-//
-// Every provider is reached through its OpenAI chat-completions-compatible endpoint,
-// so the request and response shapes are uniform (OpenAI JSON, or SSE deltas when
-// streaming). The Crucible server already parses exactly this shape.
+import { setKeyStore, kvKeyStore, setKey, deleteKey } from '../server/secrets.js'
+import { notify, type PushSub } from '../server/push.js'
+import { setWorldStore, kvWorldStore } from '../server/store.js'
+import { setModelPrefs, setRouterStore, kvRouterStore, wake } from '../server/router.js'
+import { readWorld, writeWorld, addObservations } from '../server/world.js'
+import { think } from '../server/think.js'
+import { sourcePanes, noticePane } from '../server/panes.js'
+import { say } from '../server/say.js'
+import { proposeGaps, researchGap } from '../server/research.js'
+import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks } from '../server/tracks.js'
+import { providers, byId, listModels, chat, probe } from '../server/providers.js'
+import { getKey } from '../server/secrets.js'
+import {
+  authUrl, exchangeCode, pullObservations, GOOGLE_SOURCES, callbackPath,
+  type Tokens,
+} from '../server/google.js'
+
+/**
+ * Crucible on the edge.
+ *
+ * The whole point of this file is that it is thin. Synthesis, curiosity,
+ * tracks, routing and the Google connector are the SAME modules the Mac runs;
+ * only the two host-shaped things differ — where keys come from (Worker
+ * secrets) and where the world model lives (KV) — and both are injected at the
+ * top of every request. That is what makes the product standalone: nothing
+ * here needs a laptop to be awake.
+ *
+ * It is single-tenant on purpose. One person's world model, one Google
+ * account allowed in. Everything under /api is refused without a valid session
+ * cookie, because this world model is his calendar, his mail, his health and
+ * his location, sitting on a public hostname.
+ */
 
 export interface Env {
+  CRUCIBLE: KVNamespace
+  ASSETS: Fetcher
   JWT_SECRET: string
-  // Provider keys — names match the Crucible server's .env.local exactly so the same
-  // values can be lifted straight into `wrangler secret put`.
-  VITE_GROQ_API_KEY: string
-  VITE_OPENROUTER_API_KEY: string
-  VITE_GEMINI_API_KEY: string
-  VITE_HF_API_KEY: string
-  VITE_MISTRAL_API_KEY: string
-  CLOUDFLARE_API_KEY: string
-  CLOUDFLARE_ACCOUNT_ID: string
-  // Optional OpenAI-compatible providers — only function if their secret is set.
-  TOGETHER_API_KEY?: string
-  CEREBRAS_API_KEY?: string
-  COHERE_API_KEY?: string
-  FIREWORKS_API_KEY?: string
-  DEEPINFRA_TOKEN?: string
-  // ── Session B: OAuth (login moves off Fly to here) ──
-  GOOGLE_CLIENT_ID?: string
-  GOOGLE_CLIENT_SECRET?: string
-  GITHUB_CLIENT_ID?: string
-  GITHUB_CLIENT_SECRET?: string
-  // Where to send the browser back to after login, with ?token=<jwt>. Default crucible.cam.
-  FRONTEND_URL?: string
-  // KV namespace holding user identities (keyed by provider:providerId). Optional —
-  // without it the Worker derives a stable deterministic user id so login still works.
-  CRUCIBLE_USERS?: KVNamespace
+  GOOGLE_CLIENT_ID: string
+  GOOGLE_CLIENT_SECRET: string
+  /** The one Google account allowed to sign in. Everyone else is refused. */
+  ALLOWED_EMAIL: string
+  GEMINI_API_KEY?: string
+  GROQ_API_KEY?: string
+  OPENROUTER_API_KEY?: string
+  ANTHROPIC_API_KEY?: string
+  OPENAI_API_KEY?: string
+  XAI_API_KEY?: string
+  MISTRAL_API_KEY?: string
+  VAPID_PUBLIC_KEY?: string
+  VAPID_PRIVATE_KEY?: string
+  VAPID_SUBJECT?: string
+  BRAVE_API_KEY?: string
+  TAVILY_API_KEY?: string
 }
 
-// Minimal KV typing so this file is self-contained without @cloudflare/workers-types.
-interface KVNamespace {
-  get(key: string): Promise<string | null>
-  put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
+/** Provider id → the secret that carries its key. */
+const KEY_MAP: Record<string, string> = {
+  gemini: 'GEMINI_API_KEY',
+  groq: 'GROQ_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  xai: 'XAI_API_KEY',
+  mistral: 'MISTRAL_API_KEY',
+  brave: 'BRAVE_API_KEY',
+  tavily: 'TAVILY_API_KEY',
 }
 
-// Browsers that may hit the Worker directly (the VS Code extension / dashboard land
-// here later). The Crucible server calls server-to-server with no Origin, which is
-// allowed unconditionally.
-const ALLOWED_ORIGINS = new Set([
-  'https://crucible.cam',
-  'http://localhost:5180',
-  'http://localhost:5173',
-])
+const TOKENS_KEY = 'google-tokens'
+const COOKIE = 'cru_session'
+const enc = new TextEncoder()
 
-function corsHeaders(origin: string | null): Record<string, string> {
-  const allow = origin && ALLOWED_ORIGINS.has(origin) ? origin : 'https://crucible.cam'
-  return {
-    'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Credentials': 'true',
-    'Vary': 'Origin',
-  }
+// ── session ───────────────────────────────────────────────────────────────
+const b64url = (b: ArrayBuffer | Uint8Array): string =>
+  btoa(String.fromCharCode(...new Uint8Array(b as ArrayBuffer))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+
+async function hmac(data: string, secret: string): Promise<string> {
+  const k = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  return b64url(await crypto.subtle.sign('HMAC', k, enc.encode(data)))
 }
 
-function json(body: unknown, status: number, origin: string | null): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
-  })
+async function sign(payload: Record<string, unknown>, secret: string): Promise<string> {
+  const h = b64url(enc.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })))
+  const p = b64url(enc.encode(JSON.stringify(payload)))
+  return `${h}.${p}.${await hmac(`${h}.${p}`, secret)}`
 }
 
-// ── JWT (HS256) — must match the server's signJwt/verifyJwt scheme exactly ──────
-// Node signs with crypto.createHmac('sha256', secret).digest('base64url') (unpadded);
-// we recompute the same here with Web Crypto and compare in (near) constant time.
-function b64urlToBytes(b64url: string): Uint8Array {
-  const b64 = b64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(b64url.length / 4) * 4, '=')
-  const bin = atob(b64)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
-}
-
-function bytesToB64url(bytes: Uint8Array): string {
-  let bin = ''
-  for (const b of bytes) bin += String.fromCharCode(b)
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-async function hmacKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
-  )
-}
-
-// Sign a JWT byte-identically to the server's signJwt (HS256, unpadded base64url).
-// A token signed here verifies in the Mac server's verifyJwt and vice-versa.
-async function signJwt(payload: Record<string, unknown>, secret: string): Promise<string> {
-  const enc = new TextEncoder()
-  const h = bytesToB64url(enc.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })))
-  const b = bytesToB64url(enc.encode(JSON.stringify(payload)))
-  const sigBuf = await crypto.subtle.sign('HMAC', await hmacKey(secret), enc.encode(`${h}.${b}`))
-  return `${h}.${b}.${bytesToB64url(new Uint8Array(sigBuf))}`
-}
-
-async function verifyJwt(token: string, secret: string): Promise<Record<string, any> | null> {
+async function verify(token: string | null, secret: string): Promise<Record<string, any> | null> {
+  if (!token) return null
+  const [h, p, s] = token.split('.')
+  if (!h || !p || !s) return null
+  if ((await hmac(`${h}.${p}`, secret)) !== s) return null
   try {
-    const parts = token.split('.')
-    if (parts.length !== 3) return null
-    const [h, b, s] = parts
-    const sigBuf = await crypto.subtle.sign('HMAC', await hmacKey(secret), new TextEncoder().encode(`${h}.${b}`))
-    const expected = bytesToB64url(new Uint8Array(sigBuf))
-    if (expected.length !== s.length) return null
-    let diff = 0
-    for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ s.charCodeAt(i)
-    if (diff !== 0) return null
-    const payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(b)))
-    if (typeof payload.exp === 'number' && payload.exp < Date.now() / 1000) return null
-    return payload
+    const claims = JSON.parse(atob(p.replace(/-/g, '+').replace(/_/g, '/')))
+    if (typeof claims.exp === 'number' && claims.exp * 1000 < Date.now()) return null
+    return claims
   } catch {
     return null
   }
 }
 
-// ── Provider routing — each provider's OpenAI-compatible chat endpoint ──────────
-function resolveUpstream(provider: string, env: Env): { url: string; headers: Record<string, string> } | null {
-  switch (provider) {
-    case 'groq':
-      return { url: 'https://api.groq.com/openai/v1/chat/completions', headers: { Authorization: `Bearer ${env.VITE_GROQ_API_KEY}` } }
-    case 'openrouter':
-      return {
-        url: 'https://openrouter.ai/api/v1/chat/completions',
-        headers: { Authorization: `Bearer ${env.VITE_OPENROUTER_API_KEY}`, 'HTTP-Referer': 'https://crucible.cam', 'X-Title': 'Crucible' },
-      }
-    case 'gemini':
-      // Google's OpenAI-compatible surface — lets gemini ride the same path as the rest.
-      return { url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions', headers: { Authorization: `Bearer ${env.VITE_GEMINI_API_KEY}` } }
-    case 'huggingface':
-      return { url: 'https://router.huggingface.co/novita/v3/openai/chat/completions', headers: { Authorization: `Bearer ${env.VITE_HF_API_KEY}` } }
-    case 'mistral':
-      return { url: 'https://api.mistral.ai/v1/chat/completions', headers: { Authorization: `Bearer ${env.VITE_MISTRAL_API_KEY}` } }
-    case 'cloudflare':
-      // Workers AI OpenAI-compatible endpoint (account-scoped).
-      return { url: `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/v1/chat/completions`, headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_KEY}` } }
-    case 'together':
-      return { url: 'https://api.together.ai/v1/chat/completions', headers: { Authorization: `Bearer ${env.TOGETHER_API_KEY ?? ''}` } }
-    case 'cerebras':
-      return { url: 'https://api.cerebras.ai/v1/chat/completions', headers: { Authorization: `Bearer ${env.CEREBRAS_API_KEY ?? ''}` } }
-    case 'cohere':
-      return { url: 'https://api.cohere.ai/compatibility/v1/chat/completions', headers: { Authorization: `Bearer ${env.COHERE_API_KEY ?? ''}` } }
-    case 'fireworks':
-      return { url: 'https://api.fireworks.ai/inference/v1/chat/completions', headers: { Authorization: `Bearer ${env.FIREWORKS_API_KEY ?? ''}` } }
-    case 'deepinfra':
-      return { url: 'https://api.deepinfra.com/v1/openai/chat/completions', headers: { Authorization: `Bearer ${env.DEEPINFRA_TOKEN ?? ''}` } }
-    default:
-      return null
+const cookie = (req: Request, name: string): string | null => {
+  const raw = req.headers.get('cookie') ?? ''
+  for (const part of raw.split(';')) {
+    const [k, ...v] = part.trim().split('=')
+    if (k === name) return v.join('=')
   }
+  return null
 }
 
-interface ProxyBody {
-  provider?: string
-  model?: string
-  messages?: { role: string; content: string }[]
-  stream?: boolean
-  max_tokens?: number
-  extra?: Record<string, unknown>
+/**
+ * `no-store` is not decoration. Without it the edge cached API replies — a
+ * stale "not configured" 503 kept being served after the secrets were set,
+ * and the same mechanism would happily serve one person's feed to the next.
+ */
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...headers },
+  })
+
+// ── google tokens, in KV instead of a dotfile ─────────────────────────────
+async function loadTokens(env: Env): Promise<Tokens | null> {
+  const raw = await env.CRUCIBLE.get(TOKENS_KEY)
+  return raw ? (JSON.parse(raw) as Tokens) : null
 }
 
-// ── Session B: OAuth (Google + GitHub) — moved here so Fly can be shut down ──────
-// Identity-only login: exchange the provider code, resolve {id,email}, sign a session
-// JWT with the SAME scheme/secret the Mac server uses, and bounce the browser back to
-// the app with ?token=<jwt>. State is a short-lived signed token (stateless — no server
-// memory), so this works across Cloudflare's edge with no KV roundtrip for CSRF.
-const GOOGLE_SCOPES = 'openid email profile'
-
-function frontendUrl(env: Env): string {
-  return (env.FRONTEND_URL ?? 'https://crucible.cam').replace(/\/$/, '')
+async function saveTokens(env: Env, t: Tokens): Promise<void> {
+  await env.CRUCIBLE.put(TOKENS_KEY, JSON.stringify(t))
 }
 
-async function sha256Hex(input: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input))
-  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
-}
+/** A live Google access token, refreshed if it has expired. */
+async function googleToken(env: Env): Promise<string | null> {
+  const t = await loadTokens(env)
+  if (!t?.access_token) return null
+  if (t.expiry - 60_000 > Date.now()) return t.access_token
+  if (!t.refresh_token) return null
 
-interface WorkerUser { id: string; email: string; provider: string; providerId: string; createdAt: number }
-
-// Resolve a stable user identity. Uses KV when bound; otherwise derives a deterministic
-// id from provider:providerId so login still issues a valid session without KV.
-async function upsertUser(env: Env, provider: string, providerId: string, email: string): Promise<WorkerUser> {
-  const key = `user:${provider}:${providerId}`
-  if (env.CRUCIBLE_USERS) {
-    const existing = await env.CRUCIBLE_USERS.get(key)
-    if (existing) { try { return JSON.parse(existing) as WorkerUser } catch { /* fall through to recreate */ } }
-    const user: WorkerUser = { id: crypto.randomUUID(), email, provider, providerId, createdAt: Date.now() }
-    await env.CRUCIBLE_USERS.put(key, JSON.stringify(user))
-    return user
-  }
-  const id = `${provider}-${(await sha256Hex(`${provider}:${providerId}`)).slice(0, 24)}`
-  return { id, email, provider, providerId, createdAt: Date.now() }
-}
-
-async function makeState(provider: string, secret: string): Promise<string> {
-  return signJwt({ k: 'oauth', p: provider, exp: Math.floor(Date.now() / 1000) + 600 }, secret)
-}
-async function checkState(state: string, provider: string, secret: string): Promise<boolean> {
-  const p = await verifyJwt(state, secret)
-  return !!p && p.k === 'oauth' && p.p === provider
-}
-
-function redirectTo(location: string): Response {
-  return new Response(null, { status: 302, headers: { Location: location } })
-}
-
-async function handleAuth(request: Request, env: Env, url: URL): Promise<Response | null> {
-  const path = url.pathname
-  const selfOrigin = url.origin                       // e.g. https://proxy.crucible.cam
-  const fe = frontendUrl(env)
-
-  // ── Login redirects ──
-  if (path === '/auth/login/google') {
-    if (!env.GOOGLE_CLIENT_ID) return new Response('GOOGLE_CLIENT_ID not configured', { status: 503 })
-    const params = new URLSearchParams({
+  const r = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      refresh_token: t.refresh_token,
       client_id: env.GOOGLE_CLIENT_ID,
-      redirect_uri: `${selfOrigin}/auth/callback/google`,
-      response_type: 'code',
-      scope: GOOGLE_SCOPES,
-      state: await makeState('google', env.JWT_SECRET),
-    })
-    return redirectTo(`https://accounts.google.com/o/oauth2/v2/auth?${params}`)
+      client_secret: env.GOOGLE_CLIENT_SECRET,
+      grant_type: 'refresh_token',
+    }),
+  })
+  const b: any = await r.json()
+  if (!r.ok) return null
+  const next: Tokens = {
+    access_token: b.access_token,
+    refresh_token: b.refresh_token ?? t.refresh_token,
+    expiry: Date.now() + (Number(b.expires_in) || 3600) * 1000,
+    scope: b.scope ?? t.scope,
   }
-  if (path === '/auth/login/github') {
-    if (!env.GITHUB_CLIENT_ID) return new Response('GITHUB_CLIENT_ID not configured', { status: 503 })
-    const params = new URLSearchParams({
-      client_id: env.GITHUB_CLIENT_ID,
-      redirect_uri: `${selfOrigin}/auth/callback/github`,
-      scope: 'user:email',
-      state: await makeState('github', env.JWT_SECRET),
-    })
-    return redirectTo(`https://github.com/login/oauth/authorize?${params}`)
-  }
+  await saveTokens(env, next)
+  return next.access_token
+}
 
-  // ── Callbacks ──
-  if (path === '/auth/callback/google') {
-    const code = url.searchParams.get('code') ?? ''
-    const state = url.searchParams.get('state') ?? ''
-    const err = url.searchParams.get('error')
-    if (err) return redirectTo(`${fe}/?auth_error=${encodeURIComponent(err)}`)
-    if (!(await checkState(state, 'google', env.JWT_SECRET))) return redirectTo(`${fe}/?auth_error=invalid_state`)
-    try {
-      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          code, client_id: env.GOOGLE_CLIENT_ID!, client_secret: env.GOOGLE_CLIENT_SECRET!,
-          redirect_uri: `${selfOrigin}/auth/callback/google`, grant_type: 'authorization_code',
-        }),
-      })
-      const tokens: any = await tokenRes.json()
-      if (!tokenRes.ok) throw new Error(tokens.error_description ?? 'token exchange failed')
-      const profRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-        headers: { Authorization: `Bearer ${tokens.access_token}` },
-      })
-      const profile: any = await profRes.json()
-      const user = await upsertUser(env, 'google', String(profile.id), profile.email ?? '')
-      const jwt = await signJwt({ id: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + 30 * 86400 }, env.JWT_SECRET)
-      return redirectTo(`${fe}/?token=${encodeURIComponent(jwt)}`)
-    } catch (e) {
-      return redirectTo(`${fe}/?auth_error=${encodeURIComponent('Google sign-in failed')}`)
-    }
-  }
-  if (path === '/auth/callback/github') {
-    const code = url.searchParams.get('code') ?? ''
-    const state = url.searchParams.get('state') ?? ''
-    const err = url.searchParams.get('error')
-    if (err) return redirectTo(`${fe}/?auth_error=${encodeURIComponent(err)}`)
-    if (!(await checkState(state, 'github', env.JWT_SECRET))) return redirectTo(`${fe}/?auth_error=invalid_state`)
-    try {
-      const tokenRes = await fetch('https://github.com/login/oauth/access_token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({
-          client_id: env.GITHUB_CLIENT_ID, client_secret: env.GITHUB_CLIENT_SECRET,
-          code, redirect_uri: `${selfOrigin}/auth/callback/github`,
-        }),
-      })
-      const tokens: any = await tokenRes.json()
-      if (tokens.error) throw new Error(tokens.error_description ?? tokens.error)
-      const profRes = await fetch('https://api.github.com/user', {
-        headers: { Authorization: `Bearer ${tokens.access_token}`, 'User-Agent': 'Crucible' },
-      })
-      const profile: any = await profRes.json()
-      let email: string = profile.email ?? ''
-      if (!email) {
-        const emailRes = await fetch('https://api.github.com/user/emails', {
-          headers: { Authorization: `Bearer ${tokens.access_token}`, 'User-Agent': 'Crucible' },
-        })
-        const emails: any[] = await emailRes.json()
-        email = emails.find(e => e.primary)?.email ?? emails[0]?.email ?? ''
-      }
-      const user = await upsertUser(env, 'github', String(profile.id), email)
-      const jwt = await signJwt({ id: user.id, email: user.email, exp: Math.floor(Date.now() / 1000) + 30 * 86400 }, env.JWT_SECRET)
-      return redirectTo(`${fe}/?token=${encodeURIComponent(jwt)}`)
-    } catch (e) {
-      return redirectTo(`${fe}/?auth_error=${encodeURIComponent('GitHub sign-in failed')}`)
-    }
-  }
+const searchKeys = async () => ({
+  brave: (await getKey('brave')) ?? undefined,
+  tavily: (await getKey('tavily')) ?? undefined,
+})
 
-  return null  // not an auth route
+const SUBS_KEY = 'push:subs'
+
+async function loadSubs(env: Env): Promise<PushSub[]> {
+  try { return JSON.parse((await env.CRUCIBLE.get(SUBS_KEY)) ?? '[]') } catch { return [] }
+}
+
+async function saveSubs(env: Env, subs: PushSub[]): Promise<void> {
+  await env.CRUCIBLE.put(SUBS_KEY, JSON.stringify(subs))
+}
+
+/**
+ * Ring only for a track that actually fired. Calendar and mail refresh on
+ * nearly every pass, so notifying on "new observations" would buzz him every
+ * three hours forever; a track is something he explicitly agreed to be told
+ * about, which is the only thing that has earned an interruption.
+ */
+async function ringIfWorthIt(env: Env, learned: string[]): Promise<void> {
+  if (!learned.length) return
+  const { VAPID_PUBLIC_KEY: publicKey, VAPID_PRIVATE_KEY: privateKey, VAPID_SUBJECT: subject } = env
+  if (!publicKey || !privateKey || !subject) return
+  const subs = await loadSubs(env)
+  if (!subs.length) return
+  const r = await notify(subs, { publicKey, privateKey, subject })
+  // A push service that says the subscription is gone is telling the truth;
+  // keeping it would mean retrying a dead endpoint on every pass forever.
+  if (r.expired.length) await saveSubs(env, subs.filter((s) => !r.expired.includes(s.endpoint)))
+}
+
+/**
+ * One unattended pass: refresh what Google can see, then let any standing
+ * interest that has come due do its own looking. Each half is wrapped
+ * separately — a revoked Google token must not stop tracks from running, and
+ * a track that throws must not lose the observations already pulled.
+ */
+async function gather(env: Env): Promise<void> {
+  try {
+    const token = await googleToken(env)
+    if (token) {
+      const w = await readWorld()
+      const { observations } = await pullObservations(token, w.sources)
+      if (observations.length) await addObservations(observations)
+    }
+  } catch {
+    /* a dead token is tomorrow's problem, not this run's */
+  }
+  try {
+    const { learned } = await runDueTracks(await searchKeys())
+    await ringIfWorthIt(env, learned)
+  } catch {
+    /* one bad track must not poison the pass */
+  }
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url)
-    const origin = request.headers.get('Origin')
-
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(origin) })
-    }
-
-    // Session B: OAuth login/callback are top-level browser navigations (GET) — handle
-    // before the proxy auth gate (they have no JWT yet; they MINT one).
-    if (request.method === 'GET' && url.pathname.startsWith('/auth/')) {
-      const authRes = await handleAuth(request, env, url)
-      if (authRes) return authRes
-    }
-
-    // ── Session N: public benchmark dashboard ──────────────────────────────────
-    // POST /api/benchmarks/publish — JWT-authed (same Bearer check as /proxy/chat).
-    // Stores the latest boot smoke-suite result in KV under 'bench:latest'. The
-    // improvement daemon should POST here weekly with the smoke-last.json payload.
-    if (url.pathname === '/api/benchmarks/publish' && request.method === 'POST') {
-      const auth = request.headers.get('Authorization') ?? ''
-      const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-      const payload = await verifyJwt(token, env.JWT_SECRET)
-      if (!payload) return json({ error: 'Unauthorized' }, 401, origin)
-      let raw: string
-      try { raw = await request.text(); JSON.parse(raw) } catch { return json({ error: 'Invalid JSON body' }, 400, origin) }
-      if (!env.CRUCIBLE_USERS) return json({ ok: false, error: 'KV not bound' }, 200, origin)
-      await env.CRUCIBLE_USERS.put('bench:latest', raw, { expirationTtl: 60 * 60 * 24 * 30 })
-      return json({ ok: true }, 200, origin)
-    }
-
-    // GET /api/benchmarks/public — NO auth. Returns the latest stored benchmark so the
-    // static dashboard page can fetch it cross-origin (CORS *). Friendly default when
-    // there is no data yet (or no KV bound).
-    if (url.pathname === '/api/benchmarks/public' && request.method === 'GET') {
-      const publicCors = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      const fallback = JSON.stringify({ ts: 0, passed: false, note: 'no benchmark data yet' })
-      let out = fallback
-      if (env.CRUCIBLE_USERS) {
-        const stored = await env.CRUCIBLE_USERS.get('bench:latest')
-        if (stored) {
-          try { JSON.parse(stored); out = stored } catch { out = fallback }
-        }
-      }
-      return new Response(out, { status: 200, headers: publicCors })
-    }
-
-    if (url.pathname !== '/proxy/chat' || request.method !== 'POST') {
-      return json({ error: 'Not found' }, 404, origin)
-    }
-
-    // Auth — internal JWT minted by the Crucible server (same JWT_SECRET).
-    const auth = request.headers.get('Authorization') ?? ''
-    const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
-    const payload = await verifyJwt(token, env.JWT_SECRET)
-    if (!payload) return json({ error: 'Unauthorized' }, 401, origin)
-
-    let body: ProxyBody
-    try { body = await request.json() } catch { return json({ error: 'Invalid JSON body' }, 400, origin) }
-
-    const { provider, model, messages, stream, max_tokens, extra } = body
-    if (!provider || !model || !Array.isArray(messages)) {
-      return json({ error: 'Missing provider, model, or messages' }, 400, origin)
-    }
-
-    const up = resolveUpstream(provider, env)
-    if (!up) return json({ error: `Unknown provider: ${provider}` }, 400, origin)
-
-    // The Crucible registry id is provider-prefixed (e.g. "groq/llama-3.3-70b",
-    // "openrouter/openai/gpt-oss-120b"). Strip the first segment to get the upstream id.
-    const upstreamModel = model.includes('/') ? model.slice(model.indexOf('/') + 1) : model
-
-    // Canonical fields win over `extra` so a caller can add params (reasoning_effort)
-    // but never clobber model/messages/stream.
-    const upstreamBody: Record<string, unknown> = {
-      ...(extra && typeof extra === 'object' ? extra : {}),
-      model: upstreamModel,
-      messages,
-      stream: !!stream,
-    }
-    if (typeof max_tokens === 'number') upstreamBody.max_tokens = max_tokens
-
-    let upstreamRes: Response
-    try {
-      upstreamRes = await fetch(up.url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...up.headers },
-        body: JSON.stringify(upstreamBody),
-      })
-    } catch (e) {
-      return json({ error: `Upstream fetch failed: ${(e as Error).message}` }, 502, origin)
-    }
-
-    // Transparent pass-through of the upstream body (SSE stream or JSON), with CORS.
-    const headers = new Headers(corsHeaders(origin))
-    const ct = upstreamRes.headers.get('Content-Type')
-    if (ct) headers.set('Content-Type', ct)
-    return new Response(upstreamRes.body, { status: upstreamRes.status, headers })
+  /**
+   * Work that happens while he is not looking.
+   *
+   * The product promises "things handled without you today", and until this
+   * existed that could only ever be true if he had the app open — every pull
+   * and every track ran off a request he made. This is the half that makes the
+   * claim honest.
+   *
+   * Deliberately GATHERING only, never synthesis. Pulling Google and running
+   * due tracks is cheap, deterministic, and mostly keyless; a scheduled
+   * think() would burn the free tier's daily allowance on an answer nobody is
+   * reading, and leave none for the moment he actually opens it. Synthesis
+   * stays on-demand, over whatever this has collected.
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    setKeyStore(kvKeyStore(env.CRUCIBLE, env as unknown as Record<string, unknown>, KEY_MAP))
+    setWorldStore(kvWorldStore(env.CRUCIBLE))
+    setModelPrefs(async () => JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}'))
+    setRouterStore(kvRouterStore(env.CRUCIBLE))
+    ctx.waitUntil(gather(env))
   },
+
+  async fetch(req: Request, env: Env): Promise<Response> {
+    // Host drivers first: every downstream module reads keys and the world
+    // through these, and neither exists until this runs.
+    setKeyStore(kvKeyStore(env.CRUCIBLE, env as unknown as Record<string, unknown>, KEY_MAP))
+    setWorldStore(kvWorldStore(env.CRUCIBLE))
+    setModelPrefs(async () => JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}'))
+    setRouterStore(kvRouterStore(env.CRUCIBLE))
+
+    const url = new URL(req.url)
+    const path = url.pathname
+    const origin = url.origin
+
+    /**
+     * Fail closed. An unset JWT_SECRET would otherwise hash against the string
+     * "undefined" — a secret anyone can guess — and an unset ALLOWED_EMAIL
+     * would let the allowlist check throw instead of refuse. Neither is a
+     * state this should serve traffic in, so it refuses everything but the
+     * static shell until the secrets exist.
+     */
+    const missing = (['JWT_SECRET', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'ALLOWED_EMAIL'] as const)
+      .filter((k) => !env[k])
+    if (missing.length && (path.startsWith('/api/') || path.startsWith('/auth/'))) {
+      return json({ error: `Not configured yet — missing ${missing.join(', ')}` }, 503)
+    }
+
+    // ── auth: one Google sign-in, allowlisted to a single account ─────────
+    if (path === '/auth/login') {
+      return Response.redirect(authUrl(env.GOOGLE_CLIENT_ID, `${origin}${callbackPath}`), 302)
+    }
+
+    if (path === callbackPath) {
+      const code = url.searchParams.get('code')
+      if (!code) return new Response('No code', { status: 400 })
+      try {
+        const tokens = await exchangeCode(code, env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, `${origin}${callbackPath}`)
+        const me: any = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { authorization: `Bearer ${tokens.access_token}` },
+        }).then((r) => r.json())
+
+        // The allowlist is the whole access-control model. Anyone else who
+        // completes Google's flow still gets nothing.
+        if (!me?.email || me.email.toLowerCase() !== env.ALLOWED_EMAIL.toLowerCase()) {
+          // Name the address that was presented — the person reading this owns
+          // it, so it leaks nothing, and "not an account this Crucible serves"
+          // with no address is impossible to act on. The allowed address is
+          // NOT echoed; that one would be a leak.
+          return new Response(
+            `Not an account this Crucible serves.\n\nYou signed in as: ${me?.email ?? '(no email on the account)'}\n\nSet ALLOWED_EMAIL to that address to let it in:\n  npx wrangler secret put ALLOWED_EMAIL\n  npx wrangler deploy`,
+            { status: 403, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } }
+          )
+        }
+
+        await saveTokens(env, tokens)
+        const session = await sign({ sub: me.sub, email: me.email, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30 }, env.JWT_SECRET)
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: '/',
+            'set-cookie': `${COOKIE}=${session}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`,
+          },
+        })
+      } catch (e) {
+        return new Response(`Sign-in failed: ${(e as Error).message}`, { status: 400 })
+      }
+    }
+
+    if (path === '/auth/logout') {
+      return new Response(null, {
+        status: 302,
+        headers: { location: '/', 'set-cookie': `${COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0` },
+      })
+    }
+
+    /**
+     * The one /api path that must work WITHOUT a session: it only starts the
+     * sign-in flow. Gating it would mean needing a session to get a session,
+     * and the app's own "Sign in" button points here.
+     */
+    if (path === '/api/google/connect') {
+      return Response.redirect(`${origin}/auth/login`, 302)
+    }
+
+    // ── everything else under /api requires a session ────────────────────
+    if (path.startsWith('/api/')) {
+      const claims = await verify(cookie(req, COOKIE), env.JWT_SECRET)
+      if (!claims) return json({ error: 'Not signed in', signIn: '/auth/login' }, 401)
+
+      try {
+        return await api(req, env, path, origin)
+      } catch (e) {
+        return json({ error: (e as Error).message }, 502)
+      }
+    }
+
+    // ── the app itself ───────────────────────────────────────────────────
+    return env.ASSETS.fetch(req)
+  },
+}
+
+async function api(req: Request, env: Env, path: string, origin: string): Promise<Response> {
+  const method = req.method
+  const body = method === 'POST' || method === 'PUT' || method === 'PATCH'
+    ? await req.json().catch(() => ({} as any))
+    : ({} as any)
+
+  if (path === '/api/providers' && method === 'GET') {
+    const list = await Promise.all(
+      providers.map(async (p) => {
+        const key = await getKey(p.id)
+        const live = key ? await listModels(p.id, key).catch(() => null) : null
+        return {
+          id: p.id, label: p.label, hint: p.hint, free: p.free,
+          models: live?.length ? live : p.models,
+          model: p.defaultModel,
+          configured: key !== null,
+        }
+      })
+    )
+    const prefs = JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}')
+    const active = prefs.activeProvider && list.some((p) => p.id === prefs.activeProvider && p.configured)
+      ? prefs.activeProvider
+      : list.find((p) => p.configured)?.id ?? null
+    return json({
+      providers: list.map((p) => ({ ...p, model: prefs.models?.[p.id] ?? p.model })),
+      routing: prefs.routing ?? 'auto',
+      active,
+    })
+  }
+
+  // A key pasted in the app. Proven before it is stored, exactly as on the Mac:
+  // a key that cannot answer is a worse state than no key at all.
+  const keyMatch = /^\/api\/providers\/([^/]+)\/key$/.exec(path)
+  if (keyMatch && (method === 'PUT' || method === 'DELETE')) {
+    const p = byId(keyMatch[1]) ?? (['brave', 'tavily'].includes(keyMatch[1]) ? { id: keyMatch[1], defaultModel: '' } as any : null)
+    if (!p) return json({ error: 'Unknown provider' }, 404)
+    if (method === 'DELETE') {
+      await deleteKey(p.id)
+      return json({ ok: true })
+    }
+    const key = String(body?.key ?? '').trim()
+    if (!key) return json({ error: 'No key provided' }, 400)
+    if (p.defaultModel) {
+      try {
+        await chat({ providerId: p.id, model: p.defaultModel, key, prompt: 'Reply with the single word: ok', maxTokens: 16 })
+      } catch (err) {
+        return json({ error: (err as Error).message }, 400)
+      }
+    }
+    await setKey(p.id, key)
+    return json({ ok: true, active: p.id })
+  }
+
+  // Who chooses the model: Crucible per task, or the one he pinned.
+  if (path === '/api/routing' && method === 'PUT') {
+    const r = body?.routing
+    if (r !== 'auto' && r !== 'pinned') return json({ error: 'routing must be auto or pinned' }, 400)
+    const prefs = JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}')
+    prefs.routing = r
+    await env.CRUCIBLE.put('prefs', JSON.stringify(prefs))
+    return json({ ok: true, routing: r })
+  }
+
+  // Which provider to lean on. The router still chooses per task; this only
+  // nudges its preference, and is stored per-user rather than in a config file.
+  if (path === '/api/active' && method === 'POST') {
+    const id = String(body?.providerId ?? '')
+    const p = byId(id)
+    if (!p) return json({ error: 'Unknown provider' }, 404)
+    if ((await getKey(id)) === null) return json({ error: 'No key for that provider' }, 400)
+    const prefs = JSON.parse((await env.CRUCIBLE.get('prefs')) ?? '{}')
+    prefs.activeProvider = id
+    if (body?.model) {
+      // Being listed is not being allowed: providers list their paid tiers to
+      // every key, so without this a free key can select a pro model here and
+      // the next home-feed synthesis fails with a quota error for a screen.
+      const key = await getKey(id)
+      const why = key ? await probe(id, String(body.model), key) : 'No key for that provider'
+      if (why) return json({ error: why }, 400)
+      // It just answered, so whatever rest it was serving is out of date.
+      await wake(id, String(body.model))
+      prefs.models = { ...(prefs.models ?? {}), [id]: String(body.model) }
+    }
+    await env.CRUCIBLE.put('prefs', JSON.stringify(prefs))
+    return json({ ok: true, active: id, model: prefs.models?.[id] ?? p.defaultModel })
+  }
+
+  if (path === '/api/push/vapid-public' && method === 'GET') {
+    return json({ key: env.VAPID_PUBLIC_KEY ?? null })
+  }
+
+  if (path === '/api/push/subscribe' && method === 'POST') {
+    const sub = body?.subscription as PushSub | undefined
+    if (!sub?.endpoint) return json({ error: 'invalid subscription' }, 400)
+    const subs = await loadSubs(env)
+    // One device, one entry — re-subscribing must not stack duplicates.
+    await saveSubs(env, [...subs.filter((s) => s.endpoint !== sub.endpoint), sub])
+    return json({ ok: true })
+  }
+
+  if (path === '/api/world' && method === 'GET') return json(await readWorld())
+
+  if (path === '/api/world/tell' && method === 'POST') {
+    const text = String(body?.text ?? '').trim()
+    if (!text) return json({ error: 'Nothing said' }, 400)
+    const now = new Date()
+    await addObservations([{
+      id: `told-${now.getTime().toString(36)}`,
+      source: 'user',
+      at: now.toISOString().slice(0, 10),
+      text: body?.inReplyTo ? `Asked "${String(body.inReplyTo).slice(0, 200)}" — he said: ${text}` : text,
+    }])
+    return json({ ok: true })
+  }
+
+  if (path === '/api/say' && method === 'POST') {
+    const text = String(body?.text ?? '').trim()
+    if (!text) return json({ error: 'Nothing said' }, 400)
+    const w = await readWorld()
+    // The hands. Without these `say` can only describe doing things.
+    return json(await say(w, text, body?.card ?? null, body?.thread ?? [], {
+      sync: async () => {
+        const token = await googleToken(env)
+        if (!token) throw new Error('Google is not connected')
+        const { observations } = await pullObservations(token, w.sources)
+        if (observations.length) await addObservations(observations)
+        return { added: observations.length }
+      },
+      research: async (question) => {
+        const obs = await researchGap({ question, who: 'world', why: 'he asked' }, w, undefined as any, await searchKeys())
+        if (!obs) return null
+        await addObservations([obs])
+        return obs.text
+      },
+    }))
+  }
+
+  if (path === '/api/think' && method === 'POST') {
+    const world = await readWorld()
+    // Same contract as the Mac: what the connectors know renders with or
+    // without a model, and a brain that cannot answer is one card, not a
+    // blank screen. See server/panes.ts for why this is not synthesis's job.
+    let result
+    try {
+      result = await think(world, body?.nudge)
+    } catch (err) {
+      const panes = sourcePanes(world)
+      const message = (err as Error).message
+      return json({
+        dateLabel: new Date().toLocaleDateString(),
+        clock: '12h',
+        place: null,
+        readLine: panes.length ? 'Here’s what I already know.' : '',
+        needs: [noticePane(message), ...panes],
+        ask: { opening: 'What’s on your mind?', chips: [] },
+        quietLog: [],
+        beliefUpdates: [],
+        dropped: [],
+        degraded: message,
+      })
+    }
+    if (result.beliefUpdates.length) {
+      const byIdMap = new Map(world.beliefs.map((b) => [b.id, b]))
+      for (const b of result.beliefUpdates) {
+        if (b.confidence === 0) byIdMap.delete(b.id)
+        else byIdMap.set(b.id, b)
+      }
+      world.beliefs = [...byIdMap.values()]
+      await writeWorld(world)
+    }
+    const panes = sourcePanes(world)
+    const have = new Set(result.needs.map((n) => n.id))
+    return json({ ...result, needs: [...result.needs, ...panes.filter((p) => !have.has(p.id))] })
+  }
+
+  if (path === '/api/learn' && method === 'POST') {
+    const keys = await searchKeys()
+    const tracked = await runDueTracks(keys)
+    const world = await readWorld()
+    const gaps = await proposeGaps(world)
+    const worldGaps = gaps.filter((g) => g.who === 'world')
+    const found = (await Promise.all(worldGaps.map((g) => researchGap(g, world, undefined, keys).catch(() => null))))
+      .filter((o): o is NonNullable<typeof o> => o !== null)
+    if (found.length) await addObservations(found)
+    return json({
+      tracked: tracked.ran,
+      asked: worldGaps.map((g) => g.question),
+      learned: [...tracked.learned, ...found.map((o) => o.text)],
+      unanswered: worldGaps.length - found.length,
+      forHim: gaps.filter((g) => g.who === 'user'),
+    })
+  }
+
+  // ── tracks ──────────────────────────────────────────────────────────────
+  if (path === '/api/tracks' && method === 'GET') return json({ tracks: await listTracks() })
+
+  if (path === '/api/tracks' && method === 'POST') {
+    const t = await addTrack(body ?? {}, body?.by === 'agent' ? 'agent' : 'user')
+    return t ? json({ ok: true, track: t }) : json({ error: 'needs a "what", and must not duplicate an existing track' }, 400)
+  }
+
+  if (path === '/api/tracks/run' && method === 'POST') return json(await runDueTracks(await searchKeys()))
+
+  const trackId = path.startsWith('/api/tracks/') ? path.slice('/api/tracks/'.length) : null
+  if (trackId && method === 'PATCH') {
+    const t = await updateTrack(trackId, body ?? {})
+    return t ? json({ ok: true, track: t }) : json({ error: 'no such track' }, 404)
+  }
+  if (trackId && method === 'DELETE') {
+    return (await removeTrack(trackId)) ? json({ ok: true }) : json({ error: 'no such track' }, 404)
+  }
+
+  // ── what it may see ─────────────────────────────────────────────────────
+  if (path === '/api/sources' && method === 'GET') {
+    const w = await readWorld()
+    return json({
+      sources: GOOGLE_SOURCES.map((id) => ({ id, on: w.sources?.[id] !== false })),
+      curation: w.curation ?? 'auto',
+    })
+  }
+
+  if (path === '/api/sources' && method === 'PUT') {
+    const w = await readWorld()
+    w.sources = w.sources ?? {}
+    for (const [id, on] of Object.entries(body?.sources ?? {})) w.sources[id] = on === true
+    if (body?.curation === 'auto' || body?.curation === 'manual') w.curation = body.curation
+    await writeWorld(w)
+    return json({ ok: true, sources: w.sources, curation: w.curation })
+  }
+
+  // ── google ──────────────────────────────────────────────────────────────
+  if (path === '/api/google/status' && method === 'GET') {
+    const t = await loadTokens(env)
+    return json({ configured: !!env.GOOGLE_CLIENT_ID, connected: !!t?.access_token, scopes: t?.scope?.split(' ') ?? [] })
+  }
+
+  if (path === '/api/google/connect' && method === 'GET') {
+    // Signing in IS connecting here — one flow, one consent screen.
+    return Response.redirect(`${origin}/auth/login`, 302)
+  }
+
+  if (path === '/api/google/sync' && method === 'POST') {
+    const token = await googleToken(env)
+    if (!token) return json({ error: 'Google is not connected' }, 400)
+    const w = await readWorld()
+    const { observations, errors } = await pullObservations(token, w.sources)
+    if (observations.length) await addObservations(observations)
+    return json({ added: observations.length, errors, bySource: observations.reduce((a: Record<string, number>, o) => ({ ...a, [o.source]: (a[o.source] ?? 0) + 1 }), {}) })
+  }
+
+  if (path === '/api/google/disconnect' && method === 'POST') {
+    await env.CRUCIBLE.delete(TOKENS_KEY)
+    return json({ ok: true })
+  }
+
+  return json({ error: 'Not found' }, 404)
 }

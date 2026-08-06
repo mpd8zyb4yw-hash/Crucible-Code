@@ -2,52 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "crucible-server",
-      "runtimeExecutable": "/opt/homebrew/bin/node",
-      "runtimeArgs": [
-        "/Users/justin/crucible-local/crucible-local/node_modules/.bin/tsx",
-        "server.ts"
-      ],
-      "cwd": "/Users/justin/crucible-local/crucible-local",
-      "env": { "PORT": "3001" },
-      "port": 3001
-    },
-    {
-      "name": "crucible-vite",
-      "runtimeExecutable": "/opt/homebrew/bin/node",
-      "runtimeArgs": [
-        "/Users/justin/crucible-local/crucible-local/node_modules/vite/bin/vite.js",
-        "--port",
-        "5180",
-        "--strictPort"
-      ],
-      "cwd": "/Users/justin/crucible-local/crucible-local",
-      "port": 5180
-    },
-    {
-      "name": "crucible-vite-iso",
-      "runtimeExecutable": "/opt/homebrew/bin/node",
-      "runtimeArgs": [
-        "/Users/justin/crucible-local/crucible-local/node_modules/vite/bin/vite.js",
-        "--port",
-        "5181",
-        "--strictPort"
-      ],
-      "cwd": "/Users/justin/crucible-local/crucible-local",
-      "env": { "CRUCIBLE_API_TARGET": "http://localhost:3011" },
-      "port": 5181
-    },
-    {
-      "name": "game-artifact-preview",
-      "runtimeExecutable": "python3",
-      "runtimeArgs": [
-        "-m",
-        "http.server",
-        "5191",
-        "--directory",
-        "/Users/justin/Desktop/Crucible/reef-lend-range-fold"
-      ],
-      "port": 5191
+      "name": "crucible",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5173
     }
   ]
 }
