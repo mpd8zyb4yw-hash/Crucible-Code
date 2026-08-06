@@ -11,7 +11,7 @@ import { sourcePanes, noticePane } from './panes.js'
 import { say } from './say.js'
 import { proposeGaps, researchGap } from './research.js'
 import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks } from './tracks.js'
-import { route, health, candidates, setModelPrefs, wake } from './router.js'
+import { route, health, candidates, setModelPrefs, wake, budgets } from './router.js'
 import { hunt, ensureVerified, snapshot, usable as usableModels } from './models.js'
 import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES } from './google.js'
 
@@ -114,6 +114,18 @@ app.get('/api/providers', async (_req, res) => {
  * This is the manual pull for when a provider has plainly changed underneath
  * us and waiting six hours for the next window is not acceptable.
  */
+/**
+ * What is left, per model, right now.
+ *
+ * Costs nothing to produce: the measured half rides in on headers from calls
+ * the app already made, and the modelled half is arithmetic over our own
+ * counters. Every row states which of the two it is, so a number that is our
+ * estimate can never be read as the provider's promise.
+ */
+app.get('/api/budgets', async (_req, res) => {
+  res.json({ budgets: await budgets() })
+})
+
 app.post('/api/models/hunt', async (req, res) => {
   try {
     const report = await hunt({ providerId: req.body?.provider, force: true })
@@ -204,26 +216,33 @@ app.post('/api/active', async (req, res) => {
 })
 
 /** The brain's one way to think. Keys never leave this process. */
+/**
+ * A raw call, routed like every other call.
+ *
+ * This used to reach for `chat()` directly with the active provider and its
+ * configured model, which quietly opted the whole endpoint out of everything
+ * the router does. No fallback, so a rate-limited model returned an error where
+ * a step down to the sibling model on the same key would have answered. No
+ * `note()`, so the budget headers on the response were dropped and the tracker
+ * could not see usage that had definitely happened. And no registry evidence,
+ * so a model proving itself here still looked unproven.
+ *
+ * There is no reason for a second path to the providers. Routing a chat as
+ * `chat` costs nothing and makes this endpoint behave like the rest of the app.
+ */
 app.post('/api/chat', async (req, res) => {
-  const cfg = await readConfig()
-  const id = cfg.activeProvider
-  if (!id) return res.status(400).json({ error: 'No model connected' })
-  const p = byId(id)
-  if (!p) return res.status(400).json({ error: 'Active provider is no longer available' })
-  const key = await getKey(id)
-  if (!key) return res.status(400).json({ error: 'No key for the active provider' })
-
   try {
-    const out = await chat({
-      providerId: id,
-      model: cfg.models?.[id] ?? p.defaultModel,
-      key,
-      system: req.body?.system,
-      prompt: String(req.body?.prompt ?? ''),
-      json: !!req.body?.json,
-      maxTokens: req.body?.maxTokens,
-    })
-    res.json({ ...out, provider: id, model: cfg.models?.[id] ?? p.defaultModel })
+    const out = await route(
+      'chat',
+      {
+        system: req.body?.system,
+        prompt: String(req.body?.prompt ?? ''),
+        json: !!req.body?.json,
+        maxTokens: req.body?.maxTokens,
+      },
+      { preferred: req.body?.provider }
+    )
+    res.json(out)
   } catch (err) {
     res.status(502).json({ error: (err as Error).message })
   }

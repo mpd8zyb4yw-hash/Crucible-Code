@@ -1,4 +1,4 @@
-import { chat, byId, canChat, listModels, type ChatRequest, type ChatResult, type Quota, type ProviderError } from './providers.js'
+import { chat, byId, canChat, listModels, type ChatRequest, type ChatResult, type Quota, type ProviderError, type RateSnapshot } from './providers.js'
 import { getKey } from './secrets.js'
 import { usable as usableModels, noteLiveCall, noteLiveFailure } from './models.js'
 
@@ -57,6 +57,109 @@ const SKILL: Record<string, Partial<Record<Task, number>>> = {
  */
 
 const HEAVY: Task[] = ['synthesis', 'curiosity']
+
+/**
+ * Published free-tier ceilings, for the providers that report nothing.
+ *
+ * Groq and OpenRouter return their remaining budget in response headers, so for
+ * those this table is never consulted — the provider's own number always wins.
+ * Gemini returns no rate-limit headers at all, and its daily request cap is the
+ * limit that actually bites, so the only way to show anything useful is to
+ * subtract what we have counted ourselves from the published ceiling.
+ *
+ * That makes these numbers an ESTIMATE and they are labelled as one everywhere
+ * they surface. They are also the kind of number that goes stale — exactly the
+ * failure mode of the model table this work removed — so they are a fallback of
+ * last resort, they never override a measured value, and being wrong here
+ * degrades a display rather than breaking a route.
+ */
+const PUBLISHED_DAILY: Record<string, Record<string, number>> = {
+  gemini: {
+    // Google publishes per-model RPD on the free tier; the flash family is the
+    // only part of it this key can reach, so it is the only part worth stating.
+    'default': 250,
+    'gemini-3.6-flash': 250,
+    'gemini-flash-latest': 250,
+    'gemini-3.5-flash': 250,
+    'gemini-flash-lite-latest': 1000,
+    'gemini-3.1-flash-lite': 1000,
+    'gemini-3.5-flash-lite': 1000,
+  },
+}
+
+/** What we believe is left for a model, and how much that belief is worth. */
+export interface Budget {
+  model: string
+  providerId: string
+  /** Requests left in the window, or null when nothing is known. */
+  requestsLeft: number | null
+  requestLimit: number | null
+  tokensLeft: number | null
+  /** When the window resets, epoch ms, when the provider said. */
+  resetsAt: number | null
+  /** Our own count today, always real. */
+  usedToday: number
+  tokensInToday: number
+  tokensOutToday: number
+  /**
+   * 'measured' — the provider's own headers.
+   * 'modelled' — published ceiling minus our count.
+   * 'unknown'  — no headers and no published figure; nothing is claimed.
+   *
+   * This distinction is the whole point. A modelled number presented as a
+   * measured one is a fabricated statistic, and there is a standing rule
+   * against reporting any figure that did not come from a real run.
+   */
+  basis: 'measured' | 'modelled' | 'unknown'
+  /** Set when the model is resting, with the provider's reason. */
+  restingUntil?: number
+  why?: string
+}
+
+/**
+ * The live budget picture, for every model we know of — including ones nothing
+ * has called yet, which report `unknown` rather than a comfortable-looking
+ * fiction.
+ */
+export async function budgets(): Promise<Budget[]> {
+  const s = await readState()
+  const day = today()
+  const out: Budget[] = []
+
+  for (const [providerId, st] of Object.entries(s)) {
+    const seen = new Set([
+      ...Object.keys(st.quota ?? {}),
+      ...Object.keys(st.calls ?? {}),
+      ...Object.keys(st.cool ?? {}),
+    ])
+    for (const model of seen) {
+      const q = st.quota?.[model]
+      const c = st.calls?.[model]
+      const used = c && c.day === day ? c.requests : 0
+      const published = PUBLISHED_DAILY[providerId]?.[model] ?? PUBLISHED_DAILY[providerId]?.default
+      const resting = (st.cool?.[model] ?? 0) > Date.now() ? st.cool[model] : undefined
+
+      // Headers first, always. They are the provider's own arithmetic; ours is
+      // a guess that cannot see usage from anything other than this app.
+      const measured = q && q.requestsLeft !== undefined
+      out.push({
+        model,
+        providerId,
+        requestsLeft: measured ? q!.requestsLeft! : published !== undefined ? Math.max(0, published - used) : null,
+        requestLimit: measured ? (q!.requestLimit ?? null) : (published ?? null),
+        tokensLeft: q?.tokensLeft ?? null,
+        resetsAt: q?.resetsAt ?? null,
+        usedToday: used,
+        tokensInToday: c && c.day === day ? c.tokensIn : 0,
+        tokensOutToday: c && c.day === day ? c.tokensOut : 0,
+        basis: measured ? 'measured' : published !== undefined ? 'modelled' : 'unknown',
+        restingUntil: resting,
+        why: resting ? st.why?.[model] : undefined,
+      })
+    }
+  }
+  return out.sort((a, b) => a.providerId.localeCompare(b.providerId) || a.model.localeCompare(b.model))
+}
 
 /**
  * Which provider and model he chose in settings. The router used to ignore the
@@ -145,6 +248,21 @@ interface ProviderState {
   fails: number
   tokensIn: number
   tokensOut: number
+  /**
+   * The provider's own budget headers, per model, from the last call that
+   * carried any. Free to collect — they ride along on responses we already
+   * asked for — and authoritative in a way our own arithmetic never is.
+   */
+  quota?: Record<string, RateSnapshot>
+  /**
+   * What we have spent per model today, counted by us.
+   *
+   * This is the fallback for providers that report nothing. Gemini sends no
+   * rate-limit headers at all, so the only way to say anything about its
+   * remaining free-tier budget is to subtract our own usage from the published
+   * ceiling — an estimate, and labelled as one wherever it is shown.
+   */
+  calls?: Record<string, { day: string; requests: number; tokensIn: number; tokensOut: number }>
 }
 
 export type RouterState = Record<string, ProviderState>
@@ -481,7 +599,7 @@ export async function route(
     try {
       const t0 = Date.now()
       const out = await chat({ ...req, providerId: c.providerId, model: c.model, key })
-      await note(c.providerId, c.model, { ok: true, usage: out.usage, size })
+      await note(c.providerId, c.model, { ok: true, usage: out.usage, size, limits: out.limits })
       // Free evidence. A model that just did real work needs no probe to prove
       // it works, and this is why the registry can stay accurate on a budget
       // that could never afford to probe everything on a schedule.
@@ -630,6 +748,8 @@ async function note(
     /** Prompt size of a call that succeeded, which retires a stale ceiling. */
     size?: number
     usage?: { in?: number; out?: number }
+    /** Budget headers read off the response, when the provider sent any. */
+    limits?: RateSnapshot
   }
 ) {
   const s = await readState()
@@ -637,7 +757,24 @@ async function note(
   st.why = st.why ?? {}
   st.maxPrompt = st.maxPrompt ?? {}
   st.kind = st.kind ?? {}
+  st.quota = st.quota ?? {}
+  st.calls = st.calls ?? {}
   st.today += 1
+
+  // Per-model counting, so the ledger can say what is left for a model the
+  // provider does not report headers for. Provider-level totals cannot: two
+  // models on one key have separate budgets and spending one says nothing
+  // about the other.
+  const day = today()
+  const c = st.calls[model] ?? { day, requests: 0, tokensIn: 0, tokensOut: 0 }
+  if (c.day !== day) { c.day = day; c.requests = 0; c.tokensIn = 0; c.tokensOut = 0 }
+  c.requests += 1
+  c.tokensIn += r.usage?.in ?? 0
+  c.tokensOut += r.usage?.out ?? 0
+  st.calls[model] = c
+
+  // The provider's own numbers always win over ours.
+  if (r.limits) st.quota[model] = r.limits
   if (r.oversize !== undefined) {
     // Not an outage and not a failure streak — a ceiling. The model stays in
     // the running for everything smaller, which is most of what the app asks.

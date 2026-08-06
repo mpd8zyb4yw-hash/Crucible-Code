@@ -188,6 +188,83 @@ export interface ChatResult {
   sources?: { title: string; uri: string }[]
   /** Provider-reported usage, when available. */
   usage?: { in?: number; out?: number }
+  /** What the provider said about the budget, read off the response headers. */
+  limits?: RateSnapshot
+}
+
+/**
+ * What a provider tells us about our remaining budget, for free.
+ *
+ * Every OpenAI-compatible endpoint returns its rate-limit state in the headers
+ * of the response we already asked for. We were throwing them away on success
+ * and only reading them on failure, which meant the app could not see a limit
+ * coming — it could only report one it had already hit, at the moment it broke
+ * something. Reading them costs nothing: no extra call, no extra token, and the
+ * numbers are the provider's own rather than our estimate of them.
+ */
+export interface RateSnapshot {
+  /** Requests left in the current window, as the provider counts them. */
+  requestsLeft?: number
+  requestLimit?: number
+  /** Tokens left in the current window. */
+  tokensLeft?: number
+  tokenLimit?: number
+  /** When the window resets, epoch ms. */
+  resetsAt?: number
+  /** When this was read. */
+  at: number
+  /** True when these came from the provider; false when we inferred them. */
+  measured: true
+}
+
+/** Providers state resets as "1m30s", "45s", "2000ms" or plain seconds. */
+function duration(v: string | null): number | undefined {
+  if (!v) return undefined
+  const t = v.trim()
+  if (/^\d+(\.\d+)?$/.test(t)) return Math.round(parseFloat(t) * 1000)
+  let ms = 0
+  let hit = false
+  for (const [, n, unit] of t.matchAll(/(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)/gi)) {
+    const x = parseFloat(n)
+    hit = true
+    ms += unit.toLowerCase() === 'ms' ? x
+      : unit.toLowerCase() === 's' ? x * 1000
+      : unit.toLowerCase() === 'm' ? x * 60_000
+      : unit.toLowerCase() === 'h' ? x * 3_600_000
+      : x * 86_400_000
+  }
+  return hit ? Math.round(ms) : undefined
+}
+
+const num = (v: string | null): number | undefined => {
+  if (v === null) return undefined
+  const n = Number(v)
+  return Number.isFinite(n) ? n : undefined
+}
+
+/**
+ * Read the budget off a response. Returns null when the provider said nothing,
+ * which is itself information — Gemini reports no headers at all, so its
+ * numbers have to be modelled from our own ledger and must never be presented
+ * as though the provider had confirmed them.
+ */
+export function parseRateHeaders(h: Headers): RateSnapshot | null {
+  const s: RateSnapshot = { at: Date.now(), measured: true }
+  s.requestsLeft = num(h.get('x-ratelimit-remaining-requests'))
+  s.requestLimit = num(h.get('x-ratelimit-limit-requests'))
+  s.tokensLeft = num(h.get('x-ratelimit-remaining-tokens'))
+  s.tokenLimit = num(h.get('x-ratelimit-limit-tokens'))
+
+  const reset =
+    duration(h.get('x-ratelimit-reset-requests')) ??
+    duration(h.get('x-ratelimit-reset-tokens')) ??
+    duration(h.get('retry-after'))
+  if (reset !== undefined) s.resetsAt = Date.now() + reset
+
+  const any =
+    s.requestsLeft !== undefined || s.tokensLeft !== undefined ||
+    s.requestLimit !== undefined || s.tokenLimit !== undefined
+  return any ? s : null
 }
 
 /**
@@ -298,6 +375,7 @@ async function openaiChat(req: ChatRequest, url: string): Promise<ChatResult> {
   return {
     text: body?.choices?.[0]?.message?.content ?? '',
     usage: { in: body?.usage?.prompt_tokens, out: body?.usage?.completion_tokens },
+    limits: parseRateHeaders(res.headers) ?? undefined,
   }
 }
 
@@ -319,7 +397,11 @@ async function anthropicChat(req: ChatRequest): Promise<ChatResult> {
   const body = await res.json().catch(() => null)
   if (!res.ok) throw fail(body, res.status, res.headers)
   const text = (body?.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
-  return { text, usage: { in: body?.usage?.input_tokens, out: body?.usage?.output_tokens } }
+  return {
+    text,
+    usage: { in: body?.usage?.input_tokens, out: body?.usage?.output_tokens },
+    limits: parseRateHeaders(res.headers) ?? undefined,
+  }
 }
 
 async function geminiChat(req: ChatRequest): Promise<ChatResult> {
