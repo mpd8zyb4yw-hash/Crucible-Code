@@ -1,5 +1,6 @@
 import { route } from './router.js'
 import { renderWorld, staleBeliefs, type World, type Belief } from './world.js'
+import type { WidgetPane } from './widgets.js'
 
 /**
  * The synthesis pass.
@@ -55,6 +56,18 @@ export interface Need {
    * the answer as an observation about him rather than as small talk.
    */
   asks: boolean
+  /**
+   * What this card opens into, before the chat thread.
+   *
+   * Empty means the card is pure conversation, which is the right shape for a
+   * card that is genuinely just a thought. Anything with underlying records —
+   * mail, a calendar, a route, a set of videos — carries panes instead, so
+   * opening it gives you the thing rather than a description of the thing.
+   *
+   * Server-built panes come from `sourcePanes`; model-authored ones are
+   * sanitised through `widgets.ts` before they ever reach here.
+   */
+  panes?: WidgetPane[]
 }
 
 export interface ThinkResult {

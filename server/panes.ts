@@ -1,5 +1,6 @@
 import type { Need } from './think.js'
 import type { Observation, World } from './world.js'
+import type { Widget, WidgetAction, WidgetItem, WidgetPane } from './widgets.js'
 
 /**
  * The panes that do not need a model.
@@ -101,7 +102,163 @@ function genericPane(key: string, obs: Observation[]): Need | null {
     line: newest.text,
     stats: [{ l: 'Known', v: String(obs.length) }],
     count: obs.length,
+    panes: widgetFor(key, obs),
   })
+}
+
+// ── What each source opens into ──────────────────────────────────────────────
+
+/**
+ * The widget a source's own observations make.
+ *
+ * Built from `data`, the structured payload the connectors now keep, and from
+ * nothing else — no model, no network. That is the point: this is the standing
+ * state of his life, it is already known, and it must be on screen whether or
+ * not anything is thinking. A source whose observations predate structured
+ * payloads produces a plain list of their text, which is worse than a real mail
+ * list and far better than the chat thread that used to be there.
+ */
+function widgetFor(source: string, obs: Observation[]): WidgetPane[] {
+  const newestFirst = [...obs].sort((a, b) => b.at.localeCompare(a.at))
+
+  if (source === 'email') {
+    const items: WidgetItem[] = newestFirst.flatMap((o) => {
+      const d = o.data
+      if (d?.kind !== 'email') return []
+      return [{
+        id: d.messageId,
+        title: d.subject,
+        sub: d.fromName ?? d.from,
+        body: d.body ?? d.snippet,
+        meta: shortWhen(o.at),
+        at: o.at,
+        unread: d.unread,
+        tags: d.fromName ? [d.fromName] : undefined,
+        // Read and reply are safe to offer up front; archiving is a change to
+        // his mailbox, so it is confirmed at the moment it is tapped.
+        actions: [
+          { kind: 'mail.reply', label: 'Reply', params: { messageId: d.messageId, threadId: d.threadId ?? null, to: d.from, subject: d.subject }, primary: true },
+          { kind: 'mail.archive', label: 'Archive', params: { messageId: d.messageId }, busy: 'Archiving…' },
+          ...(d.unread ? [{ kind: 'mail.read', label: 'Mark read', params: { messageId: d.messageId } }] : []),
+        ] as WidgetAction[],
+      }]
+    })
+    if (!items.length) return fallbackList(newestFirst, 'Nothing in the last week.')
+    return [{
+      widget: {
+        kind: 'list',
+        items,
+        expandable: true,
+        // The senders present, so the filter chips are the people who actually
+        // wrote to him rather than a fixed set of categories.
+        filters: [...new Set(items.flatMap((i) => i.tags ?? []))].slice(0, 6),
+        empty: 'Nothing in the last week.',
+      },
+    }]
+  }
+
+  if (source === 'calendar') {
+    const items: WidgetItem[] = obs.flatMap((o) => {
+      const d = o.data
+      if (d?.kind !== 'event') return []
+      const going = d.response === 'accepted'
+      return [{
+        id: d.eventId,
+        title: d.summary,
+        sub: [d.location, d.attendees?.length ? `${d.attendees.length} people` : null].filter(Boolean).join(' · ') || undefined,
+        body: d.description,
+        meta: d.allDay ? 'all day' : clockOf(d.start),
+        at: d.start,
+        tags: d.response ? [d.response] : undefined,
+        actions: d.response && d.response !== 'accepted'
+          ? ([{ kind: 'calendar.rsvp', label: going ? 'Going' : 'Accept', params: { eventId: d.eventId, response: 'accepted' }, primary: true },
+              { kind: 'calendar.rsvp', label: 'Decline', params: { eventId: d.eventId, response: 'declined' } }] as WidgetAction[])
+          : undefined,
+      }]
+    })
+    if (!items.length) return fallbackList(obs, 'Nothing on the next seven days.')
+    return [{
+      widget: { kind: 'agenda', items, days: 7, empty: 'Nothing on the next seven days.' },
+      actions: [{ kind: 'calendar.create', label: 'New event' }],
+    }]
+  }
+
+  if (source === 'health') {
+    const d = newestFirst.find((o) => o.data?.kind === 'steps')?.data
+    if (d?.kind !== 'steps' || !d.days.length) return fallbackList(newestFirst, 'No step data yet.')
+    return [{
+      widget: {
+        kind: 'chart',
+        points: d.days.map((x) => ({ label: dayLabel(x.date), value: x.steps })),
+        unit: 'steps',
+        // The average as a line across the bars, so a day reads as above or
+        // below his own normal rather than against a number from a magazine.
+        target: d.average,
+        compareLabel: 'average',
+        accent: 'lime',
+      },
+    }]
+  }
+
+  if (source === 'youtube') {
+    const items: WidgetItem[] = newestFirst.flatMap((o) => {
+      const d = o.data
+      if (d?.kind !== 'video') return []
+      return [{
+        id: d.videoId,
+        title: d.title,
+        sub: d.channel,
+        body: d.description,
+        meta: shortWhen(o.at),
+        at: o.at,
+        image: d.thumbnail,
+        actions: [{ kind: 'media.open', label: 'Watch', params: { videoId: d.videoId }, primary: true }],
+      }]
+    })
+    if (!items.length) return fallbackList(newestFirst, 'Nothing watched recently.')
+    return [{ widget: { kind: 'media', items, columns: 2, empty: 'Nothing watched recently.' } }]
+  }
+
+  return fallbackList(newestFirst, 'Nothing here yet.')
+}
+
+/**
+ * The generic pane: whatever the observations say, as a list.
+ *
+ * Reached by any source without a hand-written widget and by old observations
+ * with no structured payload. It is the reason a brand-new connector is useful
+ * the day it lands — it gets a real, scrollable, expandable pane without a line
+ * of code being written about it.
+ */
+function fallbackList(obs: Observation[], empty: string): WidgetPane[] {
+  const items: WidgetItem[] = obs.slice(0, 40).map((o) => ({
+    id: o.id,
+    title: clip(o.text, 90),
+    body: o.text.length > 90 ? o.text : undefined,
+    meta: shortWhen(o.at),
+    at: o.at,
+  }))
+  return [{ widget: { kind: 'list', items, expandable: true, empty } }]
+}
+
+const clockOf = (iso: string) => {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(11, 16)
+}
+
+const dayLabel = (date: string) => {
+  const d = new Date(date)
+  return Number.isNaN(d.getTime()) ? date : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()]!
+}
+
+function shortWhen(at: string): string {
+  const d = new Date(at)
+  if (Number.isNaN(d.getTime())) return at
+  const days = Math.round((Date.now() - d.getTime()) / 86_400_000)
+  if (days <= 0) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 7) return `${days}d ago`
+  return at.slice(5, 10)
 }
 
 /** Sources that are not connectors and must never become panes of their own. */
@@ -131,6 +288,7 @@ export function sourcePanes(world: World): Need[] {
       line: s.line(obs),
       stats: s.stats?.(obs) ?? [],
       count: obs.length,
+      panes: widgetFor(s.key, obs),
     }))
   }
 
@@ -184,6 +342,7 @@ function row(x: {
   line: string
   stats: { l: string; v: string }[]
   count: number
+  panes: WidgetPane[]
 }): Need {
   return {
     id: `src-${x.key}`,
@@ -206,6 +365,7 @@ function row(x: {
     proposes: null,
     basis: [`source:${x.key}`],
     asks: false,
+    panes: x.panes,
   }
 }
 

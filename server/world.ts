@@ -21,7 +21,86 @@ export interface Observation {
   at: string
   /** Plain-language description of the raw event. */
   text: string
+  /**
+   * The same event as fields, when the connector had them.
+   *
+   * `text` is what the MODEL reads — one sentence, because the synthesis prompt
+   * is a budget and prose is what a language model reasons over. But it is a
+   * lossy rendering, and for a long time it was the only thing kept: an email
+   * became the string `Email from X — "Subject": snippet`, which no interface
+   * can turn back into a message you can open, reply to, or mark read. Every
+   * widget in the app was impossible for want of the fields that were thrown
+   * away at sync time.
+   *
+   * So both are stored. `text` stays exactly as it was, so nothing about the
+   * brain changes; `data` is what the panes render from. Observations written
+   * before this existed simply have no `data`, and a pane that finds none falls
+   * back to showing `text` — an old world model degrades, it does not break.
+   */
+  data?: ObservationData
 }
+
+/**
+ * Structured payloads, one shape per kind of thing a connector can see.
+ *
+ * Discriminated on `kind` rather than on the observation's `source`, because
+ * the two are not the same: a mail-shaped thing could arrive from somewhere
+ * other than Gmail, and a source can produce more than one kind.
+ */
+export type ObservationData =
+  | {
+      kind: 'email'
+      messageId: string
+      threadId?: string
+      from: string
+      fromName?: string
+      to?: string
+      subject: string
+      snippet?: string
+      /** Full body, when it has been fetched. Absent until the card is opened. */
+      body?: string
+      unread?: boolean
+      labels?: string[]
+    }
+  | {
+      kind: 'event'
+      eventId: string
+      calendarId?: string
+      summary: string
+      /** ISO datetime, or a plain date for all-day events. */
+      start: string
+      end?: string
+      allDay?: boolean
+      location?: string
+      description?: string
+      attendees?: { email: string; name?: string; response?: string }[]
+      /** Our own response: accepted | declined | tentative | needsAction. */
+      response?: string
+      organizer?: string
+    }
+  | {
+      kind: 'steps'
+      /** One entry per day, oldest first. */
+      days: { date: string; steps: number }[]
+      average?: number
+    }
+  | {
+      kind: 'video'
+      videoId: string
+      title: string
+      channel?: string
+      thumbnail?: string
+      publishedAt?: string
+      duration?: string
+      description?: string
+    }
+  | {
+      kind: 'place'
+      label: string
+      lat: number
+      lon: number
+      address?: string
+    }
 
 export interface Belief {
   id: string

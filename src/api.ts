@@ -67,6 +67,66 @@ export const setActive = (providerId: string, model?: string) =>
   }).then(j<{ ok: true; active: string; model: string }>)
 
 
+/**
+ * The widget vocabulary, mirrored from server/widgets.ts.
+ *
+ * Duplicated rather than imported because the client bundle must not pull in
+ * anything from server/ — that tree imports node and Worker globals. The server
+ * file is the authority; this is a structural copy of its public shape.
+ */
+export interface WidgetAction {
+  kind: string
+  label: string
+  params?: Record<string, string | number | boolean | null>
+  busy?: string
+  irreversible?: boolean
+  primary?: boolean
+}
+
+export interface WidgetItem {
+  id: string
+  title: string
+  sub?: string
+  body?: string
+  meta?: string
+  at?: string
+  image?: string
+  tags?: string[]
+  unread?: boolean
+  accent?: string
+  actions?: WidgetAction[]
+}
+
+export interface WidgetPlace {
+  id: string
+  label: string
+  lat: number
+  lon: number
+  sub?: string
+  self?: boolean
+}
+
+export interface WidgetPoint {
+  label: string
+  value: number
+  compare?: number
+}
+
+export type Widget =
+  | { kind: 'list'; items: WidgetItem[]; filters?: string[]; empty?: string; expandable?: boolean }
+  | { kind: 'agenda'; items: WidgetItem[]; focus?: string; days?: number; empty?: string }
+  | { kind: 'chart'; points: WidgetPoint[]; unit?: string; target?: number; compareLabel?: string; accent?: string }
+  | { kind: 'media'; items: WidgetItem[]; columns?: 1 | 2; empty?: string }
+  | { kind: 'map'; places: WidgetPlace[]; route?: 'walk' | 'drive' | 'cycle'; follow?: boolean; searchable?: boolean; zoom?: number }
+  | { kind: 'detail'; rows: { label: string; value: string; accent?: string }[]; body?: string }
+  | { kind: 'compose'; placeholder?: string; value?: string; to?: string; submit: WidgetAction; multiline?: boolean }
+
+export interface WidgetPane {
+  title?: string
+  widget: Widget
+  actions?: WidgetAction[]
+}
+
 export interface Need {
   id: string
   tier: 'hero' | 'ember' | 'quiet'
@@ -90,6 +150,8 @@ export interface Need {
   proposes: { what: string; why: string; question: string | null; everyHours: number } | null
   basis: string[]
   asks: boolean
+  /** What this card opens into, before the chat thread. */
+  panes?: WidgetPane[]
 }
 
 export interface ThinkResult {

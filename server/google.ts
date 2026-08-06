@@ -27,8 +27,23 @@ export const GOOGLE_SCOPES = [
   'openid',
   'email',
   'profile',
-  'https://www.googleapis.com/auth/calendar.readonly',
-  'https://www.googleapis.com/auth/gmail.readonly',
+  /**
+   * Read-write, deliberately.
+   *
+   * These were both `.readonly`, which made Crucible a mail room: it could sort
+   * and summarise, and every actual action — reply, archive, RSVP — had to
+   * happen in Google's app. The point of the widget layer is that it does not.
+   *
+   * `gmail.modify` covers archive, mark-read and labels but NOT sending, which
+   * Google scopes separately; `gmail.send` is what makes a reply possible.
+   * Nothing sends by itself — a message leaves only when he taps Send on a
+   * composer he is looking at, and the endpoint has no path that sends without
+   * one. Broadening these requires re-consenting once on localhost and once on
+   * crucible.cam, since the grants are per-origin.
+   */
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/youtube.readonly',
   'https://www.googleapis.com/auth/fitness.activity.read',
 ].join(' ')
@@ -138,6 +153,18 @@ async function gFetch(token: string, url: string): Promise<any> {
 const iso = (d: Date) => d.toISOString().slice(0, 10)
 
 /**
+ * The human part of a From header. `"Anna Rossi" <anna@x.it>` → `Anna Rossi`,
+ * and a bare address falls back to the part before the @, so a mail row always
+ * has something readable to lead with rather than a raw header.
+ */
+function displayName(from: string): string | undefined {
+  const quoted = /^\s*"?([^"<]+?)"?\s*</.exec(from)
+  if (quoted?.[1]?.trim()) return quoted[1].trim()
+  const bare = /([^@<\s]+)@/.exec(from)
+  return bare?.[1]
+}
+
+/**
  * Pull a window of real life out of Google and shape it into observations.
  * Each source is independent: one failing (a scope not granted, an API off)
  * must never cost the others.
@@ -166,11 +193,31 @@ export async function pullObservations(
       const start = e.start?.dateTime ?? e.start?.date
       if (!start) continue
       const when = e.start?.dateTime ? new Date(e.start.dateTime).toString().replace(/ GMT.*$/, '') : `${start} (all day)`
+      const me = (e.attendees ?? []).find((a: any) => a.self)
       out.push({
         id: `gcal-${e.id}`.slice(0, 60),
         source: 'calendar',
         at: String(start).slice(0, 10),
         text: `${e.summary ?? 'Untitled'} — ${when}${e.location ? `, at ${e.location}` : ''}${e.attendees?.length ? `, with ${e.attendees.map((a: any) => a.displayName ?? a.email).slice(0, 4).join(', ')}` : ''}`,
+        // The same event as fields, so the agenda can render a real event
+        // rather than parsing the sentence above back apart.
+        data: {
+          kind: 'event',
+          eventId: String(e.id),
+          summary: String(e.summary ?? 'Untitled'),
+          start: String(e.start?.dateTime ?? e.start?.date),
+          end: e.end?.dateTime ?? e.end?.date,
+          allDay: !e.start?.dateTime,
+          location: e.location ? String(e.location) : undefined,
+          description: e.description ? String(e.description).slice(0, 2000) : undefined,
+          attendees: (e.attendees ?? []).slice(0, 20).map((a: any) => ({
+            email: String(a.email ?? ''),
+            name: a.displayName ? String(a.displayName) : undefined,
+            response: a.responseStatus ? String(a.responseStatus) : undefined,
+          })),
+          response: me?.responseStatus ? String(me.responseStatus) : undefined,
+          organizer: e.organizer?.email ? String(e.organizer.email) : undefined,
+        },
       })
     }
   } catch (e) {
@@ -182,13 +229,29 @@ export async function pullObservations(
   if (on('email')) try {
     const list = await gFetch(token, 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=15&q=newer_than:7d -category:promotions')
     for (const m of (list.messages ?? []).slice(0, 15)) {
-      const msg = await gFetch(token, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`)
+      const msg = await gFetch(token, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Date`)
       const h = Object.fromEntries((msg.payload?.headers ?? []).map((x: any) => [x.name, x.value]))
+      const from = String(h.From ?? 'unknown')
       out.push({
         id: `gmail-${m.id}`.slice(0, 60),
         source: 'email',
         at: h.Date ? iso(new Date(h.Date)) : iso(now),
-        text: `Email from ${h.From ?? 'unknown'} — "${h.Subject ?? '(no subject)'}"${msg.snippet ? `: ${String(msg.snippet).slice(0, 180)}` : ''}`,
+        text: `Email from ${from} — "${h.Subject ?? '(no subject)'}"${msg.snippet ? `: ${String(msg.snippet).slice(0, 180)}` : ''}`,
+        // Keeping the ids is what makes a message actionable later: without
+        // messageId and threadId there is no way to open, reply to, archive or
+        // mark anything, however good the summary sentence is.
+        data: {
+          kind: 'email',
+          messageId: String(m.id),
+          threadId: msg.threadId ? String(msg.threadId) : undefined,
+          from,
+          fromName: displayName(from),
+          to: h.To ? String(h.To) : undefined,
+          subject: String(h.Subject ?? '(no subject)'),
+          snippet: msg.snippet ? String(msg.snippet).slice(0, 400) : undefined,
+          unread: Array.isArray(msg.labelIds) && msg.labelIds.includes('UNREAD'),
+          labels: Array.isArray(msg.labelIds) ? msg.labelIds.slice(0, 12).map(String) : undefined,
+        },
       })
     }
   } catch (e) {
@@ -208,14 +271,24 @@ export async function pullObservations(
         endTimeMillis: now.getTime(),
       }),
     }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-    const days = (b.bucket ?? []).map((x: any) => x.dataset?.[0]?.point?.[0]?.value?.[0]?.intVal ?? 0).filter((n: number) => n > 0)
-    if (days.length) {
-      const avg = Math.round(days.reduce((a: number, c: number) => a + c, 0) / days.length)
+    // Keep which day each count belongs to. The old version mapped straight to
+    // a bare array of numbers, so "6,100 average" could be stated but no chart
+    // could ever be drawn — a bar needs to know which day it stands on.
+    const buckets: { date: string; steps: number }[] = (b.bucket ?? [])
+      .map((x: any) => ({
+        date: iso(new Date(Number(x.startTimeMillis))),
+        steps: Number(x.dataset?.[0]?.point?.[0]?.value?.[0]?.intVal ?? 0),
+      }))
+      .filter((d: { date: string; steps: number }) => d.steps > 0)
+
+    if (buckets.length) {
+      const avg = Math.round(buckets.reduce((a, c) => a + c.steps, 0) / buckets.length)
       out.push({
         id: `gfit-${iso(now)}`,
         source: 'health',
         at: iso(now),
-        text: `Steps over the last ${days.length} days: average ${avg}/day (daily: ${days.join(', ')}).`,
+        text: `Steps over the last ${buckets.length} days: average ${avg}/day (daily: ${buckets.map((d) => d.steps).join(', ')}).`,
+        data: { kind: 'steps', days: buckets, average: avg },
       })
     }
   } catch (e) {
@@ -227,13 +300,36 @@ export async function pullObservations(
   if (on('youtube')) try {
     const b = await gFetch(token, 'https://www.googleapis.com/youtube/v3/activities?part=snippet,contentDetails&mine=true&maxResults=20')
     const items = (b.items ?? []).filter((i: any) => i.snippet?.type === 'upload' || i.contentDetails)
-    if (items.length) {
-      const titles = items.slice(0, 10).map((i: any) => `"${i.snippet?.title}" (${String(i.snippet?.publishedAt ?? '').slice(11, 16)})`)
+
+    /**
+     * One observation per video, not one per sync.
+     *
+     * This used to concatenate ten titles into a single sentence. That is fine
+     * for the model, which reads prose anyway, and useless for everything else:
+     * a thumbnail grid needs ten items with ten ids and ten image URLs, and
+     * none of that can be recovered from a semicolon-separated string. The
+     * summary line is still produced, as its own observation, so the brain sees
+     * exactly what it saw before.
+     */
+    for (const i of items.slice(0, 12)) {
+      const videoId = i.contentDetails?.upload?.videoId ?? i.contentDetails?.playlistItem?.resourceId?.videoId
+      const s = i.snippet ?? {}
+      if (!videoId || !s.title) continue
+      const thumb = s.thumbnails?.medium?.url ?? s.thumbnails?.default?.url
       out.push({
-        id: `yt-${iso(now)}`,
+        id: `yt-v-${videoId}`.slice(0, 60),
         source: 'youtube',
-        at: iso(now),
-        text: `Recent YouTube activity: ${titles.join('; ')}`,
+        at: s.publishedAt ? iso(new Date(s.publishedAt)) : iso(now),
+        text: `YouTube: "${s.title}"${s.channelTitle ? ` from ${s.channelTitle}` : ''}`,
+        data: {
+          kind: 'video',
+          videoId: String(videoId),
+          title: String(s.title),
+          channel: s.channelTitle ? String(s.channelTitle) : undefined,
+          thumbnail: thumb ? String(thumb) : undefined,
+          publishedAt: s.publishedAt ? String(s.publishedAt) : undefined,
+          description: s.description ? String(s.description).slice(0, 1000) : undefined,
+        },
       })
     }
   } catch (e) {
@@ -241,4 +337,64 @@ export async function pullObservations(
   }
 
   return { observations: out, errors }
+}
+
+// ── Acting, not just reading ─────────────────────────────────────────────────
+
+/**
+ * A write against a Google API, with the same token handling as every read.
+ *
+ * Separate from `gFetch` only because it needs a method and a body; it shares
+ * the refresh-on-expiry path, so an action taken an hour after the last sync
+ * does not fail on a stale token.
+ */
+async function gWrite(token: string, url: string, method: 'POST' | 'PUT' | 'PATCH', body: unknown): Promise<any> {
+  const r = await fetch(url, {
+    method,
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!r.ok) {
+    const text = await r.text().catch(() => '')
+    /**
+     * The most likely failure here is a token minted before the scopes were
+     * broadened. Google reports that as a flat 403 with no hint that
+     * re-consenting is the fix, which would read as "archiving is broken".
+     */
+    if (r.status === 403 || r.status === 401) {
+      throw new Error('Google refused that — reconnect your account so Crucible can act on mail and calendar, not just read them.')
+    }
+    throw new Error(`Google: ${r.status} ${text.slice(0, 200)}`)
+  }
+  return r.status === 204 ? {} : r.json().catch(() => ({}))
+}
+
+/** Add or remove Gmail labels. Archiving is removing INBOX; there is no delete here. */
+export async function gmailModify(
+  token: string,
+  messageId: string,
+  change: { addLabelIds?: string[]; removeLabelIds?: string[] }
+): Promise<void> {
+  if (!messageId) throw new Error('No message given.')
+  await gWrite(token, `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/modify`, 'POST', change)
+}
+
+/** Answer an invitation without opening Google Calendar. */
+export async function calendarRsvp(token: string, eventId: string, response: string): Promise<void> {
+  if (!eventId) throw new Error('No event given.')
+  const allowed = new Set(['accepted', 'declined', 'tentative'])
+  if (!allowed.has(response)) throw new Error(`"${response}" is not an answer I can send.`)
+
+  // Only OUR attendee row may be touched. Patching the attendee list wholesale
+  // would let a malformed action rewrite everyone else's response, so the
+  // current list is read first and exactly one entry is changed.
+  const ev = await gFetch(token, `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`)
+  const attendees = (ev.attendees ?? []).map((a: any) => (a.self ? { ...a, responseStatus: response } : a))
+  if (!attendees.some((a: any) => a.self)) throw new Error('You are not on the invitation for that event.')
+  await gWrite(
+    token,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    'PATCH',
+    { attendees }
+  )
 }

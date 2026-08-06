@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { css } from './css'
-import { listProviders, think, tell, addTrack, say, enablePush, type Need, type ThinkResult } from './api'
+import { listProviders, think, tell, addTrack, say, enablePush, type Need, type ThinkResult, type WidgetAction } from './api'
 import Home from './Home'
 import Report, { type Msg } from './Report'
 import Settings from './Settings'
@@ -131,6 +131,30 @@ export default function App() {
    * accepting it is what creates the standing interest — this is the whole
    * "design a card with the agent" path, and it costs him one tap.
    */
+  /**
+   * Perform a widget action.
+   *
+   * Everything goes through one endpoint that maps a NAMED intent to a call the
+   * server already knows how to make. The client never learns what
+   * 'mail.archive' does, and a card cannot ask for anything the server has not
+   * implemented — which is what keeps a model-authored widget from being a way
+   * to reach arbitrary endpoints.
+   *
+   * The feed is refreshed afterwards rather than patched locally: archiving a
+   * message changes what the panes should show, and guessing at that in the
+   * client is how two sources of truth start disagreeing.
+   */
+  const onAction = async (need: Need, action: WidgetAction) => {
+    const res = await fetch('/api/act', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: action.kind, params: action.params ?? {}, card: need.title }),
+    })
+    const body = await res.json().catch(() => null)
+    if (!res.ok) throw new Error(body?.error ?? `That didn't work (HTTP ${res.status})`)
+    if (body?.refresh !== false) void reconsider()
+  }
+
   const onAct = async (need: Need) => {
     // The "I can't think right now" card is the one card whose action is not a
     // thing to record — it is a door to the place the problem is fixable.
@@ -191,6 +215,7 @@ export default function App() {
             thread={threads[open.id] || []}
             done={doneIds.has(open.id)}
             onSay={onSay}
+            onAction={onAction}
             onClose={() => setView(null)}
           />
         )}

@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { css, cssv } from './css'
 import { accentOf, askSkin, skinOf } from './heat'
-import type { Need } from './api'
+import Widgets from './Widgets'
+import type { Need, WidgetAction } from './api'
 
 export interface Msg { who: 'me' | 'ai'; text: string }
 
@@ -11,9 +12,11 @@ interface Props {
   done: boolean
   onSay: (need: Need, text: string) => Promise<void>
   onClose: () => void
+  /** Perform a widget action. Throws to surface the failure inside the widget. */
+  onAction: (need: Need, action: WidgetAction) => Promise<void>
 }
 
-export default function Report({ need, thread, done, onSay, onClose }: Props) {
+export default function Report({ need, thread, done, onSay, onClose, onAction }: Props) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
 
@@ -70,6 +73,14 @@ export default function Report({ need, thread, done, onSay, onClose }: Props) {
             ))}
           </div>
         )}
+
+        {/* The card opens into the THING, above the conversation about it.
+            Mail is a list of messages you can read and reply to; a calendar is
+            an agenda you can RSVP from. The thread stays underneath rather than
+            being replaced — it is still the place to ask about what you see. */}
+        {need.panes?.length ? (
+          <Widgets panes={need.panes} heat={need.heat} onAction={(a) => onAction(need, a)} />
+        ) : null}
 
         <div style={css('display:flex; flex-direction:column; gap:10px; padding-top:2px;')}>
           {raw.map((m, i) => {

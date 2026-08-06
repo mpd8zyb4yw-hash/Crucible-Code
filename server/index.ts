@@ -13,7 +13,7 @@ import { proposeGaps, researchGap } from './research.js'
 import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks } from './tracks.js'
 import { route, health, candidates, setModelPrefs, wake, budgets } from './router.js'
 import { hunt, ensureVerified, snapshot, usable as usableModels } from './models.js'
-import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES } from './google.js'
+import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES, gmailModify, calendarRsvp } from './google.js'
 
 const PORT = Number(process.env.PORT ?? 3001)
 const CONFIG_DIR = join(homedir(), '.crucible')
@@ -124,6 +124,77 @@ app.get('/api/providers', async (_req, res) => {
  */
 app.get('/api/budgets', async (_req, res) => {
   res.json({ budgets: await budgets() })
+})
+
+/**
+ * Perform a widget action.
+ *
+ * One endpoint, a fixed table of named intents. The client posts a NAME and
+ * parameters; it never posts a URL, a method or a body to forward. That is the
+ * whole security property: widget specs can be authored by a model reading
+ * untrusted content — an email is untrusted content — and the worst a
+ * hallucinated or injected action can do is name an intent that does not exist,
+ * or pass a message id that does not resolve.
+ *
+ * Actions that leave the device or cannot be undone are confirmed by him in the
+ * UI before they arrive here, and the model's own grammar has no word for them
+ * (see MODEL_SAFE_ACTIONS in widgets.ts) — only panes the server built from
+ * real records can offer one.
+ */
+app.post('/api/act', async (req, res) => {
+  const kind = String(req.body?.kind ?? '')
+  const params = (req.body?.params ?? {}) as Record<string, unknown>
+  const str = (k: string) => (typeof params[k] === 'string' ? (params[k] as string) : '')
+  const google = async () => {
+    const t = await accessToken(G_ID, G_SECRET)
+    if (!t) throw new Error('Google is not connected.')
+    return t
+  }
+
+  try {
+    switch (kind) {
+      // ── Reading and organising. Reversible from Gmail, so no confirmation.
+      case 'mail.archive':
+        await gmailModify(await google(), str('messageId'), { removeLabelIds: ['INBOX'] })
+        return res.json({ ok: true })
+      case 'mail.read':
+        await gmailModify(await google(), str('messageId'), { removeLabelIds: ['UNREAD'] })
+        return res.json({ ok: true })
+      case 'mail.unread':
+        await gmailModify(await google(), str('messageId'), { addLabelIds: ['UNREAD'] })
+        return res.json({ ok: true })
+
+      // ── Calendar.
+      case 'calendar.rsvp':
+        await calendarRsvp(await google(), str('eventId'), str('response'))
+        return res.json({ ok: true })
+
+      /**
+       * Something happened that the assistant should know about.
+       *
+       * The one action a model-authored widget can take that changes state, and
+       * it only ever adds to the world model — it cannot touch his accounts.
+       */
+      case 'world.tell':
+        await addObservations([
+          { id: `act-${Date.now()}`, source: 'user', at: new Date().toISOString().slice(0, 10), text: str('text') || String(req.body?.card ?? 'acted on a card') },
+        ])
+        return res.json({ ok: true })
+
+      /** Purely client-side intents reach here only if the client missed them. */
+      case 'mail.open':
+      case 'calendar.open':
+      case 'media.open':
+      case 'map.route':
+      case 'map.search':
+        return res.json({ ok: true, refresh: false })
+
+      default:
+        return res.status(400).json({ error: `I don't know how to do "${kind}" yet.` })
+    }
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message })
+  }
 })
 
 app.post('/api/models/hunt', async (req, res) => {
