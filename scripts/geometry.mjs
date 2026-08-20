@@ -475,8 +475,41 @@ const wait = async (url, ms = 30_000) => {
 }
 
 const children = []
+
+/**
+ * STOP EVERYTHING THIS RUN STARTED — THE WHOLE GROUP, NOT THE WRAPPER.
+ *
+ * `start` spawns `npx`, which execs `tsx`, which forks `node`. `child.kill()`
+ * signals only the FIRST of those, so the actual fixture — the `node` process
+ * holding port 3002 — survived every cleanup path this harness had. The next
+ * stage of the same `npm test` then found a fixture it did not start, refused
+ * to test a ghost, and failed the run. That is not hypothetical: it is what
+ * blocked the deploy reconciler, and it cost this session a red suite whose
+ * only fault was a leftover socket.
+ *
+ * `detached: true` makes each child a process-group leader, so a negative pid
+ * signals the leader and everything it went on to exec. Both are attempted:
+ * the group for the real work, the handle in case the group is already gone.
+ *
+ * The consequence of `detached` is that these no longer die with the terminal,
+ * so this MUST run on every exit path — hence the handlers below rather than a
+ * `finally` in one function.
+ */
+function stopAll(signal = 'SIGKILL') {
+  for (const c of children) {
+    try { process.kill(-c.pid, signal) } catch { /* group already gone */ }
+    try { c.kill(signal) } catch { /* handle already reaped */ }
+  }
+  children.length = 0
+}
+
+process.on('exit', () => stopAll())
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => { stopAll(); process.exit(1) })
+}
+
 function start(cmd, args, env) {
-  const c = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, ...env }, stdio: 'ignore' })
+  const c = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, ...env }, stdio: 'ignore', detached: true })
   children.push(c)
   return c
 }
@@ -886,7 +919,7 @@ async function main() {
   }
 
   await browser.close()
-  for (const c of children) c.kill()
+  stopAll()
 
   console.log(`\n${ran - failures.length}/${ran} geometry checks passed`)
   if (failures.length) {
@@ -898,6 +931,6 @@ async function main() {
 
 main().catch((e) => {
   console.error(e)
-  for (const c of children) c.kill()
+  stopAll()
   process.exit(1)
 })

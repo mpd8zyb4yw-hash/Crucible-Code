@@ -42,6 +42,39 @@ const BASE = () => `http://localhost:${PAGE_PORT}`
 const DEVICE = { width: 402, height: 874 }
 
 const children = []
+
+/**
+ * STOP EVERYTHING THIS RUN STARTED — THE WHOLE GROUP, NOT THE WRAPPER.
+ *
+ * `start` spawns `npx`, which execs `tsx`, which forks `node`. `child.kill()`
+ * signals only the FIRST of those, so the actual fixture — the `node` process
+ * holding port 3002 — survived every cleanup path this harness had. The next
+ * stage of the same `npm test` then found a fixture it did not start, refused
+ * to test a ghost, and failed the run. That is not hypothetical: it is what
+ * blocked the deploy reconciler, and it cost this session a red suite whose
+ * only fault was a leftover socket.
+ *
+ * `detached: true` makes each child a process-group leader, so a negative pid
+ * signals the leader and everything it went on to exec. Both are attempted:
+ * the group for the real work, the handle in case the group is already gone.
+ *
+ * The consequence of `detached` is that these no longer die with the terminal,
+ * so this MUST run on every exit path — hence the handlers below rather than a
+ * `finally` in one function.
+ */
+function stopAll(signal = 'SIGKILL') {
+  for (const c of children) {
+    try { process.kill(-c.pid, signal) } catch { /* group already gone */ }
+    try { c.kill(signal) } catch { /* handle already reaped */ }
+  }
+  children.length = 0
+}
+
+process.on('exit', () => stopAll())
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => { stopAll(); process.exit(1) })
+}
+
 let failures = 0
 let passes = 0
 
@@ -796,7 +829,7 @@ async function deadControls(page, where) {
 // ── harness ──────────────────────────────────────────────────────────────────
 
 function start(cmd, args, env) {
-  const c = spawn(cmd, args, { stdio: 'ignore', env: { ...process.env, ...env } })
+  const c = spawn(cmd, args, { stdio: 'ignore', env: { ...process.env, ...env }, detached: true })
   children.push(c)
   return c
 }
@@ -898,7 +931,7 @@ async function main() {
       `It is running whatever code it was started with, so this run would test that.\n` +
       `Stop it — \`kill ${answering?.pid ?? `$(lsof -ti:${FIXTURE})`}\` — and run again.`,
     )
-    for (const c of children) c.kill('SIGKILL')
+    stopAll()
     process.exit(1)
   }
 
@@ -941,7 +974,7 @@ async function main() {
   }
 
   await browser.close()
-  for (const c of children) c.kill('SIGKILL')
+  stopAll()
 
   console.log(`\n${passes}/${passes + failures} interaction checks passed · ${counted} visible controls swept`)
   if (failures) {
@@ -952,7 +985,7 @@ async function main() {
 }
 
 main().catch((e) => {
-  for (const c of children) c.kill('SIGKILL')
+  stopAll()
   console.error(e)
   process.exit(1)
 })
