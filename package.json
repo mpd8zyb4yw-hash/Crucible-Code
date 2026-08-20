@@ -18,6 +18,7 @@
     "shots": "node scripts/shots.mjs",
     "interaction": "node scripts/interaction.mjs",
     "fixture": "tsx scripts/fixture.mjs --port 3002",
+    "dev:fixture": "concurrently \"npm:fixture\" \"CRUCIBLE_API_TARGET=http://localhost:3002 vite --port 5175 --strictPort\"",
     "prebuild": "node scripts/stamp.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
