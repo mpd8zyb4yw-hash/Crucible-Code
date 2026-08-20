@@ -3,6 +3,7 @@ import { css } from './css'
 import {
   listProviders, say, enablePush,
   getFeed, refreshFeed, refreshPane, askFor, leaveByFor, judgeIntelligence,
+  syncIfDue, revisionOf,
   type Feed, type IntelligencePresentation, type Need, type WidgetAction,
 } from './api'
 import Home from './Home'
@@ -223,7 +224,30 @@ export default function App() {
   /** Durable Home state: paint from the local mirror, reconcile after. */
   useEffect(() => { void reconcileHome() }, [])
 
+  /**
+   * LAND A FEED, UNLESS SOMETHING NEWER IS ALREADY ON SCREEN.
+   *
+   * A cold launch puts three requests in the air within a second — the cached
+   * read, the live build, and the sync-if-due — and a phone does not return
+   * them in the order it sent them. Whoever answered last used to win, so a slow
+   * older build could land on top of a fast newer one and put stale events back
+   * on Home with nothing anywhere saying so.
+   *
+   * `landedLive` was the only guard and it only covered one direction: cached
+   * must not overwrite live. It said nothing about live-vs-live, which is the
+   * case that actually reorders.
+   *
+   * So the comparison is now on the server's own monotonic `revision`, and it is
+   * a strict `>`: an equal revision is the SAME BUILD arriving twice, and
+   * re-landing it would throw away nothing but would also mean the cache write
+   * and the paint happen for no reason.
+   */
+  const landedRevision = useRef(0)
+
   const land = useCallback((feed: Feed, cached: boolean) => {
+    const rev = revisionOf(feed)
+    if (rev <= landedRevision.current) return
+    landedRevision.current = rev
     if (!cached) landedLive.current = true
     setResult(feed)
     if (feed.items.length) mark('useful')
@@ -287,15 +311,61 @@ export default function App() {
     return () => { alive = false }
   }, [land])
 
+  /**
+   * ARRIVING IS ITSELF A REASON TO GO AND LOOK.
+   *
+   * The missing half of "it is current when he opens it". The cached paint above
+   * is instant and is made of whatever the last pass stored; nothing then went
+   * and asked the connectors whether any of it had changed, so the only way to
+   * make Calendar true was to OPEN Calendar — the domain fetched on arrival and
+   * Home did not. That is the app asking him to do its job.
+   *
+   * Fired once per launch, after the cached paint rather than before it, so the
+   * first frame is never waiting on a network. The server decides whether this
+   * costs a connector call at all; with everything fresh it is one comparison
+   * and the same feed comes back, which `land` then declines as not newer.
+   */
   useEffect(() => {
-    const onShow = () => {
+    let alive = true
+    syncIfDue()
+      .then((r) => { if (alive && r.feed) land(r.feed, false) })
+      .catch(() => { /* a sync that will not run costs freshness, never a screen */ })
+    return () => { alive = false }
+  }, [land])
+
+  /**
+   * COMING BACK, AND STAYING.
+   *
+   * This used to reconsider only if the FEED was more than ten minutes old,
+   * which asked the wrong question twice over. The feed's age says nothing
+   * about its sources' age — a feed rebuilt sixty seconds ago over three-hour-
+   * old mail is fresh by that test and wrong on screen — and `reconsider()` runs
+   * a full synthesis, which is far too expensive to attach to every foreground.
+   *
+   * So returning to the app asks the cheap question instead: is any SOURCE
+   * overdue. The server answers it, and answers "no" for free.
+   *
+   * The interval is the other half. He leaves this open on a desk; without it,
+   * an app that has been visible for an hour is an hour stale and only a tab
+   * switch would fix it. Ninety seconds is chosen against the shortest cadence
+   * in `sync.ts` (five minutes) — often enough that a source is never much past
+   * its ceiling, rare enough that the no-op case is genuinely idle. The server
+   * gates the actual work either way, so this cannot become a quota problem.
+   */
+  useEffect(() => {
+    const check = () => {
       if (document.visibilityState !== 'visible') return
-      const age = Date.now() - Date.parse(result?.at ?? '')
-      if (!Number.isFinite(age) || age > 10 * 60_000) void reconsider()
+      syncIfDue()
+        .then((r) => { if (r.feed) land(r.feed, false) })
+        .catch(() => {})
     }
-    document.addEventListener('visibilitychange', onShow)
-    return () => document.removeEventListener('visibilitychange', onShow)
-  }, [reconsider, result?.at])
+    document.addEventListener('visibilitychange', check)
+    const timer = setInterval(check, 90_000)
+    return () => {
+      document.removeEventListener('visibilitychange', check)
+      clearInterval(timer)
+    }
+  }, [land])
 
   const needs = useMemo(() => result?.needs ?? [], [result])
   const items = useMemo(() => result?.items ?? [], [result])

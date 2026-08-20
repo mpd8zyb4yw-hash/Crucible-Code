@@ -80,7 +80,11 @@
   //
   // The handler branches on `event.cron`; the string below is matched against
   // LIGHT_CRON in worker/index.ts, so the two have to stay in step.
-  "triggers": { "crons": ["*/15 * * * *", "0 */3 * * *"] },
+  // ONE TICK. `server/sync.ts` decides per source whether anything is actually
+  // due, so a tick with fresh sources makes no connector call at all — which is
+  // what makes five minutes affordable where the old all-or-nothing pull was
+  // stuck at three hours. Calendar and mail are the reason for the number.
+  "triggers": { "crons": ["*/5 * * * *"] },
 
   "observability": { "enabled": true }
 

@@ -292,6 +292,21 @@ export interface World {
    * may only fill in when nothing better is known.
    */
   timeZoneBy?: 'device' | 'connector'
+  /**
+   * WHEN EACH SOURCE WAS LAST READ SUCCESSFULLY, by source name.
+   *
+   * The thing that made per-source freshness possible, and whose absence is why
+   * everything was pulled on one three-hourly schedule: there was nowhere to
+   * record that calendar had been read four minutes ago and YouTube not for an
+   * hour, so the only available policy was "all of it, rarely".
+   *
+   * Written per source and only on success — see `sync.ts`. A source that
+   * failed keeps its old stamp and therefore stays overdue, which is what makes
+   * a transient Gmail error cost one retry instead of a whole cadence.
+   *
+   * Absent means never read, which reads as due. Every account starts there.
+   */
+  synced?: Record<string, string>
 }
 
 /**
@@ -661,7 +676,7 @@ export type Coverage = {
 export async function addObservations(
   obs: Observation[],
   now = new Date(),
-  opts: { timeZone?: string; coverage?: Coverage[] } = {}
+  opts: { timeZone?: string; coverage?: Coverage[]; synced?: string[] } = {}
 ): Promise<World> {
   /**
    * Transactional, because a sync is the LONGEST world mutation there is and
@@ -697,9 +712,22 @@ function foldObservations(
   w: World,
   obs: Observation[],
   now: Date,
-  opts: { timeZone?: string; coverage?: Coverage[] } = {}
+  opts: { timeZone?: string; coverage?: Coverage[]; synced?: string[] } = {}
 ): void {
   if (opts.timeZone) noteTimeZone(w, opts.timeZone, 'connector')
+  /*
+    STAMPED INSIDE THE SAME TRANSACTION AS THE OBSERVATIONS THEY CAME FROM.
+
+    Not a second write afterwards: a sync whose observations landed and whose
+    stamp did not would be re-pulled on the very next tick forever, and one
+    whose stamp landed and whose observations did not would go quiet for a whole
+    cadence. Both are avoided by there being one write.
+  */
+  if (opts.synced?.length) {
+    const at = now.toISOString()
+    w.synced = { ...(w.synced ?? {}) }
+    for (const source of opts.synced) w.synced[source] = at
+  }
   const incoming = new Map(obs.map((o) => [o.id, o]))
   const held = new Set(w.observations.map((o) => o.id))
 

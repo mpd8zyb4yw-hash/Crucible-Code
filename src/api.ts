@@ -666,6 +666,13 @@ export interface Feed extends Omit<ThinkResult, 'provider' | 'model' | 'fellBack
   /** When synthesis was assembled. NOT when the source rows were derived. */
   at: string
   /**
+   * WHICH FEED IS NEWER. See `server/feed.ts` for why this is not `at`.
+   *
+   * Optional only because a snapshot written before this field existed has none;
+   * read it through `revisionOf`, never directly.
+   */
+  revision?: number
+  /**
    * When the deterministic source rows were last projected — normally now, even
    * on a cached read, because the server re-derives them from the stored world
    * rather than serving the ones it happened to cache. See `readSnapshot`.
@@ -729,6 +736,44 @@ const withTz = (path: string): string => {
 
 export const getFeed = (opts: { cached?: boolean } = {}) =>
   fetch(withTz(`/api/feed${opts.cached ? '?cached=1' : ''}`)).then(j<Feed>)
+
+/**
+ * HOW OLD IS THIS FEED, AS ONE COMPARABLE NUMBER.
+ *
+ * Falls back to `at` for a snapshot written before `revision` existed, and to 0
+ * for anything unreadable — so an ancient cached feed loses every comparison
+ * rather than winning by having no opinion.
+ */
+export const revisionOf = (f: Feed | null | undefined): number => {
+  if (!f) return 0
+  if (typeof f.revision === 'number' && Number.isFinite(f.revision)) return f.revision
+  const t = Date.parse(f.at ?? '')
+  return Number.isFinite(t) ? t : 0
+}
+
+export interface SyncOutcome {
+  due: string[]
+  synced: string[]
+  errors: string[]
+  observations: number
+  freshness: Record<string, { at: string | null; ageMs: number | null; cadenceMs: number }>
+  feed: Feed
+}
+
+/**
+ * TELL THE SERVER SOMEBODY IS LOOKING, AND LET IT DECIDE WHAT THAT COSTS.
+ *
+ * Deliberately carries no source list and no cadence. The client's whole
+ * contribution is the fact of a person being present; which connectors that is
+ * worth a call to is a question about the account's quota, and the account does
+ * not live in this tab. See `server/sync.ts`.
+ */
+export const syncIfDue = () =>
+  fetch('/api/sync/due', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tz: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+  }).then(j<SyncOutcome>)
 
 /** Bring panes and sources current with no model. Survives a rate limit. */
 export const refreshFeed = () =>

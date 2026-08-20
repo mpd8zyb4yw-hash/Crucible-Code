@@ -89,6 +89,24 @@ export interface Feed extends Omit<ThinkResult, 'beliefUpdates' | 'dropped'> {
   /** When this was assembled. The client shows it and decides whether to refetch. */
   at: string
   /**
+   * WHICH FEED IS NEWER, AS A NUMBER THE CLIENT CAN COMPARE.
+   *
+   * `land()` used to accept whatever arrived last. That is wrong whenever two
+   * requests are in flight — which is the normal state of this app, not an edge
+   * case: a cold launch fires a cached read, a live build and a sync-if-due
+   * within a second of each other, and on a phone changing cells they do not
+   * come back in the order they were sent. A slow older response landing on top
+   * of a fast newer one puts stale events back on his home screen, and nothing
+   * on the screen says it happened.
+   *
+   * Derived from the build instant rather than a stored counter, so it needs no
+   * durable state and no coordination between the two hosts. A REPROJECTED
+   * cached feed deliberately keeps the revision it was BUILT with — it is the
+   * same build, re-derived against the current clock, and must never outrank a
+   * live build that has already landed.
+   */
+  revision: number
+  /**
    * When the deterministic source rows on it were last PROJECTED.
    *
    * Not the same as `at`, and the gap between them is the honest state of a
@@ -690,6 +708,8 @@ export async function buildFeed(world: World, opts: BuildOptions = {}): Promise<
     }),
     shelf,
     at,
+    /* Same instant as `at`; one source of truth for "when was this built". */
+    revision: now.getTime(),
     /**
      * THE FEW TYPED FACTS THE CLIENT'S RESOLUTION LADDER READS.
      *

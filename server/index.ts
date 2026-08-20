@@ -35,6 +35,7 @@ import { perform, registerAction, history as actionHistory, undoAction, type Aut
 import * as panes from './protocol.js'
 import { parseWatchHistory, rememberWatchHistory, channelsByWatchCount } from './takeout.js'
 import { installCapabilities } from './capabilities.js'
+import { syncDue, sourceFreshness } from './sync.js'
 import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES } from './google.js'
 
 const PORT = Number(process.env.PORT ?? 3001)
@@ -564,6 +565,38 @@ app.post('/api/feed/refresh', async (_req, res) => {
   const auth = await planAuth()
   const r = await freshen({ arriving: false, auth })
   res.json({ ...r, feed: await buildFeed(await readWorld(), { withoutModel: true }) })
+})
+
+/**
+ * "I HAVE ARRIVED" / "I AM BACK". THE SERVER DECIDES WHAT THAT COSTS.
+ *
+ * The Mac's half of the same contract the Worker serves — see the note there.
+ * Both hosts run `sync.ts`, so the freshness policy cannot differ between the
+ * laptop and the phone, which is the class of divergence the injectable-store
+ * design exists to prevent.
+ */
+app.post('/api/sync/due', async (req, res) => {
+  const world = (await noteClientZone(typeof req.body?.tz === 'string' ? req.body.tz : '')) ?? (await readWorld())
+  let outcome = { due: [] as string[], synced: [] as string[], errors: [] as string[], observations: 0 }
+  try {
+    const token = await accessToken(G_ID, G_SECRET)
+    if (token) outcome = await syncDue(token, world)
+  } catch (e) {
+    outcome.errors = [(e as Error).message]
+  }
+  // Only rebuilt when something actually arrived: a feed rebuilt over an
+  // unchanged world is the same feed with a newer timestamp on it, which is
+  // precisely the lie this change removes.
+  if (outcome.synced.length) await freshen({ arriving: false, auth: await planAuth() }).catch(() => null)
+  const feed = outcome.synced.length
+    ? await buildFeed(await readWorld(), { withoutModel: true })
+    : ((await readSnapshot(await readWorld())) ?? (await buildFeed(await readWorld(), { withoutModel: true })))
+  res.json({ ...outcome, freshness: sourceFreshness(await readWorld()), feed })
+})
+
+/** What each source knows and how old it is. Read-only; no connector call. */
+app.get('/api/sync/freshness', async (_req, res) => {
+  res.json({ freshness: sourceFreshness(await readWorld()) })
 })
 
 /** His arrangement: what is on the splash, in what order, and what is hidden. */

@@ -32,6 +32,7 @@ import { durableObjectMemoryStore } from '../server/memory/store.js'
 import type { DurableObjectSqlStorage } from '../server/memory/sql.js'
 import { eventsFromWorldObservations } from '../server/memory/ingest.js'
 import { cadenceFor } from '../server/memory/host.js'
+import { syncDue, sourceFreshness } from '../server/sync.js'
 import { cognitionOverStore, setCognition, type CognitionContext, type MemoryCognition } from '../server/memory/cognition.js'
 import { READ_ONLY_LIVE } from '../server/memory/authority.js'
 import type { DomainContext, DomainFacts } from '../server/domain.js'
@@ -669,9 +670,10 @@ async function saveSubs(env: Env, subs: PushSub[]): Promise<void> {
 
 /**
  * Ring only for a track that actually fired. Calendar and mail refresh on
- * nearly every pass, so notifying on "new observations" would buzz him every
- * three hours forever; a track is something he explicitly agreed to be told
- * about, which is the only thing that has earned an interruption.
+ * nearly every pass — now more often than ever — so notifying on "new
+ * observations" would buzz him all day; a track is something he explicitly
+ * agreed to be told about, which is the only thing that has earned an
+ * interruption.
  */
 async function ringIfWorthIt(env: Env, learned: string[]): Promise<void> {
   if (!learned.length) return
@@ -692,32 +694,25 @@ async function ringIfWorthIt(env: Env, learned: string[]): Promise<void> {
  * a track that throws must not lose the observations already pulled.
  */
 /**
- * Must match the light entry in wrangler.jsonc's `triggers.crons`.
+ * ONE TICK, AND THE SOURCES DECIDE FOR THEMSELVES WHETHER THEY ARE IN IT.
  *
- * Compared against `event.cron` rather than inferred from the wall clock: a
- * scheduled invocation is told which trigger fired it, and deriving it from the
- * minute would silently do the wrong work the first time either schedule moved.
+ * There used to be two crons — a quarter-hourly one that re-rendered the feed
+ * without asking any connector anything, and a three-hourly one that actually
+ * pulled Google. So a mailbox could be nearly three hours stale while the feed
+ * on top of it was rebuilt eleven times, each rebuild stamping a fresh `at` on
+ * a screen made of old facts. He could not see that distinction and should not
+ * have had to.
+ *
+ * Now there is one tick and `sync.ts` owns the policy: each source has its own
+ * staleness ceiling and is pulled only when it is over it. A tick where nothing
+ * is due costs one clock comparison and no connector call at all — which is why
+ * a five-minute cron is affordable where a five-minute `pullObservations` would
+ * not have been.
  */
-const LIGHT_CRON = '*/15 * * * *'
-
-/** Let the clock tick on panes that asked for it, and leave the feed current. */
-async function sweep(env: Env): Promise<void> {
-  try {
-    await freshen({ arriving: false, auth: await planAuth(env) })
-    await buildFeed(await readWorld(), { withoutModel: true })
-  } catch {
-    /* nothing here is irreplaceable; the next sweep is in fifteen minutes */
-  }
-}
-
-async function gather(env: Env): Promise<void> {
+async function tick(env: Env): Promise<void> {
   try {
     const token = await googleToken(env)
-    if (token) {
-      const w = await readWorld()
-      const { observations, timeZone, coverage } = await pullObservations(token, w.sources, w.timeZone)
-      if (observations.length || timeZone || coverage.length) await addObservations(observations, new Date(), { timeZone, coverage })
-    }
+    if (token) await syncDue(token, await readWorld())
   } catch {
     /* a dead token is tomorrow's problem, not this run's */
   }
@@ -789,21 +784,21 @@ export default {
     installReasoner()
     installWorkerActions(env)
     /**
-     * Two cadences, because two different things go stale at two different
-     * rates.
+     * ONE CADENCE, AND PER-SOURCE FRESHNESS INSIDE IT. See `sync.ts`.
      *
-     * The quarter-hour sweep only lets the CLOCK tick: `refreshDue` still asks
-     * each pane whether its own interval has elapsed, so a pane he set to
-     * refresh daily refreshes daily and a quarter-hourly one can actually be
-     * quarter-hourly, which it could not be when the only sweep ran every three
-     * hours. Nothing is fetched that no pane asked for.
-     *
-     * The three-hourly pass is the expensive half — pulling Google and running
-     * standing interests — and stays where it was, for the reason it was put
-     * there: those sources do not change faster than that, and the free tier's
-     * allowance is better spent on the synthesis he actually reads.
+     * `refreshDue` still asks each pane whether its own interval has elapsed,
+     * so nothing is fetched that no pane asked for; what changed is that the
+     * CONNECTORS now get the same treatment. Calendar and mail are allowed to
+     * be five minutes old, YouTube two hours, and the tick that notices is the
+     * same one either way.
      */
-    ctx.waitUntil(event.cron === LIGHT_CRON ? sweep(env) : gather(env))
+    /*
+    ONE PATH. `event.cron` is no longer branched on, because there is no longer
+    a cheap tick and an expensive one — there is a tick, and what it costs is
+    decided by how stale his sources actually are.
+  */
+  void event
+  ctx.waitUntil(tick(env))
   },
 
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -1457,6 +1452,55 @@ async function api(req: Request, env: Env, path: string, origin: string): Promis
   if (path === '/api/feed/refresh' && method === 'POST') {
     const r = await freshen({ arriving: false, auth: await planAuth(env) })
     return json({ ...r, feed: await buildFeed(await readWorld(), { withoutModel: true }) })
+  }
+
+  /**
+   * "I HAVE ARRIVED" / "I AM BACK" — AND THE SERVER DECIDES WHAT THAT COSTS.
+   *
+   * The client is allowed to say that a person is looking at the screen. It is
+   * NOT allowed to say "fetch Gmail": quota belongs to the account rather than
+   * to the tab, and a client that owned this policy would spend the day's
+   * allowance on a phone that reloads whenever iOS feels like it, twice over
+   * with a second device open.
+   *
+   * So this takes no source list and accepts no cadence. It asks `sync.ts` what
+   * is overdue, pulls exactly that, and returns the rebuilt feed. With nothing
+   * overdue it makes no connector call at all and returns the current feed —
+   * which is the common case, and is meant to be cheap enough that the app can
+   * call it on every foreground without thinking about it.
+   *
+   * `withoutModel`, deliberately: this fires on arrival and on every return to
+   * the app, and a synthesis on each one would spend the free tier's daily
+   * allowance on answers nobody asked for. What this guarantees is that his
+   * SOURCES are current; the thinking still happens when he asks for it.
+   */
+  if (path === '/api/sync/due' && method === 'POST') {
+    // `noteClientZone` shrugs (undefined) if the zone write failed; a sync must
+    // still happen, so fall back to a plain read rather than skipping the pass.
+    const world = (await noteClientZone(String(body?.tz ?? ''))) ?? (await readWorld())
+    let outcome = { due: [] as string[], synced: [] as string[], errors: [] as string[], observations: 0 }
+    try {
+      const token = await googleToken(env)
+      if (token) outcome = await syncDue(token, world)
+    } catch (e) {
+      /* A sync that cannot run must still return a feed — see `failure`. */
+      outcome.errors = [(e as Error).message]
+    }
+    /*
+      REFRESHED ONLY WHEN SOMETHING ACTUALLY ARRIVED. Rebuilding a feed over a
+      world that did not move produces a byte-identical feed with a newer
+      timestamp, which is the exact lie this whole change exists to stop.
+    */
+    if (outcome.synced.length) await freshen({ arriving: false, auth: await planAuth(env) }).catch(() => null)
+    const feed = outcome.synced.length
+      ? await buildFeed(await readWorld(), { withoutModel: true })
+      : ((await readSnapshot(await readWorld())) ?? (await buildFeed(await readWorld(), { withoutModel: true })))
+    return json({ ...outcome, freshness: sourceFreshness(await readWorld()), feed })
+  }
+
+  /** What each source knows and how old it is. Read-only; no connector call. */
+  if (path === '/api/sync/freshness' && method === 'GET') {
+    return json({ freshness: sourceFreshness(await readWorld()) })
   }
 
   if (path === '/api/shelf' && method === 'GET') return json(await readShelf())

@@ -22,6 +22,7 @@
 import { canonical } from '../server/panes.ts'
 import { deckWidget } from '../server/deck.ts'
 import { isOver, isRunning, isToday, leadFor, nextUp, upcoming } from '../server/calendar.ts'
+import { dueSources, SOURCE_CADENCE_MS, sourceFreshness } from '../server/sync.ts'
 
 let failures = 0
 const check = (what, got, want) => {
@@ -327,6 +328,69 @@ check('tomorrow is not over', isOver(read().events.find((e) => e.id === 'hike'),
         leadFor(events.find((e) => e.id === 'hike'), morning, ROME), 'Wednesday')
 }
 
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   PER-SOURCE FRESHNESS — the half of "is it still true" that is about the
+   CONNECTORS rather than about the projection.
+
+   Everything above asks whether the app draws the stored world correctly. None
+   of it can catch the world itself being three hours old, which is what the two
+   old crons guaranteed: calendar and mail were pulled every three hours while
+   the feed on top of them was rebuilt every fifteen minutes, each rebuild
+   stamping a newer `at` on the same stale facts.
+   ───────────────────────────────────────────────────────────────────────────── */
+{
+  const T0 = new Date('2026-08-18T08:00:00Z')
+  const ago = (ms) => new Date(T0.getTime() - ms).toISOString()
+  const world = (synced = {}, sources = {}) => ({ sources, synced, observations: [], beliefs: [], tracks: [], curation: 'auto', profile: '' })
+
+  // A world that has never synced anything is entirely due. Every new account
+  // starts here, and "absent means never" must not read as "absent means fresh".
+  check('a world that has never synced owes every source',
+        dueSources(world(), T0).sort(), ['calendar', 'email', 'health', 'youtube'])
+
+  // The cadences, asserted as an ORDER rather than as four magic numbers: what
+  // matters is that a mailbox is allowed to be less stale than a subscription
+  // feed, not that the constant is exactly five minutes.
+  ok('calendar and mail are the least tolerant of staleness',
+     SOURCE_CADENCE_MS.calendar <= SOURCE_CADENCE_MS.health &&
+     SOURCE_CADENCE_MS.email <= SOURCE_CADENCE_MS.health &&
+     SOURCE_CADENCE_MS.health < SOURCE_CADENCE_MS.youtube)
+
+  // THE DEFECT, NAMED. Four minutes after a sync everything is quiet; at six
+  // minutes the mailbox and the calendar are overdue and nothing else is. Under
+  // the old arrangement both of these ticks pulled all four sources or none.
+  const justNow = { calendar: ago(4 * 60_000), email: ago(4 * 60_000), health: ago(4 * 60_000), youtube: ago(4 * 60_000) }
+  check('four minutes after a sync, nothing is due', dueSources(world(justNow), T0), [])
+
+  const sixMinutes = { calendar: ago(6 * 60_000), email: ago(6 * 60_000), health: ago(6 * 60_000), youtube: ago(6 * 60_000) }
+  check('at six minutes the calendar and the mailbox are due, alone',
+        dueSources(world(sixMinutes), T0).sort(), ['calendar', 'email'])
+
+  // …and the expensive one still is not, an hour later.
+  const anHour = { calendar: ago(60 * 60_000), email: ago(60 * 60_000), health: ago(60 * 60_000), youtube: ago(60 * 60_000) }
+  ok('an hour on, YouTube is still not worth a call', !dueSources(world(anHour), T0).includes('youtube'))
+  ok('but the step count is', dueSources(world(anHour), T0).includes('health'))
+
+  // CONSENT OUTRANKS FRESHNESS. A source he switched off is never due, however
+  // long it has been — asking it how stale it is would spend quota on data he
+  // told us not to read.
+  check('a source he switched off is never due, however stale',
+        dueSources(world({}, { email: false, health: false, youtube: false }), T0), ['calendar'])
+
+  // A FAILED SOURCE STAYS OVERDUE. `sync.ts` stamps only what came back, so a
+  // pass where mail threw leaves mail due on the very next tick rather than
+  // pushing it out by a whole cadence with nothing saying so.
+  const mailFailed = { calendar: T0.toISOString(), email: ago(3 * 60 * 60_000), health: T0.toISOString(), youtube: T0.toISOString() }
+  check('a source that failed is retried next tick, not a cadence later',
+        dueSources(world(mailFailed), T0), ['email'])
+
+  // The readout the UI is allowed to render: an age, never a verdict.
+  const fresh = sourceFreshness(world(justNow), T0)
+  check('freshness reports the age of each source', fresh.calendar.ageMs, 4 * 60_000)
+  check('and null for one never read', sourceFreshness(world(), T0).calendar.ageMs, null)
+}
+
 if (failures) {
   console.error(`\n${failures} freshness failure(s): something on screen is no longer true.`)
   process.exit(1)
@@ -334,5 +398,6 @@ if (failures) {
 console.log(
   'freshness ok — his real 18 August calendar: finished events age out, the hero is what is next, ' +
   'a running event wins it, duplicates collapse, a reschedule replaces, a cancellation leaves the world ' +
-  'and contests the belief that rested on it, and Home never names an event depth would call finished'
+  'and contests the belief that rested on it, Home never names an event depth would call finished, ' +
+  'and each source is now pulled on its own staleness ceiling rather than all four every three hours'
 )

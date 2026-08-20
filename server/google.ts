@@ -284,9 +284,19 @@ export async function pullObservations(
    * instant of the sync, which is not a day. See the Fit block below.
    */
   zone?: string
-): Promise<{ observations: Observation[]; errors: string[]; timeZone?: string; coverage: Coverage[] }> {
+): Promise<{ observations: Observation[]; errors: string[]; timeZone?: string; coverage: Coverage[]; synced: GoogleSource[] }> {
   const out: Observation[] = []
   const errors: string[] = []
+  /**
+   * WHICH SOURCES CAME BACK WITHOUT THROWING.
+   *
+   * Not derivable from `errors`, which is a list of prose, and not derivable
+   * from `out` either — a successful read of an empty mailbox produces no
+   * observations and is still a successful read. `sync.ts` stamps exactly these,
+   * so a source that failed stays overdue and is retried on the next tick
+   * instead of going quiet for its whole cadence.
+   */
+  const synced: GoogleSource[] = []
   /**
    * WHAT THIS SYNC IS COMPLETE FOR — see `Coverage` in `world.ts`.
    *
@@ -378,6 +388,8 @@ export async function pullObservations(
         },
       })
     }
+    /* Reached only if nothing above threw: this source is now current. */
+    synced.push('calendar')
   } catch (e) {
     errors.push(`calendar: ${(e as Error).message}`)
   }
@@ -412,6 +424,8 @@ export async function pullObservations(
         },
       })
     }
+    /* Reached only if nothing above threw: this source is now current. */
+    synced.push('email')
   } catch (e) {
     errors.push(`gmail: ${(e as Error).message}`)
   }
@@ -510,6 +524,8 @@ export async function pullObservations(
         data: { kind: 'steps', days, average: avg },
       })
     }
+    /* Reached only if nothing above threw: this source is now current. */
+    synced.push('health')
   } catch (e) {
     errors.push(`fit: ${(e as Error).message}`)
   }
@@ -556,11 +572,13 @@ export async function pullObservations(
         },
       })
     }
+    /* Reached only if nothing above threw: this source is now current. */
+    synced.push('youtube')
   } catch (e) {
     errors.push(`youtube: ${(e as Error).message}`)
   }
 
-  return { observations: out, errors, timeZone, coverage }
+  return { observations: out, errors, timeZone, coverage, synced }
 }
 
 // ── Acting, not just reading ─────────────────────────────────────────────────
