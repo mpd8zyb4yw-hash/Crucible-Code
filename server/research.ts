@@ -172,7 +172,7 @@ export async function researchGap(
   let text = ''
   let sources: { title: string; uri: string }[] = []
 
-  if (grounded) {
+  if (grounded && creds) {
     try {
       const out = await chat({ ...creds, system: RESEARCH_SYSTEM, prompt: `${ctx}Question: ${gap.question}`, search: true, maxTokens: 1024 })
       text = out.text.trim()

@@ -516,8 +516,25 @@ if (shadow) {
   const panes = [{
     id: 'src-email', panes: [{ widget: { kind: 'mail', messages: [{ id: 'm1', from: 'a@b.test', subject: 's', at: '2026-08-01T00:00:00.000Z' }] } }],
   }]
-  const broken = enrichPanes(panes, null, { posture: LIVE, timeZone: tz, now: life.now })
-  ok('a memory core that cannot be read leaves the panes exactly as they were', JSON.stringify(broken) === JSON.stringify(panes))
+  /*
+    TWO WAYS TO HAVE NO MEMORY, AND BOTH MUST BE INVISIBLE.
+
+    Passing `null` used to be the whole test, and against the new signature it
+    would be a weaker one than it was: `enrichPanes` short-circuits on a null
+    cognition before it touches anything, so that path proves only that an early
+    return returns early. The failure that actually threatens a screen is a
+    cognition that EXISTS and throws — an unreadable ledger, a compiler that
+    trips over a malformed record — so that case is now tested explicitly.
+  */
+  const absent = await enrichPanes(panes, null, { timeZone: tz, now: life.now })
+  ok('no memory core at all leaves the panes exactly as they were', JSON.stringify(absent) === JSON.stringify(panes))
+
+  const exploding = {
+    intelligence: async () => { throw new Error('ledger is unreadable') },
+    domainContexts: async () => { throw new Error('ledger is unreadable') },
+  }
+  const broken = await enrichPanes(panes, exploding, { timeZone: tz, now: life.now })
+  ok('a memory core that throws leaves the panes exactly as they were', JSON.stringify(broken) === JSON.stringify(panes))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -81,6 +81,42 @@ export interface MemoryPosture {
 /** Everything shadowed. §30's default state, and the one this milestone ships in. */
 export const SHADOW_ONLY: MemoryPosture = { enabled: true, authority: {} }
 
+/**
+ * THE SEVEN READ-ONLY CAPABILITIES, LIVE. `recommendations` DELIBERATELY NOT.
+ *
+ * Promoting these is only defensible because of what promotion does NOT do. It
+ * does not lower a single evidence bar: `significance.ts` still demands its
+ * coverage, diversity and magnitude, `correction.ts` still removes anything he
+ * has denied, and every compiler still returns the empty answer when the record
+ * does not support one. The negative corpus asserts exactly that, under this
+ * posture, and is the reason this line can be written at all — it already tested
+ * that a LIVE capability over thin evidence stays silent.
+ *
+ * So the change is from "memory is invisible regardless of evidence" to "memory
+ * is visible when, and only when, the evidence clears the bar it always had".
+ * On today's ledger that still means quiet most of the time. Quiet because
+ * nothing was earned is the designed state; quiet because the read path was
+ * never connected was the defect.
+ *
+ * `recommendations` — acting unprompted — stays shadow. It is the one capability
+ * whose failure is not a wrong sentence on a screen but an action he did not
+ * ask for, and §52 gates it hardest for that reason. It is promoted after
+ * real-world calibration, not with this batch.
+ */
+export const READ_ONLY_LIVE: MemoryPosture = {
+  enabled: true,
+  authority: {
+    entities: 'live',
+    baselines: 'live',
+    routines: 'live',
+    anomalies: 'live',
+    prediction_outcomes: 'live',
+    hypotheses: 'live',
+    intelligence: 'live',
+    // recommendations: intentionally absent → 'shadow' via `authorityOf`.
+  },
+}
+
 export const authorityOf = (p: MemoryPosture, c: Capability): Authority =>
   p.enabled ? (p.authority[c] ?? 'shadow') : 'shadow'
 

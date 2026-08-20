@@ -1,4 +1,5 @@
-import { domainContexts, type DomainContext, type DomainContextOptions, type DomainFacts } from './domain.js'
+import { type DomainContext, type DomainFacts } from './domain.js'
+import type { CognitionContext, MemoryCognition } from './memory/cognition.js'
 import type { MemoryStore } from './memory/types.js'
 import { isVideoId } from './youtube.js'
 import type { Heat, Need } from './think.js'
@@ -1247,22 +1248,48 @@ const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
  * never the domain. The per-domain isolation is inside `domainContexts`; this
  * outer catch is for the store itself being unreadable.
  */
-export function enrichPanes(
+export async function enrichPanes(
   needs: Need[],
-  store: MemoryStore,
-  opts: DomainContextOptions & { now: Date },
-): Need[] {
+  /**
+   * THE COGNITION, NOT THE STORE — which is what makes this reachable at the
+   * edge at all.
+   *
+   * It used to take a `MemoryStore`: a synchronous SQL handle, which the Worker
+   * can never have, because the real ledger is inside a Durable Object. So on
+   * production this argument was null on every request and every pane went home
+   * unenriched. See `memory/cognition.ts`.
+   *
+   * Null remains legal and remains the quiet answer: a host with no memory core
+   * bound returns the caller's panes untouched.
+   */
+  cognition: MemoryCognition | null,
+  opts: { now: Date; timeZone?: string; hour12?: boolean },
+): Promise<Need[]> {
+  if (!cognition) return needs
+  const ctx: CognitionContext = { now: opts.now.toISOString(), timeZone: opts.timeZone, hour12: opts.hour12 }
   try {
-    return needs.map((n) => {
-      const panes = (n.panes ?? []).map((p) => {
-        const facts = factsOf(p.widget, opts.now, opts.timeZone)
-        if (!facts) return p
-        const context = domainContexts(store, facts, opts)
-        if (!context.length) return p
-        return { ...p, widget: place(p.widget, context) }
+    /*
+      CONCURRENT ACROSS PANES, SEQUENTIAL IN NOTHING.
+
+      Every pane's context is independent, and at the edge each one is an RPC
+      into the same object. Awaiting them in a loop would turn a four-pane home
+      screen into four serial round trips on the path that paints it; the object
+      handles them in its own turn order either way.
+    */
+    return await Promise.all(
+      needs.map(async (n) => {
+        const panes = await Promise.all(
+          (n.panes ?? []).map(async (p) => {
+            const facts = factsOf(p.widget, opts.now, opts.timeZone)
+            if (!facts) return p
+            const context = await cognition.domainContexts(facts, ctx)
+            if (!context.length) return p
+            return { ...p, widget: place(p.widget, context) }
+          })
+        )
+        return panes.length ? { ...n, panes } : n
       })
-      return panes.length ? { ...n, panes } : n
-    })
+    )
   } catch {
     return needs
   }

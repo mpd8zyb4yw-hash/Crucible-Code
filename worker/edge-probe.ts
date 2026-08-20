@@ -54,9 +54,16 @@ import { runCycle } from '../server/memory/reflect.js'
 import { statedFact, writeFact } from '../server/memory/facts.js'
 import { recordRecommendation, recordOutcome } from '../server/memory/recommendations.js'
 import type { MemoryEvent, MemoryStore } from '../server/memory/types.js'
+import { enrichPanes } from '../server/panes.js'
+import { cognition as installedCognition } from '../server/memory/cognition.js'
+import { dayIn, partsIn } from '../server/clock.js'
+import type { Need } from '../server/think.js'
 
 /** The production class, unchanged and unwrapped. See the header. */
 export { WorldObject } from './index.js'
+
+/** The production entry point itself, so its own wiring can be exercised. */
+import productionWorker from './index.js'
 
 interface ProbeEnv {
   PROBE: DurableObjectNamespace
@@ -452,6 +459,174 @@ function sliceDays(events: MemoryEvent[], days: number): MemoryEvent[] {
   return events.filter((e) => e.observedAt < until)
 }
 
+
+/**
+ * THE EDGE'S READ PATH, END TO END, ON THE REAL RUNTIME.
+ *
+ * ── WHAT THIS PROVES THAT NOTHING ELSE DID ───────────────────────────────────
+ *
+ * `scripts/memory.mjs` proves the compilers work. It proves it against a local
+ * `MemoryStore` — which is the host that was never broken. The defect this
+ * route exists to catch lived entirely in the gap between the two hosts: the
+ * Worker dual-WROTE to a Durable Object ledger and then asked a completely
+ * different abstraction to read it, got null, and skipped enrichment on every
+ * production request. Every memory test passed throughout, because every memory
+ * test drives the store directly.
+ *
+ * So this drives the chain the product actually uses, and no part of it is a
+ * stand-in:
+ *
+ *   real evidence  → `syntheticLife()`, appended through the PRODUCTION
+ *                    `memory.append` op
+ *   real storage   → `WorldObject` on workerd's SQLite, not a shim
+ *   real thinking  → `memory.reflect`, the same op the alarm calls
+ *   real transport → an RPC cognition built exactly as `worker/index.ts` builds
+ *                    it, isolate → object → SQL and back
+ *   real seam      → `enrichPanes`, the production function `feed.ts` calls,
+ *                    unmodified and imported from the shipping module
+ *
+ * If any link is broken the answer is an empty context array — which is exactly
+ * what production returned before this change, and exactly what the harness
+ * asserts against.
+ */
+async function edgeCognitionAcceptance(env: ProbeEnv, name: string): Promise<Record<string, unknown>> {
+  /*
+    THE PRODUCTION OBJECT, BY THE NAME PRODUCTION USES.
+
+    `installWorldStore` hard-codes `idFromName('world')`, so seeding anywhere
+    else would leave the installed cognition pointing at an empty ledger and the
+    test would prove nothing while looking like it had.
+  */
+  void name
+  const stub = env.WORLD.get(env.WORLD.idFromName('world'))
+  const call = async (b: unknown): Promise<any> => {
+    const res = await stub.fetch('https://world.crucible/', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(b),
+    })
+    return res.json()
+  }
+
+  const life = syntheticLife()
+
+  // 1 · evidence into the REAL object, through the real op.
+  const appended = await call({
+    op: 'memory.append',
+    events: life.events,
+    now: life.now.toISOString(),
+    opts: { timeZone: life.timeZone, me: life.me },
+  })
+
+  // 2 · make it think. Daily, because that is the pass that builds baselines.
+  const reflected = await call({
+    op: 'memory.reflect',
+    kind: 'daily',
+    now: life.now.toISOString(),
+    opts: { timeZone: life.timeZone, me: life.me },
+  })
+
+  /*
+    3 · THE TRANSPORT PRODUCTION INSTALLS — not one this file builds.
+
+    An earlier version of this test constructed its own RPC cognition with the
+    same shape as the Worker's. It passed, and it was nearly worthless: deleting
+    `setCognition(edgeCognition)` from `worker/index.ts` — the exact line whose
+    absence WAS the bug — would not have failed it. A harness that rebuilds the
+    thing it is checking is checking its own copy.
+
+    So the production `fetch` handler is invoked once, purely for its
+    installation side effects (`installWorldStore` runs before any routing or
+    auth check), and what comes back out of `cognition()` is whatever the
+    shipping Worker decided to install. The response itself is discarded — this
+    harness binds no ASSETS, so a static path would throw, and that is
+    irrelevant to what is being asked.
+  */
+  let installRan = true
+  try {
+    await productionWorker.fetch(new Request('https://crucible.test/api/version'), env as never)
+  } catch {
+    installRan = false
+  }
+  const cognition = installedCognition()
+  if (!cognition) {
+    return {
+      written: appended?.written ?? 0,
+      reflected: reflected?.ok === true,
+      installed: false,
+      installRan,
+      context: [],
+      contextRaw: [],
+      intelligence: null,
+      day: null,
+      weekday: null,
+    }
+  }
+
+  /*
+    4 · A DAY THE LEDGER HAS A BASELINE FOR.
+
+    The most recent Thursday at or before the fixture's `now`, in HIS zone —
+    baselines are keyed by weekday in the zone the evidence was labelled in, and
+    deriving this from the runtime's UTC would ask for a baseline on the wrong
+    day roughly a seventh of the time.
+
+    The step value is deliberately absurd rather than computed from the mean.
+    The harness cannot see inside the object to read `thu.mean`, and it does not
+    need to: one step is below any plausible Thursday, so a working chain must
+    produce the "below your usual Thursday" line and a broken one produces
+    nothing at all. The assertion is about the CHAIN, not about the arithmetic —
+    `scripts/memory.mjs` already owns the arithmetic.
+  */
+  const thursday = new Date(life.now)
+  for (let i = 0; i < 8 && partsIn(thursday, life.timeZone).weekday !== 4; i++) {
+    thursday.setUTCDate(thursday.getUTCDate() - 1)
+  }
+  const day = dayIn(thursday, life.timeZone)
+
+  const needs: Need[] = [
+    {
+      id: 'src-activity',
+      title: 'Activity',
+      panes: [
+        {
+          widget: {
+            kind: 'fitness',
+            series: [],
+            /*
+              `says` and `isToday` are required by `ActivityBrief` and are not
+              what is under test — `factsOf` reads only `metric` and `current`.
+              Filled honestly rather than with placeholders that would read as a
+              claim if this widget ever reached a screen, which it does not.
+            */
+            report: { metric: 'steps', says: '', current: { day, value: 1, isToday: false } },
+          },
+        },
+      ],
+    } as unknown as Need,
+  ]
+
+  // 5 · the production seam, over the RPC.
+  const enrichedNeeds = await enrichPanes(needs, cognition, { now: life.now, timeZone: life.timeZone })
+  const widget = (enrichedNeeds[0] as any)?.panes?.[0]?.widget
+  const intelligence = await cognition.intelligence({ now: life.now.toISOString(), timeZone: life.timeZone })
+
+  return {
+    written: appended?.written ?? 0,
+    reflected: reflected?.ok === true,
+    /** Whether the SHIPPING Worker installed a read path at all. The bug, named. */
+    installed: true,
+    installRan,
+    day,
+    weekday: partsIn(thursday, life.timeZone).weekday,
+    /** The sentences that reached the widget. Empty means the chain is broken. */
+    context: (widget?.context ?? []).map((c: { line: string }) => c.line),
+    /** Carried so the harness can assert §13: no probability reaches a screen. */
+    contextRaw: widget?.context ?? [],
+    intelligence,
+  }
+}
+
 /**
  * The worker half: a thin proxy so the harness can address either object over
  * plain HTTP. `idFromName` rather than a random id, so a test that restarts the
@@ -463,6 +638,16 @@ export default {
     if (url.pathname === '/up') return Response.json({ ok: true, schema: SCHEMA_VERSION })
 
     const name = url.searchParams.get('name') ?? 'probe'
+
+    /* The edge read path, end to end. See `edgeCognitionAcceptance`. */
+    if (url.pathname === '/cognition') {
+      try {
+        return Response.json({ ok: true, ...(await edgeCognitionAcceptance(env, name)) })
+      } catch (e) {
+        return Response.json({ ok: false, message: (e as Error).message, stack: (e as Error).stack })
+      }
+    }
+
     const target = url.pathname === '/world' ? env.WORLD : url.pathname === '/probe' ? env.PROBE : null
     if (!target) return Response.json({ ok: false, message: `no route for ${url.pathname}` }, { status: 404 })
 

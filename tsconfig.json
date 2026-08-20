@@ -1,7 +1,16 @@
 {
+  // EVERY TREE THAT SHIPS, IN ONE GRAPH.
+  //
+  // `tsconfig.server.json` existed and was referenced by nothing, so `tsc -b`
+  // — and therefore `npm run build`, and therefore the deploy gate — typechecked
+  // the browser bundle and silently skipped the server and the Worker. Eleven
+  // errors lived there permanently for want of a line in this file, and a
+  // Worker that does not compile is a Worker that fails in production rather
+  // than on this laptop.
   "files": [],
   "references": [
     { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
+    { "path": "./tsconfig.node.json" },
+    { "path": "./tsconfig.server.json" }
   ]
 }

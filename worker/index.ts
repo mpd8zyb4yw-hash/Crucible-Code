@@ -32,6 +32,10 @@ import { durableObjectMemoryStore } from '../server/memory/store.js'
 import type { DurableObjectSqlStorage } from '../server/memory/sql.js'
 import { eventsFromWorldObservations } from '../server/memory/ingest.js'
 import { cadenceFor } from '../server/memory/host.js'
+import { cognitionOverStore, setCognition, type CognitionContext, type MemoryCognition } from '../server/memory/cognition.js'
+import { READ_ONLY_LIVE } from '../server/memory/authority.js'
+import type { DomainContext, DomainFacts } from '../server/domain.js'
+import type { IntelligencePresentation } from '../server/intelligence.js'
 import { recordedCycle } from '../server/memory/shadow.js'
 import * as inspect from '../server/memory/inspect.js'
 import type { MemoryEvent, MemoryStore } from '../server/memory/types.js'
@@ -222,6 +226,34 @@ export class WorldObject {
      * Every path is guarded. The memory core is additive and unread; a failure in
      * it must return a shrug, never a 500 that a sync would surface to him.
      */
+    /**
+     * COGNITION, INSIDE THE OBJECT, OVER THE REAL LEDGER.
+     *
+     * This is the half that was missing. The Worker isolate has no SQL and can
+     * never have any; the ledger with his life in it is here. So the compilers
+     * run HERE — the same `cognitionOverStore` the Mac calls, not an edge
+     * variant of it — and only their bounded output crosses back.
+     *
+     * A failure answers EMPTY rather than erroring. Enrichment that cannot run
+     * is a screen without a line on it, which is the app that existed before the
+     * memory core did; an exception here would be a 500 on his home screen.
+     */
+    if ('op' in body && body.op === 'memory.cognition') {
+      const empty = body.call === 'intelligence' ? null : []
+      const store = this.#memoryStore()
+      if (!store) return Response.json({ op: 'memory', ok: true, result: empty })
+      try {
+        const cog = cognitionOverStore(store, READ_ONLY_LIVE)
+        const result =
+          body.call === 'intelligence'
+            ? await cog.intelligence(body.ctx)
+            : await cog.domainContexts(body.facts, body.ctx)
+        return Response.json({ op: 'memory', ok: true, result })
+      } catch (e) {
+        return Response.json({ op: 'memory', ok: false, message: (e as Error).message, result: empty })
+      }
+    }
+
     if ('op' in body && (body.op === 'memory.append' || body.op === 'memory.reflect' || body.op === 'memory.inspect')) {
       const store = this.#memoryStore()
       if (!store) return Response.json({ op: 'memory', ok: false, message: 'no sql storage on this object' })
@@ -300,6 +332,21 @@ type MemoryRequest =
   | { op: 'memory.append'; events: MemoryEvent[]; now: string; opts?: { timeZone?: string; me?: string } }
   | { op: 'memory.reflect'; kind: 'ingest' | 'short' | 'daily' | 'weekly'; now: string; opts?: { timeZone?: string; me?: string } }
   | { op: 'memory.inspect'; view: InspectView; arg?: string; limit?: number }
+  /**
+   * THE READ PATH THE PRODUCT ACTUALLY USES — see `memory/cognition.ts`.
+   *
+   * Distinct from `memory.inspect`, which is the developer view and returns
+   * rows. This returns only what a screen may draw: a clamped presentation or a
+   * handful of clamped context lines, each carrying its certainty and the ids it
+   * was compiled from. The ledger never leaves the object.
+   *
+   * The inputs are equally bounded. `DomainFacts` is the four small typed
+   * records the projection has already computed — not the world, not the panes,
+   * and never the database. What crosses this wire in either direction is
+   * measured in sentences.
+   */
+  | { op: 'memory.cognition'; call: 'intelligence'; ctx: CognitionContext }
+  | { op: 'memory.cognition'; call: 'domainContexts'; facts: DomainFacts; ctx: CognitionContext }
 
 /**
  * THE READ PATH INTO THE EDGE'S MEMORY — AND WHY IT IS NOT A CONTRADICTION.
@@ -398,6 +445,9 @@ function installWorldStore(env: Env): void {
     setWorldStore(kvWorldStore(env.CRUCIBLE))
     setObservationSink(null)
     callMemory = null
+    // No object, no ledger, no cognition. Explicit rather than inherited: a
+    // previous isolate on this same runtime may have installed a working one.
+    setCognition(null)
     return
   }
   const stub = env.WORLD.get(env.WORLD.idFromName('world'))
@@ -412,6 +462,48 @@ function installWorldStore(env: Env): void {
 
   setWorldStore(roomWorldStore(async (r) => (await call(r)) as RoomReply))
   callMemory = (body) => call(body)
+
+  /**
+   * THE EDGE'S READ PATH INTO ITS OWN MEMORY — THE DEFECT THIS DEPLOY CLOSES.
+   *
+   * Until now this line did not exist, and its absence was invisible. The
+   * Worker dual-WROTE to the ledger below and never once read from it: nothing
+   * here called `installMemory`, so `memoryStore()` answered null on every
+   * production request, and `feed.ts` took its "no store, never mind" branch on
+   * every build of every home screen. The memory core was running, thinking,
+   * and speaking to nobody.
+   *
+   * The transport is thin on purpose. All the reasoning lives in
+   * `cognitionOverStore`, which runs INSIDE the object next to the SQL; this
+   * side only carries the question there and the sentences back. There is no
+   * edge-specific cognition to drift from the Mac's.
+   *
+   * Every failure degrades to the empty answer. An object that is unreachable,
+   * a deploy with no SQL storage, a compiler that throws — all of them cost the
+   * enrichment and none of them cost the screen, which is the same contract
+   * `host.ts` states for the local store.
+   */
+  const rpc = async (req: MemoryRequest): Promise<unknown> => {
+    const res = (await call(req)) as { ok?: boolean; result?: unknown } | null
+    return res?.result
+  }
+  const edgeCognition: MemoryCognition = {
+    intelligence: async (ctx) => {
+      try {
+        return ((await rpc({ op: 'memory.cognition', call: 'intelligence', ctx })) as IntelligencePresentation | null) ?? null
+      } catch {
+        return null
+      }
+    },
+    domainContexts: async (facts, ctx) => {
+      try {
+        return ((await rpc({ op: 'memory.cognition', call: 'domainContexts', facts, ctx })) as DomainContext[] | null) ?? []
+      } catch {
+        return []
+      }
+    },
+  }
+  setCognition(edgeCognition)
 
   /**
    * THE EDGE'S DUAL WRITE — Phase B of §30, and nothing further.

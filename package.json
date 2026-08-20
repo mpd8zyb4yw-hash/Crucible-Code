@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "concurrently \"npm:server\" \"vite\"",
     "server": "tsx watch --env-file=.env.local server/index.ts",
-    "test": "tsx scripts/contract.mjs && tsx scripts/activity.mjs && tsx scripts/dates.mjs && tsx scripts/world.mjs && tsx scripts/person.mjs && tsx scripts/memory.mjs && tsx scripts/negative.mjs && tsx scripts/freshness.mjs && node scripts/edge.mjs && node scripts/geometry.mjs && node scripts/shots.mjs && node scripts/interaction.mjs",
+    "test": "npm run typecheck && tsx scripts/contract.mjs && tsx scripts/activity.mjs && tsx scripts/dates.mjs && tsx scripts/world.mjs && tsx scripts/person.mjs && tsx scripts/memory.mjs && tsx scripts/negative.mjs && tsx scripts/freshness.mjs && node scripts/edge.mjs && node scripts/geometry.mjs && node scripts/shots.mjs && node scripts/interaction.mjs",
+    "typecheck": "npm run typecheck:client && npm run typecheck:server",
+    "typecheck:client": "tsc -b tsconfig.app.json",
+    "typecheck:server": "tsc -p tsconfig.server.json",
     "memory": "tsx scripts/memory.mjs",
     "edge": "node scripts/edge.mjs",
     "real": "tsx scripts/real.mjs",

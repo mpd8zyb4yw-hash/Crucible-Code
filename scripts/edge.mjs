@@ -119,6 +119,15 @@ async function call(route, body, name = 'probe') {
 }
 const probe = (body, name) => call('/probe', body, name)
 const world = (body, name = 'world') => call('/world', body, name)
+/**
+ * The edge read path, end to end, against its own `WorldObject` instance.
+ *
+ * A DEDICATED INSTANCE (`name`) because this one seeds four months of synthetic
+ * life and reflects over it; sharing the object the other sections write to
+ * would make their row counts depend on whether this ran first.
+ */
+const cognition = (name = 'cognition') =>
+  fetch(`${BASE}/cognition?name=${encodeURIComponent(name)}`, { method: 'POST', body: '{}' }).then((r) => r.json())
 
 /** Poll until `read()` satisfies `done`, or give up. Returns the last value. */
 async function until(read, done, ms = 12_000, every = 200) {
@@ -346,6 +355,55 @@ async function main() {
   eq('a rebuild keeps what he stated', cleared.stated, preMigration.stated)
   eq('a rebuild discards what was inferred beside it', cleared.inferred, [])
   eq('a rebuild keeps the recommendation outcome', cleared.outcomes, preMigration.outcomes)
+
+  // ── THE EDGE READ PATH · the defect this release closes ────────────────────
+  //
+  // Production wrote to this ledger for its whole life and never once read from
+  // it: the Worker never installed a memory host, so `memoryStore()` answered
+  // null on every request and `feed.ts` skipped enrichment silently, forever.
+  // Every existing memory test passed the entire time, because every one of them
+  // drives a local store — the host that was never broken.
+  //
+  // So this asserts on the chain rather than on the arithmetic: real evidence,
+  // real Cloudflare SQLite, real reflection, a real isolate→object RPC, and the
+  // real `enrichPanes` the feed calls. A break anywhere in it yields an empty
+  // array, which is precisely what shipped.
+  section('EDGE COGNITION')
+  const cog = await cognition()
+  ok('the acceptance route ran', cog.ok, cog.message)
+  /*
+    THE LINE WHOSE ABSENCE WAS THE BUG. The Worker's own `fetch` is invoked for
+    its installation side effects and this asserts on what IT chose to install —
+    not on a transport this harness built, which would pass with the production
+    wiring deleted.
+  */
+  ok('the shipping Worker installs a memory read path', cog.installed === true,
+     'cognition() was null after the production fetch handler ran — feed.ts would silently skip enrichment')
+  ok('evidence reached the real object', (cog.written ?? 0) > 0, JSON.stringify(cog.written))
+  ok('and the object reflected over it', cog.reflected === true, JSON.stringify(cog.reflected))
+  eq('the day under test really is a Thursday in his zone', cog.weekday, 4)
+  ok(
+    'a memory-derived line reached the widget through the production seam',
+    Array.isArray(cog.context) && cog.context.length > 0,
+    `context was ${JSON.stringify(cog.context)} — an empty array is the pre-fix behaviour`
+  )
+  ok(
+    'and it is the baseline comparison, in his words',
+    /below your usual Thursday/i.test((cog.context ?? []).join(' ')),
+    JSON.stringify(cog.context)
+  )
+  // §13, at the edge as much as on the Mac: the conclusion crosses, never the
+  // machinery that produced it.
+  ok(
+    'with no figure, probability or count in it',
+    (cog.context ?? []).every((l) => !/\d/.test(l)),
+    JSON.stringify(cog.context)
+  )
+  ok(
+    'and the context object carries its certainty for ranking, not for rendering',
+    (cog.contextRaw ?? []).every((c) => typeof c.certainty === 'string' && !/\d/.test(c.line)),
+    JSON.stringify(cog.contextRaw)
+  )
 
   // ── §16 · Restart ──────────────────────────────────────────────────────────
   //

@@ -1,8 +1,8 @@
 import { history, historyAvailable } from './actions.js'
 import { readHome, type HomeState } from './home.js'
 import { buildDeck, type HomeDeck } from './deck.js'
-import { intelligenceSlot, type IntelligencePresentation } from './intelligence.js'
-import { memoryPosture, memoryStore } from './memory/host.js'
+import type { IntelligencePresentation } from './intelligence.js'
+import { cognition } from './memory/cognition.js'
 import { buildInsights, needFrom, type InsightRun } from './insight.js'
 import { enrichPanes, sourcePanes, noticePane } from './panes.js'
 import { getFact, liftFromObservations, readPerson } from './person.js'
@@ -12,7 +12,7 @@ import { think, type Need, type ThinkResult } from './think.js'
 import { resolveRefs, type WidgetPane } from './widgets.js'
 import { liftPeople } from './people.js'
 import { dateLabel as spellDate, dayIn, dateVocabulary } from './clock.js'
-import { dedupeBeliefs, deriveProfile, mutateWorld, reconcileBeliefs, writeWorld, type World } from './world.js'
+import { dedupeBeliefs, deriveProfile, mutateWorld, reconcileBeliefs, writeWorld, type Observation, type World } from './world.js'
 
 /**
  * The splash, assembled.
@@ -184,9 +184,19 @@ export async function readSnapshot(world?: World, now = new Date()): Promise<Fee
   if (!snap) return null
   if (!world) return snap
   try {
-    // His arrangement is read here, where awaiting is already the shape of the
-    // call, so `reproject` itself stays synchronous — see `buildDeck`.
-    return reproject(snap, world, await readHome(), now)
+    /*
+      His arrangement, the enriched projection and slot three, together — all
+      three are awaited here so `reproject` itself stays synchronous, and in
+      parallel because none of them depends on another. At the edge two of them
+      are round trips into the same object, and doing them in sequence would
+      pay for the same latency twice on the path that paints his home screen.
+    */
+    const [home, sources, intelligence] = await Promise.all([
+      readHome(),
+      enriched(sourcePanes(world, now), now, world.timeZone),
+      slotThree(now, world.timeZone),
+    ])
+    return reproject(snap, world, home, now, { sources, intelligence })
   } catch {
     // A projection that throws must not cost the first paint. The stored feed
     // is still the thing that was true when it was written.
@@ -225,11 +235,11 @@ const sameDay = (a: Date, b: Date, tz?: string) => dayIn(a, tz) === dayIn(b, tz)
  * Defensive to the point of rudeness, for the reason `host.ts` states — a broken
  * ledger costs evidence and must never cost a screen.
  */
-function slotThree(now: Date, tz?: string): IntelligencePresentation | null {
+async function slotThree(now: Date, tz?: string): Promise<IntelligencePresentation | null> {
   try {
-    const store = memoryStore()
-    if (!store) return null
-    return intelligenceSlot(store, { now, timeZone: tz, posture: memoryPosture(), label: metricLabel })
+    const cog = cognition()
+    if (!cog) return null
+    return await cog.intelligence({ now: now.toISOString(), timeZone: tz })
   } catch {
     return null
   }
@@ -250,23 +260,16 @@ function slotThree(now: Date, tz?: string): IntelligencePresentation | null {
  * Synchronous, defensive, and returns the panes UNCHANGED on any failure. The
  * app that existed before this function is the app that runs when it declines.
  */
-function enriched(needs: Need[], now: Date, tz?: string): Need[] {
+async function enriched(needs: Need[], now: Date, tz?: string): Promise<Need[]> {
   try {
-    const store = memoryStore()
-    if (!store) return needs
-    return enrichPanes(needs, store, { now, timeZone: tz, posture: memoryPosture() })
+    const cog = cognition()
+    if (!cog) return needs
+    return await enrichPanes(needs, cog, { now, timeZone: tz })
   } catch {
     return needs
   }
 }
 
-/** Metric ids in his words. The vocabulary `candidates.ts` already uses. */
-const metricLabel = (m: string): string =>
-  m === 'steps' ? 'your step count'
-  : m === 'events_per_day' ? 'how much is in your calendar'
-  : m === 'departure_minute' ? 'when you leave'
-  : m === 'contact_days' ? 'how often you are in touch'
-  : m
 
 /**
  * Swap every cached source row for one derived from the world as it stands.
@@ -279,8 +282,24 @@ const metricLabel = (m: string): string =>
  * which is the correct trade, because the alternative is his arrangement
  * silently rearranging itself on a cold start.
  */
-function reproject(snap: Feed, world: World, home: HomeState, now: Date): Feed {
-  const freshSources = enriched(sourcePanes(world, now), now, world.timeZone)
+function reproject(
+  snap: Feed,
+  world: World,
+  home: HomeState,
+  now: Date,
+  /**
+   * THE MEMORY CORE'S TWO CONTRIBUTIONS, ALREADY AWAITED BY THE CALLER.
+   *
+   * Inputs rather than reads, and that is the same rule `buildDeck` already
+   * states one level down: this function is what the cached path runs, it is
+   * synchronous by design, and at the edge both of these are now an RPC into a
+   * Durable Object. `readSnapshot` is async anyway — it is already awaiting KV
+   * twice — so the waiting happens where waiting was already the shape of the
+   * call, and the instant-paint rule is untouched.
+   */
+  memory: { sources: Need[]; intelligence: IntelligencePresentation | null },
+): Feed {
+  const freshSources = memory.sources
   const fresh = new Map(freshSources.map((n) => [n.id, n]))
   const stale = !sameDay(new Date(snap.at), now, world.timeZone)
   const hasSynthesis = snap.items.some((i) => i.kind === 'synthesis')
@@ -330,7 +349,7 @@ function reproject(snap: Feed, world: World, home: HomeState, now: Date): Feed {
       wrong" take effect on the very next paint rather than on the next think.
     */
     deck: buildDeck(freshSources, attentionNow, synthesisNow, home, now, world.timeZone, {
-      intelligence: slotThree(now, world.timeZone),
+      intelligence: memory.intelligence,
     }),
     /**
      * KEEP THE STORED LABEL ONLY IF A MODEL WROTE IT.
@@ -572,7 +591,7 @@ export async function buildFeed(world: World, opts: BuildOptions = {}): Promise<
   const attentionCards = (insights?.ranked.surface ?? []).map((a) => needFrom(a, now))
 
   // ── what is already true, model or no model ───────────────────────────────
-  const sources = enriched(sourcePanes(world, now), now, world.timeZone)
+  const sources = await enriched(sourcePanes(world, now), now, world.timeZone)
   const panes = await livePanes()
   await resolveRefs([...sources.flatMap((p) => p.panes ?? []), ...panes.flatMap((p) => p.panes)])
 
@@ -667,7 +686,7 @@ export async function buildFeed(world: World, opts: BuildOptions = {}): Promise<
       can drift out of step with the first.
     */
     deck: buildDeck(sources, attentionCards, modelCards, await readHome(), now, world.timeZone, {
-      intelligence: slotThree(now, world.timeZone),
+      intelligence: await slotThree(now, world.timeZone),
     }),
     shelf,
     at,

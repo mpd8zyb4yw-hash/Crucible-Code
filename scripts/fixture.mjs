@@ -57,6 +57,7 @@ import { presentShift } from '../server/intelligence.ts'
   what the app looks like when the memory core has nothing to add.
 */
 import { enrichPanes } from '../server/panes.ts'
+import { cognitionOverStore } from '../server/memory/cognition.ts'
 /*
   AND THE COPY BUDGET IS THE REAL ONE TOO. See `need` below.
 */
@@ -518,7 +519,7 @@ const LONG_SUBJECT =
 const LONG_PLACE =
   'San Giovanni in Persiceto, Città metropolitana di Bologna, Emilia-Romagna'
 
-const base = (items, { intelligence = INTELLIGENCE, ...over } = {}) => {
+const base = async (items, { intelligence = INTELLIGENCE, ...over } = {}) => {
   /*
     ENRICHED ONCE, AT THE TOP, AND THE SAME NEEDS GO EVERYWHERE.
 
@@ -530,7 +531,7 @@ const base = (items, { intelligence = INTELLIGENCE, ...over } = {}) => {
     and both consumers read its result.
   */
   const served = (over.items ?? items).map((i) => (i.need ? { ...i, need: i.need } : i))
-  const needs = enrich(served.flatMap((i) => (i.need ? [i.need] : [])))
+  const needs = await enrich(served.flatMap((i) => (i.need ? [i.need] : [])))
   const byId = new Map(needs.map((n) => [n.id, n]))
   const enrichedItems = served.map((i) => (i.need && byId.has(i.need.id) ? { ...i, need: byId.get(i.need.id) } : i))
 
@@ -764,8 +765,19 @@ const MEMORY = {
  */
 const POSTURE = { enabled: true, authority: { entities: 'live', baselines: 'live', routines: 'live' } }
 
+/*
+  THE COGNITION THE CAPTURES RUN THROUGH — the same seam production uses.
+
+  `enrichPanes` takes a cognition rather than a store now, because the edge's
+  ledger is inside a Durable Object and can never hand out a synchronous SQL
+  handle. The fixture still has a real local store, so it wraps it in the same
+  `cognitionOverStore` both hosts run; what is being captured is therefore the
+  production path, not a fixture-shaped imitation of it.
+*/
+const COGNITION = cognitionOverStore(MEMORY, POSTURE)
+
 const enrich = (needs) =>
-  enrichPanes(needs, MEMORY, { now: NOW, timeZone: 'Europe/Rome', posture: POSTURE })
+  enrichPanes(needs, COGNITION, { now: NOW, timeZone: 'Europe/Rome' })
 
 /** The same split `feed.ts` makes: sources go in the deck, the rest compete for slot two. */
 const deckFor = (items, intelligence = INTELLIGENCE) => {
@@ -1064,8 +1076,8 @@ createServer(async (req, res) => {
     })
   }
   if (p === '/api/home') return json(res, { systemOrder: [], hiddenApps: [], pinnedPanes: [], saved: [], archived: [], dismissed: [], seenAt: {}, updatedAt: at(17, 40) })
-  if (p === '/api/feed') return json(res, feed())
-  if (p === '/api/feed/refresh') return json(res, { refreshed: [], failed: [], feed: feed() })
+  if (p === '/api/feed') return json(res, await feed())
+  if (p === '/api/feed/refresh') return json(res, { refreshed: [], failed: [], feed: await feed() })
   if (p === '/api/push/vapid-public') return json(res, { key: null })
   if (p === '/api/say') {
     return json(res, { reply: 'I’ve pulled that up for you.', learned: false, did: 'Pulled 2 new things from Google just now.', didKind: 'telemetry', ui: [] })

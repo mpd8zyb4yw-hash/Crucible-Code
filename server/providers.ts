@@ -370,7 +370,7 @@ async function openaiChat(req: ChatRequest, url: string): Promise<ChatResult> {
       ...(req.json ? { response_format: { type: 'json_object' } } : {}),
     }),
   })
-  const body = await res.json().catch(() => null)
+  const body: any = await res.json().catch(() => null)
   if (!res.ok) throw fail(body, res.status, res.headers)
   return {
     text: body?.choices?.[0]?.message?.content ?? '',
@@ -394,7 +394,7 @@ async function anthropicChat(req: ChatRequest): Promise<ChatResult> {
       messages: [{ role: 'user', content: req.prompt }],
     }),
   })
-  const body = await res.json().catch(() => null)
+  const body: any = await res.json().catch(() => null)
   if (!res.ok) throw fail(body, res.status, res.headers)
   const text = (body?.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('')
   return {
@@ -423,7 +423,7 @@ async function geminiChat(req: ChatRequest): Promise<ChatResult> {
       },
     }),
   })
-  const body = await res.json().catch(() => null)
+  const body: any = await res.json().catch(() => null)
   if (!res.ok) throw fail(body, res.status, res.headers)
   const cand = body?.candidates?.[0]
   const text = (cand?.content?.parts ?? []).map((p: any) => p.text ?? '').join('')

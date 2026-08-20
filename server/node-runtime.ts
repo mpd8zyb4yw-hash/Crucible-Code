@@ -15,6 +15,7 @@ import { setSnapshotStore, type Feed } from './feed.js'
 import * as keychain from './keychain.js'
 import { betterSqliteMemoryStore } from './memory/store.js'
 import { installMemory, reflect, cadenceFor } from './memory/host.js'
+import { READ_ONLY_LIVE } from './memory/authority.js'
 import { partsIn } from './clock.js'
 import type { World } from './world.js'
 
@@ -81,7 +82,16 @@ function installNodeMemory(): void {
    * here it is the same address out of the environment, and its absence is a
    * degraded resolver rather than a broken one.
    */
-  installMemory(store, { timeZone: zone, me: process.env.ALLOWED_EMAIL })
+  /**
+   * THE SAME POSTURE THE EDGE RUNS. Both hosts, one capability map.
+   *
+   * It defaulted to `SHADOW_ONLY`, which meant the Mac's memory core was as
+   * silent as the edge's — for a different reason, but with the same result on
+   * screen. Naming the posture here is what keeps the two hosts from disagreeing
+   * about what the app is allowed to say, which is a difference that would show
+   * up as "it works on the laptop" and nowhere else.
+   */
+  installMemory(store, { timeZone: zone, me: process.env.ALLOWED_EMAIL }, READ_ONLY_LIVE)
 
   const timer = setInterval(() => {
     const now = new Date()

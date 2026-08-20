@@ -6,13 +6,18 @@
 # exists on this laptop is a change that does not exist. The standing
 # instruction is that the deployed copy must never drift from the code — so this
 # is not "a deploy command", it is a RECONCILER: it compares what is live with
-# what is here and closes the gap, and it is safe to run on a timer forever
-# with nobody watching.
+# what is here and closes the gap.
+#
+# It reconciles ONLY THE RELEASE BRANCH, and only from a clean tree. It used to
+# reconcile whatever happened to be on disk, which made every unfinished edit a
+# deployment; see "WHAT MAY REACH PRODUCTION" below, which is the rule that now
+# governs every path into this file.
 #
 # It runs from three places, and all three are the same code path:
-#   · the Stop hook, at the end of every Claude session   (.claude/settings.json)
 #   · a launchd agent, every fifteen minutes              (scripts/watchdog.plist)
-#   · by hand
+#   · by hand, deliberately                               (scripts/deploy.sh release)
+#   · a Stop hook, if one is installed — none is by default, because "the
+#     session ended" is not evidence that the work is finished.
 #
 # ── WHAT WENT WRONG BEFORE, WHICH IS WHY THIS FILE IS SHAPED LIKE THIS ───────
 #
@@ -77,10 +82,65 @@ SITE="https://crucible.cam"
 # shutting down his dev server every fifteen minutes.
 HARNESS_PORTS="3002"
 
-MODE="${1:-auto}"   # auto | force | check
+MODE="${1:-auto}"   # auto | release | force | check
 
 say() { printf '%s\n' "$*" >> "$LOG"; }
 emit() { printf '{"systemMessage":%s}\n' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"; }
+
+# ── WHAT MAY REACH PRODUCTION, AND FROM WHERE ────────────────────────────────
+#
+# This script used to ship whatever was on disk, from any branch, committed or
+# not, on a fifteen-minute timer. That is a fine reconciler for a tree that only
+# ever holds finished work and a live hazard for one that does not: an edit
+# saved mid-thought is on his phone within the quarter hour, and development,
+# review and production stop being three different things.
+#
+# So the modes are now separated by what each is ALLOWED to ship:
+#
+#   auto     the watchdog and the Stop hook. UNATTENDED — nobody is watching,
+#            so it may only ever ship the designated release branch with a
+#            clean tree. In any other state it does nothing, silently.
+#   release  a deliberate act by a person who means it. Any branch, still
+#            never a dirty tree.
+#   force    for a person debugging the deploy itself. Still never a dirty tree.
+#   check    read-only. Always permitted.
+#
+# The dirty-tree rule has no exception in any mode. A deploy that cannot be
+# named by a commit cannot be reviewed, reverted or reproduced, and the
+# question "what is live" stops having an answer.
+#
+# The release branch is data, not a constant, so moving production to a
+# different branch does not require editing this file:
+#     echo my-branch > .crucible-release-branch
+
+RELEASE_BRANCH="$(cat .crucible-release-branch 2>/dev/null || echo 'crucible-groundtruth')"
+
+# DEPLOYABLE PATHS ONLY — the same set the fingerprint uses. A scratch note or
+# a stray log in the tree is not a reason to refuse to ship, and a rule that
+# fires on irrelevant dirt is one that gets worked around.
+tree_dirty() {
+  [ -n "$(git status --porcelain -- src server worker public index.html wrangler.jsonc package.json 2>/dev/null)" ]
+}
+
+if [ "$MODE" != "check" ]; then
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+
+  if tree_dirty; then
+    say "── $(date '+%Y-%m-%d %H:%M:%S') ──"
+    say "refused: uncommitted deployable changes in the working tree (mode=$MODE)"
+    # Silent for auto, which fires on a timer and would otherwise narrate every
+    # tick of every working day. A person who typed the command hears about it.
+    [ "$MODE" = "auto" ] || emit "Deploy refused: the working tree has uncommitted changes. Commit them first."
+    exit 0
+  fi
+
+  if [ "$MODE" = "auto" ] && [ "$branch" != "$RELEASE_BRANCH" ]; then
+    # SILENT ON PURPOSE. While any branch work is in progress this is the
+    # normal state, several times an hour; a message here would train him to
+    # ignore the one that matters. `scripts/deploy.sh check` still answers.
+    exit 0
+  fi
+fi
 
 # ── one at a time ────────────────────────────────────────────────────────────
 #
@@ -263,8 +323,8 @@ stamped="$(cat "$STAMP" 2>/dev/null || echo '')"
 expected_now="$(sed -n 's/.*"tree": "\([^"]*\)".*/\1/p' server/build.ts 2>/dev/null | head -1)"
 
 reason=""
-if [ "$MODE" = "force" ]; then
-  reason="forced"
+if [ "$MODE" = "force" ] || [ "$MODE" = "release" ]; then
+  reason="deliberate ${MODE}"
 elif [ -z "$live" ]; then
   # Unreachable is not "up to date". It may be a flat network, and it may be a
   # Worker that will not start — and the second is a site that is DOWN, which
