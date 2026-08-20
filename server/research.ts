@@ -2,6 +2,7 @@ import { chat, canSearch } from './providers.js'
 import { route } from './router.js'
 import { renderWorld, type World, type Observation } from './world.js'
 import { parseLoose } from './think.js'
+import { looksLikeProtocol } from './reply.js'
 import { search as legacySearch } from './legacy/retrievalLayer.js'
 
 /**
@@ -196,6 +197,14 @@ export async function researchGap(
   }
 
   if (!text || /^not found\b/i.test(text)) return null
+  /*
+    A research answer becomes an OBSERVATION — evidence the synthesis pass reads
+    and quotes back to him. So the same boundary applies here as in chat: a
+    model that returned its envelope instead of an answer has not answered, and
+    filing protocol as a fact about his life is how it later gets read out as
+    one. Nothing found beats something malformed.
+  */
+  if (looksLikeProtocol(text)) return null
 
   const now = new Date()
   const cites = sources.slice(0, 3).map((s) => s.title).filter(Boolean)

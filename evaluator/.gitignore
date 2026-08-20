@@ -1,0 +1,7 @@
+.profile/
+.token
+.tunnel.log
+.server.log
+.tunnel-token
+.capability
+.mcp-secret

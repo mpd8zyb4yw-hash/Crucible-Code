@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #101016; }
+  #root { width: 100%; height: 100%; }
+  * { box-sizing: border-box; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 4px; }
+  @keyframes fadeIn { from { opacity:0 } to { opacity:1 } }
+  @keyframes caretBlink { 0%,100% { opacity: 1 } 50% { opacity: 0 } }
+  @keyframes slideUp { from { opacity:0; transform:translateY(10px) } to { opacity:1; transform:translateY(0) } }
+  textarea::placeholder, input::placeholder { color: #4a4a5e; }
+</style>
+</helmet>
+<div style="height: 100vh; width: 100%; background: #101016; display: flex; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e4e4ee; position: relative; overflow: hidden; user-select: none">
+
+  <canvas ref="{{ bgRef }}" style="position: fixed; inset: 0; z-index: 0; pointer-events: none"></canvas>
+
+  <!-- ── Left glass rail ── -->
+  <div style="width: 56px; flex-shrink: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; padding: 14px 0 16px; gap: 6px; background: rgba(255,255,255,0.025); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border-right: 1px solid rgba(255,255,255,0.06)">
+    <div style="width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; margin-bottom: 14px">
+      <svg width="22" height="22" viewBox="0 0 48 48" fill="none"><path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="#e4e4ee" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.85"></path></svg>
+    </div>
+    <button onClick="{{ goChat }}" title="Chat" style="width: 38px; height: 38px; border-radius: 11px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{ navChatBg }}; color: {{ navChatColor }}; outline: {{ navChatOutline }}; transition: background 0.2s, color 0.2s">
+      <svg width="17" height="17" viewBox="0 0 16 16" fill="none"><path d="M14 8a6 6 0 0 1-8.7 5.4L2 14l0.7-3A6 6 0 1 1 14 8Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"></path></svg>
+    </button>
+    <button onClick="{{ goAgents }}" title="Agents" style="width: 38px; height: 38px; border-radius: 11px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{ navAgentsBg }}; color: {{ navAgentsColor }}; outline: {{ navAgentsOutline }}; transition: background 0.2s, color 0.2s">
+      <svg width="17" height="17" viewBox="0 0 16 16" fill="none"><rect x="3" y="5" width="10" height="8" rx="2.5" stroke="currentColor" stroke-width="1.4"></rect><path d="M8 5V2.8M6 9h.01M10 9h.01" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path><circle cx="8" cy="2.2" r="0.9" fill="currentColor"></circle></svg>
+    </button>
+    <button onClick="{{ goHistory }}" title="History" style="width: 38px; height: 38px; border-radius: 11px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{ navHistoryBg }}; color: {{ navHistoryColor }}; outline: {{ navHistoryOutline }}; transition: background 0.2s, color 0.2s">
+      <svg width="17" height="17" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.2" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 5v3.2l2.2 1.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+    </button>
+    <div style="flex: 1"></div>
+    <button onClick="{{ goSettings }}" title="Settings" style="width: 38px; height: 38px; border-radius: 11px; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; background: {{ navSettingsBg }}; color: {{ navSettingsColor }}; outline: {{ navSettingsOutline }}; transition: background 0.2s, color 0.2s">
+      <svg width="17" height="17" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2.2" stroke="currentColor" stroke-width="1.4"></circle><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"></path></svg>
+    </button>
+    <div style="width: 26px; height: 26px; border-radius: 50%; background: linear-gradient(135deg, #7c7cf8, #4db89e); opacity: 0.85; margin-top: 4px"></div>
+  </div>
+
+  <!-- ── CHAT tab ── -->
+  <sc-if value="{{ tabChat }}" hint-placeholder-val="{{ true }}">
+    <div data-screen-label="Chat" style="flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; z-index: 1">
+
+      <!-- Topbar -->
+      <div style="height: 48px; flex-shrink: 0; display: flex; align-items: center; padding: 0 18px; gap: 12px; z-index: 10">
+        <span style="font-size: 13px; font-weight: 700; letter-spacing: -0.01em; color: #e4e4ee">Crucible</span>
+        <span style="display: flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; color: #66667a; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.07); padding: 2px 8px; border-radius: 999px">
+          <span style="width: 5px; height: 5px; border-radius: 50%; background: #4db89e"></span>
+          ON-DEVICE
+        </span>
+        <div style="flex: 1"></div>
+        <sc-if value="{{ isWorking }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; align-items: center; gap: 8px; animation: fadeIn 0.3s">
+            <span style="font-variant-numeric: tabular-nums; font-size: 10.5px; color: #55556a; font-weight: 500">{{ elapsedLabel }}</span>
+            <span style="font-size: 10.5px; color: #77778c; letter-spacing: 0.05em">{{ stageLabel }}</span>
+          </div>
+        </sc-if>
+        <button onClick="{{ newChat }}" title="New chat" style="display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.04); color: #b8b8cc; font-size: 11px; font-weight: 600; cursor: pointer">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"></path></svg>
+          New chat
+        </button>
+      </div>
+
+      <!-- Messages -->
+      <div ref="{{ scrollRef }}" style="flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 24px 28px 170px; gap: 28px; -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 130px), rgba(0,0,0,0.4) calc(100% - 70px), transparent 100%); mask-image: linear-gradient(to bottom, black calc(100% - 130px), rgba(0,0,0,0.4) calc(100% - 70px), transparent 100%)">
+        <div style="width: 100%; max-width: 720px; display: flex; flex-direction: column; gap: 18px">
+
+          <sc-for list="{{ messages }}" as="msg" hint-placeholder-count="2">
+            <sc-if value="{{ msg.isUser }}" hint-placeholder-val="{{ true }}">
+              <div style="display: flex; justify-content: flex-end">
+                <div style="max-width: 60%; padding: 10px 16px; border-radius: 16px 16px 4px 16px; font-size: 13.5px; line-height: 1.6; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.09); color: #d4d4e2; overflow-wrap: anywhere; user-select: text">{{ msg.text }}</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{ msg.isReply }}" hint-placeholder-val="{{ false }}">
+              <div style="position: relative; border-radius: 16px; width: 100%; animation: slideUp 0.4s ease">
+                <div style="position: relative; border-radius: 16px; padding: 18px 20px; overflow: hidden; background: rgba(255,255,255,0.035); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); border: 1px solid rgba(255,255,255,0.09); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05)">
+                  <sc-if value="{{ msg.ensemble }}" hint-placeholder-val="{{ false }}">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px">
+                      <sc-for list="{{ msg.models }}" as="m" hint-placeholder-count="2">
+                        <span style="display: flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; background: {{ m.chipBg }}; border: 1px solid {{ m.chipBorder }}">
+                          <span style="width: 5px; height: 5px; border-radius: 50%; background: {{ m.color }}"></span>
+                          <span style="font-size: 10px; font-weight: 600; color: {{ m.color }}">{{ m.label }}</span>
+                          <span style="font-size: 9px; color: #55556a">{{ m.role }}</span>
+                        </span>
+                      </sc-for>
+                      <div style="flex: 1"></div>
+                      <span style="font-size: 9px; font-weight: 700; letter-spacing: 0.12em; color: rgba(157,157,250,0.7); text-transform: uppercase">ensemble</span>
+                    </div>
+                  </sc-if>
+                  <div style="font-size: 13.5px; line-height: 1.75; color: #dcdcea; overflow-wrap: anywhere; user-select: text; white-space: pre-wrap">{{ msg.text }}</div>
+                  <sc-if value="{{ msg.showLocalTag }}" hint-placeholder-val="{{ false }}">
+                    <div style="margin-top: 10px; font-size: 9.5px; font-weight: 600; letter-spacing: 0.08em; color: #4a4a5e">CRUCIBLE · ON-DEVICE</div>
+                  </sc-if>
+                </div>
+              </div>
+            </sc-if>
+          </sc-for>
+
+          <!-- Live streaming reply — molten pour overlay -->
+          <sc-if value="{{ hasLive }}" hint-placeholder-val="{{ false }}">
+            <div ref="{{ liveWrapRef }}" style="position: relative; border-radius: 16px; width: 100%; margin-top: 46px">
+              <canvas ref="{{ ringRef }}" style="position: absolute; left: -24px; top: -70px; z-index: 3; pointer-events: none"></canvas>
+              <div style="position: relative; border-radius: 16px; padding: 18px 20px; min-height: 54px; overflow: hidden; background: rgba(255,255,255,0.035); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); border: 1px solid rgba(255,255,255,0.045); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05)">
+                <div style="font-size: 13.5px; line-height: 1.75; color: #dcdcea; overflow-wrap: anywhere; user-select: text; white-space: pre-wrap; min-height: 18px">{{ liveText }}<sc-if value="{{ showCaret }}" hint-placeholder-val="{{ false }}"><span style="display: inline-block; width: 7px; height: 15px; margin-left: 2px; vertical-align: text-bottom; background: linear-gradient(180deg, #ffb45e, #ff6a1a); border-radius: 2px; animation: caretBlink 0.9s step-end infinite"></span></sc-if></div>
+              </div>
+            </div>
+          </sc-if>
+
+        </div>
+      </div>
+
+      <!-- Composer -->
+      <div style="position: absolute; bottom: 0; left: 0; right: 0; padding: 8px 20px 20px; display: flex; flex-direction: column; align-items: center; z-index: 10">
+
+        <!-- Ensemble confirmation ask -->
+        <sc-if value="{{ showConfirmAsk }}" hint-placeholder-val="{{ false }}">
+          <div style="width: 100%; max-width: 720px; margin-bottom: 10px; padding: 14px 16px; border-radius: 16px; background: rgba(124,124,248,0.07); border: 1px solid rgba(124,124,248,0.25); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); display: flex; flex-direction: column; gap: 10px; animation: slideUp 0.25s ease">
+            <div style="display: flex; align-items: center; gap: 8px">
+              <span style="width: 6px; height: 6px; border-radius: 50%; background: #7c7cf8; box-shadow: 0 0 8px rgba(124,124,248,0.7)"></span>
+              <span style="font-size: 12px; font-weight: 700; color: #c8c8f0">Use ensemble for this?</span>
+            </div>
+            <span style="font-size: 11.5px; line-height: 1.55; color: #8a8a9e">This fans out to {{ keyCount }} external endpoint{{ keyPlural }} using your API keys, then cross-examines the drafts. Nothing leaves this device otherwise.</span>
+            <div style="display: flex; gap: 8px; justify-content: flex-end">
+              <button onClick="{{ declineEnsemble }}" style="padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.1); background: transparent; color: #b8b8cc; font-size: 11px; font-weight: 600; cursor: pointer">Crucible only</button>
+              <button onClick="{{ confirmEnsemble }}" style="padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(124,124,248,0.4); background: rgba(124,124,248,0.15); color: #b0b0ff; font-size: 11px; font-weight: 600; cursor: pointer">Run ensemble</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- No keys yet -->
+        <sc-if value="{{ showNoKeys }}" hint-placeholder-val="{{ false }}">
+          <div style="width: 100%; max-width: 720px; margin-bottom: 10px; padding: 14px 16px; border-radius: 16px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); display: flex; align-items: center; gap: 12px; animation: slideUp 0.25s ease">
+            <div style="display: flex; flex-direction: column; gap: 3px; flex: 1">
+              <span style="font-size: 12px; font-weight: 700; color: #d8d8e8">Ensemble needs your own API keys</span>
+              <span style="font-size: 11.5px; color: #8a8a9e">No endpoints configured. Add keys in Settings — Crucible ships with zero external calls.</span>
+            </div>
+            <button onClick="{{ declineEnsemble }}" style="padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.1); background: transparent; color: #b8b8cc; font-size: 11px; font-weight: 600; cursor: pointer; flex-shrink: 0">Crucible only</button>
+            <button onClick="{{ goSettings }}" style="padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(124,124,248,0.4); background: rgba(124,124,248,0.15); color: #b0b0ff; font-size: 11px; font-weight: 600; cursor: pointer; flex-shrink: 0">Add keys</button>
+          </div>
+        </sc-if>
+
+        <div style="display: flex; flex-direction: column; background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.09); border-radius: 20px; padding: 12px 12px 10px 14px; width: 100%; max-width: 720px; backdrop-filter: blur(32px); -webkit-backdrop-filter: blur(32px); box-shadow: 0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)">
+          <div style="display: flex; gap: 10px; align-items: center">
+            <svg width="20" height="20" viewBox="0 0 48 48" fill="none" style="flex-shrink: 0; opacity: 0.4"><path d="M10 14h28M10 14l6 22M38 14l-6 22M16 36q8 8 16 0" stroke="#e4e4ee" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+            <textarea ref="{{ composerRef }}" rows="1" placeholder="Message Crucible" onKeyDown="{{ composerKey }}" style="flex: 1; background: none; border: none; color: #e4e4ee; font-size: 13.5px; resize: none; outline: none; font-family: inherit; line-height: 1.5; max-height: 160px; user-select: text"></textarea>
+            <button onClick="{{ sendClick }}" title="Send" style="width: 32px; height: 32px; border-radius: 50%; border: none; background: {{ sendBg }}; display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; outline: 1px solid {{ sendOutline }}; transition: background 0.3s">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 11V3M3.5 6.5L7 3L10.5 6.5" stroke="{{ sendArrow }}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+            </button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; padding: 10px 0 0 32px">
+            <button onClick="{{ toggleEnsemble }}" style="display: flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid {{ ensPillBorder }}; background: {{ ensPillBg }}; transition: background 0.2s, border-color 0.2s">
+              <span style="width: 5px; height: 5px; border-radius: 50%; background: {{ ensDot }}; box-shadow: {{ ensDotGlow }}"></span>
+              <span style="font-size: 10px; font-weight: 600; letter-spacing: 0.04em; color: {{ ensLabelColor }}">Ensemble</span>
+            </button>
+            <span style="font-size: 10px; color: #4a4a5e; font-weight: 500">{{ extCallsLabel }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ── AGENTS tab ── -->
+  <sc-if value="{{ tabAgents }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Agents" style="flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; z-index: 1; overflow-y: auto">
+      <div style="width: 100%; max-width: 860px; margin: 0 auto; padding: 36px 32px 48px; display: flex; flex-direction: column; gap: 26px">
+        <div style="display: flex; flex-direction: column; gap: 4px">
+          <span style="font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: #eef">Agents</span>
+          <span style="font-size: 12.5px; color: #77778c">Prebuilt workflows, or vibe-code your own. All run on-device by default.</span>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px; padding: 16px 16px 14px; border-radius: 18px; background: rgba(255,255,255,0.04); border: 1px solid rgba(124,124,248,0.2); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05)">
+          <div style="display: flex; align-items: center; gap: 8px">
+            <span style="width: 6px; height: 6px; border-radius: 50%; background: linear-gradient(135deg, #7c7cf8, #c084fc); box-shadow: 0 0 8px rgba(150,120,250,0.7)"></span>
+            <span style="font-size: 11px; font-weight: 700; letter-spacing: 0.1em; color: #9d9dfa; text-transform: uppercase">Vibe-code an agent</span>
+          </div>
+          <textarea rows="2" placeholder="Describe what your agent should do — Crucible drafts its workflow, tools, and guardrails" style="background: none; border: none; color: #e4e4ee; font-size: 13px; resize: none; outline: none; font-family: inherit; line-height: 1.6; user-select: text"></textarea>
+          <div style="display: flex; justify-content: flex-end">
+            <button style="padding: 6px 16px; border-radius: 999px; border: 1px solid rgba(124,124,248,0.35); background: rgba(124,124,248,0.12); color: #b0b0ff; font-size: 11.5px; font-weight: 600; cursor: pointer">Draft agent</button>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px">
+          <sc-for list="{{ agents }}" as="a" hint-placeholder-count="6">
+            <div style="display: flex; flex-direction: column; gap: 10px; padding: 16px; border-radius: 16px; background: linear-gradient(150deg, {{ a.tint }} 0%, rgba(255,255,255,0.02) 60%); border: 1px solid rgba(255,255,255,0.07); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); cursor: pointer; transition: border-color 0.2s" style-hover="border-color: {{ a.hoverBorder }}">
+              <div style="display: flex; align-items: center; gap: 8px">
+                <span style="width: 28px; height: 28px; border-radius: 9px; display: flex; align-items: center; justify-content: center; background: {{ a.iconBg }}; color: {{ a.color }}; font-size: 13px; font-weight: 700">{{ a.glyph }}</span>
+                <span style="font-size: 13px; font-weight: 700; color: #e8e8f4; flex: 1">{{ a.name }}</span>
+              </div>
+              <span style="font-size: 11.5px; line-height: 1.55; color: #8a8a9e">{{ a.desc }}</span>
+              <div style="display: flex; gap: 5px; flex-wrap: wrap; margin-top: auto">
+                <span style="font-size: 9px; font-weight: 600; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); color: #77778c">{{ a.chip1 }}</span>
+                <span style="font-size: 9px; font-weight: 600; letter-spacing: 0.05em; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); color: #77778c">{{ a.chip2 }}</span>
+                <div style="flex: 1"></div>
+                <span style="font-size: 10px; font-weight: 700; color: {{ a.color }}">Run ▸</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ── HISTORY tab ── -->
+  <sc-if value="{{ tabHistory }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="History" style="flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; z-index: 1; overflow-y: auto">
+      <div style="width: 100%; max-width: 720px; margin: 0 auto; padding: 36px 32px 48px; display: flex; flex-direction: column; gap: 20px">
+        <div style="display: flex; align-items: center; gap: 12px">
+          <span style="font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: #eef; flex: 1">History</span>
+          <input placeholder="Search conversations…" style="background: rgba(255,255,255,0.045); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 8px 14px; font-size: 12.5px; color: #d0d0e0; outline: none; font-family: inherit; width: 240px; user-select: text" />
+        </div>
+        <div style="display: flex; gap: 6px">
+          <span style="font-size: 10.5px; font-weight: 600; padding: 4px 12px; border-radius: 999px; background: rgba(124,124,248,0.12); border: 1px solid rgba(124,124,248,0.3); color: #9d9dfa; cursor: pointer">All</span>
+          <span style="font-size: 10.5px; font-weight: 600; padding: 4px 12px; border-radius: 999px; background: transparent; border: 1px solid rgba(255,255,255,0.07); color: #55556a; cursor: pointer">Ensemble</span>
+          <span style="font-size: 10.5px; font-weight: 600; padding: 4px 12px; border-radius: 999px; background: transparent; border: 1px solid rgba(255,255,255,0.07); color: #55556a; cursor: pointer">Agents</span>
+          <span style="font-size: 10.5px; font-weight: 600; padding: 4px 12px; border-radius: 999px; background: transparent; border: 1px solid rgba(255,255,255,0.07); color: #55556a; cursor: pointer">Pinned</span>
+        </div>
+        <sc-for list="{{ historyBuckets }}" as="bucket" hint-placeholder-count="2">
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <span style="font-size: 10px; font-weight: 700; letter-spacing: 0.12em; color: #4a4a5e; text-transform: uppercase">{{ bucket.label }}</span>
+            <sc-for list="{{ bucket.items }}" as="s" hint-placeholder-count="3">
+              <div onClick="{{ goChat }}" style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); cursor: pointer; transition: background 0.15s, border-color 0.15s" style-hover="background: rgba(255,255,255,0.055); border-color: rgba(124,124,248,0.25)">
+                <span style="width: 6px; height: 6px; border-radius: 50%; background: {{ s.color }}; flex-shrink: 0"></span>
+                <div style="display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0">
+                  <span style="font-size: 12.5px; font-weight: 600; color: #d8d8e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ s.title }}</span>
+                  <span style="font-size: 11px; color: #66667a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ s.snippet }}</span>
+                </div>
+                <span style="font-size: 9px; font-weight: 700; letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); color: #66667a; flex-shrink: 0; text-transform: uppercase">{{ s.mode }}</span>
+                <span style="font-size: 10.5px; color: #4a4a5e; flex-shrink: 0; font-variant-numeric: tabular-nums">{{ s.when }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <!-- ── SETTINGS tab ── -->
+  <sc-if value="{{ tabSettings }}" hint-placeholder-val="{{ false }}">
+    <div data-screen-label="Settings" style="flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; z-index: 1; overflow-y: auto">
+      <div style="width: 100%; max-width: 640px; margin: 0 auto; padding: 36px 32px 48px; display: flex; flex-direction: column; gap: 26px">
+        <div style="display: flex; flex-direction: column; gap: 4px">
+          <span style="font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: #eef">Settings</span>
+          <span style="font-size: 12.5px; color: #77778c">Crucible runs fully on-device. External calls only happen through keys you add here.</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <div style="display: flex; flex-direction: column; gap: 3px">
+            <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.06em; color: #b8b8cc; text-transform: uppercase">API keys</span>
+            <span style="font-size: 11.5px; line-height: 1.55; color: #77778c">Bring your own endpoints. Name each key whatever you like — Crucible assumes nothing about providers. Keys unlock ensemble mode; without them, ensemble stays off.</span>
+          </div>
+
+          <sc-if value="{{ hasKeys }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; flex-direction: column; gap: 8px">
+              <sc-for list="{{ keys }}" as="k" hint-placeholder-count="1">
+                <div style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07)">
+                  <span style="width: 6px; height: 6px; border-radius: 50%; background: #4db89e; flex-shrink: 0"></span>
+                  <span style="font-size: 12.5px; font-weight: 600; color: #d8d8e8; min-width: 120px">{{ k.name }}</span>
+                  <span style="font-size: 11.5px; color: #55556a; font-family: 'SF Mono', 'Fira Code', monospace; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ k.masked }}</span>
+                  <button onClick="{{ k.remove }}" style="padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.08); background: transparent; color: #66667a; font-size: 10px; font-weight: 600; cursor: pointer">Remove</button>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+          <sc-if value="{{ noKeys }}" hint-placeholder-val="{{ true }}">
+            <div style="padding: 20px; border-radius: 14px; border: 1px dashed rgba(255,255,255,0.1); display: flex; align-items: center; justify-content: center">
+              <span style="font-size: 11.5px; color: #55556a">No keys yet — a blank slate. Zero external calls until you add one.</span>
+            </div>
+          </sc-if>
+
+          <div style="display: flex; gap: 8px; align-items: center; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.035); border: 1px solid rgba(255,255,255,0.08)">
+            <input ref="{{ keyNameRef }}" placeholder="Name (anything)" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 7px 12px; font-size: 12px; color: #d0d0e0; outline: none; font-family: inherit; width: 160px; user-select: text" />
+            <input ref="{{ keyValRef }}" placeholder="Key or endpoint token" style="background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 7px 12px; font-size: 12px; color: #d0d0e0; outline: none; font-family: 'SF Mono', 'Fira Code', monospace; flex: 1; user-select: text" />
+            <button onClick="{{ addKey }}" style="padding: 7px 16px; border-radius: 999px; border: 1px solid rgba(124,124,248,0.35); background: rgba(124,124,248,0.12); color: #b0b0ff; font-size: 11.5px; font-weight: 600; cursor: pointer; flex-shrink: 0">Add key</button>
+          </div>
+          <span style="font-size: 10.5px; color: #4a4a5e">Stored locally, never synced. {{ keyCountLabel }}</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 12px">
+          <div style="display: flex; flex-direction: column; gap: 3px">
+            <span style="font-size: 12px; font-weight: 700; letter-spacing: 0.06em; color: #b8b8cc; text-transform: uppercase">Ensemble</span>
+            <span style="font-size: 11.5px; line-height: 1.55; color: #77778c">Off by default. When armed from the composer, Crucible asks before every fan-out — no query is escalated automatically.</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07)">
+            <div style="display: flex; flex-direction: column; gap: 2px; flex: 1">
+              <span style="font-size: 12.5px; font-weight: 600; color: #d8d8e8">Ask before every ensemble run</span>
+              <span style="font-size: 11px; color: #66667a">Per-query confirmation, even while the toggle is armed</span>
+            </div>
+            <span style="font-size: 10px; font-weight: 700; letter-spacing: 0.08em; color: #4db89e">ALWAYS ON</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;autoDemo&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Demo&quot;}, &quot;streamSpeed&quot;: {&quot;editor&quot;: &quot;range&quot;, &quot;default&quot;: 1, &quot;min&quot;: 0.4, &quot;max&quot;: 2.5, &quot;step&quot;: 0.1, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;Pour animation&quot;}, &quot;minFillMs&quot;: {&quot;editor&quot;: &quot;range&quot;, &quot;default&quot;: 1350, &quot;min&quot;: 800, &quot;max&quot;: 3000, &quot;step&quot;: 50, &quot;unit&quot;: &quot;ms&quot;, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;Pour animation&quot;}}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props)
+    this.state = {
+      tab: 'chat',
+      messages: [],
+      live: null,            // { text, full, phase: thinking|pouring|finishing|cooling, ensemble }
+      ensembleOn: false,
+      confirm: null,         // null | 'ask' | 'nokeys'
+      pendingText: null,
+      keys: [],
+      elapsed: 0,
+    }
+    this.bgCanvasRef = React.createRef()
+    this.ringCanvasRef = React.createRef()
+    this.liveWrapRef = React.createRef()
+    this.scrollRef = React.createRef()
+    this.composerRef = React.createRef()
+    this.keyNameRef = React.createRef()
+    this.keyValRef = React.createRef()
+    // animator internals (not React state — driven by rAF)
+    this._fill = 0; this._fillTarget = 0
+    this._cool = 0; this._angle = 0; this._cruOp = 1
+    this._tokensFrac = 0; this._pourStart = 0; this._coolStart = 0
+    this._streamEnded = false
+  }
+
+  minFill() { return this.props.minFillMs ?? 1350 }
+  speed() { return this.props.streamSpeed ?? 1 }
+
+  componentDidMount() {
+    this.startBg()
+    this.startAnimator()
+    this._timer = setInterval(() => {
+      if (this.state.live) this.setState(s => ({ elapsed: s.elapsed + 1 }))
+    }, 1000)
+    if (this.props.autoDemo ?? true) {
+      setTimeout(() => {
+        if (!this.state.live && this.state.messages.length === 0) {
+          this.runSend('Design a rate limiter for our public API — burst tolerance but strict sustained limits.', false)
+        }
+      }, 700)
+    }
+  }
+  componentWillUnmount() {
+    if (this._bgStop) this._bgStop()
+    if (this._animStop) this._animStop()
+    if (this._streamT) clearTimeout(this._streamT)
+    clearInterval(this._timer)
+  }
+
+  // ── background blobs ──
+  startBg() {
+    const canvas = this.bgCanvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    let t = 0, anim
+    const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight }
+    resize(); window.addEventListener('resize', resize)
+    const draw = () => {
+      t += 0.003
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      const blobs = [
+        { x: 0.2, y: 0.3, r: 0.32, h: 255 + Math.sin(t) * 20 },
+        { x: 0.85, y: 0.6, r: 0.26, h: 195 + Math.cos(t * 1.3) * 15 },
+        { x: 0.5, y: 0.85, r: 0.24, h: 300 + Math.sin(t * 0.8) * 25 },
+      ]
+      blobs.forEach(b => {
+        const x = b.x * canvas.width, y = b.y * canvas.height
+        const r = b.r * Math.min(canvas.width, canvas.height)
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r)
+        g.addColorStop(0, 'hsla(' + b.h + ',70%,60%,0.065)')
+        g.addColorStop(1, 'hsla(' + b.h + ',70%,60%,0)')
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = g; ctx.fill()
+      })
+      anim = requestAnimationFrame(draw)
+    }
+    draw()
+    this._bgStop = () => { cancelAnimationFrame(anim); window.removeEventListener('resize', resize) }
+  }
+
+  // ── chat lifecycle ──
+  send(text) {
+    if (!text || this.state.live) return
+    if (this.state.ensembleOn) {
+      this.setState({ pendingText: text, confirm: this.state.keys.length === 0 ? 'nokeys' : 'ask' })
+      return
+    }
+    this.runSend(text, false)
+  }
+
+  cannedReply(ensemble) {
+    const local = "Use a token bucket per API key: burst capacity 100, refilled at 10/s, so short spikes pass while the average holds. Behind it, a sliding-window counter at the gateway enforces the strict sustained cap — the bucket absorbs bursts, the window guarantees the hourly contract.\n\nKeep counters in a single-writer store with atomic increments, and return Retry-After plus rate-limit headers on 429s so well-behaved clients back off before hitting the wall."
+    const ens = "Consensus after cross-examination: token bucket at the edge for burst tolerance, sliding-window log at the gateway for the strict sustained limit. Two drafts proposed fixed windows; both were rejected for boundary bursts (2x limit at window edges).\n\nDisagreement worth noting: one draft argued for GCRA over token bucket — simpler state, same semantics. Worth a spike if you want one algorithm for both constraints."
+    return ensemble ? ens : local
+  }
+
+  runSend(text, ensemble) {
+    const full = this.cannedReply(ensemble)
+    this.setState(s => ({
+      messages: [...s.messages, { isUser: true, isReply: false, text }],
+      live: { text: '', full, phase: 'thinking', ensemble },
+      confirm: null, pendingText: null, elapsed: 0,
+    }))
+    this._fill = 0; this._fillTarget = 0; this._cool = 0
+    this._cruOp = 1; this._tokensFrac = 0; this._streamEnded = false
+    const ta = this.composerRef.current
+    if (ta) ta.value = ''
+    this.scrollDown()
+    // thinking → first token
+    this._streamT = setTimeout(() => this.beginPour(), (900 + Math.random() * 700) / this.speed())
+  }
+
+  beginPour() {
+    const live = this.state.live
+    if (!live) return
+    this._pourStart = performance.now()
+    this.setLivePhase('pouring')
+    const words = live.full.split(/(?<=\s)/)
+    let i = 0
+    const step = () => {
+      const l = this.state.live
+      if (!l) return
+      // bursty token arrival: 1–4 words, occasional pause
+      const n = 1 + Math.floor(Math.random() * 4)
+      i = Math.min(words.length, i + n)
+      this._tokensFrac = i / words.length
+      this.setState(s => ({ live: { ...s.live, text: words.slice(0, i).join('') } }))
+      this.scrollDown()
+      if (i >= words.length) { this._streamEnded = true; this.setLivePhase('finishing'); return }
+      const pause = Math.random() < 0.12 ? 420 : 40 + Math.random() * 110
+      this._streamT = setTimeout(step, pause / this.speed())
+    }
+    step()
+  }
+
+  setLivePhase(phase) {
+    this.setState(s => s.live ? { live: { ...s.live, phase } } : null)
+  }
+
+  finalizeLive() {
+    const live = this.state.live
+    if (!live) return
+    const models = this.state.keys.slice(0, 4).map((k, idx) => {
+      const palette = [
+        { c: '#7c7cf8', rgb: '124,124,248' }, { c: '#4db89e', rgb: '77,184,158' },
+        { c: '#c084fc', rgb: '192,132,252' }, { c: '#f59e0b', rgb: '245,158,11' },
+      ][idx]
+      return { label: k.name, color: palette.c, chipBg: 'rgba(' + palette.rgb + ',0.08)', chipBorder: 'rgba(' + palette.rgb + ',0.22)', role: idx === 0 ? 'led synthesis' : 'contributed' }
+    })
+    this.setState(s => ({
+      messages: [...s.messages, { isUser: false, isReply: true, text: live.text, ensemble: live.ensemble, showLocalTag: !live.ensemble, models }],
+      live: null,
+    }))
+  }
+
+  scrollDown() {
+    requestAnimationFrame(() => {
+      const el = this.scrollRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    })
+  }
+
+  // ── molten pour animator ──
+  startAnimator() {
+    let anim, last = performance.now()
+    const loop = (now) => {
+      const dt = Math.min(50, now - last); last = now
+      this.drawPour(now, dt / 16.67)
+      anim = requestAnimationFrame(loop)
+    }
+    anim = requestAnimationFrame(loop)
+    this._animStop = () => cancelAnimationFrame(anim)
+  }
+
+  roundRectPoints(x, y, w, h, r, N) {
+    // dense clockwise polyline of a rounded rect, starting at top-left corner end
+    const pts = []
+    const seg = (fn, steps) => { for (let i = 0; i <= steps; i++) pts.push(fn(i / steps)) }
+    const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    const arc = (cx, cy, a0, a1, t) => [cx + r * Math.cos(a0 + (a1 - a0) * t), cy + r * Math.sin(a0 + (a1 - a0) * t)]
+    const lineSteps = Math.floor(N / 8), arcSteps = Math.floor(N / 16)
+    seg(t => lerp([x + r, y], [x + w - r, y], t), lineSteps)                      // top
+    seg(t => arc(x + w - r, y + r, -Math.PI / 2, 0, t), arcSteps)                 // TR
+    seg(t => lerp([x + w, y + r], [x + w, y + h - r], t), lineSteps)              // right
+    seg(t => arc(x + w - r, y + h - r, 0, Math.PI / 2, t), arcSteps)              // BR
+    seg(t => lerp([x + w - r, y + h], [x + r, y + h], t), lineSteps)              // bottom
+    seg(t => arc(x + r, y + h - r, Math.PI / 2, Math.PI, t), arcSteps)            // BL
+    seg(t => lerp([x, y + h - r], [x, y + r], t), lineSteps)                      // left
+    seg(t => arc(x + r, y + r, Math.PI, Math.PI * 1.5, t), arcSteps)              // TL
+    return pts
+  }
+
+  moltenColor(s, t, alpha) {
+    // mottled molten gradient: uneven blend of deep + bright orange along the path
+    const n = 0.5 + 0.5 * Math.sin(s * 0.55 + t * 0.0022) * Math.cos(s * 0.21 - t * 0.0031)
+    const r = Math.round(255)
+    const g = Math.round(70 + n * 110)
+    const b = Math.round(10 + n * 60)
+    return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')'
+  }
+
+  drawHalf(ctx, pts, frac, t) {
+    if (frac <= 0 || pts.length < 2) return
+    // cumulative lengths
+    let total = 0
+    const cum = [0]
+    for (let i = 1; i < pts.length; i++) {
+      total += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+      cum.push(total)
+    }
+    const lim = total * Math.min(1, frac)
+    // glow pass
+    ctx.save()
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+    ctx.shadowColor = 'rgba(255,120,20,0.9)'; ctx.shadowBlur = 14
+    ctx.strokeStyle = 'rgba(255,110,26,0.16)'; ctx.lineWidth = 6
+    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1])
+    for (let i = 1; i < pts.length && cum[i] <= lim; i++) ctx.lineTo(pts[i][0], pts[i][1])
+    ctx.stroke()
+    ctx.restore()
+    // mottled core: short segments with varying color + shimmer
+    ctx.save()
+    ctx.lineCap = 'round'
+    for (let i = 1; i < pts.length && cum[i] <= lim; i++) {
+      const shimmer = 0.72 + 0.28 * Math.sin(cum[i] * 0.32 - t * 0.006 + Math.sin(cum[i] * 0.07 + t * 0.002) * 2)
+      const nearEdge = lim - cum[i] < 26 ? 1.25 : 1
+      ctx.strokeStyle = this.moltenColor(cum[i], t, Math.min(1, shimmer * nearEdge))
+      ctx.lineWidth = 1.8
+      ctx.beginPath(); ctx.moveTo(pts[i - 1][0], pts[i - 1][1]); ctx.lineTo(pts[i][0], pts[i][1]); ctx.stroke()
+    }
+    ctx.restore()
+  }
+
+  drawVessel(ctx, alpha) {
+    ctx.strokeStyle = 'rgba(232,232,242,' + alpha + ')'
+    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round'
+    ctx.beginPath(); ctx.moveTo(-11, -8); ctx.lineTo(-6.5, 9.5); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(11, -8); ctx.lineTo(6.5, 9.5); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(-6.5, 9.5); ctx.quadraticCurveTo(0, 14, 6.5, 9.5); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(-11, -8); ctx.lineTo(11, -8); ctx.stroke()
+  }
+
+  drawPour(now, dtf) {
+    const canvas = this.ringCanvasRef.current
+    const wrap = this.liveWrapRef.current
+    const live = this.state.live
+    if (!canvas || !wrap || !live) return
+    const rect = wrap.getBoundingClientRect()
+    const PAD = 24, TOP = 70
+    const W = rect.width + PAD * 2, H = rect.height + TOP + 14
+    const DPR = window.devicePixelRatio || 1
+    if (canvas.width !== Math.round(W * DPR) || canvas.height !== Math.round(H * DPR)) {
+      canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR)
+      canvas.style.width = W + 'px'; canvas.style.height = H + 'px'
+    }
+    const ctx = canvas.getContext('2d')
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+
+    const ph = live.phase
+    const cardX = PAD, cardY = TOP, cardW = rect.width, cardH = rect.height, rad = 15
+
+    // ── crucible tilt + opacity ──
+    let targetAngle
+    if (ph === 'thinking') {
+      // continuous eased loop: upright → tilt right → upright (cosine = ease-in-out, no snap)
+      targetAngle = 0.42 * (0.5 - 0.5 * Math.cos(now * 0.0016))
+      this._angle += (targetAngle - this._angle) * 0.12 * dtf
+    } else if (ph === 'pouring' || ph === 'finishing') {
+      this._angle += (1.02 - this._angle) * 0.06 * dtf   // hold full pour tilt
+    } else if (ph === 'cooling') {
+      this._angle += (0 - this._angle) * 0.07 * dtf       // return upright
+    }
+
+    // ── fill progress: smoothed, token-driven, min-duration floor ──
+    if (ph === 'pouring' || ph === 'finishing') {
+      const elapsed = now - this._pourStart
+      const cap = elapsed / Math.max(400, this.minFill())
+      const raw = this._streamEnded ? 1 : this._tokensFrac
+      this._fillTarget = Math.min(1, raw, cap)
+      const delta = this._fillTarget - this._fill
+      // eased current→target with min drift (never frozen) and max speed clamp
+      let stepv = delta * 0.055 * dtf
+      const maxStep = 0.03 * dtf
+      if (stepv > maxStep) stepv = maxStep
+      if (delta > 0.001 && stepv < 0.0012 * dtf) stepv = 0.0012 * dtf
+      this._fill = Math.min(1, this._fill + Math.max(0, stepv))
+      if (ph === 'finishing' && this._fill > 0.995) {
+        this._fill = 1
+        this._coolStart = now
+        this.setLivePhase('cooling')
+      }
+    }
+
+    // ── cooling sweep + crucible fade, concurrent, min-duration floor ──
+    if (ph === 'cooling') {
+      const coolDur = Math.max(1000, 800)
+      this._cool = Math.min(1, (now - this._coolStart) / coolDur)
+      this._cruOp = Math.max(0, 1 - this._cool * 1.05)
+      if (this._cool >= 1) { this.finalizeLive(); return }
+    }
+
+    // ── border molten fill ──
+    const landingX = cardX + cardW / 2
+    if (this._fill > 0 && (ph === 'pouring' || ph === 'finishing' || ph === 'cooling')) {
+      const pts = this.roundRectPoints(cardX, cardY, cardW, cardH, rad, 480)
+      // rotate so array starts at landing point (top edge, center)
+      let startIdx = 0, best = 1e9
+      for (let i = 0; i < pts.length; i++) {
+        const d = Math.abs(pts[i][0] - landingX) + Math.abs(pts[i][1] - cardY) * 4
+        if (pts[i][1] < cardY + rad && d < best) { best = d; startIdx = i }
+      }
+      const loop = pts.slice(startIdx).concat(pts.slice(0, startIdx))
+      // bottom-center index
+      let botIdx = 0; best = 1e9
+      for (let i = 0; i < loop.length; i++) {
+        const d = Math.abs(loop[i][0] - (cardX + cardW / 2)) + Math.abs(loop[i][1] - (cardY + cardH)) * 4
+        if (d < best) { best = d; botIdx = i }
+      }
+      const right = loop.slice(0, botIdx + 1)
+      const left = loop.slice(botIdx).reverse().concat([loop[0]]).reverse()
+      // left half: from landing going counter-clockwise = loop end→botIdx reversed
+      const leftHalf = [loop[0]].concat(loop.slice(botIdx + 1).reverse())
+      this.drawHalf(ctx, right, this._fill, now)
+      this.drawHalf(ctx, leftHalf, this._fill, now)
+      // cooling: erase from the top down (top cools first), soft feather
+      if (this._cool > 0) {
+        const eased = this._cool < 0.5 ? 2 * this._cool * this._cool : 1 - Math.pow(-2 * this._cool + 2, 2) / 2
+        const coolY = eased * (cardY + cardH + 30)
+        ctx.save()
+        ctx.globalCompositeOperation = 'destination-out'
+        const g = ctx.createLinearGradient(0, coolY - 46, 0, coolY)
+        g.addColorStop(0, 'rgba(0,0,0,1)'); g.addColorStop(1, 'rgba(0,0,0,0)')
+        ctx.fillStyle = 'rgba(0,0,0,1)'; ctx.fillRect(0, 0, W, coolY - 46)
+        ctx.fillStyle = g; ctx.fillRect(0, coolY - 46, W, 46)
+        ctx.restore()
+      }
+    }
+
+    // ── molten stream from spout to border top ──
+    const cruX = landingX - 16, cruY = 26
+    if ((ph === 'pouring' || ph === 'finishing') && this._cruOp > 0) {
+      const cos = Math.cos(this._angle), sin = Math.sin(this._angle)
+      const spoutX = cruX + 11 * cos - (-8) * sin
+      const spoutY = cruY + 11 * sin + (-8) * cos
+      const strength = Math.min(1, (now - this._pourStart) / 350)
+      ctx.save()
+      // bloom
+      ctx.shadowColor = 'rgba(255,120,20,0.85)'; ctx.shadowBlur = 12
+      for (let l = 0; l < 3; l++) {
+        const wob = Math.sin(now * 0.004 + l * 2.1) * (1.2 + l * 0.5)
+        ctx.strokeStyle = this.moltenColor(l * 40 + now * 0.05, now, (0.55 - l * 0.14) * strength)
+        ctx.lineWidth = 2.6 - l * 0.7
+        ctx.beginPath()
+        ctx.moveTo(spoutX, spoutY)
+        ctx.quadraticCurveTo(landingX + wob + 3, (spoutY + cardY) / 2, landingX + wob * 0.4, cardY + 1)
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+
+    // ── crucible vessel ──
+    if (this._cruOp > 0.01 && ph !== 'thinking' || ph === 'thinking') {
+      ctx.save()
+      ctx.globalAlpha = ph === 'cooling' ? this._cruOp : 1
+      ctx.translate(cruX, cruY)
+      ctx.rotate(this._angle)
+      this.drawVessel(ctx, ph === 'thinking' ? 0.75 : 0.9)
+      ctx.restore()
+    }
+  }
+
+  // ── keys ──
+  addKey() {
+    const n = this.keyNameRef.current, v = this.keyValRef.current
+    if (!n || !v || !n.value.trim() || !v.value.trim()) return
+    const val = v.value.trim()
+    const masked = val.length > 8 ? val.slice(0, 4) + '••••••••' + val.slice(-4) : '••••••••'
+    this.setState(s => ({ keys: [...s.keys, { id: Date.now(), name: n.value.trim(), masked }] }))
+    n.value = ''; v.value = ''
+  }
+  removeKey(id) {
+    this.setState(s => ({ keys: s.keys.filter(k => k.id !== id) }))
+  }
+
+  renderVals() {
+    const { tab, live, ensembleOn, confirm, keys, messages, elapsed } = this.state
+    const ph = live ? live.phase : null
+    const isThinking = ph === 'thinking'
+    const isWorking = !!live
+
+    const navProps = {}
+    for (const id of ['chat', 'agents', 'history', 'settings']) {
+      const key = id.charAt(0).toUpperCase() + id.slice(1)
+      navProps['nav' + key + 'Bg'] = tab === id ? 'rgba(124,124,248,0.13)' : 'transparent'
+      navProps['nav' + key + 'Color'] = tab === id ? '#9d9dfa' : '#55556a'
+      navProps['nav' + key + 'Outline'] = tab === id ? '1px solid rgba(124,124,248,0.28)' : 'none'
+    }
+
+    const mm = Math.floor(elapsed / 60), ss = elapsed % 60
+    const tintOf = (hex, alpha) => {
+      const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16)
+      return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')'
+    }
+
+    return {
+      bgRef: this.bgCanvasRef, ringRef: this.ringCanvasRef, liveWrapRef: this.liveWrapRef,
+      scrollRef: this.scrollRef, composerRef: this.composerRef,
+      keyNameRef: this.keyNameRef, keyValRef: this.keyValRef,
+      ...navProps,
+      goChat: () => this.setState({ tab: 'chat' }),
+      goAgents: () => this.setState({ tab: 'agents' }),
+      goHistory: () => this.setState({ tab: 'history' }),
+      goSettings: () => this.setState({ tab: 'settings', confirm: null, pendingText: null }),
+      tabChat: tab === 'chat', tabAgents: tab === 'agents', tabHistory: tab === 'history', tabSettings: tab === 'settings',
+
+      messages,
+      hasLive: isWorking,
+      liveText: live ? live.text : '',
+      showCaret: ph === 'pouring',
+      isWorking,
+      elapsedLabel: (mm < 10 ? '0' + mm : mm) + ':' + (ss < 10 ? '0' + ss : ss),
+      stageLabel: isThinking ? 'thinking…' : ph === 'cooling' ? 'settling…' : live && live.ensemble ? 'cross-examining…' : 'pouring…',
+      newChat: () => { if (this._streamT) clearTimeout(this._streamT); this.setState({ messages: [], live: null, confirm: null, elapsed: 0 }) },
+
+      sendClick: () => { const ta = this.composerRef.current; if (ta) this.send(ta.value.trim()) },
+      composerKey: (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(e.target.value.trim()) }
+      },
+      sendBg: isWorking ? 'rgba(255,110,26,0.12)' : 'transparent',
+      sendOutline: isWorking ? 'rgba(255,110,26,0.4)' : 'rgba(255,255,255,0.09)',
+      sendArrow: isWorking ? '#ff8a3d' : '#55556a',
+
+      toggleEnsemble: () => this.setState(s => ({ ensembleOn: !s.ensembleOn, confirm: null })),
+      ensPillBorder: ensembleOn ? 'rgba(124,124,248,0.4)' : 'rgba(255,255,255,0.07)',
+      ensPillBg: ensembleOn ? 'rgba(124,124,248,0.12)' : 'transparent',
+      ensDot: ensembleOn ? '#7c7cf8' : '#3a3a4c',
+      ensDotGlow: ensembleOn ? '0 0 6px rgba(124,124,248,0.6)' : 'none',
+      ensLabelColor: ensembleOn ? '#9d9dfa' : '#55556a',
+      extCallsLabel: ensembleOn
+        ? (keys.length === 0 ? 'armed — but no API keys added yet' : 'armed — will ask before any fan-out')
+        : '0 external calls',
+
+      showConfirmAsk: confirm === 'ask',
+      showNoKeys: confirm === 'nokeys',
+      keyCount: String(keys.length),
+      keyPlural: keys.length === 1 ? '' : 's',
+      confirmEnsemble: () => { const t = this.state.pendingText; this.setState({ confirm: null }); this.runSend(t, true) },
+      declineEnsemble: () => { const t = this.state.pendingText; this.setState({ confirm: null }); this.runSend(t, false) },
+
+      keys: keys.map(k => ({ ...k, remove: () => this.removeKey(k.id) })),
+      hasKeys: keys.length > 0,
+      noKeys: keys.length === 0,
+      keyCountLabel: keys.length === 0 ? '' : keys.length + ' key' + (keys.length === 1 ? '' : 's') + ' configured.',
+      addKey: () => this.addKey(),
+
+      agents: [
+        { name: 'Vibe Code', glyph: '{ }', color: '#4db89e', desc: 'Describe the app; Crucible writes, lints, and self-reviews the code on-device.', chip1: 'ON-DEVICE', chip2: 'LINTER' },
+        { name: 'Search Web', glyph: '◎', color: '#f59e0b', desc: 'Web-augmented answers with ranked, cited sources.', chip1: 'LIVE WEB', chip2: 'CITED' },
+        { name: 'Deep Research', glyph: '≡', color: '#38bdf8', desc: 'Autonomous multi-step research runs with a structured, cited report.', chip1: 'AUTONOMOUS', chip2: 'REPORT' },
+        { name: 'Smoke Test', glyph: '✓', color: '#c084fc', desc: 'Throws adversarial cases at your code or spec and reports what breaks.', chip1: 'ADVERSARIAL', chip2: 'CI-READY' },
+        { name: 'Decide For Me', glyph: '⚖', color: '#7c7cf8', desc: 'Structured self-debate over your options with one ranked recommendation.', chip1: 'DEBATE', chip2: 'RANKED' },
+        { name: 'Custom', glyph: '+', color: '#8a8a9e', desc: 'Start from a blank workflow — pick tools and stages yourself.', chip1: 'BLANK', chip2: 'YOURS' },
+      ].map(a => ({
+        ...a,
+        tint: a.name === 'Custom' ? 'rgba(255,255,255,0.045)' : tintOf(a.color, 0.09),
+        iconBg: tintOf(a.color, 0.13),
+        hoverBorder: tintOf(a.color, 0.4),
+      })),
+      historyBuckets: [
+        { label: 'Today', items: [
+          { title: 'Rate limiter design for public API', snippet: 'Token bucket + sliding window at the gateway…', mode: 'local', when: '2:14 PM', color: '#4db89e' },
+          { title: 'Smoke test — payments webhook', snippet: '3 failures found: replay, idempotency, clock skew…', mode: 'agent', when: '11:02 AM', color: '#c084fc' },
+        ]},
+        { label: 'Yesterday', items: [
+          { title: 'Refactor session store to Redis', snippet: 'Lua scripts for atomic counters; migration plan…', mode: 'local', when: 'Thu', color: '#4db89e' },
+          { title: 'Postgres vs. SQLite for corpus db', snippet: 'Cross-examined 2–1 for SQLite given single-writer…', mode: 'ensemble', when: 'Thu', color: '#7c7cf8' },
+          { title: 'Deep research — WebGPU adoption', snippet: '14-source report; Safari timeline is the blocker…', mode: 'agent', when: 'Thu', color: '#38bdf8' },
+        ]},
+      ],
+    }
+  }
+}
+</script>
+</body>
+</html>

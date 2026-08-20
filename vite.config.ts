@@ -15,4 +15,19 @@ export default defineConfig({
       '/api': { target: process.env.CRUCIBLE_API_TARGET ?? 'http://localhost:3001', changeOrigin: true, ws: true },
     },
   },
+  /**
+   * The same proxy for `vite preview`.
+   *
+   * Dev mode serves unbundled modules, so a timing taken against it measures
+   * the module graph as much as the app. Preview serves the real build, and
+   * without this it served it with no backend at all — which made the only
+   * production-shaped measurement available locally impossible to take.
+   */
+  preview: {
+    port: 4173,
+    strictPort: true,
+    proxy: {
+      '/api': { target: process.env.CRUCIBLE_API_TARGET ?? 'http://localhost:3001', changeOrigin: true, ws: true },
+    },
+  },
 })

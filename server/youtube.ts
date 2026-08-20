@@ -1,4 +1,5 @@
-import { objectId, remember, type RetrievedObject } from './objects.js'
+import { objectId, remember, type ObjectDraft } from './objects.js'
+import { registerSource, type SourceContext } from './execute.js'
 import { DAY, HOUR, retrieved, unavailable, type Provenance } from './provenance.js'
 
 /**
@@ -91,6 +92,81 @@ export interface Video {
   durationSec?: number
   views?: number
   likes?: number
+}
+
+/**
+ * A YouTube video id, as YouTube actually mints them: eleven characters of
+ * base64url. Not a guess at the format — it is the documented one, and every id
+ * this app has ever received from the API matches it.
+ *
+ * This exists because an id is the ONE field that cannot be approximately
+ * right. A wrong title is a wrong title; a wrong id is a link to nothing, and
+ * it looks identical to a working one until it is tapped.
+ */
+export const YOUTUBE_ID = /^[A-Za-z0-9_-]{11}$/
+
+export const isVideoId = (id: unknown): id is string =>
+  typeof id === 'string' && YOUTUBE_ID.test(id)
+
+/**
+ * The shape a renderer can actually use, with the canonical URL attached.
+ *
+ * THIS FUNCTION EXISTS BECAUSE OF A ONE-WORD MISMATCH THAT PRODUCED DEAD LINKS.
+ * `/api/youtube/search` returned this module's `Video` records unmapped, and the
+ * client cast them to its own `VideoObject`. Every field name happened to
+ * agree — title, channel, thumbnail, publishedAt, description — except two:
+ * `videoId` vs `id`, and `durationSec` vs `seconds`. So the cards rendered
+ * perfectly, with a real picture and a real title, and the identity was
+ * `undefined`. The Watch control interpolated it into
+ * `youtube.com/watch?v=undefined`, which is a real page that says the video is
+ * unavailable. Nothing errored anywhere.
+ *
+ * The URL is built HERE, once, from a verified id, and travels with the record.
+ * No renderer constructs a YouTube URL from a field it hopes is an id.
+ */
+export interface PresentableVideo {
+  id: string
+  title: string
+  channel?: string
+  channelId?: string
+  thumbnail?: string
+  publishedAt?: string
+  seconds?: number
+  description?: string
+  /** Canonical watch URL. Present only when `id` is a real provider id. */
+  url: string
+}
+
+/**
+ * Map provider records to presentable ones, DROPPING anything whose id is not a
+ * real YouTube id, and saying how many were dropped.
+ *
+ * Dropping rather than rendering-without-a-link is the right severity: a video
+ * this app cannot identify is a video it cannot honestly claim exists. The
+ * count is returned so the caller can report it instead of quietly showing a
+ * shorter list.
+ */
+export function presentable(videos: Video[]): { videos: PresentableVideo[]; rejected: number } {
+  const out: PresentableVideo[] = []
+  let rejected = 0
+  for (const v of videos) {
+    if (!isVideoId(v.videoId)) {
+      rejected++
+      continue
+    }
+    out.push({
+      id: v.videoId,
+      title: v.title,
+      channel: v.channel,
+      channelId: v.channelId,
+      thumbnail: v.thumbnail,
+      publishedAt: v.publishedAt,
+      seconds: v.durationSec,
+      description: v.description,
+      url: `https://www.youtube.com/watch?v=${v.videoId}`,
+    })
+  }
+  return { videos: out, rejected }
 }
 
 export interface Channel {
@@ -316,14 +392,32 @@ export function watchHistoryUnavailable(): Provenance {
 // ── Into objects ─────────────────────────────────────────────────────────────
 
 /**
- * A title stays true for years; a view count is stale within the day. Ranking
- * on a number this old is fine, printing it as current is not, so the staleness
- * window is set by the fastest-moving field on the record.
+ * A title stays true for years; a view count is stale within the day.
+ *
+ * The record-level window used to be set by the fastest-moving field, which
+ * meant a video's TITLE went stale because its view count had — and a pane
+ * twenty hours old described itself as possibly-changed when nothing on screen
+ * had changed at all. The identity never ages, the title effectively never
+ * does, and only the statistics move quickly, so each says so for itself and
+ * `staleAfterMs` is left as the fallback for anything not named.
  */
 const VIDEO_STALE_AFTER = 12 * HOUR
+const VIDEO_FIELD_STALENESS = {
+  title: 30 * DAY,
+  sub: 30 * DAY,
+  image: 30 * DAY,
+  at: 365 * DAY,
+  durationSec: 365 * DAY,
+  durationLabel: 365 * DAY,
+  channelId: 365 * DAY,
+  url: 365 * DAY,
+  // What the app is actually allowed to print as current.
+  views: HOUR,
+  likes: HOUR,
+}
 const CHANNEL_STALE_AFTER = 7 * DAY
 
-export function videoObject(v: Video, via: string, prov?: Provenance): RetrievedObject {
+export function videoObject(v: Video, via: string, prov?: Provenance): ObjectDraft {
   const mins = v.durationSec ? Math.round(v.durationSec / 60) : undefined
   return {
     id: objectId('youtube', 'video', v.videoId),
@@ -345,11 +439,11 @@ export function videoObject(v: Video, via: string, prov?: Provenance): Retrieved
       likes: v.likes ?? null,
       url: `https://www.youtube.com/watch?v=${v.videoId}`,
     },
-    prov: prov ?? retrieved('youtube', via, VIDEO_STALE_AFTER),
+    prov: prov ?? retrieved('youtube', via, VIDEO_STALE_AFTER, VIDEO_FIELD_STALENESS),
   }
 }
 
-export function channelObject(c: Channel, via: string): RetrievedObject {
+export function channelObject(c: Channel, via: string): ObjectDraft {
   return {
     id: objectId('youtube', 'channel', c.channelId),
     source: 'youtube',
@@ -364,14 +458,108 @@ export function channelObject(c: Channel, via: string): RetrievedObject {
 }
 
 /** Store what was fetched, so widgets can cite it and panes can outlive it. */
-export async function rememberVideos(videos: Video[], via: string): Promise<RetrievedObject[]> {
+export async function rememberVideos(videos: Video[], via: string): Promise<ObjectDraft[]> {
   const objs = videos.map((v) => videoObject(v, via))
   await remember(objs)
   return objs
 }
 
-export async function rememberChannels(channels: Channel[], via: string): Promise<RetrievedObject[]> {
+export async function rememberChannels(channels: Channel[], via: string): Promise<ObjectDraft[]> {
   const objs = channels.map((c) => channelObject(c, via))
   await remember(objs)
   return objs
+}
+
+// ── As a source the plan layer can name ──────────────────────────────────────
+
+/**
+ * The adapter, which is the whole of what the general layer learns about
+ * YouTube.
+ *
+ * Every route ends in `hydrate`, so the invariant this file exists for holds
+ * for plans as well as for panes: a title and a thumbnail come off one
+ * `videos.list` record or neither is used. The executor cannot enforce that —
+ * only this file knows what "the same record" means here — which is precisely
+ * why the adapter, and not the executor, is where a connector's rules live.
+ *
+ * The access token arrives in `params` because credentials are the caller's
+ * business; nothing in `execute.ts` knows this source needs one.
+ */
+export function installYouTubeSource(): void {
+  const token = (ctx: SourceContext): string => {
+    const t = ctx.params.youtubeToken ?? ctx.params.googleToken
+    if (typeof t !== 'string' || !t) throw new Error('YouTube is not connected.')
+    return t
+  }
+  const str = (ctx: SourceContext, k: string): string | undefined =>
+    typeof ctx.params[k] === 'string' ? (ctx.params[k] as string) : undefined
+  const int = (ctx: SourceContext, k: string, d: number): number =>
+    typeof ctx.params[k] === 'number' ? (ctx.params[k] as number) : d
+
+  registerSource('youtube', {
+    routes: ['subscriptions', 'likes', 'search', 'channel', 'videos'],
+    // Published units. Search is a hundred times a list read, and a refresh
+    // policy that re-searches hourly should be a visible decision.
+    cost: (route) => (route === 'search' ? COST.search : COST.list),
+    describe: {
+      what: 'his YouTube account',
+      kinds: ['video'],
+      routes: {
+        subscriptions: 'recent uploads from channels he subscribes to. params: perChannel, maxChannels, limit',
+        likes: 'videos he has liked. params: limit',
+        search: 'a YouTube search. params: q (required), limit, channelId, publishedAfter (ISO). Expensive — prefer subscriptions where it will do',
+        channel: 'recent uploads from one channel. params: channelId (required), limit',
+        videos: 'full records for videos already known. Use as `enrich`, not `source`',
+      },
+    },
+    async fetch(route, ctx) {
+      const t = token(ctx)
+      switch (route) {
+        case 'subscriptions': {
+          const { videos } = await fromSubscriptions(t, {
+            perChannel: int(ctx, 'perChannel', 3),
+            maxChannels: int(ctx, 'maxChannels', 25),
+            limit: int(ctx, 'limit', 40),
+          })
+          return videos.map((v) => videoObject(v, 'subscriptions'))
+        }
+        case 'likes':
+          return (await likedVideos(t, int(ctx, 'limit', 25))).map((v) => videoObject(v, 'likes'))
+        case 'search': {
+          const q = str(ctx, 'q')
+          if (!q) throw new Error('A search needs something to search for.')
+          const found = await search(t, q, {
+            limit: int(ctx, 'limit', 10),
+            channelId: str(ctx, 'channelId'),
+            publishedAfter: str(ctx, 'publishedAfter'),
+          })
+          return found.map((v) => videoObject(v, 'search'))
+        }
+        case 'channel': {
+          const channelId = str(ctx, 'channelId')
+          if (!channelId) throw new Error('Which channel?')
+          const [withPlaylist] = await withUploadPlaylists(t, [{ channelId, title: '' }])
+          if (!withPlaylist?.uploadsPlaylist) return []
+          const ids = await playlistVideoIds(t, withPlaylist.uploadsPlaylist, int(ctx, 'limit', 10))
+          return (await hydrate(t, ids)).map((v) => videoObject(v, 'channel'))
+        }
+        /**
+         * The enrichment route: turn ids we already hold into full records.
+         *
+         * This is what makes a Takeout-imported pane able to grow thumbnails
+         * without Takeout ever having claimed to have one — the ids come from
+         * the export, the pictures come from `videos.list`, and each is filed
+         * as its own reading of the same identity.
+         */
+        case 'videos': {
+          const ids = ctx.input.length
+            ? ctx.input.map((o) => (ctx.by ? String(o.fields?.[ctx.by] ?? '') : o.nativeId)).filter(Boolean)
+            : String(ctx.params.ids ?? '').split(',').filter(Boolean)
+          return (await hydrate(t, ids)).map((v) => videoObject(v, 'videos'))
+        }
+        default:
+          return []
+      }
+    },
+  })
 }

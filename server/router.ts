@@ -27,6 +27,14 @@ export type Task =
   | 'chat'
   /** Connector payloads into observations. Bulk, mechanical. */
   | 'extract'
+  /**
+   * His words into a query plan. Short, structured, and unforgiving: a plan
+   * that is subtly wrong is worse than no plan, because it will be re-executed
+   * on a schedule for months. Rated close to curiosity rather than to chat.
+   */
+  | 'compile'
+  /** Ordering retrieved things by a judgement. Medium, latency matters. */
+  | 'rank'
 
 /**
  * How well each provider suits each task, 0-10. Deliberately coarse: this is
@@ -34,12 +42,12 @@ export type Task =
  * and should replace them (see crucible-synthesis-basis-metric).
  */
 const SKILL: Record<string, Partial<Record<Task, number>>> = {
-  anthropic: { synthesis: 10, curiosity: 9, chat: 9, research: 7, extract: 7 },
-  gemini: { synthesis: 9, curiosity: 9, chat: 8, research: 8, extract: 8 },
-  openai: { synthesis: 8, curiosity: 8, chat: 8, research: 7, extract: 7 },
-  xai: { synthesis: 7, curiosity: 7, chat: 7, research: 6, extract: 6 },
-  groq: { synthesis: 4, curiosity: 5, chat: 7, research: 7, extract: 9 },
-  openrouter: { synthesis: 6, curiosity: 6, chat: 6, research: 6, extract: 7 },
+  anthropic: { synthesis: 10, curiosity: 9, chat: 9, research: 7, extract: 7, compile: 10, rank: 9 },
+  gemini: { synthesis: 9, curiosity: 9, chat: 8, research: 8, extract: 8, compile: 9, rank: 8 },
+  openai: { synthesis: 8, curiosity: 8, chat: 8, research: 7, extract: 7, compile: 8, rank: 8 },
+  xai: { synthesis: 7, curiosity: 7, chat: 7, research: 6, extract: 6, compile: 7, rank: 7 },
+  groq: { synthesis: 4, curiosity: 5, chat: 7, research: 7, extract: 9, compile: 5, rank: 7 },
+  openrouter: { synthesis: 6, curiosity: 6, chat: 6, research: 6, extract: 7, compile: 6, rank: 6 },
 }
 
 /**
@@ -56,7 +64,16 @@ const SKILL: Record<string, Partial<Record<Task, number>>> = {
  * answered. See the tier selection in `candidates`.
  */
 
-const HEAVY: Task[] = ['synthesis', 'curiosity']
+/**
+ * Work that gets the strongest model rather than the cheapest awake one.
+ *
+ * `compile` belongs here despite being short. Its output is not read once and
+ * discarded — it is STORED and re-executed unattended for as long as the pane
+ * exists, so a cheap model's near-miss is not a slightly worse answer, it is a
+ * pane that quietly returns the wrong thing every morning. Length is the wrong
+ * measure of what a call is worth; consequence is.
+ */
+const HEAVY: Task[] = ['synthesis', 'curiosity', 'compile']
 
 /**
  * Published free-tier ceilings, for the providers that report nothing.

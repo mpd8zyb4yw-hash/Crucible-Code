@@ -9,9 +9,36 @@ import type { CSSProperties } from 'react'
  * a transcription typo in a box-shadow or gradient is invisible in review but
  * visible on screen. Paste the declaration, don't retype it.
  */
+/**
+ * Split on `;`, but not on a `;` that is INSIDE a url(), a quote or a paren.
+ *
+ * A plain `text.split(';')` is right until a value legitimately contains one,
+ * and then it is wrong silently. `url("data:image/svg+xml;utf8,…")` was cut
+ * after `svg+xml`, which is still a syntactically valid URL, so the browser
+ * fetched it, failed, and painted nothing — a black rectangle where a video
+ * thumbnail should be, with no error anywhere. Real image URLs carry `;` in
+ * their query strings too, so this is not only about data URIs.
+ */
+function declarations(text: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let quote: string | null = null
+  let start = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!
+    if (quote) { if (c === quote && text[i - 1] !== '\\') quote = null; continue }
+    if (c === '"' || c === "'") quote = c
+    else if (c === '(') depth++
+    else if (c === ')') depth = Math.max(0, depth - 1)
+    else if (c === ';' && depth === 0) { out.push(text.slice(start, i)); start = i + 1 }
+  }
+  out.push(text.slice(start))
+  return out
+}
+
 export function css(text: string): CSSProperties {
   const out: Record<string, string> = {}
-  for (const decl of text.split(';')) {
+  for (const decl of declarations(text)) {
     const i = decl.indexOf(':')
     if (i < 0) continue
     const prop = decl.slice(0, i).trim()

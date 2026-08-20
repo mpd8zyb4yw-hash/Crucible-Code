@@ -1,7 +1,8 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { Observation } from './world.js'
+import { dayIn, type Coverage, type Observation } from './world.js'
+import { cleanSnippet } from './widgets.js'
 import { fromSubscriptions, rememberChannels, rememberVideos } from './youtube.js'
 
 /**
@@ -153,6 +154,8 @@ async function gFetch(token: string, url: string): Promise<any> {
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)
 
+
+
 /**
  * The human part of a From header. `"Anna Rossi" <anna@x.it>` → `Anna Rossi`,
  * and a bare address falls back to the part before the @, so a mail row always
@@ -173,13 +176,133 @@ function displayName(from: string): string | undefined {
 export const GOOGLE_SOURCES = ['calendar', 'email', 'health', 'youtube'] as const
 export type GoogleSource = (typeof GOOGLE_SOURCES)[number]
 
+/**
+ * The UTC offset a zone is actually at on a given day, as "+02:00".
+ *
+ * Computed from the zone rather than assumed, because Rome is +01:00 in
+ * February and +02:00 in August and a hardcoded either would be wrong for half
+ * the year — silently, by an hour, at exactly the boundary that decides which
+ * day a step belongs to.
+ */
+export function offsetOf(day: string, zone?: string): string {
+  if (!zone) return 'Z'
+  try {
+    const at = new Date(`${day}T12:00:00Z`)
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'longOffset' })
+      .formatToParts(at)
+      .find((p) => p.type === 'timeZoneName')?.value ?? ''
+    const m = /GMT([+-]\d{2}:\d{2})/.exec(parts)
+    return m ? m[1]! : 'Z'
+  } catch {
+    return 'Z'
+  }
+}
+
+/**
+ * WHERE A STEP WINDOW MUST BEGIN: local midnight, seven days back.
+ *
+ * Exported so `scripts/activity.mjs` can assert the property rather than trust
+ * the comment, because the defect it prevents is invisible from every screen.
+ *
+ * Google's `period` bucketing anchors its buckets to the START OF THE RANGE, not
+ * to true local midnight. Asking from `now - 7d` — an instant, mid-morning —
+ * therefore produced seven 24-hour windows each beginning at whatever time of
+ * day the sync happened to run, every one of them LABELLED with a calendar date
+ * it only partly covered.
+ *
+ * Measured against his live account at 09:25 on 2026-08-12, the two windows
+ * disagreed about completed days by a factor of three:
+ *
+ *              old (09:25 anchor)   aligned to midnight
+ *   2026-08-09         12,972                6,307
+ *   2026-08-10          3,795               10,356
+ *   2026-08-12        (absent)                  16
+ *
+ * Neither figure was an error and nothing logged: the app has been storing
+ * "the 24 hours after the sync fired" under the name of a day, which is also
+ * why two syncs on the same afternoon disagreed about yesterday. The aligned
+ * window additionally returns TODAY, which the old one silently dropped —
+ * that is the "today hasn't synced yet" in the screenshots.
+ */
+export function fitWindowStart(now: Date, zone?: string): number | null {
+  if (!zone) return null
+  const day = dayIn(new Date(now.getTime() - 6 * 86_400_000), zone)
+  // Parsed as a wall-clock time in HIS zone, via the offset that zone is
+  // actually at on that date. `Date.parse('YYYY-MM-DDT00:00:00')` would use the
+  // RUNTIME's zone, which on the Worker is UTC — the whole class of bug
+  // clock.ts exists to prevent.
+  return Date.parse(`${day}T00:00:00${offsetOf(day, zone)}`)
+}
+
+/**
+ * FIT'S AGGREGATE RESPONSE → ONE NUMBER PER CALENDAR DAY, IN HIS ZONE.
+ *
+ * Pulled out of the sync so it can be RUN ON A CAPTURED PAYLOAD, which is the
+ * whole of §40's first stage: the raw bytes, the parse, the day labelling and
+ * the total have to be checkable without a live account and without a
+ * screenshot. `scripts/activity.mjs` traces fixtures through this function, then
+ * through `activityReport`, and asserts the number the surface would draw.
+ *
+ * Every rule this enforces was once a defect that showed up only as a figure
+ * being too low — see the long note at the call site. Summing every point of
+ * every dataset, honouring `fpVal` as well as `intVal`, keeping real zeros, and
+ * labelling a bucket by the day it STARTS in his zone rather than in UTC.
+ */
+export function stepsFromAggregate(body: unknown, zone?: string): { date: string; steps: number }[] {
+  const buckets = ((body as { bucket?: unknown[] } | null)?.bucket ?? []) as any[]
+  return buckets.map((x) => {
+    let steps = 0
+    for (const ds of x.dataset ?? []) {
+      for (const pt of ds.point ?? []) {
+        for (const v of pt.value ?? []) {
+          // Both representations, because a derived stream can report either
+          // and reading one of them is how a day silently comes back as 0.
+          if (typeof v?.intVal === 'number') steps += v.intVal
+          else if (typeof v?.fpVal === 'number') steps += Math.round(v.fpVal)
+        }
+      }
+    }
+    /**
+     * The label is the day the bucket STARTS in his zone. With `period`
+     * bucketing Google has already aligned the boundary; taking the UTC date of
+     * the start instant would put a Rome day beginning at 00:00 local onto the
+     * previous UTC date for the two hours that matter.
+     */
+    return { date: dayIn(new Date(Number(x.startTimeMillis)), zone), steps }
+  })
+}
+
 export async function pullObservations(
   token: string,
   /** Which sources he has left switched on. Absent means all of them. */
-  enabled?: Partial<Record<GoogleSource, boolean>>
-): Promise<{ observations: Observation[]; errors: string[] }> {
+  enabled?: Partial<Record<GoogleSource, boolean>>,
+  /**
+   * The zone his days begin in, when it is already known.
+   *
+   * Only the activity call uses it, and it is not optional in spirit: without
+   * it, Fit is asked for buckets of exactly 86,400,000 ms anchored to the
+   * instant of the sync, which is not a day. See the Fit block below.
+   */
+  zone?: string
+): Promise<{ observations: Observation[]; errors: string[]; timeZone?: string; coverage: Coverage[] }> {
   const out: Observation[] = []
   const errors: string[] = []
+  /**
+   * WHAT THIS SYNC IS COMPLETE FOR — see `Coverage` in `world.ts`.
+   *
+   * Populated only inside a successful, untruncated fetch. Everything about the
+   * three rules stated there is enforced at the two push sites below rather than
+   * by the fold, because the fold cannot know what was asked for.
+   */
+  const coverage: Coverage[] = []
+  /**
+   * His zone, which Google already knows and this call already returns.
+   *
+   * Free — it is a top-level field on the events response below, and it was
+   * being parsed past and dropped. Everything that decides what day something
+   * happens on needs it; see `World.timeZone` for what its absence cost.
+   */
+  let timeZone: string | undefined
   // One signing-in step, then he decides source by source what it may read.
   const on = (s: GoogleSource) => enabled?.[s] !== false
   const now = new Date()
@@ -190,6 +313,7 @@ export async function pullObservations(
   if (on('calendar')) try {
     const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${now.toISOString()}&timeMax=${weekAhead.toISOString()}&singleEvents=true&orderBy=startTime&maxResults=50`
     const b = await gFetch(token, url)
+    if (typeof b.timeZone === 'string' && b.timeZone) timeZone = b.timeZone
     for (const e of b.items ?? []) {
       const start = e.start?.dateTime ?? e.start?.date
       if (!start) continue
@@ -221,6 +345,39 @@ export async function pullObservations(
         },
       })
     }
+    /*
+      GOOGLE'S REPLY IS THE COMPLETE TRUTH FOR THE WINDOW IT WAS ASKED ABOUT.
+
+      `singleEvents=true` expands recurrences and OMITS cancelled instances, and
+      a deleted event is simply absent — so "in the window and not in the reply"
+      is exactly "no longer on his calendar". Without this, the only way an event
+      could ever leave the world document was for the document to be deleted.
+
+      The membership test restates Google's own selection criterion (ends after
+      timeMin, starts before timeMax) so the two cannot drift: anything the query
+      WOULD have returned is covered, and anything it would not have returned —
+      this morning's finished meeting, last week's dinner — is untouched, which is
+      what keeps depth's history intact while Home stops being an archive.
+
+      NOT declared when the page came back full: `maxResults=50` means there may
+      be a second page, and retiring against a truncated reply would delete real
+      events. A rare, silently-wrong deletion is worse than a rare stale row.
+    */
+    if ((b.items ?? []).length < 50) {
+      const instant = (v: string): number =>
+        /^\d{4}-\d{2}-\d{2}$/.test(v) ? Date.parse(`${v}T00:00:00Z`) : Date.parse(v)
+      coverage.push({
+        source: 'calendar',
+        covers: (o) => {
+          const d = o.data
+          if (d?.kind !== 'event') return false
+          const s = instant(String(d.start ?? ''))
+          const e = instant(String(d.end ?? d.start ?? ''))
+          if (!Number.isFinite(s) || !Number.isFinite(e)) return false
+          return e > now.getTime() && s < weekAhead.getTime()
+        },
+      })
+    }
   } catch (e) {
     errors.push(`calendar: ${(e as Error).message}`)
   }
@@ -237,7 +394,7 @@ export async function pullObservations(
         id: `gmail-${m.id}`.slice(0, 60),
         source: 'email',
         at: h.Date ? iso(new Date(h.Date)) : iso(now),
-        text: `Email from ${from} — "${h.Subject ?? '(no subject)'}"${msg.snippet ? `: ${String(msg.snippet).slice(0, 180)}` : ''}`,
+        text: `Email from ${from} — "${h.Subject ?? '(no subject)'}"${msg.snippet ? `: ${cleanSnippet(String(msg.snippet)).slice(0, 180)}` : ''}`,
         // Keeping the ids is what makes a message actionable later: without
         // messageId and threadId there is no way to open, reply to, archive or
         // mark anything, however good the summary sentence is.
@@ -249,7 +406,7 @@ export async function pullObservations(
           fromName: displayName(from),
           to: h.To ? String(h.To) : undefined,
           subject: String(h.Subject ?? '(no subject)'),
-          snippet: msg.snippet ? String(msg.snippet).slice(0, 400) : undefined,
+          snippet: msg.snippet ? cleanSnippet(String(msg.snippet)).slice(0, 400) || undefined : undefined,
           unread: Array.isArray(msg.labelIds) && msg.labelIds.includes('UNREAD'),
           labels: Array.isArray(msg.labelIds) ? msg.labelIds.slice(0, 12).map(String) : undefined,
         },
@@ -259,37 +416,98 @@ export async function pullObservations(
     errors.push(`gmail: ${(e as Error).message}`)
   }
 
-  // Fit — steps. Device-independent, so it works from the phone with no
-  // native app and no HealthKit.
+  /**
+   * Fit — steps.
+   *
+   * THREE THINGS HERE WERE WRONG IN WAYS THAT ONLY SHOW UP AS A NUMBER BEING
+   * TOO LOW, which is the hardest kind of bug to see: nothing errors, a chart
+   * draws, and the figure is simply not his.
+   *
+   * 1. A DAY IS NOT 86,400,000 MILLISECONDS FROM WHENEVER THE SYNC RAN. The
+   *    old call bucketed by a raw duration anchored at `now - 7d`, so each
+   *    "day" was a rolling 24-hour window starting at the time of day the sync
+   *    happened to fire, and each bucket was then LABELLED with the UTC date of
+   *    its start. Two syncs at different hours produced different numbers for
+   *    the same calendar day, and the label could be a day out. Fit's own
+   *    `period` bucketing with a `timeZoneId` is the fix: Google aligns the
+   *    buckets to midnight in his zone and the label means what it says.
+   *
+   * 2. ONLY THE FIRST POINT OF THE FIRST DATASET WAS READ. Fit returns a
+   *    dataset per aggregation and a point per contiguous run; a day with more
+   *    than one run silently reported only the first of them, and a float value
+   *    reported nothing at all because only `intVal` was honoured. Both are
+   *    undercounts with no error. Everything in the bucket is now summed.
+   *
+   * 3. `.filter(d => d.steps > 0)` DELETED REAL ZEROS. A day Fit reported as
+   *    zero and a day Fit never delivered became the same absence, so the
+   *    surface could not tell "you did not walk" from "the connector is not
+   *    reporting" — and it guessed, printing a banner asserting "not zero"
+   *    about days that genuinely were. Zeros are kept; a day that is absent
+   *    from the response is absent from the series, and the two are now
+   *    different things downstream.
+   *
+   * WHAT THIS STILL CANNOT DO, and no amount of care here will: if a step is
+   * not inside Google Fit, this cannot see it. There is no HealthKit bridge in
+   * a web app. An iPhone whose steps live in Apple Health and are not mirrored
+   * into Fit will report far fewer steps than the phone shows, and that is a
+   * property of the account, not of this code.
+   */
   if (on('health')) try {
+    /**
+     * 4. THE OLDEST DAY OF EVERY SYNC WAS A PARTIAL DAY REPORTED AS A WHOLE ONE.
+     *
+     * `startTimeMillis: now - 7d` is an INSTANT, not a midnight. Bucketing by
+     * period aligns the buckets that follow it, but the first bucket still
+     * begins where the range does — so a sync at 09:25 asked for that day from
+     * 09:25 onward and labelled the result with the whole date. Every sync
+     * therefore wrote one day whose total was missing its own morning, and
+     * because a later sync writes a DIFFERENT partial for a different day, the
+     * stored series disagreed with itself between runs.
+     *
+     * Measured against his live account on 2026-08-12, three syncs reported
+     * 2026-08-08 as 8, 6,307 and 12 — the same completed day, three answers.
+     * The window is aligned to local midnight now, so no completed day is ever
+     * asked for in part.
+     */
+    const from = fitWindowStart(now, zone) ?? weekAgo.getTime()
+
+    const body: Record<string, unknown> = {
+      aggregateBy: [{ dataTypeName: 'com.google.step_count.delta' }],
+      startTimeMillis: from,
+      endTimeMillis: now.getTime(),
+    }
+    body.bucketByTime = zone
+      ? { period: { type: 'day', value: 1, timeZoneId: zone } }
+      : { durationMillis: 86_400_000 }
+
     const b = await fetch('https://www.googleapis.com/fitness/v1/users/me/dataset:aggregate', {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        aggregateBy: [{ dataTypeName: 'com.google.step_count.delta' }],
-        bucketByTime: { durationMillis: 86_400_000 },
-        startTimeMillis: weekAgo.getTime(),
-        endTimeMillis: now.getTime(),
-      }),
-    }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-    // Keep which day each count belongs to. The old version mapped straight to
-    // a bare array of numbers, so "6,100 average" could be stated but no chart
-    // could ever be drawn — a bar needs to know which day it stands on.
-    const buckets: { date: string; steps: number }[] = (b.bucket ?? [])
-      .map((x: any) => ({
-        date: iso(new Date(Number(x.startTimeMillis))),
-        steps: Number(x.dataset?.[0]?.point?.[0]?.value?.[0]?.intVal ?? 0),
-      }))
-      .filter((d: { date: string; steps: number }) => d.steps > 0)
+      body: JSON.stringify(body),
+    }).then((r) => (r.ok ? (r.json() as Promise<any>) : Promise.reject(new Error(`${r.status}`))))
 
-    if (buckets.length) {
-      const avg = Math.round(buckets.reduce((a, c) => a + c.steps, 0) / buckets.length)
+    const days = stepsFromAggregate(b, zone)
+
+    if (days.length) {
+      const total = days.reduce((a, c) => a + c.steps, 0)
+      /**
+       * The average is over the days ACTUALLY RETURNED, and the sentence says
+       * how many those are. The old one divided by the count of non-zero days,
+       * which reads high and whose denominator moved silently as days dropped
+       * in and out of the filter.
+       */
+      const avg = Math.round(total / days.length)
+      const reported = days.filter((d) => d.steps > 0).length
       out.push({
-        id: `gfit-${iso(now)}`,
+        id: `gfit-${dayIn(now, zone)}`,
         source: 'health',
-        at: iso(now),
-        text: `Steps over the last ${buckets.length} days: average ${avg}/day (daily: ${buckets.map((d) => d.steps).join(', ')}).`,
-        data: { kind: 'steps', days: buckets, average: avg },
+        at: now.toISOString(),
+        text:
+          `Steps over ${days.length} day(s) to ${days[days.length - 1]!.date}: average ${avg}/day ` +
+          `across all days (${reported} of ${days.length} days had any activity recorded). ` +
+          `Daily: ${days.map((d) => `${d.date} ${d.steps}`).join(', ')}. ` +
+          `Source: Google Fit only — steps not written into Fit are not counted here.`,
+        data: { kind: 'steps', days, average: avg },
       })
     }
   } catch (e) {
@@ -333,6 +551,7 @@ export async function pullObservations(
           channel: v.channel,
           thumbnail: v.thumbnail,
           publishedAt: v.publishedAt,
+          durationSec: v.durationSec,
           description: v.description ? v.description.slice(0, 1000) : undefined,
         },
       })
@@ -341,7 +560,7 @@ export async function pullObservations(
     errors.push(`youtube: ${(e as Error).message}`)
   }
 
-  return { observations: out, errors }
+  return { observations: out, errors, timeZone, coverage }
 }
 
 // ── Acting, not just reading ─────────────────────────────────────────────────
@@ -353,11 +572,22 @@ export async function pullObservations(
  * the refresh-on-expiry path, so an action taken an hour after the last sync
  * does not fail on a stale token.
  */
-async function gWrite(token: string, url: string, method: 'POST' | 'PUT' | 'PATCH', body: unknown): Promise<any> {
+async function gWrite(
+  token: string,
+  url: string,
+  // DELETE is here for `gmailDeleteDraft`, which is the undo half of drafting a
+  // message. A verb that can only create is a verb with no inverse, and this
+  // codebase's action table refuses those.
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  body: unknown
+): Promise<any> {
   const r = await fetch(url, {
     method,
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (!r.ok) {
     const text = await r.text().catch(() => '')
@@ -463,6 +693,58 @@ export async function gmailReply(
   })
 }
 
+/**
+ * PUT A MESSAGE IN HIS DRAFTS. NOT IN ANYONE'S INBOX.
+ *
+ * The distinction this function exists for. `gmailReply` above sends, is marked
+ * irreversible, and cannot be reached without him confirming; this writes to
+ * `users/me/drafts`, which is a folder in his own account. Nothing leaves it
+ * without him opening it, reading it and pressing send in Gmail.
+ *
+ * That is the only honest way for this app to help with a message to a third
+ * party. A draft is fully reversible — deleting it restores the world exactly —
+ * so it can be offered from a card without a confirmation dialog, and the card
+ * can say plainly what it did.
+ *
+ * `gmail.modify` covers drafts, so this needs no scope the app does not already
+ * hold. Returns the draft id so the action can describe its own undo.
+ */
+export async function gmailDraft(
+  token: string,
+  msg: { to: string; subject: string; body: string }
+): Promise<{ id: string }> {
+  if (!msg.to.trim()) throw new Error('A draft needs someone to be addressed to.')
+  if (!msg.body.trim()) throw new Error('There is nothing to draft.')
+
+  // Same encoding rule as a reply: a non-ASCII subject must be encoded or Gmail
+  // mangles it, and this app is used in Italy.
+  const encodedSubject = /^[\x20-\x7E]*$/.test(msg.subject)
+    ? msg.subject
+    : `=?UTF-8?B?${Buffer.from(msg.subject, 'utf8').toString('base64')}?=`
+
+  const mime = [
+    `To: ${msg.to}`,
+    `Subject: ${encodedSubject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset="UTF-8"',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    msg.body,
+  ].join('\r\n')
+
+  const raw = Buffer.from(mime, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const out = await gWrite(token, 'https://gmail.googleapis.com/gmail/v1/users/me/drafts', 'POST', {
+    message: { raw },
+  })
+  return { id: String(out?.id ?? '') }
+}
+
+/** Remove a draft this app created. The exact inverse of `gmailDraft`. */
+export async function gmailDeleteDraft(token: string, draftId: string): Promise<void> {
+  if (!draftId) throw new Error('No draft to remove.')
+  await gWrite(token, `https://gmail.googleapis.com/gmail/v1/users/me/drafts/${encodeURIComponent(draftId)}`, 'DELETE', undefined)
+}
+
 /** Put something on the calendar without leaving the app. */
 export async function calendarCreate(
   token: string,
@@ -489,4 +771,78 @@ export async function calendarCreate(
     end: endAt,
   })
   return { id: String(made.id ?? '') }
+}
+
+/**
+ * CHANGE AN EVENT THAT ALREADY EXISTS.
+ *
+ * The gap this fills was not subtle. He told the assistant that "Comic concert
+ * in avano" was the wrong name and asked for it to be "Cinzia's"; the reply was
+ * "Pulling your calendar from Google now to rename the event", followed by
+ * "Pulled 3 new things from Google just now", and the event kept its name. The
+ * app could CREATE an event and it could RSVP to one, and those were the only
+ * two things it could do to a calendar — so the only move available to a model
+ * asked to rename something was to refresh and describe the result. It read as
+ * the assistant lying about what it had done, which is worse than refusing.
+ *
+ * Only the fields actually named are sent. A PATCH with an undefined `summary`
+ * would erase the name, and "rename this" must not be able to silently drop the
+ * location, the guests or the description as a side effect.
+ *
+ * The previous values come back with the result so the caller can register a
+ * real undo — every write in this app is reversible except sending mail, and a
+ * rename is not the place to start making exceptions.
+ */
+export async function calendarUpdate(
+  token: string,
+  eventId: string,
+  change: { summary?: string; start?: string; end?: string; location?: string; description?: string }
+): Promise<{ before: { summary?: string; start?: string; end?: string; location?: string; description?: string } }> {
+  if (!eventId) throw new Error('No event given.')
+
+  const named = Object.entries(change).filter(([, v]) => v !== undefined && v !== null && String(v).trim() !== '')
+  if (!named.length) throw new Error('Nothing to change.')
+
+  const ev = await gFetch(token, `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`)
+
+  const body: Record<string, unknown> = {}
+  if (change.summary !== undefined) body.summary = String(change.summary).slice(0, 300)
+  if (change.location !== undefined) body.location = String(change.location).slice(0, 300)
+  if (change.description !== undefined) body.description = String(change.description).slice(0, 2000)
+
+  // A time change has to keep the event's own shape: an all-day event uses
+  // `date` and a timed one uses `dateTime`, and Google rejects the wrong field
+  // rather than converting. The existing event decides which it is.
+  const wasAllDay = !!ev.start?.date
+  const asWhen = (v: string) => {
+    const bare = /^\d{4}-\d{2}-\d{2}$/.test(v)
+    return bare || wasAllDay
+      ? { date: bare ? v : new Date(v).toISOString().slice(0, 10) }
+      : { dateTime: new Date(v).toISOString() }
+  }
+  if (change.start) body.start = asWhen(change.start)
+  if (change.end) body.end = asWhen(change.end)
+  // Moving the start without an end would leave Google with end <= start, which
+  // it refuses. The original duration is preserved instead.
+  if (change.start && !change.end && ev.start?.dateTime && ev.end?.dateTime) {
+    const span = Date.parse(ev.end.dateTime) - Date.parse(ev.start.dateTime)
+    body.end = { dateTime: new Date(Date.parse(new Date(change.start).toISOString()) + span).toISOString() }
+  }
+
+  await gWrite(
+    token,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    'PATCH',
+    body,
+  )
+
+  return {
+    before: {
+      summary: ev.summary,
+      location: ev.location,
+      description: ev.description,
+      start: ev.start?.dateTime ?? ev.start?.date,
+      end: ev.end?.dateTime ?? ev.end?.date,
+    },
+  }
 }

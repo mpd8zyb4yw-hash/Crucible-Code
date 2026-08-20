@@ -17,26 +17,86 @@ a { color:#C8CBD2; text-decoration:none; } a:hover { color:#fff; }
 @keyframes cruPulse { 0%,100% { opacity:.5; } 50% { opacity:.9; } }
 @keyframes cruExpand { from { opacity:0; transform:translateY(10px) scale(.975); } to { opacity:1; transform:translateY(0) scale(1); } }
 @keyframes cruRise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+@keyframes cruSpin { to { transform: rotate(360deg); } }
+@keyframes cruFade { from { opacity:0; } to { opacity:1; } }
+@keyframes cruDrawer { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
 
 /* Product shell: the design doc presents the app inside a 390x844 device.
    That framing is preserved exactly wherever it fits; on a viewport too small
    to hold it (an actual phone) the app goes full-bleed, which is the same
-   pixels without the bezel. */
+   pixels without the bezel.
+
+   THE DEVICE BOX HAS NO SIZE HERE, AND NO SIZE IN JAVASCRIPT EITHER.
+
+   It was `100dvh` once, then a pixel height measured from `visualViewport`, and
+   both were the same mistake in different notation: a number computed from one
+   rectangle and applied to a box living in another. On a Home Screen launch iOS
+   lays the document out in the full screen and reports the visual viewport as
+   the unobscured region — 62px smaller — so the app drew short and the
+   difference painted as black under the composer.
+
+   On a phone the shell is `position:fixed; inset:0` (ViewportShell.tsx), which
+   IS the layout viewport by construction, so there is no number to get wrong.
+   What is left here is the part that is genuinely static: the document must be
+   exactly the window and must never scroll. */
+html, body {
+  height: 100%;
+  /* The app is a fixed rectangle. Any page scroll at all is a bug, and on iOS a
+     rubber-band flick moves the visual viewport under a fixed shell — which
+     reads as the whole app sliding off the bottom of the screen. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  position: relative;
+}
+
+/* Only the desktop bezel needs centring, and only the desktop bezel is in flow
+   — on a phone the shell is fixed and `#root` holds nothing that has size. */
 #root {
-  min-height: 100vh;
-  min-height: 100dvh;
+  min-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-@media (max-width: 460px), (max-height: 900px) {
-  #root { align-items: stretch; justify-content: stretch; }
-  .cru-device {
-    width: 100% !important;
-    height: 100vh !important;
-    height: 100dvh !important;
-    border-radius: 0 !important;
-    box-shadow: none !important;
-  }
+/*
+  A CONTROL THAT COSTS NOTHING UNTIL SOMEBODY NEEDS IT.
+
+  The deck's "Show all domains" was a 1×1px clipped button in every state,
+  focus included — the canonical screen-reader pattern, and not the non-touch
+  path the UI contract requires, because a sighted keyboard user landed on
+  something with no position on screen and no focus ring. It was reachable and
+  invisible, which is a technicality rather than a fallback.
+
+  Clipped while unfocused, so it spends no permanent screen space; a real,
+  legible target the moment it is focused. Both halves of the constraint.
+*/
+.cru-skip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  font-family: inherit;
+  background: rgba(237, 238, 241, .92);
+  color: #0B0B0D;
+}
+
+.cru-skip:focus-visible {
+  width: auto;
+  height: auto;
+  clip-path: none;
+  overflow: visible;
+  margin: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  z-index: 40;
+  outline: 2px solid #F0A56B;
+  outline-offset: 2px;
 }

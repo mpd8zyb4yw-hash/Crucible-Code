@@ -1,0 +1,54 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+
+  // THE HARNESS CONFIG. Never deployed — `scripts/edge.mjs` runs it under
+  // `wrangler dev --local`, which is workerd: Cloudflare's actual runtime, with
+  // Cloudflare's actual SQLite and alarm scheduler. See worker/edge-probe.ts for
+  // why a shim over better-sqlite3 could not answer the questions this asks.
+  //
+  // The name differs from the production worker's on purpose. A `wrangler deploy`
+  // pointed at this file by accident would create a separate worker rather than
+  // overwrite `crucible`, and it has no routes, so it would serve nothing.
+  "name": "crucible-edge-test",
+  "main": "worker/edge-probe.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Local-only. `wrangler dev --local` never contacts the account for these, so
+  // the id is a label rather than the production namespace — which is the point:
+  // this harness must not be able to reach 7288f617…, where his life is.
+  "kv_namespaces": [
+    { "binding": "CRUCIBLE", "id": "edge-test-local" }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      // The real production class, imported and re-exported unchanged.
+      { "name": "WORLD", "class_name": "WorldObject" },
+      // The introspection the production class deliberately does not have.
+      { "name": "PROBE", "class_name": "MemoryProbe" }
+    ]
+  },
+
+  // Both SQLite-backed, matching production's `new_sqlite_classes`. A classic
+  // backend has no `state.storage.sql` at all and the memory core would simply be
+  // absent — which is a behaviour worth having a test for, and is not this one.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["WorldObject", "MemoryProbe"] }
+  ],
+
+  "vars": {
+    // See `Env.MEMORY_REFLECT_MS`. Production leaves this unset and gets a
+    // quarter of an hour; the harness needs the object to wake while a test is
+    // still watching. Nothing else about the alarm differs.
+    "MEMORY_REFLECT_MS": "600",
+
+    // The production worker refuses every /api request without these. The probe
+    // entry point does not serve /api at all, so they exist only to keep the
+    // shared module graph from complaining about a missing binding.
+    "JWT_SECRET": "edge-test-not-a-secret",
+    "GOOGLE_CLIENT_ID": "edge-test",
+    "GOOGLE_CLIENT_SECRET": "edge-test",
+    "ALLOWED_EMAIL": "edge-test@example.invalid"
+  }
+}

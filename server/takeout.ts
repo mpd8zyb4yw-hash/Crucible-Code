@@ -1,5 +1,5 @@
-import { objectId, remember, type RetrievedObject } from './objects.js'
-import { historical, inferred } from './provenance.js'
+import { objectId, remember, type ObjectDraft } from './objects.js'
+import { claim, historical, type Claim } from './provenance.js'
 
 /**
  * Google Takeout import.
@@ -155,9 +155,9 @@ export function channelsByWatchCount(h: WatchHistory, limit = 25): { tallies: Ch
  * hydrated through `youtube.hydrate()` like everything else, and then it is
  * `retrieved` rather than `historical` and says so.
  */
-export async function rememberWatchHistory(h: WatchHistory, limit = 1500): Promise<RetrievedObject[]> {
+export async function rememberWatchHistory(h: WatchHistory, limit = 1500): Promise<ObjectDraft[]> {
   const prov = historical('youtube', h.exportedAt, 'takeout')
-  const objs = h.events.slice(0, limit).map((e): RetrievedObject => ({
+  const objs = h.events.slice(0, limit).map((e): ObjectDraft => ({
     id: objectId('youtube', 'video', e.videoId),
     source: 'youtube',
     kind: 'video',
@@ -184,9 +184,35 @@ export async function rememberWatchHistory(h: WatchHistory, limit = 1500): Promi
  * in `basis`. Breadth of basis is then a number rather than a feeling.
  */
 export function tallyProvenance(h: WatchHistory, t: ChannelTally) {
-  return inferred(
-    'youtube',
-    `counted from ${t.watches} watch events in a Takeout export covering up to ${h.exportedAt.slice(0, 10)}`,
-    h.events.filter((e) => (e.channelId ?? e.channel) === (t.channelId ?? t.channel)).slice(0, 50).map((e) => objectId('youtube', 'video', e.videoId))
-  )
+  return channelClaim(h, t).prov
+}
+
+/**
+ * The tally as a claim, with its evidence beside it rather than inside it.
+ *
+ * "He watches this channel most" is not a fact in the world and not something
+ * YouTube ever said; it is what counting rows in one export implies, and the
+ * rows are what make it checkable. Keeping the two apart is what lets a later
+ * pass re-weigh it — or find that the export it rested on was replaced, and
+ * drop the conclusion rather than carrying it forward as though it were an
+ * observation.
+ *
+ * Confidence is a function of the EVIDENCE, not of the sentence: a channel
+ * seen three times is a weak claim however confidently it can be phrased, and
+ * the window the export covers bounds it regardless of how many events there
+ * were.
+ */
+export function channelClaim(h: WatchHistory, t: ChannelTally): Claim<ChannelTally> {
+  const basis = h.events
+    .filter((e) => (e.channelId ?? e.channel) === (t.channelId ?? t.channel))
+    .slice(0, 50)
+    .map((e) => objectId('youtube', 'video', e.videoId))
+  return claim(t, {
+    source: 'youtube',
+    method: `counted ${t.watches} watch events in a Takeout export covering up to ${h.exportedAt.slice(0, 10)}`,
+    basis,
+    // Ten events is enough to mean something; three is a coincidence with a
+    // number attached. Never above 0.9: one export is one window of his life.
+    confidence: Math.min(0.9, t.watches / 10),
+  })
 }

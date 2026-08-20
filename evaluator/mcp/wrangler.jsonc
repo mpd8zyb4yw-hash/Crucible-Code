@@ -1,0 +1,9 @@
+{
+  // Its own Worker, like the /remote proxy beside it: this must not be able to
+  // affect crucible.cam, and deleting it must cost nothing else.
+  "name": "crucible-evaluator-mcp",
+  "account_id": "ade58f39c3ae6de82904b7fb6da3f054",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true
+}

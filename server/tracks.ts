@@ -1,4 +1,4 @@
-import { readWorld, writeWorld, addObservations, type Track, type World } from './world.js'
+import { mutateWorld, readWorld, addObservations, type Track, type World } from './world.js'
 import { researchGap, type SearchKeys } from './research.js'
 
 /**
@@ -57,35 +57,75 @@ export async function addTrack(input: Partial<Track>, by: Track['by']): Promise<
   // The model is told to gather the specifics before offering; this is the
   // check that does not depend on it having listened.
   if (by === 'agent' && VAGUE.test(t.what)) return null
-  const w = await readWorld()
-  w.tracks = w.tracks ?? []
-  // Same interest asked for twice is one interest.
-  if (w.tracks.some((x) => x.what.toLowerCase() === t.what.toLowerCase())) return null
-  w.tracks.push(t)
-  await writeWorld(w)
-  return t
+  /**
+   * Transactional, like every other world mutation. The duplicate check has to happen
+   * INSIDE the mutation or it is a check against a document that may already have
+   * grown the very track it is looking for — the classic read-modify-write duplicate.
+   */
+  const { result } = await mutateWorld((w) => {
+    w.tracks = w.tracks ?? []
+    // Same interest asked for twice is one interest.
+    if (w.tracks.some((x) => x.what.toLowerCase() === t.what.toLowerCase())) return null
+    w.tracks.push(t)
+    return t
+  }, { label: 'a new watch' })
+  return result
 }
 
 export async function updateTrack(id: string, patch: Partial<Track>): Promise<Track | null> {
-  const w = await readWorld()
-  const t = (w.tracks ?? []).find((x) => x.id === id)
-  if (!t) return null
-  if (patch.what !== undefined) t.what = String(patch.what).trim().slice(0, 120)
-  if (patch.why !== undefined) t.why = String(patch.why).trim().slice(0, 200)
-  if (patch.question !== undefined) t.question = patch.question ? String(patch.question).slice(0, 200) : null
-  if (patch.everyHours !== undefined) t.everyHours = Math.max(1, Math.min(24 * 30, Number(patch.everyHours) || 24))
-  if (patch.active !== undefined) t.active = patch.active === true
-  await writeWorld(w)
-  return t
+  const { result } = await mutateWorld((w) => {
+    const t = (w.tracks ?? []).find((x) => x.id === id)
+    if (!t) return null
+    if (patch.what !== undefined) t.what = String(patch.what).trim().slice(0, 120)
+    if (patch.why !== undefined) t.why = String(patch.why).trim().slice(0, 200)
+    if (patch.question !== undefined) t.question = patch.question ? String(patch.question).slice(0, 200) : null
+    if (patch.everyHours !== undefined) t.everyHours = Math.max(1, Math.min(24 * 30, Number(patch.everyHours) || 24))
+    if (patch.active !== undefined) t.active = patch.active === true
+    return t
+  }, { label: 'that watch' })
+  return result
 }
 
 export async function removeTrack(id: string): Promise<boolean> {
+  const { result } = await mutateWorld((w) => {
+    const before = (w.tracks ?? []).length
+    w.tracks = (w.tracks ?? []).filter((x) => x.id !== id)
+    return w.tracks.length !== before
+  }, { label: 'stopping that watch' })
+  return result
+}
+
+/**
+ * Check one watch now, because he asked.
+ *
+ * Separate from the cadence path rather than a special case of it: "check this
+ * now" must run whether or not the interval has elapsed and whether or not the
+ * watch is paused — a paused watch he explicitly pokes is a question, not a
+ * schedule. It still stamps `lastRunAt`, so the next automatic check is an
+ * interval away from this one rather than from whenever the clock last fired.
+ */
+export async function runTrack(id: string, searchKeys: SearchKeys = {}, now = new Date()): Promise<{ ok: boolean; found: string | null }> {
   const w = await readWorld()
-  const before = (w.tracks ?? []).length
-  w.tracks = (w.tracks ?? []).filter((x) => x.id !== id)
-  if (w.tracks.length === before) return false
-  await writeWorld(w)
-  return true
+  const t = (w.tracks ?? []).find((x) => x.id === id)
+  if (!t?.question) return { ok: false, found: null }
+
+  const obs = await researchGap({ question: t.question, who: 'world', why: t.why }, w, undefined, searchKeys).catch(() => null)
+  if (obs) await addObservations([obs])
+
+  /**
+   * ONLY THE STAMP IS WRITTEN BACK.
+   *
+   * This re-read the world and wrote it whole, which was safe enough when the document
+   * held observations and beliefs and is not any more: a research call takes seconds,
+   * and a correction landing inside that window was destroyed by the write. The
+   * mutation now touches one field on one track.
+   */
+  await mutateWorld((fresh) => {
+    const live = (fresh.tracks ?? []).find((x) => x.id === id)
+    if (live) live.lastRunAt = now.toISOString()
+  }, { label: 'when that watch last ran' })
+
+  return { ok: true, found: obs?.text ?? null }
 }
 
 /** Active tracks whose cadence has elapsed and that the web can actually answer. */
@@ -124,12 +164,12 @@ export async function runDueTracks(searchKeys: SearchKeys = {}, now = new Date()
 
   // Stamp every track that ran, answered or not: a question the web could not
   // answer this hour should not be retried on the next tick.
-  const after = await readWorld()
-  for (const { t } of results) {
-    const live = (after.tracks ?? []).find((x) => x.id === t.id)
-    if (live) live.lastRunAt = now.toISOString()
-  }
-  await writeWorld(after)
+  await mutateWorld((fresh) => {
+    for (const { t } of results) {
+      const live = (fresh.tracks ?? []).find((x) => x.id === t.id)
+      if (live) live.lastRunAt = now.toISOString()
+    }
+  }, { label: 'when those watches last ran' })
 
   return { ran: due.map((t) => t.what), learned: found.map((o) => o.text) }
 }

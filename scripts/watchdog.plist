@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  KEEP CRUCIBLE.CAM ON THE CURRENT CODE, WITH NOBODY PRESENT.
+
+  The Stop hook ships at the end of a Claude session, which is the right moment
+  and the wrong guarantee: it only fires if someone was in a session, it only
+  fires once, and if that one attempt is interrupted — a laptop lid, a killed
+  process, two runs colliding — the live site sits behind the code until the
+  next session happens to end. That is exactly how crucible.cam came to be
+  serving a build from before the Durable Object landed while every local check
+  said everything was fine.
+
+  So the same script also runs on a timer. It is a RECONCILER rather than a
+  deploy command: it asks production what it is running, compares that to the
+  source here, and does nothing at all when they agree. The idle cost is one
+  HTTPS request per tick.
+
+  A TEMPLATE, NOT THE INSTALLED FILE. `__CRUCIBLE_ROOT__` is substituted with
+  wherever this checkout actually lives at install time, because a hard-coded
+  home directory is a watchdog that stops working the day the repo moves — and
+  it stops working SILENTLY, which is the one thing a watchdog must never do.
+
+  Install (or reinstall after a move):
+    scripts/install-watchdog.sh
+
+  It substitutes the path, loads the job, and then proves it is registered
+  rather than assuming `launchctl load` meant anything.
+
+  Remove:
+    launchctl unload ~/Library/LaunchAgents/com.crucible.deploy.plist
+    rm ~/Library/LaunchAgents/com.crucible.deploy.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.crucible.deploy</string>
+
+  <!--
+    `bash -lc` rather than the script directly: the deploy needs `npm`, `npx`
+    and `node` on PATH, and launchd hands a job an almost empty environment. A
+    login shell picks up whatever nvm/homebrew arrangement this Mac actually
+    has, instead of this file guessing at a path that will be wrong after the
+    next Node upgrade.
+  -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>__CRUCIBLE_ROOT__/scripts/deploy.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__CRUCIBLE_ROOT__</string>
+
+  <!--
+    Fifteen minutes, and the number is chosen against the WORST case rather than
+    the common one.
+
+    The common run is a single HTTPS request and could fire every minute. But a
+    run that actually has work to do takes about eight — the browser test suite
+    is most of it — and a ten-minute interval leaves almost no margin before the
+    next tick lands on top of it. The lock makes an overlap harmless, and an
+    interval that routinely produces overlaps is still a bad interval: it turns
+    the normal case into contention and makes the logs hard to read.
+    Fifteen leaves the slow path comfortable room and still corrects a missed
+    Stop hook long before he next picks up his phone.
+  -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <!--
+    AND ONCE AT LOAD. The most likely moment for the live site to be behind is
+    right after the machine wakes or logs in, having missed however many
+    intervals it was asleep for.
+  -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!--
+    Explicitly NOT KeepAlive. This is a periodic reconciler that exits, not a
+    daemon; KeepAlive would restart it in a tight loop the moment it finished.
+  -->
+  <key>StandardOutPath</key>
+  <string>__CRUCIBLE_ROOT__/.crucible-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>__CRUCIBLE_ROOT__/.crucible-watchdog.log</string>
+
+  <!--
+    Politeness. The deploy runs a browser test suite, and a background job has
+    no business competing with whatever he is actually doing.
+  -->
+  <key>Nice</key>
+  <integer>5</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

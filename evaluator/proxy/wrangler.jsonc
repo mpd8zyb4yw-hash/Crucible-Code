@@ -1,0 +1,9 @@
+{
+  // Deliberately its OWN Worker, not a route on the Crucible one: this must not
+  // be able to affect crucible.cam, and it must be deletable on its own.
+  "name": "crucible-evaluator",
+  "account_id": "ade58f39c3ae6de82904b7fb6da3f054",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true
+}

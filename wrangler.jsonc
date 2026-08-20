@@ -19,9 +19,45 @@
     "run_worker_first": ["/api/*", "/auth/*"]
   },
 
-  // The world model, and the Google refresh token. One user, one document.
+  // Everything that is not the world model: the Google refresh token, model
+  // routing state, panes, the shelf, the feed snapshot. Also where the world
+  // model USED to live — see the Durable Object below. The room seeds itself
+  // from this key on its first request and mirrors every landed write back to
+  // it, so `wrangler kv key get world` still reads his life.
   "kv_namespaces": [
     { "binding": "CRUCIBLE", "id": "7288f617e7904a0fa9a96bda11dd6540" }
+  ],
+
+  // THE WORLD MODEL'S ONE AUTHORITATIVE WRITER.
+  //
+  // KV has no conditional write, so the compare-and-set against it was
+  // read-hash-compare-write with a real — if narrow — window between the check
+  // and the put. That was tolerable while the document held re-syncable
+  // observations and is not tolerable now that it holds his corrections, which
+  // nothing will ever re-derive. A Durable Object is single across the whole
+  // network and gates its own requests, so the compare and the assignment
+  // happen in one turn with nothing able to interleave. See server/worldRoom.ts.
+  "durable_objects": {
+    "bindings": [{ "name": "WORLD", "class_name": "WorldObject" }]
+  },
+  // SQLite-backed, which is the current default class and the one with the
+  // larger per-value ceiling. The document is chunked either way, because a
+  // world model that fails to save because it grew is the same silent loss the
+  // object exists to prevent.
+  //
+  // THE SQLITE BACKEND IS NOW LOAD-BEARING FOR A SECOND REASON. The memory core
+  // (server/memory/, docs/memory-core.md) keeps its ledger in this same object's
+  // `state.storage.sql` — the same object rather than a second one, because
+  // there is exactly one WorldObject per user and its requests are gated, so a
+  // write to the ledger and a write to the document cannot interleave. Two
+  // objects would need a distributed transaction to promise that.
+  //
+  // A deploy without this migration has no `state.storage.sql`, and the memory
+  // core is then simply absent — the object says so and serves the world model
+  // exactly as before, rather than failing. Moving this class back to the classic
+  // backend would silently switch the ledger off.
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["WorldObject"] }
   ],
 
   // A route, not a custom domain: crucible.cam already has proxied DNS records
@@ -32,10 +68,19 @@
     { "pattern": "crucible.cam/*", "zone_name": "crucible.cam" }
   ],
 
-  // Unattended gathering. Every three hours rather than every few minutes:
-  // the sources it pulls do not change faster than that, and the free tier's
-  // daily allowance is better spent on synthesis he actually reads.
-  "triggers": { "crons": ["0 */3 * * *"] },
+  // Two cadences, for two things that go stale at different rates.
+  //
+  //   */15 — let the clock tick on panes with an interval policy, and rewrite
+  //          the feed snapshot so opening the app is current rather than
+  //          three hours old. `refreshDue` still gates each pane on its OWN
+  //          interval, so this fetches nothing nobody asked for.
+  //   0 */3 — the expensive half: pull Google, run standing interests. The
+  //          sources it reads do not change faster than that, and the free
+  //          tier's daily allowance is better spent on synthesis he reads.
+  //
+  // The handler branches on `event.cron`; the string below is matched against
+  // LIGHT_CRON in worker/index.ts, so the two have to stay in step.
+  "triggers": { "crons": ["*/15 * * * *", "0 */3 * * *"] },
 
   "observability": { "enabled": true }
 

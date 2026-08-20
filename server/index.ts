@@ -5,20 +5,37 @@ import { join } from 'node:path'
 import { getKey, setKey, deleteKey } from './secrets.js'
 import { installNodeRuntime } from './node-runtime.js'
 import { providers, byId, chat, listModels, canSearch, probe } from './providers.js'
-import { readWorld, writeWorld, addObservations } from './world.js'
+import { mutateWorld, readWorld, addObservations, noteTimeZone, type World } from './world.js'
+import { personRoute } from './personRoutes.js'
 import { think } from './think.js'
 import { sourcePanes, noticePane } from './panes.js'
 import { say } from './say.js'
 import { proposeGaps, researchGap } from './research.js'
-import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks } from './tracks.js'
+import { listTracks, addTrack, updateTrack, removeTrack, runDueTracks, runTrack } from './tracks.js'
 import { route, health, candidates, setModelPrefs, wake, budgets } from './router.js'
 import { hunt, ensureVerified, snapshot, usable as usableModels } from './models.js'
 import { searchPlaces, routeBetween } from './maps.js'
+import { leaveBy } from './leaveby.js'
 import { forgetSource } from './objects.js'
 import { resolveRefs } from './widgets.js'
-import { quotaLedger } from './youtube.js'
+import {
+  quotaLedger, installYouTubeSource, presentable,
+  search, fromSubscriptions, likedVideos, type Video as YTVideo,
+} from './youtube.js'
+import { installGoogleSources } from './googleSources.js'
+import { sanitisePlan, type RefreshPolicy } from './ir.js'
+import { compile, compileLocally } from './compile.js'
+import { ask } from './ask.js'
+import { installReasoner } from './reasoner.js'
+import { buildFeed, freshen, readSnapshot } from './feed.js'
+import { arrange, forget, readShelf, toggle } from './shelf.js'
+import { readHome, writeHome } from './home.js'
+import { sourceCatalogue } from './execute.js'
+import { perform, registerAction, history as actionHistory, undoAction, type Authoriser } from './actions.js'
+import * as panes from './protocol.js'
 import { parseWatchHistory, rememberWatchHistory, channelsByWatchCount } from './takeout.js'
-import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES, gmailModify, calendarRsvp, gmailReply, calendarCreate } from './google.js'
+import { installCapabilities } from './capabilities.js'
+import { authUrl, exchangeCode, accessToken, loadTokens, clearTokens, saveTokens, pullObservations, serverBase, callbackPath, GOOGLE_SOURCES } from './google.js'
 
 const PORT = Number(process.env.PORT ?? 3001)
 const CONFIG_DIR = join(homedir(), '.crucible')
@@ -50,6 +67,16 @@ installNodeRuntime()
 // The router decides which model runs each task; without this it cannot see
 // which one he chose, and "think with this" changes nothing.
 setModelPrefs(readConfig)
+// Connectors announce themselves to the plan layer. This is the only thing the
+// general pane/revision code ever learns about YouTube, and adding Gmail or
+// Calendar means another line here rather than an edit to any of it.
+installYouTubeSource()
+installGoogleSources()
+// The model, for the two plan nodes that need one. Injected here rather than
+// imported by the executor, so everything that was verifiable without a
+// provider key still is — uninstall this line and the deterministic half of
+// every hybrid plan runs exactly as before, and says where it stopped.
+installReasoner()
 
 const app = express()
 app.use(express.json({ limit: '4mb' }))
@@ -185,81 +212,404 @@ function parsePoint(s: string): { lat: number; lon: number } | null {
   return { lat, lon }
 }
 
-app.post('/api/act', async (req, res) => {
-  const kind = String(req.body?.kind ?? '')
-  const params = (req.body?.params ?? {}) as Record<string, unknown>
-  const str = (k: string) => (typeof params[k] === 'string' ? (params[k] as string) : '')
+/**
+ * The action handlers.
+ *
+ * Registered rather than switched on, for the same reason source adapters are:
+ * the general layer must not contain a list of the things Google happens to
+ * offer. Each one declares whether it can be taken back, and how — `perform`
+ * refuses an irreversible action that nobody confirmed, and writes down every
+ * attempt including the refusals.
+ */
+{
+  const str = (p: Record<string, unknown>, k: string) => (typeof p[k] === 'string' ? (p[k] as string) : '')
   const google = async () => {
     const t = await accessToken(G_ID, G_SECRET)
     if (!t) throw new Error('Google is not connected.')
     return t
   }
 
-  try {
-    switch (kind) {
-      // ── Reading and organising. Reversible from Gmail, so no confirmation.
-      case 'mail.archive':
-        await gmailModify(await google(), str('messageId'), { removeLabelIds: ['INBOX'] })
-        return res.json({ ok: true })
-      case 'mail.read':
-        await gmailModify(await google(), str('messageId'), { removeLabelIds: ['UNREAD'] })
-        return res.json({ ok: true })
-      case 'mail.unread':
-        await gmailModify(await google(), str('messageId'), { addLabelIds: ['UNREAD'] })
-        return res.json({ ok: true })
+  // Reading and organising. Reversible from Gmail, and reversible here: the
+  // undo is the opposite label change, recorded with the action that made it.
+  /*
+    EVERY ACTION, FROM ONE TABLE.
 
-      /**
-       * Sending. The only outbound action in the app.
-       *
-       * It is reachable exactly one way: he typed the text and confirmed the
-       * send in the composer. No model-authored widget can name this intent —
-       * `mail.send` is not in the model-safe grammar — and there is no
-       * scheduled or automatic caller.
-       */
-      case 'mail.send':
-        await gmailReply(await google(), str('messageId'), str('text'))
-        return res.json({ ok: true })
+    This block was ~130 lines here and the same ~130 lines in
+    `worker/index.ts`, differing only in how each host reaches a Google token.
+    That fork is why `calendar.update` did not exist: adding a verb meant
+    remembering a second file, with nothing to catch you when you did not. See
+    server/capabilities.ts.
+  */
+  installCapabilities({
+    google,
+    searchKeys: async () => ({
+      brave: (await getKey('brave')) ?? undefined,
+      tavily: (await getKey('tavily')) ?? undefined,
+    }),
+  })
+}
 
-      // ── Calendar.
-      case 'calendar.create': {
-        const made = await calendarCreate(await google(), {
-          summary: str('summary') || str('text'),
-          start: str('start') || new Date().toISOString(),
-          end: str('end') || undefined,
-          location: str('location') || undefined,
-        })
-        return res.json({ ok: true, id: made.id })
-      }
-      case 'calendar.rsvp':
-        await calendarRsvp(await google(), str('eventId'), str('response'))
-        return res.json({ ok: true })
+/**
+ * Perform a widget action.
+ *
+ * One endpoint, a table of named intents. The client posts a NAME and
+ * parameters; it never posts a URL, a method or a body to forward. That is the
+ * whole security property: widget specs can be authored by a model reading
+ * untrusted content — an email is untrusted content — and the worst a
+ * hallucinated or injected action can do is name an intent that does not exist,
+ * or pass a message id that does not resolve.
+ *
+ * What is new is that the authorisation is now part of the request and part of
+ * the record. "He tapped it, having seen this revision of this pane" is
+ * different from "a standing rule did it at 4am", and both are different from
+ * "the app decided to" — and until it was written down, all three arrived here
+ * looking identical.
+ */
+app.post('/api/act', async (req, res) => {
+  const kind = String(req.body?.kind ?? '')
+  const params = (req.body?.params ?? {}) as Record<string, unknown>
+  const authorisedBy: Authoriser = {
+    by: 'user',
+    paneId: typeof req.body?.paneId === 'string' ? req.body.paneId : undefined,
+    revisionId: typeof req.body?.revisionId === 'string' ? req.body.revisionId : undefined,
+    confirmed: req.body?.confirmed === true,
+  }
 
-      /**
-       * Something happened that the assistant should know about.
-       *
-       * The one action a model-authored widget can take that changes state, and
-       * it only ever adds to the world model — it cannot touch his accounts.
-       */
-      case 'world.tell':
-        await addObservations([
-          { id: `act-${Date.now()}`, source: 'user', at: new Date().toISOString().slice(0, 10), text: str('text') || String(req.body?.card ?? 'acted on a card') },
-        ])
-        return res.json({ ok: true })
+  const record = await perform(kind, params, authorisedBy)
+  if (record.outcome === 'ok') return res.json({ ok: true, id: record.result, action: record.id, undoable: !!record.undo })
+  res.status(record.outcome === 'refused' ? 400 : 502).json({ error: record.error, action: record.id })
+})
 
-      /** Purely client-side intents reach here only if the client missed them. */
-      case 'mail.open':
-      case 'calendar.open':
-      case 'media.open':
-      case 'map.route':
-      case 'map.search':
-        return res.json({ ok: true, refresh: false })
+// ── Panes ─────────────────────────────────────────────────────────────────
+/**
+ * The pane protocol.
+ *
+ * Every route here is the same shape: work out which pane, do one thing to it,
+ * hand back the pane's new state. None of them can destroy a revision, and the
+ * two that go to the network say what they cost.
+ *
+ * The auth blob is assembled once and passed into execution rather than read
+ * inside it: a plan names a source and a route, never a credential, so the only
+ * place a token can enter is here.
+ */
+async function planAuth(): Promise<Record<string, string>> {
+  const token = await accessToken(G_ID, G_SECRET).catch(() => null)
+  return token ? { youtubeToken: token, googleToken: token } : {}
+}
 
-      default:
-        return res.status(400).json({ error: `I don't know how to do "${kind}" yet.` })
+app.get('/api/panes', async (req, res) => {
+  res.json({ panes: await panes.all(req.query.closed === '1') })
+})
+
+app.get('/api/panes/:id', async (req, res) => {
+  const v = await panes.open_(req.params.id)
+  if (!v) return res.status(404).json({ error: 'No such pane.' })
+  res.json(v)
+})
+
+/**
+ * Create a pane from a compiled plan.
+ *
+ * The plan is untrusted input — sanitised exactly like a widget spec, and it
+ * cannot name a URL, a credential or an action. `intent` is kept verbatim
+ * beside it whatever the plan turned out to be.
+ */
+app.post('/api/panes', async (req, res) => {
+  /**
+   * A plan is now OPTIONAL here.
+   *
+   * Send one and it is sanitised and run, exactly as before — that path is what
+   * the verification harness drives and it has not moved. Send only `intent`
+   * and the compiler writes the plan, which is the same journey his words take
+   * through `/api/ask`. Both end at the same `panes.open`, because a compiled
+   * plan is not a privileged kind of plan.
+   */
+  if (!req.body?.plan) {
+    const words = String(req.body?.intent ?? '').trim()
+    if (!words) return res.status(400).json({ error: 'That is not a plan I can run.' })
+    try {
+      return res.json(await ask(words, { fresh: true, onShelf: req.body?.onShelf !== false, auth: await planAuth() }))
+    } catch (e) {
+      return res.status(502).json({ error: (e as Error).message })
     }
+  }
+
+  const plan = sanitisePlan(req.body.plan, String(req.body?.intent ?? ''))
+  if (!plan) return res.status(400).json({ error: 'That is not a plan I can run.' })
+  try {
+    const out = await panes.open(plan, {
+      title: req.body?.title,
+      pin: req.body?.pin === 'content' || req.body?.pin === 'intent' ? req.body.pin : undefined,
+      auth: await planAuth(),
+    })
+    res.json(out)
   } catch (e) {
     res.status(502).json({ error: (e as Error).message })
   }
+})
+
+/**
+ * Which pane does this sentence mean?
+ *
+ * Exposed on its own so the client can ask before acting, and so an ambiguous
+ * answer can be turned into a question to him rather than a guess. Consequential
+ * requests refuse the weakest layers — see `addressing.ts`.
+ */
+app.post('/api/panes/resolve', async (req, res) => {
+  res.json(
+    await panes.whichPane(req.body?.ref, req.body?.context ?? {}, { consequential: req.body?.consequential === true })
+  )
+})
+
+/** "Actually, three from 60 Minutes instead." A new revision, or a branch. */
+app.post('/api/panes/:id/refine', async (req, res) => {
+  const plan = sanitisePlan(req.body?.plan, String(req.body?.intent ?? ''))
+  if (!plan) return res.status(400).json({ error: 'That is not a plan I can run.' })
+  const out = await panes.refine(req.params.id, plan, { from: req.body?.from, auth: await planAuth() })
+  if (!out) return res.status(404).json({ error: 'No such pane or revision.' })
+  res.json(out)
+})
+
+/** "Same thing, but ten." Deterministic where the plan was. */
+app.post('/api/panes/:id/parameters', async (req, res) => {
+  const edits = Array.isArray(req.body?.edits) ? req.body.edits : []
+  const out = await panes.reparameterise(req.params.id, edits, { auth: await planAuth() })
+  if (!out) return res.status(404).json({ error: 'No such pane.' })
+  res.json(out)
+})
+
+app.post('/api/panes/:id/refresh', async (req, res) => {
+  const out = await panes.refresh(req.params.id, { auth: await planAuth() })
+  if (!out) return res.status(404).json({ error: 'No such pane.' })
+  res.json(out)
+})
+
+/** Take the revision that was waiting behind a content pin. */
+app.post('/api/panes/:id/accept', async (req, res) => {
+  const v = await panes.accept(req.params.id)
+  if (!v) return res.status(404).json({ error: 'Nothing waiting on that pane.' })
+  res.json(v)
+})
+
+app.post('/api/panes/:id/undo', async (req, res) => {
+  const v = await panes.stepBack(req.params.id)
+  if (!v) return res.status(400).json({ error: 'Nothing to go back to.' })
+  res.json(v)
+})
+
+app.post('/api/panes/:id/redo', async (req, res) => {
+  const v = await panes.stepForward(req.params.id)
+  if (!v) return res.status(400).json({ error: 'Nothing to go forward to.' })
+  res.json(v)
+})
+
+/**
+ * Pinning. Two operations, not a boolean — see `revisions.ts`.
+ * 'content' keeps exactly these; 'intent' keeps a pane here matching this.
+ */
+app.put('/api/panes/:id/pin', async (req, res) => {
+  const mode = req.body?.mode
+  const v = await panes.pin(req.params.id, mode === 'content' || mode === 'intent' ? mode : null)
+  if (!v) return res.status(404).json({ error: 'No such pane.' })
+  res.json(v)
+})
+
+app.put('/api/panes/:id/refresh-policy', async (req, res) => {
+  const v = await panes.schedule(req.params.id, req.body?.policy as RefreshPolicy)
+  if (!v) return res.status(404).json({ error: 'No such pane.' })
+  res.json(v)
+})
+
+app.post('/api/panes/:id/close', async (req, res) => {
+  const v = await panes.close(req.params.id)
+  if (!v) return res.status(404).json({ error: 'No such pane.' })
+  // Closing gives up the place on the splash but keeps every revision, so
+  // reopening restores the exact state he left — it simply comes back at the
+  // end rather than in the gap it used to occupy.
+  await forget(req.params.id).catch(() => null)
+  res.json(v)
+})
+
+app.post('/api/panes/:id/reopen', async (req, res) => {
+  const v = await panes.reopen(req.params.id)
+  if (!v) return res.status(404).json({ error: 'No such pane.' })
+  res.json(v)
+})
+
+/** Every state this pane has been in, and what changed between two of them. */
+app.get('/api/panes/:id/history', async (req, res) => {
+  res.json({ revisions: await panes.history(req.params.id) })
+})
+
+app.get('/api/panes/:id/diff', async (req, res) => {
+  const d = await panes.compare(String(req.query.from ?? ''), String(req.query.to ?? ''))
+  if (!d) return res.status(404).json({ error: 'I don’t have both of those revisions.' })
+  res.json(d)
+})
+
+// ── His words ─────────────────────────────────────────────────────────────
+/**
+ * Compile an instruction, without running it.
+ *
+ * Separate from `/api/ask` so a plan can be looked at before it is trusted,
+ * which is the honest way to introduce a compiler. It is also what answers
+ * "why does this pane do that" — the plan is the answer, and it is readable.
+ */
+app.post('/api/compile', async (req, res) => {
+  const words = String(req.body?.intent ?? '').trim()
+  if (!words) return res.status(400).json({ error: 'Nothing to compile.' })
+  // `model:false` asks for the free compilation or nothing — never a silent
+  // upgrade to a paid call on a key that may have three left today.
+  if (req.body?.model === false) {
+    const local = compileLocally(words)
+    return local
+      ? res.json({ plan: local, planClass: 'deterministic', by: 'local', unknown: [], unresolved: [] })
+      : res.status(422).json({ error: 'That one needs a model to compile.' })
+  }
+  try {
+    res.json({ ...(await compile(words, { context: req.body?.context })), by: 'model' })
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message })
+  }
+})
+
+/**
+ * WHEN TO SET OFF.
+ *
+ * Its own route rather than a branch of `/api/ask`, because it is its own
+ * computation with its own prerequisites: `ask` compiles words into a pane, and
+ * a departure time is not a pane. Every input arrives already resolved — the
+ * client's ladder does that against what is on his screen — so this route never
+ * guesses and never asks. It computes, or it says which input it could not
+ * honour. See server/leaveby.ts.
+ */
+app.post('/api/leaveby', async (req, res) => {
+  const b = req.body ?? {}
+  const need = ['destination', 'eventStart', 'origin', 'transportMode'].filter((k) => !String(b[k] ?? '').trim())
+  if (need.length) return res.status(400).json({ error: `Missing ${need.join(', ')}.` })
+  try {
+    const w = await readWorld()
+    res.json(await leaveBy({
+      destination: String(b.destination),
+      eventStart: String(b.eventStart),
+      origin: String(b.origin),
+      transportMode: String(b.transportMode),
+    }, w.timeZone))
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message })
+  }
+})
+
+/**
+ * Say something, get a pane.
+ *
+ * The route the whole layer was built toward: no plan in the request, no widget
+ * spec he has to trust in the response, and no id he has to know. It either
+ * hands back a pane or asks him which one he meant.
+ */
+app.post('/api/ask', async (req, res) => {
+  const words = String(req.body?.intent ?? req.body?.text ?? '').trim()
+  if (!words) return res.status(400).json({ error: 'Nothing to do.' })
+  try {
+    res.json(
+      await ask(words, {
+        paneId: typeof req.body?.paneId === 'string' ? req.body.paneId : undefined,
+        ref: req.body?.ref,
+        ctx: req.body?.context ?? {},
+        fresh: req.body?.fresh === true,
+        onShelf: req.body?.onShelf !== false,
+        auth: await planAuth(),
+      })
+    )
+  } catch (e) {
+    res.status(502).json({ error: (e as Error).message })
+  }
+})
+
+// ── The splash ────────────────────────────────────────────────────────────
+/**
+ * Everything on the home screen, in his order.
+ *
+ * `?cached=1` returns the last assembled feed without thinking — what the
+ * client paints in the first frame. Without it, this rebuilds: refreshing
+ * whatever asked to be refreshed on open, then synthesising over the result.
+ * The two are the same shape on purpose, so the client swaps one for the other
+ * and nothing about the screen changes except how current it is.
+ */
+app.get('/api/feed', async (req, res) => {
+  // The zone the machine showing the screen is standing in, which outranks
+  // anything a connector reports. See `World.timeZoneBy`.
+  const world = await noteClientZone(typeof req.query.tz === 'string' ? req.query.tz : '')
+  if (req.query.cached === '1') {
+    // The world is passed so the deterministic rows are re-derived against now
+    // rather than served as they were computed. See `readSnapshot`.
+    const snap = await readSnapshot(world)
+    if (snap) return res.json(snap)
+  }
+  const auth = await planAuth()
+  // On-open refreshes first, so synthesis reasons over what the panes show now
+  // rather than over what they showed before he opened the app.
+  await freshen({ arriving: true, auth }).catch(() => null)
+  res.json(await buildFeed(await readWorld(), { nudge: typeof req.query.nudge === 'string' ? req.query.nudge : undefined }))
+})
+
+/**
+ * Bring everything up to date without a model.
+ *
+ * The unattended path, and the client's fallback when synthesis is rate
+ * limited: his panes and his sources come back current, the model's cards are
+ * simply absent, and the feed says so rather than pretending.
+ */
+app.post('/api/feed/refresh', async (_req, res) => {
+  const auth = await planAuth()
+  const r = await freshen({ arriving: false, auth })
+  res.json({ ...r, feed: await buildFeed(await readWorld(), { withoutModel: true }) })
+})
+
+/** His arrangement: what is on the splash, in what order, and what is hidden. */
+app.get('/api/shelf', async (_req, res) => {
+  res.json(await readShelf())
+})
+
+app.put('/api/shelf', async (req, res) => {
+  const body = req.body ?? {}
+  let shelf = await readShelf()
+  if (Array.isArray(body.order)) shelf = await arrange(body.order.map(String))
+  if (body.toggle && typeof body.toggle.id === 'string') shelf = await toggle(body.toggle.id, body.toggle.on !== false)
+  if (typeof body.forget === 'string') shelf = await forget(body.forget)
+  res.json(shelf)
+})
+
+/**
+ * The durable half of Home: his order, what he hid, what he saved.
+ *
+ * Device-local state — which card of each deck is in front, chat snap state,
+ * scroll positions — deliberately never reaches here. Syncing it would let one
+ * device silently repage another, which is the same failure as the agent doing
+ * it.
+ */
+app.get('/api/home', async (_req, res) => {
+  res.json(await readHome())
+})
+
+app.patch('/api/home', async (req, res) => {
+  res.json(await writeHome(req.body ?? {}))
+})
+
+/** What a plan is allowed to name right now. Derived from the registry. */
+app.get('/api/catalogue', (_req, res) => {
+  res.json({ sources: sourceCatalogue() })
+})
+
+/** What it has done, on whose authority, and what can still be taken back. */
+app.get('/api/actions', async (_req, res) => {
+  res.json({ actions: await actionHistory() })
+})
+
+app.post('/api/actions/:id/undo', async (req, res) => {
+  const done = await undoAction(req.params.id, { by: 'user', confirmed: true })
+  if (!done) return res.status(400).json({ error: 'That one can’t be taken back.' })
+  res.json(done)
 })
 
 app.post('/api/models/hunt', async (req, res) => {
@@ -401,27 +751,44 @@ app.post('/api/world/observations', async (req, res) => {
  * fact. This is the other half of the loop: without it the assistant can ask
  * but never learn, which is worse than not asking.
  */
+/**
+ * KEPT AS A PATH, REIMPLEMENTED AS A TYPED WRITE.
+ *
+ * This appended a sentence to the observation list and nothing else — the
+ * "observation graveyard" path this whole change is about. Answering "Do you
+ * drive?" with "No" left no queryable fact anywhere, so the router still had to
+ * guess a travel mode and the question stayed askable forever; his real world model
+ * contains that exact sentence twice for precisely that reason.
+ *
+ * It now delegates to `tell`, which writes the typed field FIRST and produces the
+ * sentence as secondary history, in one transaction. Same URL, because clients call
+ * it, and both hosts now run the same implementation.
+ */
 app.post('/api/world/tell', async (req, res) => {
-  const text = String(req.body?.text ?? '').trim()
-  if (!text) return res.status(400).json({ error: 'Nothing said' })
-  const now = new Date()
-  await addObservations([
-    {
-      id: `told-${now.getTime().toString(36)}`,
-      source: 'user',
-      at: now.toISOString().slice(0, 10),
-      // Answers to a question are far more useful with the question attached.
-      text: req.body?.inReplyTo ? `Asked "${String(req.body.inReplyTo).slice(0, 200)}" — he said: ${text}` : text,
-    },
-  ])
-  res.json({ ok: true })
+  const out = await personRoute('/api/person/tell', 'POST', req.body)
+  res.status(out?.status ?? 500).json(out?.value ?? { ok: false })
 })
 
 app.put('/api/world/profile', async (req, res) => {
-  const w = await readWorld()
-  w.profile = String(req.body?.profile ?? '')
-  await writeWorld(w)
+  const profile = String(req.body?.profile ?? '')
+  // Transactional, so writing his own account of himself cannot be lost to a build
+  // that happens to be running — and cannot take the rest of the document with it.
+  await mutateWorld((w) => { w.profile = profile }, { label: 'your profile' })
   res.json({ ok: true })
+})
+
+/**
+ * The typed personal model. One handler, shared with the Worker.
+ *
+ * Mounted as a catch-all over `/api/person/*` rather than as five routes, so
+ * adding a sixth means editing `personRoutes.ts` alone and BOTH hosts get it.
+ * The alternative is what already happened to `/api/world/profile`: written for
+ * the Mac, never added to the edge, and quietly 404ing on the phone.
+ */
+app.all(['/api/person', '/api/person/*splat', '/api/focus'], async (req, res) => {
+  const out = await personRoute(req.path, req.method, req.body)
+  if (!out) return res.status(404).json({ error: 'No such person route' })
+  res.status(out.status).json(out.value)
 })
 
 
@@ -455,8 +822,9 @@ app.get(callbackPath, async (req, res) => {
     const token = await accessToken(G_ID, G_SECRET)
     let added = 0
     if (token) {
-      const { observations } = await pullObservations(token, (await readWorld()).sources)
-      if (observations.length) await addObservations(observations)
+      const w0 = await readWorld()
+      const { observations, timeZone, coverage } = await pullObservations(token, w0.sources, w0.timeZone)
+      if (observations.length || timeZone || coverage.length) await addObservations(observations, new Date(), { timeZone, coverage })
       added = observations.length
     }
     res.send(`<body style="background:#0B0A0C;color:#EDEEF1;font:15px -apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0"><div style="text-align:center"><div style="font-size:20px;font-weight:600">Google connected</div><div style="opacity:.6;margin-top:8px">Pulled ${added} things. You can close this tab.</div></div></body>`)
@@ -469,8 +837,9 @@ app.get(callbackPath, async (req, res) => {
 app.post('/api/google/sync', async (_req, res) => {
   const token = await accessToken(G_ID, G_SECRET)
   if (!token) return res.status(400).json({ error: 'Google is not connected' })
-  const { observations, errors } = await pullObservations(token, (await readWorld()).sources)
-  if (observations.length) await addObservations(observations)
+  const w0 = await readWorld()
+  const { observations, errors, timeZone, coverage } = await pullObservations(token, w0.sources, w0.timeZone)
+  if (observations.length || timeZone || coverage.length) await addObservations(observations, new Date(), { timeZone, coverage })
   res.json({ added: observations.length, bySource: observations.reduce((a: Record<string, number>, o) => ({ ...a, [o.source]: (a[o.source] ?? 0) + 1 }), {}), errors })
 })
 
@@ -488,12 +857,12 @@ app.get('/api/sources', async (_req, res) => {
 })
 
 app.put('/api/sources', async (req, res) => {
-  const w = await readWorld()
-  w.sources = w.sources ?? {}
-  for (const [id, on] of Object.entries(req.body?.sources ?? {})) w.sources[id] = on === true
-  if (req.body?.curation === 'auto' || req.body?.curation === 'manual') w.curation = req.body.curation
-  await writeWorld(w)
-  res.json({ ok: true, sources: w.sources, curation: w.curation })
+  const { world } = await mutateWorld((w) => {
+    w.sources = w.sources ?? {}
+    for (const [id, on] of Object.entries(req.body?.sources ?? {})) w.sources[id] = on === true
+    if (req.body?.curation === 'auto' || req.body?.curation === 'manual') w.curation = req.body.curation
+  }, { label: 'which sources I may read' })
+  res.json({ ok: true, sources: world.sources, curation: world.curation })
 })
 
 app.post('/api/google/disconnect', async (_req, res) => {
@@ -531,6 +900,101 @@ app.post('/api/youtube/takeout', express.json({ limit: '256mb' }), async (req, r
     })
   } catch (e) {
     res.status(400).json({ error: (e as Error).message })
+  }
+})
+
+/**
+ * YouTube retrieval, by explicit scope.
+ *
+ * "Pull some scary stories" used to reach nothing at all: the surface was fed
+ * only from synced watch-history observations, so an account he does not watch
+ * YouTube on made the entire application look empty, and the request died as a
+ * sentence in chat. Open search existed in `youtube.ts` the whole time — there
+ * was simply no route to it.
+ *
+ * Watch history is therefore NOT the boundary of this surface. The scopes are
+ * separate on purpose, because they answer different questions and cost
+ * different amounts (a list call is 1 unit, a search is 100):
+ *
+ *   open          — public YouTube. Works with no personal signal whatsoever.
+ *   subscriptions — recent uploads from channels he follows.
+ *   likes         — what he has liked.
+ *
+ * Weak personal signal lowers personalisation CONFIDENCE. It must never lower
+ * retrieval REACH, which is what "Nothing watched recently." was doing.
+ */
+app.get('/api/youtube/search', async (req, res) => {
+  const q = String(req.query.q ?? '').trim()
+  const scope = String(req.query.scope ?? 'open')
+  const limit = Math.min(50, Number(req.query.limit) || 12)
+  const { youtubeToken } = await planAuth()
+
+  if (!youtubeToken) {
+    return res.status(401).json({ failure: 'auth', reason: 'YouTube isn’t connected — sign in with Google to search it.' })
+  }
+  if (scope === 'open' && !q) {
+    return res.status(400).json({ failure: 'unsupported', reason: 'Searching YouTube needs something to search for.' })
+  }
+
+  try {
+    let videos: YTVideo[] = []
+    let provenance = ''
+    if (scope === 'subscriptions') {
+      videos = (await fromSubscriptions(youtubeToken, { limit })).videos
+      provenance = 'From your subscriptions'
+      // A query alongside a personal scope narrows what came back rather than
+      // reaching further; it is a filter, not a second search.
+      if (q) {
+        const n = q.toLowerCase()
+        videos = videos.filter((v) => `${v.title} ${v.channel ?? ''}`.toLowerCase().includes(n))
+      }
+    } else if (scope === 'likes') {
+      videos = await likedVideos(youtubeToken, limit)
+      provenance = 'From your likes'
+      if (q) {
+        const n = q.toLowerCase()
+        videos = videos.filter((v) => `${v.title} ${v.channel ?? ''}`.toLowerCase().includes(n))
+      }
+    } else {
+      videos = await search(youtubeToken, q, { limit })
+      provenance = 'Across YouTube'
+    }
+    /**
+     * Mapped, not passed through. See `presentable` — handing this module's
+     * `Video` shape straight to a client that reads `.id` is what produced
+     * `watch?v=undefined` on every searched video.
+     */
+    const shown = presentable(videos)
+    res.json({
+      videos: shown.videos,
+      scope,
+      query: q,
+      provenance,
+      resultCount: shown.videos.length,
+      // Never a silently shorter list: if YouTube returned something this app
+      // cannot identify, that is stated rather than hidden.
+      unidentified: shown.rejected,
+      quota: quotaLedger(),
+      at: new Date().toISOString(),
+    })
+  } catch (e) {
+    // Say WHICH failure. Quota means wait, auth means reconnect, and a generic
+    // "couldn't search" collapses two different recoveries into none.
+    const msg = String((e as Error)?.message ?? e)
+    const code = /\b(\d{3})\b/.exec(msg)?.[1]
+    const failure =
+      code === '403' && /quota/i.test(msg) ? 'quota'
+      : code === '401' || code === '403' ? 'auth'
+      : code && Number(code) >= 500 ? 'provider'
+      : 'provider'
+    res.status(502).json({
+      failure,
+      reason:
+        failure === 'quota' ? 'YouTube’s daily search quota is used up. It resets at midnight Pacific.'
+        : failure === 'auth' ? 'YouTube refused the account — it needs reconnecting.'
+        : `YouTube returned an error: ${msg}`,
+      quota: quotaLedger(),
+    })
   }
 })
 
@@ -622,7 +1086,18 @@ app.post('/api/say', async (req, res) => {
   const text = String(req.body?.text ?? '').trim()
   if (!text) return res.status(400).json({ error: 'Nothing said' })
   try {
-    res.json(await say(await readWorld(), text, req.body?.card ?? null, req.body?.thread ?? [], sayDeps()))
+    res.json(await say(
+      await readWorld(),
+      text,
+      req.body?.card ?? null,
+      req.body?.thread ?? [],
+      sayDeps(),
+      // What he is looking at. Sent by the client because the client is where
+      // it lives — the server holds the pane's CONTENTS, but which day is on
+      // screen and which three messages are selected are facts about the
+      // browser and nowhere else.
+      Array.isArray(req.body?.surfaces) ? req.body.surfaces : []
+    ))
   } catch (err) {
     res.status(502).json({ error: (err as Error).message })
   }
@@ -648,7 +1123,12 @@ app.post('/api/think', async (req, res) => {
         else byIdMap.set(b.id, b)
       }
       world.beliefs = [...byIdMap.values()]
-      await writeWorld(world)
+      /**
+       * BELIEFS ONLY. `world` here was read before the model call, which takes as long
+       * as a model takes — so writing it whole would restore a pre-synthesis `person`
+       * over any correction he made while it was thinking.
+       */
+      await mutateWorld((fresh) => { fresh.beliefs = world.beliefs }, { label: 'the beliefs from this pass' })
     }
 
     // Synthesis leads; the connected sources sit under it. Merged rather than
@@ -714,8 +1194,8 @@ function sayDeps() {
       const token = await accessToken(G_ID, G_SECRET)
       if (!token) throw new Error('Google is not connected')
       const w = await readWorld()
-      const { observations } = await pullObservations(token, w.sources)
-      if (observations.length) await addObservations(observations)
+      const { observations, timeZone, coverage } = await pullObservations(token, w.sources, w.timeZone)
+      if (observations.length || timeZone || coverage.length) await addObservations(observations, new Date(), { timeZone, coverage })
       return { added: observations.length }
     },
     research: async (question: string) => {
@@ -726,9 +1206,49 @@ function sayDeps() {
       await addObservations([obs])
       return obs.text
     },
+    /**
+     * "Show me…" said in the composer, compiled and put on his splash.
+     *
+     * The last mile of the compiler: he never sees a plan, never names a pane
+     * and never learns an id — he says a sentence and a pane exists. What comes
+     * back is only enough for the assistant to describe what it did honestly,
+     * including the parts of his instruction it could not express.
+     */
+    build: async (intent: string) => {
+      const r = await ask(intent, { fresh: true, auth: await planAuth() })
+      if (r.kind !== 'pane') throw new Error('I wasn’t sure which one you meant.')
+      return {
+        title: r.view.pane.title || intent,
+        count: r.view.revision.refs.length,
+        unresolved: r.compiled.unresolved,
+      }
+    },
   }
 }
 
 app.listen(PORT, () => {
   console.log(`crucible brain on http://localhost:${PORT}`)
 })
+
+/**
+ * Record the client's zone, if it sent one, and hand back the world.
+ *
+ * Every feed request carries it, so this runs constantly and must be almost
+ * free: `noteTimeZone` returns false unless something actually changed, and
+ * only then is anything written.
+ */
+async function noteClientZone(tz: string): Promise<World | undefined> {
+  try {
+    /**
+     * `noteTimeZone` returns false unless something actually changed, so the common
+     * case is a plain read and no transaction at all — which matters, because every
+     * feed request carries a zone and this runs constantly.
+     */
+    const w = await readWorld()
+    if (!tz || !noteTimeZone(w, tz, 'device')) return w
+    const { world } = await mutateWorld((fresh) => { noteTimeZone(fresh, tz, 'device') }, { label: 'your time zone' })
+    return world
+  } catch {
+    return undefined
+  }
+}

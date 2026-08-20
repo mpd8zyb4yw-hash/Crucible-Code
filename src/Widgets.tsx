@@ -2,73 +2,365 @@ import { useEffect, useMemo, useState } from 'react'
 import { css, cssv } from './css'
 import { accentOf } from './heat'
 import type { Widget, WidgetAction, WidgetItem, WidgetPane } from './api'
+import Calendar from './surfaces/Calendar'
+import Mail from './surfaces/Mail'
+import Video from './surfaces/Video'
+import Fitness from './surfaces/Fitness'
+import Watch from './surfaces/Watch'
+import MapSurface from './surfaces/Map'
+import { Actions, CARD, Empty, clockOf, shortWhen } from './surfaces/kit'
+import { arriveAt, registerDiag, useSurfaces } from './surface/store'
+import type { SurfaceKind } from './surface/types'
+import { Boundary } from './Boundary'
+import { Fit } from './fit'
+
+import { poisoned } from './poison'
 
 /**
  * The widget renderer.
  *
- * Every card used to open into the same header-stats-chat view, so tapping Mail
- * gave you a conversation about your mail instead of your mail. This renders
- * the declarative specs from `server/widgets.ts` so a card opens into the thing
- * itself — and because the vocabulary is fixed and small, a card the model
- * invented gets a real interface without the model ever emitting markup.
+ * Two families live behind one switch, and the split is the point of the
+ * design. The generic primitives — list, agenda, chart, media, detail, compose
+ * — are what a card the MODEL invented is allowed to use: a small fixed
+ * vocabulary, so a novel card gets a real interface without the model ever
+ * emitting markup. The domain surfaces are what a card the APP built from a
+ * connector gets: a real calendar, a real mailbox, a real map, each with typed
+ * state that he and the model drive through the same commands.
  *
- * Style strings are pasted from the design and parsed by `css()` rather than
- * hand-converted, for the same reason as everywhere else in this app: the
- * visual design is finished work and a retyped shadow is an invisible
- * regression. Nothing here introduces a colour of its own — accents come from
- * `accentOf`, so a widget cannot drift the palette.
+ * A spec naming a kind this build has never heard of renders as nothing rather
+ * than as an error. The brain and the app deploy separately — one on the Mac,
+ * one on a Worker — and the phone caches an older bundle than either, so an
+ * unknown primitive has to be survivable: the card falls back to its chat
+ * thread and nothing crashes on a screen he is holding.
  */
 
 interface Props {
   panes: WidgetPane[]
   heat: string
+  /**
+   * Stable prefix for the surface keys of everything in here.
+   *
+   * A surface's state — which day, which selection — is keyed by this plus the
+   * pane's index, which is what makes it survive a reload and a re-render. It
+   * must therefore be the OWNER's stable id (a pane id, a card id) and never
+   * anything derived from the contents.
+   */
+  owner: string
+  /**
+   * The object the thing that opened this was ABOUT, if it was about one.
+   *
+   * Applied to whichever pane actually contains it, once, on arrival. See
+   * `arriveAt` in the store for why it is an intent rather than a command.
+   */
+  focus?: string | null
   /** Perform a named action. Resolves when it is done, throws to show an error. */
   onAction: (action: WidgetAction) => Promise<void>
+  /** Ask the source for something different. Present only where there is a plan. */
+  onRefine?: (intent: string) => Promise<void>
 }
 
-export default function Widgets({ panes, heat, onAction }: Props) {
+export default function Widgets({ panes, heat, owner, focus, onAction, onRefine }: Props) {
   if (!panes?.length) return null
   return (
-    <div style={css('display:flex; flex-direction:column; gap:16px;')}>
+    /*
+      This wrapper must PASS THROUGH the frame's height, not collapse to its
+      content. It was `display:flex; flex-direction:column` with no growth, so
+      a domain application asking for `height:100%` measured itself against an
+      auto-height parent and resolved to nothing — the Maps canvas came out
+      0px tall inside a 351px frame. Filling the frame only works if every link
+      in the chain agrees to be filled.
+    */
+    <div style={css('flex:1; min-height:0; display:flex; flex-direction:column; gap:16px;')}>
       {panes.map((p, i) => (
-        <Pane key={i} pane={p} heat={heat} onAction={onAction} />
+        <Pane key={i} pane={p} heat={heat} surfaceKey={`${owner}#${i}`} focus={focus} onAction={onAction} onRefine={onRefine} />
       ))}
     </div>
   )
 }
 
-function Pane({ pane, heat, onAction }: { pane: WidgetPane; heat: string; onAction: Props['onAction'] }) {
+/**
+ * THE DECLARED EMPTY STATE FOR EACH RENDERER, or `null` when there is content.
+ *
+ * One table, so "what does this application say when it has nothing" is
+ * answerable without opening it, and so a new renderer cannot ship without
+ * answering the question — an unhandled kind falls through to `null`, which the
+ * runtime blank-destination test in `scripts/shots.mjs` reports as a surface
+ * that neither drew content nor declared an emptiness.
+ *
+ * The strings are the LAST resort. Every one of these can be overridden by the
+ * widget's own `empty`, which is what the server sends when it knows something
+ * more specific than "nothing here" — "connect Gmail and this fills in" is a
+ * different fact from "your mailbox is empty", and only the server can tell them
+ * apart.
+ */
+function emptyStateOf(w?: Widget): string | null {
+  if (!w) return 'Nothing to show'
+  const declared = (fallback: string) =>
+    ('empty' in w && typeof w.empty === 'string' && w.empty) || fallback
+  switch (w.kind) {
+    case 'calendar': return w.events.length ? null : declared('No events in this period')
+    case 'mail': return w.messages.length ? null : declared('No messages match this filter')
+    case 'video': return w.videos.length ? null : declared('No verified videos found')
+    case 'watch': return w.watches.length ? null : declared('Nothing is being watched')
+    case 'fitness': return w.series.length ? null : declared('No activity recorded')
+    // A map with only "you" on it is a map with no place selected. Counting the
+    // self marker as content is how an empty Places came to look populated.
+    case 'map': return w.places.some((p) => !p.self) ? null : declared('No place selected')
+    case 'chart': return w.points.length ? null : declared('Nothing to chart yet')
+    case 'detail': return w.rows.length ? null : declared('Nothing recorded')
+    case 'list':
+    case 'agenda':
+    case 'media': return w.items.length ? null : declared('Nothing here yet')
+    // A composer is a thing to do rather than a result, so it is never empty.
+    case 'compose': return null
+  }
+}
+
+function Pane({
+  pane, heat, surfaceKey, focus, onAction, onRefine,
+}: {
+  pane: WidgetPane
+  heat: string
+  surfaceKey: string
+  focus?: string | null
+  onAction: Props['onAction']
+  onRefine?: Props['onRefine']
+}) {
+  // Registered before the body renders, so the intent is already waiting when
+  // the surface publishes its objects a moment later.
+  useEffect(() => { arriveAt(surfaceKey, focus) }, [surfaceKey, focus])
+  const focused = useSurfaces()[surfaceKey]?.focus ?? null
   return (
-    <div style={css('display:flex; flex-direction:column; gap:9px;')}>
-      {pane.title && (
-        <div style={css('font-size:11px; font-weight:600; letter-spacing:.07em; text-transform:uppercase; color:rgba(237,238,241,.42);')}>
-          {pane.title}
-        </div>
-      )}
-      <Body widget={pane.widget} heat={heat} onAction={onAction} />
-      {pane.actions?.length ? <Actions actions={pane.actions} onAction={onAction} /> : null}
+    /*
+      No chrome around the application.
+
+      This used to render the pane's title as an eyebrow and its actions as a
+      button row, both OUTSIDE `Body` — so every domain renderer was boxed in
+      by furniture it did not control and could not integrate. Title and
+      actions are handed INTO the application now; a surface decides where its
+      own "New event" button belongs, which is inside its toolbar, not floating
+      above it.
+    */
+    /*
+      `data-focus` is the observable half of a focus intent.
+
+      Focus lived only in the store, so "the card opened its app focused on the
+      right object" was a claim no test and no screenshot could check — which is
+      how a Home card that navigated nowhere in particular passed a full gate.
+      The surface publishes which object it is actually focused on; that is what
+      the acceptance test reads.
+    */
+    /*
+      `data-renderer` is the same argument as `data-focus`, one level up.
+
+      Which renderer mounted lived only in `registerDiag`, so "tapping Calendar
+      opens Calendar" was checkable from a console and not from a capture — and
+      the failure it hides is the one that actually happened: a card that
+      resolved to nothing at all, which no assertion about a surface's INTERNAL
+      state can see, because there was no surface. The kind is published where
+      a screenshot-time assertion can read it.
+    */
+    /*
+      `data-empty-state` is the third of the same argument.
+
+      §12 of the contract: after a navigation, a valid surface holds either real
+      content or a DECLARED designed empty state. A title over a black rectangle
+      is neither, and it is indistinguishable from a crash — which is why the
+      blank-pane complaint kept coming back after each fix. Every renderer
+      already had an empty sentence written for it; what none of them had was a
+      way for anything outside the component to know that the sentence is what is
+      on screen.
+
+      Declared HERE rather than in six components, because the question "is this
+      surface empty" is answered by the payload, and the payload is what this
+      file dispatches on. Six independent answers would drift, and the one that
+      drifted would be the one nobody captured.
+    */
+    <div
+      data-surface={surfaceKey}
+      data-renderer={pane.widget?.kind ?? undefined}
+      data-empty-state={emptyStateOf(pane.widget) ?? undefined}
+      data-focus={focused ?? undefined}
+      style={css('flex:1; min-height:0; display:flex; flex-direction:column;')}
+    >
+      <Diag pane={pane} surfaceKey={surfaceKey} />
+      <Boundary
+        key={surfaceKey}
+        scope={pane.title || RENDERER[pane.widget?.kind ?? ''] || 'This surface'}
+        level="surface"
+      >
+        {/*
+          EVERY PANE IS ITS OWN EXACT BOX.
+
+          A surface with two panes used to divide the frame by flex and hope:
+          each renderer was told nothing about its share, so a Maps pane sized
+          itself for the whole frame and painted over the one beneath it. `Fit`
+          measures each pane's real box and hands it the number, and bounds it
+          so a renderer that gets it wrong is clipped rather than overlapping.
+          See fit.tsx.
+        */}
+        <Fit name={`pane:${pane.widget?.kind ?? 'unknown'}`}>
+          <Body
+            widget={pane.widget}
+            heat={heat}
+            surfaceKey={surfaceKey}
+            title={pane.title ?? ''}
+            actions={pane.actions}
+            onAction={onAction}
+            onRefine={onRefine}
+          />
+        </Fit>
+      </Boundary>
     </div>
   )
 }
 
+/** The component actually drawing each widget kind. Kept beside the switch. */
+const RENDERER: Record<string, string> = {
+  calendar: 'CalendarSurface', mail: 'MailSurface', video: 'VideoSurface',
+  fitness: 'FitnessSurface', watch: 'KeepAnEyeSurface', map: 'MapSurface',
+  list: 'ListWidget', agenda: 'AgendaWidget', chart: 'ChartWidget',
+  media: 'MediaWidget', detail: 'DetailWidget', compose: 'ComposeWidget',
+}
+
 /**
- * An unknown widget kind renders as nothing rather than as an error.
+ * Record what is mounted here, next to the switch that mounts it.
  *
- * The brain and the app are deployed separately — one on the Mac, one on a
- * Worker, and the phone caches an older bundle than either. A spec naming a
- * primitive this build has never heard of therefore has to be survivable: the
- * card falls back to its chat thread, which is exactly what it did before, and
- * nothing crashes on a screen he is holding.
+ * Registering from the dispatcher rather than from inside each surface is the
+ * point: a domain surface cannot claim to be something it is not, because it
+ * never gets to describe itself. The kind recorded is the kind that was
+ * actually switched on.
+ *
+ * `map.route` on a watch registers under actionTargetKinds, never under
+ * currentSurfaceKind — which is exactly the distinction that "Opened Maps…"
+ * inside Keep an eye was blurring.
  */
-function Body({ widget, heat, onAction }: { widget: Widget; heat: string; onAction: Props['onAction'] }) {
+function Diag({ pane, surfaceKey }: { pane: WidgetPane; surfaceKey: string }) {
+  const kind = pane.widget?.kind
+  useEffect(() => {
+    if (!kind) return
+    const w = pane.widget as unknown as Record<string, unknown>
+    const collections = ['events', 'messages', 'videos', 'watches', 'places', 'items', 'series']
+    const objectActions = collections
+      .flatMap((c) => (Array.isArray(w[c]) ? (w[c] as Record<string, unknown>[]) : []))
+      .flatMap((o) => (Array.isArray(o?.actions) ? (o.actions as { kind?: string }[]) : []))
+    const app = (a: { kind?: string }) => (a.kind ?? '').split('.')[0] ?? ''
+    registerDiag({
+      surfaceKey,
+      currentSurfaceKind: kind as SurfaceKind,
+      rendererComponent: RENDERER[kind] ?? 'unknown',
+      title: pane.title ?? '',
+      objectSourceKinds: [...new Set(objectActions.map(app).filter(Boolean))],
+      actionTargetKinds: [...new Set((pane.actions ?? []).map(app).filter(Boolean))],
+    })
+  })
+  return null
+}
+
+function Body({
+  widget, heat, surfaceKey, title, actions, onAction, onRefine,
+}: {
+  widget: Widget
+  heat: string
+  surfaceKey: string
+  title: string
+  /** Pane-level actions, for the DOMAIN to place inside its own UI. */
+  actions?: WidgetAction[]
+  onAction: Props['onAction']
+  onRefine?: Props['onRefine']
+}) {
+  /**
+   * Failure injection, reachable from a phone with no tooling:
+   *
+   *   __cruPoison('map')   → the Maps surface throws on its next render
+   *   __cruPoison()        → clear
+   *
+   * This is the only honest way to check containment on the real device. A
+   * boundary that has never actually caught anything is a claim, not a
+   * guarantee, and the failure it defends against is one I cannot reproduce on
+   * demand from real data. Costs one Set lookup per render.
+   */
+  if (poisoned(widget?.kind ?? '')) {
+    throw new Error(`Injected failure in '${widget?.kind}' surface (__cruPoison)`)
+  }
+
   switch (widget?.kind) {
+    // ── Domain surfaces ──────────────────────────────────────────────────────
+    case 'calendar':
+      return (
+        <Calendar
+          surfaceKey={surfaceKey}
+          title={title || 'Calendar'}
+          events={widget.events}
+          empty={widget.empty}
+          heat={heat}
+          actions={actions}
+          onAction={onAction}
+        />
+      )
+    case 'mail':
+      return (
+        <Mail
+          surfaceKey={surfaceKey}
+          title={title || 'Mail'}
+          messages={widget.messages}
+          empty={widget.empty}
+          onAction={onAction}
+        />
+      )
+    case 'video':
+      return (
+        <Video
+          surfaceKey={surfaceKey}
+          title={title || 'Videos'}
+          videos={widget.videos}
+          empty={widget.empty}
+          onAction={onAction}
+          onRefine={onRefine}
+        />
+      )
+    case 'fitness':
+      return (
+        <Fitness
+          surfaceKey={surfaceKey}
+          title={title || 'Activity'}
+          series={widget.series}
+          report={widget.report}
+          empty={widget.empty}
+          heat={heat}
+        />
+      )
+    case 'watch':
+      return (
+        <Watch
+          surfaceKey={surfaceKey}
+          title={title || 'Keep an eye'}
+          watches={widget.watches}
+          empty={widget.empty}
+          onAction={onAction}
+        />
+      )
+    case 'map':
+      return (
+        <MapSurface
+          surfaceKey={surfaceKey}
+          title={title || 'Map'}
+          places={widget.places}
+          follow={widget.follow}
+          searchable={widget.searchable}
+          route={widget.route}
+          zoom={widget.zoom}
+          heat={heat}
+        />
+      )
+
+    // ── Generic primitives ───────────────────────────────────────────────────
     case 'list': return <ListWidget w={widget} heat={heat} onAction={onAction} />
     case 'agenda': return <AgendaWidget w={widget} heat={heat} onAction={onAction} />
     case 'chart': return <ChartWidget w={widget} heat={heat} />
     case 'media': return <MediaWidget w={widget} onAction={onAction} />
     case 'detail': return <DetailWidget w={widget} heat={heat} />
     case 'compose': return <ComposeWidget w={widget} onAction={onAction} />
-    case 'map': return <MapWidget w={widget} heat={heat} />
     default: return null
   }
 }
@@ -78,11 +370,10 @@ function Body({ widget, heat, onAction }: { widget: Widget; heat: string; onActi
 /**
  * The one primitive that produces text rather than showing it.
  *
- * A reply lives here rather than in Gmail, which is the whole point of the
- * exercise — but sending is irreversible and visible to someone else, so the
- * send button confirms before it fires and the text it will send is on screen
- * while it does. Nothing auto-sends: there is no path from a model deciding
- * something to a message leaving, only from his thumb.
+ * Sending is irreversible and visible to someone else, so the send button
+ * confirms before it fires and the text it will send is on screen while it
+ * does. Nothing auto-sends: there is no path from a model deciding something to
+ * a message leaving, only from his thumb.
  */
 function ComposeWidget({ w, onAction }: { w: Extract<Widget, { kind: 'compose' }>; onAction: Props['onAction'] }) {
   const [text, setText] = useState(w.value ?? '')
@@ -146,93 +437,11 @@ function ComposeWidget({ w, onAction }: { w: Extract<Widget, { kind: 'compose' }
   )
 }
 
-// ── Shared furniture ─────────────────────────────────────────────────────────
-
-const CARD = 'border-radius:15px; background:rgba(255,255,255,.05); box-shadow:inset 0 0 0 1px rgba(255,255,255,.07);'
-
-function Empty({ text }: { text: string }) {
-  return (
-    <div style={cssv`padding:20px 15px; text-align:center; font-size:12.5px; color:rgba(237,238,241,.38); ${CARD}`}>
-      {text}
-    </div>
-  )
-}
-
-/**
- * Action buttons.
- *
- * An action marked irreversible asks first, in place, every time — sending mail
- * or cancelling an event is visible to someone else and cannot be taken back,
- * and a mis-tap on a phone is not a decision. The confirmation is the same
- * button turning into "sure?" rather than a modal, so it stays inside the card.
- */
-function Actions({
-  actions,
-  onAction,
-  intercept,
-}: {
-  actions: WidgetAction[]
-  onAction: Props['onAction']
-  /** Handle an action in the client instead of sending it. True = handled. */
-  intercept?: (a: WidgetAction) => boolean
-}) {
-  const [busy, setBusy] = useState<number | null>(null)
-  const [confirming, setConfirming] = useState<number | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
-
-  const run = async (a: WidgetAction, i: number) => {
-    if (busy !== null) return
-    if (intercept?.(a)) return
-    if (a.irreversible && confirming !== i) { setConfirming(i); return }
-    setConfirming(null)
-    setBusy(i)
-    setFailed(null)
-    try {
-      await onAction(a)
-    } catch (e) {
-      setFailed((e as Error).message)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  return (
-    <div style={css('display:flex; flex-direction:column; gap:6px;')}>
-      <div style={css('display:flex; gap:7px; flex-wrap:wrap;')}>
-        {actions.map((a, i) => (
-          <div
-            key={i}
-            onClick={() => void run(a, i)}
-            style={a.primary
-              ? cssv`padding:8px 14px; border-radius:999px; background:rgba(237,238,241,${busy === null ? '.9' : '.4'}); color:#101012; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap;`
-              : cssv`padding:8px 14px; border-radius:999px; background:rgba(255,255,255,.06); box-shadow:inset 0 0 0 1px rgba(255,255,255,.14); font-size:12.5px; color:rgba(237,238,241,${busy === null ? '.82' : '.4'}); cursor:pointer; white-space:nowrap;`}
-          >
-            {busy === i ? (a.busy ?? 'Working…') : confirming === i ? `${a.label} — sure?` : a.label}
-          </div>
-        ))}
-      </div>
-      {failed && (
-        <div style={css('font-size:11.5px; color:rgba(255,170,170,.8); line-height:1.45;')}>{failed}</div>
-      )}
-    </div>
-  )
-}
-
 // ── list ─────────────────────────────────────────────────────────────────────
 
 function ListWidget({ w, heat, onAction }: { w: Extract<Widget, { kind: 'list' }>; heat: string; onAction: Props['onAction'] }) {
   const [open, setOpen] = useState<string | null>(null)
   const [filter, setFilter] = useState<string | null>(null)
-  /**
-   * Which row is being replied to.
-   *
-   * Reply is the one action that does not simply happen — it needs him to write
-   * something first. Rather than a separate screen, the composer unfolds under
-   * the message it answers, so the thing being replied to stays on screen while
-   * the reply is written. Intercepted here rather than sent to the server,
-   * because there is nothing yet to send.
-   */
-  const [replying, setReplying] = useState<string | null>(null)
 
   const items = useMemo(
     () => (filter ? w.items.filter((i) => i.tags?.includes(filter)) : w.items),
@@ -288,37 +497,7 @@ function ListWidget({ w, heat, onAction }: { w: Extract<Widget, { kind: 'list' }
                     {it.body}
                   </div>
                 )}
-                {it.actions?.length ? (
-                  <Actions
-                    actions={it.actions}
-                    onAction={onAction}
-                    intercept={(a) => {
-                      if (a.kind !== 'mail.reply') return false
-                      setReplying(replying === it.id ? null : it.id)
-                      return true
-                    }}
-                  />
-                ) : null}
-
-                {replying === it.id && (
-                  <ComposeWidget
-                    w={{
-                      kind: 'compose',
-                      to: it.sub,
-                      placeholder: `Reply to ${it.sub ?? 'this'}…`,
-                      submit: {
-                        kind: 'mail.send',
-                        label: 'Send reply',
-                        busy: 'Sending…',
-                        // Sending is visible to someone else and cannot be
-                        // taken back, so the composer confirms before it fires.
-                        irreversible: true,
-                        params: { messageId: it.id },
-                      },
-                    }}
-                    onAction={onAction}
-                  />
-                )}
+                {it.actions?.length ? <Actions actions={it.actions} onAction={onAction} /> : null}
               </div>
             )}
           </div>
@@ -331,12 +510,12 @@ function ListWidget({ w, heat, onAction }: { w: Extract<Widget, { kind: 'list' }
 // ── agenda ───────────────────────────────────────────────────────────────────
 
 /**
- * A calendar is not a list.
+ * Time-ordered items grouped by day.
  *
- * What matters about an event is which day it falls on and what else is on that
- * day, so items are grouped by date with the day as a heading. Rendering them
- * as a flat list — which is what the generic list would do — loses exactly the
- * information a calendar exists to carry.
+ * Kept for model-authored cards, which have items rather than events — a card
+ * about "the three things this week that need money" is a legitimate agenda and
+ * has no calendar behind it. The connector's calendar no longer comes through
+ * here; it gets the real surface.
  */
 function AgendaWidget({ w, heat, onAction }: { w: Extract<Widget, { kind: 'agenda' }>; heat: string; onAction: Props['onAction'] }) {
   const [open, setOpen] = useState<string | null>(null)
@@ -444,7 +623,9 @@ function ChartWidget({ w, heat }: { w: Extract<Widget, { kind: 'chart' }>; heat:
  */
 function Provenance({ item }: { item: WidgetItem }) {
   if (!item.provenance) return null
-  const soft = item.origin === 'retrieved'
+  // `enriched` is two sources agreeing about one thing — as real as a single
+  // live read, and it must not be set in the italic reserved for a guess.
+  const soft = item.origin === 'retrieved' || item.origin === 'enriched'
   return (
     <div
       style={cssv`margin-top:3px; font-size:10.5px; letter-spacing:.01em; color:rgba(237,238,241,${soft ? '.3' : '.42'}); ${soft ? '' : 'font-style:italic;'}`}
@@ -522,236 +703,4 @@ function DetailWidget({ w, heat }: { w: Extract<Widget, { kind: 'detail' }>; hea
   )
 }
 
-// ── map ──────────────────────────────────────────────────────────────────────
-
-/**
- * A map, built from tile images rather than a mapping library.
- *
- * Leaflet or MapLibre would be the obvious choice and both are the wrong one
- * here: the hosted app runs under a strict CSP with no external scripts, and
- * pulling a mapping stack into the bundle to draw a dozen pins is a lot of
- * weight for a phone on a mountain connection. A slippy map is a grid of 256px
- * PNGs at computed coordinates — that part is arithmetic, and the arithmetic is
- * below.
- *
- * Everything is keyless: OpenStreetMap tiles, Nominatim for search, OSRM for
- * routing. No billing account, nothing to expire, and no API key that could
- * leak from a phone. Google's Directions and Places APIs are billable and would
- * have meant putting a payment method behind a card he taps.
- */
-const TILE = 256
-
-const lonToX = (lon: number, z: number) => ((lon + 180) / 360) * Math.pow(2, z)
-const latToY = (lat: number, z: number) => {
-  const r = (lat * Math.PI) / 180
-  return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * Math.pow(2, z)
-}
-
-function MapWidget({ w, heat }: { w: Extract<Widget, { kind: 'map' }>; heat: string }) {
-  const [places, setPlaces] = useState(w.places)
-  const [me, setMe] = useState<{ lat: number; lon: number } | null>(null)
-  const [route, setRoute] = useState<{ lat: number; lon: number }[] | null>(null)
-  const [summary, setSummary] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
-  const [busy, setBusy] = useState<string | null>(null)
-  const [failed, setFailed] = useState<string | null>(null)
-
-  const W = 343
-  const H = 210
-
-  /**
-   * His own position, asked for only when the widget says it needs it.
-   *
-   * The browser prompts once and the phone is the device that actually knows —
-   * which is the whole reason this works at all, since the life data is on the
-   * phone and not the Mac.
-   */
-  useEffect(() => {
-    if (!w.follow || !navigator.geolocation) return
-    const id = navigator.geolocation.watchPosition(
-      (p) => setMe({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      () => setFailed('I could not get your location — the browser refused it.'),
-      { enableHighAccuracy: true, maximumAge: 15_000, timeout: 12_000 }
-    )
-    return () => navigator.geolocation.clearWatch(id)
-  }, [w.follow])
-
-  const pins = useMemo(
-    () => (me ? [...places, { id: 'me', label: 'You', lat: me.lat, lon: me.lon, self: true }] : places),
-    [places, me]
-  )
-
-  // Frame everything worth seeing, rather than trusting a hardcoded centre:
-  // a route the user cannot see the end of is not a route.
-  const view = useMemo(() => {
-    const pts = [...pins, ...(route ?? []).map((p, i) => ({ id: `r${i}`, label: '', ...p }))]
-    if (!pts.length) return { z: w.zoom ?? 13, cx: 0.5, cy: 0.5, lat: 0, lon: 0 }
-    const lats = pts.map((p) => p.lat)
-    const lons = pts.map((p) => p.lon)
-    const lat = (Math.min(...lats) + Math.max(...lats)) / 2
-    const lon = (Math.min(...lons) + Math.max(...lons)) / 2
-    let z = w.zoom ?? 13
-    if (pts.length > 1) {
-      const spanLon = Math.max(...lons) - Math.min(...lons) || 1e-4
-      const spanLat = Math.max(...lats) - Math.min(...lats) || 1e-4
-      // Fit the wider of the two spans, then back off one level for margin.
-      const zx = Math.log2((360 * W) / (TILE * spanLon))
-      const zy = Math.log2((180 * H) / (TILE * spanLat))
-      z = Math.max(2, Math.min(17, Math.floor(Math.min(zx, zy)) - 1))
-    }
-    return { z, lat, lon }
-  }, [pins, route, w.zoom])
-
-  const z = view.z
-  const centreX = lonToX(view.lon, z)
-  const centreY = latToY(view.lat, z)
-  const originX = centreX * TILE - W / 2
-  const originY = centreY * TILE - H / 2
-  const toPx = (lat: number, lon: number) => ({
-    x: lonToX(lon, z) * TILE - originX,
-    y: latToY(lat, z) * TILE - originY,
-  })
-
-  const tiles = useMemo(() => {
-    const out: { key: string; url: string; left: number; top: number }[] = []
-    const n = Math.pow(2, z)
-    const x0 = Math.floor(originX / TILE)
-    const y0 = Math.floor(originY / TILE)
-    for (let x = x0; x <= Math.floor((originX + W) / TILE); x++) {
-      for (let y = y0; y <= Math.floor((originY + H) / TILE); y++) {
-        if (y < 0 || y >= n) continue
-        const wx = ((x % n) + n) % n
-        out.push({
-          key: `${z}/${wx}/${y}`,
-          url: `https://tile.openstreetmap.org/${z}/${wx}/${y}.png`,
-          left: x * TILE - originX,
-          top: y * TILE - originY,
-        })
-      }
-    }
-    return out
-  }, [z, originX, originY])
-
-  const search = async () => {
-    if (!query.trim() || busy) return
-    setBusy('Searching…')
-    setFailed(null)
-    try {
-      const r = await fetch(`/api/map/search?q=${encodeURIComponent(query)}`)
-      const b = await r.json()
-      if (!r.ok) throw new Error(b?.error ?? 'Search failed')
-      if (!b.places?.length) { setFailed(`Nothing found for "${query}".`); return }
-      setPlaces(b.places)
-      setRoute(null)
-      setSummary(null)
-    } catch (e) {
-      setFailed((e as Error).message)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  const draw = async (mode: 'walk' | 'drive' | 'cycle') => {
-    const from = me ?? places[0]
-    const to = places[places.length - 1]
-    if (!from || !to || from === to) { setFailed('I need two places to draw a route between.'); return }
-    setBusy('Routing…')
-    setFailed(null)
-    try {
-      const r = await fetch(`/api/map/route?from=${from.lat},${from.lon}&to=${to.lat},${to.lon}&mode=${mode}`)
-      const b = await r.json()
-      if (!r.ok) throw new Error(b?.error ?? 'Routing failed')
-      setRoute(b.points ?? [])
-      setSummary(b.summary ?? null)
-    } catch (e) {
-      setFailed((e as Error).message)
-    } finally {
-      setBusy(null)
-    }
-  }
-
-  return (
-    <div style={css('display:flex; flex-direction:column; gap:9px;')}>
-      {w.searchable && (
-        <div style={cssv`display:flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; ${CARD}`}>
-          <input
-            value={query}
-            placeholder="Search for a place…"
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') void search() }}
-            style={css('flex:1; min-width:0; background:transparent; border:0; outline:0; font-family:inherit; font-size:13px; color:rgba(237,238,241,.9);')}
-          />
-          <div onClick={() => void search()} style={css('flex:none; font-size:12px; color:rgba(237,238,241,.55); cursor:pointer;')}>
-            {busy === 'Searching…' ? '…' : 'Go'}
-          </div>
-        </div>
-      )}
-
-      <div style={cssv`position:relative; height:${H}px; border-radius:15px; overflow:hidden; background:#1b1d22; box-shadow:inset 0 0 0 1px rgba(255,255,255,.07);`}>
-        {tiles.map((t) => (
-          <img
-            key={t.key}
-            src={t.url}
-            alt=""
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            style={cssv`position:absolute; width:${TILE}px; height:${TILE}px; left:${t.left}px; top:${t.top}px; filter:grayscale(.82) brightness(.44) contrast(1.12) saturate(.7);`}
-          />
-        ))}
-
-        {/* The route, drawn over the tiles as one SVG path. */}
-        {route && route.length > 1 && (
-          <svg width={W} height={H} style={css('position:absolute; left:0; top:0; pointer-events:none;')}>
-            <path
-              d={route.map((p, i) => { const q = toPx(p.lat, p.lon); return `${i ? 'L' : 'M'}${q.x.toFixed(1)},${q.y.toFixed(1)}` }).join(' ')}
-              fill="none"
-              stroke={accentOf('teal', heat)}
-              strokeWidth="3.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              opacity="0.95"
-            />
-          </svg>
-        )}
-
-        {pins.map((p) => {
-          const q = toPx(p.lat, p.lon)
-          if (q.x < -20 || q.x > W + 20 || q.y < -20 || q.y > H + 20) return null
-          return (
-            <div key={p.id} style={cssv`position:absolute; left:${q.x}px; top:${q.y}px; transform:translate(-50%,-50%); display:flex; flex-direction:column; align-items:center; gap:3px; pointer-events:none;`}>
-              <div style={cssv`width:${p.self ? '13' : '11'}px; height:${p.self ? '13' : '11'}px; border-radius:999px; background:${p.self ? '#7CD9C0' : accentOf('rose', heat)}; box-shadow:0 0 0 3px rgba(11,11,13,.65), 0 1px 5px rgba(0,0,0,.5);`} />
-              {!p.self && (
-                <div style={css('max-width:96px; padding:2px 6px; border-radius:6px; background:rgba(11,11,13,.78); font-size:9.5px; line-height:1.3; color:rgba(237,238,241,.9); text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;')}>
-                  {p.label}
-                </div>
-              )}
-            </div>
-          )
-        })}
-
-        {/* OpenStreetMap's licence requires attribution wherever its tiles are shown. */}
-        <div style={css('position:absolute; right:5px; bottom:4px; font-size:8.5px; color:rgba(237,238,241,.42); background:rgba(11,11,13,.5); padding:1px 5px; border-radius:4px;')}>
-          © OpenStreetMap
-        </div>
-      </div>
-
-      {summary && (
-        <div style={css('font-size:12px; color:rgba(237,238,241,.6);')}>{summary}</div>
-      )}
-
-      <div style={css('display:flex; gap:7px; flex-wrap:wrap;')}>
-        {(['walk', 'cycle', 'drive'] as const).map((m) => (
-          <div
-            key={m}
-            onClick={() => void draw(m)}
-            style={cssv`padding:7px 13px; border-radius:999px; background:rgba(255,255,255,${w.route === m ? '.14' : '.05'}); box-shadow:inset 0 0 0 1px rgba(255,255,255,.1); font-size:12px; color:rgba(237,238,241,${busy ? '.4' : '.78'}); cursor:pointer;`}
-          >
-            {busy === 'Routing…' ? '…' : m === 'walk' ? 'Walk' : m === 'cycle' ? 'Cycle' : 'Drive'}
-          </div>
-        ))}
-      </div>
-
-      {failed && <div style={css('font-size:11.5px; color:rgba(255,170,170,.8); line-height:1.45;')}>{failed}</div>}
-    </div>
-  )
-}
+export { clockOf, shortWhen }

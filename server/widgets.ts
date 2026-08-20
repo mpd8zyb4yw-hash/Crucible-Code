@@ -33,6 +33,7 @@
  * older app and a newer brain degrade to the chat thread rather than crashing.
  */
 
+import type { DomainContext } from './domain.js'
 import { lookupMany } from './objects.js'
 import { effectiveOrigin, provenanceLabel, type Origin } from './provenance.js'
 
@@ -64,6 +65,26 @@ export interface WidgetAction {
   irreversible?: boolean
   /** Pull this action out as the primary button. */
   primary?: boolean
+  /**
+   * THIS CHANGES HOW THE APP TREATS HIM FROM NOW ON, rather than acting on
+   * something that is on the screen.
+   *
+   * Setting a goal, choosing a source, turning a domain off. The distinction
+   * matters in exactly one place — a Home deck card, where `chipsOf` refuses to
+   * draw one — and it is a flag on the action rather than a list of `kind`s
+   * kept beside the renderer, because the renderer is the wrong place to know
+   * what `activity.goal` means.
+   *
+   * WHY THE HOME CARD REFUSES IT. "Make 7,180 the goal" was a white pill and the
+   * loudest element on the Activity widget, above a chart and a sentence it was
+   * competing with, offering to configure how every future reading gets judged —
+   * from a card whose job is to say how today went. The same action is on the
+   * Activity surface WITH the line that explains it ("Your seven-day average"),
+   * which is where a decision like that can actually be made. Nothing is
+   * removed: the capability, the surface control and the assistant's ability to
+   * run it are all untouched. See docs/ux-audit.md.
+   */
+  setting?: boolean
 }
 
 /** One entry in a list: a message, an event, a transaction, a video. */
@@ -128,6 +149,339 @@ export interface WidgetPoint {
   value: number
   /** Optional second series, drawn behind — a target, last week, an average. */
   compare?: number
+}
+
+// ── Domain objects ───────────────────────────────────────────────────────────
+
+/**
+ * Typed objects, for the renderers that need more than a title and a subtitle.
+ *
+ * The generic primitives above flatten everything into `WidgetItem`, which is
+ * the right trade for a card the model invented and the wrong one for a
+ * calendar: a `WidgetItem` has no end time, so no renderer built on it can draw
+ * a week grid, work out an overlap, or find a ninety-minute gap. The
+ * information needed to DO those things was being thrown away one layer above
+ * the place it was needed.
+ *
+ * These are deliberately not a new concept in the pane/revision layer. A
+ * revision stores whatever presentation its plan produced and has never
+ * inspected it; these ride in exactly the same field as `list` and `agenda` do.
+ * What changes is only that a domain renderer receives the domain's own shape.
+ *
+ * They are also TRUSTED-PRODUCER ONLY (see `TRUSTED_KINDS`). A model cannot
+ * emit one, because every field here is something the app either fetched or can
+ * verify, and an invented event id that reaches an RSVP button is a different
+ * class of mistake from an invented headline.
+ */
+
+/**
+ * ONE EVENT IS TIMED OR IT IS ALL-DAY. NEVER BOTH.
+ *
+ * A card read "Time: 11:00 AM" and, four lines below it, "All-day event marker
+ * set for 11 AM." Those are not two views of one fact, they are two mutually
+ * exclusive kinds of event asserted about the same object, and once both are in
+ * the payload every consumer picks whichever it happens to check first: the
+ * agenda drew a timed row, the day grid drew an all-day banner, and the model
+ * described a contradiction it had been handed.
+ *
+ * The distinction is structural, so it is settled at ingestion rather than
+ * inferred later by each reader:
+ *
+ *   timed    `start`/`end` are instants. `allDay` is false.
+ *   all-day  `start`/`end` are calendar dates with no clock. `allDay` is true.
+ *
+ * THE SHAPE OF `start` IS THE AUTHORITY, not the flag beside it. A flag is one
+ * boolean that can be wrong; a date-only string cannot pretend to name an
+ * instant. So a `YYYY-MM-DD` start makes the event all-day whatever the flag
+ * said, and a flag claiming all-day over a real timestamp is a claim we drop
+ * rather than a clock time we invent.
+ */
+export function normaliseEvent<T extends { start: string; end?: string; allDay?: boolean }>(e: T): T {
+  const dateOnly = (s: string | undefined) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s.trim())
+  const allDay = dateOnly(e.start)
+
+  const day = (s: string | undefined): string | undefined => {
+    if (!s) return undefined
+    if (dateOnly(s)) return s.trim()
+    const t = Date.parse(s)
+    return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : undefined
+  }
+
+  if (allDay) {
+    // A clock time on an all-day event is the contradiction itself. Dropped,
+    // not rounded to midnight — midnight is a time, and this event has none.
+    return { ...e, allDay: true, start: e.start.trim(), end: day(e.end) }
+  }
+
+  // An end before its start is a payload we cannot render honestly; a missing
+  // end is a fact the surface already knows how to draw.
+  const s = Date.parse(e.start)
+  const en = e.end ? Date.parse(e.end) : NaN
+  const end = Number.isFinite(en) && Number.isFinite(s) && en >= s ? e.end : undefined
+  return { ...e, allDay: false, end }
+}
+
+export interface CalEvent {
+  id: string
+  title: string
+  /** ISO datetime, or a plain YYYY-MM-DD for all-day events. */
+  start: string
+  end?: string
+  /**
+   * WHAT CRUCIBLE WORKED OUT ABOUT THIS ONE OBJECT, WITH ITS PROVENANCE.
+   *
+   * Mirrors `src/api.ts`. Typed, optional, computed on the server or absent, and
+   * NEVER rendered without `grounds` — a claim on an opened object that cannot
+   * say where it came from is the confident wrong answer this app keeps being
+   * asked not to give.
+   *
+   * Populated by `enrichPanes` from a `depth`-weight `DomainContext`. The slot
+   * predates that and was designed for a routed leave-by; both are the same kind
+   * of thing, which is why there is one slot rather than two.
+   */
+  note?: { says: string; grounds: string }
+  allDay?: boolean
+  location?: string
+  description?: string
+  attendees?: { email: string; name?: string; response?: string }[]
+  /** Our own response: accepted | declined | tentative | needsAction. */
+  response?: string
+  organizer?: string
+  calendarId?: string
+  accent?: string
+  actions?: WidgetAction[]
+}
+
+/**
+ * WHAT GMAIL'S `snippet` ACTUALLY CONTAINS.
+ *
+ * Two kinds of rubbish, both of which reached his screen verbatim and neither of
+ * which is a rendering decision — this is dirty data, so it is cleaned once here
+ * rather than in the widget, the list row, the reader and the prompt:
+ *
+ *   · HTML ENTITIES. Gmail returns the snippet escaped, so "Here's" arrives as
+ *     `Here&#39;s`. React then escapes it again on the way out, which is correct
+ *     behaviour producing a literally wrong string. Four of his four mail rows
+ *     read `Here&#39;s` and `didn&#39;t`.
+ *   · PREHEADER PADDING. Marketing senders pad the preview text with runs of
+ *     U+034F (combining grapheme joiner) and zero-width spaces so the client
+ *     shows nothing after their opening line. Gmail's snippet keeps them, so his
+ *     Mail widget drew one sentence followed by ninety invisible characters, and
+ *     every row's preview was a sentence and then a long grey nothing.
+ *
+ * Entities first, then the invisibles — decoding can produce them.
+ */
+export function cleanSnippet(raw: string): string {
+  const named: Record<string, string> = {
+    amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…', mdash: '—', ndash: '–',
+  }
+  return raw
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&([a-z]+);/gi, (m, n) => named[String(n).toLowerCase()] ?? m)
+    // Zero-width and invisible formatting characters, plus the joiner senders
+    // use as padding. Not a blocklist of one vendor: it is the whole class.
+    .replace(/[\u034F\u200B-\u200F\u2028\u2029\u202A-\u202E\u2060-\u2064\uFEFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * WHAT A VIDEO IS ABOUT, WITHOUT THE MERCHANDISE.
+ *
+ * A YouTube description is not a synopsis. It is a synopsis followed by a
+ * Patreon link, a coffee promo code, a chapter index, an explicit-content
+ * disclaimer and a wall of hashtags — and all of it was rendered verbatim into
+ * a 150px box with its own scrollbar, which is several hundred words of somebody
+ * else's advertising inside his assistant.
+ *
+ * The leading paragraphs ARE worth keeping: they say what the thing is, which is
+ * the one question the surface is answering. So this keeps prose until it hits
+ * the first thing that is plainly not prose, and stops there.
+ *
+ * Returns an empty string when there is nothing left, and an empty string draws
+ * nothing — a description that was ONLY promotion had no synopsis to lose.
+ */
+export function synopsis(raw: string | undefined): string {
+  if (!raw) return ''
+  const promo =
+    /^\s*(https?:\/\/|#\w|\*\s*\*|[\d:]+\s+\S|(patreon|membership|merch|promo code|subscribe|follow|credit for|author:|music|sound effects?|disclaimer|explicit content|use code|discount|sponsor|if you would like|submit (a |your )?stor|check out|thanks for watching|click here)\b)/i
+  const out: string[] = []
+  for (const para of raw.split(/\n\s*\n/)) {
+    const p = para.trim()
+    if (!p) continue
+    if (promo.test(p)) break
+    // A paragraph that is mostly link is a link with a sentence attached.
+    if ((p.match(/https?:\/\//g) ?? []).length > 1) break
+    out.push(p.replace(/\s*https?:\/\/\S+/g, '').replace(/[ \t]+/g, ' ').trim())
+    if (out.join(' ').length > 400) break
+  }
+  // A sentence whose object was a URL is left dangling by the strip above —
+  // "please submit your story here -" is not prose, it is the wreck of a link.
+  const text = out.join(' ').replace(/[\s\u2013\u2014:;,-]+$/, '').trim()
+  return text.length > 420 ? `${text.slice(0, 419).replace(/\s\S*$/, '')}…` : text
+}
+
+export interface MailMessage {
+  id: string
+  threadId?: string
+  subject: string
+  from: string
+  fromName?: string
+  /**
+   * WHAT CRUCIBLE WORKED OUT ABOUT THIS ONE OBJECT, WITH ITS PROVENANCE.
+   *
+   * Mirrors `src/api.ts`. Typed, optional, computed on the server or absent, and
+   * NEVER rendered without `grounds` — a claim on an opened object that cannot
+   * say where it came from is the confident wrong answer this app keeps being
+   * asked not to give.
+   *
+   * Populated by `enrichPanes` from a `depth`-weight `DomainContext`. The slot
+   * predates that and was designed for a routed leave-by; both are the same kind
+   * of thing, which is why there is one slot rather than two.
+   */
+  note?: { says: string; grounds: string }
+  to?: string
+  snippet?: string
+  body?: string
+  /** ISO timestamp it arrived. */
+  at: string
+  unread?: boolean
+  labels?: string[]
+  actions?: WidgetAction[]
+}
+
+export interface VideoObject {
+  id: string
+  title: string
+  channel?: string
+  thumbnail?: string
+  publishedAt?: string
+  /** Runtime in seconds. The whole point of "only ones over 30 minutes". */
+  seconds?: number
+  description?: string
+  /**
+   * Canonical watch URL, built from a verified provider id — see
+   * `youtube.ts#presentable`. Absent means the video could not be identified,
+   * and no renderer may offer a way to open it. Mirrored in `src/api.ts`.
+   */
+  url?: string
+  provenance?: string
+  origin?: Origin
+  actions?: WidgetAction[]
+}
+
+/** One named line of daily numbers: steps, sleep, resting heart rate. */
+export interface FitnessSeries {
+  key: string
+  label: string
+  unit?: string
+  accent?: string
+  /**
+   * Oldest first, and EVERY day in the window — including the ones with nothing.
+   *
+   * `value: null` is a day the source did not report. It used to be expressed by
+   * the day simply being absent from the array, which meant the renderer could
+   * not tell "no reading" from "a zero it happened not to send", and drew both
+   * as a stub three pixels high. On a week where the feed had stopped, that is
+   * the difference between "you barely moved" and "this has not synced since
+   * Friday" — opposite facts, identical pictures. See §35.
+   */
+  days: { date: string; value: number | null }[]
+  /**
+   * Which source these readings came from, and when it last delivered.
+   *
+   * Carried on the series rather than looked up beside it so that a chart can
+   * never be drawn from one source while its caption names another — the
+   * lineage §10 asks for, attached to the thing it describes.
+   */
+  source?: { id: string; lastReportedDay: string | null }
+}
+
+/**
+ * THE ACTIVITY SURFACE'S HEADER, AS DATA RATHER THAN AS A CHART.
+ *
+ * A flattened view of `ActivityReport` — flattened deliberately, because this
+ * crosses to the client and the client must not be able to recompute any of it.
+ * Every figure here is decided on the server, where the goal, the source
+ * preference and the conflict state all live; the surface's job is to draw what it
+ * is given and to say when it has been given nothing.
+ *
+ * `current: null` is the field that matters most. It means there IS no trustworthy
+ * figure — two sources disagree and he has not ruled — and the surface renders
+ * `why` in its place rather than a number. That is the whole difference between an
+ * app that has a conflict type and an app that shows whichever number synced last.
+ */
+export interface ActivityBrief {
+  metric: string
+  unit?: string
+  /** One honest sentence. The Home row and the surface header share it. */
+  says: string
+  /**
+   * The trusted latest figure, or null with `why` explaining the absence.
+   *
+   * `isToday` is not decoration. Without it the surface printed Friday's count
+   * on a Tuesday in the place a reader takes for "today", which is a true number
+   * that reads as a false one. See `freshness`.
+   */
+  current: { day: string; value: number; isToday: boolean } | null
+  /**
+   * HOW OLD THE NUMBER IS, AS ITS OWN FACT.
+   *
+   * Sent so the surface can make staleness impossible to miss rather than
+   * leaving it to a sentence further down the screen. `level` is the loudness:
+   * a phone that has not synced since this morning is ordinary, and one that has
+   * not synced since Friday means the chart is history.
+   */
+  freshness: { today: string; haveToday: boolean; todayValue: number | null; staleDays: number; level: 'current' | 'lagging' | 'stale' }
+  source: { id: string | null; by: 'chosen' | 'only' | 'disputed' | 'none'; canSupportGoal: boolean; why?: string; available: string[] }
+  trend: {
+    average: number | null
+    priorAverage: number | null
+    changePercent: number | null
+    direction: 'up' | 'down' | 'flat' | 'unknown'
+    covered: number
+    windowDays: number
+  }
+  goal:
+    | {
+        id: string
+        description: string
+        target: number
+        unit?: string
+        direction: 'up' | 'down' | 'steady'
+        current: number
+        /** 0..1, or null for a 'steady' goal — a bar would imply a finish line. */
+        fraction: number | null
+        met: boolean
+        shortfall: number
+        timeframe?: string
+      }
+    | null
+  gap: { missingDays: string[]; staleDays: number; lastDay: string | null; lastDayLabel: string }
+  conflicts: { metric: string; scope: string; readings: { source: string; value: number }[]; differencePercent: number }[]
+  /** The one thing worth doing, and what tapping it actually does. */
+  next: { label: string; detail: string; does: string; options?: string[] }
+}
+
+/** A standing interest, as the dashboard shows it. */
+export interface WatchObject {
+  id: string
+  what: string
+  why?: string
+  question?: string | null
+  everyHours: number
+  lastRunAt: string | null
+  /** When the next check is due, computed from the interval. */
+  nextRunAt?: string | null
+  active: boolean
+  by: 'user' | 'agent'
+  /** The last thing it found, in its own words. */
+  state?: string
+  /** When that answer last CHANGED, as opposed to when it was last checked. */
+  changedAt?: string | null
+  history?: { at: string; text: string; changed?: boolean }[]
+  actions?: WidgetAction[]
 }
 
 // ── The spec ─────────────────────────────────────────────────────────────────
@@ -199,6 +553,14 @@ export type Widget =
       /** Let the user search for a place and add it. */
       searchable?: boolean
       zoom?: number
+      /**
+       * WHAT THE MEMORY CORE ADDS, AND NOTHING THE DOMAIN COULD HAVE WORKED OUT.
+       *
+       * See the identical field on `calendar`. Keyed by pin id, so a rhythm is
+       * attached to the place it is about and travels with it into both the Home
+       * row and the map.
+       */
+      context?: DomainContext[]
     }
   /** Labelled facts in two columns. An event's details, an order, a summary. */
   | {
@@ -219,6 +581,95 @@ export type Widget =
       to?: string
       submit: WidgetAction
       multiline?: boolean
+    }
+  // ── Domain surfaces ────────────────────────────────────────────────────────
+  // Trusted producers only. Each one has a renderer that is a real application
+  // for that domain, and each one declares typed capabilities that the person
+  // and the model drive through the same reducer.
+  /** An actual calendar: month, week and day views over real events. */
+  | {
+      kind: 'calendar'
+      events: CalEvent[]
+  /**
+   * WHAT THE MEMORY CORE ADDS, AND NOTHING THE DOMAIN COULD HAVE WORKED OUT.
+   *
+   * Phase 8. Compiled by `server/domain.ts` from typed cognition and attached
+   * HERE — on the widget — rather than beside it, because the widget is the one
+   * object both projections read: `deck.ts` builds the Home card from it and the
+   * surface renders it. A context attached anywhere else could be present on the
+   * card and absent in depth, which is the disagreement `canonical` exists to
+   * make impossible.
+   *
+   * Absent is the normal state. Every consumer draws the domain unchanged when
+   * there is nothing here.
+   */
+  context?: DomainContext[]
+      /** ISO date it opens on. Defaults to today. */
+      focus?: string
+      view?: 'month' | 'week' | 'day'
+      empty?: string
+    }
+  /** A mailbox: threads, unread state, senders, bodies, a composer. */
+  | {
+      kind: 'mail'
+      messages: MailMessage[]
+  /**
+   * WHAT THE MEMORY CORE ADDS, AND NOTHING THE DOMAIN COULD HAVE WORKED OUT.
+   *
+   * Phase 8. Compiled by `server/domain.ts` from typed cognition and attached
+   * HERE — on the widget — rather than beside it, because the widget is the one
+   * object both projections read: `deck.ts` builds the Home card from it and the
+   * surface renders it. A context attached anywhere else could be present on the
+   * card and absent in depth, which is the disagreement `canonical` exists to
+   * make impossible.
+   *
+   * Absent is the normal state. Every consumer draws the domain unchanged when
+   * there is nothing here.
+   */
+  context?: DomainContext[]
+      empty?: string
+    }
+  /** Results with authoritative thumbnails, channels and durations. */
+  | {
+      kind: 'video'
+      videos: VideoObject[]
+      empty?: string
+    }
+  /** Interactive daily series with a range and toggleable lines. */
+  | {
+      kind: 'fitness'
+      series: FitnessSeries[]
+      /**
+       * What the numbers MEAN, computed by `activity.ts`.
+       *
+       * Optional because a fitness widget can legitimately be a bare series — a
+       * model-authored chart of something, a metric with no goal attached — and
+       * the surface renders the chart either way. When present, the surface leads
+       * with it, because seven bars and an average was a picture of data with no
+       * statement about whether any of it was going the way he wanted.
+       */
+      report?: ActivityBrief
+  /**
+   * WHAT THE MEMORY CORE ADDS, AND NOTHING THE DOMAIN COULD HAVE WORKED OUT.
+   *
+   * Phase 8. Compiled by `server/domain.ts` from typed cognition and attached
+   * HERE — on the widget — rather than beside it, because the widget is the one
+   * object both projections read: `deck.ts` builds the Home card from it and the
+   * surface renders it. A context attached anywhere else could be present on the
+   * card and absent in depth, which is the disagreement `canonical` exists to
+   * make impossible.
+   *
+   * Absent is the normal state. Every consumer draws the domain unchanged when
+   * there is nothing here.
+   */
+  context?: DomainContext[]
+      empty?: string
+    }
+  /** The operational dashboard for standing interests. */
+  | {
+      kind: 'watch'
+      watches: WatchObject[]
+      empty?: string
     }
 
 /** A widget plus how it is introduced. Cards carry zero or more of these. */
@@ -242,6 +693,22 @@ export interface WidgetPane {
  * would replace.
  */
 export const WIDGET_KINDS = ['list', 'agenda', 'chart', 'media', 'map', 'detail', 'compose'] as const
+
+/**
+ * The domain surfaces, which a model may NOT emit.
+ *
+ * Not an oversight and not a permissions afterthought: these carry ids that
+ * actions are taken against — an event that gets an RSVP, a message that gets
+ * archived — and every one of them here came out of a record the app fetched.
+ * `sanitiseWidget` rejects any kind outside `WIDGET_KINDS` already, so this
+ * list is what the exclusion MEANS rather than a second check. Producers build
+ * these as typed literals and never through the sanitiser.
+ *
+ * The model operates these surfaces through commands instead (see
+ * `src/surface/`), which name objects that are already on screen. It can say
+ * "select the third video"; it cannot invent a fourth.
+ */
+export const TRUSTED_KINDS = ['calendar', 'mail', 'video', 'fitness', 'watch'] as const
 
 /**
  * Actions a model-authored widget is allowed to request.

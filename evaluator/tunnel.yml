@@ -1,0 +1,9 @@
+# The evaluator bridge's own tunnel — deliberately separate from the tunnel
+# serving crucible.cam, so starting and stopping this one cannot disturb the
+# copy he actually uses.
+tunnel: 7613dd3d-dc3a-4183-84ca-6c8a329d1811
+credentials-file: /Users/justin/.cloudflared/7613dd3d-dc3a-4183-84ca-6c8a329d1811.json
+ingress:
+  - hostname: eval.crucible.cam
+    service: http://127.0.0.1:8899
+  - service: http_status:404

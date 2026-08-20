@@ -1,6 +1,8 @@
 import { route } from './router.js'
+import { dateVocabulary, renderDateVocabulary } from './clock.js'
 import { renderWorld, staleBeliefs, type World, type Belief } from './world.js'
 import { resolveRefs, sanitisePane, type WidgetPane } from './widgets.js'
+import type { Because, Correction } from './attention.js'
 
 /**
  * The synthesis pass.
@@ -57,6 +59,19 @@ export interface Need {
    */
   asks: boolean
   /**
+   * The id of the ONE object this card's line is about.
+   *
+   * A card that says "Newest: Invoice 4471" opened Mail and left him to find
+   * Invoice 4471 himself, in a list of forty — the card named a thing and then
+   * refused to point at it. This carries that object's id through to the
+   * surface, which opens on it.
+   *
+   * It is only ever an id already present in `panes`. Home cannot name
+   * something the application does not have; that binding is the whole reason
+   * both are projected from one canonical read.
+   */
+  focus?: string | null
+  /**
    * What this card opens into, before the chat thread.
    *
    * Empty means the card is pure conversation, which is the right shape for a
@@ -68,6 +83,67 @@ export interface Need {
    * sanitised through `widgets.ts` before they ever reach here.
    */
   panes?: WidgetPane[]
+  /**
+   * WHY THIS IS ON HIS SCREEN, as things rather than as a sentence.
+   *
+   * Present only on cards this app COMPUTED. A model-authored card cannot have
+   * one, and that asymmetry is deliberate: asking a language model to explain
+   * its own reasoning after the fact produces a plausible story, not the actual
+   * grounds, and a plausible story is worse than no explanation because it
+   * cannot be corrected.
+   */
+  because?: Because
+  /**
+   * What he can tell us that changes the MODEL rather than hiding the card.
+   * See `correct.ts` — every verb here has an implementation.
+   */
+  corrections?: Correction[]
+  /** What we do not know about this. Rendered; never silently swallowed. */
+  uncertainty?: string[]
+  /**
+   * THE SERVER OWNS THIS CARD'S LIFETIME.
+   *
+   * Originally "exempt from the insights lane's 12-hour expiry", which was half a
+   * fix: the lane's flat timer is right for model prose ("an insight nobody
+   * engaged with is not intelligence any more") and wrong for an obligation, so
+   * computed cards were exempted from it — and thereby given no lifetime at all
+   * except being recomputed.
+   *
+   * It now means the lane must not apply its own policy, because the item carries
+   * one. See `attention.ts`'s `Lifecycle`: a leave-by time expires to the minute,
+   * a conflict expires when he rules on it, a question when it is answered.
+   */
+  standing?: boolean
+  /**
+   * When this card must stop being shown, if it has a clock at all.
+   *
+   * Absent is not "never expires" — it means the expiry is not time-based, and the
+   * server withdraws the card by not producing it. Both are set from the item's
+   * `Lifecycle` and neither is a decision the client makes.
+   */
+  expiresAt?: string
+  /** Why it will leave. Shown in the report, and logged when it does. */
+  expiryReason?: string
+  /**
+   * Which of Home's three bands this belongs in — see `attention.ts`'s `bandOf`.
+   *
+   * Present only on computed cards. A model-authored card has no band, and that
+   * is not an oversight: a band is a claim about how much of his attention
+   * something deserves, computed from an instant and an action, and a model
+   * asked which band to use would answer "now" every time. Cards without one
+   * are drawn as background, which is the honest default for prose.
+   */
+  band?: 'now' | 'next' | 'background'
+  /**
+   * The subject this card belongs to — 'travel', 'fitness'. Computed cards only.
+   *
+   * It is what the engagement loop keys on: acting on this card or dismissing it
+   * is evidence about this subject, not about cards in general. See
+   * `person.ts`'s `engagement`.
+   */
+  topic?: string
+  /** 0..1 from the attention model, for the report. Never shown as a percentage. */
+  score?: number
 }
 
 export interface ThinkResult {
@@ -118,7 +194,9 @@ PEOPLE CHANGE. A belief is not a fact — it is a claim with an expiry. If new e
 
 NEVER GREET HIM. There is no hello, no "buongiorno", no "good morning" — not in any language. He opens this to see where things stand, not to be welcomed. The top of the screen is the date, the time and, only if he wants it, where he is. Nothing else.
 
-SPEAK HIS LANGUAGE AND HIS UNITS. Write to him in the language HE writes to you in — not the language of wherever he happens to be. An American in Italy is not necessarily an Italian speaker. Likewise every convention: miles or kilometres, pounds or kilos, "clock" 12h or 24h, day-month or month-day. Use what he uses. If you do not know, ASK — that is exactly the kind of small thing worth one question and never worth guessing. "dateLabel" is today's date written his way; "place" is where he is, and it stays null unless he has actually shown he wants it on screen.
+SPEAK HIS LANGUAGE AND HIS UNITS. Write to him in the language HE writes to you in — not the language of wherever he happens to be. An American in Italy is not necessarily an Italian speaker. Likewise every convention: miles or kilometres, pounds or kilos, "clock" 12h or 24h, day-month or month-day. Use what he uses. If you do not know, ASK — that is exactly the kind of small thing worth one question and never worth guessing. "place" is where he is, and it stays null unless he has actually shown he wants it on screen.
+
+YOU DO NOT DO DATE ARITHMETIC. Not any. You are given today's date, tomorrow's date, and every day of the coming week with its weekday name already worked out — use those strings exactly. Do not work out what weekday a date falls on, do not count days between two dates, do not write "in three days" or "next Tuesday" unless that phrase appears in the list you were given. You have no calendar; you have a recollection, and a wrong weekday on a card about a dinner is the kind of error that makes everything else on the screen untrustworthy. If you need a day that is not in the list, write the ISO date itself.
 
 HIS PREFERENCES STEER YOU. Anything he has told you about how he wants things — what he uses something FOR, what he is trying to achieve, how he likes to learn, what he does not want nagging about — outranks your own idea of what is sensible. The same fact means different things to different people: a step count is a weight-loss signal for one person, a weight-GAIN signal for another, and mere curiosity for a third. Never assume which; use what he has told you, and if he has not told you, ask.
 
@@ -138,6 +216,8 @@ Rules:
 - "ask" is the composer, not a card: what you open with when he taps it with nothing particular in mind, plus 3 things he might plausibly want right now. Draw on what you actually know about him — a generic "how can I help?" wastes the one place he goes to start a conversation.
 
 A CARD OPENS INTO THE THING, NOT A DESCRIPTION OF IT. "panes" is what he sees when he taps the card, above the conversation. If a card is about anything he could look at, compare, scroll or act on, give it a pane — a card about three flights he could take is a LIST of the three, not a paragraph describing them. Leave "panes" out entirely when the card is genuinely just a thought; a pane containing one restated sentence is worse than none.
+
+IF THE CARD IS ABOUT ONE PARTICULAR OBJECT IN ITS OWN PANE, SAY WHICH. Put that object's "id" in "focus" and the surface will open on it instead of at the top of a list. Only ever an id that appears in this card's own panes; anything else is dropped. Leave "focus" out when the card is about a set rather than one member of it.
 
 You have exactly these widgets, and you may not invent another:
 - {"kind":"list","items":[{"id","title","sub","body","meta","at","tags":[],"unread":false}],"filters":["tag"],"empty":"…"} — anything enumerable. "body" shows when he expands the row.
@@ -163,7 +243,7 @@ SHOW THE QUANTITY, DON'T JUST SAY IT. Three small ornaments exist; use one when 
 
 function shape(): string {
   return `{
-  "dateLabel": "today's date written his way",
+  "dateLabel": "today's date written the way HE writes dates — use only the date facts given above, never a weekday you worked out",
   "clock": "12h|24h",
   "place": "where he is, or null unless he wants it shown",
   "readLine": "one line summarising his day, e.g. 'Two things are warming up. Everything else I've handled.'",
@@ -186,6 +266,7 @@ function shape(): string {
     "proposes": {"what": "the flight status for his Thursday flight", "why": "he has to leave for the airport on time", "question": "searchable question, or null", "everyHours": 6},
     "basis": ["obs-id", "belief-id"],
     "asks": false,
+    "focus": "id of the one object in panes this card is about, or omit",
     "panes": [{"title": "optional heading", "widget": {"kind": "list|agenda|chart|media|map|detail|compose", "...": "fields for that kind"}}]
   }],
   "ask": {
@@ -205,6 +286,29 @@ function shape(): string {
 }
 
 const clamp = (s: unknown, n: number): string => String(s ?? '').trim().slice(0, n)
+
+/**
+ * A focus id, but only if the card's own panes actually contain that object.
+ *
+ * Every collection a widget can carry is searched, because the id space is the
+ * object's, not the widget kind's — a card may open onto mail and a map, and
+ * the thing it is about is in exactly one of them. An id that matches nothing
+ * is dropped silently: the card opens at the top, which is what it did before
+ * this field existed and is strictly better than pointing at nothing.
+ */
+const FOCUSABLE = ['events', 'messages', 'videos', 'watches', 'places', 'items'] as const
+
+function focusIn(panes: WidgetPane[], id: string): string | null {
+  if (!id) return null
+  for (const p of panes) {
+    const w = p.widget as unknown as Record<string, unknown>
+    for (const c of FOCUSABLE) {
+      const list = w?.[c]
+      if (Array.isArray(list) && list.some((o: any) => o?.id === id)) return id
+    }
+  }
+  return null
+}
 
 /**
  * Suggested replies. These used to arrive as {q, a} — a question paired with a
@@ -308,6 +412,10 @@ export function validate(raw: any, world: World): ThinkResult {
           }
         : null
 
+    const panes: WidgetPane[] = Array.isArray(n?.panes)
+      ? n.panes.slice(0, 3).map(sanitisePane).filter((p: WidgetPane | null): p is WidgetPane => p !== null)
+      : []
+
     needs.push({
       id,
       tier,
@@ -342,9 +450,17 @@ export function validate(raw: any, world: World): ThinkResult {
        * understood widget is worse than the chat thread it would replace, and
        * the card still works without it.
        */
-      panes: Array.isArray(n?.panes)
-        ? n.panes.slice(0, 3).map(sanitisePane).filter((p: WidgetPane | null): p is WidgetPane => p !== null)
-        : undefined,
+      panes: panes.length ? panes : undefined,
+      /**
+       * The one object this card is about — validated against the panes the
+       * card actually carries, not trusted.
+       *
+       * An unchecked id here would let a model point the surface at something
+       * it has no reason to believe exists, and the client would silently do
+       * nothing. Dropping it is the honest failure: the card still opens, at
+       * the top, exactly as it did before this field existed.
+       */
+      focus: focusIn(panes, clamp(n?.focus, 200)),
       gauges: gauges.length ? gauges : null,
       meter,
       glyph: glyph && glyph.values.length ? glyph : null,
@@ -387,7 +503,7 @@ export function validate(raw: any, world: World): ThinkResult {
  */
 const COLD_START = 6
 
-export function buildPrompt(world: World, nudge?: string): string {
+export function buildPrompt(world: World, nudge?: string, now = new Date()): string {
   const stale = staleBeliefs(world)
   const cold = world.observations.length < COLD_START
   return [
@@ -402,7 +518,26 @@ export function buildPrompt(world: World, nudge?: string): string {
       ? `HE CURATES THIS FEED, NOT YOU. Only surface cards about things he has explicitly asked you to watch (listed above) or has directly asked about. Something outside that may be worth an offer via "proposes", but it does not get a card of its own until he accepts. If nothing he tracks needs him today, return no cards and say so in readLine — an empty feed he controls beats a full one he did not ask for.`
       : '',
     nudge ? `HE JUST SAID:\n${nudge}` : '',
-    `Right now it is ${new Date().toString().replace(/ \(.*\)$/, '')} — take the hour of day into account.`,
+    /**
+     * THE MODEL IS HANDED THE CALENDAR. IT IS NOT ASKED TO WORK ONE OUT.
+     *
+     * The previous version told it the current instant in his zone and left it to
+     * derive everything else — which was already the third attempt at this bug and
+     * still fixed only half of it. Giving a model "Tue 11 Aug 2026 09:15" does
+     * remove the UTC error; it does not stop the model from then writing
+     * "Thursday" about the 12th, because a language model has no calendar. It has
+     * a plausible recollection, and every "tomorrow", "in three days" and weekday
+     * name in the cards below was that recollection printed as fact.
+     *
+     * So every phrase it could need is computed by `clock.ts` and supplied as a
+     * lookup table, with an instruction not to derive others. Nothing downstream
+     * depends on it obeying — the feed's own `dateLabel` is computed and overwrites
+     * whatever came back, and every date on a computed card comes from `clock.ts`
+     * — but its PROSE now agrees with the app's arithmetic instead of running a
+     * rival calendar in the same sentence.
+     */
+    renderDateVocabulary(dateVocabulary(now, world.timeZone)),
+    `Take the hour of day into account.`,
     `Return JSON in exactly this shape:\n${shape()}`,
   ]
     .filter(Boolean)
@@ -417,7 +552,7 @@ export async function think(
   // model that is not currently rate limited.
   const out = await route('synthesis', {
     system: SYSTEM,
-    prompt: buildPrompt(world, nudge),
+    prompt: buildPrompt(world, nudge, new Date()),
     json: true,
     maxTokens: 8192,
   })
