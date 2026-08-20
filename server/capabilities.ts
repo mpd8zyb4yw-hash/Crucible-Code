@@ -1,6 +1,6 @@
 import { registerAction } from './actions.js'
 import { goalPhrase } from './activity.js'
-import { gmailModify, gmailReply, gmailDraft, gmailDeleteDraft, calendarCreate, calendarRsvp, calendarUpdate } from './google.js'
+import { gmailModify, gmailReply, gmailDraft, gmailDeleteDraft, calendarCreate, calendarDelete, calendarRsvp, calendarUpdate } from './google.js'
 import { addObservations } from './world.js'
 import { addTrack, listTracks, removeTrack, runTrack, updateTrack } from './tracks.js'
 import { pauseGoal, setGoal } from './personRoutes.js'
@@ -43,24 +43,28 @@ export function installCapabilities({ google, searchKeys }: Host): void {
   // Reading and organising. Reversible in Gmail, and reversible here: the undo
   // is the opposite label change, recorded with the action that made it.
   registerAction('mail.archive', {
+    effect: 'private_reversible',
     async run(p) {
       await gmailModify(await google(), str(p, 'messageId'), { removeLabelIds: ['INBOX'] })
       return { undo: { kind: 'mail.unarchive', params: { messageId: str(p, 'messageId') } } }
     },
   })
   registerAction('mail.unarchive', {
+    effect: 'private_reversible',
     async run(p) {
       await gmailModify(await google(), str(p, 'messageId'), { addLabelIds: ['INBOX'] })
       return { undo: { kind: 'mail.archive', params: { messageId: str(p, 'messageId') } } }
     },
   })
   registerAction('mail.read', {
+    effect: 'private_reversible',
     async run(p) {
       await gmailModify(await google(), str(p, 'messageId'), { removeLabelIds: ['UNREAD'] })
       return { undo: { kind: 'mail.unread', params: { messageId: str(p, 'messageId') } } }
     },
   })
   registerAction('mail.unread', {
+    effect: 'private_reversible',
     async run(p) {
       await gmailModify(await google(), str(p, 'messageId'), { addLabelIds: ['UNREAD'] })
       return { undo: { kind: 'mail.read', params: { messageId: str(p, 'messageId') } } }
@@ -76,6 +80,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
    * is reachable exactly one way.
    */
   registerAction('mail.send', {
+    effect: 'irreversible',
     irreversible: true,
     async run(p) {
       await gmailReply(await google(), str(p, 'messageId'), str(p, 'text'))
@@ -101,6 +106,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
    * been sent. See `draft.ts`'s `disclosure`.
    */
   registerAction('mail.draft', {
+    effect: 'private_reversible',
     async run(p) {
       const made = await gmailDraft(await google(), {
         to: str(p, 'to'),
@@ -111,6 +117,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
     },
   })
   registerAction('mail.draft.discard', {
+    effect: 'private_reversible',
     async run(p) {
       await gmailDeleteDraft(await google(), str(p, 'draftId'))
       return {}
@@ -118,15 +125,67 @@ export function installCapabilities({ google, searchKeys }: Host): void {
   })
 
   // ── calendar ──────────────────────────────────────────────────────────────
+  /**
+   * CREATING AN EVENT, WHICH REQUIRES KNOWING WHEN.
+   *
+   * `start` used to fall back to `new Date().toISOString()`. An empty-string
+   * default dressed up as a value: a caller with no time at all produced a real
+   * event in his real calendar, starting at the instant the request happened to
+   * arrive, and nothing anywhere said a time had been invented. That is how a
+   * Home control with nothing filled in wrote a meaningless event into his
+   * calendar — and, because `perform` only gated `irreversible`, it could do it
+   * without anyone confirming.
+   *
+   * `||` fallbacks are not validation. They convert "I do not know" into a
+   * confident wrong answer, which is the one outcome this app is built to avoid.
+   * So the required fields are checked and the action REFUSES, in words that say
+   * which field is missing.
+   *
+   * The undo is exact: Google's own delete of the id it just minted. That is
+   * what earns `external_reversible` rather than `irreversible` — but note that
+   * the effect still keeps `system` out of it, because an event on a shared
+   * calendar has already been seen by the time it is deleted.
+   */
   registerAction('calendar.create', {
+    effect: 'external_reversible',
     async run(p) {
+      const summary = str(p, 'summary') || str(p, 'text')
+      const start = str(p, 'start')
+      // Checked BEFORE the provider call, so a refusal costs nothing and cannot
+      // half-create anything.
+      if (!summary) throw new Error('I need to know what the event is called.')
+      if (!start) throw new Error('I need to know when it starts.')
+      if (Number.isNaN(Date.parse(start))) throw new Error(`I could not read "${start}" as a time.`)
+      const end = str(p, 'end') || undefined
+      if (end && Number.isNaN(Date.parse(end))) throw new Error(`I could not read "${end}" as a time.`)
+
       const made = await calendarCreate(await google(), {
-        summary: str(p, 'summary') || str(p, 'text'),
-        start: str(p, 'start') || new Date().toISOString(),
-        end: str(p, 'end') || undefined,
+        summary,
+        start,
+        end,
         location: str(p, 'location') || undefined,
       })
-      return { id: made.id }
+      return {
+        id: made.id,
+        undo: made.id ? { kind: 'calendar.delete', params: { eventId: made.id } } : null,
+      }
+    },
+  })
+
+  /**
+   * The inverse of the above, and the reason it can claim to be reversible.
+   *
+   * Registered as its own capability rather than hidden inside the undo record,
+   * because an undo is performed through `perform` like anything else and needs
+   * a handler to find.
+   */
+  registerAction('calendar.delete', {
+    effect: 'external_reversible',
+    async run(p) {
+      const eventId = str(p, 'eventId')
+      if (!eventId) throw new Error('I need to know which event to remove.')
+      await calendarDelete(await google(), eventId)
+      return {}
     },
   })
 
@@ -145,6 +204,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
    * changed separately in between.
    */
   registerAction('calendar.update', {
+    effect: 'external_reversible',
     async run(p) {
       const eventId = str(p, 'eventId')
       const change = {
@@ -164,6 +224,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
   })
 
   registerAction('calendar.rsvp', {
+    effect: 'external_reversible',
     async run(p) {
       await calendarRsvp(await google(), str(p, 'eventId'), str(p, 'response'))
       return { undo: { kind: 'calendar.rsvp', params: { eventId: str(p, 'eventId'), response: 'needsAction' } } }
@@ -176,6 +237,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
    * model-authored widget can take, and it only ever adds to the world model.
    */
   registerAction('world.tell', {
+    effect: 'internal',
     async run(p) {
       await addObservations([
         {
@@ -197,6 +259,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
    * destroys the interest itself, so it carries the way back.
    */
   registerAction('track.toggle', {
+    effect: 'internal',
     async run(p) {
       const active = p.active === true || p.active === 'true'
       const t = await updateTrack(str(p, 'id'), { active })
@@ -205,6 +268,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
     },
   })
   registerAction('track.interval', {
+    effect: 'internal',
     async run(p) {
       const before = (await listTracks()).find((x) => x.id === str(p, 'id'))
       const t = await updateTrack(str(p, 'id'), { everyHours: Number(p.everyHours) || 24 })
@@ -213,6 +277,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
     },
   })
   registerAction('track.remove', {
+    effect: 'internal',
     async run(p) {
       const before = (await listTracks()).find((x) => x.id === str(p, 'id'))
       if (!(await removeTrack(str(p, 'id')))) throw new Error('That watch is gone.')
@@ -220,12 +285,14 @@ export function installCapabilities({ google, searchKeys }: Host): void {
     },
   })
   registerAction('track.add', {
+    effect: 'internal',
     async run(p) {
       const t = await addTrack(p as Record<string, never>, 'user')
       return { id: t?.id }
     },
   })
   registerAction('track.check', {
+    effect: 'internal',
     async run(p) {
       const r = await runTrack(str(p, 'id'), await searchKeys())
       if (!r.ok) throw new Error('That watch has no question to ask.')
@@ -255,6 +322,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
    * is indistinguishable from "never said", and would be re-inferred.
    */
   registerAction('activity.goal', {
+    effect: 'internal',
     async run(p) {
       const metric = str(p, 'metric')
       const target = Number(p.target)
@@ -275,6 +343,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
     },
   })
   registerAction('activity.goal.clear', {
+    effect: 'internal',
     async run(p) {
       const r = await pauseGoal(str(p, 'id'))
       if (!r.ok) throw new Error('I could not find that goal.')
@@ -287,7 +356,7 @@ export function installCapabilities({ google, searchKeys }: Host): void {
   // so they appear in the log like everything else — "he opened this" is worth
   // knowing and costs nothing to keep.
   for (const kind of ['mail.open', 'calendar.open', 'media.open', 'map.route', 'map.search']) {
-    registerAction(kind, { async run() { return {} } })
+    registerAction(kind, { effect: 'read', async run() { return {} } })
   }
 }
 
@@ -300,8 +369,34 @@ export function installCapabilities({ google, searchKeys }: Host): void {
  */
 export const CAPABILITIES = [
   'mail.archive', 'mail.unarchive', 'mail.read', 'mail.unread', 'mail.send',
+  /*
+    DRAFTING, WHICH WAS IMPLEMENTED AND UNREACHABLE.
+
+    `mail.draft` has existed and worked for as long as `mail.send` has, and was
+    missing from this list — so the assistant could not name the one verb that
+    the whole "prepare it, never send it" design rests on. Asked to write to
+    someone, the best it could reach for was a verb that sends. That is not a
+    missing feature; it is a working feature that nothing could ask for.
+  */
+  'mail.draft', 'mail.draft.discard',
   'calendar.create', 'calendar.update', 'calendar.rsvp',
   'world.tell',
   'track.toggle', 'track.interval', 'track.remove', 'track.add', 'track.check',
+  /* Same story: registered, working, and not in the vocabulary. */
+  'activity.goal', 'activity.goal.clear',
   'mail.open', 'calendar.open', 'media.open', 'map.route', 'map.search',
 ] as const
+
+/**
+ * REGISTERED ON PURPOSE, AND DELIBERATELY NOT OFFERED TO THE MODEL.
+ *
+ * The escape hatch that keeps the contract test honest. Without it, "every
+ * handler must be advertised" would be satisfied either by advertising
+ * something dangerous or by deleting the test — so the third option is written
+ * down here, with the reason, where a reviewer can disagree with it.
+ */
+export const NOT_OFFERED: Record<string, string> = {
+  'calendar.delete':
+    'reachable only as the undo of calendar.create. A model that can delete ' +
+    'events can delete the wrong one, and no phrasing of a prompt makes that safe.',
+}

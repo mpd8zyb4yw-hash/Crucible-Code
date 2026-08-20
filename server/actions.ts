@@ -73,18 +73,113 @@ export function kvActionStore(kv: KVNamespace, key = 'actions'): ActionStore {
 /** Kept long enough to answer for itself. Oldest fall off first. */
 const MAX_RECORDS = 2000
 
+/**
+ * WHAT AN ACTION ACTUALLY DOES TO THE WORLD.
+ *
+ * The comment at the top of this file says system authority is "only ever for
+ * reversible, invisible-to-others work". `perform` did not enforce that: it
+ * checked `handler.irreversible` and nothing else, so every action that was not
+ * literally `mail.send` — creating a calendar event, changing one, RSVPing to
+ * someone else's — could be performed by the app on its own initiative with no
+ * confirmation from anybody. The policy was written down and then not applied.
+ *
+ * "Reversible" was doing two jobs and could only express one. Sending mail and
+ * creating an event on a shared calendar are both visible to other people; only
+ * one of them can be taken back. Marking an event as reversible therefore made
+ * it silently self-authorising, which is exactly how a Home control with no
+ * start time wrote a real event into his calendar.
+ *
+ * So the axis is EFFECT, and it has five values:
+ *
+ *   read                 answers a question. Changes nothing.
+ *   internal             changes only Crucible's own state — a belief, a track,
+ *                        a goal. Nobody outside this app can observe it.
+ *   private_reversible   makes something real, only he can see it, and it can
+ *                        be undone exactly. A draft. An archived message.
+ *   external_reversible  someone else can see it, and it can be undone. A
+ *                        calendar event on a shared calendar.
+ *   irreversible         cannot be taken back. Sending.
+ */
+export type ActionEffect =
+  | 'read'
+  | 'internal'
+  | 'private_reversible'
+  | 'external_reversible'
+  | 'irreversible'
+
+/**
+ * WHO MAY AUTHORISE WHAT.
+ *
+ * The line that matters is between `private_reversible` and
+ * `external_reversible`: the app may prepare things for him on its own, and it
+ * may not do things other people will see. An undo does not change that. Once a
+ * colleague's phone has buzzed, deleting the event does not unbuzz it, and
+ * "there was an undo" is not consent.
+ *
+ * A standing policy CAN authorise an externally-visible reversible action —
+ * that is what a standing policy is for, and it is named and revocable. Nothing
+ * authorises an irreversible action except him, having seen it, saying yes.
+ */
+const MAY: Record<ActionEffect, ReadonlyArray<Authoriser['by']>> = {
+  read: ['user', 'policy', 'system'],
+  internal: ['user', 'policy', 'system'],
+  private_reversible: ['user', 'policy', 'system'],
+  external_reversible: ['user', 'policy'],
+  irreversible: ['user'],
+}
+
+/** The refusal, in his words rather than in the vocabulary above. */
+const REFUSAL: Record<ActionEffect, string> = {
+  read: '',
+  internal: '',
+  private_reversible: '',
+  external_reversible: 'Someone else would see this, so I am not doing it on my own.',
+  irreversible: 'This cannot be taken back, so it needs you to confirm it.',
+}
+
 export interface ActionHandler {
   /**
-   * True when the effect is visible to someone else or cannot be taken back.
-   * Such an action requires `confirmed: true` from the user; there is no flag
-   * anywhere that waives it.
+   * What this does to the world. See `ActionEffect`.
+   *
+   * DEFAULTS TO THE STRICTEST VALUE. A handler registered without one is
+   * treated as irreversible and can only be performed by him, confirmed. That
+   * is deliberately annoying: the failure direction for a forgotten annotation
+   * must be "it asked when it did not need to", never "it acted when it should
+   * not have".
+   */
+  effect?: ActionEffect
+  /**
+   * KEPT, AND NOW DERIVED FROM `effect` RATHER THAN BESIDE IT.
+   *
+   * Still read by `perform` when deciding whether to record an undo. Handlers
+   * should set `effect`; this remains for the one thing it was always good at,
+   * which is saying "there is no way back from this".
    */
   irreversible?: boolean
   /** Perform it. Returns a provider id and, when possible, how to reverse it. */
   run(params: Record<string, unknown>): Promise<{ id?: string; undo?: ActionRecord['undo'] }>
 }
 
+/** The effect this handler declares, at its strictest reading. */
+export const effectOf = (h: ActionHandler): ActionEffect =>
+  h.effect ?? (h.irreversible ? 'irreversible' : 'irreversible')
+
 const handlers = new Map<string, ActionHandler>()
+
+/**
+ * EVERY KIND THIS HOST CAN ACTUALLY PERFORM.
+ *
+ * Exported so a test can compare what is REGISTERED against what is
+ * ADVERTISED. The two drifted — `mail.draft` and `activity.goal` were both
+ * implemented, working, and absent from the vocabulary the model is handed, so
+ * the assistant could not ask for the one action that is the whole point of
+ * "prepare, never send". Nothing could notice, because nothing compared them.
+ */
+/** What one registered kind does to the world. For the same contract test. */
+export const effectOfKind = (kind: string): ActionEffect | null => {
+  const h = handlers.get(kind)
+  return h ? effectOf(h) : null
+}
 
 export function registerAction(kind: string, handler: ActionHandler): void {
   handlers.set(kind, handler)
@@ -94,8 +189,12 @@ export function registeredActions(): string[] {
   return [...handlers.keys()]
 }
 
+/**
+ * Read off `effect` rather than off the old flag, so there is one answer to
+ * "can this be taken back" and not two that can disagree.
+ */
 export function isIrreversible(kind: string): boolean {
-  return handlers.get(kind)?.irreversible === true
+  return effectOfKind(kind) === 'irreversible'
 }
 
 let seq = 0
@@ -119,17 +218,24 @@ export async function perform(
   const handler = handlers.get(kind)
   if (!handler) return record({ ...base, outcome: 'refused', error: `I don't know how to do "${kind}".` })
 
-  if (handler.irreversible && !(authorisedBy.by === 'user' && authorisedBy.confirmed)) {
-    return record({
-      ...base,
-      outcome: 'refused',
-      error: 'This cannot be taken back, so it needs you to confirm it.',
-    })
+  /**
+   * THE POLICY, APPLIED RATHER THAN DESCRIBED.
+   *
+   * Two questions, in order: may this KIND of authority perform this KIND of
+   * effect at all, and — for the one effect where seeing it is the whole point —
+   * did he actually confirm.
+   */
+  const effect = effectOf(handler)
+  if (!MAY[effect].includes(authorisedBy.by)) {
+    return record({ ...base, outcome: 'refused', error: REFUSAL[effect] })
+  }
+  if (effect === 'irreversible' && !(authorisedBy.by === 'user' && authorisedBy.confirmed)) {
+    return record({ ...base, outcome: 'refused', error: REFUSAL.irreversible })
   }
 
   try {
     const out = await handler.run(params)
-    return record({ ...base, outcome: 'ok', result: out.id, undo: handler.irreversible ? null : (out.undo ?? null) })
+    return record({ ...base, outcome: 'ok', result: out.id, undo: effect === 'irreversible' ? null : (out.undo ?? null) })
   } catch (e) {
     return record({ ...base, outcome: 'failed', error: (e as Error).message.slice(0, 300) })
   }

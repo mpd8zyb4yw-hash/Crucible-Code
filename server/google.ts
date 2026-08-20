@@ -792,6 +792,28 @@ export async function calendarCreate(
 }
 
 /**
+ * REMOVE AN EVENT. THE EXACT INVERSE OF `calendarCreate`.
+ *
+ * What makes `calendar.create` honestly reversible rather than reversible by
+ * assertion. Without this the create action returned no undo at all, so the
+ * action log recorded "ok" with nothing to take back — a claim of reversibility
+ * that nothing could act on.
+ *
+ * Only ever called with an id this app minted, from the undo record written at
+ * creation. It is not a general "delete anything" verb and is deliberately not
+ * in the model-safe grammar.
+ */
+export async function calendarDelete(token: string, eventId: string): Promise<void> {
+  if (!eventId) throw new Error('No event given.')
+  await gWrite(
+    token,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    'DELETE',
+    undefined
+  )
+}
+
+/**
  * CHANGE AN EVENT THAT ALREADY EXISTS.
  *
  * The gap this fills was not subtle. He told the assistant that "Comic concert

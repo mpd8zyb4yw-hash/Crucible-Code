@@ -23,6 +23,8 @@ import { sourcePanes } from '../server/panes.ts'
 import { normaliseEvent } from '../server/widgets.ts'
 import { humanReply, looksLikeProtocol } from '../server/reply.ts'
 import { presentationFor } from '../server/execute.ts'
+import { CAPABILITIES as ACTION_VOCABULARY, NOT_OFFERED, installCapabilities } from '../server/capabilities.ts'
+import { registeredActions, effectOfKind, perform } from '../server/actions.ts'
 import { OPERATIONS, reconcileOperation, TERMINAL } from '../src/surface/types.ts'
 import { MUTATES } from '../src/surface/store.ts'
 import { classify, resolveVisible, RETENTION, blankDurable, SYSTEM_APPS } from '../src/home/lanes.ts'
@@ -1076,6 +1078,97 @@ for (const c of PRESENTATION) {
   }
 }
 
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   THE TWO ACTION REGISTRIES AGREE.
+
+   They did not. `mail.draft` and `activity.goal` were registered, implemented
+   and working, and were missing from the vocabulary the model is handed — so
+   asked to write to someone, the best verb the assistant could reach for was
+   `mail.send`. A working feature nothing could ask for, and nothing compared
+   the two lists, so nothing noticed.
+   ───────────────────────────────────────────────────────────────────────────── */
+{
+  // This file counts failures inline rather than through a helper; these are
+  // local to the section so the style of the rest is left alone.
+  const check = (what, got, want) => {
+    if (JSON.stringify(got) === JSON.stringify(want)) return
+    failures++
+    console.error(`FAIL  actions: ${what} — got ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`)
+  }
+  const ok = (what, cond, detail = '') => {
+    if (cond) return
+    failures++
+    console.error(`FAIL  actions: ${what}${detail ? ` — ${detail}` : ''}`)
+  }
+
+  // The handlers only exist once a host installs them. The stubs are never
+  // called — this section asks what is REGISTERED, not what it does.
+  installCapabilities({
+    google: async () => { throw new Error('no provider in the contract test') },
+    searchKeys: async () => ({}),
+  })
+
+  const registered = new Set(registeredActions())
+  const advertised = new Set(ACTION_VOCABULARY)
+
+  const unimplemented = [...advertised].filter((k) => !registered.has(k)).sort()
+  check('every advertised capability has a handler', unimplemented, [])
+
+  const unadvertised = [...registered].filter((k) => !advertised.has(k) && !(k in NOT_OFFERED)).sort()
+  check('every registered action is advertised, or says why it is not', unadvertised, [])
+
+  // The escape hatch must stay honest: an entry naming a kind nobody registers
+  // is a stale excuse, and reads as a deliberate omission that is not one.
+  const staleExcuses = Object.keys(NOT_OFFERED).filter((k) => !registered.has(k)).sort()
+  check('nothing is excused from a vocabulary it was never in', staleExcuses, [])
+
+  /* ── AUTHORITY IS ENFORCED, NOT DESCRIBED ──────────────────────────────────
+     `perform` used to check `handler.irreversible` and nothing else, so every
+     action that was not literally `mail.send` — creating a calendar event,
+     changing one, RSVPing to someone else's — could be performed by the app on
+     its own initiative, unconfirmed. The policy was in a comment. */
+  const unclassified = [...registered].filter((k) => !effectOfKind(k)).sort()
+  check('every registered action declares what it does to the world', unclassified, [])
+
+  ok('an event on a shared calendar is not private work',
+     effectOfKind('calendar.create') === 'external_reversible')
+  ok('a draft is', effectOfKind('mail.draft') === 'private_reversible')
+  ok('sending is final', effectOfKind('mail.send') === 'irreversible')
+
+  // THE REFUSALS, PERFORMED. Assertions about the table would pass with the
+  // enforcement deleted; these go through `perform` itself.
+  const system = { by: 'system', why: 'contract test' }
+  const bare = { by: 'user' }
+
+  const a = await perform('calendar.create', { summary: 'x', start: '2026-08-20T10:00:00Z' }, system)
+  check('the app may not put an event on a shared calendar by itself', a.outcome, 'refused')
+
+  const b = await perform('mail.send', { messageId: 'm', text: 'hi' }, bare)
+  check('and may not send unconfirmed, even for him', b.outcome, 'refused')
+
+  // …while the work it IS allowed to do on his behalf is not blocked. This one
+  // reaches its handler and fails there, on a provider the test does not have —
+  // which is the proof that authorisation let it through.
+  const c = await perform('mail.draft', { to: 'a@b.test', subject: 's', text: 't' }, system)
+  ok('but it may prepare a draft on its own', c.outcome === 'failed' && !/on my own|confirm/i.test(c.error ?? ''))
+
+  /* ── A MISSING START TIME IS NOT "NOW" ────────────────────────────────────
+     `calendar.create` defaulted `start` to `new Date().toISOString()`, so a
+     caller with no time produced a real event beginning whenever the request
+     happened to arrive. That is how a Home control with nothing filled in wrote
+     a meaningless event into his calendar. */
+  const noTime = await perform('calendar.create', { summary: 'Dinner' }, { by: 'user', confirmed: true })
+  check('an event with no start time is refused', noTime.outcome, 'failed')
+  ok('and says which field is missing', /when it starts/i.test(noTime.error ?? ''), noTime.error)
+
+  const noName = await perform('calendar.create', { start: '2026-08-20T10:00:00Z' }, { by: 'user', confirmed: true })
+  ok('an event with no name is refused too', /called/i.test(noName.error ?? ''), noName.error)
+
+  const badTime = await perform('calendar.create', { summary: 'x', start: 'tomorrow-ish' }, { by: 'user', confirmed: true })
+  ok('and an unreadable time is not guessed at', /could not read/i.test(badTime.error ?? ''), badTime.error)
+}
+
 if (failures) {
   console.error(
     `\n${failures} contract violation(s): a surface changed type with its data, ` +
@@ -1094,5 +1187,6 @@ console.log(
   `${globalThis.__capabilityChecks.implemented} reducer operations are all declared and ` +
   `${globalThis.__capabilityChecks.controls} surface controls all dispatch something their surface accepts; ` +
   `Home-bound copy was held to its card budget with nothing discarded; and no card said the same thing twice — ` +
-  `the eyebrow and the sub carry different facts, and no surface header counts what its surface lists`,
+  `the eyebrow and the sub carry different facts, no surface header counts what its surface lists; ` +
+  `and every registered action is advertised, declares its effect, and is refused when the authority is wrong`,
 )
