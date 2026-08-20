@@ -443,6 +443,12 @@ export interface Need {
   basis: string[]
   asks: boolean
   /**
+   * Answers a correction verb cannot express, because only the device can give
+   * them — geolocation behind a permission prompt, chiefly. See
+   * `Need.answers` in server/think.ts, and `QuestionCard`.
+   */
+  answers?: { kind: 'locate' | 'compose'; label: string }[]
+  /**
    * The id of the ONE object this card's line is about, so opening the card
    * lands on that object rather than at the top of a list of forty.
    */

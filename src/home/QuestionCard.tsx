@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 import { css, cssv } from '../css'
 import { CLAMP, RADIUS, S, TONE, TYPE, type StateTone } from '../tokens'
 import { applyCorrection, type Correction } from '../api'
+import { requestLocation, locationState } from '../surface/location'
 import type { HomeObject } from './lanes'
 
 /**
@@ -179,6 +180,43 @@ export function QuestionCard({
   const { ref, rung } = useReduction(`${o.id}|${o.title}|${need?.sub ?? ''}|${options.length}`)
   const shape = LADDER[rung]!
 
+  /**
+   * PERFORM A DEVICE ANSWER.
+   *
+   * `locate` runs from this tap and no earlier: iOS only honours a geolocation
+   * prompt inside a user gesture, which is exactly why this could not be a
+   * server correction. `requestLocation` already reports the fix to
+   * `/api/person/where` with its provenance, so the typed fact and its
+   * coordinates are written by the same path the map has always used — this
+   * adds an entry point, not a second way of knowing where he is.
+   *
+   * A refusal is not a failure of the card. Permission denied leaves the
+   * question standing and says what else he can do, because the alternative —
+   * a card that dismisses itself when the answer did not arrive — is a question
+   * that lies about having been answered.
+   */
+  const device = async (a: { kind: 'locate' | 'compose'; label: string }) => {
+    if (busy) return
+    if (a.kind === 'compose') { onElaborate(o.title); return }
+    setBusy(a.label)
+    setFailed(null)
+    try {
+      const fix = await requestLocation()
+      if (!fix) {
+        const st = locationState()
+        setFailed(st.error ?? 'I could not get your location.')
+        return
+      }
+      const said = fix.label ? `Starting from ${fix.label}.` : 'Got your location.'
+      setSaid(said)
+      onAnswered(said)
+    } catch {
+      setFailed('I could not get your location.')
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const answer = async (c: Correction) => {
     if (busy) return
     setBusy(c.label)
@@ -281,6 +319,34 @@ export function QuestionCard({
         BOTTOM of the card, where it reads as the card being calm.
       */}
       <div data-critical="answers" style={cssv`margin-top:${S.base}px; flex:none; display:flex; flex-wrap:wrap; gap:6px;`}>
+        {/*
+          ANSWERS ONLY THIS DEVICE CAN GIVE, AND THEY COME FIRST.
+
+          A correction verb writes a typed fact the server already knows the
+          shape of. It cannot express "ask the browser where we are", because
+          that lives behind a permission prompt that requires a user gesture —
+          so the location question rendered with its single correction, "Do not
+          ask again", and the only actionable thing on a card asking where he is
+          was to make it stop asking.
+
+          These are NEVER reduced by the overflow ladder. The ladder may drop a
+          reason line or a fourth chip; it may not drop the only way through the
+          question.
+        */}
+        {(need?.answers ?? []).map((a) => (
+          <button
+            key={a.kind}
+            type="button"
+            data-answer={a.label}
+            data-answer-kind={a.kind}
+            disabled={!!busy}
+            onClick={(e) => { e.stopPropagation(); void device(a) }}
+            style={cssv`border:0; padding:8px 13px; border-radius:999px; cursor:pointer; font-family:inherit;
+              font-size:${TYPE.small}; font-weight:600; white-space:normal; text-align:left;
+              background:rgba(143,224,174,${busy === a.label ? '.35' : '.92'}); color:#101012;`}
+          >{busy === a.label ? 'Asking…' : a.label}</button>
+        ))}
+
         {options.slice(0, shape.chips).map((c) => (
           <button
             key={c.label}

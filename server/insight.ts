@@ -1158,6 +1158,18 @@ function integrationItems(
         ],
       },
       basis: [],
+      /**
+       * THE WAY THROUGH THE QUESTION, WHICH IT DID NOT HAVE.
+       *
+       * These come first on the card. "Do not ask again" is still offered and is
+       * still last, which is the correct order for a question that has a real
+       * answer: dismissing it should be available and should not be the only
+       * thing available.
+       */
+      answers: [
+        { kind: 'locate', label: 'Use my current location' },
+        { kind: 'compose', label: 'Tell me where you are' },
+      ],
       corrections: [
         { verb: 'not-relevant', label: 'Do not ask again', about: 'location' },
       ],
@@ -1349,6 +1361,13 @@ export function needFrom(a: Attention, now = new Date()): Need {
     panes: a.panes,
     because: a.because,
     corrections: copy.corrections,
+    /*
+      NOT PUT THROUGH THE COPY BUDGET, deliberately. `budgetForHome` decides what
+      prose fits on a 224px card and may drop a reason line; these are the card's
+      only way of being answered at all, and a layout rule must never be able to
+      remove the answer from a question. See `Need.answers`.
+    */
+    answers: a.answers,
     uncertainty: a.uncertainty,
     /**
      * WHAT THE LANE IS TOLD, AND WHAT IT IS NO LONGER ALLOWED TO DECIDE.

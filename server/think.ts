@@ -59,6 +59,24 @@ export interface Need {
    */
   asks: boolean
   /**
+   * ANSWERS A CORRECTION CANNOT EXPRESS.
+   *
+   * A question card's options are its `corrections` — server verbs that write a
+   * typed fact. That works when the answer is something the server already
+   * knows the shape of, and fails completely when the answer only the DEVICE can
+   * supply: "where are you" cannot be answered by a verb, because the answer is
+   * behind a browser permission prompt that requires a user gesture.
+   *
+   * So the location question rendered with its one correction — "Do not ask
+   * again" — and "Something else…". The only actionable option on a card asking
+   * where he is was to make it stop asking. He met it repeatedly and there was
+   * no way through it.
+   *
+   * Typed and closed rather than a free callback, so the server still decides
+   * what may be offered and the client only decides how to perform it.
+   */
+  answers?: { kind: 'locate' | 'compose'; label: string }[]
+  /**
    * The id of the ONE object this card's line is about.
    *
    * A card that says "Newest: Invoice 4471" opened Mail and left him to find

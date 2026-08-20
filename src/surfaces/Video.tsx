@@ -77,15 +77,26 @@ export default function Video({ surfaceKey, title, videos, empty, onAction, onRe
   /** A video with no server-verified URL cannot be opened, and says so. */
   const openable = (v: VideoObject) => typeof v.url === 'string' && v.url.length > 0
 
+  /**
+   * A DESTINATION THAT DID NOT ANSWER, AND WHAT IS OFFERED INSTEAD.
+   *
+   * Held as state rather than announced in a note, because the honest response
+   * to "I could not tell whether Brave opened" is a choice, and a choice needs
+   * somewhere to live. `openAt` no longer substitutes a browser on its own —
+   * see the note there — so this is where the substitution becomes his.
+   */
+  const [stalled, setStalled] = useState<{ video: VideoObject; tried: DestinationId } | null>(null)
+
   const openVideo = async (v: VideoObject) => {
     if (!openable(v)) return
     if (!destination) { setPicking(v); return }
     const how = await openAt(v.url!, destination)
-    // Only ever reports what actually happened. "Opened" is not claimed for a
-    // custom scheme that nothing handled — that is what 'fell-back' is for.
+    if (how === 'not-opened') { setStalled({ video: v, tried: destination }); setOpenNote(null); return }
+    setStalled(null)
+    // Only ever reports what actually happened. "Opened" is never claimed for a
+    // custom scheme nothing answered.
     setOpenNote(
       how === 'copied' ? 'Link copied.'
-      : how === 'fell-back' ? 'That app did not answer — opened in your browser instead.'
       : how === 'blocked' ? 'Your browser blocked the pop-up.'
       : null
     )
@@ -104,7 +115,8 @@ export default function Video({ surfaceKey, title, videos, empty, onAction, onRe
     }).catch(() => null)
     if (andOpen?.url) {
       const how = await openAt(andOpen.url, id)
-      setOpenNote(how === 'fell-back' ? 'That app did not answer — opened in your browser instead.' : null)
+      if (how === 'not-opened') setStalled({ video: andOpen, tried: id })
+      else { setStalled(null); setOpenNote(null) }
     }
   }
 
@@ -567,6 +579,48 @@ export default function Video({ surfaceKey, title, videos, empty, onAction, onRe
               onClick={() => setPicking(null)}
               style={cssv`align-self:flex-start; margin-top:2px; font-size:${TYPE.small}; color:rgba(237,238,241,.42); cursor:pointer;`}
             >Not now</div>
+          </div>
+        </div>
+      )}
+
+      {/*
+        THE DESTINATION DID NOT ANSWER, SO HE DECIDES WHAT HAPPENS NEXT.
+
+        This is what replaces silently opening Safari. Three options, all of
+        them his, and the app stays exactly where it was until he picks one —
+        which is the correct behaviour for "I could not tell whether that
+        worked", and the one thing the 900ms timer could never do.
+      */}
+      {stalled && (
+        <div
+          data-role="open-stalled"
+          style={css('position:absolute; left:14px; right:14px; bottom:8px; z-index:8; padding:10px 12px; border-radius:12px; background:rgba(28,24,20,.97); box-shadow:inset 0 0 0 1px rgba(240,165,107,.28), 0 6px 22px rgba(0,0,0,.45);')}
+        >
+          <div style={cssv`font-size:11.5px; line-height:1.35; color:rgba(255,220,170,.9);`}>
+            {DESTINATIONS.find((d) => d.id === stalled.tried)?.label ?? 'That app'} didn’t answer.
+          </div>
+          <div style={css('display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;')}>
+            <button
+              data-role="open-retry"
+              onClick={() => { const v = stalled.video; setStalled(null); void openVideo(v) }}
+              style={css('padding:6px 10px; border:0; border-radius:10px; background:rgba(240,165,107,.22); color:rgba(255,220,170,.95); font-size:11.5px; cursor:pointer;')}
+            >Try again</button>
+            <button
+              data-role="open-in-browser"
+              onClick={async () => {
+                const v = stalled.video
+                setStalled(null)
+                // HIS choice, made explicitly, so this one really is a browser open.
+                const how = await openAt(v.url!, 'browser')
+                setOpenNote(how === 'blocked' ? 'Your browser blocked the pop-up.' : null)
+              }}
+              style={css('padding:6px 10px; border:0; border-radius:10px; background:rgba(255,255,255,.08); color:rgba(237,238,241,.9); font-size:11.5px; cursor:pointer;')}
+            >Open in browser</button>
+            <button
+              data-role="open-choose"
+              onClick={() => { const v = stalled.video; setStalled(null); setPicking(v) }}
+              style={css('padding:6px 10px; border:0; border-radius:10px; background:rgba(255,255,255,.08); color:rgba(237,238,241,.9); font-size:11.5px; cursor:pointer;')}
+            >Choose another</button>
           </div>
         </div>
       )}

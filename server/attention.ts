@@ -220,6 +220,12 @@ export interface Attention {
   /** Observation/object ids. Same contract as a belief's basis. */
   basis: string[]
   corrections: Correction[]
+  /**
+   * Answers only the DEVICE can give. See `Need.answers` in `think.ts` — the
+   * location question is the case this exists for, and it had no way through
+   * itself until it did.
+   */
+  answers?: { kind: 'locate' | 'compose'; label: string }[]
   /** ISO instant this is about, when it is about one. Drives urgency decay. */
   at?: string
   /** How and when this stops being worth his attention. See `Lifecycle`. */

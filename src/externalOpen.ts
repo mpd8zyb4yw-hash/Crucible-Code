@@ -108,13 +108,16 @@ const SCHEME_GRACE_MS = 900
 /**
  * Open a URL at a destination.
  *
- * Returns what actually happened, as far as it can be known. `'fell-back'` is a
- * real and expected outcome, not an error.
+ * Returns what actually happened, as far as it can be known.
+ *
+ * `'not-opened'` REPLACES the old `'fell-back'`, and the difference is the whole
+ * point: this function no longer decides on his behalf that a different app
+ * will do. See the note at the bottom of the scheme branch.
  */
 export async function openAt(
   url: string,
   destination: DestinationId
-): Promise<'opened' | 'fell-back' | 'copied' | 'blocked'> {
+): Promise<'opened' | 'not-opened' | 'copied' | 'blocked'> {
   if (destination === 'copy') {
     try {
       await navigator.clipboard.writeText(url)
@@ -160,8 +163,28 @@ export async function openAt(
   await new Promise((r) => setTimeout(r, SCHEME_GRACE_MS))
   document.removeEventListener('visibilitychange', onHide)
 
+  /**
+   * AN EXPLICIT DESTINATION IS AUTHORITATIVE. NO SILENT SUBSTITUTION.
+   *
+   * This used to open the https URL in the default browser whenever the page
+   * had not gone hidden within 900ms, and report it as `'fell-back'`. So a man
+   * who had deliberately chosen Brave — gone into a picker and selected it —
+   * watched his video open in Safari, and the only explanation was one line of
+   * note text that vanished on the next tap. He chose Brave twice more. It kept
+   * happening.
+   *
+   * The grace period cannot tell "Brave is not installed" from "Brave is slow",
+   * "the phone was busy", or "iOS did not fire visibilitychange this time" —
+   * and it is wrong in the direction that overrides an explicit instruction.
+   * The correct answer to "I could not tell whether that worked" is to say so
+   * and let him choose, not to quietly pick a different app and call it a
+   * fallback.
+   *
+   * So: nothing else is opened here. The caller offers Try again / Open in
+   * browser / Choose another destination, and every one of those is his.
+   */
   if (switched) return 'opened'
-  return window.open(url, '_blank', 'noopener,noreferrer') ? 'fell-back' : 'blocked'
+  return 'not-opened'
 }
 
 /**
