@@ -112,22 +112,48 @@ const COMPOSER_RESERVE = 70
  */
 const COMPOSER_CLEARANCE = 10
 
+/** Unresolved work, which survives a launch. Conversation does not. */
+const TASKS = 'cru:tasks'
+
+/**
+ * A FAILED REQUEST, AS A TURN HE CAN READ.
+ *
+ * One place, because both chat paths had the same bug and would otherwise have
+ * to be fixed identically twice — which is how one of them ends up not being.
+ */
+function failureTurn(e: unknown): Msg {
+  const api = e as { userMessage?: string; retryable?: boolean }
+  return {
+    who: 'ai',
+    text: api?.userMessage || 'I couldn’t get an answer just now.',
+    failed: true,
+    retryable: api?.retryable !== false,
+  }
+}
+
 export default function App() {
   const [view, setView] = useState<View>(null)
   const { local } = useHomeState()
   /**
-   * Conversations outlive the cards they were opened from. Synthesis mints new
-   * card ids every pass, so a reply — which triggers a re-think — used to
-   * orphan the very thread it came from, and a reload lost the lot. Persisted
-   * so that going back and returning finds the conversation still there.
+   * CONVERSATIONS LIVE AS LONG AS THE SESSION, AND NO LONGER.
+   *
+   * They used to be written to `cru:threads` and restored on every launch,
+   * forever. That is the wrong abstraction wearing the word "memory": a chat
+   * bubble is not a fact. What deserves to outlive a launch is what was LEARNED
+   * — facts, preferences, corrections, people, commitments — and all of that
+   * already lives in the world model and the memory core, typed and
+   * correctable. The transcript was a second, untyped, uncorrectable copy of
+   * some of it, plus a great deal of noise, plus — because failures were
+   * appended as assistant turns — a permanent record of every network blip the
+   * app had ever had. Opening Crucible on Tuesday and being greeted by
+   * Monday's "HTTP 503" is the failure this removes.
+   *
+   * Within a session they still outlive the cards they were opened from, which
+   * is what the persistence was originally added for: synthesis mints new card
+   * ids every pass, so a reply used to orphan the thread it came from. That is
+   * a same-session problem and this is a same-session store.
    */
-  const [threads, setThreads] = useState<Record<string, Msg[]>>(
-    () => contained('hydrate', () => JSON.parse(localStorage.getItem('cru:threads') ?? '{}'), {}),
-  )
-
-  useEffect(() => {
-    try { localStorage.setItem('cru:threads', JSON.stringify(threads)) } catch { /* private mode */ }
-  }, [threads])
+  const [threads, setThreads] = useState<Record<string, Msg[]>>({})
   const history = useHistory()
   const [doneIds, setDoneIds] = useState<Set<string>>(new Set())
   const [notes, setNotes] = useState<Record<string, string>>({})
@@ -156,7 +182,26 @@ export default function App() {
    * blocking slot and THIS task resumes, so he never has to say the original
    * instruction twice. See task/resolve.ts.
    */
-  const [pending, setPending] = useState<Record<string, SuspendedTask>>({})
+  /**
+   * THE ONE THING THAT DOES SURVIVE A LAUNCH: WORK STILL WAITING ON HIM.
+   *
+   * A suspended task is not conversation. It is a request he made that could not
+   * finish because exactly one thing was missing, and it is still true tomorrow
+   * — so closing the app and coming back should find it waiting rather than
+   * silently dropped. What is stored is the task: its kind, its instruction, the
+   * slots resolved so far and the question it is blocked on. Not the bubbles
+   * around it.
+   *
+   * This is the distinction the old `cru:threads` could not make. It kept every
+   * word and no state; this keeps the state and none of the words.
+   */
+  const [pending, setPending] = useState<Record<string, SuspendedTask>>(
+    () => contained('hydrate', () => JSON.parse(localStorage.getItem(TASKS) ?? '{}'), {}),
+  )
+
+  useEffect(() => {
+    try { localStorage.setItem(TASKS, JSON.stringify(pending)) } catch { /* private mode */ }
+  }, [pending])
   const [acknowledged, setAcknowledged] = useState<Set<string>>(new Set())
   /** The question the composer is currently answering, if he chose to type one. */
   const [answering, setAnswering] = useState<Need | null>(null)
@@ -212,6 +257,17 @@ export default function App() {
     onOpenHash()
     window.addEventListener('hashchange', onOpenHash)
     return () => window.removeEventListener('hashchange', onOpenHash)
+  }, [])
+
+  /*
+    THE OLD TRANSCRIPT STORE, REMOVED FROM DEVICES THAT ALREADY HAVE ONE.
+
+    Not leaving it: it is his conversation history sitting in localStorage on a
+    phone, it will never be read again, and "unused data we decided to keep" is
+    the shape of every privacy incident. One line, once, on launch.
+  */
+  useEffect(() => {
+    try { localStorage.removeItem('cru:threads') } catch { /* private mode */ }
   }, [])
 
   useEffect(() => {
@@ -650,7 +706,16 @@ export default function App() {
 
       if (r.learned) void reconsider()
     } catch (e) {
-      setThreads((p) => ({ ...p, [id]: [...(p[id] || []), { who: 'ai', text: (e as Error).message }] }))
+      /*
+        THE SAFE SENTENCE, NEVER THE RAW ONE.
+
+        This line used to append `(e as Error).message`, and `api.ts` minted that
+        message as `HTTP ${res.status}` — so a bad gateway spoke to him in the
+        assistant's voice, and then persisted. `ApiError.userMessage` is written
+        to be read aloud; the provider's actual words live in the server log
+        against `diagnosticId`.
+      */
+      setThreads((p) => ({ ...p, [id]: [...(p[id] || []), failureTurn(e)] }))
     } finally {
       setSending(false)
     }
@@ -695,7 +760,16 @@ export default function App() {
         land(f.feed, false)
       }
     } catch (e) {
-      setThreads((p) => ({ ...p, [id]: [...(p[id] || []), { who: 'ai', text: (e as Error).message }] }))
+      /*
+        THE SAFE SENTENCE, NEVER THE RAW ONE.
+
+        This line used to append `(e as Error).message`, and `api.ts` minted that
+        message as `HTTP ${res.status}` — so a bad gateway spoke to him in the
+        assistant's voice, and then persisted. `ApiError.userMessage` is written
+        to be read aloud; the provider's actual words live in the server log
+        against `diagnosticId`.
+      */
+      setThreads((p) => ({ ...p, [id]: [...(p[id] || []), failureTurn(e)] }))
     } finally {
       setSending(false)
     }

@@ -15,9 +15,80 @@ export interface ProvidersResponse {
   routing: 'auto' | 'pinned'
 }
 
+/**
+ * A FAILURE THE UI IS ALLOWED TO RENDER.
+ *
+ * This is the class the whole file used to lack. `j` threw
+ * `new Error(body.error ?? \`HTTP ${res.status}\`)`, and `App.tsx` appended
+ * `e.message` into the transcript as an assistant turn — so a Cloudflare hiccup
+ * became a chat bubble reading "HTTP 503", in the assistant's own voice,
+ * persisted across launches. There is not a shorter way to tell someone that
+ * the thing they are talking to is not really there.
+ *
+ * `userMessage` is always safe to show. `code` and `retryable` are for the UI to
+ * branch on. `diagnosticId` is the thread back to the server log, which is where
+ * the provider's actual words stay.
+ */
+export class ApiError extends Error {
+  readonly code: string
+  readonly userMessage: string
+  readonly retryable: boolean
+  readonly diagnosticId?: string
+  readonly status: number
+
+  constructor(init: { code?: string; message?: string; retryable?: boolean; diagnosticId?: string; status: number }) {
+    const safe = init.message?.trim() || FALLBACK_MESSAGE
+    super(safe)
+    this.name = 'ApiError'
+    this.code = init.code ?? 'server_error'
+    this.userMessage = safe
+    // Absent means "we do not know", and the safe assumption for an unknown
+    // failure is that trying again might work — the alternative is an app that
+    // silently gives up on a blip.
+    this.retryable = init.retryable ?? true
+    this.diagnosticId = init.diagnosticId
+    this.status = init.status
+  }
+}
+
+/**
+ * What is said when the server did not say anything usable.
+ *
+ * Never a status code. A number is not an explanation, and putting one in the
+ * assistant's mouth makes the failure sound like the assistant's opinion.
+ */
+const FALLBACK_MESSAGE = 'I couldn’t get an answer just now.'
+
+/** Signing-out is the one failure the app reacts to structurally. */
+const looksLikeAuth = (status: number, text: string) =>
+  status === 401 || /not signed in|signed out/i.test(text)
+
 async function j<T>(res: Response): Promise<T> {
   const body = await res.json().catch(() => null)
-  if (!res.ok) throw new Error((body as any)?.error ?? `HTTP ${res.status}`)
+  if (!res.ok) {
+    const e = (body as { error?: unknown })?.error
+    /*
+      THE TYPED SHAPE, WHEN THE SERVER SENDS ONE. `server/apiError.ts` returns
+      { error: { code, message, retryable, diagnosticId } }; older routes still
+      return { error: "some string" }, and a few return nothing at all. All three
+      are handled here so that no caller has to know which kind of route it
+      called — and so that the string case cannot smuggle a status code through.
+    */
+    if (e && typeof e === 'object') {
+      const t = e as { code?: string; message?: string; retryable?: boolean; diagnosticId?: string }
+      return Promise.reject(new ApiError({ ...t, status: res.status }))
+    }
+    const text = typeof e === 'string' ? e : ''
+    return Promise.reject(new ApiError({
+      // A legacy route's own sentence is kept ONLY when it reads like one. The
+      // auth message in particular is load-bearing: `App.tsx` matches on it to
+      // show the sign-in state rather than an error.
+      message: looksLikeAuth(res.status, text) ? (text || 'You’re signed out.') : text || FALLBACK_MESSAGE,
+      code: looksLikeAuth(res.status, text) ? 'not_signed_in' : 'server_error',
+      retryable: !looksLikeAuth(res.status, text),
+      status: res.status,
+    }))
+  }
   return body as T
 }
 

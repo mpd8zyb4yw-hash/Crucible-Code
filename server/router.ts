@@ -1,4 +1,4 @@
-import { chat, byId, canChat, listModels, type ChatRequest, type ChatResult, type Quota, type ProviderError, type RateSnapshot } from './providers.js'
+import { chat, PROVIDER_DEADLINE_MS, ROUTE_DEADLINE_MS, byId, canChat, listModels, type ChatRequest, type ChatResult, type Quota, type ProviderError, type RateSnapshot } from './providers.js'
 import { getKey } from './secrets.js'
 import { usable as usableModels, noteLiveCall, noteLiveFailure } from './models.js'
 
@@ -558,6 +558,17 @@ const PERMANENT =
 const TOO_LARGE = /too large|too long|context length|maximum context|token limit for/i
 
 /**
+ * A DEADLINE PASSING IS NOT EVIDENCE ABOUT THE MODEL.
+ *
+ * Same argument the rate-limit case already makes one comment down: a provider
+ * that was slow at 09:04 is not a provider that has been decommissioned, and
+ * quarantining it would shelve the best model on the busiest afternoon. It is
+ * still RECORDED — `note` sees it, so a provider that times out constantly loses
+ * on ranking — it simply does not count as a permanent refusal.
+ */
+const TIMED_OUT = /timed out|aborted|cancelled/i
+
+/**
  * A quota of zero is not a rate limit — it is "this model is not on your plan",
  * wearing a 429 and a "please retry in 27s" that will never come true. Gemini
  * reports its paid tiers this way to free keys, which is how a pro model stayed
@@ -581,8 +592,24 @@ export interface RouteResult extends ChatResult {
 export async function route(
   task: Task,
   req: Omit<ChatRequest, 'providerId' | 'model' | 'key'>,
-  opts: { preferred?: string } = {}
+  opts: { preferred?: string; deadlineMs?: number } = {}
 ): Promise<RouteResult> {
+  /**
+   * THE WHOLE ATTEMPT IS BOUNDED, NOT JUST EACH TRY.
+   *
+   * Falling back through candidates in sequence turns a per-provider deadline
+   * into a multiplication: three at eight seconds each is twenty-four, which is
+   * the hang this was supposed to fix wearing a different hat. So the budget is
+   * spent from here, each attempt gets whatever is left, and when there is not
+   * enough left to be worth starting one the loop stops and says so.
+   */
+  const until = Date.now() + (opts.deadlineMs ?? ROUTE_DEADLINE_MS)
+  /*
+    Below this there is no point beginning: a provider that answers in under a
+    second is one that was going to answer anyway, and starting a call we intend
+    to abort spends quota to learn nothing.
+  */
+  const FLOOR_MS = 1_200
   const all = await candidates(task, opts.preferred)
   if (!all.length) throw new Error('No model connected')
 
@@ -613,9 +640,24 @@ export async function route(
   for (const c of list) {
     const key = await getKey(c.providerId)
     if (!key) continue
+    const left = until - Date.now()
+    if (left < FLOOR_MS) {
+      // Recorded like any other reason for not using a candidate, so the
+      // sentence he gets says "there was no time left" rather than implying
+      // every model refused him.
+      fellBackFrom.push(`${c.providerId}/${c.model}: no time left in this request`)
+      break
+    }
     try {
       const t0 = Date.now()
-      const out = await chat({ ...req, providerId: c.providerId, model: c.model, key })
+      const out = await chat({
+        ...req,
+        providerId: c.providerId,
+        model: c.model,
+        key,
+        // The smaller of "what one provider gets" and "what is left overall".
+        timeoutMs: Math.min(PROVIDER_DEADLINE_MS, left),
+      })
       await note(c.providerId, c.model, { ok: true, usage: out.usage, size, limits: out.limits })
       // Free evidence. A model that just did real work needs no probe to prove
       // it works, and this is why the registry can stay accurate on a budget
@@ -628,13 +670,14 @@ export async function route(
       const quota = (e as ProviderError).quota
       const limited = !!quota || RATE_LIMITED.test(e.message)
       const oversize = !limited && TOO_LARGE.test(e.message)
-      const permanent = NEVER_ALLOWED.test(e.message) || (!limited && !oversize && PERMANENT.test(e.message))
+      const timedOut = !limited && !oversize && TIMED_OUT.test(e.message)
+      const permanent = NEVER_ALLOWED.test(e.message) || (!limited && !oversize && !timedOut && PERMANENT.test(e.message))
       const why = explain(e, quota)
       await note(c.providerId, c.model, { ok: false, limited, permanent, quota, why, oversize: oversize ? size : undefined })
       // Only a refusal that is ABOUT the model quarantines it. A rate limit or
       // an oversized prompt says nothing about whether the model works, and
       // counting either would quarantine the best model on the busiest key.
-      if (!limited && !oversize) await noteLiveFailure(c.providerId, c.model, e)
+      if (!limited && !oversize && !timedOut) await noteLiveFailure(c.providerId, c.model, e)
       // The provider's actual reason, not the word "rate limited" for all of
       // them: a per-minute burst and a spent daily budget need different
       // answers from him, and lumping them together hid which one this was.

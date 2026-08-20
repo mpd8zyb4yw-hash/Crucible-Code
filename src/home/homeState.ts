@@ -63,7 +63,18 @@ function write(key: string, value: unknown): void {
 // ── the store ────────────────────────────────────────────────────────────────
 
 let durable: Durable = read(DURABLE_KEY, blankDurable)
-let local: LocalState = read(LOCAL_KEY, blankLocal)
+/**
+ * DEVICE-LOCAL, AND ONE FIELD OF IT DELIBERATELY NOT RESTORED.
+ *
+ * `visible` and `deck` are a preference — he reads card three, he comes back to
+ * card three — and they persist. `chat` is not a preference, it is where a
+ * conversation had got to, and restoring it means a cold launch opens onto a
+ * maximised chat panel showing yesterday's exchange instead of onto his day.
+ *
+ * A launch begins collapsed. The workspace is the product; the composer is how
+ * you talk to it, not the thing you arrive in.
+ */
+let local: LocalState = { ...read(LOCAL_KEY, blankLocal), chat: 'collapsed' }
 const listeners = new Set<() => void>()
 
 const emit = () => { for (const l of listeners) l() }

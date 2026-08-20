@@ -8,7 +8,21 @@ import { applyCorrection, noteEngaged, type Need, type WidgetAction } from './ap
 import { draftingIn, useSurfaces } from './surface/store'
 import { ReplyComposer } from './ReplyComposer'
 
-export interface Msg { who: 'me' | 'ai'; text: string }
+export interface Msg {
+  who: 'me' | 'ai'
+  text: string
+  /**
+   * THIS TURN IS AN APOLOGY, NOT AN ANSWER.
+   *
+   * Marked rather than inferred from the words, because two things depend on
+   * knowing: a failed turn is never written to durable storage (an apology for a
+   * network blip is not something to greet him with tomorrow), and it is the
+   * only kind of turn allowed to offer "Try again".
+   */
+  failed?: boolean
+  /** Whether trying the same thing again could plausibly work. See `ApiError`. */
+  retryable?: boolean
+}
 
 /**
  * The labels the composition layer guarantees, so the shared row can find them.

@@ -180,6 +180,16 @@ export interface ChatRequest {
    */
   search?: boolean
   maxTokens?: number
+  /**
+   * How long this one provider gets before it is abandoned.
+   *
+   * Defaulted rather than required, because every existing caller predates it
+   * and the default is the right answer for all of them. `route` overrides it
+   * downwards as the total budget runs out — see `ROUTE_DEADLINE_MS`.
+   */
+  timeoutMs?: number
+  /** An outer cancellation, e.g. the request that asked for this going away. */
+  signal?: AbortSignal
 }
 
 export interface ChatResult {
@@ -346,13 +356,79 @@ const OPENAI_COMPATIBLE: Record<string, string> = {
   openrouter: 'https://openrouter.ai/api/v1/chat/completions',
 }
 
+/**
+ * HOW LONG ONE PROVIDER GETS.
+ *
+ * There was no deadline at all. Every call in this file was a bare `fetch`, so
+ * a provider that accepted the connection and then said nothing held the
+ * request open until something else gave up first — and the thing that
+ * eventually gave up was a person watching a spinner. Worse, `route` falls back
+ * through several candidates in sequence, so N hung providers cost N times
+ * however long each took to die.
+ *
+ * Eight seconds is chosen against what this is FOR. These calls sit between him
+ * pressing send and a sentence appearing; past about ten seconds he has already
+ * decided the app is broken, and a correct answer arriving at twenty is worth
+ * less than a fast admission at eight.
+ */
+export const PROVIDER_DEADLINE_MS = 8_000
+
+/**
+ * AND HOW LONG THE WHOLE ATTEMPT GETS, FALLBACKS INCLUDED.
+ *
+ * The per-provider deadline alone does not bound the request: three candidates
+ * at eight seconds each is twenty-four, which is the same failure with extra
+ * steps. `route` spends against this budget and stops trying when it is gone,
+ * so the ceiling he actually experiences is this number rather than a
+ * multiplication nobody did.
+ */
+export const ROUTE_DEADLINE_MS = 12_000
+
+/**
+ * A signal that fires when the deadline passes OR the caller gives up.
+ *
+ * `AbortSignal.timeout` alone cannot express the second half, and
+ * `AbortSignal.any` is not available on every runtime this ships to, so the two
+ * are combined by hand. The returned `done` MUST be called: a pending timer
+ * keeps a Worker isolate alive past its response, which is how a request that
+ * answered in 200ms bills for eight seconds.
+ */
+function withDeadline(ms: number, outer?: AbortSignal): { signal: AbortSignal; done: () => void } {
+  const c = new AbortController()
+  // Aborted with an ordinary Error whose text says what happened: `apiError.ts`
+  // classifies on it, and "signal is aborted without reason" classifies as
+  // nothing useful at all.
+  const timer = setTimeout(() => c.abort(new Error(`provider timed out after ${ms}ms`)), ms)
+  const onOuter = () => c.abort(outer?.reason ?? new Error('cancelled'))
+  if (outer) {
+    if (outer.aborted) onOuter()
+    else outer.addEventListener('abort', onOuter)
+  }
+  return {
+    signal: c.signal,
+    done: () => {
+      clearTimeout(timer)
+      outer?.removeEventListener('abort', onOuter)
+    },
+  }
+}
+
 /** One call shape for every provider. Throws with the provider's own message. */
 export async function chat(req: ChatRequest): Promise<ChatResult> {
   const { providerId } = req
-  if (providerId === 'gemini') return geminiChat(req)
-  if (providerId === 'anthropic') return anthropicChat(req)
-  if (OPENAI_COMPATIBLE[providerId]) return openaiChat(req, OPENAI_COMPATIBLE[providerId])
-  throw new Error(`Unknown provider: ${providerId}`)
+  const { signal, done } = withDeadline(req.timeoutMs ?? PROVIDER_DEADLINE_MS, req.signal)
+  const withSignal = { ...req, signal }
+  try {
+    if (providerId === 'gemini') return await geminiChat(withSignal)
+    if (providerId === 'anthropic') return await anthropicChat(withSignal)
+    if (OPENAI_COMPATIBLE[providerId]) return await openaiChat(withSignal, OPENAI_COMPATIBLE[providerId])
+    throw new Error(`Unknown provider: ${providerId}`)
+  } finally {
+    // `await`ed above rather than returned, so this runs when the call settles
+    // rather than when the promise is handed back. A returned promise would
+    // clear the timer before the fetch it is supposed to bound had finished.
+    done()
+  }
 }
 
 async function openaiChat(req: ChatRequest, url: string): Promise<ChatResult> {
@@ -362,6 +438,7 @@ async function openaiChat(req: ChatRequest, url: string): Promise<ChatResult> {
   ]
   const res = await fetch(url, {
     method: 'POST',
+    signal: req.signal,
     headers: { 'content-type': 'application/json', authorization: `Bearer ${req.key}` },
     body: JSON.stringify({
       model: req.model,
@@ -382,6 +459,7 @@ async function openaiChat(req: ChatRequest, url: string): Promise<ChatResult> {
 async function anthropicChat(req: ChatRequest): Promise<ChatResult> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
+    signal: req.signal,
     headers: {
       'content-type': 'application/json',
       'x-api-key': req.key,
@@ -412,6 +490,7 @@ async function geminiChat(req: ChatRequest): Promise<ChatResult> {
   const grounded = !!req.search
   const res = await fetch(url, {
     method: 'POST',
+    signal: req.signal,
     headers: { 'content-type': 'application/json', 'x-goog-api-key': req.key },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: req.prompt }] }],
